@@ -212,7 +212,12 @@ class SourceRegistry:
             if not class_name:
                 raise UnknownBackendError(f"cairo source {source.id}: missing params.class_name")
             source_cls = get_cairo_source_class(class_name)
-            source_obj = source_cls()
+            constructor_params = {
+                key: value
+                for key, value in source.params.items()
+                if key not in {"class_name", "natural_w", "natural_h", "fps"}
+            }
+            source_obj = source_cls(**constructor_params)
             natural_w = int(source.params.get("natural_w", 1920))
             natural_h = int(source.params.get("natural_h", 1080))
             # Precedence for render cadence:
@@ -252,6 +257,7 @@ class SourceRegistry:
             shm_path = source.params.get("shm_path")
             if not shm_path:
                 raise UnknownBackendError(f"shm_rgba source {source.id}: missing params.shm_path")
+            sidecar_path = source.params.get("sidecar_path")
             # HOMAGE #124: the Reverie ``external_rgba`` slot is the
             # always-on generative substrate — its backend carries the
             # ``HomageSubstrateSource`` marker so the choreographer
@@ -278,6 +284,7 @@ class SourceRegistry:
             )
             return ShmRgbaReader(
                 Path(shm_path),
+                sidecar_path=Path(sidecar_path) if sidecar_path else None,
                 is_substrate=is_substrate,
                 max_age_s=max_age_s,
             )

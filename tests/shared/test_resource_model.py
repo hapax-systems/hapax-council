@@ -80,6 +80,7 @@ class TestContentionGroupValidation:
         with pytest.raises(ValidationError):
             ContentionGroup(
                 name="bad",
+                host_id="hapax-podium",
                 resource_type=ResourceType.CPU,
                 total_capacity=0,
                 unit="cores",
@@ -91,6 +92,7 @@ class TestContentionGroupValidation:
         with pytest.raises(ValidationError):
             ContentionGroup(
                 name="bad",
+                host_id="hapax-podium",
                 resource_type=ResourceType.CPU,
                 total_capacity=-1,
                 unit="cores",
@@ -102,6 +104,7 @@ class TestContentionGroupValidation:
         with pytest.raises(ValidationError):
             ContentionGroup(
                 name="bad",
+                host_id="hapax-podium",
                 resource_type=ResourceType.CPU,
                 total_capacity=4.0,
                 unit="cores",
@@ -112,6 +115,7 @@ class TestContentionGroupValidation:
     def test_valid_group_passes(self):
         cg = ContentionGroup(
             name="test",
+            host_id="hapax-podium",
             resource_type=ResourceType.CPU,
             total_capacity=4.0,
             unit="cores",
@@ -119,6 +123,7 @@ class TestContentionGroupValidation:
             headroom_min=1.0,
         )
         assert cg.name == "test"
+        assert cg.host_id == "hapax-podium"
         assert len(cg.members) == 2
 
 
@@ -272,6 +277,13 @@ class TestServiceProfileCompleteness:
 
 
 class TestContentionGroupConsistency:
+    def test_gpu0_is_host_qualified_podium_5090(self):
+        cg = DEFAULT_CONTENTION_GROUPS["CG-GPU0"]
+
+        assert cg.host_id == "hapax-podium"
+        assert cg.total_capacity == 32768.0
+        assert "RTX 5090" in cg.notes
+
     def test_all_contention_group_members_exist_in_profiles(self):
         profile_names = set(DEFAULT_SERVICE_PROFILES.keys())
         for cg_name, cg in DEFAULT_CONTENTION_GROUPS.items():
@@ -387,6 +399,12 @@ class TestDefaultThresholdsCoverage:
         covered = {t.resource_type for t in DEFAULT_THRESHOLDS}
         for rt in ResourceType:
             assert rt in covered, f"No threshold for {rt}"
+
+    def test_memory_pressure_thresholds_use_memavailable_and_psi(self):
+        signals = {t.signal for t in DEFAULT_THRESHOLDS if t.resource_type == ResourceType.RAM}
+        assert "mem_available_gb" in signals
+        assert "memory_psi_some_avg10_pct" in signals
+        assert "memory_psi_full_avg10_pct" in signals
 
 
 class TestClassifyStateDeterminism:

@@ -65,7 +65,7 @@
           "anchors": [
             "HAPAX_UNIFIED_REACTIVITY_ACTIVE=1",
             "Read-only capture",
-            "hapax-broadcast-normalized-capture"
+            "HAPAX_SCREWM_AUDIO_TARGET=hapax-broadcast-normalized"
           ]
         },
         {
@@ -104,6 +104,13 @@
           "anchors": [
             "test_unknown_phase_is_unsafe",
             "CONSENT_SAFE_LAYOUT_NAME"
+          ]
+        },
+        {
+          "path": "tests/systemd/test_screwm_darkplaces_units.py",
+          "anchors": [
+            "test_screwm_audio_reactivity_taps_obs_bound_broadcast_source",
+            "hapax-broadcast-normalized-capture"
           ]
         }
       ],
@@ -172,19 +179,6 @@
             "v4l2-ctl -d \"$DEVICE\" --set-parm=\"$FPS\"",
             "ximagesrc display-name=\"$DISPLAY_NUM\" use-damage=0 show-pointer=false",
             "v4l2sink device=\"$DEVICE\" sync=false"
-          ]
-        },
-        {
-          "path": "systemd/units/hapax-obs-v4l2-source-reset.service",
-          "anchors": [
-            "--poll-interval 15",
-            "--device-id /dev/video50",
-            "--framerate 30",
-            "--obs-log-v4l2-errors",
-            "Restart=no",
-            "--max-static-ignore-seconds 75",
-            "--screenshot-width 160",
-            "--screenshot-height 90"
           ]
         }
       ],
@@ -482,6 +476,8 @@
         "unified_reactivity_export",
         "slotdrift_currency",
         "density_grounding",
+        "geo_drift_cvar_drive",
+        "live_texture_deploy_rebuild",
         "receiver_local_drift",
         "fail_safe_fallback"
       ],
@@ -490,8 +486,26 @@
           "path": "scripts/darkplaces-state-export.py",
           "anchors": [
             "def build_visual_chain_lines",
+            "drift-geo-amp.txt",
             "effect-drift-density.txt",
             "unified-reactivity.json"
+          ]
+        },
+        {
+          "path": "assets/quake/qc/coupling.qc",
+          "anchors": [
+            "void() coupling_apply_drift_geo",
+            "hapax_drift_geo_amp",
+            "r_glsl_postprocess_ruttetra_enable"
+          ]
+        },
+        {
+          "path": "assets/quake/darkplaces/hapax-live-texture.patch",
+          "anchors": [
+            "#define MATERIALFLAG_HAPAXDRIFT 0x00400000",
+            "Mod_HapaxDriftEligibleTextureName",
+            "t->currentmaterialflags & MATERIALFLAG_HAPAXDRIFT",
+            "qbool dphapaxdrift"
           ]
         },
         {
@@ -518,6 +532,20 @@
             "unified-reactivity.json @60Hz",
             "HAPAX_SCREWM_AUDIO_TARGET"
           ]
+        },
+        {
+          "path": "systemd/units/hapax-darkplaces-live-texture-rebuild.path",
+          "anchors": [
+            "PathChanged=%h/.cache/hapax/source-activation/last-success-sha",
+            "hapax-darkplaces-live-texture-rebuild.service"
+          ]
+        },
+        {
+          "path": "systemd/units/hapax-darkplaces-live-texture-rebuild.service",
+          "anchors": [
+            "ensure-darkplaces-live-texture-build.sh",
+            "try-restart hapax-darkplaces-v4l2.service"
+          ]
         }
       ],
       "deterministic_tests": [
@@ -525,7 +553,15 @@
           "path": "tests/scripts/test_darkplaces_state_export.py",
           "anchors": [
             "test_darkplaces_state_export_density_grounds_drift_currency",
+            "test_darkplaces_state_export_emits_live_gated_drift_geo_scalars",
             "effect-drift-density-currency.txt"
+          ]
+        },
+        {
+          "path": "tests/systemd/test_screwm_darkplaces_units.py",
+          "anchors": [
+            "test_darkplaces_live_texture_rebuild_path_watches_source_activation_patch",
+            "try-restart hapax-darkplaces-v4l2.service"
           ]
         },
         {

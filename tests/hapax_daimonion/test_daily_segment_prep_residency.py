@@ -1439,3 +1439,208 @@ def test_load_prepped_programmes_rejects_programme_id_filename_mismatch(
 
 def test_raw_manifest_candidates_are_not_published_to_qdrant() -> None:
     assert not hasattr(prep, "_upsert_programmes_to_qdrant")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase A — generation integrity (R-A1..R-A3)
+# cc-task: segment-prep-phase-a-generation-integrity-20260607
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _council_verdict(scores: dict[str, int | None]) -> Any:
+    from agents.deliberative_council.models import ConvergenceStatus, CouncilVerdict
+
+    return CouncilVerdict(
+        scores=scores,
+        confidence_bands={},
+        convergence_status=ConvergenceStatus.CONVERGED,
+        disagreement_log=[],
+        research_findings=[],
+        evidence_matrix=None,
+        receipt={"input_hash": "test"},
+    )
+
+
+def test_research_enrich_angle_routes_through_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R-A2: the enrich LLM call must resolve a provider via explicit gateway
+    routing instead of raising ``LLM Provider NOT provided`` on a bare model."""
+    import litellm
+
+    captured: dict[str, Any] = {}
+
+    def fake_completion(**kwargs: Any) -> SimpleNamespace:
+        captured.update(kwargs)
+        message = SimpleNamespace(content="enriched " + "x" * 200)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    monkeypatch.setattr(litellm, "completion", fake_completion)
+
+    out = prep._research_enrich_angle("angle analysis text", "a topic")
+
+    assert captured, "litellm.completion was never called"
+    model = captured["model"]
+    # An explicit provider prefix + api_base is what lets litellm resolve a
+    # provider; without either the call raises 'LLM Provider NOT provided'.
+    assert "/" in model, f"model {model!r} has no explicit provider prefix"
+    assert captured.get("api_base"), "no api_base passed; provider cannot resolve"
+    # Faithful to the AC: the resolved model string must not raise.
+    litellm.get_llm_provider(model)
+    assert out.startswith("## Research Enrichment")
+
+
+def test_compose_refusal_reason_allows_viable_segment() -> None:
+    """R-A1 pass path: a segment whose contract, live-event report, and
+    live-event viability all pass is NOT refused at compose time."""
+    ok = {"ok": True}
+    assert (
+        prep._compose_refusal_reason(
+            segment_prep_contract_report=ok,
+            segment_live_event_report=ok,
+            live_event_viability_report=ok,
+        )
+        is None
+    )
+
+
+def test_compose_refusal_reason_refuses_non_viable_segment() -> None:
+    """R-A1 refusal path: live-event viability is enforced at WRITE time, so a
+    non-viable segment is refused at compose (recorded as a refusal dossier)
+    rather than saved as a dead candidate dropped at the manifest boundary."""
+    ok = {"ok": True}
+    assert (
+        prep._compose_refusal_reason(
+            segment_prep_contract_report=ok,
+            segment_live_event_report=ok,
+            live_event_viability_report={"ok": False},
+        )
+        == "live_event_viability_not_demonstrated"
+    )
+    assert (
+        prep._compose_refusal_reason(
+            segment_prep_contract_report={"ok": False},
+            segment_live_event_report=ok,
+            live_event_viability_report=ok,
+        )
+        == "segment_prep_contract_failed"
+    )
+    assert (
+        prep._compose_refusal_reason(
+            segment_prep_contract_report=ok,
+            segment_live_event_report={"ok": False},
+            live_event_viability_report=ok,
+        )
+        == "segment_live_event_report_failed"
+    )
+
+
+def test_council_topic_substance_gate_constructs_valid_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R-A3: the topic-substance council config must be constructible (no
+    pydantic extra_forbidden) so the council actually executes rather than
+    silently failing open on a ValidationError."""
+    from agents.deliberative_council import engine as council_engine
+    from agents.deliberative_council.models import CouncilConfig
+
+    captured: dict[str, Any] = {}
+
+    async def fake_deliberate(
+        council_input: Any, mode: Any, rubric: Any, config: Any = None
+    ) -> Any:
+        captured["config"] = config
+        return _council_verdict({"substance": 4})
+
+    monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
+
+    result = prep._council_topic_substance_gate("a substantive topic", "prog-1")
+
+    assert "config" in captured, "deliberate never reached — CouncilConfig construction raised"
+    assert isinstance(captured["config"], CouncilConfig)
+    assert result is True
+
+
+def test_council_coherence_check_constructs_valid_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R-A3: the coherence-check council config must be constructible."""
+    from agents.deliberative_council import engine as council_engine
+    from agents.deliberative_council.models import CouncilConfig
+
+    captured: dict[str, Any] = {}
+
+    async def fake_deliberate(
+        council_input: Any, mode: Any, rubric: Any, config: Any = None
+    ) -> Any:
+        captured["config"] = config
+        return _council_verdict({"coherence": 4})
+
+    monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
+
+    passed, _feedback = prep._council_coherence_check("a coherent composed script", "prog-1")
+
+    assert "config" in captured, "deliberate never reached — CouncilConfig construction raised"
+    assert isinstance(captured["config"], CouncilConfig)
+    assert passed is True
+
+
+def test_run_narrative_critique_constructs_valid_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R-A3: the narrative-critique default council config must be constructible
+    (no ``max_models``/``phase3_rounds`` extra_forbidden)."""
+    from agents.deliberative_council import engine as council_engine
+    from agents.deliberative_council.models import CouncilConfig
+    from shared.segment_narrative_critique import run_narrative_critique
+
+    captured: dict[str, Any] = {}
+
+    async def fake_deliberate(
+        council_input: Any, mode: Any, rubric: Any, config: Any = None
+    ) -> Any:
+        captured["config"] = config
+        return _council_verdict({"focalization_integrity": 4, "escalation_architecture": 4})
+
+    monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
+
+    run_narrative_critique("a composed narrative script " + "x" * 200, "prog-1")
+
+    assert "config" in captured, "deliberate never reached — CouncilConfig construction raised"
+    assert isinstance(captured["config"], CouncilConfig)
+
+
+def test_council_topic_substance_gate_fails_open_when_degraded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R-A3 downstream: now that the council actually executes, a DEGRADED
+    council (no model produced a score) must fail-open per this gate's
+    documented contract — a down council must not silently reject every topic."""
+    from agents.deliberative_council import engine as council_engine
+
+    async def fake_deliberate(
+        council_input: Any, mode: Any, rubric: Any, config: Any = None
+    ) -> Any:
+        return _council_verdict({})  # empty scores == degraded / unavailable
+
+    monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
+
+    assert prep._council_topic_substance_gate("a topic", "prog-1") is True
+
+
+def test_council_coherence_check_fails_open_when_degraded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R-A3 downstream: a degraded coherence council fails open (does not block
+    composition on an unavailable council)."""
+    from agents.deliberative_council import engine as council_engine
+
+    async def fake_deliberate(
+        council_input: Any, mode: Any, rubric: Any, config: Any = None
+    ) -> Any:
+        return _council_verdict({})
+
+    monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
+
+    passed, _feedback = prep._council_coherence_check("a script", "prog-1")
+    assert passed is True

@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Bounded critical-artifact offsite backup while broad Tier 2 B2 is blocked.
+# This script intentionally does not create live database dumps, create Qdrant
+# snapshots, upload live MinIO backing stores, or run destructive restic prune.
+
+REPO="${HAPAX_GDRIVE_CRITICAL_REPO:-rclone:gdrive:hapax-backups/restic-critical}"
+PASSWORD_ENTRY="${HAPAX_GDRIVE_CRITICAL_RESTIC_PASSWORD_ENTRY:-backblaze/restic-password}"
+CACHE_DIR="${RESTIC_CACHE_DIR:-/store/llm-data/restic-cache/gdrive-critical}"
+WORK_DIR="${HAPAX_GDRIVE_CRITICAL_WORK_DIR:-/store/llm-data/gdrive-critical-backup}"
+POSTGRES_PITR_DIR="${HAPAX_POSTGRES_PITR_DIR:-/store/llm-data/postgres-pitr}"
+QDRANT_SNAPSHOT_DIR="${HAPAX_QDRANT_SNAPSHOT_DIR:-/store/llm-data/qdrant-snapshots}"
+HAPAX_VAULT_DIR="${HAPAX_VAULT_DIR:-$HOME/Documents/Personal/30-areas/hapax}"
+
+# Conservative Google Drive/rclone defaults. Operators may tune these by env.
+export RCLONE_TRANSFERS="${RCLONE_TRANSFERS:-1}"
+export RCLONE_CHECKERS="${RCLONE_CHECKERS:-4}"
+export RCLONE_RETRIES="${RCLONE_RETRIES:-6}"
+export RCLONE_LOW_LEVEL_RETRIES="${RCLONE_LOW_LEVEL_RETRIES:-20}"
+export RCLONE_TPSLIMIT="${RCLONE_TPSLIMIT:-4}"
+
+mode="backup"
+if [[ $# -gt 0 ]]; then
+    case "$1" in
+        --backup)
+            mode="backup"
+            ;;
+        --verify-only)
+            mode="verify"
+            ;;
+        --retention-dry-run)
+            mode="retention_dry_run"
+            ;;
+        -h|--help)
+            cat <<'EOF'
+hapax-backup-gdrive-critical
+
+Modes:
+  --backup             Back up bounded critical artifacts (default).
+  --verify-only        Read-only snapshot/check verification.
+  --retention-dry-run  Show retention result without prune/delete.
+
+This is not the broad B2 Tier 2 backup. It never creates DB dumps, creates
+Qdrant snapshots, uploads live MinIO backing stores, or runs destructive prune.
+EOF
+            exit 0
+            ;;
+        *)
+            echo "ERROR: unknown argument: $1" >&2
+            exit 2
+            ;;
+    esac
+fi
+
+log() { echo "[$(date -Iseconds)] $*" >&2; }
+
+restic_password() {
+    local password
+    password="$(pass show "$PASSWORD_ENTRY" 2>/dev/null | sed -n '1p')" || {
+        echo "ERROR: cannot read restic password pass entry '$PASSWORD_ENTRY'" >&2
+        return 1
+    }
+    if [[ -z "$password" ]]; then
+        echo "ERROR: restic password pass entry '$PASSWORD_ENTRY' is empty" >&2
+        return 1
+    fi
+    printf '%s' "$password"
+}
+
+run_restic() {
+    local password
+    password="$(restic_password)"
+    RESTIC_PASSWORD="$password" \
+    RESTIC_REPOSITORY="$REPO" \
+    RESTIC_CACHE_DIR="$CACHE_DIR" \
+        restic "$@"
+}
+
+require_non_root_workdir() {
+    if [[ ! -d /store/llm-data ]]; then
+        echo "ERROR: /store/llm-data is required so restic cache/workdir avoid root Btrfs" >&2
+        exit 1
+    fi
+    mkdir -p "$CACHE_DIR" "$WORK_DIR"
+}
+
+append_if_exists() {
+    local path="$1" manifest="$2"
+    if [[ -e "$path" ]]; then
+        printf '%s\n' "$path" >> "$manifest"
+    fi
+}
+
+append_latest_qdrant_snapshots() {
+    local manifest="$1"
+    if [[ ! -d "$QDRANT_SNAPSHOT_DIR" ]]; then
+        log "WARN: Qdrant snapshot dir absent: $QDRANT_SNAPSHOT_DIR"
+        return
+    fi
+
+    local collection latest
+    while IFS= read -r -d '' collection; do
+        latest="$(find "$collection" -maxdepth 1 -type f -name '*.snapshot' -printf '%T@ %p\n' 2>/dev/null \
+            | sort -nr \
+            | awk 'NR == 1 { $1=""; sub(/^ /, ""); print }')"
+        if [[ -n "$latest" ]]; then
+            printf '%s\n' "$latest" >> "$manifest"
+        fi
+    done < <(find "$QDRANT_SNAPSHOT_DIR" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -z)
+}
+
+append_vault_evidence() {
+    local manifest="$1"
+    local files=(
+        "appendix-nvme-dev-storage-install-plan-2026-06-05.md"
+        "appendix-podium-dev-rebalance-completion-plan-2026-06-04.md"
+        "data-role-registry-2026-06-05.md"
+        "gdrive-critical-offsite-bootstrap-proof-2026-06-05.md"
+        "gdrive-critical-offsite-source-automation-plan-2026-06-05.md"
+        "langfuse-minio-clickhouse-retention-policy-2026-06-05.md"
+        "offsite-backup-capacity-restic-evidence-2026-06-05.md"
+        "postgres-backup-rpo-decision-2026-06-05.md"
+        "qdrant-snapshot-restore-sop-2026-06-05.md"
+        "sop-baseline-gate-2026-06-04.md"
+    )
+
+    local file
+    for file in "${files[@]}"; do
+        append_if_exists "$HAPAX_VAULT_DIR/$file" "$manifest"
+    done
+}
+
+validate_manifest_readability() {
+    local manifest="$1"
+    local unreadable=()
+    local path
+    while IFS= read -r path; do
+        if [[ ! -r "$path" ]]; then
+            unreadable+=("$path")
+        fi
+    done < "$manifest"
+
+    if (( ${#unreadable[@]} > 0 )); then
+        echo "ERROR: critical backup manifest contains unreadable paths:" >&2
+        printf '  %s\n' "${unreadable[@]}" >&2
+        echo "Fix permissions or attach a narrow ACL before running; refusing partial snapshot." >&2
+        exit 1
+    fi
+}
+
+build_manifest() {
+    local run_dir="$1"
+    local manifest="$run_dir/backup-files.txt"
+    : > "$manifest"
+
+    append_if_exists "$POSTGRES_PITR_DIR" "$manifest"
+    append_latest_qdrant_snapshots "$manifest"
+    append_vault_evidence "$manifest"
+
+    sort -u "$manifest" -o "$manifest"
+    if [[ ! -s "$manifest" ]]; then
+        echo "ERROR: critical backup manifest is empty" >&2
+        exit 1
+    fi
+
+    validate_manifest_readability "$manifest"
+    log "Manifest contains $(wc -l < "$manifest") paths"
+    printf '%s\n' "$manifest"
+}
+
+backup() {
+    require_non_root_workdir
+    local run_dir="$WORK_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)"
+    mkdir -p "$run_dir"
+    local manifest
+    manifest="$(build_manifest "$run_dir")"
+
+    mapfile -t backup_paths < "$manifest"
+    log "Running bounded GDrive critical backup"
+    run_restic backup \
+        --verbose \
+        --retry-lock 30m \
+        --tag gdrive-critical \
+        --tag critical-artifacts \
+        --tag "gdrive-critical-$(date -u +%Y%m%d)" \
+        "${backup_paths[@]}"
+
+    log "Running read-only post-backup repository check"
+    run_restic check --no-lock
+    log "Latest GDrive critical snapshots"
+    run_restic snapshots --no-lock --latest 3
+}
+
+verify_only() {
+    require_non_root_workdir
+    log "Verifying GDrive critical repo without creating locks"
+    run_restic snapshots --no-lock --latest 3
+    run_restic check --no-lock
+}
+
+retention_dry_run() {
+    require_non_root_workdir
+    log "Running retention dry-run only; no prune/delete"
+    run_restic forget \
+        --no-lock \
+        --keep-daily 7 \
+        --keep-weekly 4 \
+        --keep-monthly 2 \
+        --dry-run
+}
+
+case "$mode" in
+    backup)
+        backup
+        ;;
+    verify)
+        verify_only
+        ;;
+    retention_dry_run)
+        retention_dry_run
+        ;;
+esac

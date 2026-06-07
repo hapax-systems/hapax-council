@@ -29,6 +29,8 @@ printf 'HAPAX_AGENT_SLOT=%s\\n' "$HAPAX_AGENT_SLOT" >> {env_file}
 printf 'HAPAX_WORKTREE_ROLE=%s\\n' "$HAPAX_WORKTREE_ROLE" >> {env_file}
 printf 'CODEX_THREAD_NAME=%s\\n' "$CODEX_THREAD_NAME" >> {env_file}
 printf 'HAPAX_IDLE_UPDATE_SECONDS=%s\\n' "$HAPAX_IDLE_UPDATE_SECONDS" >> {env_file}
+printf 'LOGOS_BASE_URL=%s\\n' "${{LOGOS_BASE_URL:-}}" >> {env_file}
+printf 'COCKPIT_BASE_URL=%s\\n' "${{COCKPIT_BASE_URL:-}}" >> {env_file}
 printf 'GITHUB_PERSONAL_ACCESS_TOKEN=%s\\n' "${{GITHUB_PERSONAL_ACCESS_TOKEN:-}}" >> {env_file}
 printf 'CODEX_GITHUB_PERSONAL_ACCESS_TOKEN=%s\\n' "${{CODEX_GITHUB_PERSONAL_ACCESS_TOKEN:-}}" >> {env_file}
 printf 'TAVILY_API_KEY=%s\\n' "${{TAVILY_API_KEY:-}}" >> {env_file}
@@ -99,6 +101,31 @@ exit 0
     return fake_tmux
 
 
+def _write_fake_ssh_eval(bin_dir: Path) -> None:
+    fake_ssh = bin_dir / "ssh"
+    fake_ssh.write_text(
+        """#!/usr/bin/env bash
+remote_cmd="${@: -1}"
+if [ -n "${HAPAX_FAKE_SSH_REMOTE_CMDS:-}" ]; then
+  printf '%s\\n' "$remote_cmd" >> "$HAPAX_FAKE_SSH_REMOTE_CMDS"
+fi
+case "$remote_cmd" in
+  HAPAX_REMOTE_PAYLOAD=*)
+    echo 'fish: Expected a variable name after this $' >&2
+    exit 127
+    ;;
+esac
+if [[ "$remote_cmd" == *"\\$'"* ]]; then
+  echo 'fish: Expected a variable name after this $' >&2
+  exit 127
+fi
+exec bash -c "$remote_cmd"
+""",
+        encoding="utf-8",
+    )
+    fake_ssh.chmod(0o755)
+
+
 def test_rejects_slot_name_as_visible_session(tmp_path: Path) -> None:
     env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
 
@@ -162,6 +189,58 @@ def test_valid_codex_session_execs_codex_with_no_ask_flags(tmp_path: Path) -> No
     assert "HAPAX_WORKTREE_ROLE=alpha" in launched_env
     assert "CODEX_THREAD_NAME=cx-red" in launched_env
     assert "HAPAX_IDLE_UPDATE_SECONDS=270" in launched_env
+
+
+def test_appendix_codex_exec_uses_remote_payload_without_shell_interpolation(
+    tmp_path: Path,
+) -> None:
+    env, args_file, env_file = _env_with_fake_codex(tmp_path)
+    (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
+    _write_fake_ssh_eval(tmp_path / "bin")
+    exploit = tmp_path / "dispatch-host-shell-injection"
+    remote_cmds = tmp_path / "ssh-remote-commands.txt"
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_LOGOS_URL"] = f"http://podium.invalid/api; touch {exploit}"
+    env["HAPAX_FAKE_SSH_REMOTE_CMDS"] = str(remote_cmds)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-red",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--",
+            "mcp",
+            "list",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = remote_cmds.read_text(encoding="utf-8").splitlines()
+    assert commands
+    assert all(command.startswith("bash -c ") for command in commands)
+    assert all(not command.startswith("HAPAX_REMOTE_PAYLOAD=") for command in commands)
+    assert all("$'" not in command for command in commands)
+    assert not exploit.exists()
+    assert "mcp list" in args_file.read_text(encoding="utf-8")
+    launched_env = env_file.read_text(encoding="utf-8")
+    assert f"LOGOS_BASE_URL=http://podium.invalid/api; touch {exploit}" in launched_env
+    proofs = list(
+        (Path(env["HOME"]) / ".cache" / "hapax" / "orchestration" / "dispatch-host-proofs").glob(
+            "*cx-red-no-task-remote.json"
+        )
+    )
+    assert len(proofs) == 1
+    proof = proofs[0].read_text(encoding="utf-8")
+    assert '"requested_host": "appendix"' in proof
+    assert '"platform": "codex"' in proof
 
 
 def test_launcher_scrubs_mcp_tokens_from_codex_session_env(tmp_path: Path) -> None:
@@ -631,6 +710,81 @@ printf '%s\\n' "$@" > {tmux_args}
     assert "--force" in runner_text
     assert "--task demo-task" in runner_text
     assert "--no-claim" not in runner_text
+
+
+def test_terminal_tmux_can_be_podium_thin_client_for_appendix_codex(tmp_path: Path) -> None:
+    env, args_file, env_file = _env_with_fake_codex(tmp_path)
+    _write_active_task(env, "demo-task")
+    (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
+    _write_fake_ssh_eval(tmp_path / "bin")
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+
+    tmux_args = tmp_path / "tmux-args.txt"
+    fake_tmux = tmp_path / "bin" / "tmux"
+    fake_tmux.write_text(
+        f"""#!/usr/bin/env bash
+case "$1" in
+  has-session)
+    exit 1
+    ;;
+  list-panes)
+    printf '%s\\n' 4321
+    ;;
+  new-session)
+    printf '%s\\n' "$@" > {tmux_args}
+    ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_tmux.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-amber",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--task",
+            "demo-task",
+            "--terminal",
+            "tmux",
+            "--force",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "hapax-codex-cx-amber"
+    tmux_lines = tmux_args.read_text(encoding="utf-8").splitlines()
+    assert tmux_lines[:4] == ["new-session", "-d", "-s", "hapax-codex-cx-amber"]
+    runner = Path(tmux_lines[-1])
+    runner_text = runner.read_text(encoding="utf-8")
+    assert "exec ssh" in runner_text
+    assert "bash" in runner_text
+    assert "exec /" not in runner_text
+
+    runner_result = subprocess.run(
+        [str(runner)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert runner_result.returncode == 0, runner_result.stderr
+    assert "Bootstrap file:" in args_file.read_text(encoding="utf-8")
+    launched_env = env_file.read_text(encoding="utf-8")
+    assert "LOGOS_BASE_URL=http://192.168.68.85:8051/api" in launched_env
+    proof_root = Path(env["HOME"]) / ".cache" / "hapax" / "orchestration" / "dispatch-host-proofs"
+    assert list(proof_root.glob("*cx-amber-demo-task-local.json"))
+    assert list(proof_root.glob("*cx-amber-demo-task-remote.json"))
 
 
 def test_terminal_tmux_allows_assigned_ready_state_task(tmp_path: Path) -> None:

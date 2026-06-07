@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
 import subprocess
 import threading
@@ -124,6 +125,7 @@ _ENTER_RAMP_S = 0.4
 _EXIT_RAMP_S = 0.6
 _EXIT_HYSTERESIS_S = 4.0
 _FRONTED_ALPHA = 0.90
+_IDLE_SCAFFOLD_ALPHA = 0.30
 _METADATA_CACHE_TTL_S = 10.0
 _DEFAULT_REPO_PATH = Path(os.path.expanduser("~/projects/hapax-council"))
 _RAW_BYPASS_WARNED = False
@@ -133,6 +135,10 @@ _TMUX_SESSION_CACHE: tuple[float, tuple[str, ...]] | None = None
 _LEGAL_FIRST = "Ryan"
 _LEGAL_MIDDLE = "Lee"
 _LEGAL_LAST = "Kleeberger"
+
+
+def _idle_phase(t: float, ordinal: int) -> float:
+    return 0.5 + 0.5 * math.sin(t * (0.36 + ordinal * 0.041) + ordinal * 0.83)
 
 
 def compute_visibility_score(
@@ -931,6 +937,35 @@ class CodingSessionReveal(HomageTransitionalSource, ActivityRevealMixin):
         ramped["alpha"] = float(state.get("alpha", _FRONTED_ALPHA)) * (1.0 - progress)
         self.render_content(cr, canvas_w, canvas_h, t, ramped)
 
+    def render_atlas_idle_surface(
+        self,
+        canvas_w: int,
+        canvas_h: int,
+        t: float | None = None,
+    ) -> cairo.ImageSurface:
+        """Render a privacy-safe ward-atlas substrate even when FSM-hidden."""
+        import cairo
+
+        w = max(1, int(canvas_w))
+        h = max(1, int(canvas_h))
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
+        cr = cairo.Context(surface)
+        cr.set_operator(cairo.OPERATOR_CLEAR)
+        cr.paint()
+        cr.set_operator(cairo.OPERATOR_OVER)
+        with self._snapshot_lock:
+            snap = self._snapshot
+        self._render_idle_scaffold(
+            cr,
+            w,
+            h,
+            snap,
+            _IDLE_SCAFFOLD_ALPHA,
+            time.monotonic() if t is None else t,
+        )
+        surface.flush()
+        return surface
+
     def render_content(
         self,
         cr: cairo.Context,
@@ -942,13 +977,116 @@ class CodingSessionReveal(HomageTransitionalSource, ActivityRevealMixin):
         alpha = float(state.get("alpha", 0.0))
         self._last_rendered_alpha = alpha
         if alpha <= 0.001:
+            with self._snapshot_lock:
+                snap = self._snapshot
+            self._render_idle_scaffold(cr, canvas_w, canvas_h, snap, _IDLE_SCAFFOLD_ALPHA, t)
             return
         with self._snapshot_lock:
             snap = self._snapshot
         visible = [session for session in snap.sessions if session.visible]
         if not visible:
+            self._render_idle_scaffold(cr, canvas_w, canvas_h, snap, min(0.52, alpha), t)
             return
         self._render_session(cr, canvas_w, canvas_h, visible[0], snap.metadata, alpha, t)
+
+    def _render_idle_scaffold(
+        self,
+        cr: cairo.Context,
+        canvas_w: int,
+        canvas_h: int,
+        snap: CodingSessionSnapshot,
+        alpha: float,
+        t: float,
+    ) -> None:
+        """Render a privacy-safe visual substrate when no session text is visible."""
+        import cairo
+
+        from agents.studio_compositor.homage.rendering import active_package
+
+        pkg = active_package()
+        bg = pkg.palette.background
+        muted = pkg.palette.muted
+        warm = pkg.palette.accent_yellow
+        accent = pkg.palette.accent_cyan
+        w = max(1, canvas_w)
+        h = max(1, canvas_h)
+        a = max(0.0, min(1.0, alpha))
+        metadata = snap.metadata
+        churn = min(1.0, (metadata.churn_lpm if metadata else 0.0) / 120.0)
+        branch_seed = 0
+        if metadata and metadata.branch_glyph:
+            branch_seed = sum(ord(ch) for ch in metadata.branch_glyph)
+
+        cr.save()
+        cr.rectangle(0, 0, w, h)
+        cr.clip()
+        grad = cairo.LinearGradient(0, 0, w, h)
+        grad.add_color_stop_rgba(0.0, bg[0] * 0.34, bg[1] * 0.34, bg[2] * 0.46, 0.82 * a)
+        grad.add_color_stop_rgba(
+            0.62,
+            accent[0] * 0.10 + warm[0] * 0.04,
+            accent[1] * 0.12 + warm[1] * 0.04,
+            accent[2] * 0.16,
+            0.64 * a,
+        )
+        grad.add_color_stop_rgba(
+            1.0,
+            muted[0] * 0.20 + warm[0] * 0.06,
+            muted[1] * 0.22 + warm[1] * 0.06,
+            muted[2] * 0.24,
+            0.58 * a,
+        )
+        cr.set_source(grad)
+        cr.paint()
+
+        step_x = max(42.0, w / 11.0)
+        step_y = max(32.0, h / 12.0)
+        cr.set_line_width(max(1.0, min(w, h) * 0.0035))
+        for idx in range(1, 12):
+            phase = _idle_phase(t, idx + branch_seed % 7)
+            x = idx * step_x + math.sin(t * 0.18 + idx) * step_x * 0.18
+            if x >= w:
+                break
+            cr.set_source_rgba(accent[0], accent[1], accent[2], (0.045 + phase * 0.06) * a)
+            cr.move_to(x, 0)
+            cr.line_to(x + math.sin(t * 0.11 + idx) * 20.0, h)
+            cr.stroke()
+        for idx in range(1, 13):
+            phase = _idle_phase(t, idx + 19)
+            y = idx * step_y
+            if y >= h:
+                break
+            cr.set_source_rgba(muted[0], muted[1], muted[2], (0.050 + phase * 0.055) * a)
+            cr.move_to(0, y)
+            cr.line_to(w, y + math.cos(t * 0.13 + idx) * 14.0)
+            cr.stroke()
+
+        cr.set_line_width(max(1.0, min(w, h) * 0.010))
+        for idx in range(4):
+            phase = _idle_phase(t, idx + branch_seed % 11)
+            cx = w * (0.22 + idx * 0.17) + math.sin(t * 0.21 + idx) * w * 0.035
+            cy = h * (0.35 + math.cos(t * 0.17 + idx) * 0.12)
+            rx = w * (0.07 + churn * 0.025 + phase * 0.018)
+            ry = h * (0.045 + phase * 0.015)
+            cr.set_source_rgba(warm[0], warm[1], warm[2], (0.065 + phase * 0.085) * a)
+            cr.save()
+            cr.translate(cx, cy)
+            cr.scale(max(1.0, rx), max(1.0, ry))
+            cr.arc(0, 0, 1.0, 0, math.tau)
+            cr.stroke()
+            cr.restore()
+
+        band_count = 6
+        band_h = max(3.0, h * 0.012)
+        for idx in range(band_count):
+            phase = _idle_phase(t, idx + 31)
+            width = w * (0.16 + churn * 0.10 + phase * 0.08)
+            x = (t * (12.0 + churn * 36.0) + idx * w / band_count) % (w + width) - width
+            y = h * (0.82 + idx * 0.018)
+            cr.set_source_rgba(accent[0], accent[1], accent[2], (0.12 + phase * 0.14) * a)
+            cr.rectangle(x, y, width, band_h)
+            cr.fill()
+        cr.restore()
 
     def _render_session(
         self,

@@ -1,6 +1,6 @@
 """Audio self-perception daemon — AVSDLC-002.
 
-Captures from the normalized broadcast egress at 5s cadence via parecord,
+Captures persistently from the normalized broadcast egress via parecord,
 computes spectral features, and writes
 ``/dev/shm/hapax-audio-self-perception/state.json`` for VLA to inject into
 stimmung.
@@ -20,10 +20,8 @@ import time
 from pathlib import Path
 
 from agents.audio_health.probes import (
+    PersistentProbeSet,
     ProbeConfig,
-    ProbeError,
-    _capture_parecord,
-    _decode_s16le_to_mono,
 )
 from agents.audio_self_perception.analyzer import analyze
 
@@ -31,6 +29,7 @@ log = logging.getLogger(__name__)
 
 PROBE_INTERVAL_S: float = 5.0
 CAPTURE_DURATION_S: float = 2.0
+DEFAULT_SAMPLE_RATE: int = 48000
 DEFAULT_TARGET_STAGE: str = "hapax-broadcast-normalized"
 TARGET_STAGE: str = os.environ.get("HAPAX_AUDIO_SELF_PERCEPTION_STAGE", DEFAULT_TARGET_STAGE)
 SHM_DIR: Path = Path("/dev/shm/hapax-audio-self-perception")
@@ -60,21 +59,14 @@ def _write_state(perception: dict, error: str | None = None) -> None:
     tmp.rename(SHM_FILE)
 
 
-def _probe_once() -> None:
-    config = ProbeConfig(
-        duration_s=CAPTURE_DURATION_S,
-        sample_rate=44100,
-        channels=2,
-    )
-    try:
-        raw = _capture_parecord(TARGET_STAGE, config)
-    except ProbeError as exc:
-        log.debug("Capture failed: %s", exc)
-        _write_state({}, error=str(exc))
+def _probe_once(probes: PersistentProbeSet) -> None:
+    result = probes.capture(TARGET_STAGE)
+    if result.error:
+        log.debug("Capture failed: %s", result.error)
+        _write_state({}, error=result.error)
         return
 
-    samples = _decode_s16le_to_mono(raw, config.channels)
-    perception = analyze(samples, sample_rate=config.sample_rate)
+    perception = analyze(result.samples_mono, sample_rate=result.sample_rate)
     _write_state(perception.to_dict())
     log.debug(
         "rms=%.1f centroid=%.0f bal=%.2f v/m/e=%.2f/%.2f/%.2f",
@@ -96,20 +88,27 @@ def main() -> None:
     signal.signal(signal.SIGINT, _handle_signal)
 
     log.info(
-        "Audio self-perception daemon starting (stage=%s, interval=%.1fs)",
+        "Audio self-perception daemon starting (stage=%s, interval=%.1fs, rate=%d)",
         TARGET_STAGE,
         PROBE_INTERVAL_S,
+        DEFAULT_SAMPLE_RATE,
     )
 
-    while not _shutdown:
-        t0 = time.monotonic()
-        try:
-            _probe_once()
-        except Exception:
-            log.exception("Probe cycle failed")
-        elapsed = time.monotonic() - t0
-        sleep_s = max(0.1, PROBE_INTERVAL_S - elapsed)
-        time.sleep(sleep_s)
+    config = ProbeConfig(
+        duration_s=CAPTURE_DURATION_S,
+        sample_rate=DEFAULT_SAMPLE_RATE,
+        channels=2,
+    )
+    with PersistentProbeSet(config=config) as probes:
+        while not _shutdown:
+            t0 = time.monotonic()
+            try:
+                _probe_once(probes)
+            except Exception:
+                log.exception("Probe cycle failed")
+            elapsed = time.monotonic() - t0
+            sleep_s = max(0.1, PROBE_INTERVAL_S - elapsed)
+            time.sleep(sleep_s)
 
     log.info("Audio self-perception daemon stopped")
 

@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch deployed DarkPlaces live-texture patch for rebuild
+ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/ensure-darkplaces-live-texture-build.sh
+
+[Path]
+PathChanged=%h/.cache/hapax/source-activation/last-success-sha
+PathChanged=%h/.cache/hapax/source-activation/worktree/assets/quake/darkplaces/hapax-live-texture.patch
+Unit=hapax-darkplaces-live-texture-rebuild.service
+
+[Install]
+WantedBy=default.target

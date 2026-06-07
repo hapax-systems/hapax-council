@@ -1,42 +1,54 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# hapax-backup-watchdog — Verify backup health for Tier 1 (NAS) and Tier 2 (B2)
+# hapax-backup-watchdog — Verify backup health for Tier 1 and critical offsite
 #
 # Checks:
 #   1. Tier 1 (local/NAS): last restic snapshot < 36 hours old
-#   2. Tier 2 (remote/B2): last restic snapshot < 10 days old
+#   2. GDrive critical offsite: last restic snapshot < 48 hours old
 #   3. Qdrant snapshot dir on NAS: non-empty, collections present
-#   4. Restic repo integrity: restic check (Tier 1 only, daily)
+#   4. Restic repo integrity: Tier 1 plus GDrive critical metadata checks
 #
 # Notifications via ntfy (localhost:8090) and desktop notify-send.
 # Exit code: 0 = all healthy, 1 = at least one check failed.
 
 NTFY_URL="${HAPAX_NTFY_URL:-http://localhost:8090/hapax-backup}"
 TIER1_REPO="/mnt/nas/backups/restic"
-TIER2_REPO="rclone:b2:hapax-backups/restic"
+GDRIVE_CRITICAL_REPO="${HAPAX_GDRIVE_CRITICAL_REPO:-rclone:gdrive:hapax-backups/restic-critical}"
 QDRANT_SNAP_DIR="/mnt/nas/backups/qdrant-snapshots"
 TIER1_MAX_AGE_HOURS=36
-TIER2_MAX_AGE_HOURS=$((10 * 24))  # 10 days
-
-export RESTIC_PASSWORD
-RESTIC_PASSWORD="$(pass show backblaze/restic-password 2>/dev/null)" || {
-    echo "FATAL: cannot read restic password from pass"
-    curl -sf -d "🔴 Backup watchdog: cannot read restic password" "$NTFY_URL" >/dev/null 2>&1 || true
-    exit 1
-}
+GDRIVE_CRITICAL_MAX_AGE_HOURS="${HAPAX_GDRIVE_CRITICAL_MAX_AGE_HOURS:-48}"
+TIER1_PASSWORD_ENTRY="${HAPAX_TIER1_RESTIC_PASSWORD_ENTRY:-backups/restic-password}"
+GDRIVE_CRITICAL_PASSWORD_ENTRY="${HAPAX_GDRIVE_CRITICAL_RESTIC_PASSWORD_ENTRY:-backblaze/restic-password}"
 
 FAILURES=()
 
 log() { echo "[$(date -Iseconds)] $1"; }
 
+restic_password() {
+    local entry="$1" label="$2"
+    local password
+    password="$(pass show "$entry" 2>/dev/null | sed -n '1p')" || {
+        FAILURES+=("$label: cannot read restic password from pass entry '$entry'")
+        return 1
+    }
+    if [[ -z "$password" ]]; then
+        FAILURES+=("$label: restic password entry '$entry' is empty")
+        return 1
+    fi
+    printf '%s' "$password"
+}
+
 check_snapshot_age() {
-    local repo="$1" label="$2" max_hours="$3"
+    local repo="$1" label="$2" max_hours="$3" password_entry="$4"
     log "Checking $label snapshot age (max ${max_hours}h)..."
 
+    local password
+    password="$(restic_password "$password_entry" "$label")" || return
+
     local latest_time
-    latest_time=$(RESTIC_REPOSITORY="$repo" restic snapshots --latest 1 --json 2>/dev/null \
-        | jq -r '.[0].time // empty' 2>/dev/null) || {
+    latest_time=$(RESTIC_PASSWORD="$password" RESTIC_REPOSITORY="$repo" restic snapshots --no-lock --json 2>/dev/null \
+        | jq -r 'max_by(.time).time // empty' 2>/dev/null) || {
         FAILURES+=("$label: cannot read snapshots")
         return
     }
@@ -78,10 +90,18 @@ check_qdrant_snapshots() {
 }
 
 check_restic_integrity() {
-    local repo="$1" label="$2"
+    local repo="$1" label="$2" password_entry="$3" no_lock="${4:-false}"
     log "Checking $label restic integrity..."
 
-    if ! RESTIC_REPOSITORY="$repo" restic check 2>/dev/null; then
+    local password
+    password="$(restic_password "$password_entry" "$label")" || return
+
+    local args=(check)
+    if [[ "$no_lock" == "true" ]]; then
+        args+=(--no-lock)
+    fi
+
+    if ! RESTIC_PASSWORD="$password" RESTIC_REPOSITORY="$repo" restic "${args[@]}" 2>/dev/null; then
         FAILURES+=("$label: restic check failed — possible repo corruption")
     else
         log "  $label: OK — restic check passed"
@@ -89,10 +109,11 @@ check_restic_integrity() {
 }
 
 # Run checks
-check_snapshot_age "$TIER1_REPO" "Tier1-NAS" "$TIER1_MAX_AGE_HOURS"
-check_snapshot_age "$TIER2_REPO" "Tier2-B2" "$TIER2_MAX_AGE_HOURS"
+check_snapshot_age "$TIER1_REPO" "Tier1-NAS" "$TIER1_MAX_AGE_HOURS" "$TIER1_PASSWORD_ENTRY"
+check_snapshot_age "$GDRIVE_CRITICAL_REPO" "GDrive-Critical" "$GDRIVE_CRITICAL_MAX_AGE_HOURS" "$GDRIVE_CRITICAL_PASSWORD_ENTRY"
 check_qdrant_snapshots
-check_restic_integrity "$TIER1_REPO" "Tier1-NAS"
+check_restic_integrity "$TIER1_REPO" "Tier1-NAS" "$TIER1_PASSWORD_ENTRY"
+check_restic_integrity "$GDRIVE_CRITICAL_REPO" "GDrive-Critical" "$GDRIVE_CRITICAL_PASSWORD_ENTRY" true
 
 # Report
 if (( ${#FAILURES[@]} > 0 )); then

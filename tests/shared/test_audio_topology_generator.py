@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from shared.audio_routing_policy import load_audio_topology_descriptor
 from shared.audio_topology import (
     ChannelMap,
     Edge,
@@ -16,6 +19,8 @@ from shared.audio_topology_generator import (
     generate_confs,
     node_to_conf_fragment,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class TestGainConversion:
@@ -247,6 +252,22 @@ class TestGenerateConfs:
         assert set(out.keys()) == {"pipewire/a.conf", "pipewire/b.conf"}
         for content in out.values():
             assert content.strip()  # non-empty
+
+    @pytest.mark.parametrize(
+        "filename",
+        (
+            "pipewire/tts-loudnorm.conf",
+            "pipewire/music-loudnorm.conf",
+            "pipewire/pc-loudnorm.conf",
+            "pipewire/yt-loudnorm.conf",
+        ),
+    )
+    def test_current_loudnorm_generated_mirrors_match_descriptor(self, filename: str) -> None:
+        descriptor = load_audio_topology_descriptor()
+        generated = generate_confs(descriptor)[filename]
+        mirror = REPO_ROOT / "config" / "pipewire" / "generated" / filename
+
+        assert mirror.read_text(encoding="utf-8") == generated
 
 
 class TestParamsPassthrough:

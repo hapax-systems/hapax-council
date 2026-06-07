@@ -707,13 +707,12 @@ class TestTtsBroadcastCheck:
                         "info": {
                             "props": {
                                 "node.name": (
-                                    "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00"
-                                    ".pro-output-0"
+                                    "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0"
                                 ),
                                 "media.class": "Audio/Sink",
                                 "factory.name": "api.alsa.pcm.sink",
-                                "api.alsa.path": "hw:7",
-                                "audio.channels": 24,
+                                "api.alsa.path": "hw:UltraLitemk5",
+                                "audio.channels": 12,
                             }
                         },
                     },
@@ -722,14 +721,29 @@ class TestTtsBroadcastCheck:
                         "type": "PipeWire:Interface:Node",
                         "info": {
                             "props": {
-                                "node.name": "hapax-mpc-usb-return-capture",
+                                "node.name": (
+                                    "alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0"
+                                ),
+                                "media.class": "Audio/Source",
+                                "factory.name": "api.alsa.pcm.source",
+                                "api.alsa.path": "hw:UltraLitemk5",
+                                "audio.channels": 10,
+                            }
+                        },
+                    },
+                    {
+                        "id": 105,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": "hapax-voice-wet-capture",
                                 "media.class": "Audio/Sink",
                                 "factory.name": "filter-chain",
                             }
                         },
                     },
                     {
-                        "id": 105,
+                        "id": 106,
                         "type": "PipeWire:Interface:Node",
                         "info": {
                             "props": {
@@ -740,7 +754,7 @@ class TestTtsBroadcastCheck:
                         },
                     },
                     {
-                        "id": 106,
+                        "id": 107,
                         "type": "PipeWire:Interface:Node",
                         "info": {
                             "props": {
@@ -753,7 +767,7 @@ class TestTtsBroadcastCheck:
                     {
                         "id": 200,
                         "type": "PipeWire:Interface:Link",
-                        "info": {"output-node-id": 105, "input-node-id": 106},
+                        "info": {"output-node-id": 106, "input-node-id": 107},
                     },
                 ]
             )
@@ -762,7 +776,7 @@ class TestTtsBroadcastCheck:
         assert result.returncode == 0
         assert "TTS broadcast path: OK" in result.stdout
 
-    def test_tts_broadcast_check_fails_when_mpc_wet_return_missing(
+    def test_tts_broadcast_check_fails_when_mk5_s4_wet_return_missing(
         self,
         tmp_path: Path,
     ) -> None:
@@ -773,7 +787,7 @@ class TestTtsBroadcastCheck:
         result = _run(["tts-broadcast-check", "--dump-file", str(dump)])
         assert result.returncode == 2
         assert "TTS broadcast path: FAIL" in result.stdout
-        assert "hapax-mpc-usb-return-capture" in result.stdout
+        assert "hapax-voice-wet-capture" in result.stdout
 
 
 class TestL12ForwardCheck:

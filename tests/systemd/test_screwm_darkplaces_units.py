@@ -5,6 +5,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UNITS_DIR = REPO_ROOT / "systemd" / "units"
 SCRIPTS_DIR = REPO_ROOT / "scripts"
+INSTALL_UNITS = REPO_ROOT / "systemd" / "scripts" / "install-units.sh"
+USER_PRESET = REPO_ROOT / "systemd" / "user-preset.d" / "hapax.preset"
 
 
 def _read(unit_name: str) -> str:
@@ -36,6 +38,9 @@ def test_darkplaces_v4l2_service_remains_runtime_guarded_and_uses_visible_xvfb_r
         "brio-operator",
         "brio-room",
         "brio-synths",
+        "brio-operator-ir",
+        "brio-room-ir",
+        "brio-synths-ir",
         "c920-desk",
         "c920-room",
         "c920-overhead",
@@ -97,6 +102,61 @@ def test_darkplaces_launchers_ensure_persistent_live_texture_binary() -> None:
         assert "resolve_darkplaces_bin()" in body
         assert "ensure-darkplaces-live-texture-build.sh" in body
         assert 'DARKPLACES_BIN="$(resolve_darkplaces_bin)"' in body
+
+
+def test_darkplaces_launchers_force_diagnostic_screen_postprocess_off() -> None:
+    for launcher in ("darkplaces-v4l2-xvfb.sh", "darkplaces-v4l2-xorg.sh"):
+        body = (SCRIPTS_DIR / launcher).read_text(encoding="utf-8")
+        assert "+r_glsl_postprocess 0" in body
+        assert "+r_glsl_postprocess_ruttetra_enable 0" in body
+        assert '+r_glsl_postprocess_uservec1 "0 0 0 0"' in body
+        assert '+r_glsl_postprocess_uservec2 "0 0 0 0"' in body
+        assert '+r_glsl_postprocess_uservec3 "0 0 0 0"' in body
+        assert '+r_glsl_postprocess_uservec4 "0 0 0 0"' in body
+        assert "+set screwm_qc_screen_postprocess 0" in body
+
+
+def test_darkplaces_live_texture_rebuild_path_watches_source_activation_patch() -> None:
+    service = _read("hapax-darkplaces-live-texture-rebuild.service")
+    path = _read("hapax-darkplaces-live-texture-rebuild.path")
+
+    assert "WorkingDirectory=%h/.cache/hapax/source-activation/worktree" in service
+    assert "ConditionPathExists=%h/.cache/hapax/source-activation/last-success-sha" in service
+    assert (
+        "ConditionPathExists=%h/.cache/hapax/source-activation/worktree/"
+        "scripts/ensure-darkplaces-live-texture-build.sh"
+    ) in service
+    assert (
+        "ConditionPathExists=%h/.cache/hapax/source-activation/worktree/"
+        "assets/quake/darkplaces/hapax-live-texture.patch"
+    ) in service
+    assert (
+        "ExecStart=%h/.cache/hapax/source-activation/worktree/"
+        "scripts/ensure-darkplaces-live-texture-build.sh"
+    ) in service
+    assert "try-restart hapax-darkplaces-v4l2.service" in service
+    assert "StartLimitIntervalSec=600" in service
+    assert "%h/.cache/hapax/rebuild/worktree" not in service
+
+    assert "PathChanged=%h/.cache/hapax/source-activation/current.json" not in path
+    assert "PathChanged=%h/.cache/hapax/source-activation/last-success-sha" in path
+    assert (
+        "PathChanged=%h/.cache/hapax/source-activation/worktree/"
+        "assets/quake/darkplaces/hapax-live-texture.patch"
+    ) in path
+    assert "\nPathExists=" not in path
+    assert "Unit=hapax-darkplaces-live-texture-rebuild.service" in path
+    assert "%h/.cache/hapax/rebuild/worktree" not in path
+
+
+def test_darkplaces_live_texture_rebuild_path_is_enabled_by_deploy_defaults() -> None:
+    install_units = INSTALL_UNITS.read_text(encoding="utf-8")
+    preset = USER_PRESET.read_text(encoding="utf-8")
+
+    assert "AUTO_ENABLE_PATHS=(" in install_units
+    assert "hapax-darkplaces-live-texture-rebuild.path" in install_units
+    assert 'systemctl --user enable --now "$path_name"' in install_units
+    assert "enable hapax-darkplaces-live-texture-rebuild.path" in preset
 
 
 def test_darkplaces_launchers_bind_youtube_camera_and_ward_atlas_textures() -> None:
@@ -178,6 +238,17 @@ def test_darkplaces_launchers_bind_youtube_camera_and_ward_atlas_textures() -> N
         assert "hapax_live_texture14_height 2048" in body or (
             "+hapax_live_texture14_height 2048" in body
         )
+        for slot, texture, frame in (
+            ("15", "w18", "quake-live-ir-brio-operator.bgra"),
+            ("16", "w19", "quake-live-ir-brio-room.bgra"),
+            ("17", "w35", "quake-live-ir-brio-synths.bgra"),
+        ):
+            prefix = f"hapax_live_texture{slot}"
+            assert f"{prefix}_enable 1" in body or f"+{prefix}_enable 1" in body
+            assert f"{prefix}_name {texture}" in body or f"+{prefix}_name {texture}" in body
+            assert frame in body
+            assert f"{prefix}_width 340" in body or f"+{prefix}_width 340" in body
+            assert f"{prefix}_height 340" in body or f"+{prefix}_height 340" in body
 
 
 def test_quake_live_media_services_feed_youtube_camera_and_ward_atlas_slots() -> None:
@@ -232,6 +303,17 @@ def test_quake_live_media_services_feed_youtube_camera_and_ward_atlas_slots() ->
     assert "--output /dev/shm/hapax-compositor/quake-live-ward-atlas.bgra" in atlas
     assert "--meta /dev/shm/hapax-compositor/quake-live-ward-atlas.json" in atlas
     assert "Environment=HAPAX_QUAKE_WARD_ATLAS_GPU_DRIFT=1" in atlas
+    for env_name in (
+        "HAPAX_LORE_CHRONICLE_TICKER_ENABLED",
+        "HAPAX_LORE_PROGRAMME_STATE_ENABLED",
+        "HAPAX_LORE_PROGRAMME_HISTORY_ENABLED",
+        "HAPAX_LORE_PRECEDENT_TICKER_ENABLED",
+        "HAPAX_LORE_RESEARCH_INSTRUMENT_DASHBOARD_ENABLED",
+        "HAPAX_LORE_RESEARCH_POSTER_CONSTRUCTIVIST_ENABLED",
+        "HAPAX_LORE_RESEARCH_POSTER_TUFTE_ENABLED",
+        "HAPAX_LORE_RESEARCH_POSTER_ASCII_ENABLED",
+    ):
+        assert f"Environment={env_name}=1" in atlas
     assert "Restart=always" in atlas
 
     assert "PartOf=hapax-visual-stack.target hapax-darkplaces-v4l2.service" in reverie
@@ -292,9 +374,42 @@ def test_quake_live_media_services_feed_youtube_camera_and_ward_atlas_slots() ->
         assert frame in env
         assert "HAPAX_QUAKE_CAMERA_SIZE=1280x720" in env
         assert "HAPAX_QUAKE_CAMERA_FPS=10" in env
+        if role.startswith("brio-"):
+            assert "HAPAX_QUAKE_CAMERA_RESERVED_FOR_IR=1" in env
         assert "HAPAX_QUAKE_LIVE_TEXTURE_WIDTH=1280" in env
         assert "HAPAX_QUAKE_LIVE_TEXTURE_HEIGHT=720" in env
         assert "HAPAX_QUAKE_LIVE_TEXTURE_FPS=5" in env
+        assert "HAPAX_QUAKE_LIVE_TEXTURE_INPUT_FPS=10" in env
+
+    ir_expected = {
+        "brio-operator-ir": (
+            "w18",
+            "quake-live-ir-brio-operator.bgra",
+            "usb-046d_Logitech_BRIO_5342C819-video-index2",
+        ),
+        "brio-room-ir": (
+            "w19",
+            "quake-live-ir-brio-room.bgra",
+            "usb-046d_Logitech_BRIO_43B0576A-video-index2",
+        ),
+        "brio-synths-ir": (
+            "w35",
+            "quake-live-ir-brio-synths.bgra",
+            "usb-046d_Logitech_BRIO_9726C031-video-index2",
+        ),
+    }
+    for role, (texture, frame, device_id) in ir_expected.items():
+        env = (config_dir / f"{role}.env").read_text(encoding="utf-8")
+        assert f"HAPAX_QUAKE_CAMERA_ROLE={role}" in env
+        assert f"HAPAX_QUAKE_CAMERA_DEVICE=/dev/v4l/by-id/{device_id}" in env
+        assert "HAPAX_QUAKE_CAMERA_FORMAT=gray" in env
+        assert "HAPAX_QUAKE_CAMERA_SIZE=340x340" in env
+        assert "HAPAX_QUAKE_CAMERA_FPS=10" in env
+        assert f"HAPAX_QUAKE_LIVE_TEXTURE_NAME={texture}" in env
+        assert frame in env
+        assert "HAPAX_QUAKE_LIVE_TEXTURE_WIDTH=340" in env
+        assert "HAPAX_QUAKE_LIVE_TEXTURE_HEIGHT=340" in env
+        assert "HAPAX_QUAKE_LIVE_TEXTURE_FPS=6" in env
         assert "HAPAX_QUAKE_LIVE_TEXTURE_INPUT_FPS=10" in env
 
 
@@ -394,8 +509,8 @@ def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
     assert "float EF_FULLBRIGHT = 512;" in defs
     assert "float EF_DOUBLESIDED = 32768;" in defs
     assert "float EF_ADDITIVE = 32;" in defs
-    assert "float AOA_MODEL_SCALE = 1.0;" in defs
-    assert "float AOA_SPHERE_MODEL_SCALE = 0.45;" in defs
+    assert "float AOA_MODEL_SCALE = 1.3;" in defs
+    assert "float AOA_SPHERE_MODEL_SCALE = 1.3;" in defs
     assert "vector(vector v) vectoangles = #51;" in defs
     assert "ang = vectoangles(target - pos);" in camera
     assert 'if (cvar("screwm_camera_orbit") > 0)' in camera
@@ -534,6 +649,9 @@ def test_screwm_gpu_services_use_darkplaces_runtime_marker_and_live_cutover() ->
         "ticker-chronicle:1344x176",
         "reverie:960x540",
         "aoa-atlas:2048x2048:2.25",
+        "ir-brio-operator:340x340",
+        "ir-brio-room:340x340",
+        "ir-brio-synths:340x340",
     ):
         assert slot in media_drift
     assert "Environment=HAPAX_WARD_ATLAS_SLOTS=ward-atlas:2048x2304@2" in ward_atlas_gpu
@@ -546,3 +664,12 @@ def test_screwm_gpu_services_use_darkplaces_runtime_marker_and_live_cutover() ->
     assert "HAPAX_WARD_ATLAS_REAL" not in ward_atlas_gpu
     assert "ExecStart=%h/.local/bin/screwm-ward-atlas" in ward_atlas_gpu
     assert "ExecStart=%h/.local/bin/screwm-media-drift" in media_drift
+
+
+def test_screwm_audio_reactivity_taps_obs_bound_broadcast_source() -> None:
+    body = _read("hapax-screwm-audio-reactivity.service")
+
+    assert "Environment=HAPAX_SCREWM_AUDIO_TARGET=hapax-broadcast-normalized" in body
+    assert "Environment=HAPAX_SCREWM_AUDIO_TARGET=hapax-broadcast-normalized-capture" not in body
+    assert "--require-file scripts/screwm-audio-reactivity-source.py" in body
+    assert "scripts/screwm-audio-reactivity-source.py" in body

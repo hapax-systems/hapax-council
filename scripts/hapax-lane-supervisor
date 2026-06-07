@@ -6,11 +6,12 @@
 #
 # Clean split (coordination-reform-master-design-2026-05-30 §FM-11, Phase 6,
 # CASE-CROSS-RUNTIME-COMMS-001): the *supervisor* guarantees the lane process
-# exists; the *dispatcher/launcher* decides what it does. So respawning a
-# task-less or quota-walled lane into idle-await is correct, not spam — a
-# claimed lane resumes its task; a task-less lane comes up read-only and awaits
-# governed dispatch. This is the production replacement for the old, unwired,
-# task-gated, greek-only dead-lane block in hapax-lane-rate-limit-watchdog.
+# exists; the *dispatcher/launcher* decides what it does. On full local-worker
+# hosts, respawning a task-less or quota-walled lane into idle-await is correct,
+# not spam — a claimed lane resumes its task; a task-less lane comes up
+# read-only and awaits governed dispatch. Appendix/thin-client hosts set
+# HAPAX_LOCAL_DEV_MAINTENANCE_MODE=appendix-only, which suppresses unclaimed
+# local idle-await respawns while preserving active claimed-task resume.
 #
 # Coverage spans every runtime (not greek-only):
 #   - claude (greek): headless pidfile model at $RUNTIME_DIR/<lane>.pid, OR a
@@ -114,6 +115,26 @@ PROGRESS_STALLED_TICK=0  # per-tick gauge: lanes found output-stalled this sweep
 mkdir -p "$STATE_DIR"
 
 log() { printf '%s lane-supervisor: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
+
+local_dev_maintenance_mode() {
+  local mode="${HAPAX_LOCAL_DEV_MAINTENANCE_MODE:-}"
+  if [ -z "$mode" ]; then
+    mode="${HAPAX_DEFAULT_DISPATCH_HOST:-${HAPAX_DISPATCH_HOST:-local}}"
+  fi
+  case "$mode" in
+    appendix | hapax-appendix | appendix-only | appendix_only | remote | thin-client | thin_client)
+      echo "appendix-only"
+      ;;
+    *)
+      echo "local"
+      ;;
+  esac
+}
+
+LOCAL_DEV_MAINTENANCE_MODE="$(local_dev_maintenance_mode)"
+if [ "$LOCAL_DEV_MAINTENANCE_MODE" = "appendix-only" ]; then
+  log "appendix-only local-dev maintenance: unclaimed idle-await respawns disabled; active claimed-task resumes preserved"
+fi
 
 # ── liveness ──────────────────────────────────────────────────────────────────
 
@@ -279,12 +300,21 @@ respawn_sync() {
 # guard <lane> <kind>: ensure the lane process exists; respawn if dead.
 guard() {
   local lane="$1" kind="$2" worktree="$WORKTREE_ROOT/hapax-council--$1"
+  local task_line task_id title
+  task_line="$(resolve_claimed_task "$lane")"
+  task_id="${task_line%%	*}"
+  title="${task_line#*	}"
+  [ "$title" = "$task_line" ] && title=""
 
   # A rostered lane with no worktree can never be launched. Don't silently skip
   # it forever — count the cycles and escalate once it crosses the threshold, so
   # the operator either provisions the worktree or removes the lane (the roster
   # is then honest). The escalation is the safety net for any future roster drift.
   if ! lane_has_worktree "$lane"; then
+    if [ "$LOCAL_DEV_MAINTENANCE_MODE" = "appendix-only" ] && [ -z "$task_id" ]; then
+      log "$lane ($kind): no worktree and no active task — appendix-only local-dev maintenance suppresses idle-await respawn"
+      return 0
+    fi
     local wstreak
     wstreak="$(bump_streak "$lane" no-worktree)"
     log "$lane ($kind): no worktree (configured root $worktree) — skipping (cycle $wstreak)"
@@ -314,11 +344,10 @@ guard() {
     return 0
   fi
 
-  local task_line task_id title
-  task_line="$(resolve_claimed_task "$lane")"
-  task_id="${task_line%%	*}"
-  title="${task_line#*	}"
-  [ "$title" = "$task_line" ] && title=""
+  if [ "$LOCAL_DEV_MAINTENANCE_MODE" = "appendix-only" ] && [ -z "$task_id" ]; then
+    log "$lane ($kind): DEAD with no active task — appendix-only local-dev maintenance suppresses idle-await respawn"
+    return 0
+  fi
 
   if [ "$DRY_RUN" = "1" ]; then
     if [ -n "$task_id" ]; then

@@ -52,6 +52,7 @@
         "jr",
         "lite",
         "opus",
+        "provider_gateway",
         "sonnet",
         "spark",
         "worker"
@@ -381,6 +382,12 @@
           "items": {"type": "string", "minLength": 1}
         },
         "model_or_engine": {
+          "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+        },
+        "paid_provider": {
+          "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+        },
+        "paid_profile": {
           "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
         },
         "approval_posture": {"$ref": "#/$defs/approval_posture"},

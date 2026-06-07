@@ -3,17 +3,16 @@ name: LLM Stack Backup
 version: "1.0.0"
 category: observability
 reports_to: operator
-peers: [backup_local, backup_remote]
+peers: [backup_local, backup_gdrive_critical]
 depends_on: []
 
-purpose: Full LLM stack backup — Docker volumes, configs, and state for the llm-stack deployment.
+purpose: Deprecated compatibility receipt for the retired standalone LLM stack backup lane. Active coverage lives in backup_local and backup_gdrive_critical.
 inputs:
-  - Docker volume state
-  - llm-stack configuration
+  - Legacy llm-backup timer invocation
 outputs:
-  - backup artifacts
+  - Deprecation receipt in the systemd journal
 capabilities:
-  - docker_backup
+  - backup_deprecation_receipt
 schedule:
   type: timer
   systemd_unit: llm-backup.timer
@@ -21,7 +20,7 @@ schedule:
 model: null
 
 autonomy: full
-decision_scope: Execute backup procedure. Cannot modify backed-up data.
+decision_scope: Log the retired backup path and point at the canonical backup lanes. Cannot execute backups or modify backed-up data.
 escalation_target: operator
 axiom_bindings:
   - axiom_id: executive_function
@@ -36,10 +35,11 @@ service_tier: 2
 
 timer_display:
   schedule_label: "Weekly Sun 02:00"
-  purpose: "Full stack backup"
+  purpose: "Deprecated LLM backup compatibility receipt"
 
 narrative: |
-  The LLM Stack Backup agent handles weekly backups of the entire LLM
-  infrastructure — Docker volumes for Qdrant, PostgreSQL, Langfuse, and
-  LiteLLM, plus their configuration files. It runs via systemd timer
-  and requires no LLM or operator input.
+  The LLM Stack Backup agent is retained only as a compatibility receipt for
+  the retired standalone LLM-stack backup script. It does not create backup
+  artifacts. Canonical LLM-stack data protection is owned by the Tier 1 local
+  backup plus the bounded GDrive critical offsite lane. Broad Backblaze B2
+  remote backup is retired as a required routine lane.

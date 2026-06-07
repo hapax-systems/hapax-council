@@ -145,6 +145,22 @@ Operator can edit any field by hand. The only field CC *must* own is `session lo
 Transitions that CC is allowed to make autonomously: `offered→claimed→in_progress→pr_open→done`, plus any→`blocked`.
 Transitions reserved to operator (hook rejects CC attempts): `withdrawn`, `superseded`, manual `offered` reset.
 
+Active blocked-with-evidence is an active task state, not a closure. The
+canonical frontmatter shape is:
+
+```yaml
+status: blocked
+blocked_reason: <machine-readable-blocker>
+blocked_witness: <path-to-current-witness>
+```
+
+`blocked_reason` names the blocker that a dispatcher/dependent can read without
+parsing prose. `blocked_witness` points at the current command output, receipt,
+ledger, or note that proves the blocker is still live. Cascade automation may
+clear only its own dependency-wait reason
+(`waiting_for_closure_valid_dependencies: ...`) when dependencies become valid;
+it must preserve blocked-with-evidence records until their evidence changes.
+
 ### Enforcement — single PreToolUse hook
 
 `hooks/scripts/cc-task-gate.sh`:
@@ -154,7 +170,7 @@ Transitions reserved to operator (hook rejects CC attempts): `withdrawn`, `super
 3. Reads claimed task ID from `~/.cache/hapax/cc-active-task-{role}` (one-line file, written by CC via an allowed `Bash` echo when claiming).
 4. Reads the task note from `~/Documents/Personal/20-projects/hapax-cc-tasks/active/{padded-id}-*.md`.
 5. Parses frontmatter. Rejects unless `status == in_progress` AND `assigned_to == {role}`.
-6. If task is `blocked`, exit with a clear message including the `blocked_reason` field if present.
+6. If task is `blocked`, exit with a clear message including the `blocked_reason` and `blocked_witness` fields when present.
 7. If the hook can't find a claimed-task file, exit with a suggestion: run `cc-claim {id}` or browse `cc-offered.md`.
 
 No network calls. No daemon. Pure filesystem. If Obsidian is closed, the hook still works — the vault is just a directory of markdown files.
@@ -172,6 +188,12 @@ No network calls. No daemon. Pure filesystem. If Obsidian is closed, the hook st
 1. Verify task is currently in `pr_open` state, session is assignee.
 2. Move note from `active/` → `closed/`, set `status: done`, `completed_at: <now>`.
 3. Clear the `~/.cache/hapax/cc-active-task-{role}` file.
+
+`cc-close` is not used for active blockers. A lane records a quota, capability,
+runtime, provider, witness, or operator blocker by keeping the note in
+`active/` with `status: blocked`, a non-null `blocked_reason`, and a current
+`blocked_witness`. `cc-claim` refuses that task and surfaces both fields; it does
+not rewrite the note back to `claimed`.
 
 Both helpers are optional ergonomics — CC can do the same with direct file edits. The hook enforces state invariants regardless of helper use.
 
@@ -236,7 +258,7 @@ Changes:
 
 **Phase 6 — Deprecation + docs** (1h): update `PROTOCOL.md`, `CLAUDE.md`, add CLAUDE.md memory entry linking to this spec. Announce deprecation of native TaskTool for workstream items.
 
-**Phase 7 — Validation** (1h): manual E2E — operator edits a task to `status: blocked` in Obsidian, verify the next tool call in the assigned session is rejected with a clear message. Operator reverts → session resumes.
+**Phase 7 — Validation** (1h): manual E2E — operator edits a task to `status: blocked` with `blocked_reason` and `blocked_witness` in Obsidian, verify the next tool call in the assigned session is rejected with a clear message. Operator reverts → session resumes.
 
 **Total effort: ~9h of focused work, one feature branch, one PR.**
 
@@ -250,7 +272,7 @@ Unit tests for the hook (shellcheck + real-file fixtures):
 - Handles missing `blocked_reason` gracefully.
 - Handles vault-unavailable (disk error) with fail-closed rejection + clear operator-facing message.
 
-Integration tests: run `cc-claim` then perform a file edit; verify allowed. Mutate vault note to `blocked` mid-session; verify next edit rejected.
+Integration tests: run `cc-claim` then perform a file edit; verify allowed. Mutate vault note to `blocked` with `blocked_reason` and `blocked_witness` mid-session; verify next edit rejected and dependency/cascade consumers preserve the blocker.
 
 Smoke test: operator opens Obsidian, views `cc-active.md`, sees exactly what each session is doing. Edits one task — sees CC comply within one tool call.
 

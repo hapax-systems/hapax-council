@@ -5,8 +5,8 @@
 #
 # What it checks:
 #  1. role.assistant loopback output is routed to hapax-private (NOT
-#     hapax-voice-fx-capture). hapax-voice-fx-capture chains into L-12
-#     CH 11/12 = broadcast. hapax-private chains to Blue Yeti = monitor.
+#     hapax-voice-fx-capture). hapax-voice-fx-capture chains into the
+#     broadcast TTS route. hapax-private is monitor-only.
 #  2. The 55-hapax-voice-role-retarget.conf is NOT active (it would
 #     force role.assistant output back to hapax-voice-fx-capture).
 #  3. The wireplumber preferred-target for role.assistant is set to
@@ -27,10 +27,10 @@ set -u
 FAIL=0
 WP_CONF_DIR="${HAPAX_WIREPLUMBER_CONF_DIR:-${HOME}/.config/wireplumber/wireplumber.conf.d}"
 PW_CONF_DIR="${HAPAX_PIPEWIRE_CONF_DIR:-${HOME}/.config/pipewire/pipewire.conf.d}"
-FORBIDDEN_PRIVATE_TARGET_RE='alsa_output\.usb-ZOOM_Corporation_L-12|alsa_output\.usb-Torso_Electronics_S-4|hapax-livestream|hapax-livestream-tap|hapax-voice-fx-capture|hapax-pc-loudnorm|input\.loopback\.sink\.role\.multimedia'
-# HN private monitor audio routes through MPC Live III. S-4 is downstream/MIDI
-# in this path and is not an approved host-side audio target.
-PRIVATE_MONITOR_TARGET_RE='alsa_output\.usb-Akai_Professional_MPC_LIVE_III_.*\.(multichannel-output|pro-output-0)'
+FORBIDDEN_PRIVATE_TARGET_RE='alsa_output\.usb-ZOOM_Corporation_L-12|alsa_output\.usb-Akai_Professional_MPC_LIVE_III|alsa_output\.usb-Torso_Electronics_S-4|hapax-livestream|hapax-livestream-tap|hapax-voice-fx-capture|hapax-pc-loudnorm|input\.loopback\.sink\.role\.multimedia'
+# Private monitor audio routes to MOTU UltraLite mk5 Phones AUX10/AUX11 only.
+# S-4 is the public voice insert, not an approved private-monitor target.
+PRIVATE_MONITOR_TARGET_RE='alsa_output\.usb-MOTU_UltraLite-mk5_.*\.pro-output-0'
 
 active_conf() {
     sed '/^[[:space:]]*#/d' "$1" 2>/dev/null || true
@@ -101,7 +101,7 @@ if [ "${HAPAX_AUDIO_LEAK_GUARD_STATIC_ONLY:-0}" != "1" ]; then
 fi
 
 if printf '%s\n' "$PRIVATE_RUNTIME_ROUTE" | grep -Eq "$FORBIDDEN_PRIVATE_TARGET_RE"; then
-    echo "FAIL hapax-private downstream route reaches broadcast/default path: $PRIVATE_RUNTIME_ROUTE"
+    echo "FAIL hapax-private downstream route reaches broadcast/default/retired path: $PRIVATE_RUNTIME_ROUTE"
     FAIL=1
 elif [ -z "$PRIVATE_RUNTIME_ROUTE" ]; then
     echo "OK  hapax-private has no downstream playback bridge (fail-closed)"
@@ -120,7 +120,7 @@ elif [ "${HAPAX_AUDIO_LEAK_GUARD_STATIC_ONLY:-0}" != "1" ]; then
 fi
 
 if printf '%s\n' "$NOTIFICATION_RUNTIME_ROUTE" | grep -Eq "$FORBIDDEN_PRIVATE_TARGET_RE"; then
-    echo "FAIL hapax-notification-private downstream route reaches broadcast/default path: $NOTIFICATION_RUNTIME_ROUTE"
+    echo "FAIL hapax-notification-private downstream route reaches broadcast/default/retired path: $NOTIFICATION_RUNTIME_ROUTE"
     FAIL=1
 elif [ -z "$NOTIFICATION_RUNTIME_ROUTE" ]; then
     echo "OK  hapax-notification-private has no downstream playback bridge (fail-closed)"
@@ -187,7 +187,7 @@ if printf '%s\n' "$STREAM_SPLIT_ACTIVE" | grep -q 'node.name[[:space:]]*=[[:spac
             f && /^[[:space:]]*}/ {exit}
         ')
     if printf '%s\n' "$PRIVATE_STATIC_TARGET" | grep -Eq "$FORBIDDEN_PRIVATE_TARGET_RE"; then
-        echo "FAIL hapax-private-playback static target is broadcast/default path: $PRIVATE_STATIC_TARGET"
+        echo "FAIL hapax-private-playback static target is broadcast/default/retired path: $PRIVATE_STATIC_TARGET"
         FAIL=1
     else
         echo "OK  hapax-private-playback static target stays off broadcast"
@@ -201,7 +201,7 @@ NOTIFY_ACTIVE=$(active_conf "$NOTIFY_CONF")
 NOTIFY_STATIC_TARGET=$(printf '%s\n' "$NOTIFY_ACTIVE" \
     | awk '/(target\.object|node\.target)/ {print; exit}')
 if printf '%s\n' "$NOTIFY_STATIC_TARGET" | grep -Eq "$FORBIDDEN_PRIVATE_TARGET_RE"; then
-    echo "FAIL hapax-notification-private static target is broadcast/default path: $NOTIFY_STATIC_TARGET"
+    echo "FAIL hapax-notification-private static target is broadcast/default/retired path: $NOTIFY_STATIC_TARGET"
     FAIL=1
 elif [ -z "$NOTIFY_STATIC_TARGET" ]; then
     echo "OK  hapax-notification-private is fail-closed in PipeWire config (no playback target)"
@@ -210,8 +210,8 @@ else
 fi
 
 # Check 6: an optional explicit private monitor bridge may make private
-# audio audible, but it must target only the MPC Live III private monitor
-# ingress and fail closed when that endpoint is absent. The null sinks above
+# audio audible, but it must target only the mk5 Phones private monitor
+# path and fail closed when that endpoint is absent. The null sinks above
 # stay target-free; this separate file owns the guarded hardware edge.
 PRIVATE_BRIDGE_CONF="$PW_CONF_DIR/hapax-private-monitor-bridge.conf"
 PRIVATE_BRIDGE_ACTIVE=$(active_conf "$PRIVATE_BRIDGE_CONF")
@@ -254,10 +254,10 @@ else
         playback_target=$(printf '%s\n' "$playback_block" \
             | awk '/(target\.object|node\.target)/ {print; exit}')
         if printf '%s\n' "$playback_target" | grep -Eq "$FORBIDDEN_PRIVATE_TARGET_RE"; then
-            echo "FAIL $playback_node static target is broadcast/default path: $playback_target"
+            echo "FAIL $playback_node static target is broadcast/default/retired path: $playback_target"
             FAIL=1
         elif printf '%s\n' "$playback_target" | grep -Eq "$PRIVATE_MONITOR_TARGET_RE"; then
-            echo "OK  $playback_node static target is MPC Live III private monitor"
+            echo "OK  $playback_node static target is mk5 Phones private monitor"
         else
             echo "FAIL $playback_node static target is not the approved private monitor: $playback_target"
             FAIL=1

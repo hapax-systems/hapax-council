@@ -24,6 +24,6 @@ async def check_audio_ducker_liveness() -> list[CheckResult]:
             group="audio",
             status=Status.HEALTHY,
             message="ducking on MPC hardware — software ducker retired",
-            duration_ms=(time.monotonic() - t) * 1000,
+            duration_ms=int((time.monotonic() - t) * 1000),
         )
     ]

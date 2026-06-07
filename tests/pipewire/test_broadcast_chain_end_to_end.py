@@ -1,17 +1,15 @@
-"""Structural integration pins for the MPC-first music broadcast chain.
+"""Structural integration pins for the mk5/S-4 music broadcast chain.
 
 The old host-side chain was ``pw-cat -> loudnorm -> music-duck -> L-12``.
-That is intentionally retired. The current chain is hardware-first:
+That is intentionally retired. The current host-side chain is software-summed:
 
-    pw-cat -> hapax-music-loudnorm -> reconciler link map -> MPC USB IN 1/2
-        -> MPC hardware mix -> L-12 physical/Evil Pet return
-        -> hapax-l12-evilpet-capture -> hapax-livestream-tap
+    pw-cat -> hapax-music-loudnorm -> reconciler link map -> hapax-livestream-tap
         -> hapax-broadcast-master -> hapax-broadcast-normalized
 
-CI cannot inspect the MPC/L-12 patch bay, so this file pins the host-side
-contracts around that hardware gap: music-loudnorm must be reconciler-owned
-instead of target.object-owned, L-12 capture must feed the livestream tap,
-and OBS must remain bound to the post-master normalized source.
+This file pins the host-side contracts: music-loudnorm must be reconciler-owned
+instead of target.object-owned, the sum bus must feed the broadcast master, and
+OBS must remain bound to the post-master normalized source. Retired L-12 capture
+checks remain here as historical parser coverage until that fixture is removed.
 """
 
 from __future__ import annotations
@@ -73,7 +71,7 @@ def _playback_props_tail(conf_text: str) -> str:
     return stripped[playback_idx:]
 
 
-class TestStage1MusicLoudnormToMpc:
+class TestStage1MusicLoudnormToSoftwareSum:
     def test_loudnorm_sink_exists(self, chain_configs: dict[str, str]) -> None:
         text = chain_configs["hapax-music-loudnorm.conf"]
         assert 'node.name = "hapax-music-loudnorm"' in text
@@ -84,7 +82,7 @@ class TestStage1MusicLoudnormToMpc:
         assert "target.object" not in tail
         assert "node.autoconnect = false" in tail
         assert "audio.position = [ FL FR ]" in tail
-        assert 'node.description = "Hapax Music Loudnorm → MPC USB IN 1/2"' in tail
+        assert 'node.description = "Hapax Music Loudnorm -> livestream-tap software sum"' in tail
 
     def test_no_retired_duck_or_direct_l12_target(self, chain_configs: dict[str, str]) -> None:
         tail = _playback_props_tail(chain_configs["hapax-music-loudnorm.conf"])

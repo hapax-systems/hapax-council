@@ -13,6 +13,7 @@ import asyncio
 import enum
 import json
 import logging
+import os
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -157,6 +158,7 @@ class ConversationPipeline:
         self.stt = stt
         self.tts = tts_manager
         self.system_prompt = system_prompt
+        self._system_context = system_prompt
         self.tools = tools
         self.tool_handlers = tool_handlers or {}
         self.llm_model = llm_model
@@ -184,6 +186,7 @@ class ConversationPipeline:
         self._running = False
         self._task: asyncio.Task | None = None
         self._audio_output = None
+        self._tts_envelope_publisher = None
         self._last_env_hash: int = 0
         self._session_id: str = ""
         self._activity_mode: str = "idle"
@@ -322,6 +325,7 @@ class ConversationPipeline:
         # Build source-appropriate prompt
         if source == "imagination":
             narrative = content.get("narrative", "")
+            metric = narrative
             prompt = (
                 "You just had a thought worth sharing with the operator. "
                 "Express it naturally and concisely — 1-3 sentences. "
@@ -380,7 +384,7 @@ class ConversationPipeline:
                 {"role": "user", "content": prompt},
             ]
 
-            from shared.config import MODELS  # noqa: PLC0415
+            from shared.config import LITELLM_KEY, MODELS  # noqa: PLC0415
 
             # Spontaneous speech shapes what Hapax communicates about its own
             # state — a grounding act under the 2026-04-24 operative definition
@@ -399,10 +403,12 @@ class ConversationPipeline:
             )
             with metrics_ctx:
                 response = await litellm.acompletion(
-                    model=grounded_model,
+                    model=f"litellm_proxy/{grounded_model}",
                     messages=messages,
                     max_tokens=80,
                     temperature=0.7,
+                    api_base=_voice_litellm_base,
+                    api_key=LITELLM_KEY or os.environ.get("LITELLM_API_KEY", "not-set"),
                 )
 
             text = response.choices[0].message.content.strip()
@@ -427,7 +433,7 @@ class ConversationPipeline:
                     terminal_state="failed",
                 )
                 log.debug("Cascade recruited speech but LLM chose silence")
-        except Exception:
+        except Exception as exc:
             from agents.hapax_daimonion.voice_output_witness import record_drop
 
             record_drop(
@@ -437,6 +443,7 @@ class ConversationPipeline:
                 target=destination_target,
                 media_role=destination_role,
                 text=text_for_witness,
+                error=f"{type(exc).__name__}: {exc}",
                 terminal_state="failed",
             )
             log.debug("Spontaneous speech generation failed (non-fatal)", exc_info=True)
@@ -543,6 +550,7 @@ class ConversationPipeline:
         system prompt rebuilds.
         """
         if not self.messages:
+            self._system_context = self.system_prompt
             return
 
         # ── STABLE band: prompt + conversation thread ──────────────────
@@ -667,6 +675,7 @@ class ConversationPipeline:
             except Exception:
                 log.debug("GQI shm write failed", exc_info=True)
 
+        self._system_context = updated
         content_hash = hash(updated)
         if content_hash == self._last_env_hash:
             return
@@ -1760,6 +1769,9 @@ class ConversationPipeline:
             pcm,
             destination_target,
             destination_role,
+            None,
+            None,
+            getattr(self, "_tts_envelope_publisher", None),
         )
         return True
 
@@ -2202,6 +2214,7 @@ class ConversationPipeline:
                     destination_role,
                     text,
                     destination,
+                    getattr(self, "_tts_envelope_publisher", None),
                 )
             else:
                 from agents.hapax_daimonion.pw_audio_output import PlaybackResult
@@ -2237,6 +2250,7 @@ class ConversationPipeline:
         destination_role: str | None = None,
         text: str | None = None,
         destination: str | None = None,
+        tts_envelope_publisher=None,
     ) -> None:
         """Write PCM to audio output and feed AEC reference. Runs in _audio_executor.
 
@@ -2267,6 +2281,11 @@ class ConversationPipeline:
                         terminal_state="inhibited",
                     )
                 return
+            if tts_envelope_publisher is not None:
+                try:
+                    tts_envelope_publisher.feed(pcm)
+                except Exception:
+                    log.debug("TTS envelope feed failed in conversation pipeline", exc_info=True)
             if echo_canceller:
                 echo_canceller.feed_reference(pcm)
             else:

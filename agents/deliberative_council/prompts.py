@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import random
+from collections.abc import Sequence
+
+from pydantic_ai.messages import CachePoint, UserContent
 
 from .rubrics import Rubric
 
 
-def phase1_prompt(rubric: Rubric, text: str, source_ref: str, seed: int | None = None) -> str:
+def _phase1_prompt_sections(
+    rubric: Rubric, text: str, source_ref: str, seed: int | None = None
+) -> tuple[str, str]:
     axes = list(rubric.axes)
     if seed is not None:
         rng = random.Random(seed)
@@ -23,10 +28,12 @@ def phase1_prompt(rubric: Rubric, text: str, source_ref: str, seed: int | None =
 
     axis_block = "\n".join(_format_axis(a) for a in axes)
 
-    return (
+    stable_prefix = (
         "You are a member of a deliberative council evaluating text.\n\n"
         f"{rubric.instructions}\n\n"
         f"## Rubric Axes\n\n{axis_block}\n\n"
+    )
+    dynamic_suffix = (
         f"## Input\n\n**Source ref:** {source_ref}\n\n**Text:**\n{text}\n\n"
         "## Instructions\n\n"
         "1. Use your research tools to investigate the source_ref before scoring.\n"
@@ -38,6 +45,26 @@ def phase1_prompt(rubric: Rubric, text: str, source_ref: str, seed: int | None =
         '"rationale": {"axis_name": "...", ...}, '
         '"research_findings": ["..."]}'
     )
+    return stable_prefix, dynamic_suffix
+
+
+def phase1_prompt(rubric: Rubric, text: str, source_ref: str, seed: int | None = None) -> str:
+    stable_prefix, dynamic_suffix = _phase1_prompt_sections(rubric, text, source_ref, seed=seed)
+    return stable_prefix + dynamic_suffix
+
+
+def phase1_prompt_parts(
+    rubric: Rubric,
+    text: str,
+    source_ref: str,
+    *,
+    seed: int | None = None,
+    cache_ttl: str | None = None,
+) -> str | Sequence[UserContent]:
+    if not cache_ttl:
+        return phase1_prompt(rubric, text, source_ref, seed=seed)
+    stable_prefix, dynamic_suffix = _phase1_prompt_sections(rubric, text, source_ref, seed=seed)
+    return (stable_prefix, CachePoint(ttl=cache_ttl), dynamic_suffix)
 
 
 def phase3_adversarial_prompt(

@@ -287,6 +287,24 @@ struct ProducerRawSidecar {
     #[serde(default)]
     source: String,
     #[serde(default)]
+    camera_role: String,
+    #[serde(default)]
+    camera_configured_device: String,
+    #[serde(default)]
+    camera_runtime_device: String,
+    #[serde(default)]
+    camera_runtime_format: String,
+    #[serde(default)]
+    camera_runtime_size: String,
+    #[serde(default)]
+    camera_runtime_fps: Option<f64>,
+    #[serde(default)]
+    camera_runtime_substitute: Option<bool>,
+    #[serde(default)]
+    camera_runtime_substitute_reason: String,
+    #[serde(default)]
+    fallback_reason: String,
+    #[serde(default)]
     renderer: String,
     #[serde(default)]
     drift_renderer: String,
@@ -330,6 +348,15 @@ struct ProducerSidecarMetadata {
     producer_sidecar_path: String,
     producer_sidecar_present: bool,
     producer_source: String,
+    producer_camera_role: String,
+    producer_camera_configured_device: String,
+    producer_camera_runtime_device: String,
+    producer_camera_runtime_format: String,
+    producer_camera_runtime_size: String,
+    producer_camera_runtime_fps: Option<f64>,
+    producer_camera_runtime_substitute: Option<bool>,
+    producer_camera_runtime_substitute_reason: String,
+    producer_fallback_reason: String,
     producer_renderer: String,
     producer_drift_renderer: String,
     producer_frame_id: Option<u64>,
@@ -354,6 +381,15 @@ impl ProducerSidecarMetadata {
             producer_sidecar_path: sidecar_path.display().to_string(),
             producer_sidecar_present: false,
             producer_source: String::new(),
+            producer_camera_role: String::new(),
+            producer_camera_configured_device: String::new(),
+            producer_camera_runtime_device: String::new(),
+            producer_camera_runtime_format: String::new(),
+            producer_camera_runtime_size: String::new(),
+            producer_camera_runtime_fps: None,
+            producer_camera_runtime_substitute: None,
+            producer_camera_runtime_substitute_reason: String::new(),
+            producer_fallback_reason: String::new(),
             producer_renderer: String::new(),
             producer_drift_renderer: String::new(),
             producer_frame_id: None,
@@ -387,6 +423,17 @@ impl ProducerSidecarMetadata {
             producer_sidecar_path: sidecar_path.display().to_string(),
             producer_sidecar_present: true,
             producer_source: sidecar.source.clone(),
+            producer_camera_role: sidecar.camera_role.clone(),
+            producer_camera_configured_device: sidecar.camera_configured_device.clone(),
+            producer_camera_runtime_device: sidecar.camera_runtime_device.clone(),
+            producer_camera_runtime_format: sidecar.camera_runtime_format.clone(),
+            producer_camera_runtime_size: sidecar.camera_runtime_size.clone(),
+            producer_camera_runtime_fps: sidecar.camera_runtime_fps,
+            producer_camera_runtime_substitute: sidecar.camera_runtime_substitute,
+            producer_camera_runtime_substitute_reason: sidecar
+                .camera_runtime_substitute_reason
+                .clone(),
+            producer_fallback_reason: sidecar.fallback_reason.clone(),
             producer_renderer: sidecar.renderer.clone(),
             producer_drift_renderer: sidecar.drift_renderer.clone(),
             producer_frame_id: sidecar.frame_id,
@@ -1035,13 +1082,57 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    const SYNTHS_IR_CONFIGURED_DEVICE: &str =
+        "/dev/v4l/by-id/usb-046d_Logitech_BRIO_9726C031-video-index2";
+    const SYNTHS_IR_SUBSTITUTE_RAW_PATH: &str =
+        "/dev/shm/hapax-compositor/quake-live-cam-c920-desk.raw.bgra";
+    const SYNTHS_IR_SUBSTITUTE_REASON: &str = "ir_endpoint_unavailable:c920_desk_rgb_substitute";
+    const SYNTHS_IR_FALLBACK_REASON: &str =
+        "camera_substitute_forced:ir_endpoint_unavailable:c920_desk_rgb_substitute:raw:c920-desk";
+
+    fn synths_substitute_sidecar(
+        source: &str,
+        renderer: &str,
+        raw_path: &Path,
+        output_path: &Path,
+        frame_id: Option<u64>,
+        observed_at: Option<f64>,
+        input_hash: &str,
+        preflip_y: Option<bool>,
+    ) -> ProducerRawSidecar {
+        ProducerRawSidecar {
+            source: source.to_string(),
+            camera_role: "brio-synths-ir".to_string(),
+            camera_configured_device: SYNTHS_IR_CONFIGURED_DEVICE.to_string(),
+            camera_runtime_device: SYNTHS_IR_SUBSTITUTE_RAW_PATH.to_string(),
+            camera_runtime_format: "raw-bgra".to_string(),
+            camera_runtime_size: "1280x720".to_string(),
+            camera_runtime_fps: Some(6.0),
+            camera_runtime_substitute: Some(true),
+            camera_runtime_substitute_reason: SYNTHS_IR_SUBSTITUTE_REASON.to_string(),
+            fallback_reason: SYNTHS_IR_FALLBACK_REASON.to_string(),
+            renderer: renderer.to_string(),
+            drift_renderer: "quake-media-drift-v1".to_string(),
+            frame_id,
+            frames: None,
+            updated_at: None,
+            observed_at,
+            gpu_drift: true,
+            gpu_drift_raw_output: raw_path.display().to_string(),
+            gpu_drift_final_output: output_path.display().to_string(),
+            gpu_drift_output_owner: "screwm_media_drift".to_string(),
+            drift_input_hash: input_hash.to_string(),
+            preflip_y,
+        }
+    }
+
     #[test]
     fn slot_config_parse_derives_paths_and_receiver_class() {
         let slots = parse_slot_configs(
-            " yt:2048x1024:1.6:sphere-front:1820x1024:0c0b0d, ward-atlas:2048x2304:1.3, ticker-grounding:1344x176 ",
+            " yt:2048x1024:1.6:sphere-front:1820x1024:0c0b0d, ward-atlas:2048x2304:1.3, ticker-grounding:1344x176, ir-brio-operator:340x340 ",
         )
         .unwrap();
-        assert_eq!(slots.len(), 3);
+        assert_eq!(slots.len(), 4);
 
         let atlas = &slots[0];
         assert_eq!(atlas.name, "yt");
@@ -1088,6 +1179,18 @@ mod tests {
         );
         assert_eq!(ticker.class, ReceiverClass::Ticker);
         assert_eq!(ticker.intensity, 1.0);
+
+        let ir = &slots[3];
+        assert_eq!(ir.name, "ir-brio-operator");
+        assert_eq!(
+            ir.raw_path,
+            Path::new(SHM_DIR).join("quake-live-ir-brio-operator.raw.bgra")
+        );
+        assert_eq!(
+            ir.out_path,
+            Path::new(SHM_DIR).join("quake-live-ir-brio-operator.bgra")
+        );
+        assert_eq!(ir.class, ReceiverClass::Camera);
     }
 
     #[test]
@@ -1167,10 +1270,18 @@ mod tests {
         fs::write(&path, br#"["not", "an", "object"]"#).unwrap();
         assert!(read_producer_raw_sidecar(&path).is_none());
 
-        fs::write(
-            &path,
-            br#"{
+        let payload = format!(
+            r#"{{
                 "source": "ticker",
+                "camera_role": "brio-synths-ir",
+                "camera_configured_device": "{SYNTHS_IR_CONFIGURED_DEVICE}",
+                "camera_runtime_device": "{SYNTHS_IR_SUBSTITUTE_RAW_PATH}",
+                "camera_runtime_format": "raw-bgra",
+                "camera_runtime_size": "1280x720",
+                "camera_runtime_fps": 6,
+                "camera_runtime_substitute": true,
+                "camera_runtime_substitute_reason": "{SYNTHS_IR_SUBSTITUTE_REASON}",
+                "fallback_reason": "{SYNTHS_IR_FALLBACK_REASON}",
                 "renderer": "cairo-pango",
                 "drift_renderer": "quake-media-drift-v1",
                 "frames": 42,
@@ -1181,12 +1292,27 @@ mod tests {
                 "drift_input_hash": "abc123",
                 "preflip_y": true,
                 "updated_at": 123.5
-            }"#,
-        )
-        .unwrap();
+            }}"#
+        );
+        fs::write(&path, payload).unwrap();
 
         let sidecar = read_producer_raw_sidecar(&path).unwrap();
         assert_eq!(sidecar.source, "ticker");
+        assert_eq!(sidecar.camera_role, "brio-synths-ir");
+        assert_eq!(
+            sidecar.camera_configured_device,
+            SYNTHS_IR_CONFIGURED_DEVICE
+        );
+        assert_eq!(sidecar.camera_runtime_device, SYNTHS_IR_SUBSTITUTE_RAW_PATH);
+        assert_eq!(sidecar.camera_runtime_format, "raw-bgra");
+        assert_eq!(sidecar.camera_runtime_size, "1280x720");
+        assert_eq!(sidecar.camera_runtime_fps, Some(6.0));
+        assert_eq!(sidecar.camera_runtime_substitute, Some(true));
+        assert_eq!(
+            sidecar.camera_runtime_substitute_reason,
+            SYNTHS_IR_SUBSTITUTE_REASON
+        );
+        assert_eq!(sidecar.fallback_reason, SYNTHS_IR_FALLBACK_REASON);
         assert_eq!(sidecar.renderer, "cairo-pango");
         assert_eq!(sidecar.drift_renderer, "quake-media-drift-v1");
         assert_eq!(sidecar.frames, Some(42));
@@ -1204,21 +1330,16 @@ mod tests {
         let sidecar_path = Path::new("/tmp/quake-live-ward-atlas.raw.json");
         let raw_path = Path::new("/tmp/quake-live-ward-atlas.raw.bgra");
         let output_path = Path::new("/tmp/quake-live-ward-atlas.bgra");
-        let sidecar = ProducerRawSidecar {
-            source: "ward-atlas".to_string(),
-            renderer: "quake-live-ward-atlas-source".to_string(),
-            drift_renderer: "quake-media-drift-v1".to_string(),
-            frame_id: Some(7),
-            frames: None,
-            updated_at: None,
-            observed_at: Some(456.25),
-            gpu_drift: true,
-            gpu_drift_raw_output: raw_path.display().to_string(),
-            gpu_drift_final_output: output_path.display().to_string(),
-            gpu_drift_output_owner: "screwm_media_drift".to_string(),
-            drift_input_hash: "input-hash".to_string(),
-            preflip_y: None,
-        };
+        let sidecar = synths_substitute_sidecar(
+            "ward-atlas",
+            "quake-live-ward-atlas-source",
+            raw_path,
+            output_path,
+            Some(7),
+            Some(456.25),
+            "input-hash",
+            None,
+        );
 
         let metadata = ProducerSidecarMetadata::from_sidecar(
             sidecar_path,
@@ -1229,6 +1350,24 @@ mod tests {
         );
         assert!(metadata.producer_sidecar_present);
         assert_eq!(metadata.producer_source, "ward-atlas");
+        assert_eq!(metadata.producer_camera_role, "brio-synths-ir");
+        assert_eq!(
+            metadata.producer_camera_configured_device,
+            SYNTHS_IR_CONFIGURED_DEVICE
+        );
+        assert_eq!(
+            metadata.producer_camera_runtime_device,
+            SYNTHS_IR_SUBSTITUTE_RAW_PATH
+        );
+        assert_eq!(metadata.producer_camera_runtime_format, "raw-bgra");
+        assert_eq!(metadata.producer_camera_runtime_size, "1280x720");
+        assert_eq!(metadata.producer_camera_runtime_fps, Some(6.0));
+        assert_eq!(metadata.producer_camera_runtime_substitute, Some(true));
+        assert_eq!(
+            metadata.producer_camera_runtime_substitute_reason,
+            SYNTHS_IR_SUBSTITUTE_REASON
+        );
+        assert_eq!(metadata.producer_fallback_reason, SYNTHS_IR_FALLBACK_REASON);
         assert_eq!(metadata.producer_renderer, "quake-live-ward-atlas-source");
         assert_eq!(metadata.producer_drift_renderer, "quake-media-drift-v1");
         assert_eq!(metadata.producer_frame_id, Some(7));
@@ -1284,21 +1423,16 @@ mod tests {
         let sidecar_path = Path::new("/tmp/quake-live-ward-atlas.raw.json");
         let raw_path = Path::new("/tmp/quake-live-ward-atlas.raw.bgra");
         let output_path = Path::new("/tmp/quake-live-ward-atlas.bgra");
-        let sidecar = ProducerRawSidecar {
-            source: "ward-atlas".to_string(),
-            renderer: "quake-live-ward-atlas-source".to_string(),
-            drift_renderer: "quake-media-drift-v1".to_string(),
-            frame_id: Some(8),
-            frames: None,
-            updated_at: None,
-            observed_at: Some(777.0),
-            gpu_drift: true,
-            gpu_drift_raw_output: raw_path.display().to_string(),
-            gpu_drift_final_output: output_path.display().to_string(),
-            gpu_drift_output_owner: "screwm_media_drift".to_string(),
-            drift_input_hash: "input".to_string(),
-            preflip_y: Some(false),
-        };
+        let sidecar = synths_substitute_sidecar(
+            "ward-atlas",
+            "quake-live-ward-atlas-source",
+            raw_path,
+            output_path,
+            Some(8),
+            Some(777.0),
+            "input",
+            Some(false),
+        );
         let meta = SlotMetadata {
             slot: "ward-atlas".to_string(),
             w: 2048,
@@ -1359,6 +1493,24 @@ mod tests {
         );
         assert_eq!(value["producer_sidecar_present"], true);
         assert_eq!(value["producer_source"], "ward-atlas");
+        assert_eq!(value["producer_camera_role"], "brio-synths-ir");
+        assert_eq!(
+            value["producer_camera_configured_device"],
+            SYNTHS_IR_CONFIGURED_DEVICE
+        );
+        assert_eq!(
+            value["producer_camera_runtime_device"],
+            SYNTHS_IR_SUBSTITUTE_RAW_PATH
+        );
+        assert_eq!(value["producer_camera_runtime_format"], "raw-bgra");
+        assert_eq!(value["producer_camera_runtime_size"], "1280x720");
+        assert_eq!(value["producer_camera_runtime_fps"], 6.0);
+        assert_eq!(value["producer_camera_runtime_substitute"], true);
+        assert_eq!(
+            value["producer_camera_runtime_substitute_reason"],
+            SYNTHS_IR_SUBSTITUTE_REASON
+        );
+        assert_eq!(value["producer_fallback_reason"], SYNTHS_IR_FALLBACK_REASON);
         assert_eq!(value["producer_renderer"], "quake-live-ward-atlas-source");
         assert_eq!(value["producer_drift_renderer"], "quake-media-drift-v1");
         assert_eq!(value["producer_frame_id"], 8);

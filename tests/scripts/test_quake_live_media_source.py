@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import runpy
 import subprocess
+import time
 from argparse import Namespace
 from pathlib import Path
 
@@ -13,6 +15,11 @@ def _load_module() -> dict:
     return runpy.run_path(
         str(REPO_ROOT / "scripts" / "quake-live-media-source.py"), run_name="__test__"
     )
+
+
+def _pixel_bgra(data: bytes, width: int, x: int, y: int) -> tuple[int, int, int, int]:
+    offset = (y * width + x) * 4
+    return tuple(data[offset : offset + 4])
 
 
 def test_missing_camera_device_uses_explicit_offline_texture_fallback() -> None:
@@ -30,6 +37,9 @@ def test_missing_camera_device_uses_explicit_offline_texture_fallback() -> None:
         projection="flat",
         mask="none",
         mask_background="0c0b0d",
+        camera_visibility_profile="auto",
+        camera_reserved_for_ir=False,
+        restart_delay=2.0,
         fallback_reason="",
     )
 
@@ -40,6 +50,440 @@ def test_missing_camera_device_uses_explicit_offline_texture_fallback() -> None:
     assert "C920 OVERHEAD OFFLINE" in command_text
     assert "WAITING FOR LIVE CAMERA" in command_text
     assert args.fallback_reason.startswith("camera_device_missing:")
+
+
+def test_brio_rgb_reserved_for_ir_publishes_explicit_fresh_placeholder(tmp_path: Path) -> None:
+    module = _load_module()
+    device = tmp_path / "video0"
+    device.write_bytes(b"")
+    args = Namespace(
+        source="camera",
+        camera_role="brio-room",
+        camera_device=str(device),
+        camera_format="mjpeg",
+        camera_size="1280x720",
+        camera_fps=10,
+        camera_reserved_for_ir=True,
+        fps=5,
+        width=1280,
+        height=720,
+        projection="flat",
+        mask="none",
+        mask_background="0c0b0d",
+        camera_visibility_profile="auto",
+        fallback_reason="",
+    )
+
+    command = module["_ffmpeg_command"](args, 1280, 720)
+    command_text = " ".join(command)
+
+    assert "-f lavfi" in command_text
+    assert "BRIO ROOM RESERVED" in command_text
+    assert "LOCAL RGB OFF; IR WARD OWNS BRIO" in command_text
+    assert str(device) not in command_text
+    assert args.fallback_reason == "camera_reserved_for_ir:same_physical_brio_ir_ward"
+
+
+def test_brio_rgb_reserved_for_ir_resolves_matching_live_ir_proxy() -> None:
+    module = _load_module()
+    args = Namespace(source="camera", camera_role="brio-room", camera_reserved_for_ir=True)
+
+    spec = module["_reserved_ir_proxy_spec"](args)
+
+    assert spec["role"] == "brio-room-ir"
+    assert spec["raw_path"].name == "quake-live-ir-brio-room.raw.bgra"
+    assert spec["meta_path"].name == "quake-live-ir-brio-room.raw.json"
+    assert spec["width"] == 340
+    assert spec["height"] == 340
+
+
+def test_reserved_ir_proxy_fits_square_ir_into_large_camera_texture(tmp_path: Path) -> None:
+    module = _load_module()
+    raw = tmp_path / "ir.raw.bgra"
+    meta = tmp_path / "ir.raw.json"
+    # BGRA pixels: red, green, blue, white.
+    raw.write_bytes(
+        bytes(
+            (
+                0,
+                0,
+                255,
+                255,
+                0,
+                255,
+                0,
+                255,
+                255,
+                0,
+                0,
+                255,
+                255,
+                255,
+                255,
+                255,
+            )
+        )
+    )
+    meta.write_text('{"fallback_reason":""}\n', encoding="utf-8")
+    args = Namespace(
+        source="camera",
+        camera_role="brio-room",
+        camera_reserved_for_ir=True,
+        camera_reserved_ir_proxy_max_age_s=30.0,
+        width=6,
+        height=4,
+        mask_background="010203",
+        fallback_reason="",
+    )
+    spec = {
+        "role": "brio-room-ir",
+        "raw_path": raw,
+        "meta_path": meta,
+        "width": 2,
+        "height": 2,
+    }
+
+    frame = module["_reserved_ir_proxy_output_frame"](args, spec)
+
+    assert args.fallback_reason == "camera_reserved_for_ir:proxy:brio-room-ir"
+    assert _pixel_bgra(frame, 6, 0, 0) == (3, 2, 1, 255)
+    assert _pixel_bgra(frame, 6, 5, 3) == (3, 2, 1, 255)
+    assert _pixel_bgra(frame, 6, 1, 0) == (0, 0, 255, 255)
+    assert _pixel_bgra(frame, 6, 4, 0) == (0, 255, 0, 255)
+    assert _pixel_bgra(frame, 6, 1, 3) == (255, 0, 0, 255)
+    assert _pixel_bgra(frame, 6, 4, 3) == (255, 255, 255, 255)
+
+
+def test_reserved_ir_proxy_writes_status_frame_when_proxy_is_stale(tmp_path: Path) -> None:
+    module = _load_module()
+    raw = tmp_path / "ir.raw.bgra"
+    meta = tmp_path / "ir.raw.json"
+    raw.write_bytes(bytes((1, 2, 3, 255)) * 4)
+    meta.write_text("{}\n", encoding="utf-8")
+    stale = time.time() - 60.0
+    os.utime(raw, (stale, stale))
+    os.utime(meta, (stale, stale))
+    args = Namespace(
+        source="camera",
+        camera_role="brio-room",
+        camera_reserved_for_ir=True,
+        camera_reserved_ir_proxy_max_age_s=0.1,
+        width=64,
+        height=36,
+        mask_background="010203",
+        fallback_reason="",
+    )
+    spec = {
+        "role": "brio-room-ir",
+        "raw_path": raw,
+        "meta_path": meta,
+        "width": 2,
+        "height": 2,
+    }
+
+    frame = module["_reserved_ir_proxy_output_frame"](args, spec)
+
+    assert args.fallback_reason.startswith("camera_reserved_for_ir:proxy_source_stale:")
+    assert len(frame) == 64 * 36 * 4
+    assert frame != bytes((1, 2, 3, 255)) * (64 * 36)
+
+
+def test_media_sidecar_includes_shm_rgba_reader_aliases(tmp_path: Path) -> None:
+    module = _load_module()
+    meta = tmp_path / "quake-live-ir-brio-operator.raw.json"
+    args = Namespace(
+        source="camera",
+        url="",
+        camera_role="brio-operator-ir",
+        camera_device="/dev/video-ir",
+        width=340,
+        height=340,
+        source_frame_width=340,
+        source_frame_height=340,
+        fps=6,
+        mask="none",
+        mask_background="0c0b0d",
+        projection="flat",
+        camera_visibility_profile="brio-ir-low-light",
+        gpu_drift=True,
+        gpu_drift_raw_output=tmp_path / "quake-live-ir-brio-operator.raw.bgra",
+        output=tmp_path / "quake-live-ir-brio-operator.bgra",
+        gpu_projection_kind="",
+        youtube_gpu_decode=False,
+        youtube_gpu_decode_active=False,
+        youtube_gpu_decode_runtime_disabled=False,
+        drift="off",
+        drift_intensity=1.0,
+        drift_input_hash="abc",
+        drift_output_hash="",
+        drift_changed=False,
+        fallback_reason="",
+    )
+
+    module["_write_meta"](meta, args, frames=42)
+    payload = json.loads(meta.read_text(encoding="utf-8"))
+
+    assert payload["w"] == 340
+    assert payload["h"] == 340
+    assert payload["stride"] == 1360
+    assert payload["frame_id"] == 42
+    assert payload["width"] == 340
+    assert payload["height"] == 340
+    assert payload["frames"] == 42
+    assert payload["camera_visibility_profile"] == "brio-ir-low-light"
+    assert payload["resolved_camera_visibility_profile"] == "brio-ir-low-light"
+
+
+def test_frame_read_timeout_returns_none_for_silent_pipe() -> None:
+    module = _load_module()
+    read_fd, write_fd = os.pipe()
+    try:
+        with os.fdopen(read_fd, "rb", buffering=0) as pipe:
+            started = time.monotonic()
+            assert module["_read_exact_with_timeout"](pipe, 4, 0.02) is None
+            assert time.monotonic() - started < 1.0
+    finally:
+        os.close(write_fd)
+
+
+def test_recovered_camera_loop_first_frame_refreshes_metadata() -> None:
+    module = _load_module()
+
+    assert module["_metadata_write_due"](frames=84, loop_frames=1, fps=6)
+    assert not module["_metadata_write_due"](frames=84, loop_frames=2, fps=6)
+
+
+def test_camera_timeout_after_success_schedules_visible_fallback(tmp_path: Path) -> None:
+    module = _load_module()
+    device = tmp_path / "video-ir"
+    device.write_bytes(b"")
+    args = Namespace(
+        source="camera",
+        camera_role="brio-synths-ir",
+        camera_device=str(device),
+        camera_format="gray",
+        camera_size="340x340",
+        camera_fps=10,
+        fps=6,
+        width=340,
+        height=340,
+        projection="flat",
+        mask="none",
+        mask_background="0c0b0d",
+        camera_visibility_profile="brio-ir-low-light",
+        camera_reserved_for_ir=False,
+        camera_forced_fallback_reason="",
+        restart_delay=2.0,
+        fallback_reason="",
+    )
+
+    module["_mark_camera_loop_failure"](args, "camera_frame_timeout:8.0s", stop=False)
+    command = module["_ffmpeg_command"](args, 340, 340)
+    command_text = " ".join(command)
+
+    assert args.fallback_reason == "camera_frame_timeout:8.0s"
+    assert args.camera_forced_fallback_reason == ""
+    assert "-f lavfi" in command_text
+    assert "BRIO SYNTHS IR OFFLINE" in command_text
+    assert "WAITING FOR LIVE CAMERA" in command_text
+    assert str(device) not in command_text
+
+
+def test_camera_timeout_can_use_configured_substitute_endpoint(tmp_path: Path) -> None:
+    module = _load_module()
+    primary = tmp_path / "video-ir"
+    substitute = tmp_path / "video-rgb"
+    primary.write_bytes(b"")
+    substitute.write_bytes(b"")
+    args = Namespace(
+        source="camera",
+        camera_role="brio-synths-ir",
+        camera_device=str(primary),
+        camera_format="gray",
+        camera_size="340x340",
+        camera_fps=10,
+        camera_substitute_device=str(substitute),
+        camera_substitute_format="mjpeg",
+        camera_substitute_size="1280x720",
+        camera_substitute_fps=10,
+        camera_substitute_visibility_profile="none",
+        camera_substitute_reason="ir_endpoint_unavailable:rgb_endpoint_substitute",
+        fps=6,
+        width=340,
+        height=340,
+        projection="flat",
+        mask="none",
+        mask_background="0c0b0d",
+        camera_visibility_profile="brio-ir-low-light",
+        camera_reserved_for_ir=False,
+        camera_forced_fallback_reason="",
+        restart_delay=2.0,
+        fallback_reason="",
+    )
+
+    module["_mark_camera_loop_failure"](args, "camera_short_frame:0/462400", stop=False)
+    command = module["_ffmpeg_command"](args, 340, 340)
+    command_text = " ".join(command)
+    vf = command[command.index("-vf") + 1]
+
+    assert args.fallback_reason == (
+        "camera_short_frame:0/462400:substitute:ir_endpoint_unavailable:rgb_endpoint_substitute"
+    )
+    assert args.camera_forced_fallback_reason == ""
+    assert command[command.index("-i") + 1] == str(substitute)
+    assert "-f v4l2" in command_text
+    assert "-input_format mjpeg" in command_text
+    assert "-video_size 1280x720" in command_text
+    assert "scale=w=340:h=340" in vf
+    assert "pad=340:340" in vf
+    assert "histeq=" not in vf
+    assert args.camera_runtime_device == str(substitute)
+    assert args.camera_runtime_substitute is True
+    assert args.camera_runtime_substitute_reason == (
+        "ir_endpoint_unavailable:rgb_endpoint_substitute"
+    )
+
+
+def test_camera_substitute_mode_always_skips_primary_endpoint(tmp_path: Path) -> None:
+    module = _load_module()
+    primary = tmp_path / "video-ir"
+    substitute = tmp_path / "video-rgb"
+    primary.write_bytes(b"")
+    substitute.write_bytes(b"")
+    args = Namespace(
+        source="camera",
+        camera_role="brio-synths-ir",
+        camera_device=str(primary),
+        camera_format="gray",
+        camera_size="340x340",
+        camera_fps=10,
+        camera_substitute_device=str(substitute),
+        camera_substitute_format="mjpeg",
+        camera_substitute_size="1280x720",
+        camera_substitute_fps=10,
+        camera_substitute_mode="always",
+        camera_substitute_visibility_profile="none",
+        camera_substitute_reason="ir_endpoint_unavailable:rgb_endpoint_substitute",
+        fps=6,
+        width=340,
+        height=340,
+        projection="flat",
+        mask="none",
+        mask_background="0c0b0d",
+        camera_visibility_profile="brio-ir-low-light",
+        camera_reserved_for_ir=False,
+        camera_forced_fallback_reason="",
+        restart_delay=2.0,
+        fallback_reason="",
+    )
+
+    command = module["_ffmpeg_command"](args, 340, 340)
+
+    assert args.fallback_reason == (
+        "camera_substitute_forced:ir_endpoint_unavailable:rgb_endpoint_substitute"
+    )
+    assert command[command.index("-i") + 1] == str(substitute)
+    assert str(primary) not in command
+    assert args.camera_runtime_device == str(substitute)
+    assert args.camera_runtime_substitute is True
+
+
+def test_camera_raw_substitute_polls_live_bgra_source(tmp_path: Path) -> None:
+    module = _load_module()
+    raw = tmp_path / "c920-desk.raw.bgra"
+    meta = tmp_path / "c920-desk.raw.json"
+    raw.write_bytes(bytes((0, 0, 255, 255)) * (4 * 2))
+    meta.write_text('{"fallback_reason":""}\n', encoding="utf-8")
+    args = Namespace(
+        source="camera",
+        camera_role="brio-synths-ir",
+        camera_device="/dev/video-ir",
+        camera_substitute_mode="always",
+        camera_substitute_raw_path=raw,
+        camera_substitute_raw_meta=meta,
+        camera_substitute_raw_size="4x2",
+        camera_substitute_raw_role="c920-desk",
+        camera_substitute_raw_max_age_s=30.0,
+        camera_substitute_reason="ir_endpoint_unavailable:c920_desk_rgb_substitute",
+        width=4,
+        height=4,
+        fps=6,
+        mask_background="0c0b0d",
+        fallback_reason="",
+    )
+    spec = module["_camera_raw_substitute_spec"](args)
+
+    frame = module["_camera_raw_substitute_output_frame"](args, spec)
+
+    assert args.fallback_reason == (
+        "camera_substitute_forced:ir_endpoint_unavailable:c920_desk_rgb_substitute:raw:c920-desk"
+    )
+    assert args.camera_runtime_device == str(raw)
+    assert args.camera_runtime_format == "raw-bgra"
+    assert args.camera_runtime_size == "4x2"
+    assert args.camera_runtime_substitute is True
+    assert len(frame) == 4 * 4 * 4
+    assert _pixel_bgra(frame, 4, 1, 1) == (0, 0, 255, 255)
+
+
+def test_camera_metadata_records_runtime_substitute_endpoint(tmp_path: Path) -> None:
+    module = _load_module()
+    meta = tmp_path / "quake-live-ir-brio-synths.raw.json"
+    args = Namespace(
+        source="camera",
+        url="",
+        camera_role="brio-synths-ir",
+        camera_device="/dev/video-ir",
+        camera_runtime_device="/dev/video-rgb",
+        camera_format="gray",
+        camera_runtime_format="mjpeg",
+        camera_size="340x340",
+        camera_runtime_size="1280x720",
+        camera_fps=10,
+        camera_runtime_fps=10,
+        camera_runtime_substitute=True,
+        camera_runtime_substitute_reason="ir_endpoint_unavailable:rgb_endpoint_substitute",
+        width=340,
+        height=340,
+        source_frame_width=340,
+        source_frame_height=340,
+        fps=6,
+        mask="none",
+        mask_background="0c0b0d",
+        projection="flat",
+        camera_visibility_profile="brio-ir-low-light",
+        gpu_drift=True,
+        gpu_drift_raw_output=tmp_path / "quake-live-ir-brio-synths.raw.bgra",
+        output=tmp_path / "quake-live-ir-brio-synths.bgra",
+        gpu_projection_kind="",
+        youtube_gpu_decode=False,
+        youtube_gpu_decode_active=False,
+        youtube_gpu_decode_runtime_disabled=False,
+        drift="off",
+        drift_intensity=1.0,
+        drift_input_hash="abc",
+        drift_output_hash="",
+        drift_changed=False,
+        fallback_reason=(
+            "camera_short_frame:0/462400:substitute:ir_endpoint_unavailable:rgb_endpoint_substitute"
+        ),
+    )
+
+    module["_write_meta"](meta, args, frames=7)
+    payload = json.loads(meta.read_text(encoding="utf-8"))
+
+    assert payload["camera_device"] == "/dev/video-rgb"
+    assert payload["camera_configured_device"] == "/dev/video-ir"
+    assert payload["camera_runtime_device"] == "/dev/video-rgb"
+    assert payload["camera_runtime_format"] == "mjpeg"
+    assert payload["camera_runtime_size"] == "1280x720"
+    assert payload["camera_runtime_substitute"] is True
+    assert payload["camera_runtime_substitute_reason"] == (
+        "ir_endpoint_unavailable:rgb_endpoint_substitute"
+    )
+    assert payload["fallback_reason"].endswith(
+        ":substitute:ir_endpoint_unavailable:rgb_endpoint_substitute"
+    )
 
 
 def test_sphere_front_projection_uses_deterministic_oarb_sphere_fill() -> None:
@@ -216,6 +660,7 @@ def test_exact_size_camera_filter_skips_scale_and_pad(tmp_path: Path) -> None:
         projection="flat",
         mask="none",
         mask_background="0c0b0d",
+        camera_visibility_profile="auto",
         fallback_reason="",
     )
 
@@ -225,6 +670,88 @@ def test_exact_size_camera_filter_skips_scale_and_pad(tmp_path: Path) -> None:
     assert "scale=" not in command_text
     assert "pad=" not in command_text
     assert "format=bgra" in command_text
+
+
+def test_low_light_brio_ir_roles_use_histeq_before_bgra(tmp_path: Path) -> None:
+    module = _load_module()
+    device = tmp_path / "video-ir"
+    device.write_bytes(b"")
+
+    for role in ("brio-operator-ir", "brio-room-ir", "brio-synths-ir"):
+        args = Namespace(
+            source="camera",
+            camera_role=role,
+            camera_device=str(device),
+            camera_format="gray",
+            camera_size="340x340",
+            camera_fps=10,
+            fps=6,
+            width=340,
+            height=340,
+            projection="flat",
+            mask="none",
+            mask_background="0c0b0d",
+            camera_visibility_profile="auto",
+            fallback_reason="",
+        )
+
+        command = module["_ffmpeg_command"](args, 340, 340)
+        vf = command[command.index("-vf") + 1]
+
+        assert "scale=" not in vf
+        assert "pad=" not in vf
+        assert "histeq=strength=0.30:intensity=0.20:antibanding=weak" in vf
+        assert vf.index("histeq=") < vf.index("format=bgra")
+        assert args.resolved_camera_visibility_profile == "brio-ir-low-light"
+
+
+def test_brio_ir_env_files_declare_visibility_profiles() -> None:
+    expected = {
+        "brio-operator-ir.env": "HAPAX_QUAKE_CAMERA_VISIBILITY_PROFILE=brio-ir-low-light",
+        "brio-room-ir.env": "HAPAX_QUAKE_CAMERA_VISIBILITY_PROFILE=brio-ir-low-light",
+        "brio-synths-ir.env": "HAPAX_QUAKE_CAMERA_VISIBILITY_PROFILE=brio-ir-low-light",
+    }
+    for filename, line in expected.items():
+        text = (REPO_ROOT / "config" / "quake-live-cameras" / filename).read_text()
+        assert line in text
+
+
+def test_brio_rgb_reserved_env_files_declare_ir_proxy_freshness() -> None:
+    for filename in ("brio-operator.env", "brio-room.env", "brio-synths.env"):
+        text = (REPO_ROOT / "config" / "quake-live-cameras" / filename).read_text()
+
+        assert "HAPAX_QUAKE_CAMERA_RESERVED_FOR_IR=1" in text
+        assert "HAPAX_QUAKE_CAMERA_RESERVED_IR_PROXY_MAX_AGE_S=8.0" in text
+        assert "proxying the matching BRIO IR feed" in text
+
+
+def test_brio_synths_ir_env_uses_direct_greyscale_endpoint() -> None:
+    text = (REPO_ROOT / "config" / "quake-live-cameras" / "brio-synths-ir.env").read_text()
+
+    assert (
+        "HAPAX_QUAKE_CAMERA_DEVICE=/dev/v4l/by-id/usb-046d_Logitech_BRIO_9726C031-video-index2"
+    ) in text
+    assert "HAPAX_QUAKE_CAMERA_FORMAT=gray" in text
+    assert "HAPAX_QUAKE_CAMERA_SIZE=340x340" in text
+    assert "HAPAX_QUAKE_CAMERA_SUBSTITUTE" not in text
+
+
+def test_brio_ir_camera_roles_default_to_greyscale_endpoints() -> None:
+    module = _load_module()
+
+    expected = {
+        "brio-operator-ir": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_5342C819-video-index2",
+        "brio-room-ir": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_43B0576A-video-index2",
+        "brio-synths-ir": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_9726C031-video-index2",
+    }
+    for role, device in expected.items():
+        args = module["parse_args"](["--source", "camera", "--camera-role", role])
+
+        assert args.camera_device == device
+        assert args.camera_format == "gray"
+        assert args.camera_size == "340x340"
+        assert args.camera_fps == 10
+        assert args.camera_reserved_for_ir is False
 
 
 def test_youtube_url_file_accepts_video_id(tmp_path: Path) -> None:

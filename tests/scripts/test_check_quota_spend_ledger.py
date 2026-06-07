@@ -9,7 +9,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "check-quota-spend-ledger"
 FIXTURE = REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json"
-NOW = "2026-05-17T08:00:00Z"
+NOW = "2026-06-04T17:10:00Z"
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
@@ -33,6 +33,7 @@ def test_dashboard_json_exposes_reconciled_bootstrap_state() -> None:
     assert payload["support_artifacts_waiting_for_review"] == 0
     assert payload["frozen_spend_refs"] == ["spend-20260509T193000Z-opaque-route"]
     assert payload["paid_api_route_eligible"] is True
+    assert payload["budget_ledger_stale"] is False
     assert "bootstrap_dependency_state:expired" not in payload["non_green_states"]
 
 
@@ -95,6 +96,37 @@ def test_dashboard_json_and_paid_route_check_emit_combined_payload() -> None:
     payload = json.loads(result.stdout)
     assert payload["dashboard"]["paid_api_budget_state"] == "active"
     assert payload["eligibility"]["eligible"] is False
+
+
+def test_provider_gateway_paid_route_check_accepts_current_google_budget() -> None:
+    result = _run(
+        "--fixture",
+        str(FIXTURE),
+        "--dashboard-json",
+        "--check-paid-route",
+        "--route-id",
+        "api.headless.provider_gateway",
+        "--provider",
+        "google",
+        "--profile",
+        "frontier-fast",
+        "--task-class",
+        "authority-case-implementation",
+        "--quality-floor",
+        "frontier_required",
+        "--estimated-cost-usd",
+        "1.00",
+        "--capacity-pool",
+        "api_paid_spend",
+        "--now",
+        NOW,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["dashboard"]["budget_ledger_stale"] is False
+    assert payload["eligibility"]["eligible"] is True
+    assert payload["eligibility"]["budget_id"] == "tb-20260510-anthropic-api-steady-state"
 
 
 def test_invalid_fixture_exits_2(tmp_path: Path) -> None:

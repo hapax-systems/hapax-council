@@ -504,7 +504,6 @@ class CpalRunner:
                 from functools import partial
 
                 from agents.hapax_daimonion.persona import session_end_message
-                from agents.hapax_daimonion.pw_audio_output import play_pcm
                 from agents.hapax_daimonion.session_events import close_session
 
                 msg = session_end_message(d.notifications.pending_count)
@@ -526,7 +525,7 @@ class CpalRunner:
                             playback_result = await loop.run_in_executor(
                                 None,
                                 partial(
-                                    play_pcm,
+                                    self._play_pcm_with_envelope,
                                     pcm,
                                     24000,
                                     1,
@@ -803,6 +802,7 @@ class CpalRunner:
         instead so the envelope publisher can wrap the write path. Idempotent.
         """
         self._audio_output = audio_output
+        self._production._audio_output = audio_output
         if (
             self._tts_envelope_publisher is not None
             and audio_output is not None
@@ -814,28 +814,48 @@ class CpalRunner:
     def _wrap_audio_output_for_envelope_tap(self) -> None:
         """Decorate ``self._audio_output.write`` to tee PCM to the envelope publisher.
 
-        The underlying ``write`` method is preserved; the wrapper calls
-        it first (so latency-sensitive playback wins) and then feeds
-        PCM to the publisher. Analysis failures never propagate to the
-        playback path — they're logged at debug level and dropped so
-        a broken mmap never impacts voice.
+        The underlying ``write`` method is preserved; the wrapper feeds
+        PCM to the publisher before the blocking playback call so the
+        live visual ring updates while the speech is audible. Analysis
+        failures never propagate to the playback path — they're logged at
+        debug level and dropped so a broken mmap never impacts voice.
         """
         if self._audio_output is None or self._tts_envelope_publisher is None:
             return
         original_write = self._audio_output.write
-        publisher = self._tts_envelope_publisher
 
         def _wrapped_write(pcm, *args, **kwargs):
-            try:
-                original_write(pcm, *args, **kwargs)
-            finally:
-                try:
-                    publisher.feed(pcm)  # type: ignore[attr-defined]
-                except Exception:
-                    log.debug("TTS envelope feed failed", exc_info=True)
+            self._feed_tts_envelope(pcm)
+            return original_write(pcm, *args, **kwargs)
 
         self._audio_output.write = _wrapped_write  # type: ignore[assignment]
         self._envelope_wrap_done = True
+
+    def _feed_tts_envelope(self, pcm: bytes) -> None:
+        """Best-effort side-channel feed for live speech visualisation."""
+
+        publisher = self._tts_envelope_publisher
+        if publisher is None:
+            return
+        try:
+            publisher.feed(pcm)  # type: ignore[attr-defined]
+        except Exception:
+            log.debug("TTS envelope feed failed", exc_info=True)
+
+    def _play_pcm_with_envelope(
+        self,
+        pcm: bytes,
+        rate: int,
+        channels: int,
+        target: str | None,
+        media_role: str,
+    ):
+        """Play one-shot PCM while keeping the speech envelope publisher in sync."""
+
+        self._feed_tts_envelope(pcm)
+        from agents.hapax_daimonion.pw_audio_output import play_pcm
+
+        return play_pcm(pcm, rate, channels, target, media_role)
 
     def _interview_silence_active(self) -> bool:
         """Return True while the interview silence window is active."""
@@ -1105,8 +1125,6 @@ class CpalRunner:
             else:
                 from functools import partial
 
-                from agents.hapax_daimonion.pw_audio_output import play_pcm
-
                 try:
                     if self._speech_lock.locked():
                         log.debug("Autonomous narrative deferred: speech lock held")
@@ -1162,7 +1180,7 @@ class CpalRunner:
                                 playback_result = await loop.run_in_executor(
                                     None,
                                     partial(
-                                        play_pcm,
+                                        self._play_pcm_with_envelope,
                                         pcm,
                                         24000,
                                         1,

@@ -10,7 +10,7 @@ from textwrap import dedent
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-private-monitor-recover"
-MPC_TARGET = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"
+MK5_TARGET = "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0"
 BRIDGE_NODES = (
     "hapax-private-monitor-capture",
     "hapax-private-playback",
@@ -44,7 +44,7 @@ def _bridge_nodes(*, fail_closed: bool = True) -> list[dict[str, object]]:
             "hapax-private-playback",
             {
                 "media.class": "Stream/Output/Audio",
-                "target.object": MPC_TARGET,
+                "target.object": MK5_TARGET,
                 "node.dont-fallback": True,
                 "node.dont-reconnect": True,
                 "node.dont-move": True,
@@ -64,7 +64,7 @@ def _write_dump(
 ) -> Path:
     nodes = []
     if include_target:
-        nodes.append(_node(MPC_TARGET))
+        nodes.append(_node(MK5_TARGET))
     if include_bridge:
         nodes.extend(_bridge_nodes(fail_closed=bridge_fail_closed))
     dump = path / "pw-dump.json"
@@ -89,7 +89,7 @@ def _repo_root(tmp_path: Path) -> Path:
                   }}
                   playback.props = {{
                     node.name = "hapax-private-playback"
-                    target.object = "{MPC_TARGET}"
+                    target.object = "{MK5_TARGET}"
                     node.dont-fallback = true
                     node.dont-reconnect = true
                     node.dont-move = true
@@ -166,12 +166,12 @@ def test_ready_installs_bridge_and_writes_sanitized_status(tmp_path: Path) -> No
     assert result.returncode == 0, result.stdout + result.stderr
     status = _status(tmp_path)
     assert status["state"] == "ready"
-    assert status["route_id"] == "route:private.mpc_live_iii_monitor"
-    assert status["target_ref"] == "audio.mpc_private_monitor"
+    assert status["route_id"] == "route:private.mk5_phones_monitor"
+    assert status["target_ref"] == "audio.mk5_private_monitor"
     assert status["fallback_policy"] == "no_default_fallback"
     assert status["bridge_nodes_fail_closed"] is True
     serialized = json.dumps(status) + result.stdout
-    assert MPC_TARGET not in serialized
+    assert MK5_TARGET not in serialized
     assert "alsa_output.usb-" not in serialized
 
 
@@ -181,7 +181,7 @@ def test_missing_exact_target_is_blocked_absent_without_fallback(tmp_path: Path)
     assert result.returncode == 2
     status = _status(tmp_path)
     assert status["state"] == "blocked_absent"
-    assert status["reason_code"] == "mpc_private_monitor_target_absent"
+    assert status["reason_code"] == "mk5_private_monitor_target_absent"
     assert status["fallback_policy"] == "no_default_fallback"
 
 

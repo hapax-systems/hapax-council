@@ -87,6 +87,7 @@ _WAVE_HEADER_FMT = "<QBBH"
 _WAVE_HEADER_SIZE = struct.calcsize(_WAVE_HEADER_FMT)  # 12
 _WAVE_MAX_SAMPLES = 480
 _WAVE_FILE_SIZE = _WAVE_HEADER_SIZE + _WAVE_MAX_SAMPLES  # 492
+_WAVE_SILENCE_RMS = 4.0 / 32768.0
 
 
 class TtsEnvelopePublisher:
@@ -133,6 +134,7 @@ class TtsEnvelopePublisher:
         self._wave_enabled = os.environ.get("HAPAX_SPEECH_WAVE_PUBLISH", "1") != "0"
         self._wave_mmap: mmap.mmap | None = None
         self._wave_file = None
+        self._wave_path: Path | None = None
         self._wave_frame = 0
         if self._wave_enabled:
             try:
@@ -141,6 +143,7 @@ class TtsEnvelopePublisher:
                     if wave_path is not None
                     else os.environ.get("HAPAX_SPEECH_WAVE_PATH", str(DEFAULT_SPEECH_WAVE_PATH))
                 )
+                self._wave_path = resolved_wave_path
                 resolved_wave_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(resolved_wave_path, "wb") as wfh:
                     wfh.truncate(_WAVE_FILE_SIZE)
@@ -257,16 +260,26 @@ class TtsEnvelopePublisher:
         if self._wave_mmap is None:
             return
         try:
+            if _compute_rms(window) <= _WAVE_SILENCE_RMS:
+                return
             n = _WAVE_MAX_SAMPLES
             if window.size >= 2:
                 idx = np.linspace(0.0, float(window.size - 1), n)
                 decimated = np.interp(idx, np.arange(window.size, dtype=np.float64), window)
             else:
                 decimated = np.zeros(n, dtype=np.float64)
-            samples = np.clip(128.0 + decimated * 127.0, 0.0, 255.0).astype(np.uint8)
+            signed = np.rint(decimated * 127.0).astype(np.int16)
+            sub_lsb = (signed == 0) & (decimated != 0.0)
+            signed[sub_lsb] = np.where(decimated[sub_lsb] > 0.0, 1, -1)
+            samples = np.clip(128 + signed, 0, 255).astype(np.uint8)
             self._wave_frame = (self._wave_frame + 1) & 0xFFFFFFFFFFFFFFFF
             struct.pack_into(_WAVE_HEADER_FMT, self._wave_mmap, 0, self._wave_frame, 0, 0, n)
             self._wave_mmap[_WAVE_HEADER_SIZE : _WAVE_HEADER_SIZE + n] = samples.tobytes()
+            if self._wave_path is not None:
+                try:
+                    os.utime(self._wave_path, None)
+                except OSError:
+                    pass
         except Exception:  # noqa: BLE001 — never let the wave ring disturb voice
             log.exception("speech-wave emit failed; disabling wave ring")
             self._wave_mmap = None

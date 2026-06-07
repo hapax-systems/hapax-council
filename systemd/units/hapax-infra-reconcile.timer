@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Hapax host-storage registry reconciliation every 6 hours
+
+[Timer]
+OnBootSec=20min
+OnCalendar=*-*-* 00/6:50:00
+RandomizedDelaySec=15min
+Persistent=true
+Unit=hapax-infra-reconcile.service
+
+[Install]
+WantedBy=timers.target

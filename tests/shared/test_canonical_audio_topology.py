@@ -6,7 +6,6 @@ import re
 from pathlib import Path
 
 from shared.audio_topology import TopologyDescriptor
-from shared.audio_topology_inspector import check_l12_forward_invariant
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CANONICAL_YAML = REPO_ROOT / "config" / "audio-topology.yaml"
@@ -18,6 +17,8 @@ L12_RETURN_NAME = (
     "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"
 )
 MPC_OUTPUT_NAME = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"
+MK5_OUTPUT_NAME = "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0"
+MK5_INPUT_NAME = "alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0"
 
 
 def _descriptor() -> TopologyDescriptor:
@@ -35,7 +36,7 @@ def test_canonical_descriptor_parses() -> None:
 
 
 def test_canonical_has_current_livestream_node_ids() -> None:
-    """Livestream-critical node IDs must pin the L-12-era graph."""
+    """Livestream-critical node IDs must pin the mk5 graph and retained history."""
     ids = {n.id for n in _descriptor().nodes}
     expected = {
         "l12-capture",
@@ -46,6 +47,8 @@ def test_canonical_has_current_livestream_node_ids() -> None:
         "l12-usb-return-capture",
         "l12-mainmix-capture",
         "mpc-usb-output",
+        "mk5-output",
+        "mk5-input",
         "obs-broadcast-mainmix-tap",
         "broadcast-master-capture",
         "broadcast-normalized-capture",
@@ -60,6 +63,8 @@ def test_canonical_has_current_livestream_node_ids() -> None:
         "notification-private-monitor-output",
         "voice-fx",
         "tts-loudnorm",
+        "voice-wet",
+        "mic-rode",
         "pc-loudnorm",
         "s4-loopback",
         "m8-instrument-capture",
@@ -201,8 +206,7 @@ def test_private_and_notification_sinks_are_fail_closed() -> None:
     private_output = d.node_by_id("private-monitor-output")
     notify_capture = d.node_by_id("notification-private-monitor-capture")
     notify_output = d.node_by_id("notification-private-monitor-output")
-    mpc = d.node_by_id("mpc-usb-output")
-    s4 = d.node_by_id("s4-output")
+    mk5 = d.node_by_id("mk5-output")
     role_assistant = d.node_by_id("role-assistant")
     role_notification = d.node_by_id("role-notification")
 
@@ -216,13 +220,13 @@ def test_private_and_notification_sinks_are_fail_closed() -> None:
     assert notify.params["fail_closed"] is True
     assert role_notification.target_object == "hapax-notification-private"
 
-    assert mpc.params["private_monitor_endpoint"] is True
-    assert mpc.params["private_monitor_positions"] == "AUX8 AUX9"
-    assert s4.params.get("private_monitor_endpoint") is not True
+    assert mk5.params["private_monitor_endpoint"] is True
+    assert mk5.params["private_monitor_positions"] == "AUX10 AUX11"
     assert private_capture.target_object == "hapax-private"
     assert private_capture.params["stream.capture.sink"] is True
-    assert private_output.target_object == mpc.pipewire_name
-    assert private_output.params["mpc_usb_input_pair"] == "AUX8 AUX9"
+    assert private_output.target_object == mk5.pipewire_name
+    assert private_output.params["playback_positions"] == "AUX10 AUX11"
+    assert private_output.params["mk5_output_pair"] == "AUX10 AUX11"
     assert notify_capture.target_object is None
     assert notify_capture.params["stream.capture.sink"] is True
     assert notify_capture.params["monitor_capture_target"] == "disabled"
@@ -251,34 +255,54 @@ def test_private_and_notification_sinks_are_fail_closed() -> None:
         "notification-private-monitor-output",
     ) not in edge_pairs
     assert ("notification-private-monitor-output", "mpc-usb-output") not in edge_pairs
+    assert ("private-monitor-output", "mk5-output") in edge_pairs
 
 
-def test_tts_broadcast_path_has_mpc_wet_return_and_livestream_forward_path() -> None:
+def test_tts_broadcast_path_has_mk5_s4_wet_return_and_livestream_forward_path() -> None:
     d = _descriptor()
     role_broadcast = d.node_by_id("role-broadcast")
     voice_fx = d.node_by_id("voice-fx")
     loudnorm = d.node_by_id("tts-loudnorm")
-    mpc = d.node_by_id("mpc-usb-output")
-    # Interim MPC-only broadcast return (2026-05-29, L-12 removed): the wet
-    # return is now the MPC's own USB return (pro-input-0 capture_AUX0/1).
-    mpc_return_source = "alsa_input.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-input-0"
-    wet_return = d.node_by_id("mpc-usb-return-capture")
+    mk5_output = d.node_by_id("mk5-output")
+    mk5_input = d.node_by_id("mk5-input")
+    voice_wet = d.node_by_id("voice-wet")
+    mic_rode = d.node_by_id("mic-rode")
+    music = d.node_by_id("music-loudnorm")
 
     assert role_broadcast.target_object == "hapax-voice-fx-capture"
     assert voice_fx.target_object == "hapax-loudnorm-capture"
-    assert loudnorm.target_object == MPC_OUTPUT_NAME
+    assert loudnorm.target_object == MK5_OUTPUT_NAME
+    assert loudnorm.params["playback_node"] == "hapax-loudnorm-playback"
     assert loudnorm.params["playback_positions"] == "AUX2 AUX3"
+    assert loudnorm.params["mk5_output_pair"] == "AUX2 AUX3"
+    assert loudnorm.params["node.autoconnect"] is False
+    assert loudnorm.params["audibility_passthrough"] is True
     assert loudnorm.params["broadcast_forward_path"] == (
-        "mpc-usb-output mpc-usb-return-capture hapax-livestream-tap"
+        "mk5-output s4-analog-insert voice-wet hapax-livestream-tap"
     )
-    assert mpc.params["hardware_forward_path"]
-    assert wet_return.target_object == mpc_return_source
-    assert wet_return.params["capture_positions"] == "AUX0 AUX1"
-    assert wet_return.params["playback_target"] == "hapax-livestream-tap"
+    assert mk5_output.params["voice_dry_send_positions"] == "AUX2 AUX3"
+    assert mk5_input.params["s4_wet_return_positions"] == "AUX2 AUX3"
+    assert mk5_input.params["operator_mic_position"] == "AUX0"
+    assert voice_wet.target_object == MK5_INPUT_NAME
+    assert voice_wet.params["capture_positions"] == "AUX2 AUX3"
+    assert voice_wet.params["playback_node"] == "hapax-voice-wet-playback"
+    assert voice_wet.params["playback_target"] == "hapax-livestream-tap"
+    assert mic_rode.target_object == MK5_INPUT_NAME
+    assert mic_rode.params["capture_positions"] == "AUX0"
+    assert mic_rode.params["playback_node"] == "hapax-mic-rode-playback"
+    assert mic_rode.params["playback_target"] == "hapax-livestream-tap"
+    assert music.params["playback_target"] == "hapax-livestream-tap"
+    assert music.params["audibility_passthrough"] is True
+    assert music.params["audibility_passthrough_gain"] == 0.35
 
     edge_pairs = {(edge.source, edge.target) for edge in d.edges}
-    assert ("mpc-usb-return", "mpc-usb-return-capture") in edge_pairs
-    assert ("mpc-usb-return-capture", "livestream-tap") in edge_pairs
+    assert ("tts-loudnorm", "mk5-output") in edge_pairs
+    assert ("mk5-input", "voice-wet") in edge_pairs
+    assert ("voice-wet", "livestream-tap") in edge_pairs
+    assert ("mk5-input", "mic-rode") in edge_pairs
+    assert ("mic-rode", "livestream-tap") in edge_pairs
+    assert ("music-loudnorm", "livestream-tap") in edge_pairs
+    assert ("yt-loudnorm", "livestream-tap") in edge_pairs
 
 
 def test_pc_loudnorm_is_fail_closed_and_notifications_do_not_enter_multimedia() -> None:
@@ -402,8 +426,21 @@ def test_respeaker_xvf3800_is_optional_sidechat_capture_not_rode_replacement() -
     assert forbidden_edges == [], "XVF3800 descriptor path must not touch L-12 hardware"
 
 
-def test_l12_forward_invariant_static_guard_passes() -> None:
-    """Canonical descriptor must satisfy the L-12 forward/private route guard."""
-    result = check_l12_forward_invariant(_descriptor())
+def test_mk5_forward_invariant_static_guard_passes() -> None:
+    """Canonical descriptor must satisfy the mk5/S-4 forward/private route guard."""
+    d = _descriptor()
+    edge_pairs = {(edge.source, edge.target) for edge in d.edges}
 
-    assert result.ok, result.format()
+    assert ("voice-fx", "tts-loudnorm") in edge_pairs
+    assert ("tts-loudnorm", "mk5-output") in edge_pairs
+    assert ("mk5-input", "voice-wet") in edge_pairs
+    assert ("voice-wet", "livestream-tap") in edge_pairs
+    assert ("mk5-input", "mic-rode") in edge_pairs
+    assert ("mic-rode", "livestream-tap") in edge_pairs
+    assert ("livestream-tap", "broadcast-master-capture") in edge_pairs
+    assert ("private-monitor-output", "mk5-output") in edge_pairs
+
+    assert ("pc-loudnorm", "mk5-output") not in edge_pairs
+    assert ("pc-loudnorm", "livestream-tap") not in edge_pairs
+    assert ("notification-private-monitor-output", "mk5-output") not in edge_pairs
+    assert ("notification-private-monitor-output", "livestream-tap") not in edge_pairs

@@ -3,11 +3,12 @@ Description=Hapax audio perception daemon — CPU-only scene classification
 After=pipewire.service pipewire-pulse.service hapax-secrets.service
 Wants=pipewire-pulse.service
 OnFailure=notify-failure@%n.service
+ConditionPathExists=%h/.cache/hapax/rebuild/worktree/pyproject.toml
 
 [Service]
 Type=simple
-WorkingDirectory=/home/hapax/projects/hapax-council
-ExecStart=/home/hapax/.local/bin/uv run python -m agents.audio_perception
+WorkingDirectory=%h/.cache/hapax/rebuild/worktree
+ExecStart=%h/.local/bin/uv run --extra audio python -m agents.audio_perception
 Restart=always
 RestartSec=10
 EnvironmentFile=/run/user/1000/hapax-secrets.env

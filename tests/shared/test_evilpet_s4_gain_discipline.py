@@ -75,6 +75,15 @@ EXPECTED_MIXER_GAINS: dict[str, set[float]] = {
     # Interim MPC-only broadcast return (L-12 removed 2026-05-29):
     # unity public-mix capture, mirrors l12 conf gain discipline.
     "hapax-mpc-usb-return-capture.conf": {1.0},
+    # Music loudnorm is an audited passthrough after the LADSPA route emitted
+    # silence live; 0.35 preserves music-only headroom before the software sum.
+    "hapax-music-loudnorm.conf": {0.35},
+    # mk5/S-4 live baseline: TTS passthrough, wet-return pre-limiter input,
+    # and Rode mono-to-stereo duplication all start at unity. Downstream
+    # limiter/master stages own level safety.
+    "hapax-voice-fx-loudnorm.conf": {1.0},
+    "hapax-voice-wet.conf": {1.0},
+    "hapax-mic-rode.conf": {1.0},
 }
 
 GAIN_RE = re.compile(r'"Gain 1"\s*=\s*([\d.]+)')

@@ -29,6 +29,7 @@ Record sonnet quality-equivalence for a bounded floor::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -64,14 +65,31 @@ def _parse_now(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def _stable_receipt_id(receipt_type: str, route_id: str) -> str:
+def _stable_receipt_id(
+    receipt_type: str,
+    route_id: str,
+    *,
+    task_ids: list[str] | tuple[str, ...] = (),
+    mutation_surfaces: list[str] | tuple[str, ...] = (),
+) -> str:
     """Timestamp-free receipt id so --ensure-fresh re-mints overwrite one file.
 
     The default minting id is timestamped (one file per run); timer-driven
     upkeep must instead converge on a single stable artifact in the dir the
     dispatch read-path scans, or stale receipts would accumulate forever.
     """
-    return f"{receipt_type}-{normalize_route_id(route_id).replace('.', '-')}"
+    base = f"{receipt_type}-{normalize_route_id(route_id).replace('.', '-')}"
+    if receipt_type != "runtime_actuation":
+        return base
+    scope = json.dumps(
+        {
+            "task_ids": sorted(task_ids),
+            "mutation_surfaces": sorted(mutation_surfaces),
+        },
+        sort_keys=True,
+    )
+    digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:12]
+    return f"{base}-{digest}"
 
 
 def _fresh_enough_to_keep(
@@ -80,6 +98,8 @@ def _fresh_enough_to_keep(
     receipt_type: str,
     route_id: str,
     stale_after: str,
+    task_ids: list[str] | tuple[str, ...] = (),
+    mutation_surfaces: list[str] | tuple[str, ...] = (),
     refresh_within: timedelta,
     now: datetime,
 ) -> RouteAuthorityReceipt | None:
@@ -104,6 +124,11 @@ def _fresh_enough_to_keep(
         return None
     if existing.stale_after != stale_after:
         return None
+    if existing.receipt_type == "runtime_actuation":
+        if sorted(existing.task_ids) != sorted(task_ids):
+            return None
+        if sorted(existing.mutation_surfaces) != sorted(mutation_surfaces):
+            return None
     remaining = _parse_duration_spec(existing.stale_after) - (now - _coerce_utc(existing.issued_at))
     if remaining <= refresh_within:
         return None
@@ -264,16 +289,17 @@ def _escalate_remint_failure(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Mint a signed route-authority receipt (opus model entitlement or "
-            "quality equivalence) that un-degrades a frontier route to LAUNCH."
+            "Mint a signed route-authority receipt (opus model entitlement, "
+            "quality equivalence, or task-bound runtime actuation authority)."
         )
     )
     parser.add_argument(
         "--receipt-type",
         required=True,
-        choices=["opus_model_entitlement", "quality_equivalence"],
+        choices=["opus_model_entitlement", "quality_equivalence", "runtime_actuation"],
         help="opus_model_entitlement raises the opus authority ceiling; "
-        "quality_equivalence records a bounded-floor equivalence for a fallback route.",
+        "quality_equivalence records a bounded-floor equivalence for a fallback route; "
+        "runtime_actuation records task-bound authority for a runtime mutation.",
     )
     parser.add_argument(
         "--route-id",
@@ -305,6 +331,23 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         metavar="FLOOR",
         help="Quality floor (repeatable). Required for quality_equivalence receipts.",
+    )
+    parser.add_argument(
+        "--task-id",
+        action="append",
+        dest="task_ids",
+        default=[],
+        metavar="TASK",
+        help="Task id authorized by a runtime_actuation receipt (repeatable).",
+    )
+    parser.add_argument(
+        "--mutation-surface",
+        action="append",
+        dest="mutation_surfaces",
+        default=[],
+        metavar="SURFACE",
+        help="Mutation surface authorized by a runtime_actuation receipt (repeatable; "
+        "defaults to runtime for runtime_actuation).",
     )
     parser.add_argument(
         "--receipt-id",
@@ -361,6 +404,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     evidence_refs = args.evidence_refs or [f"operator-signed:{args.receipt_type}:{args.route_id}"]
+    mutation_surfaces = args.mutation_surfaces
+    if args.receipt_type == "runtime_actuation" and not mutation_surfaces:
+        mutation_surfaces = ["runtime"]
 
     receipt_id = args.receipt_id
     now_dt = _coerce_utc(_parse_now(args.now) or now_utc())
@@ -369,7 +415,12 @@ def main(argv: list[str] | None = None) -> int:
     alert_within: timedelta | None = None
     if args.ensure_fresh:
         if receipt_id is None:
-            receipt_id = _stable_receipt_id(args.receipt_type, args.route_id)
+            receipt_id = _stable_receipt_id(
+                args.receipt_type,
+                args.route_id,
+                task_ids=args.task_ids,
+                mutation_surfaces=mutation_surfaces,
+            )
         try:
             refresh_within = _parse_duration_spec(args.refresh_within)
         except ValueError as exc:
@@ -393,6 +444,8 @@ def main(argv: list[str] | None = None) -> int:
             receipt_type=args.receipt_type,
             route_id=args.route_id,
             stale_after=args.stale_after,
+            task_ids=args.task_ids,
+            mutation_surfaces=mutation_surfaces,
             refresh_within=refresh_within,
             now=now_dt,
         )
@@ -410,6 +463,8 @@ def main(argv: list[str] | None = None) -> int:
             signed_by=args.signed_by,
             stale_after=args.stale_after,
             quality_floors=args.quality_floors,
+            task_ids=args.task_ids,
+            mutation_surfaces=mutation_surfaces,
             issued_at=_parse_now(args.now),
         )
         path = write_route_authority_receipt(receipt, receipt_dir=args.receipt_dir)

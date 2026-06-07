@@ -302,13 +302,26 @@ def generated_forbidden_route_map_text(
     return generated_route_map_texts(topology, policy)[1]
 
 
-def _boundary_node_pairs(forbidden: tuple[tuple[str, str], ...]) -> tuple[str, ...]:
+def _node_pair_set(links: tuple[tuple[str, str], ...]) -> set[str]:
+    return {
+        f"{source_port.split(':')[0]}|{target_port.split(':')[0]}"
+        for source_port, target_port in links
+    }
+
+
+def _boundary_node_pairs(
+    forbidden: tuple[tuple[str, str], ...],
+    desired: tuple[tuple[str, str], ...] = (),
+) -> tuple[str, ...]:
     """Extract unique source_node|target_node boundary pairs from forbidden links."""
+    desired_pairs = _node_pair_set(desired)
     pairs: dict[str, None] = {}
     for source_port, target_port in forbidden:
         source_node = source_port.split(":")[0]
         target_node = target_port.split(":")[0]
-        pairs[f"{source_node}|{target_node}"] = None
+        pair = f"{source_node}|{target_node}"
+        if pair not in desired_pairs:
+            pairs[pair] = None
     return tuple(pairs)
 
 
@@ -325,12 +338,17 @@ def generated_wireplumber_deny_policy_texts(
     if topology is None:
         topology = load_audio_topology_descriptor()
     forbidden = _forbidden_links(topology)
-    node_pairs = _boundary_node_pairs(forbidden)
+    desired = _desired_links(topology, load_audio_routing_policy())
+    node_pairs = _boundary_node_pairs(forbidden, desired)
     return (_wireplumber_deny_conf_text(), _wireplumber_deny_script_text(forbidden, node_pairs))
 
 
 def _node(topology: TopologyDescriptor, node_id: str) -> Node:
     return topology.node_by_id(node_id)
+
+
+def _has_node(topology: TopologyDescriptor, node_id: str) -> bool:
+    return any(node.id == node_id for node in topology.nodes)
 
 
 def _playback_name(node: Node) -> str:
@@ -346,6 +364,10 @@ def _playback_name(node: Node) -> str:
 
 def _role_output_name(node: Node) -> str:
     return node.pipewire_name.replace("input.", "output.", 1)
+
+
+def _role_loopback_output_name(node: Node) -> str:
+    return f"{node.pipewire_name}-output"
 
 
 def _words(value: str | int | float | bool | None) -> tuple[str, ...]:
@@ -406,6 +428,9 @@ def _desired_links(
     topology: TopologyDescriptor,
     policy: AudioRoutingPolicy,
 ) -> tuple[tuple[str, str], ...]:
+    if _has_node(topology, "mk5-output"):
+        return _desired_links_mk5(topology, policy)
+
     # Interim MPC-only baseline (2026-05-29, L-12 removed): the broadcast
     # return runs entirely over the MPC's own 24-ch USB return. The orphaned
     # L-12 evilpet / wet-return legs are intentionally NOT emitted into the
@@ -491,7 +516,112 @@ def _desired_links(
     return tuple(links)
 
 
+def _desired_links_mk5(
+    topology: TopologyDescriptor,
+    policy: AudioRoutingPolicy,
+) -> tuple[tuple[str, str], ...]:
+    _assert_pc_route_fail_closed(policy)
+    livestream = _node(topology, "livestream-tap")
+    master = _node(topology, "broadcast-master-capture")
+    voice_fx = _node(topology, "voice-fx")
+    tts = _node(topology, "tts-loudnorm")
+    music = _node(topology, "music-loudnorm")
+    youtube = _node(topology, "yt-loudnorm")
+    private_sink = _node(topology, "private-sink")
+    private_capture = _node(topology, "private-monitor-capture")
+    private_output = _node(topology, "private-monitor-output")
+    notification_sink = _node(topology, "notification-private-sink")
+    role_assistant = _node(topology, "role-assistant")
+    role_notification = _node(topology, "role-notification")
+    role_broadcast = _node(topology, "role-broadcast")
+    mk5_output = _node(topology, "mk5-output")
+    mk5_input = _node(topology, "mk5-input")
+    voice_wet = _node(topology, "voice-wet")
+    mic_rode = _node(topology, "mic-rode")
+
+    links: list[tuple[str, str]] = []
+
+    if _broadcast_route_enabled(policy, "broadcast-tts"):
+        links.extend(
+            _pair_links(_role_loopback_output_name(role_broadcast), voice_fx.pipewire_name)
+        )
+        links.extend(_pair_links(_playback_name(voice_fx), tts.pipewire_name))
+        links.extend(
+            _pair_links(
+                _playback_name(tts),
+                mk5_output.pipewire_name,
+                target_ports=("playback_AUX2", "playback_AUX3"),
+            )
+        )
+        links.extend(
+            [
+                (
+                    f"{mk5_input.pipewire_name}:capture_AUX2",
+                    f"{voice_wet.pipewire_name}:input_AUX2",
+                ),
+                (
+                    f"{mk5_input.pipewire_name}:capture_AUX3",
+                    f"{voice_wet.pipewire_name}:input_AUX3",
+                ),
+            ]
+        )
+        links.extend(_pair_links(_playback_name(voice_wet), livestream.pipewire_name))
+
+    if _broadcast_route_enabled(policy, "operator-mic"):
+        links.append(
+            (
+                f"{mk5_input.pipewire_name}:capture_AUX0",
+                f"{mic_rode.pipewire_name}:input_AUX0",
+            )
+        )
+        links.extend(_pair_links(_playback_name(mic_rode), livestream.pipewire_name))
+
+    if _broadcast_route_enabled(policy, "music-bed"):
+        links.extend(_pair_links(_playback_name(music), livestream.pipewire_name))
+
+    # YouTube remains policy-gated for public claims, but the mk5/S-4 migration
+    # deliberately wires the bed into the software sum bus for operator control.
+    links.extend(_pair_links(_playback_name(youtube), livestream.pipewire_name))
+
+    links.extend(
+        _pair_links(
+            livestream.pipewire_name,
+            master.pipewire_name,
+            source_ports=("monitor_FL", "monitor_FR"),
+            target_ports=("input_FL", "input_FR"),
+        )
+    )
+
+    if _private_tts_route_enabled(policy):
+        links.extend(
+            _pair_links(
+                private_sink.pipewire_name,
+                private_capture.pipewire_name,
+                source_ports=("monitor_FL", "monitor_FR"),
+                target_ports=("input_FL", "input_FR"),
+            )
+        )
+        links.extend(
+            _pair_links(
+                private_output.pipewire_name,
+                mk5_output.pipewire_name,
+                target_ports=("playback_AUX10", "playback_AUX11"),
+            )
+        )
+        links.extend(
+            _pair_links(_role_loopback_output_name(role_assistant), private_sink.pipewire_name)
+        )
+
+    links.extend(
+        _pair_links(_role_loopback_output_name(role_notification), notification_sink.pipewire_name)
+    )
+    return tuple(dict.fromkeys(links))
+
+
 def _forbidden_links(topology: TopologyDescriptor) -> tuple[tuple[str, str], ...]:
+    if _has_node(topology, "mk5-output"):
+        return _forbidden_links_mk5(topology)
+
     l12_return = _node(topology, "l12-usb-return")
     mpc = _node(topology, "mpc-usb-output")
     livestream = _node(topology, "livestream-tap")
@@ -600,6 +730,55 @@ def _forbidden_links(topology: TopologyDescriptor) -> tuple[tuple[str, str], ...
     return tuple(dict.fromkeys(links))
 
 
+def _forbidden_links_mk5(topology: TopologyDescriptor) -> tuple[tuple[str, str], ...]:
+    livestream = _node(topology, "livestream-tap")
+    master = _node(topology, "broadcast-master-capture")
+    mk5_output = _node(topology, "mk5-output")
+    private_capture = _node(topology, "private-monitor-capture")
+    private_output = _node(topology, "private-monitor-output")
+    notification_output = _node(topology, "notification-private-monitor-output")
+    pc = _node(topology, "pc-loudnorm")
+    role_assistant = _node(topology, "role-assistant")
+    role_notification = _node(topology, "role-notification")
+    role_multimedia = _node(topology, "role-multimedia")
+
+    links: list[tuple[str, str]] = []
+    private_or_default_sources = (
+        private_output.pipewire_name,
+        private_capture.pipewire_name,
+        _playback_name(notification_output),
+        _playback_name(pc),
+    )
+    for source in private_or_default_sources:
+        links.extend(_pair_links(source, livestream.pipewire_name))
+
+    for source in (
+        private_output.pipewire_name,
+        _playback_name(notification_output),
+        _playback_name(pc),
+    ):
+        links.extend(
+            _pair_links(
+                source,
+                master.pipewire_name,
+                target_ports=("input_FL", "input_FR"),
+            )
+        )
+        links.extend(
+            _pair_links(
+                source,
+                mk5_output.pipewire_name,
+                target_ports=("playback_AUX2", "playback_AUX3"),
+            )
+        )
+
+    for role in (role_assistant, role_notification):
+        for role_source in (_role_output_name(role), _role_loopback_output_name(role)):
+            links.extend(_pair_links(role_source, role_multimedia.pipewire_name))
+
+    return tuple(dict.fromkeys(links))
+
+
 def _assert_pc_route_fail_closed(policy: AudioRoutingPolicy) -> None:
     route = next(
         (route for route in policy.routes if route.source_id == "multimedia-default"), None
@@ -634,7 +813,7 @@ def _link_map_text(links: tuple[tuple[str, str], ...]) -> str:
         "# Source: config/audio-topology.yaml + config/audio-routing.yaml\n"
         "# Format: source_port|target_port\n"
         "# Do not hand-edit; run scripts/generate-pipewire-audio-confs.py --write-route-maps.\n"
-        "# MPC AUX4/AUX5 is fail-closed/reserved; no desired links may target it.\n"
+        "# Retired or private hardware paths are fail-closed; desired links are explicit.\n"
         "\n" + _render_links(links) + "\n"
     )
 

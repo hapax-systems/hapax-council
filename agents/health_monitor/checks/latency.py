@@ -66,7 +66,7 @@ def _get_threshold(check_name: str, default: float) -> float:
 async def check_service_latency() -> list[CheckResult]:
     """Check HTTP response times for core services."""
     results: list[CheckResult] = []
-    for name, (url, default_ms) in _c.LATENCY_THRESHOLDS.items():
+    for name, (url, default_ms) in _c.latency_thresholds().items():
         t = time.monotonic()
         threshold_ms = _get_threshold(name, default_ms)
         latency = await _http_latency_ms(url)

@@ -38,7 +38,7 @@ def test_live_texture_parser_matches_launcher_and_autoexec_slots() -> None:
         for slot in autoexec_slots
     ]
     assert launcher_signature == autoexec_signature
-    assert len(launcher_signature) == 14
+    assert len(launcher_signature) == 17
     assert launcher_signature[0] == (
         1,
         "progs/aoa_sphere.mdl_0",
@@ -53,13 +53,36 @@ def test_live_texture_parser_matches_launcher_and_autoexec_slots() -> None:
         512,
         128,
     )
-    assert launcher_signature[-1] == (
+    assert launcher_signature[13] == (
         14,
         "progs/aoa.mdl_0",
         "/dev/shm/hapax-compositor/quake-live-aoa-atlas.bgra",
         2048,
         2048,
     )
+    assert launcher_signature[14:] == [
+        (
+            15,
+            "w18",
+            "/dev/shm/hapax-compositor/quake-live-ir-brio-operator.bgra",
+            340,
+            340,
+        ),
+        (
+            16,
+            "w19",
+            "/dev/shm/hapax-compositor/quake-live-ir-brio-room.bgra",
+            340,
+            340,
+        ),
+        (
+            17,
+            "w35",
+            "/dev/shm/hapax-compositor/quake-live-ir-brio-synths.bgra",
+            340,
+            340,
+        ),
+    ]
 
 
 def test_manifest_derives_supported_gpu_drift_candidates() -> None:
@@ -70,7 +93,7 @@ def test_manifest_derives_supported_gpu_drift_candidates() -> None:
     assert manifest["version"] == "screwm-gpu-drift-cutover-preflight-v1"
     assert manifest["source"] == "scripts/darkplaces-v4l2-xvfb.sh"
     assert manifest["runtime_actions_performed"] is False
-    assert len(candidates) == 13
+    assert len(candidates) == 16
     assert "speech-wave" not in candidates
     assert any(warning["slot"] == "speech-wave" for warning in manifest["warnings"])
 
@@ -113,8 +136,34 @@ def test_manifest_derives_supported_gpu_drift_candidates() -> None:
     assert aoa["raw_output"] == "/dev/shm/hapax-compositor/quake-live-aoa-atlas.raw.bgra"
     assert aoa["final_sidecar"] == "/dev/shm/hapax-compositor/quake-live-aoa-atlas.json"
 
+    ir = candidates["ir-brio-operator"]
+    assert ir["slot_spec"] == "ir-brio-operator:340x340"
+    assert ir["texture_slot"] == 15
+    assert ir["texture_name"] == "w18"
+    assert ir["mount_id"] == "brio-operator-ir-ward"
+    assert ir["producer_kind"] == "live-camera-ir"
+    assert ir["producer_class"] == "live-media-camera-ir"
+    assert ir["service"] == "hapax-quake-live-camera@brio-operator-ir.service"
+    assert ir["producer_env_flag"] == "HAPAX_QUAKE_GPU_DRIFT"
+    assert ir["raw_output"] == "/dev/shm/hapax-compositor/quake-live-ir-brio-operator.raw.bgra"
+    assert ir["final_sidecar"] == "/dev/shm/hapax-compositor/quake-live-ir-brio-operator.json"
+
+    assert candidates["ir-brio-room"]["texture_slot"] == 16
+    assert candidates["ir-brio-room"]["texture_name"] == "w19"
+    assert candidates["ir-brio-room"]["mount_id"] == "brio-room-ir-ward"
+    assert candidates["ir-brio-room"]["service"] == ("hapax-quake-live-camera@brio-room-ir.service")
+    assert candidates["ir-brio-synths"]["texture_slot"] == 17
+    assert candidates["ir-brio-synths"]["texture_name"] == "w35"
+    assert candidates["ir-brio-synths"]["mount_id"] == "brio-synths-ir-ward"
+    assert candidates["ir-brio-synths"]["service"] == (
+        "hapax-quake-live-camera@brio-synths-ir.service"
+    )
+
     assert "speech-wave" not in manifest["drift_slots_env"]
     assert "aoa-atlas:2048x2048:2.25" in manifest["drift_slots_env"]
+    assert "ir-brio-operator:340x340" in manifest["drift_slots_env"]
+    assert "ir-brio-room:340x340" in manifest["drift_slots_env"]
+    assert "ir-brio-synths:340x340" in manifest["drift_slots_env"]
     assert manifest["drift_slots_env"].split(",")[0] == (
         "yt:2048x1024:1.6:sphere-front:1820x1024:0c0b0d"
     )

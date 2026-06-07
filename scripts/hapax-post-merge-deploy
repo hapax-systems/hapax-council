@@ -34,6 +34,8 @@
 #       try-restart-is-a-no-op-for-a-never-enabled-unit gap). Unmarked new
 #       timers still auto-enable for back-compat; unmarked services do not.
 #   systemd/units/*.service.d/*.conf → cp drop-in + daemon-reload + restart active unit
+#       plus known stale local route-dropin cleanup for units that are being
+#       sourceized out of a temporary worktree override.
 #   systemd/user-preset.d/*.preset → cp user preset
 #   systemd/overrides/**           → source/rationale docs only; no direct deploy
 #   systemd/scripts/*              → installer helper scripts; no direct deploy
@@ -49,6 +51,12 @@
 #                                    worktree's cc-task-gate.sh is a shim that
 #                                    resolves here, so "update the gate" is a
 #                                    one-file change, not a 26-worktree fan-out)
+#   assets/quake/{maps,qc,csqc,models,sound,glsl,scripts,config}/** and
+#   assets/quake/darkplaces/**      → install Screwm Quake assets into the
+#                                    DarkPlaces gamedir; restart the visible
+#                                    renderer only when already active so map,
+#                                    CSQC, and live-texture binding changes do
+#                                    not sit green-but-unloaded after merge.
 #
 # Usage:
 #   hapax-post-merge-deploy <commit-sha>
@@ -329,6 +337,7 @@ record_post_merge_trace() {
     HAPAX_TRACE_WATCHDOGS="$(_trace_join "${WATCHDOGS[@]}")" \
     HAPAX_TRACE_SCRIPTS="$(_trace_join "${SCRIPTS[@]}")" \
     HAPAX_TRACE_SCRIPT_PY="$(_trace_join "${SCRIPT_PY[@]}")" \
+    HAPAX_TRACE_QUAKE_ASSETS="$(_trace_join "${QUAKE_ASSETS[@]}")" \
     HAPAX_TRACE_AUDIO_SAFE_RESTARTS="$(_trace_join "${AUDIO_SAFE_RESTARTS[@]}")" \
     HAPAX_TRACE_SYSTEMD_UNCLASSIFIED="$(_trace_join "${SYSTEMD_UNCLASSIFIED[@]}")" \
     python3 - "$TRACE_PATH" "$TRACE_MAX_RECORDS" "$SHA" "$DRY_RUN" "$status" "$exit_code" \
@@ -370,6 +379,7 @@ deploy_groups = {
     "systemd_watchdogs": lines("HAPAX_TRACE_WATCHDOGS"),
     "hapax_scripts": lines("HAPAX_TRACE_SCRIPTS"),
     "unit_backing_scripts": lines("HAPAX_TRACE_SCRIPT_PY"),
+    "quake_assets": lines("HAPAX_TRACE_QUAKE_ASSETS"),
 }
 runtime_media_groups = [
     name
@@ -384,6 +394,7 @@ runtime_media_groups = [
         "systemd_watchdogs",
         "hapax_scripts",
         "unit_backing_scripts",
+        "quake_assets",
     )
     if deploy_groups[name]
 ]
@@ -478,7 +489,7 @@ else
     FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" | sort -u)"
 fi
 
-PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); SCRIPTS=(); SCRIPT_PY=()
+PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=()
 GATE_CLOSURE=()
 SYSTEMD_UNCLASSIFIED=()
 AUDIO_SAFE_RESTARTS=()
@@ -518,6 +529,38 @@ is_audio_safe_restart_unit() {
         fi
     done
     return 1
+}
+
+cleanup_known_stale_user_dropins_for_unit() {
+    local unit="$1"
+    case "$unit" in
+        hapax-obs-audio-bind.service)
+            local dropin_dir="$SYSTEMD_USER_DIR/$unit.d"
+            local dropin
+            [ -d "$dropin_dir" ] || return 0
+            for dropin in "$dropin_dir"/*.conf; do
+                [ -f "$dropin" ] || continue
+                if grep -Eq 'hapax-council--codex-audio-l12' "$dropin"; then
+                    echo "  removing stale local drop-in '$dropin'"
+                    rm -f "$dropin" || true
+                fi
+            done
+            rmdir "$dropin_dir" 2>/dev/null || true
+            ;;
+        hapax-screwm-audio-reactivity.service)
+            local dropin_dir="$SYSTEMD_USER_DIR/$unit.d"
+            local dropin
+            [ -d "$dropin_dir" ] || return 0
+            for dropin in "$dropin_dir"/*.conf; do
+                [ -f "$dropin" ] || continue
+                if grep -Eq 'HAPAX_SCREWM_AUDIO_TARGET=hapax-broadcast-normalized-capture' "$dropin"; then
+                    echo "  removing stale local drop-in '$dropin'"
+                    rm -f "$dropin" || true
+                fi
+            done
+            rmdir "$dropin_dir" 2>/dev/null || true
+            ;;
+    esac
 }
 
 audio_safe_restart_bin() {
@@ -627,6 +670,8 @@ while IFS= read -r f; do
         systemd/system/*)                 ;; # system-scoped configs; require sudo install
         hooks/scripts/cc-task-gate.impl.sh|hooks/scripts/agent-role.sh|hooks/scripts/escape-grant.sh|hooks/scripts/cc-task-gate-bootstrap.py|hooks/scripts/hooks-doctor.sh|hooks/scripts/cc-task-gate.sh)
             GATE_CLOSURE+=("$f") ;;
+        assets/quake/maps/*|assets/quake/qc/*|assets/quake/csqc/*|assets/quake/models/*|assets/quake/sound/*|assets/quake/glsl/*|assets/quake/scripts/*|assets/quake/config/*|assets/quake/darkplaces/*)
+            QUAKE_ASSETS+=("$f") ;;
         scripts/hapax-*)                  SCRIPTS+=("$f") ;;
         scripts/*.py|scripts/*.sh)        SCRIPT_PY+=("$f") ;;
         systemd/expected-timers.yaml)     ;; # frozen-baseline doc, not deployable
@@ -831,6 +876,7 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
         if git cat-file -e "$SHA:$f" 2>/dev/null; then
             git show "$SHA:$f" > "$dest"
             echo "  '$f' -> '$dest'"
+            cleanup_known_stale_user_dropins_for_unit "$base"
             SYSTEMD_INSTALLED+=("$f")
         else
             rm -fv "$dest" || true
@@ -927,6 +973,31 @@ if [ "${#SCRIPT_PY[@]}" -gt 0 ]; then
             fi
         done
     done
+fi
+
+# --- Screwm Quake runtime assets ---
+# Map, WAD, QC/CSQC, and DarkPlaces live-texture patch artifacts are loaded by
+# the running renderer, not by the Python service rebuild loop. Install them
+# after merge, then restart the visible renderer only when it is already active.
+if [ "${#QUAKE_ASSETS[@]}" -gt 0 ]; then
+    echo "quake assets changed (${#QUAKE_ASSETS[@]}):"
+    for f in "${QUAKE_ASSETS[@]}"; do
+        echo "  $f"
+    done
+    QUAKE_INSTALLER="$REPO/scripts/install-darkplaces-screwm-assets.sh"
+    if [ ! -f "$QUAKE_INSTALLER" ]; then
+        echo "hapax-post-merge-deploy: missing Screwm Quake asset installer: $QUAKE_INSTALLER" >&2
+        exit 2
+    fi
+    echo "installing Screwm Quake assets"
+    bash "$QUAKE_INSTALLER"
+    if systemctl --user is-active --quiet hapax-darkplaces-v4l2.service; then
+        echo "restarting hapax-darkplaces-v4l2.service (Screwm Quake assets changed)"
+        restart_user_unit hapax-darkplaces-v4l2.service
+    else
+        echo "hapax-darkplaces-v4l2.service inactive; assets installed for next renderer start"
+    fi
+    DID_ANYTHING=1
 fi
 
 # --- canonical gate closure (reform FM-6 shim collapse) ---

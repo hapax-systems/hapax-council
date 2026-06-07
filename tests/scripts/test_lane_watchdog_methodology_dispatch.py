@@ -111,6 +111,8 @@ def test_idle_watchdog_does_not_assign_offered_queue_work() -> None:
     assert "claude --resume" not in text
     assert "codex --resume" not in text
     assert "SKIPPING missing Codex lane" in text
+    assert "HAPAX_LOCAL_DEV_MAINTENANCE_MODE" in text
+    assert "APPENDIX-ONLY skip nudge" in text
     assert "CC_CLAIM" not in text
     assert "Claimed task" not in text
 
@@ -152,6 +154,79 @@ def test_idle_watchdog_sends_await_dispatch_when_no_claim(tmp_path: Path) -> Non
     assert "--require-ack" in sent
     assert "cc-claim" not in sent
     assert not Path(env["TMUX_SENT"]).exists()
+
+
+def test_idle_watchdog_appendix_only_skips_unclaimed_local_nudge(tmp_path: Path) -> None:
+    env = _base_env(
+        tmp_path,
+        session="hapax-codex-cx-red",
+        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+    )
+    env["HAPAX_LOCAL_DEV_MAINTENANCE_MODE"] = "appendix-only"
+
+    result = subprocess.run([str(IDLE_WATCHDOG)], env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert "APPENDIX-ONLY skip nudge hapax-codex-cx-red" in result.stdout
+    assert "appendix-only suppressed 1 unclaimed local idle lane nudge(s)" in result.stdout
+    assert not Path(env["CODEX_SENT"]).exists()
+    assert not Path(env["TMUX_SENT"]).exists()
+
+
+def test_idle_watchdog_appendix_only_preserves_active_task_resume_prompt(
+    tmp_path: Path,
+) -> None:
+    env = _base_env(
+        tmp_path,
+        session="hapax-codex-cx-red",
+        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+    )
+    env["HAPAX_LOCAL_DEV_MAINTENANCE_MODE"] = "appendix-only"
+    task_dir = (
+        Path(env["HOME"]) / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+    )
+    task_dir.mkdir(parents=True)
+    (task_dir / "owned-task.md").write_text(
+        "---\nstatus: claimed\nassigned_to: cx-red\n---\n# Owned\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run([str(IDLE_WATCHDOG)], env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    sent = Path(env["CODEX_SENT"]).read_text(encoding="utf-8")
+    assert "active task: owned-task" in sent
+    assert "--require-ack" in sent
+    assert "APPENDIX-ONLY skip nudge" not in result.stdout
+
+
+def test_idle_watchdog_appendix_only_disables_required_claude_launch(
+    tmp_path: Path,
+) -> None:
+    env = _base_env(
+        tmp_path,
+        session="hapax-codex-cx-red",
+        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+    )
+    env["HAPAX_LOCAL_DEV_MAINTENANCE_MODE"] = "appendix-only"
+    home = Path(env["HOME"])
+    launcher = home / ".local" / "bin" / "hapax-claude"
+    launcher.parent.mkdir(parents=True)
+    launched = tmp_path / "claude-launched.txt"
+    _write_executable(
+        launcher,
+        f"""
+        #!/usr/bin/env bash
+        printf '%s\n' "$*" >> "{launched}"
+        """,
+    )
+    (home / "projects" / "hapax-council--beta").mkdir(parents=True)
+
+    result = subprocess.run([str(IDLE_WATCHDOG)], env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert "appendix-only local-dev maintenance" in result.stdout
+    assert not launched.exists()
 
 
 def test_idle_watchdog_does_not_dispatch_offered_task_from_idle_lane(tmp_path: Path) -> None:

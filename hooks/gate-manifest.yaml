@@ -16,6 +16,9 @@ runtimes:
         - matcher: ""
           hooks:
             - conductor-start.sh
+        - matcher: ""
+          hooks:
+            - hooks-doctor.sh
       PreToolUse:
         - matcher: "Bash|mcp__github__create_pull_request|mcp__github__merge_pull_request"
           hooks:
@@ -254,7 +257,7 @@ runtimes:
       - security
       - all-green
     run_markers:
-      - 'astral-sh/ruff-action@v3'
+      - 'astral-sh/ruff-action@v4.0.0'
       - 'uv run python scripts/check-unused-functions.py'
       - 'uv run python scripts/check-new-module-consumers.py'
       - 'uv run python scripts/check-audio-conf-consistency.py'

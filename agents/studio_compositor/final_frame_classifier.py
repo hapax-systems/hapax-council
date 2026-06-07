@@ -5,12 +5,15 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
+from math import isfinite
 from pathlib import Path
 from statistics import median
 
 from PIL import Image
 
 _ANALYSIS_SIZE = (64, 36)
+SCREWM_GEOMETRY_LEGIBILITY_FLOOR = 0.70
+DEFAULT_SCREWM_CULL_MARGIN = 0.10
 _MAX_UNIFORM_LUMA_STDDEV = 3.0
 _MIN_SERIES_FRAMES = 6
 _MIN_PAIRED_FRAMES = 6
@@ -54,6 +57,22 @@ class FinalFrameSeriesClassification:
     max_luma_ratio_step: float | None
     reasons: tuple[str, ...]
     frames: tuple[dict[str, object], ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ScrewmGeometryLegibilityScore:
+    ampmax_safe: float
+    rest_pose_iou: float | None
+    max_displacement: float | None
+    displacement_ratio: float | None
+    edge_correlation: float | None
+    score: float | None
+    floor: float
+    passed: bool
+    reasons: tuple[str, ...]
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -306,6 +325,125 @@ def classify_final_frame_series(
     )
 
 
+def screwm_ampmax_safe(
+    bbox_extents: Sequence[float | int],
+    *,
+    cull_margin: float = DEFAULT_SCREWM_CULL_MARGIN,
+) -> float:
+    """Return the 5f safe displacement clamp from DarkPlaces model bounds.
+
+    DarkPlaces exposes model rest bounds as ``normalmins``/``normalmaxs``. The
+    Screwm floor uses the smallest rest extent so shader displacement cannot
+    exceed the conservative culling envelope. Invalid input returns ``0.0`` so
+    callers fail closed.
+    """
+
+    if len(bbox_extents) != 3 or not _is_unit_margin(cull_margin):
+        return 0.0
+    extents = [float(value) for value in bbox_extents]
+    if any(not isfinite(value) or value <= 0.0 for value in extents):
+        return 0.0
+    return round(min(extents) * (1.0 - float(cull_margin)), 6)
+
+
+def screwm_ampmax_safe_from_bounds(
+    mins: Sequence[float | int],
+    maxs: Sequence[float | int],
+    *,
+    cull_margin: float = DEFAULT_SCREWM_CULL_MARGIN,
+) -> float:
+    """Compute the 5f safe clamp from ``normalmins``/``normalmaxs``-style bounds."""
+
+    if len(mins) != 3 or len(maxs) != 3:
+        return 0.0
+    try:
+        extents = [
+            float(max_value) - float(min_value)
+            for min_value, max_value in zip(mins, maxs, strict=True)
+        ]
+    except (TypeError, ValueError):
+        return 0.0
+    return screwm_ampmax_safe(extents, cull_margin=cull_margin)
+
+
+def classify_screwm_geometry_legibility(
+    *,
+    bbox_extents: Sequence[float | int],
+    max_displacement: float | int | None,
+    rest_pose_iou: float | int | None,
+    edge_correlation: float | int | None,
+    cull_margin: float = DEFAULT_SCREWM_CULL_MARGIN,
+    floor: float = SCREWM_GEOMETRY_LEGIBILITY_FLOOR,
+) -> ScrewmGeometryLegibilityScore:
+    """Score Screwm geometry drift against the Phase 2a rest-pose floor.
+
+    Formula from ``docs/superpowers/specs/2026-06-03-screwm-unified-fx-phase1.md``
+    STEP 5g:
+    ``0.4*IoU + 0.3*(1 - max_disp/AMPMAX_SAFE) + 0.3*edge_corr``.
+    Missing or invalid components fail closed; over-safe displacement is a hard
+    failure even if the other terms are high.
+    """
+
+    reasons: list[str] = []
+    ampmax_safe = screwm_ampmax_safe(bbox_extents, cull_margin=cull_margin)
+    if ampmax_safe <= 0.0:
+        reasons.append("screwm_geo_legibility:invalid_ampmax_safe")
+
+    normalized_iou = _bounded_metric(
+        rest_pose_iou,
+        "screwm_geo_legibility:missing_rest_pose_iou",
+        "screwm_geo_legibility:rest_pose_iou_out_of_range",
+        reasons,
+    )
+    normalized_edge = _bounded_metric(
+        edge_correlation,
+        "screwm_geo_legibility:missing_edge_correlation",
+        "screwm_geo_legibility:edge_correlation_out_of_range",
+        reasons,
+    )
+    normalized_max_disp = _nonnegative_metric(
+        max_displacement,
+        "screwm_geo_legibility:missing_max_displacement",
+        "screwm_geo_legibility:invalid_max_displacement",
+        reasons,
+    )
+
+    displacement_ratio: float | None = None
+    displacement_term: float | None = None
+    if ampmax_safe > 0.0 and normalized_max_disp is not None:
+        displacement_ratio = round(normalized_max_disp / ampmax_safe, 6)
+        if normalized_max_disp > ampmax_safe:
+            reasons.append("screwm_geo_legibility:max_displacement_exceeds_ampmax_safe")
+        displacement_term = max(0.0, min(1.0, 1.0 - normalized_max_disp / ampmax_safe))
+
+    score: float | None = None
+    if (
+        ampmax_safe > 0.0
+        and normalized_iou is not None
+        and normalized_edge is not None
+        and displacement_term is not None
+    ):
+        score = round(
+            0.4 * normalized_iou + 0.3 * displacement_term + 0.3 * normalized_edge,
+            6,
+        )
+        if score < floor:
+            reasons.append(f"screwm_geo_legibility:score_below_floor:{score:.3f}<{floor:.3f}")
+
+    passed = score is not None and score >= floor and not reasons
+    return ScrewmGeometryLegibilityScore(
+        ampmax_safe=ampmax_safe,
+        rest_pose_iou=normalized_iou,
+        max_displacement=normalized_max_disp,
+        displacement_ratio=displacement_ratio,
+        edge_correlation=normalized_edge,
+        score=score,
+        floor=floor,
+        passed=passed,
+        reasons=tuple(dict.fromkeys(reasons)),
+    )
+
+
 def _analyze_frame(
     path: Path,
     *,
@@ -404,6 +542,56 @@ def _mean_and_std(values: Sequence[float | int]) -> tuple[float, float]:
     mean = sum(float(value) for value in values) / len(values)
     variance = sum((float(value) - mean) ** 2 for value in values) / len(values)
     return mean, variance**0.5
+
+
+def _is_unit_margin(value: float | int) -> bool:
+    try:
+        margin = float(value)
+    except (TypeError, ValueError):
+        return False
+    return isfinite(margin) and 0.0 <= margin < 1.0
+
+
+def _bounded_metric(
+    value: float | int | None,
+    missing_reason: str,
+    invalid_reason: str,
+    reasons: list[str],
+) -> float | None:
+    if value is None:
+        reasons.append(missing_reason)
+        return None
+    try:
+        metric = float(value)
+    except (TypeError, ValueError):
+        reasons.append(invalid_reason)
+        return None
+    if not isfinite(metric):
+        reasons.append(invalid_reason)
+        return None
+    if metric < 0.0 or metric > 1.0:
+        reasons.append(invalid_reason)
+    return max(0.0, min(1.0, metric))
+
+
+def _nonnegative_metric(
+    value: float | int | None,
+    missing_reason: str,
+    invalid_reason: str,
+    reasons: list[str],
+) -> float | None:
+    if value is None:
+        reasons.append(missing_reason)
+        return None
+    try:
+        metric = float(value)
+    except (TypeError, ValueError):
+        reasons.append(invalid_reason)
+        return None
+    if not isfinite(metric) or metric < 0.0:
+        reasons.append(invalid_reason)
+        return None
+    return metric
 
 
 def _upstream_luma_stats(

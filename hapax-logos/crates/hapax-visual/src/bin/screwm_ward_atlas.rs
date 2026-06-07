@@ -151,13 +151,13 @@ const WARD_SPECS: [WardSpec; 36] = [
         direct_texture: false,
     },
     WardSpec {
-        id: "m8-display",
-        label: "M8 DISPLAY",
+        id: "brio-operator-ir",
+        label: "BRIO OP IR",
         direct_texture: false,
     },
     WardSpec {
-        id: "steamdeck-display",
-        label: "STEAM DECK",
+        id: "brio-room-ir",
+        label: "BRIO ROOM IR",
         direct_texture: false,
     },
     WardSpec {
@@ -236,8 +236,8 @@ const WARD_SPECS: [WardSpec; 36] = [
         direct_texture: false,
     },
     WardSpec {
-        id: "m8_oscilloscope",
-        label: "M8 SCOPE",
+        id: "brio-synths-ir",
+        label: "BRIO SYN IR",
         direct_texture: false,
     },
     WardSpec {
@@ -670,9 +670,10 @@ fn build_metadata(
 ) -> WardAtlasMetadata {
     let mut wards = BTreeMap::new();
     for (index, source) in ward_sources.iter().enumerate() {
+        let metadata_index = index + 1;
         let metadata = if source.spec.direct_texture {
             WardMetadata {
-                index,
+                index: metadata_index,
                 label: source.spec.label.to_string(),
                 status: "direct-texture-owned".to_string(),
                 reason: Some("direct live texture owns this ward".to_string()),
@@ -686,10 +687,10 @@ fn build_metadata(
                 ..Default::default()
             }
         } else if let Some(status) = external_statuses.get(source.spec.id) {
-            external_status_metadata(index, source, status)
+            external_status_metadata(metadata_index, source, status)
         } else if source.external_rgba.is_some() {
             external_status_metadata(
-                index,
+                metadata_index,
                 source,
                 &ExternalFrameRead::Missing {
                     reason: "not read this frame".to_string(),
@@ -697,10 +698,10 @@ fn build_metadata(
             )
         } else {
             WardMetadata {
-                index,
+                index: metadata_index,
                 label: source.spec.label.to_string(),
                 status: "fallback".to_string(),
-                reason: Some("gpu ward IR not ported".to_string()),
+                reason: Some("gpu cairo ward not ported".to_string()),
                 source_width: source.natural_w,
                 source_height: source.natural_h,
                 ..Default::default()
@@ -1918,8 +1919,8 @@ mod tests {
                 "whos_here",
                 "durf",
                 "coding_session_reveal",
-                "m8-display",
-                "steamdeck-display",
+                "brio-operator-ir",
+                "brio-room-ir",
                 "egress_footer",
                 "programme_banner",
                 "precedent_ticker",
@@ -1935,7 +1936,7 @@ mod tests {
                 "tufte_density",
                 "ascii_schematic",
                 "segment_content",
-                "m8_oscilloscope",
+                "brio-synths-ir",
                 "cbip_dual_ir_displacement",
             ]
         );
@@ -1967,9 +1968,9 @@ mod tests {
                   "params": {"natural_w": 640, "natural_h": 360, "shm_path": "/dev/shm/hapax-sources/reverie.rgba"}
                 },
                 {
-                  "id": "m8-display",
+                  "id": "brio-operator-ir",
                   "kind": "external_rgba",
-                  "params": {"natural_w": 320, "natural_h": 240, "shm_path": "/dev/shm/hapax-sources/m8-display.rgba"}
+                  "params": {"natural_w": 340, "natural_h": 340, "shm_path": "/dev/shm/hapax-compositor/quake-live-ir-brio-operator.raw.bgra"}
                 }
               ]
             }"#,
@@ -1995,16 +1996,18 @@ mod tests {
             Some(Path::new("/dev/shm/hapax-sources/reverie.rgba"))
         );
 
-        let m8 = sources
+        let operator_ir = sources
             .iter()
-            .find(|source| source.spec.id == "m8-display")
+            .find(|source| source.spec.id == "brio-operator-ir")
             .unwrap();
-        assert!(!m8.spec.direct_texture);
-        assert_eq!(m8.natural_w, Some(320));
-        assert_eq!(m8.natural_h, Some(240));
+        assert!(!operator_ir.spec.direct_texture);
+        assert_eq!(operator_ir.natural_w, Some(340));
+        assert_eq!(operator_ir.natural_h, Some(340));
         assert_eq!(
-            m8.external_rgba.as_deref(),
-            Some(Path::new("/dev/shm/hapax-sources/m8-display.rgba"))
+            operator_ir.external_rgba.as_deref(),
+            Some(Path::new(
+                "/dev/shm/hapax-compositor/quake-live-ir-brio-operator.raw.bgra"
+            ))
         );
     }
 
@@ -2153,14 +2156,14 @@ mod tests {
                   "params": {"natural_w": 960, "natural_h": 540, "shm_path": "/dev/shm/hapax-sources/reverie.rgba"}
                 },
                 {
-                  "id": "m8-display",
+                  "id": "brio-operator-ir",
                   "kind": "external_rgba",
-                  "params": {"natural_w": 320, "natural_h": 240, "shm_path": "/tmp/m8-display.rgba"}
+                  "params": {"natural_w": 340, "natural_h": 340, "shm_path": "/tmp/quake-live-ir-brio-operator.raw.bgra"}
                 },
                 {
-                  "id": "steamdeck-display",
+                  "id": "brio-room-ir",
                   "kind": "external_rgba",
-                  "params": {"natural_w": 640, "natural_h": 400, "shm_path": "/tmp/steamdeck-display.rgba"}
+                  "params": {"natural_w": 340, "natural_h": 340, "shm_path": "/tmp/quake-live-ir-brio-room.raw.bgra"}
                 }
               ]
             }"#,
@@ -2168,12 +2171,12 @@ mod tests {
         .unwrap();
         let sources = load_ward_sources(&layout);
         let mut statuses = BTreeMap::new();
-        statuses.insert("m8-display", ExternalFrameRead::Ready(Vec::new()));
+        statuses.insert("brio-operator-ir", ExternalFrameRead::Ready(Vec::new()));
         statuses.insert(
-            "steamdeck-display",
+            "brio-room-ir",
             ExternalFrameRead::WrongSize {
                 actual: 17,
-                expected: 640 * 400 * 4,
+                expected: 340 * 340 * 4,
             },
         );
 
@@ -2214,20 +2217,34 @@ mod tests {
             Some("direct live texture owns this ward")
         );
 
-        let m8 = metadata.wards.get("m8-display").unwrap();
-        assert_eq!(m8.status, "rendered");
-        assert_eq!(m8.source_width, Some(320));
-        assert_eq!(m8.source_height, Some(240));
-        assert_eq!(m8.expected_bytes, Some(320 * 240 * 4));
+        let operator_ir = metadata.wards.get("brio-operator-ir").unwrap();
+        assert_eq!(operator_ir.index, 18);
+        assert_eq!(operator_ir.label, "BRIO OP IR");
+        assert_eq!(operator_ir.status, "rendered");
+        assert_eq!(operator_ir.source_width, Some(340));
+        assert_eq!(operator_ir.source_height, Some(340));
+        assert_eq!(operator_ir.expected_bytes, Some(340 * 340 * 4));
 
-        let steamdeck = metadata.wards.get("steamdeck-display").unwrap();
-        assert_eq!(steamdeck.status, "wrong-size");
-        assert_eq!(steamdeck.actual_bytes, Some(17));
-        assert_eq!(steamdeck.expected_bytes, Some(640 * 400 * 4));
+        let room_ir = metadata.wards.get("brio-room-ir").unwrap();
+        assert_eq!(room_ir.index, 19);
+        assert_eq!(room_ir.label, "BRIO ROOM IR");
+        assert_eq!(room_ir.status, "wrong-size");
+        assert_eq!(room_ir.actual_bytes, Some(17));
+        assert_eq!(room_ir.expected_bytes, Some(340 * 340 * 4));
+
+        let synths_ir = metadata.wards.get("brio-synths-ir").unwrap();
+        assert_eq!(synths_ir.index, 35);
+        assert_eq!(synths_ir.label, "BRIO SYN IR");
+        assert_eq!(synths_ir.status, "fallback");
+        assert_eq!(
+            synths_ir.reason.as_deref(),
+            Some("gpu cairo ward not ported")
+        );
 
         let aoa = metadata.wards.get("aoa_oarb_state").unwrap();
+        assert_eq!(aoa.index, 4);
         assert_eq!(aoa.status, "fallback");
-        assert_eq!(aoa.reason.as_deref(), Some("gpu ward IR not ported"));
+        assert_eq!(aoa.reason.as_deref(), Some("gpu cairo ward not ported"));
     }
 
     #[test]

@@ -1,13 +1,15 @@
 {
   "schema_version": 1,
-  "ledger_id": "quota-spend-ledger-reconciled-20260517",
-  "captured_at": "2026-05-17T07:42:00Z",
+  "ledger_id": "quota-spend-ledger-reconciled-20260604",
+  "captured_at": "2026-06-04T17:10:00Z",
   "authority_source": "isap:quota-spend-ledger-20260509",
   "generated_from": [
     "shared/quota_spend_ledger.py",
     "config/quota-spend-ledger-fixtures.json",
     "litellm-api-dashboard-2026-05-10",
-    "capacity-routing-quota-spend-ledger-reconciliation"
+    "capacity-routing-quota-spend-ledger-reconciliation",
+    "capacity-routing-quota-spend-ledger-current-refresh-20260604",
+    "claude-code-subscription-api-separation-20260604"
   ],
   "privacy_scope": "private",
   "consumer_permission_after": "private_capacity_routing_tests_only",
@@ -18,17 +20,31 @@
   "quota_snapshots": [
     {
       "quota_snapshot_schema": 1,
-      "snapshot_id": "quota-anthropic-subscription-fresh-20260510",
-      "captured_at": "2026-05-10T18:00:00Z",
+      "snapshot_id": "quota-anthropic-api-fresh-20260604",
+      "captured_at": "2026-06-04T16:22:00Z",
       "route_id": "litellm.anthropic.claude-opus-4",
       "provider": "anthropic",
-      "capacity_pool": "subscription_quota",
+      "capacity_pool": "api_paid_spend",
       "subscription_quota_state": "fresh",
       "evidence_refs": [
         "litellm:gateway-4000-anthropic-route-healthy",
-        "ledger:anthropic-api-key-active"
+        "ledger:anthropic-api-key-active",
+        "capacity-routing-quota-spend-ledger-current-refresh-20260604"
       ],
-      "operator_visible_reason": "Anthropic API key active via LiteLLM gateway; claude-opus-4 route healthy"
+      "operator_visible_reason": "Anthropic API key active via LiteLLM gateway; claude-opus-4 route healthy; this is API spend evidence, not Claude Code subscription quota"
+    },
+    {
+      "quota_snapshot_schema": 1,
+      "snapshot_id": "quota-claude-code-subscription-exhausted-20260604",
+      "captured_at": "2026-06-04T17:10:00Z",
+      "route_id": "claude.headless.full",
+      "provider": "anthropic-claude-code-subscription",
+      "capacity_pool": "subscription_quota",
+      "subscription_quota_state": "exhausted",
+      "evidence_refs": [
+        "operator:claude-code-subscription-quota-dry-20260604"
+      ],
+      "operator_visible_reason": "Claude Code subscription lanes are quota-dry until 2026-06-05; this blocks Claude Code lane dispatch only and is not Anthropic API quota evidence"
     },
     {
       "quota_snapshot_schema": 1,
@@ -178,6 +194,26 @@
         "tb-20260509-bootstrap-expired",
         "spend-20260509T193000Z-opaque-route"
       ]
+    },
+    {
+      "decision_schema": 1,
+      "decision_id": "sgd-20260604-provider-gateway-google-frontier-fast",
+      "created_at": "2026-06-04T16:22:00Z",
+      "route_id": "api.headless.provider_gateway",
+      "provider": "google",
+      "profile": "frontier-fast",
+      "task_class": "authority-case-implementation",
+      "quality_floor": "frontier_required",
+      "capacity_pool": "api_paid_spend",
+      "requested_cost_usd": "1.00",
+      "decision_state": "eligible_active_budget",
+      "eligible": true,
+      "budget_id": "tb-20260510-anthropic-api-steady-state",
+      "blocking_reasons": [],
+      "evidence_refs": [
+        "tb-20260510-anthropic-api-steady-state",
+        "capacity-routing-quota-spend-ledger-current-refresh-20260604"
+      ]
     }
   ],
   "provider_dependencies": [
@@ -243,7 +279,8 @@
       "cancellation_or_exit_ref": null,
       "evidence_refs": [
         "tb-20260510-anthropic-api-steady-state",
-        "ledger:anthropic-api-key-active"
+        "ledger:anthropic-api-key-active",
+        "capacity-routing-quota-spend-ledger-current-refresh-20260604"
       ],
       "operator_visible_reason": "monthly API budget renewal; review before expiry to confirm continued fleet throughput needs"
     }
@@ -253,6 +290,8 @@
     "CASE-CAPACITY-ROUTING-002-STEADY-STATE",
     "litellm:gateway-4000-anthropic-route-healthy",
     "ledger:anthropic-api-key-active",
-    "capacity-routing-quota-spend-ledger-reconciliation"
+    "capacity-routing-quota-spend-ledger-reconciliation",
+    "capacity-routing-quota-spend-ledger-current-refresh-20260604",
+    "claude-code-subscription-api-separation-20260604"
   ]
 }

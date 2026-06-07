@@ -80,6 +80,71 @@ def test_headless_source_supports_governed_model_profile_env() -> None:
     assert 'CLAUDE_ARGS+=(--model "$MODEL")' in text
 
 
+def test_appendix_hop_passes_remote_args_without_shell_interpolation(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workdir = home / "projects" / "hapax-council--beta"
+    workdir.mkdir(parents=True)
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    claim_file = cache / "cc-active-task-beta"
+    claim_file.write_text("task-x\n")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    exploit = tmp_path / "logos-url-shell-injection"
+    claude_args = tmp_path / "claude-args.txt"
+    _stub_bin(
+        bin_dir,
+        "ssh",
+        """remote_cmd="${@: -1}"
+case "$remote_cmd" in
+  HAPAX_REMOTE_PAYLOAD=*)
+    echo 'fish: Expected a variable name after this $' >&2
+    exit 127
+    ;;
+esac
+if [[ "$remote_cmd" == *"\\$'"* ]]; then
+  echo 'fish: Expected a variable name after this $' >&2
+  exit 127
+fi
+exec bash -c "$remote_cmd"
+""",
+    )
+    _stub_bin(
+        bin_dir,
+        "gh",
+        'if [ "$1" = "auth" ] && [ "$2" = "status" ]; then exit 0; fi\nexit 1\n',
+    )
+    _stub_bin(
+        bin_dir,
+        "claude",
+        f'printf "%s\\n" "$@" > {claude_args}\n: > {claim_file}\nexit 0\n',
+    )
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_LOGOS_URL"] = f"http://podium.invalid/api; touch {exploit}"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not exploit.exists()
+    args = claude_args.read_text(encoding="utf-8").splitlines()
+    assert args[:5] == [
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+    ]
+
+
 def test_visible_claude_launcher_requires_task_or_readonly() -> None:
     text = VISIBLE.read_text(encoding="utf-8")
 

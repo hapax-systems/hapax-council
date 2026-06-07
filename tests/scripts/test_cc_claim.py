@@ -21,6 +21,8 @@ def _write_task(
     *,
     status: str = "offered",
     assigned_to: str = "unassigned",
+    blocked_reason: str | None = None,
+    blocked_witness: str | None = None,
     depends_on: str | None = "[]",
     kind: str = "build",
     task_type: str | None = None,
@@ -44,6 +46,10 @@ def _write_task(
         f"assigned_to: {assigned_to}",
         f"kind: {kind}",
     ]
+    if blocked_reason is not None:
+        frontmatter.append(f"blocked_reason: {blocked_reason}")
+    if blocked_witness is not None:
+        frontmatter.append(f"blocked_witness: {blocked_witness}")
     if task_type is not None:
         frontmatter.append(f"task_type: {task_type}")
     if authority_case is not None:
@@ -170,6 +176,51 @@ def test_nonterminal_frontmatter_dependency_blocks_claim(tmp_path: Path) -> None
     assert result.returncode == 5
     assert "unmet dependencies" in result.stderr
     assert "unfinished-dep (status_not_fulfilling:in_progress)" in result.stderr
+
+
+def test_blocked_task_refusal_includes_reason_and_witness(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(
+        home,
+        "active",
+        "blocked-target",
+        status="blocked",
+        blocked_reason="minio_mirror_still_d_state",
+        blocked_witness="~/.cache/hapax/witness/minio-d-state.json",
+    )
+
+    result = _claim(home, "blocked-target")
+
+    assert result.returncode == 4
+    assert "current status is 'blocked'" in result.stderr
+    assert "blocked_reason: minio_mirror_still_d_state" in result.stderr
+    assert "blocked_witness: ~/.cache/hapax/witness/minio-d-state.json" in result.stderr
+    assert "status: blocked" in note.read_text(encoding="utf-8")
+    assert not (home / ".cache" / "hapax" / "cc-active-task-cx-test").exists()
+
+
+def test_blocked_dependency_reports_precise_reason_and_witness(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(
+        home,
+        "active",
+        "blocked-dep",
+        status="blocked",
+        blocked_reason="provider_budget_receipt_absent",
+        blocked_witness="~/.cache/hapax/witness/provider-budget.json",
+    )
+    _write_task(
+        home,
+        "active",
+        "claim-target",
+        depends_on="\n  - blocked-dep",
+    )
+
+    result = _claim(home, "claim-target")
+
+    assert result.returncode == 5
+    assert "blocked-dep (blocked_reason:provider_budget_receipt_absent" in result.stderr
+    assert "blocked_witness:~/.cache/hapax/witness/provider-budget.json" in result.stderr
 
 
 def test_missing_frontmatter_dependency_blocks_claim(tmp_path: Path) -> None:

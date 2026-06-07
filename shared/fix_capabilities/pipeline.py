@@ -19,6 +19,11 @@ from agents.health_monitor import CheckResult, HealthReport, Status, run_cmd
 from shared.fix_capabilities import get_capability_for_group
 from shared.fix_capabilities.base import ExecutionResult, FixProposal, Safety
 from shared.fix_capabilities.evaluator import evaluate_check
+from shared.maintenance_lock import (
+    first_docker_maintenance_lock,
+    maintenance_lock_for_target,
+    maintenance_lock_message,
+)
 from shared.notify import send_notification
 
 log = logging.getLogger(__name__)
@@ -31,8 +36,8 @@ _SAFE_REMEDIATION_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"^systemctl --user (start|restart|reset-failed|enable --now) [\w@.\-]+$"),
     re.compile(r"^systemctl --user reset-failed [\w@.\-]+ && systemctl --user start [\w@.\-]+$"),
     re.compile(r"^docker (start|restart) [\w.\-]+$"),
-    re.compile(r"^cd [~/\w.\-]+ && docker compose up -d(?: [\w.\-]+)?$"),
-    re.compile(r"^cd [~/\w.\-]+ && docker compose --profile \w+ up -d(?: [\w.\-]+)?$"),
+    re.compile(r"^cd [~/\w.\-]+ && docker compose up -d(?: [\w.\-]+)*$"),
+    re.compile(r"^cd [~/\w.\-]+ && docker compose --profile \w+ up -d(?: [\w.\-]+)*$"),
     re.compile(r"^cd [~/\w.\-]+ && docker compose restart [\w.\-]+$"),
     re.compile(r"^bash [~/\w.\-]+\.sh$"),
     # Qdrant collection creation
@@ -93,6 +98,55 @@ def _is_safe_remediation(cmd: str) -> bool:
     )
 
 
+def _docker_maintenance_lock_reason(sub_cmd: list[str]) -> str | None:
+    """Return a maintenance-lock suppression reason for Docker commands."""
+    if len(sub_cmd) >= 3 and sub_cmd[0] == "docker" and sub_cmd[1] in {"start", "restart"}:
+        action = f"docker {sub_cmd[1]}"
+        target = sub_cmd[2]
+        lock = maintenance_lock_for_target(target, target_type="container")
+        if lock is not None:
+            return maintenance_lock_message(action, target, lock)
+        return None
+
+    if len(sub_cmd) < 3 or sub_cmd[:2] != ["docker", "compose"]:
+        return None
+
+    index = 2
+    while index < len(sub_cmd) and sub_cmd[index].startswith("-"):
+        flag = sub_cmd[index]
+        index += 1
+        if flag in {"--profile", "-p", "--project-name", "-f", "--file"} and index < len(sub_cmd):
+            index += 1
+    if index >= len(sub_cmd):
+        return None
+
+    compose_action = sub_cmd[index]
+    index += 1
+    if compose_action == "up":
+        detached = index < len(sub_cmd) and sub_cmd[index] == "-d"
+        if not detached:
+            return None
+        targets = sub_cmd[index + 1 :]
+        action = "docker compose up"
+    elif compose_action == "restart":
+        targets = sub_cmd[index:]
+        action = "docker compose restart"
+    else:
+        return None
+
+    if not targets:
+        lock = first_docker_maintenance_lock()
+        if lock is not None:
+            return maintenance_lock_message(action, "<all compose services>", lock)
+        return None
+
+    for target in targets:
+        lock = maintenance_lock_for_target(target, target_type="service")
+        if lock is not None:
+            return maintenance_lock_message(action, target, lock)
+    return None
+
+
 async def _run_deterministic_fix(check: CheckResult) -> FixOutcome:
     """Execute a health check's built-in remediation command directly.
 
@@ -144,6 +198,13 @@ async def _run_deterministic_fix(check: CheckResult) -> FixOutcome:
 
     last_result = ExecutionResult(success=True, message="no commands")
     for sub_cmd in commands:
+        lock_reason = _docker_maintenance_lock_reason(sub_cmd)
+        if lock_reason is not None:
+            return FixOutcome(
+                check_name=check.name,
+                proposal=proposal,
+                rejected_reason=lock_reason,
+            )
         rc, stdout, stderr = await run_cmd(sub_cmd, timeout=30.0, cwd=cwd)
         if rc != 0:
             last_result = ExecutionResult(

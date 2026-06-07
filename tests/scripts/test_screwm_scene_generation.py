@@ -18,18 +18,169 @@ def _comment_block(content: str, marker: str) -> str:
     return content[start:] if end == -1 else content[start:end]
 
 
+def _brush_face_textures(content: str, marker: str) -> list[str]:
+    block = _comment_block(content, marker)
+    return [line.split()[15] for line in block.splitlines() if line.startswith("( ")]
+
+
+def _station_by_name(module: dict, name: str) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    stations = {
+        station_name: (origin, target)
+        for station_name, origin, target in module["GARDEN_CAMERA_STATIONS"]
+    }
+    return stations[name]
+
+
+def _pane_rect(
+    module: dict, idx: int
+) -> tuple[str, float, tuple[float, float], tuple[float, float]]:
+    x, y, z = module["ward_review_position"](idx)
+    facing = module["ward_garden_facing"](idx)
+    w, h = module["ward_pane_dimensions"](idx)
+    if facing == "x":
+        return "x", float(x), (y - w / 2, y + w / 2), (z - h / 2, z + h / 2)
+    return "y", float(y), (x - w / 2, x + w / 2), (z - h / 2, z + h / 2)
+
+
+def _source_pane_rect(
+    source: dict,
+) -> tuple[str, float, tuple[float, float], tuple[float, float]]:
+    x, y, z = source["pos"]
+    w = source["w"]
+    h = source["h"]
+    if source["facing"] == "x":
+        return "x", float(x), (y - w / 2, y + w / 2), (z - h / 2, z + h / 2)
+    return "y", float(y), (x - w / 2, x + w / 2), (z - h / 2, z + h / 2)
+
+
+def _line_intersects_pane(
+    origin: tuple[int, int, int],
+    target: tuple[int, int, int],
+    pane: tuple[str, float, tuple[float, float], tuple[float, float]],
+    *,
+    margin: float,
+) -> bool:
+    axis, plane, axis_span, z_span = pane
+    axis_idx = 0 if axis == "x" else 1
+    denom = target[axis_idx] - origin[axis_idx]
+    if abs(denom) < 1e-9:
+        return False
+    t = (plane - origin[axis_idx]) / denom
+    if not 0 < t < 1:
+        return False
+    x = origin[0] + (target[0] - origin[0]) * t
+    y = origin[1] + (target[1] - origin[1]) * t
+    z = origin[2] + (target[2] - origin[2]) * t
+    axis_coord = y if axis == "x" else x
+    return (
+        axis_span[0] - margin <= axis_coord <= axis_span[1] + margin
+        and z_span[0] - margin <= z <= z_span[1] + margin
+    )
+
+
+def _visual_angle(width: int, origin: tuple[int, int, int], target: tuple[int, int, int]) -> float:
+    distance = math.sqrt(sum((target[i] - origin[i]) ** 2 for i in range(3)))
+    return math.degrees(2 * math.atan((width / 2) / distance))
+
+
 def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments() -> None:
     module = _load_script("scripts/generate-screwm-map.py")
     content = module["generate_map"](module["MODE_PRESETS"]["rnd"])
 
     assert len(module["WARD_ANCHORS"]) == 36
-    assert module["WARD_ATLAS_VISIBLE_INDICES"] == frozenset(set(range(1, 37)) - {18, 19})
-    assert module["ACTIVE_WARD_INDICES"] == frozenset(set(range(1, 37)) - {18, 19})
+    assert module["WARD_ATLAS_VISIBLE_INDICES"] == frozenset(range(1, 37))
+    assert module["ACTIVE_WARD_INDICES"] == frozenset(range(1, 37))
     assert module["WARD_ATLAS_MOUNT"]["texture"] == "ward_atlas"
-    assert module["WARD_ATLAS_MOUNT"]["active_visible_indices"] == sorted(
-        set(range(1, 37)) - {18, 19}
-    )
-    assert module["WARD_ATLAS_MOUNT"]["activation_policy"] == ("all-wards-live-34-of-36")
+    assert module["WARD_ATLAS_MOUNT"]["active_visible_indices"] == list(range(1, 37))
+    assert module["WARD_ATLAS_MOUNT"]["activation_policy"] == ("all-wards-spatialized-36-of-36")
+    assert module["WARD_ANCHORS"][17] == "brio-operator-ir"
+    assert module["WARD_ANCHORS"][18] == "brio-room-ir"
+    assert module["WARD_ANCHORS"][34] == "brio-synths-ir"
+    assert module["IR_CAMERA_WARD_INDICES"] == frozenset({18, 19, 35})
+    assert module["IR_CAMERA_WARD_TARGET_WIDTH"] == 1024
+    sources = {source["role"]: source for source in module["SOURCE_ANCHORS"]}
+    ir_contexts = {
+        18: (
+            "brio-operator-ir",
+            "brio-operator",
+            "brio-operator-ir-ward",
+            (-650, -1320, 705),
+            (-1180, -1320, 650),
+        ),
+        19: (
+            "brio-room-ir",
+            "brio-room",
+            "brio-room-ir-ward",
+            (-650, 400, 705),
+            (-1180, 400, 650),
+        ),
+        35: (
+            "brio-synths-ir",
+            "brio-synths",
+            "brio-synths-ir-ward",
+            (-1024, -1900, 1235),
+            (-1024, -2440, 1180),
+        ),
+    }
+    ir_stations = {
+        station_name: (origin, target)
+        for station_name, origin, target in module["IR_CAMERA_WARD_STATIONS"]
+    }
+    for idx, (
+        ward_anchor,
+        source_role,
+        station_name,
+        expected_origin,
+        expected_position,
+    ) in ir_contexts.items():
+        ward_position = module["ward_review_position"](idx)
+        source_position = tuple(sources[source_role]["pos"])
+        station_origin, station_target = ir_stations[station_name]
+        width, height = module["ward_pane_dimensions"](idx)
+        mount = module["ward_live_mount_contract"](idx, ward_anchor)
+        expected_texture = {18: "w18", 19: "w19", 35: "w35"}[idx]
+        expected_output = {
+            18: "/dev/shm/hapax-compositor/quake-live-ir-brio-operator.bgra",
+            19: "/dev/shm/hapax-compositor/quake-live-ir-brio-room.bgra",
+            35: "/dev/shm/hapax-compositor/quake-live-ir-brio-synths.bgra",
+        }[idx]
+        expected_slot = {18: "slot 15", 19: "slot 16", 35: "slot 17"}[idx]
+
+        assert module["WARD_ANCHORS"][idx - 1] == ward_anchor
+        assert ward_position == expected_position
+        assert station_origin == expected_origin
+        assert station_target == expected_position
+        assert width == height == module["IR_CAMERA_WARD_TARGET_WIDTH"]
+        assert 86 <= _visual_angle(width, station_origin, station_target) <= 89
+        assert mount["id"] == f"{ward_anchor}-ward"
+        assert mount["role"] == "state-ward"
+        assert mount["mount_kind"] == "live-camera-instrument"
+        assert mount["texture"] == expected_texture
+        assert mount["producer_output"] == expected_output
+        assert mount["producer_kind"] == "live-camera-ir"
+        assert mount["source_id"] == ward_anchor
+        assert mount["liveness_class"] == "live-local-ir-camera"
+        assert mount["native_resolution"] == [340, 340]
+        assert mount["texture_size"] == [340, 340]
+        assert mount["capture_format"] == "gray"
+        assert mount["capture_resolution"] == [340, 340]
+        assert mount["source_aspect"] == [1, 1]
+        assert mount["physical_width"] == module["IR_CAMERA_WARD_TARGET_WIDTH"]
+        assert mount["receiver_light_multiplier"] == 2.6
+        assert mount["receiver_light_distance"] == 18
+        assert expected_slot in mount["hybrid_contract"]["update_semantics"]
+        if mount["facing"] == "x":
+            assert module["ROOM_Y_MIN"] <= ward_position[1] - width // 2
+            assert ward_position[1] + width // 2 <= module["ROOM_Y_MAX"]
+        else:
+            assert -module["ROOM_X_EXT"] <= ward_position[0] - width // 2
+            assert ward_position[0] + width // 2 <= module["ROOM_X_EXT"]
+            assert module["ROOM_Y_MIN"] < ward_position[1] < module["ROOM_Y_MAX"]
+        assert module["FLOOR_Z"] < ward_position[2] - height // 2
+        assert ward_position[2] + height // 2 < module["CEIL_Z"]
+        assert abs(ward_position[0] - source_position[0]) <= 420
+        assert abs(ward_position[1] - source_position[1]) <= 320
+        assert abs(ward_position[2] - source_position[2]) <= 40
     assert module["STATIC_WARD_MOUNT_PROFILE"] == "state-ward-instrument"
     assert content.count("// ward-anchor ") == 0
     assert content.count("// ward-depth-plate ") == 0
@@ -37,6 +188,7 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert content.count("// ward-glow ") == 0
     assert content.count("// ward-light ") == 0
     assert content.count("// review-fill-light ") == 8
+    assert content.count("// review-shell-light ") == 6
     assert content.count("// ward-garden-light ") == len(module["ACTIVE_WARD_INDICES"])
     rectangular_ward_indices = {
         idx
@@ -45,7 +197,16 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
             module["ward_live_mount_contract"](idx, module["WARD_ANCHORS"][idx - 1])
         )
     }
-    glyph_ward_indices = module["ACTIVE_WARD_INDICES"] - rectangular_ward_indices
+    atlas_receiver_indices = {
+        idx
+        for idx in module["ACTIVE_WARD_INDICES"]
+        if module["ward_mount_is_live_atlas_receiver"](
+            module["ward_live_mount_contract"](idx, module["WARD_ANCHORS"][idx - 1])
+        )
+    }
+    glyph_ward_indices = (
+        module["ACTIVE_WARD_INDICES"] - rectangular_ward_indices - atlas_receiver_indices
+    )
     receiver_w, receiver_h, _u_scale, _v_scale, thickness = module["ward_homage_receiver_metrics"](
         *module["ward_pane_dimensions"](2)
     )
@@ -54,6 +215,13 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert thickness >= 18
     assert module["WARD_PURPOSE_RECEIVER_THICKNESS_RATIO"] >= 0.18
     assert content.count("// ward-garden-pane ") == len(rectangular_ward_indices)
+    assert content.count("// ward-homage-receiver ") == len(atlas_receiver_indices)
+    assert all(f"// ward-homage-receiver {idx:02d}:" in content for idx in atlas_receiver_indices)
+    assert all(
+        module["ward_live_mount_contract"](idx, module["WARD_ANCHORS"][idx - 1])["texture"]
+        in _comment_block(content, f"// ward-homage-receiver {idx:02d}:")
+        for idx in atlas_receiver_indices
+    )
     assert all(f"// ward-homage-glyph {idx:02d}." in content for idx in glyph_ward_indices)
     assert all(
         module["ward_live_mount_contract"](idx, module["WARD_ANCHORS"][idx - 1])["texture"]
@@ -116,13 +284,17 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert content.count("// ward-drift ") == 0
     assert "w01" not in content
     assert "// ward-garden-pane 09: grounding_provenance_ticker w09" in content
+    assert "// ward-garden-pane 18: brio-operator-ir w18" in content
+    assert "// ward-garden-pane 19: brio-room-ir w19" in content
     assert "// ward-garden-pane 22: precedent_ticker w22" in content
     assert "// ward-garden-pane 27: chronicle_ticker w27" in content
-    assert "w35" not in content
-    assert "// ward-homage-glyph 02.1: album music slash-pair ward_atlas" in content
+    assert "// ward-garden-pane 35: brio-synths-ir w35" in content
+    assert "// ward-homage-receiver 02: album ward_atlas" in content
     assert "// ward-garden-pane 02: album ward_atlas" not in content
-    assert "// ward-homage-glyph 01.1: token_pole token spine ward_atlas" in content
-    assert "// ward-homage-glyph 35.1: m8_oscilloscope music slash-pair ward_atlas" in content
+    assert "// ward-homage-receiver 01: token_pole ward_atlas" in content
+    assert "// ward-homage-receiver 18: brio-operator-ir ward_atlas" not in content
+    assert "// ward-homage-receiver 19: brio-room-ir ward_atlas" not in content
+    assert "// ward-homage-receiver 35: brio-synths-ir ward_atlas" not in content
     before_receivers, receiver_tail = content.split("// section: scroom-drift-receiver-strips")
     _receivers, after_receivers = receiver_tail.split("// section: scroom-local-effect-lenses")
     non_receiver_content = before_receivers + after_receivers
@@ -157,6 +329,9 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert module["ward_live_mount_contract"](2, "album")["texture"] == "ward_atlas"
     assert module["ward_live_mount_contract"](2, "album")["atlas_cell"] == [1, 0]
     assert module["ward_live_mount_contract"](5, "reverie")["texture"] == "w05"
+    assert module["ward_live_mount_contract"](18, "brio-operator-ir")["texture"] == "w18"
+    assert module["ward_live_mount_contract"](19, "brio-room-ir")["texture"] == "w19"
+    assert module["ward_live_mount_contract"](35, "brio-synths-ir")["texture"] == "w35"
     assert module["ward_garden_facing"](5) == "y"
     assert module["ward_live_mount_contract"](8, "gem")["texture"] == "ward_atlas"
     assert module["ward_atlas_cell"](1) == (0, 0)
@@ -181,6 +356,96 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert "aoa-attendant-sphere 01: yt-media-face-strip yt_sphere" not in content
     assert "aoa-attendant-sphere-cross 01: yt-media-face-side yt_sphere" not in content
     assert '"origin" "0 -555 224"' in content
+
+
+def test_screwm_review_lighting_floor_is_deliberate_not_fullbright() -> None:
+    module = _load_script("scripts/generate-screwm-map.py")
+    content = module["generate_map"](module["MODE_PRESETS"]["rnd"])
+
+    assert module["REVIEW_WORLD_MINLIGHT"] == 48
+    assert module["REVIEW_WORLD_MINLIGHT_COLOR"] == "0.20 0.22 0.26"
+    assert 1.20 <= module["REVIEW_FILL_BASE_MULTIPLIER"] <= 1.35
+    assert module["REVIEW_FILL_SCALES"][0] >= 1.20
+    assert module["REVIEW_FILL_SCALES"][3] >= 1.0
+    assert module["REVIEW_FILL_SCALES"][6] >= 1.0
+    assert '"_minlight" "48"' in content
+    assert '"_minlight_color" "0.20 0.22 0.26"' in content
+    assert "// review-shell-light review-entry-floor-rake" in content
+    assert "// review-shell-light review-entry-left-wall-skim" in content
+    assert "// review-shell-light review-entry-right-wall-skim" in content
+    assert "// review-shell-light review-left-media-reader" in content
+    assert "// review-shell-light review-right-media-reader" in content
+    assert '"_minlight" "255"' not in content
+
+
+def test_screwm_media_window_review_targets_clear_camera_sources() -> None:
+    module = _load_script("scripts/generate-screwm-map.py")
+    sources = {source["role"]: source for source in module["SOURCE_ANCHORS"]}
+    expected = {
+        "left-media-window": ("brio-room", (-250, -1420, 220), (-1580, 400, 650)),
+        "right-media-window": ("c920-room", (250, -1420, 220), (1580, 400, 650)),
+    }
+
+    for station_name, (source_role, expected_origin, expected_target) in expected.items():
+        origin, target = _station_by_name(module, station_name)
+        source = sources[source_role]
+
+        assert origin == expected_origin
+        assert target == expected_target
+        assert target == source["pos"]
+        assert _visual_angle(source["w"], origin, tuple(source["pos"])) >= 40
+
+        blockers = [
+            (idx, module["WARD_ANCHORS"][idx - 1])
+            for idx in sorted(module["ACTIVE_WARD_INDICES"])
+            if _line_intersects_pane(
+                origin,
+                target,
+                _pane_rect(module, idx),
+                margin=module["REVIEW_MEDIA_TARGET_CLEARANCE"],
+            )
+        ]
+        assert blockers == []
+        source_blockers = [
+            other["role"]
+            for other in module["SOURCE_ANCHORS"]
+            if other["role"] != source_role
+            and _line_intersects_pane(
+                origin,
+                target,
+                _source_pane_rect(other),
+                margin=module["REVIEW_MEDIA_TARGET_CLEARANCE"],
+            )
+        ]
+        assert source_blockers == []
+
+
+def test_far_garden_review_station_avoids_aoa_whiteout() -> None:
+    module = _load_script("scripts/generate-screwm-map.py")
+    origin, target = _station_by_name(module, "far-garden-view")
+    aoa_center = (module["AOA_X"], module["AOA_Y"], module["AOA_Z"])
+    distance_from_aoa = math.sqrt(
+        sum((origin[index] - aoa_center[index]) ** 2 for index in range(3))
+    )
+
+    assert origin == (720, 260, 240)
+    assert target == (-260, 980, 330)
+    assert distance_from_aoa >= 900
+    assert target[1] >= 900
+    assert _visual_angle(512, origin, aoa_center) <= 28
+    assert module["SCROOM_PATH_STONES"][7][2:4] == (720, 260)
+
+
+def test_screwm_aoa_pause_keeps_expanded_aoa_inspectable_without_whiteout() -> None:
+    module = _load_script("scripts/generate-screwm-map.py")
+    origin, target = _station_by_name(module, "aoa-pause")
+    aoa = module["MEDIA_MOUNTS_BY_ID"]["aoa-fractal-face-atlas"]
+    aoa_width = int(aoa["aoa_parent_edge_units"])
+
+    assert origin == (-320, -1780, 208)
+    assert target == (module["AOA_X"], module["AOA_Y"], module["AOA_Z"])
+    assert 80 <= _visual_angle(aoa_width, origin, target) <= 84
+    assert module["SCROOM_PATH_STONES"][4][2:4] == (-320, -1780)
 
 
 def test_screwm_drift_graph_physically_touches_every_ward_anchor() -> None:
@@ -274,6 +539,103 @@ def test_screwm_map_embeds_hex_alignment_substrate_without_filled_receiver_strip
     assert "drift_c" not in hex_section
     assert "drift_g" not in hex_section
     assert "drift_r" not in hex_section
+    skip = module["NO_DRAW_SHELL_TEX"]
+    assert _brush_face_textures(hex_section, "// scroom-hex-floor-line 001") == [
+        skip,
+        "hex_floor",
+        skip,
+        skip,
+        skip,
+        skip,
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-hex-ceiling-line 001") == [
+        "hex_ceil",
+        skip,
+        skip,
+        skip,
+        skip,
+        skip,
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-stipple-floor-dot 01") == [
+        skip,
+        skip,
+        skip,
+        skip,
+        skip,
+        "stipple_floor",
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-stipple-ceiling-dot 01") == [
+        skip,
+        skip,
+        skip,
+        skip,
+        "stipple_ceil",
+        skip,
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-wall-grid-left-h 001") == [
+        skip,
+        "hex_wall",
+        skip,
+        skip,
+        skip,
+        skip,
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-wall-grid-right-h 002") == [
+        "hex_wall",
+        skip,
+        skip,
+        skip,
+        skip,
+        skip,
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-wall-grid-entry-h 003") == [
+        skip,
+        skip,
+        skip,
+        "hex_wall",
+        skip,
+        skip,
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-wall-grid-far-h 004") == [
+        skip,
+        skip,
+        "hex_wall",
+        skip,
+        skip,
+        skip,
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-wall-stipple-left 00") == [
+        skip,
+        "stipple_wall",
+        skip,
+        skip,
+        skip,
+        skip,
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-wall-stipple-right 00") == [
+        "stipple_wall",
+        skip,
+        skip,
+        skip,
+        skip,
+        skip,
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-wall-stipple-entry 00") == [
+        skip,
+        skip,
+        skip,
+        "stipple_wall",
+        skip,
+        skip,
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-wall-stipple-far 00") == [
+        skip,
+        skip,
+        "stipple_wall",
+        skip,
+        skip,
+        skip,
+    ]
 
 
 def test_screwm_room_textures_are_information_surfaces_not_identifiable_materials() -> None:
@@ -399,7 +761,7 @@ def test_screwm_review_geometry_keeps_wards_primary_not_architecture() -> None:
     assert "WARD_GARDEN_LAYOUT" in source
     assert "AOA_Y = -555" in source
     assert "AOA_HEIGHT_M = 7.0" in source
-    assert "AOA_RUNTIME_SCALE = 1.0" in source
+    assert "AOA_RUNTIME_SCALE = 1.3" in source
     assert "TOWER_CEIL_M = TOWER_FLOOR_M + (BASE_TOWER_CEIL_M - TOWER_FLOOR_M) * 2.0" in source
     assert "REVIEW_DRIFT_Y = AOA_Y - 45" in source
     assert "WARD_FRAME_PAD = 6" in source
@@ -424,8 +786,8 @@ def test_screwm_review_geometry_keeps_wards_primary_not_architecture() -> None:
     assert "SCROOM_GARDEN_LANTERNS" in source
     assert "AOA_SPHERE_FACE_SIZE" in source
     assert "AOA_SPHERE_STRIP_COUNT = 0" in source
-    assert '"_minlight" "16"' in source
-    assert '"_minlight_color" "0.12 0.14 0.18"' in source
+    assert "REVIEW_WORLD_MINLIGHT = 48" in source
+    assert 'REVIEW_WORLD_MINLIGHT_COLOR = "0.20 0.22 0.26"' in source
     assert "scene_quad.wgsl" in source
     assert "No diagnostic floor crosshair" in source
     assert "No physical drift graph stones" in source
@@ -465,11 +827,35 @@ def test_screwm_map_embeds_camera_source_constellation() -> None:
     assert "cam_bop" in content
     assert "cam_cov" in content
     assert "speech_wave" in content
-    assert "cam_bop 5990 1085 0 0.4 0.4" in content
-    assert module["SOURCE_ANCHORS"][0]["w"] == 512
-    assert module["SOURCE_ANCHORS"][0]["h"] == 288
-    assert module["SOURCE_ANCHORS"][3]["w"] == 512
-    assert module["SOURCE_ANCHORS"][3]["h"] == 288
+    brio_operator_pane = _comment_block(
+        content, "// source-garden-anchor 01: brio-operator cam_bop"
+    )
+    assert "cam_bop" in brio_operator_pane
+    assert "1.6 1.6" in brio_operator_pane
+    assert module["SOURCE_ANCHORS"][0]["w"] == 2048
+    assert module["SOURCE_ANCHORS"][0]["h"] == 1152
+    assert module["SOURCE_ANCHORS"][0]["pos"] == (-1580, -1510, 650)
+    assert module["SOURCE_ANCHORS"][2]["facing"] == "y"
+    assert module["SOURCE_ANCHORS"][2]["pos"] == (-1024, -2532, 1180)
+    assert module["SOURCE_ANCHORS"][3]["w"] == 2048
+    assert module["SOURCE_ANCHORS"][3]["h"] == 1152
+    assert module["SOURCE_ANCHORS"][3]["pos"] == (1580, -1510, 650)
+    assert module["SOURCE_ANCHORS"][5]["facing"] == "y"
+    assert module["SOURCE_ANCHORS"][5]["pos"] == (1024, -2532, 1180)
+    for source in module["SOURCE_ANCHORS"]:
+        x, y, z = source["pos"]
+        half_w = source["w"] // 2
+        half_h = source["h"] // 2
+        if source["facing"] == "x":
+            assert module["ROOM_Y_MIN"] <= y - half_w
+            assert y + half_w <= module["ROOM_Y_MAX"]
+        else:
+            assert -module["ROOM_X_EXT"] <= x - half_w
+            assert x + half_w <= module["ROOM_X_EXT"]
+            assert module["ROOM_Y_MIN"] < y - 1
+            assert y + 1 < module["ROOM_Y_MAX"]
+        assert module["FLOOR_Z"] < z - half_h
+        assert z + half_h < module["CEIL_Z"]
     assert module["SOURCE_ANCHORS"][0]["texture_size"] == (1280, 720)
     assert module["SOURCE_ANCHORS"][0]["texture_transform"] == {
         "u_sign": 1,
@@ -552,9 +938,12 @@ def test_live_media_textures_are_self_lit_information_surfaces() -> None:
     live_names = [
         "w05",
         "ward_atlas",
+        "w18",
+        "w19",
         "w09",
         "w22",
         "w27",
+        "w35",
         "cam_bop",
         "cam_brm",
         "cam_bsy",
@@ -582,6 +971,8 @@ def test_live_media_textures_are_self_lit_information_surfaces() -> None:
         assert "dpnoshadow" in block
         assert f"map {name}" in block
         assert "rgbgen const" in block
+        if name in {"w18", "w19", "w35"}:
+            assert "rgbgen const 1.0 1.0 1.0" in block
 
 
 def test_spatiotemporal_framework_makes_media_ethics_operational() -> None:
@@ -675,7 +1066,9 @@ def test_aoa_model_transform_stands_pyramid_upright_and_centers_media_front() ->
     assert max(edge_lengths) - min(edge_lengths) < 0.000001
     assert module["DEPTH"] == 4
     assert module["AOA_LEAF_FACE_EDGE_UNITS"] == 48
-    assert module["SCALE"] == 768
+    assert module["AOA_ITERATION_SCALE_MULTIPLIER"] == 2.197
+    assert module["BASE_SCALE"] == 768
+    assert math.isclose(module["SCALE"], 1687.296)
     assert module["aoa_face_count"]() == 1024
 
     parts = module["compose_aoa_parts"](module["DEPTH"])
@@ -712,6 +1105,7 @@ def test_screwm_map_inventory_matches_default_non_darkplaces_sources() -> None:
     )
     default_sources = {source["id"] for source in default_layout["sources"]} - {"darkplaces"}
     default_sources.discard("sierpinski")
+    default_sources.difference_update({"m8-display", "steamdeck-display", "m8_oscilloscope"})
     default_sources.add("aoa_oarb_state")
 
     assert set(module["WARD_ANCHORS"]) == default_sources
@@ -732,8 +1126,8 @@ def test_screwm_wad_defines_only_declared_live_ward_receiver_textures() -> None:
     textures = module["TEXTURES"]
 
     ward_textures = [name for name in textures if name.startswith("w") and name[1:].isdigit()]
-    assert ward_textures == ["w05", "w09", "w22", "w27"]
-    assert module["ACTIVE_WARD_TEXTURES"] == {"w05", "w09", "w22", "w27"}
+    assert ward_textures == ["w05", "w09", "w18", "w19", "w22", "w27", "w35"]
+    assert module["ACTIVE_WARD_TEXTURES"] == {"w05", "w09", "w18", "w19", "w22", "w27", "w35"}
     assert module["generate_pixel_data"].__defaults__[1] == "void_substrate"
     assert textures["ward_atlas"]["pattern"] == "live_media"
     assert textures["ward_atlas"]["width"] == 2048
@@ -747,6 +1141,14 @@ def test_screwm_wad_defines_only_declared_live_ward_receiver_textures() -> None:
     assert textures["w05"]["width"] == 960
     assert textures["w05"]["height"] == 540
     assert textures["w05"]["code"] == "REV"
+    assert textures["w18"]["pattern"] == "live_media"
+    assert textures["w18"]["width"] == 340
+    assert textures["w18"]["height"] == 340
+    assert textures["w18"]["code"] == "BOPIR"
+    assert textures["w19"]["pattern"] == "live_media"
+    assert textures["w19"]["width"] == 340
+    assert textures["w19"]["height"] == 340
+    assert textures["w19"]["code"] == "BRMIR"
     assert textures["w22"]["pattern"] == "live_media"
     assert textures["w22"]["width"] == 1344
     assert textures["w22"]["height"] == 176
@@ -755,6 +1157,10 @@ def test_screwm_wad_defines_only_declared_live_ward_receiver_textures() -> None:
     assert textures["w27"]["width"] == 1344
     assert textures["w27"]["height"] == 176
     assert textures["w27"]["code"] == "CHRON"
+    assert textures["w35"]["pattern"] == "live_media"
+    assert textures["w35"]["width"] == 340
+    assert textures["w35"]["height"] == 340
+    assert textures["w35"]["code"] == "BSYIR"
     assert textures["speech_wave"]["pattern"] == "live_media"
     assert textures["speech_wave"]["width"] == 512
     assert textures["speech_wave"]["height"] == 128
@@ -933,6 +1339,13 @@ def test_screwm_wad_defines_scene_quad_effect_lens_textures() -> None:
 
 def test_ward_panel_texture_has_semantic_glyph_contrast() -> None:
     module = _load_script("scripts/generate-screwm-wad.py")
+    assert module["WARD_CODES"][17] == "BOPIR"
+    assert module["WARD_CODES"][18] == "BRMIR"
+    assert module["WARD_CODES"][34] == "BSYIR"
+    assert module["WARD_TEXTURE_TYPES"][17] == "hardware_grid"
+    assert module["WARD_TEXTURE_TYPES"][18] == "hardware_grid"
+    assert module["WARD_TEXTURE_TYPES"][34] == "hardware_grid"
+
     pixels, _palette = module["generate_pixel_data"](
         (120, 105, 70),
         0,
@@ -949,18 +1362,18 @@ def test_ward_panel_texture_has_semantic_glyph_contrast() -> None:
     accent = module["WARD_ACCENT_INDICES"][(13 - 1) % len(module["WARD_ACCENT_INDICES"])]
     assert pixels.count(accent) > 180
 
-    scope_pixels, _palette = module["generate_pixel_data"](
+    synth_ir_pixels, _palette = module["generate_pixel_data"](
         (120, 105, 70),
         0,
         module["TEX_SIZE"],
         module["TEX_SIZE"],
         pattern="ward_panel",
         label=35,
-        code="SCOPE",
-        ward_type="scope_wave",
+        code="BSYIR",
+        ward_type="hardware_grid",
     )
-    scope_accent = module["WARD_ACCENT_INDICES"][(35 - 1) % len(module["WARD_ACCENT_INDICES"])]
-    assert scope_pixels.count(scope_accent) > 100
+    synth_ir_accent = module["WARD_ACCENT_INDICES"][(35 - 1) % len(module["WARD_ACCENT_INDICES"])]
+    assert synth_ir_pixels.count(synth_ir_accent) > 100
 
 
 def test_source_portal_texture_is_borderless_quiet_fallback() -> None:

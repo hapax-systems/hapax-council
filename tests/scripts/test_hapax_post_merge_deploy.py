@@ -75,6 +75,31 @@ def _repo_with_linear_commit(tmp_path: Path, files: dict[str, str]) -> tuple[Pat
     return repo, _git(repo, "rev-parse", "HEAD")
 
 
+def _repo_with_quake_asset_commit(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "trace-test@example.test")
+    _git(repo, "config", "user.name", "Trace Test")
+    installer = repo / "scripts" / "install-darkplaces-screwm-assets.sh"
+    installer.parent.mkdir(parents=True)
+    installer.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "printf '%s\\n' \"${DARKPLACES_GAME_ROOT:-$HOME/.darkplaces}\" "
+        '>> "$HAPAX_INSTALL_CALLS"\n',
+        encoding="utf-8",
+    )
+    _git(repo, "add", "scripts/install-darkplaces-screwm-assets.sh")
+    _git(repo, "commit", "-m", "base quake installer")
+    asset = repo / "assets" / "quake" / "maps" / "screwm.bsp"
+    asset.parent.mkdir(parents=True)
+    asset.write_text("compiled bsp bytes\n", encoding="utf-8")
+    _git(repo, "add", "assets/quake/maps/screwm.bsp")
+    _git(repo, "commit", "-m", "update screwm map asset")
+    return repo, _git(repo, "rev-parse", "HEAD")
+
+
 def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
     calls = tmp_path / "systemctl-calls.txt"
     bin_dir = tmp_path / "bin"
@@ -309,6 +334,163 @@ def test_user_scoped_units_still_deploy_to_user_dir(tmp_path: Path) -> None:
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
     assert record["deploy_groups"]["systemd_units"] == [unit_path]
     assert record["deploy_groups"]["systemd_system_units"] == []
+
+
+def test_quake_asset_changes_install_and_restart_active_darkplaces(tmp_path: Path) -> None:
+    repo, sha = _repo_with_quake_asset_commit(tmp_path)
+    home = tmp_path / "home"
+    game_root = tmp_path / "darkplaces"
+    install_calls = tmp_path / "install-calls.txt"
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "DARKPLACES_GAME_ROOT": str(game_root),
+        "HAPAX_INSTALL_CALLS": str(install_calls),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "quake assets changed (1)" in result.stdout
+    assert "installing Screwm Quake assets" in result.stdout
+    assert "restarting hapax-darkplaces-v4l2.service" in result.stdout
+    assert install_calls.read_text(encoding="utf-8").splitlines() == [str(game_root)]
+    calls = systemctl_calls.read_text(encoding="utf-8")
+    assert "--user is-active --quiet hapax-darkplaces-v4l2.service" in calls
+    assert "--user restart hapax-darkplaces-v4l2.service" in calls
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["deploy_groups"]["quake_assets"] == ["assets/quake/maps/screwm.bsp"]
+    assert "quake_assets" in record["avsdlc"]["runtime_media_witness_groups"]
+
+
+def test_obs_audio_bind_unit_deploy_removes_stale_audio_l12_dropin(tmp_path: Path) -> None:
+    unit_path = "systemd/units/hapax-obs-audio-bind.service"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            unit_path: (
+                "[Unit]\n"
+                "Description=OBS audio bind\n"
+                "\n"
+                "[Service]\n"
+                "Type=oneshot\n"
+                "ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-obs-audio-bind\n"
+            )
+        },
+    )
+    home = tmp_path / "home"
+    stale_dropin = (
+        home
+        / ".config"
+        / "systemd"
+        / "user"
+        / "hapax-obs-audio-bind.service.d"
+        / "95-codex-audio-l12-worktree.conf"
+    )
+    stale_dropin.parent.mkdir(parents=True, exist_ok=True)
+    stale_dropin.write_text(
+        "[Service]\nWorkingDirectory=/home/hapax/projects/hapax-council--codex-audio-l12\n",
+        encoding="utf-8",
+    )
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not stale_dropin.exists()
+    assert "removing stale local drop-in" in result.stdout
+    installed = home / ".config" / "systemd" / "user" / "hapax-obs-audio-bind.service"
+    assert installed.exists()
+    calls = systemctl_calls.read_text(encoding="utf-8")
+    assert "--user daemon-reload" in calls
+
+
+def test_screwm_audio_reactivity_unit_deploy_removes_stale_target_dropin(
+    tmp_path: Path,
+) -> None:
+    unit_path = "systemd/units/hapax-screwm-audio-reactivity.service"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            unit_path: (
+                "[Unit]\n"
+                "Description=Screwm audio reactivity\n"
+                "\n"
+                "[Service]\n"
+                "Environment=HAPAX_SCREWM_AUDIO_TARGET=hapax-broadcast-normalized\n"
+                "ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/"
+                "screwm-audio-reactivity-source.py\n"
+            )
+        },
+    )
+    home = tmp_path / "home"
+    stale_dropin = (
+        home
+        / ".config"
+        / "systemd"
+        / "user"
+        / "hapax-screwm-audio-reactivity.service.d"
+        / "override.conf"
+    )
+    stale_dropin.parent.mkdir(parents=True, exist_ok=True)
+    stale_dropin.write_text(
+        "[Service]\nEnvironment=HAPAX_SCREWM_AUDIO_TARGET=hapax-broadcast-normalized-capture\n",
+        encoding="utf-8",
+    )
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not stale_dropin.exists()
+    assert not stale_dropin.parent.exists()
+    assert "removing stale local drop-in" in result.stdout
+    installed = home / ".config" / "systemd" / "user" / "hapax-screwm-audio-reactivity.service"
+    assert installed.exists()
+    calls = systemctl_calls.read_text(encoding="utf-8")
+    assert "--user daemon-reload" in calls
 
 
 def test_audio_touching_units_restart_through_audio_safe_wrapper(tmp_path: Path) -> None:

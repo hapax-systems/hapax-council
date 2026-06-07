@@ -200,6 +200,15 @@ def test_canonical_25_timers_pair_with_existing_service() -> None:
     assert not failures, f"Timer(s) without a matching service in systemd/units/: {failures}"
 
 
+def test_obs_audio_bind_timer_does_not_order_after_pipewire() -> None:
+    """The user timer is pulled in by timers.target; PipeWire ordering belongs on the service."""
+    timer = UNITS_DIR / "hapax-obs-audio-bind.timer"
+    after_values = _raw_keys(timer, "Unit", "After")
+
+    assert not any("pipewire.service" in value.split() for value in after_values)
+    assert not any("wireplumber.service" in value.split() for value in after_values)
+
+
 def test_private_broadcast_echo_probe_timeout_covers_loaded_probe_ticks() -> None:
     """The echo probe records two monitor streams and can exceed 15s under load."""
     unit = UNITS_DIR / "hapax-private-broadcast-echo-probe.service"

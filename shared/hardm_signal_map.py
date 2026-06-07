@@ -370,7 +370,7 @@ def _system_cells() -> list[CellSignal]:
         "cpu_load_1m",
         "cpu_load_5m",
         "mem_used_pct",
-        "swap_used_pct",
+        "memory_psi_some_avg10",
         "disk_root_pct",
         "disk_data_pct",
         "docker_running",

@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 
+from agents.studio_compositor.final_frame_classifier import classify_screwm_geometry_legibility
 from agents.studio_compositor.homage import QUAKE_PACKAGE, get_package, registered_package_names
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -239,7 +240,7 @@ def test_darkplaces_fork_patch_uploads_live_media_into_world_textures() -> None:
     )
 
     _assert_unified_patch_hunk_counts(patch)
-    assert "HAPAX_LIVE_TEXTURE_SLOT_COUNT 14" in patch
+    assert "HAPAX_LIVE_TEXTURE_SLOT_COUNT 17" in patch
     assert "hapax_live_texture_name" in patch
     assert "hapax_live_texture7_name" in patch
     assert '"progs/aoa_sphere.mdl_0"' in patch
@@ -259,14 +260,21 @@ def test_darkplaces_fork_patch_uploads_live_media_into_world_textures() -> None:
     assert '"w22"' in patch
     assert '"w27"' in patch
     assert '"w05"' in patch
+    assert '"w18"' in patch
+    assert '"w19"' in patch
+    assert '"w35"' in patch
     assert '"speech_wave"' in patch
     assert "quake-live-reverie.bgra" in patch
     assert "quake-live-speech-wave.bgra" in patch
     assert "quake-live-aoa-atlas.bgra" in patch
+    assert "quake-live-ir-brio-operator.bgra" in patch
+    assert "quake-live-ir-brio-room.bgra" in patch
+    assert "quake-live-ir-brio-synths.bgra" in patch
     assert "quake-live-ticker-grounding.bgra" in patch
     assert "quake-live-ticker-precedent.bgra" in patch
     assert "quake-live-ticker-chronicle.bgra" in patch
     assert '"2304"' in patch
+    assert '"340"' in patch
     assert '"512"' in patch
     assert '"128"' in patch
     assert "R_HapaxLiveTexture_UpdateSlot" in patch
@@ -292,6 +300,29 @@ def test_darkplaces_fork_patch_uploads_live_media_into_world_textures() -> None:
     assert "R_HapaxLiveTexture_UpdateSlot(slot, &hapax_live_texture_enable[slot]" in patch
     assert "for (i = 0; i < HAPAX_LIVE_TEXTURE_SLOT_COUNT; ++i)" in patch
     assert "R_HapaxLiveTexture_Update();" in patch
+
+
+def test_darkplaces_fork_patch_material_flags_world_drift_eligibility() -> None:
+    patch = (REPO_ROOT / "assets" / "quake" / "darkplaces" / "hapax-live-texture.patch").read_text(
+        encoding="utf-8"
+    )
+
+    assert "#define MATERIALFLAG_HAPAXDRIFT 0x00400000" in patch
+    assert "qbool dphapaxdrift;" in patch
+    assert '"hapax_drift"' in patch
+    assert '"dphapaxdrift"' in patch
+    assert "shader.dphapaxdrift = true;" in patch
+    assert "texture->basematerialflags |= MATERIALFLAG_HAPAXDRIFT;" in patch
+    assert "static qbool Mod_HapaxDriftEligibleTextureName" in patch
+    for texture_prefix in ('"drift_"', '"hex_"', '"stipple_"', '"geometry"'):
+        assert texture_prefix in patch
+
+    setup_start = patch.index("void R_SetupShader_Surface")
+    setup_end = patch.index("if (t->currentmaterialflags & MATERIALFLAG_ALPHATEST)", setup_start)
+    setup_block = patch[setup_start:setup_end]
+    assert "t->currentmaterialflags & MATERIALFLAG_HAPAXDRIFT" in setup_block
+    assert 'strncmp(t->name, "drift_"' not in setup_block
+    assert "rsurface.entity && rsurface.entity != r_refdef.scene.worldentity" in setup_block
 
 
 def test_screwm_live_media_sources_apply_receiver_local_drift() -> None:
@@ -444,12 +475,13 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
     assert mounts["aoa-media-sphere"]["liveness_class"] == "live-public-media"
     assert mounts["aoa-media-sphere"]["mount_kind"] == "live-object-of-attention-sphere"
     assert mounts["aoa-media-sphere"]["hybrid_contract"]["memory_format"] == "BGRA8888"
-    assert mounts["aoa-media-sphere"]["target_visual_angle_deg"] == 39.9
-    assert mounts["aoa-media-sphere"]["target_visual_angle_deg_max"] == 41.0
+    assert mounts["aoa-media-sphere"]["target_visual_angle_deg"] == 50.5
+    assert mounts["aoa-media-sphere"]["target_visual_angle_deg_max"] == 52.0
     assert mounts["aoa-media-sphere"]["legibility_px_per_degree_floor"] == 40.0
-    assert mounts["aoa-media-sphere"]["computed_mount_width"] == 314
-    assert mounts["aoa-media-sphere"]["runtime_scale"] == 1.0
-    assert mounts["aoa-media-sphere"]["physical_radius"] == 157
+    assert mounts["aoa-media-sphere"]["intended_view_distance"] == 949
+    assert mounts["aoa-media-sphere"]["computed_mount_width"] == 895
+    assert mounts["aoa-media-sphere"]["runtime_scale"] == 1.3
+    assert mounts["aoa-media-sphere"]["physical_radius"] == 447.75
     assert mounts["aoa-media-sphere"]["enclosure"] == "aoa-tetrix-inner-volume"
     assert (
         mounts["aoa-media-sphere"]["fit_contract"] == "regular-tetrix-central-void-perfect-insphere"
@@ -461,8 +493,8 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
     assert mounts["aoa-media-sphere"]["inner_void_radius_fill_ratio"] == 1.0
     assert mounts["aoa-media-sphere"]["origin"] == [0, -555, 224]
     assert mounts["aoa-media-sphere"]["fractal_depth"] == 4
-    assert mounts["aoa-media-sphere"]["leaf_face_edge_units"] == 48
-    assert mounts["aoa-media-sphere"]["aoa_parent_edge_units"] == 768
+    assert mounts["aoa-media-sphere"]["leaf_face_edge_units"] == 137.1
+    assert mounts["aoa-media-sphere"]["aoa_parent_edge_units"] == 2193
     assert mounts["aoa-media-sphere"]["fractal_face_count"] == 1024
     assert (
         "one triangular fractal face per atlas cell"
@@ -486,16 +518,17 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
     assert aoa_atlas["projection"] == "regular-tetrix-skinframe"
     assert aoa_atlas["source_aspect"] == [1, 1]
     assert aoa_atlas["gpu_drift_intensity"] == 2.25
-    assert aoa_atlas["target_visual_angle_deg"] == 83.1
-    assert aoa_atlas["target_visual_angle_deg_max"] == 85.0
-    assert aoa_atlas["computed_mount_width"] == 768
+    assert aoa_atlas["target_visual_angle_deg"] == 98.1
+    assert aoa_atlas["target_visual_angle_deg_max"] == 100.0
+    assert aoa_atlas["intended_view_distance"] == 952
+    assert aoa_atlas["computed_mount_width"] == 2193
     assert aoa_atlas["legibility_px_per_degree_floor"] == 20.0
-    assert aoa_atlas["runtime_scale"] == 1.0
-    assert aoa_atlas["geometry_revision"] == "aoa-regular-tetrix-v4-perfect-fit-oarb"
+    assert aoa_atlas["runtime_scale"] == 1.3
+    assert aoa_atlas["geometry_revision"] == ("aoa-regular-tetrix-v7-30pct-larger-perfect-fit-oarb")
     assert aoa_atlas["fit_contract"] == "regular-tetrix-central-void-perfect-insphere"
     assert aoa_atlas["fractal_depth"] == 4
-    assert aoa_atlas["leaf_face_edge_units"] == 48
-    assert aoa_atlas["aoa_parent_edge_units"] == 768
+    assert aoa_atlas["leaf_face_edge_units"] == 137.1
+    assert aoa_atlas["aoa_parent_edge_units"] == 2193
     assert aoa_atlas["fractal_face_count"] == 1024
     assert aoa_atlas["atlas_contract"] == "one-live-control-cell-per-rendered-fractal-face"
     assert aoa_atlas["face_operability_contract"] == (
@@ -549,11 +582,72 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
         assert mount["source_aspect"] == [16, 9]
         assert mount["texture_size"] == [1280, 720]
         assert mount["target_visual_angle_deg"] == 24.0
+        assert mount["intended_view_distance"] == 4818
         assert mount["anti_parasocial_posture"] == "instrument-not-intimacy-billboard"
         assert mount["material_profile"] == "flat-live-camera-instrument"
-        assert mount["physical_width"] >= 232
+        assert mount["physical_width"] == 2048
+        assert mount["computed_mount_width"] == 2048
         assert mount["texture"].startswith("cam_")
         assert mount["producer_output"].endswith(".bgra")
+    ir_wards = {
+        "brio-operator-ir-ward": (
+            "brio-operator-ir",
+            "w18",
+            "/dev/shm/hapax-compositor/quake-live-ir-brio-operator.bgra",
+            "slot 15",
+            [-1180, -1320, 650],
+            "x",
+        ),
+        "brio-room-ir-ward": (
+            "brio-room-ir",
+            "w19",
+            "/dev/shm/hapax-compositor/quake-live-ir-brio-room.bgra",
+            "slot 16",
+            [-1180, 400, 650],
+            "x",
+        ),
+        "brio-synths-ir-ward": (
+            "brio-synths-ir",
+            "w35",
+            "/dev/shm/hapax-compositor/quake-live-ir-brio-synths.bgra",
+            "slot 17",
+            [-1024, -2440, 1180],
+            "y",
+        ),
+    }
+    for mount_id, (
+        source_id,
+        texture,
+        output,
+        slot_label,
+        origin,
+        facing,
+    ) in ir_wards.items():
+        mount = mounts[mount_id]
+        assert mount["role"] == "state-ward"
+        assert mount["source_id"] == source_id
+        assert mount["texture"] == texture
+        assert mount["producer_output"] == output
+        assert mount["producer_kind"] == "live-camera-ir"
+        assert mount["liveness_class"] == "live-local-ir-camera"
+        assert mount["mount_kind"] == "live-camera-instrument"
+        assert mount["native_resolution"] == [340, 340]
+        assert mount["capture_format"] == "gray"
+        assert mount["capture_resolution"] == [340, 340]
+        assert mount["capture_fps"] == 10
+        assert mount["texture_fps"] == 6
+        assert mount["source_aspect"] == [1, 1]
+        assert mount["texture_size"] == [340, 340]
+        assert mount["physical_width"] == 1024
+        assert mount["computed_mount_width"] == 1024
+        assert mount["receiver_light_multiplier"] == 2.6
+        assert mount["receiver_light_distance"] == 18
+        assert mount["origin"] == origin
+        assert mount["facing"] == facing
+        assert mount["hybrid_contract"]["quake_binding"] == f"BSP brush texture {texture}"
+        assert slot_label in mount["hybrid_contract"]["update_semantics"]
+        assert "hidden atlas proxies" in mount["drift_interaction"]["principle"]
+        assert "runtime_substitute" not in mount
     for mount_id, texture in (
         ("grounding-provenance-ticker", "w09"),
         ("precedent-ticker", "w22"),
@@ -577,8 +671,8 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
     assert ward_atlas["cell_size"] == [512, 256]
     assert ward_atlas["atlas_columns"] == 4
     assert ward_atlas["atlas_rows"] == 9
-    assert ward_atlas["active_visible_indices"] == sorted(set(range(1, 37)) - {18, 19})
-    assert ward_atlas["activation_policy"] == "all-wards-live-34-of-36"
+    assert ward_atlas["active_visible_indices"] == list(range(1, 37))
+    assert ward_atlas["activation_policy"] == "all-wards-spatialized-36-of-36"
     assert ward_atlas["hybrid_contract"]["update_semantics"].startswith(
         "DarkPlaces live-texture slot updates one atlas"
     )
@@ -638,6 +732,35 @@ def test_screwm_live_camera_texture_dimensions_match_all_runtime_declarations() 
 
         for slots in (autoexec_slots, launcher_slots):
             slot = _slot_for_texture(slots, mount["texture"])
+            assert int(slots[slot]["width"]) == width
+            assert int(slots[slot]["height"]) == height
+            assert slots[slot]["path"] == mount["producer_output"]
+            assert patch_dims[slot] == {"width": width, "height": height}
+
+    ir_ward_mounts = {
+        "brio-operator-ir-ward": "brio-operator-ir",
+        "brio-room-ir-ward": "brio-room-ir",
+        "brio-synths-ir-ward": "brio-synths-ir",
+    }
+    for mount in (mount for mount in contract["mounts"] if mount["id"] in ir_ward_mounts):
+        width, height = mount["texture_size"]
+        assert mount["native_resolution"] == [width, height]
+        assert mount["capture_resolution"] == [width, height]
+
+        env = _env_file(
+            REPO_ROOT / "config" / "quake-live-cameras" / f"{ir_ward_mounts[mount['id']]}.env"
+        )
+        assert env["HAPAX_QUAKE_CAMERA_SIZE"] == f"{width}x{height}"
+        assert int(env["HAPAX_QUAKE_LIVE_TEXTURE_WIDTH"]) == width
+        assert int(env["HAPAX_QUAKE_LIVE_TEXTURE_HEIGHT"]) == height
+        assert int(env["HAPAX_QUAKE_CAMERA_FPS"]) == mount["capture_fps"]
+        assert int(env["HAPAX_QUAKE_LIVE_TEXTURE_FPS"]) == mount["texture_fps"]
+        assert env["HAPAX_QUAKE_LIVE_TEXTURE_NAME"] == mount["texture"]
+        assert env["HAPAX_QUAKE_LIVE_TEXTURE_OUTPUT"] == mount["producer_output"]
+
+        for slots in (autoexec_slots, launcher_slots):
+            slot = _slot_for_texture(slots, mount["texture"])
+            assert slot in {15, 16, 17}
             assert int(slots[slot]["width"]) == width
             assert int(slots[slot]["height"]) == height
             assert slots[slot]["path"] == mount["producer_output"]
@@ -751,6 +874,9 @@ def test_screwm_quake_embodies_live_ward_activity_in_engine_lights() -> None:
     assert "screwm_ward_property_fishbowl_pressure * 34" in wards
     assert (
         "screwm_add_ward_light('-1180 -600 330', 36, screwm_green, screwm_active_36, screwm_presence_36)"
+    ) in wards
+    assert (
+        "screwm_add_ward_light('-1024 -2440 1180', 35, screwm_rose, screwm_active_35, screwm_presence_35)"
     ) in wards
 
 
@@ -1056,9 +1182,9 @@ def test_screwm_quake_contract_matches_current_camera_aoa_and_sound_foundation()
     assert "The gamepad bridge fails" in spec
     assert "`--device`/`--allow-any-joystick`" in spec
     assert "MOVETYPE_NOCLIP" in defs
-    assert "float AOA_MODEL_SCALE = 1.0;" in defs
+    assert "float AOA_MODEL_SCALE = 1.3;" in defs
     assert "vector AOA_SPHERE_CENTER = '0 -555 224';" in defs
-    assert "float AOA_SPHERE_MODEL_SCALE = 0.45;" in defs
+    assert "float AOA_SPHERE_MODEL_SCALE = 1.3;" in defs
     assert "screwm_free_view_body(self);" in world
     assert "spawn_aoa();" in world
     assert "self.angles_y = self.angles_y + frametime * self.screwm_spin_y" in world
@@ -1128,6 +1254,11 @@ def test_screwm_geo_drift_defaults_stay_within_legibility_floor() -> None:
     patch = (REPO_ROOT / "assets" / "quake" / "darkplaces" / "hapax-live-texture.patch").read_text(
         encoding="utf-8"
     )
+    exporter = (REPO_ROOT / "scripts" / "darkplaces-state-export.py").read_text(encoding="utf-8")
+    coupling = (REPO_ROOT / "assets" / "quake" / "qc" / "coupling.qc").read_text(encoding="utf-8")
+    autoexec = (REPO_ROOT / "assets" / "quake" / "config" / "autoexec.cfg").read_text(
+        encoding="utf-8"
+    )
     expected = {
         "hapax_drift_geo_amp": 24,
         "hapax_drift_geo_ampmax": 36,
@@ -1141,3 +1272,48 @@ def test_screwm_geo_drift_defaults_stay_within_legibility_floor() -> None:
         )
     # Container amplitude must never exceed the hard displacement clamp.
     assert expected["hapax_drift_geo_amp"] <= expected["hapax_drift_geo_ampmax"]
+    conservative_floor = classify_screwm_geometry_legibility(
+        bbox_extents=(64, 64, 64),
+        max_displacement=expected["hapax_drift_geo_ampmax"],
+        rest_pose_iou=1.0,
+        edge_correlation=1.0,
+    )
+    assert conservative_floor.passed, conservative_floor
+    unsafe_increase = classify_screwm_geometry_legibility(
+        bbox_extents=(64, 64, 64),
+        max_displacement=64,
+        rest_pose_iou=1.0,
+        edge_correlation=1.0,
+    )
+    assert not unsafe_increase.passed
+    assert "screwm_geo_legibility:max_displacement_exceeds_ampmax_safe" in unsafe_increase.reasons
+
+    assert "DRIFT_GEO_BASELINES" in exporter
+    assert '"amp": 0.5' in exporter
+    assert '"freq": 0.3' in exporter
+    assert '"speed": 0.25' in exporter
+    assert '"content": 0.2' in exporter
+    assert "drift-geo-amp.txt" in exporter
+    assert "drift-geo-content.txt" in exporter
+    assert "spatial_pressure = 0.0" in exporter
+
+    assert "void() coupling_apply_drift_geo" in coupling
+    assert 'coupling_read_float("data/drift-geo-amp.txt", coupling_drift_geo_amp)' in coupling
+    assert 'cvar_set("hapax_drift_geo_amp"' in coupling
+    assert 'cvar_set("hapax_drift_geo_ampmax", ftos(ampmax_val))' in coupling
+    assert "amp_val = 18 + coupling_drift_geo_amp * 12;" in coupling
+    assert "ampmax_val = 36;" in coupling
+    assert "content_val = 4 + coupling_drift_geo_content * 5;" in coupling
+    assert coupling.index("coupling_apply_drift_geo();") < coupling.index(
+        "coupling_apply_stimmung();"
+    )
+
+    assert "set hapax_drift_geo_amp 24" in autoexec
+    assert "set hapax_drift_geo_ampmax 36" in autoexec
+    assert "set hapax_drift_geo_speed 0.25" in autoexec
+    assert "set hapax_drift_geo_swirl 1.0" in autoexec
+
+    assert "r_glsl_postprocess_ruttetra_enable" in coupling
+    assert "warp_val = 9.0;" in coupling
+    assert "noise_val = 7.0;" in coupling
+    assert "halftone_val = 1.5;" in coupling

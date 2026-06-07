@@ -109,7 +109,7 @@ async def check_langfuse_auth() -> list[CheckResult]:
     def _check() -> tuple[int, str]:
         creds = base64.b64encode(f"{pk}:{sk}".encode()).decode()
         req = Request(
-            "http://localhost:3000/api/public/health",
+            _c.langfuse_endpoint_url(),
             headers={"Authorization": f"Basic {creds}"},
         )
         try:

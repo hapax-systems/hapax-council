@@ -95,6 +95,22 @@ def _surface_region_has_signal(
     return False
 
 
+def _surface_has_nonflat_signal(surface: Any) -> bool:
+    surface.flush()
+    data = bytes(surface.get_data())
+    stride = surface.get_stride()
+    width = surface.get_width()
+    height = surface.get_height()
+    samples: set[bytes] = set()
+    for row_frac in (0.15, 0.32, 0.50, 0.68, 0.85):
+        row = min(height - 1, max(0, int(height * row_frac)))
+        for col_frac in (0.12, 0.28, 0.47, 0.66, 0.88):
+            col = min(width - 1, max(0, int(width * col_frac)))
+            start = row * stride + col * 4
+            samples.add(data[start : start + 4])
+    return len(samples) >= 4 and any(sample[:3] != b"\x00\x00\x00" for sample in samples)
+
+
 def _write_health(path: Path) -> None:
     path.write_text(
         "\n".join(
@@ -429,6 +445,50 @@ class TestSourceState:
             rendered_text = "\n".join(pane.lines)
             assert "DURF" not in rendered_text
             assert "SESSION" not in rendered_text
+        finally:
+            source.stop()
+
+    def test_idle_scaffold_renders_nonflat_without_visible_panes(self, codex_config: Path) -> None:
+        import cairo
+
+        source = DURFCairoSource(config_path=codex_config, start_thread=False)
+        try:
+            source._snapshot = DURFSourceSnapshot(
+                panes=(),
+                captured_at=100.0,
+                wcs_row=build_wcs_row((), now=100.0, egress_allowed=False),
+            )
+            state = source.state()
+            assert state["alpha"] == 0.0
+            assert source.current_claim().want_visible is False
+
+            surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 530, 180)
+            cr = cairo.Context(surface)
+            source.render_content(cr, 530, 180, 0.0, state)
+
+            assert _surface_has_nonflat_signal(surface)
+            assert source.current_claim().want_visible is False
+        finally:
+            source.stop()
+
+    def test_atlas_idle_scaffold_renders_when_fsm_absent(self, codex_config: Path) -> None:
+        source = DURFCairoSource(config_path=codex_config, start_thread=False)
+        try:
+            source._state = TransitionState.ABSENT
+            source._snapshot = DURFSourceSnapshot(
+                panes=(),
+                captured_at=100.0,
+                wcs_row=build_wcs_row((), now=100.0, egress_allowed=False),
+            )
+            state = source.state()
+            assert state["alpha"] == 0.0
+            assert source.current_claim().want_visible is False
+
+            surface = source.render_atlas_idle_surface(530, 180, t=0.0)
+
+            assert _surface_has_nonflat_signal(surface)
+            assert source.transition_state is TransitionState.ABSENT
+            assert source.current_claim().want_visible is False
         finally:
             source.stop()
 

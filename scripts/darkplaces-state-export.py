@@ -100,8 +100,8 @@ WARD_ACTIVITY_EXPORTS: tuple[tuple[str, str], ...] = (
     ("15", "whos_here"),
     ("16", "durf"),
     ("17", "coding_session_reveal"),
-    ("18", "m8-display"),
-    ("19", "steamdeck-display"),
+    ("18", "brio-operator-ir"),
+    ("19", "brio-room-ir"),
     ("20", "egress_footer"),
     ("21", "programme_banner"),
     ("22", "precedent_ticker"),
@@ -117,7 +117,7 @@ WARD_ACTIVITY_EXPORTS: tuple[tuple[str, str], ...] = (
     ("32", "tufte_density"),
     ("33", "ascii_schematic"),
     ("34", "segment_content"),
-    ("35", "m8_oscilloscope"),
+    ("35", "brio-synths-ir"),
     ("36", "cbip_dual_ir_displacement"),
 )
 
@@ -182,6 +182,23 @@ EFFECT_DRIFT_FAMILIES: tuple[str, ...] = (
     "edge",
     "compositing",
 )
+
+DRIFT_GEO_BASELINES: dict[str, float] = {
+    "amp": 0.5,
+    "ampmax": 0.5,
+    "freq": 0.3,
+    "speed": 0.25,
+    "swirl": 1.0 / 3.0,
+    "content": 0.2,
+}
+DRIFT_GEO_FILES: dict[str, str] = {
+    "amp": "drift-geo-amp.txt",
+    "ampmax": "drift-geo-ampmax.txt",
+    "freq": "drift-geo-freq.txt",
+    "speed": "drift-geo-speed.txt",
+    "swirl": "drift-geo-swirl.txt",
+    "content": "drift-geo-content.txt",
+}
 
 EFFECT_DRIFT_NODE_FAMILY: dict[str, str] = {
     "color": "tonal",
@@ -788,8 +805,8 @@ def build_ward_lines(shm_dir: Path) -> dict[str, str]:
         "15": _one_line(f"HERE {int(token.get('active_viewers', 0))} VIEW", limit=34),
         "16": _one_line(f"DURF {role}", limit=34),
         "17": _one_line(f"CODE {topic}", limit=44),
-        "18": _one_line(f"M8 RMS {rms}", limit=34),
-        "19": _one_line(f"DECK ONSET {onset}", limit=34),
+        "18": _one_line(f"BRIO OP IR RMS {rms}", limit=34),
+        "19": _one_line(f"BRIO ROOM IR ON {onset}", limit=34),
         "20": _one_line(f"EGRESS {progress}", limit=34),
         "21": _one_line(f"{role}: {topic}", limit=48),
         "22": _one_line(f"PRECED {source_line or role}", limit=44),
@@ -805,7 +822,7 @@ def build_ward_lines(shm_dir: Path) -> dict[str, str]:
         "32": _one_line(f"TUFTE {active_count:02d} WARDS", limit=34),
         "33": _one_line(f"ASCII {progress}", limit=34),
         "34": beat or "SEGMENT WAIT",
-        "35": _one_line(f"SCOPE RMS {rms} ON {onset}", limit=34),
+        "35": _one_line(f"BRIO SYN IR RMS {rms} ON {onset}", limit=34),
         "36": _one_line(f"IRDUAL {rms}/{onset}", limit=34),
     }
 
@@ -2087,6 +2104,7 @@ def build_visual_chain_lines(
     kind_variance = _clamp01(kind_variance + density_currency * 0.22)
     active_effect_ratio = _clamp01(active_effect_ratio + density_currency * 0.14)
 
+    spatial_pressure = 0.0
     if is_live > 0.0:
         # SlotDrift can be intensely active while a particular sampled pass set
         # has no literal edge/compositing node. For Screwm, that still must
@@ -2178,7 +2196,24 @@ def build_visual_chain_lines(
         lines[f"effect-drift-{family}.txt"] = f"{value:.4f}"
     for family, value in family_modes.items():
         lines[f"effect-drift-mode-{family}.txt"] = f"{value:.4f}"
+    lines.update(build_drift_geo_lines(spatial_pressure))
     return lines
+
+
+def build_drift_geo_lines(spatial_pressure: float) -> dict[str, str]:
+    """Map live spatial pressure into normalized geo cvar driver files.
+
+    The boost is live-gated by the caller: quiet or non-SlotDrift sources pass
+    zero pressure and therefore emit the conservative default-normalized values.
+    Coupling.qc applies the final floor-preserving range maps.
+    """
+    pressure = _clamp01(spatial_pressure)
+
+    def lifted(name: str) -> float:
+        baseline = DRIFT_GEO_BASELINES[name]
+        return _clamp01(baseline + (1.0 - baseline) * pressure)
+
+    return {filename: f"{lifted(name):.4f}" for name, filename in DRIFT_GEO_FILES.items()}
 
 
 def build_imagination_fragment_lines(

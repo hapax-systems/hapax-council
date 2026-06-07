@@ -7,6 +7,7 @@ Type=oneshot
 ExecStart=%h/projects/hapax-council/scripts/hapax-storage-pressure-check
 Environment=HOME=%h
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+TimeoutStartSec=60
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=hapax-storage-pressure

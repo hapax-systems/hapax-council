@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DISPATCH = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
 CLAUDE_HEADLESS = REPO_ROOT / "scripts" / "hapax-claude-headless"
 WATCHDOG = REPO_ROOT / "scripts" / "hapax-lane-idle-watchdog"
+SUPERVISOR = REPO_ROOT / "scripts" / "hapax-lane-supervisor"
 COORDINATOR = REPO_ROOT / "agents" / "coordinator" / "core.py"
 
 
@@ -46,6 +47,16 @@ def test_watchdog_respawn_floor_yields_when_closed() -> None:
     assert "shared.sdlc_pressure_gate --state" in text
     # Both the Claude and Codex respawn floors gate on admission.
     assert text.count('"$SDLC_ADMISSION" != "closed"') >= 2
+    assert "HAPAX_LOCAL_DEV_MAINTENANCE_MODE" in text
+    assert "appendix-only local-dev maintenance" in text
+
+
+def test_supervisor_appendix_only_suppresses_unclaimed_idle_await_respawn() -> None:
+    text = SUPERVISOR.read_text()
+    assert "HAPAX_LOCAL_DEV_MAINTENANCE_MODE" in text
+    assert "appendix-only local-dev maintenance" in text
+    assert "suppresses idle-await respawn" in text
+    assert "active claimed-task resumes preserved" in text
 
 
 def test_coordinator_paces_dispatch_under_pressure() -> None:

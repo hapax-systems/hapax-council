@@ -186,9 +186,29 @@ def _l12_contract_fixture() -> TopologyDescriptor:
             channels:
               count: 24
             params:
-              private_monitor_endpoint: true
+              legacy_private_monitor_endpoint: true
               private_monitor_positions: AUX8 AUX9
-              private_monitor_route: private-monitor-via-mpc-live-iii
+              legacy_private_monitor_route: private-monitor-via-mpc-live-iii
+          - id: mk5-output
+            kind: alsa_sink
+            pipewire_name: alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0
+            hw: hw:UltraLitemk5,0
+            channels:
+              count: 12
+            params:
+              private_monitor_endpoint: true
+              private_monitor_positions: AUX10 AUX11
+              private_monitor_route: private-monitor-via-mk5-phones
+              voice_dry_send_positions: AUX2 AUX3
+          - id: mk5-input
+            kind: alsa_source
+            pipewire_name: alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0
+            hw: hw:UltraLitemk5,0
+            channels:
+              count: 10
+            params:
+              operator_mic_position: AUX0
+              s4_wet_return_positions: AUX2 AUX3
           - id: private-sink
             kind: tap
             pipewire_name: hapax-private
@@ -214,7 +234,7 @@ def _l12_contract_fixture() -> TopologyDescriptor:
           - id: private-monitor-output
             kind: loopback
             pipewire_name: hapax-private-playback
-            target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
+            target_object: alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0
             params:
               node.dont-fallback: true
               node.dont-reconnect: true
@@ -223,7 +243,8 @@ def _l12_contract_fixture() -> TopologyDescriptor:
               state.restore: false
               fail_closed_on_target_absent: true
               private_monitor_bridge: true
-              mpc_usb_input_pair: AUX8 AUX9
+              playback_positions: AUX10 AUX11
+              mk5_output_pair: AUX10 AUX11
           - id: notification-private-monitor-capture
             kind: filter_chain
             pipewire_name: hapax-notification-private-monitor-capture
@@ -264,9 +285,9 @@ def _l12_contract_fixture() -> TopologyDescriptor:
           - id: pc-loudnorm
             kind: filter_chain
             pipewire_name: hapax-pc-loudnorm
-            target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
             params:
               notification_excluded: true
+              fail_closed: true
           - id: voice-fx
             kind: filter_chain
             pipewire_name: hapax-voice-fx-capture
@@ -274,10 +295,24 @@ def _l12_contract_fixture() -> TopologyDescriptor:
           - id: tts-loudnorm
             kind: filter_chain
             pipewire_name: hapax-loudnorm-capture
-            target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
+            target_object: alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0
             params:
               playback_positions: AUX2 AUX3
-              broadcast_forward_path: mpc-usb-output mpc-usb-return-capture hapax-livestream-tap
+              broadcast_forward_path: mk5-output s4-analog-insert voice-wet hapax-livestream-tap
+          - id: voice-wet
+            kind: filter_chain
+            pipewire_name: hapax-voice-wet-capture
+            target_object: alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0
+            params:
+              capture_positions: AUX2 AUX3
+              playback_target: hapax-livestream-tap
+          - id: mic-rode
+            kind: filter_chain
+            pipewire_name: hapax-mic-rode-capture
+            target_object: alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0
+            params:
+              capture_positions: AUX0
+              playback_target: hapax-livestream-tap
         edges:
           - source: l12-capture
             target: l12-evilpet-capture
@@ -293,6 +328,18 @@ def _l12_contract_fixture() -> TopologyDescriptor:
             target: private-monitor-capture
           - source: private-monitor-capture
             target: private-monitor-output
+          - source: voice-fx
+            target: tts-loudnorm
+          - source: tts-loudnorm
+            target: mk5-output
+          - source: mk5-input
+            target: voice-wet
+          - source: voice-wet
+            target: livestream-tap
+          - source: mk5-input
+            target: mic-rode
+          - source: mic-rode
+            target: livestream-tap
         """
     )
 
@@ -601,7 +648,7 @@ class TestPwDumpToDescriptor:
 
 
 class TestTtsBroadcastPathCheck:
-    def _current_mpc_dump(self, *, include_final_edge: bool = True) -> list[dict[str, Any]]:
+    def _current_mk5_dump(self, *, include_final_edge: bool = True) -> list[dict[str, Any]]:
         dump = [
             _pw_node(
                 id=100,
@@ -623,54 +670,61 @@ class TestTtsBroadcastPathCheck:
             ),
             _pw_node(
                 id=103,
-                node_name="alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0",
+                node_name="alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0",
                 media_class="Audio/Sink",
                 factory="api.alsa.pcm.sink",
-                hw="hw:7",
-                channels=24,
+                hw="hw:UltraLitemk5",
+                channels=12,
             ),
             _pw_node(
                 id=104,
-                node_name="hapax-mpc-usb-return-capture",
+                node_name="alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0",
+                media_class="Audio/Source",
+                factory="api.alsa.pcm.source",
+                hw="hw:UltraLitemk5",
+                channels=10,
+            ),
+            _pw_node(
+                id=105,
+                node_name="hapax-voice-wet-capture",
                 media_class="Audio/Sink",
                 factory="filter-chain",
             ),
             _pw_node(
-                id=105,
+                id=106,
                 node_name="hapax-livestream-tap",
                 media_class="Audio/Sink",
                 factory="support.null-audio-sink",
             ),
             _pw_node(
-                id=106,
+                id=107,
                 node_name="hapax-broadcast-master-capture",
                 media_class="Audio/Sink",
                 factory="filter-chain",
             ),
         ]
         if include_final_edge:
-            dump.append(_pw_link(id=200, out_node=105, in_node=106))
+            dump.append(_pw_link(id=200, out_node=106, in_node=107))
         return dump
 
-    def test_ok_when_current_mpc_wet_return_path_is_present(self) -> None:
-        result = check_tts_broadcast_path(pw_dump_to_descriptor(self._current_mpc_dump()))
+    def test_ok_when_current_mk5_s4_wet_return_path_is_present(self) -> None:
+        result = check_tts_broadcast_path(pw_dump_to_descriptor(self._current_mk5_dump()))
         assert result.ok is True
         assert result.missing_nodes == ()
         assert result.missing_edges == ()
 
-    def test_reports_missing_mpc_wet_return_node(self) -> None:
+    def test_reports_missing_mk5_s4_wet_return_node(self) -> None:
         dump = [
             node
-            for node in self._current_mpc_dump()
-            if node.get("info", {}).get("props", {}).get("node.name")
-            != "hapax-mpc-usb-return-capture"
+            for node in self._current_mk5_dump()
+            if node.get("info", {}).get("props", {}).get("node.name") != "hapax-voice-wet-capture"
         ]
         result = check_tts_broadcast_path(pw_dump_to_descriptor(dump))
         assert result.ok is False
-        assert "hapax-mpc-usb-return-capture" in result.missing_nodes
+        assert "hapax-voice-wet-capture" in result.missing_nodes
 
     def test_reports_missing_final_tap_to_master_edge(self) -> None:
-        dump = self._current_mpc_dump(include_final_edge=False)
+        dump = self._current_mk5_dump(include_final_edge=False)
         result = check_tts_broadcast_path(pw_dump_to_descriptor(dump))
         assert result.ok is False
         assert "hapax-livestream-tap -> hapax-broadcast-master-capture" in result.missing_edges
@@ -706,7 +760,7 @@ class TestTtsBroadcastPathCheck:
         ]
         result = check_tts_broadcast_path(pw_dump_to_descriptor(dump))
         assert result.ok is False
-        assert "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0" in (
+        assert "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0" in (
             result.missing_nodes
         )
 
@@ -817,7 +871,7 @@ class TestL12ForwardInvariantCheck:
         assert result.ok is True
         assert result.violations == ()
 
-    def test_fails_when_tts_mpc_return_lacks_broadcast_forward_path(self) -> None:
+    def test_fails_when_tts_mk5_s4_return_lacks_broadcast_forward_path(self) -> None:
         descriptor = _l12_contract_fixture()
         tts = descriptor.node_by_id("tts-loudnorm")
         descriptor = _replace_node(
@@ -831,7 +885,7 @@ class TestL12ForwardInvariantCheck:
         assert result.ok is False
         codes = {violation.code for violation in result.violations}
         assert "tts_broadcast_forward_path_not_declared" in codes
-        assert "tts_l12_missing_livestream_forward_path" in codes
+        assert "tts_mk5_s4_missing_livestream_forward_path" in codes
 
     def test_fails_when_assistant_reaches_broadcast_voice_fx_path(self) -> None:
         descriptor = _replace_node(

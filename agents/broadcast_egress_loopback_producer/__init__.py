@@ -1,8 +1,8 @@
 """Broadcast egress loopback witness producer.
 
 Samples the broadcast egress source (default ``hapax-broadcast-normalized``)
-via ``parec`` once per tick, computes RMS dBFS / peak dBFS / silence_ratio
-over a sliding window, and writes a fresh
+via one persistent ``parec`` stream, computes RMS dBFS / peak dBFS /
+silence_ratio over a sliding window, and writes a fresh
 :class:`shared.broadcast_audio_health.EgressLoopbackWitness` JSON
 atomically to ``/dev/shm/hapax-broadcast/egress-loopback.json``.
 
@@ -25,6 +25,7 @@ from .producer import (
     DEFAULT_WITNESS_PATH,
     EgressLoopbackProducer,
     LoopbackSample,
+    PersistentParecCapture,
     compute_loopback_metrics,
     write_witness_atomic,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "DEFAULT_WITNESS_PATH",
     "EgressLoopbackProducer",
     "LoopbackSample",
+    "PersistentParecCapture",
     "compute_loopback_metrics",
     "write_witness_atomic",
 ]

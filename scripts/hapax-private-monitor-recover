@@ -2,8 +2,8 @@
 """Recover or report the exact private monitor target.
 
 The private monitor contract is intentionally narrower than "play this on
-whatever sink is available."  This command resolves the explicit MPC Live III
-private-monitor ingress target, installs the repo-managed fail-closed bridge
+whatever sink is available."  This command resolves the explicit MOTU
+UltraLite mk5 Phones private-monitor target, installs the repo-managed fail-closed bridge
 when requested, and writes sanitized status evidence.  If the target or bridge
 is absent, the state is ``blocked_absent``; there is never a default-sink
 fallback.
@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
-EXACT_PRIVATE_MONITOR_TARGET = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"
+EXACT_PRIVATE_MONITOR_TARGET = "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0"
 BRIDGE_REPO_PATH = Path("config/pipewire/hapax-private-monitor-bridge.conf")
 DEFAULT_INSTALL_PATH = (
     Path.home() / ".config" / "pipewire" / "pipewire.conf.d" / "hapax-private-monitor-bridge.conf"
@@ -35,8 +35,8 @@ STALE_GENERATED_BRIDGE_CONFS = (
     "notification-private-monitor-output.conf",
 )
 DISABLED_BY_RECOVER_SUFFIX = ".disabled-by-hapax-private-monitor-recover"
-SANITIZED_TARGET_REF = "audio.mpc_private_monitor"
-ROUTE_REF = "route:private.mpc_live_iii_monitor"
+SANITIZED_TARGET_REF = "audio.mk5_private_monitor"
+ROUTE_REF = "route:private.mk5_phones_monitor"
 
 
 PIPEWIRE_RELOAD_UNITS = ("pipewire.service", "pipewire-pulse.service", "wireplumber.service")
@@ -161,8 +161,8 @@ def _disable_stale_generated_bridge_confs(install_dir: Path, *, install: bool) -
     """Disable stale generated private-monitor fragments superseded by the bridge.
 
     `hapax-private-monitor-bridge.conf` is the authoritative bridge because it
-    captures the private null-sink monitors and pins playback to the MPC Live
-    III. Older generated per-node fragments can sit beside it and fail static
+    captures the private null-sink monitors and pins playback to mk5 Phones.
+    Older generated per-node fragments can sit beside it and fail static
     safety checks, so the recover install path quarantines them.
     """
     if not install:
@@ -271,14 +271,14 @@ def _status(
     reason: str
     if not target_present:
         state = "blocked_absent"
-        reason_code = "mpc_private_monitor_target_absent"
+        reason_code = "mk5_private_monitor_target_absent"
         reason = (
-            "MPC Live III private monitor target is absent; private monitor route remains silent."
+            "mk5 Phones private monitor target is absent; private monitor route remains silent."
         )
     elif not bridge["installed"]:
         state = "blocked_absent"
         reason_code = "private_monitor_bridge_not_installed"
-        reason = "MPC Live III private monitor target is present, but the bridge is not installed."
+        reason = "mk5 Phones private monitor target is present, but the bridge is not installed."
     elif not bridge["matches_repo"]:
         state = "blocked_absent"
         reason_code = "private_monitor_bridge_drift"
@@ -290,14 +290,14 @@ def _status(
     elif not bridge_fail_closed:
         state = "blocked_absent"
         reason_code = "private_monitor_bridge_property_drift"
-        reason = "Private monitor bridge nodes are loaded but missing fail-closed MPC properties."
+        reason = "Private monitor bridge nodes are loaded but missing fail-closed mk5 properties."
     else:
         state = "ready"
-        reason_code = "mpc_private_monitor_bound"
-        reason = "MPC Live III private monitor target and fail-closed bridge are present."
+        reason_code = "mk5_private_monitor_bound"
+        reason = "mk5 Phones private monitor target and fail-closed bridge are present."
     return {
         "checked_at": checked_at,
-        "surface_id": "audio.mpc_private_monitor",
+        "surface_id": SANITIZED_TARGET_REF,
         "route_id": ROUTE_REF,
         "state": state,
         "reason_code": reason_code,

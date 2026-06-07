@@ -7,6 +7,7 @@ signals. Host policy mutation belongs in later governed slices.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
@@ -32,6 +33,7 @@ DEFAULT_EXPECTED_SWAPPINESS = 5
 
 class MemoryPressureClass(StrEnum):
     GLOBAL_RAM_PRESSURE = "global_ram_pressure"
+    MEMORY_PSI_PRESSURE = "memory_psi_pressure"
     ZRAM_SATURATION = "zram_saturation"
     SYSCTL_DRIFT = "sysctl_drift"
     SERVICE_CGROUP_OOM = "service_cgroup_oom"
@@ -65,6 +67,17 @@ class SystemdMemoryProperties(BaseModel):
     memory_max_bytes: int | None = None
     memory_high_bytes: int | None = None
     oom_score_adjust: int | None = None
+
+
+class MemoryPsiReading(BaseModel):
+    some_avg10: float = 0.0
+    some_avg60: float = 0.0
+    some_avg300: float = 0.0
+    some_total: int = 0
+    full_avg10: float = 0.0
+    full_avg60: float = 0.0
+    full_avg300: float = 0.0
+    full_total: int = 0
 
 
 class MemoryPressureSignal(BaseModel):
@@ -152,6 +165,37 @@ def parse_zram_mm_stat(text: str) -> ZramMmStat:
     )
 
 
+def parse_memory_psi(text: str) -> MemoryPsiReading:
+    """Parse /proc/pressure/memory into typed PSI averages."""
+
+    values: dict[str, float | int] = {}
+    for line in text.splitlines():
+        if line.startswith("some"):
+            prefix = "some"
+        elif line.startswith("full"):
+            prefix = "full"
+        else:
+            continue
+        for key in ("avg10", "avg60", "avg300"):
+            match = re.search(rf"{key}=([0-9.]+)", line)
+            if match:
+                values[f"{prefix}_{key}"] = float(match.group(1))
+        total_match = re.search(r"total=([0-9]+)", line)
+        if total_match:
+            values[f"{prefix}_total"] = int(total_match.group(1))
+
+    return MemoryPsiReading(
+        some_avg10=float(values.get("some_avg10", 0.0)),
+        some_avg60=float(values.get("some_avg60", 0.0)),
+        some_avg300=float(values.get("some_avg300", 0.0)),
+        some_total=int(values.get("some_total", 0)),
+        full_avg10=float(values.get("full_avg10", 0.0)),
+        full_avg60=float(values.get("full_avg60", 0.0)),
+        full_avg300=float(values.get("full_avg300", 0.0)),
+        full_total=int(values.get("full_total", 0)),
+    )
+
+
 def parse_cgroup_memory_events(text: str) -> dict[str, int]:
     """Parse cgroup v2 memory.events contents."""
 
@@ -212,6 +256,37 @@ def classify_global_ram_pressure(meminfo: Mapping[str, int]) -> MemoryPressureSi
     )
 
 
+def classify_memory_psi_pressure(psi: MemoryPsiReading) -> MemoryPressureSignal:
+    some_threshold = memory_threshold("memory_psi_some_avg10_pct")
+    full_threshold = memory_threshold("memory_psi_full_avg10_pct")
+    some_state = classify_state(psi.some_avg10, some_threshold)
+    full_state = classify_state(psi.full_avg10, full_threshold)
+    state = _worse_state(some_state, full_state)
+    threshold = (
+        full_threshold if full_state == state and full_state != some_state else some_threshold
+    )
+    return MemoryPressureSignal(
+        pressure_class=MemoryPressureClass.MEMORY_PSI_PRESSURE,
+        state=state,
+        current_value=round(max(psi.some_avg10, psi.full_avg10), 3),
+        unit="%",
+        threshold_signal=threshold.signal,
+        message=f"memory PSI some avg10 {psi.some_avg10:.1f}%, full avg10 {psi.full_avg10:.1f}%",
+        raw={
+            "some_avg10": psi.some_avg10,
+            "some_avg60": psi.some_avg60,
+            "some_avg300": psi.some_avg300,
+            "some_total": psi.some_total,
+            "full_avg10": psi.full_avg10,
+            "full_avg60": psi.full_avg60,
+            "full_avg300": psi.full_avg300,
+            "full_total": psi.full_total,
+            "some_threshold": some_threshold.model_dump(mode="json"),
+            "full_threshold": full_threshold.model_dump(mode="json"),
+        },
+    )
+
+
 def classify_swap_zram_saturation(
     devices: Sequence[SwapDevice],
     *,
@@ -225,22 +300,23 @@ def classify_swap_zram_saturation(
     total_bytes = sum(device.size_bytes for device in scoped_devices)
     used_bytes = sum(device.used_bytes for device in scoped_devices)
     used_pct = (used_bytes / total_bytes * 100.0) if total_bytes else 0.0
-    state = classify_state(used_pct, threshold)
     message = (
-        f"{scope} used {used_pct:.1f}%"
+        f"{scope} used {used_pct:.1f}% (informational; pressure is MemAvailable/PSI)"
         if total_bytes
         else "no active swap or zram devices reported"
     )
     zram_stats_by_device = zram_stats_by_device or {}
     return MemoryPressureSignal(
         pressure_class=MemoryPressureClass.ZRAM_SATURATION,
-        state=state,
+        state=ResourceState.GREEN,
         current_value=round(used_pct, 3),
         unit=threshold.unit,
         threshold_signal=threshold.signal,
         message=message,
         raw={
             "scope": scope,
+            "informational_only": True,
+            "pressure_driver": False,
             "used_bytes": used_bytes,
             "total_bytes": total_bytes,
             "used_pct": round(used_pct, 3),

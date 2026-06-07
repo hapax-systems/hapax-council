@@ -1,5 +1,6 @@
 """Tests for shared.fix_capabilities.docker_cap — Docker capability module."""
 
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -177,3 +178,35 @@ class TestDockerExecute:
             ["docker", "start", "ollama"],
             timeout=30.0,
         )
+
+    @pytest.mark.asyncio
+    async def test_execute_restart_suppressed_by_maintenance_lock(
+        self, cap: DockerCapability, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("HAPAX_MAINTENANCE_LOCK_DIR", str(tmp_path))
+        (tmp_path / "minio.json").write_text(
+            json.dumps(
+                {
+                    "task_id": "maintenance-task",
+                    "reason": "quiesced copy",
+                    "expires_at": "2999-01-01T00:00:00Z",
+                    "containers": ["minio"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        proposal = FixProposal(
+            capability="docker",
+            action_name="restart_container",
+            params={"container_name": "minio"},
+            safety=Safety.SAFE,
+        )
+        with patch(
+            "shared.fix_capabilities.docker_cap.run_cmd", new_callable=AsyncMock
+        ) as mock_cmd:
+            result = await cap.execute(proposal)
+
+        assert result.success is False
+        assert "Suppressed restart container for minio" in result.message
+        assert "maintenance-task" in result.message
+        mock_cmd.assert_not_called()

@@ -23,7 +23,8 @@ DEFAULT_COLUMNS = 32
 DEFAULT_CELL_SIZE = 64
 DEFAULT_FPS = 4.0
 FACE_COUNT = 1024
-GEOMETRY_REVISION = "aoa-regular-tetrix-v4-perfect-fit-oarb"
+GEOMETRY_REVISION = "aoa-regular-tetrix-v7-30pct-larger-perfect-fit-oarb"
+LEAF_FACE_EDGE_UNITS = 105.46
 FACE_OPERABILITY_CONTRACT = "stable-independent-control-per-rendered-fractal-face"
 
 
@@ -355,7 +356,7 @@ def render_atlas(
         "cell_size": cell_size,
         "face_count": FACE_COUNT,
         "fractal_depth": 4,
-        "leaf_face_edge_units": 48,
+        "leaf_face_edge_units": LEAF_FACE_EDGE_UNITS,
         "atlas_contract": "one-live-control-cell-per-rendered-fractal-face",
         "face_operability_contract": FACE_OPERABILITY_CONTRACT,
         "face_control_input": str(controls) if controls else "",

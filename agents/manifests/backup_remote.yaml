@@ -3,30 +3,27 @@ name: Remote Backup
 version: "1.0.0"
 category: observability
 reports_to: operator
-peers: [backup_local, llm_backup]
+peers: [backup_local]
 depends_on: [backup_local]
 
-purpose: Tier 2 backup to Backblaze B2 — offsite restic replication of the local backup repository.
+purpose: Retired Backblaze B2 remote backup receipt — no routine timer is expected after the 2026-06-06 offsite-policy decision.
 inputs:
-  - local restic repository
+  - Operator retirement decision
+  - Historical B2 backup records
 outputs:
-  - B2 restic snapshots
+  - Retirement receipt
 capabilities:
-  - restic_backup
-  - b2_upload
+  - backup_retirement_receipt
 schedule:
-  type: timer
-  systemd_unit: hapax-backup-remote.timer
-  interval: daily
+  type: on-demand
+  systemd_unit: hapax-backup-remote.service
+  interval: retired
 model: null
 
-autonomy: full
-decision_scope: Replicate local backups to B2. Cannot modify local repository.
+autonomy: advisory
+decision_scope: Document the retired B2 lane. Must not run automatically, enable timers, prune, upload, or modify backup repositories.
 escalation_target: operator
 axiom_bindings:
-  - axiom_id: executive_function
-    implications: [ex-routine-007]
-    role: subject
   - axiom_id: corporate_boundary
     implications: [cb-key-001]
     role: subject
@@ -35,15 +32,16 @@ raci:
     role: responsible
 
 health_group: null
-service_tier: 1
+service_tier: 3
 
 timer_display:
-  schedule_label: "Daily 03:00"
-  purpose: "Offsite restic backup to Backblaze B2"
+  schedule_label: "Retired 2026-06-06"
+  purpose: "Backblaze B2 remote backup retained only as a historical receipt"
 
 narrative: |
-  The Remote Backup agent handles Tier 2 offsite replication. After the
-  local backup completes, this agent replicates snapshots to Backblaze B2,
-  providing geographic redundancy. It uses credentials from the pass
-  password store (backblaze/key-id, backblaze/app-key) and the restic
-  password from pass as well.
+  The Remote Backup agent is retired as a required routine lane. On 2026-06-06
+  the operator selected Google Drive critical offsite backup as the canonical
+  offsite path and retired broad Backblaze B2 coverage rather than raising the
+  B2 storage cap. The service file may remain as a historical/manual receipt,
+  but no `hapax-backup-remote.timer` should be installed, enabled, or expected
+  by health policy.

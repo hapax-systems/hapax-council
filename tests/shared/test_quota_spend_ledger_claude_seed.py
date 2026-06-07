@@ -6,19 +6,21 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from shared.quota_spend_ledger import (
+    CapacityPool,
     PaidRouteRequest,
+    SubscriptionQuotaState,
     build_dashboard,
     evaluate_paid_route_eligibility,
     load_quota_spend_ledger,
 )
 
-NOW = datetime(2026, 5, 17, 8, 0, 0, tzinfo=UTC)
+NOW = datetime(2026, 6, 4, 17, 10, 0, tzinfo=UTC)
 
 
 class TestLedgerLoads:
     def test_fixture_loads_without_error(self) -> None:
         ledger = load_quota_spend_ledger()
-        assert ledger.ledger_id == "quota-spend-ledger-reconciled-20260517"
+        assert ledger.ledger_id == "quota-spend-ledger-reconciled-20260604"
 
     def test_quality_preserving_routes_available(self) -> None:
         ledger = load_quota_spend_ledger()
@@ -29,12 +31,24 @@ class TestLedgerLoads:
         assert ledger.local_resource_state == "green"
 
 
-class TestAnthropicQuotaSnapshot:
-    def test_anthropic_snapshot_is_fresh(self) -> None:
+class TestAnthropicCapacitySnapshots:
+    def test_anthropic_api_snapshot_is_fresh_paid_spend(self) -> None:
         ledger = load_quota_spend_ledger()
         anthropic_snapshots = [s for s in ledger.quota_snapshots if s.provider == "anthropic"]
         assert len(anthropic_snapshots) == 1
+        assert anthropic_snapshots[0].capacity_pool is CapacityPool.API_PAID_SPEND
         assert anthropic_snapshots[0].subscription_quota_state == "fresh"
+
+    def test_claude_code_subscription_snapshot_is_exhausted_and_separate(self) -> None:
+        ledger = load_quota_spend_ledger()
+        snapshots = [
+            snapshot
+            for snapshot in ledger.quota_snapshots
+            if snapshot.provider == "anthropic-claude-code-subscription"
+        ]
+        assert len(snapshots) == 1
+        assert snapshots[0].capacity_pool is CapacityPool.SUBSCRIPTION_QUOTA
+        assert snapshots[0].subscription_quota_state is SubscriptionQuotaState.EXHAUSTED
 
     def test_tabbyapi_snapshot_is_fresh(self) -> None:
         ledger = load_quota_spend_ledger()
@@ -119,7 +133,7 @@ class TestDashboard:
         ledger = load_quota_spend_ledger()
         dashboard = build_dashboard(ledger, now=NOW)
         assert dashboard.paid_api_route_eligible is True
-        assert dashboard.subscription_quota_state == "fresh"
+        assert dashboard.subscription_quota_state == "exhausted"
         assert dashboard.paid_api_budget_state == "active"
         assert dashboard.budget_ledger_stale is False
 

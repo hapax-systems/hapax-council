@@ -71,7 +71,11 @@ def _write_task(
     )
 
 
-def _run(tmp_path: Path, *args: str) -> subprocess.CompletedProcess:
+def _run(
+    tmp_path: Path,
+    *args: str,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         [
             str(SCRIPT),
@@ -83,8 +87,18 @@ def _run(tmp_path: Path, *args: str) -> subprocess.CompletedProcess:
         ],
         capture_output=True,
         text=True,
+        env={**os.environ, **env} if env is not None else None,
         timeout=10,
     )
+
+
+def _fake_gh_env(tmp_path: Path, *, output: str) -> dict[str, str]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    gh = bin_dir / "gh"
+    gh.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' '{output}'\n", encoding="utf-8")
+    gh.chmod(0o755)
+    return {"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"}
 
 
 def _frontmatter(path: Path) -> dict[str, object]:
@@ -229,7 +243,7 @@ def test_non_request_markdown_parent_spec_with_body_fences_is_ignored(tmp_path: 
     assert payload["blocked"][0]["reason"] == "no_linked_tasks"
 
 
-@pytest.mark.parametrize("status", ["active", "phase0_active"])
+@pytest.mark.parametrize("status", ["active", "phase0_active", "accepted_for_execution"])
 def test_active_request_statuses_close_with_explicit_fulfillment(
     tmp_path: Path, status: str
 ) -> None:
@@ -366,6 +380,152 @@ def test_grouped_covered_requests_are_linked_from_task_body(tmp_path: Path) -> N
     assert payload["eligible_count"] == 1
     assert not (active / "REQ-SEC-001.md").exists()
     assert (closed / "REQ-SEC-001.md").exists()
+
+
+def test_grouped_covered_requests_accept_lowercase_slug_segments(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_closed = tmp_path / "tasks" / "closed"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_closed.mkdir(parents=True)
+    request_id = "REQ-20260604-quota-blocked-lane-recovery-sop"
+    _write_request(active / f"{request_id}.md", request_id)
+    _write_task(
+        task_closed / "quota-sop.md",
+        "quota-sop",
+        status="done",
+        body=f"# Quota SOP\n\n## Covered Requests\n\n- `{request_id}`\n",
+    )
+
+    result = _run(tmp_path, "--dry-run", "--json", "--task-id", "quota-sop")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["eligible_count"] == 1
+    assert payload["eligible"][0]["request_id"] == request_id
+    assert payload["eligible"][0]["fulfilling_tasks"] == ["quota-sop"]
+
+
+def test_scoped_merged_pr_open_task_can_supply_prospective_fulfillment(
+    tmp_path: Path,
+) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_active = tmp_path / "tasks" / "active"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_active.mkdir(parents=True)
+    request_id = "REQ-20260604-quota-blocked-lane-recovery-sop"
+    request = active / f"{request_id}.md"
+    _write_request(request, request_id)
+    _write_task(
+        task_active / "request-close.md",
+        "request-close",
+        status="pr_open",
+        parent_request=str(request),
+        extra_frontmatter={"pr": 123},
+        body=f"# Request Close\n\n## Covered Requests\n\n- `{request_id}`\n",
+    )
+
+    result = _run(
+        tmp_path,
+        "--dry-run",
+        "--json",
+        "--task-id",
+        "request-close",
+        env=_fake_gh_env(tmp_path, output="MERGED,true"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["eligible_count"] == 1
+    decision = payload["eligible"][0]
+    assert decision["request_id"] == request_id
+    assert decision["fulfilling_tasks"] == ["request-close"]
+    assert decision["blocking_tasks"] == []
+
+
+def test_scoped_unmerged_pr_open_task_still_blocks_request_closure(
+    tmp_path: Path,
+) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_active = tmp_path / "tasks" / "active"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_active.mkdir(parents=True)
+    request_id = "REQ-SELF-unmerged"
+    request = active / f"{request_id}.md"
+    _write_request(request, request_id)
+    _write_task(
+        task_active / "request-close.md",
+        "request-close",
+        status="pr_open",
+        parent_request=str(request),
+        extra_frontmatter={"pr": 123},
+        body=f"# Request Close\n\n## Covered Requests\n\n- `{request_id}`\n",
+    )
+
+    result = _run(
+        tmp_path,
+        "--dry-run",
+        "--json",
+        "--task-id",
+        "request-close",
+        env=_fake_gh_env(tmp_path, output="OPEN,false"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["eligible_count"] == 0
+    blocked = payload["blocked"][0]
+    assert blocked["reason"] == "linked_tasks_not_fulfilled"
+    assert blocked["blocking_tasks"] == ["request-close:pr_open:active"]
+
+
+def test_unrelated_active_linked_task_blocks_scoped_prospective_closure(
+    tmp_path: Path,
+) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_active = tmp_path / "tasks" / "active"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_active.mkdir(parents=True)
+    request_id = "REQ-SELF-unrelated-active"
+    request = active / f"{request_id}.md"
+    _write_request(request, request_id)
+    _write_task(
+        task_active / "request-close.md",
+        "request-close",
+        status="pr_open",
+        parent_request=str(request),
+        extra_frontmatter={"pr": 123},
+        body=f"# Request Close\n\n## Covered Requests\n\n- `{request_id}`\n",
+    )
+    _write_task(
+        task_active / "unrelated-active.md",
+        "unrelated-active",
+        status="claimed",
+        parent_request=str(request),
+    )
+
+    result = _run(
+        tmp_path,
+        "--dry-run",
+        "--json",
+        "--task-id",
+        "request-close",
+        env=_fake_gh_env(tmp_path, output="MERGED,true"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["eligible_count"] == 0
+    blocked = payload["blocked"][0]
+    assert blocked["reason"] == "linked_tasks_not_fulfilled"
+    assert blocked["blocking_tasks"] == ["unrelated-active:claimed:active"]
 
 
 def test_missing_downstream_task_blocks_request_closure(tmp_path: Path) -> None:

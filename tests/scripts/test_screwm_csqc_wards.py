@@ -18,7 +18,7 @@ def _load_script(path: str) -> dict:
     return runpy.run_path(str(REPO_ROOT / path), run_name="__test__")
 
 
-def test_csqc_sources_define_all_legacy_ward_labels() -> None:
+def test_csqc_sources_define_all_in_world_ward_labels() -> None:
     body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
 
     assert "CSQC_UpdateView" in body
@@ -31,6 +31,13 @@ def test_csqc_sources_define_all_legacy_ward_labels() -> None:
         assert f'"{ordinal:02d}"' in body
         assert f"data/ward-{ordinal:02d}.txt" in body
         assert f"screwm_w{ordinal:02d}" in body
+
+    assert 'screwm_draw_ward_label(\'0 -360 172\', "18", "BOPIR"' in body
+    assert 'screwm_draw_ward_label(\'74 -360 172\', "19", "BRMIR"' in body
+    assert 'screwm_draw_ward_label(\'222 -360 64\', "35", "BSYIR"' in body
+    assert 'screwm_draw_ward_label(\'0 -360 172\', "18", "M8"' not in body
+    assert 'screwm_draw_ward_label(\'74 -360 172\', "19", "DECK"' not in body
+    assert 'screwm_draw_ward_label(\'222 -360 64\', "35", "SCOPE"' not in body
 
 
 def test_csqc_text_overlay_is_not_the_default_ward_surface() -> None:
@@ -139,6 +146,7 @@ def test_csqc_source_anchors_carry_live_camera_scalars() -> None:
 
 
 def test_csqc_content_source_manifests_live_on_source_planes() -> None:
+    map_module = _load_script("scripts/generate-screwm-map.py")
     body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
 
     assert 'screwm_read_norm("data/content-source-count.txt")' in body
@@ -157,8 +165,9 @@ def test_csqc_content_source_manifests_live_on_source_planes() -> None:
     assert "fresh * 78 + opacity * 46 + area * 42" in body
     assert "screwm_content_source_count * 16" in body
     assert "void() screwm_add_media_source_signal_lights" in body
-    assert "screwm_add_content_source_light('-1580 -2140 290', 1" in body
-    assert "screwm_add_content_source_light('1580 -500 300', 6" in body
+    for idx, source in enumerate(map_module["SOURCE_ANCHORS"], start=1):
+        x, y, z = source["pos"]
+        assert f"screwm_add_content_source_light('{x} {y} {z}', {idx}" in body
 
 
 def test_csqc_aoa_panes_and_scroom_scene_graph_carry_live_lightfields() -> None:

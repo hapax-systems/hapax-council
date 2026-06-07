@@ -26,9 +26,9 @@ import logging
 import shutil
 import subprocess
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from threading import Lock
+from threading import Condition, Lock, Thread
 from typing import Final
 
 import numpy as np
@@ -49,9 +49,11 @@ _PACTL_SHORT_CACHE_LOCK = Lock()
 
 # Monitor capture defaults — tuned for parecord raw output against the
 # null-audio-sink monitor ports the broadcast chain uses.
-DEFAULT_SAMPLE_RATE: Final[int] = 44100
+DEFAULT_SAMPLE_RATE: Final[int] = 48000
 DEFAULT_CHANNELS: Final[int] = 2
 DEFAULT_DURATION_S: Final[float] = 2.0
+DEFAULT_PERSISTENT_LATENCY_MSEC: Final[int] = 100
+DEFAULT_PERSISTENT_BUFFER_S: Final[float] = 15.0
 
 # Mandatory minimum stages — these are the load-bearing edges of the
 # broadcast chain per the source research §1 H1 "Implementation"
@@ -107,6 +109,7 @@ class ProbeResult:
     measurement: ProbeMeasurement
     captured_at: float
     duration_s: float
+    sample_rate: int = DEFAULT_SAMPLE_RATE
     error: str | None = None
     samples_mono: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int16))
 
@@ -367,6 +370,155 @@ def _capture_parecord(
     return bytes(captured)
 
 
+class PersistentParecordCapture:
+    """Long-lived parecord reader for one PipeWire capture target.
+
+    The audio-health daemons run continuously. Starting ``parecord`` for every
+    stage on every tick attaches and detaches streams from live egress nodes,
+    which is the dropout mechanism this task is removing. This class starts one
+    capture process per target and drains it on a background thread into a
+    bounded ring buffer; callers sample the latest window without reconnecting.
+    """
+
+    def __init__(
+        self,
+        target: str,
+        config: ProbeConfig,
+        *,
+        max_buffer_s: float = DEFAULT_PERSISTENT_BUFFER_S,
+    ) -> None:
+        self.logical_target = target
+        self.config = config
+        self.monitor_target = resolve_parecord_target(target, config)
+        self.bytes_per_frame = 2 * max(1, config.channels)
+        min_buffer_s = max(config.duration_s * 2.0, config.duration_s + config.timeout_extra_s)
+        buffer_s = max(max_buffer_s, min_buffer_s)
+        self.max_buffer_bytes = max(
+            4096,
+            int(buffer_s * config.sample_rate * self.bytes_per_frame),
+        )
+        self._condition = Condition()
+        self._buffer = bytearray()
+        self._total_bytes = 0
+        self._error: str | None = None
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._thread: Thread | None = None
+
+    def start(self) -> None:
+        """Start the persistent parecord process if it is not already running."""
+
+        with self._condition:
+            if self._proc is not None and self._proc.poll() is None:
+                return
+            self._buffer.clear()
+            self._total_bytes = 0
+            self._error = None
+
+        if shutil.which(self.config.parecord_path) is None:
+            raise ProbeError(f"parecord binary not found at {self.config.parecord_path!r}")
+
+        cmd = [
+            self.config.parecord_path,
+            f"--device={self.monitor_target}",
+            "--raw",
+            f"--rate={self.config.sample_rate}",
+            f"--channels={self.config.channels}",
+            "--format=s16le",
+            f"--latency-msec={DEFAULT_PERSISTENT_LATENCY_MSEC}",
+        ]
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        except (FileNotFoundError, OSError) as exc:
+            raise ProbeError(f"parecord spawn failed: {exc}") from exc
+
+        thread = Thread(target=self._read_loop, name=f"parecord:{self.monitor_target}", daemon=True)
+        with self._condition:
+            self._proc = proc
+            self._thread = thread
+        thread.start()
+
+    def _read_loop(self) -> None:
+        proc = self._proc
+        if proc is None or proc.stdout is None:
+            return
+        try:
+            while True:
+                chunk = proc.stdout.read(8192)
+                if not chunk:
+                    break
+                with self._condition:
+                    self._buffer.extend(chunk)
+                    self._total_bytes += len(chunk)
+                    overflow = len(self._buffer) - self.max_buffer_bytes
+                    if overflow > 0:
+                        del self._buffer[:overflow]
+                    self._condition.notify_all()
+        except OSError as exc:
+            with self._condition:
+                self._error = f"parecord read failed from {self.monitor_target!r}: {exc}"
+                self._condition.notify_all()
+            return
+
+        rc = proc.poll()
+        with self._condition:
+            if self._proc is proc and rc not in (None, 0):
+                self._error = f"parecord exited for {self.monitor_target!r} rc={rc}"
+            elif self._proc is proc:
+                self._error = f"parecord ended for {self.monitor_target!r}"
+            self._condition.notify_all()
+
+    def read_window(self, duration_s: float | None = None) -> bytes:
+        """Return the latest captured PCM window without reconnecting."""
+
+        self.start()
+        seconds = self.config.duration_s if duration_s is None else duration_s
+        target_bytes = max(1, int(seconds * self.config.sample_rate * self.bytes_per_frame))
+        deadline = time.monotonic() + seconds + self.config.timeout_extra_s
+
+        with self._condition:
+            while len(self._buffer) < target_bytes and self._error is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._condition.wait(timeout=min(0.1, remaining))
+
+            if len(self._buffer) >= target_bytes:
+                return bytes(self._buffer[-target_bytes:])
+
+            if self._buffer:
+                return bytes(self._buffer)
+
+            error = self._error or "timed out waiting for persistent parecord data"
+            raise ProbeError(error)
+
+    def close(self) -> None:
+        """Terminate the persistent capture process."""
+
+        proc = self._proc
+        if proc is None:
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                pass
+        except OSError:
+            pass
+        with self._condition:
+            if self._proc is proc:
+                self._proc = None
+            self._condition.notify_all()
+
+
 def _decode_s16le_to_mono(
     raw: bytes,
     channels: int,
@@ -392,6 +544,111 @@ def _decode_s16le_to_mono(
     return mono.astype(np.int16)
 
 
+def _error_result(
+    stage: str,
+    started: float,
+    error: str,
+    *,
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
+) -> ProbeResult:
+    empty = ProbeMeasurement(
+        rms_dbfs=-120.0,
+        peak_dbfs=-120.0,
+        crest_factor=0.0,
+        zero_crossing_rate=0.0,
+        sample_count=0,
+    )
+    return ProbeResult(
+        stage=stage,
+        classification=Classification.MUSIC_VOICE,
+        measurement=empty,
+        samples_mono=np.zeros(0, dtype=np.int16),
+        captured_at=started,
+        duration_s=0.0,
+        sample_rate=sample_rate,
+        error=error,
+    )
+
+
+def _measure_raw_result(
+    stage: str,
+    raw: bytes,
+    config: ProbeConfig,
+    classifier_config: ClassifierConfig | None,
+    *,
+    started: float,
+) -> ProbeResult:
+    samples = _decode_s16le_to_mono(raw, config.channels)
+    measurement = measure_pcm(samples)
+    label = classify(measurement, classifier_config)
+    duration = samples.size / config.sample_rate if config.sample_rate else config.duration_s
+    return ProbeResult(
+        stage=stage,
+        classification=label,
+        measurement=measurement,
+        samples_mono=samples,
+        captured_at=started,
+        duration_s=float(duration),
+        sample_rate=config.sample_rate,
+        error=None,
+    )
+
+
+class PersistentProbeSet:
+    """Persistent per-target probe pool for long-running audio-health daemons."""
+
+    def __init__(
+        self,
+        *,
+        config: ProbeConfig | None = None,
+        classifier_config: ClassifierConfig | None = None,
+        stream_factory: Callable[[str, ProbeConfig], PersistentParecordCapture] | None = None,
+    ) -> None:
+        self.config = config or ProbeConfig()
+        self.classifier_config = classifier_config
+        self._stream_factory = stream_factory or PersistentParecordCapture
+        self._streams: dict[str, PersistentParecordCapture] = {}
+        self._lock = Lock()
+
+    def _stream_for(self, stage: str) -> PersistentParecordCapture:
+        with self._lock:
+            stream = self._streams.get(stage)
+            if stream is None:
+                stream = self._stream_factory(stage, self.config)
+                self._streams[stage] = stream
+            return stream
+
+    def capture(self, stage: str, *, captured_at: float | None = None) -> ProbeResult:
+        """Capture and classify the latest window from a persistent stream."""
+
+        started = captured_at if captured_at is not None else time.time()
+        try:
+            raw = self._stream_for(stage).read_window(self.config.duration_s)
+        except ProbeError as exc:
+            log.debug("persistent probe %s failed: %s", stage, exc)
+            return _error_result(stage, started, str(exc), sample_rate=self.config.sample_rate)
+        return _measure_raw_result(
+            stage,
+            raw,
+            self.config,
+            self.classifier_config,
+            started=started,
+        )
+
+    def close(self) -> None:
+        with self._lock:
+            streams = list(self._streams.values())
+            self._streams.clear()
+        for stream in streams:
+            stream.close()
+
+    def __enter__(self) -> PersistentProbeSet:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.close()
+
+
 def capture_and_measure(
     stage: str,
     *,
@@ -415,35 +672,14 @@ def capture_and_measure(
         raw = _capture_parecord(stage, cfg)
     except ProbeError as exc:
         log.debug("probe %s failed: %s", stage, exc)
-        empty = ProbeMeasurement(
-            rms_dbfs=-120.0,
-            peak_dbfs=-120.0,
-            crest_factor=0.0,
-            zero_crossing_rate=0.0,
-            sample_count=0,
-        )
-        return ProbeResult(
-            stage=stage,
-            classification=Classification.MUSIC_VOICE,
-            measurement=empty,
-            samples_mono=np.zeros(0, dtype=np.int16),
-            captured_at=started,
-            duration_s=0.0,
-            error=str(exc),
-        )
+        return _error_result(stage, started, str(exc), sample_rate=cfg.sample_rate)
 
-    samples = _decode_s16le_to_mono(raw, cfg.channels)
-    measurement = measure_pcm(samples)
-    label = classify(measurement, classifier_config)
-    duration = samples.size / cfg.sample_rate if cfg.sample_rate else cfg.duration_s
-    return ProbeResult(
+    return _measure_raw_result(
         stage=stage,
-        classification=label,
-        measurement=measurement,
-        samples_mono=samples,
-        captured_at=started,
-        duration_s=float(duration),
-        error=None,
+        raw=raw,
+        config=cfg,
+        classifier_config=classifier_config,
+        started=started,
     )
 
 
@@ -455,6 +691,8 @@ __all__ = [
     "ProbeConfig",
     "ProbeError",
     "ProbeResult",
+    "PersistentParecordCapture",
+    "PersistentProbeSet",
     "capture_and_measure",
     "discover_broadcast_stages",
 ]

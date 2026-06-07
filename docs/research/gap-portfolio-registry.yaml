@@ -1,0 +1,222 @@
+schema_version: 1
+registry_id: research-gap-portfolio-v1
+authority_case: CASE-20260509-RESEARCH-PO
+wip_limit: 1
+created_at: '2026-05-20'
+moat_components:
+- stigmergic_coordination
+- temporal_grounding
+- perceptual_embodiment
+- axiom_governance
+- single_operator_architecture
+- bayesian_claim_tracking
+- publication_bus_provenance
+gaps:
+- gap_id: GAP-001
+  title: Multimodal grounding research pipeline
+  request_ref: REQ-20260509-multimodal-grounding-research-pipeline
+  disposition: execute
+  validation_status: needs_phase2_validation
+  uniqueness_score: 0.85
+  composability_score: 0.9
+  decay_rate_halflife_days: 180
+  unique_apparatus_required: true
+  apparatus_justification: Requires perceptual_embodiment (camera/IR fleet) + temporal_grounding
+    (bands architecture) + stigmergic_coordination (filesystem-as-bus context)
+  last_reviewed: '2026-06-04'
+- gap_id: GAP-002
+  title: Epistemic quality infrastructure
+  request_ref: REQ-20260512-epistemic-quality-infrastructure
+  disposition: execute
+  validation_status: blocked_on_labels
+  uniqueness_score: 0.75
+  composability_score: 0.8
+  decay_rate_halflife_days: 365
+  unique_apparatus_required: true
+  apparatus_justification: Requires bayesian_claim_tracking + publication_bus_provenance
+    for calibrated epistemic scoring
+  last_reviewed: '2026-05-20'
+- gap_id: GAP-003
+  title: Unb-AIRy discursive plane
+  request_ref: REQ-20260509-unb-airy-discursive-plane
+  disposition: publish
+  validation_status: needs_phase2_validation
+  uniqueness_score: 0.92
+  composability_score: 0.7
+  decay_rate_halflife_days: 270
+  unique_apparatus_required: true
+  apparatus_justification: Requires axiom_governance + single_operator_architecture
+    for assertion-plane enforcement unique to single-operator AI systems
+  last_reviewed: '2026-06-04'
+- gap_id: GAP-004
+  title: Research positioning and publication pipeline
+  request_ref: REQ-20260509-research-positioning-and-publication
+  disposition: publish
+  validation_status: phase1_complete
+  uniqueness_score: 0.6
+  composability_score: 0.95
+  decay_rate_halflife_days: 120
+  unique_apparatus_required: false
+  apparatus_justification: Publication pipeline is standard tooling; positioning requires
+    unique content but not unique apparatus
+  last_reviewed: '2026-05-20'
+- gap_id: GAP-005
+  title: Visibility engine and egress safety
+  request_ref: REQ-20260510-visibility-engine
+  disposition: hold
+  validation_status: phase1_complete
+  uniqueness_score: 0.5
+  composability_score: 0.85
+  decay_rate_halflife_days: 90
+  unique_apparatus_required: false
+  apparatus_justification: Standard publication automation; uniqueness comes from
+    content not tooling
+  last_reviewed: '2026-05-20'
+- gap_id: GAP-006
+  title: Quality-preserving subscription routing
+  request_ref: REQ-20260509195830-quality-preserving-subscription-routing
+  disposition: hold
+  validation_status: spec_complete
+  uniqueness_score: 0.45
+  composability_score: 0.75
+  decay_rate_halflife_days: 60
+  unique_apparatus_required: false
+  apparatus_justification: Routing optimization is operational, not research-unique
+  last_reviewed: '2026-05-20'
+- gap_id: GAP-007
+  title: Deliberative council engine
+  request_ref: REQ-20260515-deliberative-council-engine
+  disposition: publish
+  validation_status: needs_phase2_validation
+  uniqueness_score: 0.88
+  composability_score: 0.65
+  decay_rate_halflife_days: 365
+  unique_apparatus_required: true
+  apparatus_justification: Requires bayesian_claim_tracking + axiom_governance for
+    multi-agent claim disconfirmation unique to this architecture
+  last_reviewed: '2026-06-04'
+- gap_id: GAP-008
+  title: 3D compositor direct v4l2 output
+  request_ref: REQ-20260514-3d-compositor-v4l2-direct-output
+  disposition: hold
+  validation_status: in_progress
+  uniqueness_score: 0.55
+  composability_score: 0.6
+  decay_rate_halflife_days: 90
+  unique_apparatus_required: false
+  apparatus_justification: Compositor plumbing, not a research contribution
+  last_reviewed: '2026-05-20'
+- gap_id: GAP-009
+  title: CCTV benchmark and perplexity evaluation
+  request_ref: REQ-20260516-cctv-perplexity-benchmark
+  disposition: publish
+  validation_status: data_collected
+  uniqueness_score: 0.78
+  composability_score: 0.7
+  decay_rate_halflife_days: 180
+  unique_apparatus_required: true
+  apparatus_justification: Requires bayesian_claim_tracking + deliberative council
+    for claim-level perplexity benchmarking
+  last_reviewed: '2026-05-20'
+- gap_id: GAP-010
+  title: Axiom gate coverage and property hardening
+  request_ref: REQ-20260515-axiom-gate-coverage-and-property-hardening
+  disposition: hold
+  validation_status: ongoing
+  uniqueness_score: 0.8
+  composability_score: 0.55
+  decay_rate_halflife_days: 365
+  unique_apparatus_required: true
+  apparatus_justification: Requires axiom_governance — constitutional constraint enforcement
+    is unique to this system
+  last_reviewed: '2026-05-20'
+- gap_id: GAP-011
+  title: Monetization decision agent
+  request_ref: REQ-20260510-monetization-decision-agent
+  disposition: hold
+  validation_status: spec_complete
+  uniqueness_score: 0.4
+  composability_score: 0.7
+  decay_rate_halflife_days: 120
+  unique_apparatus_required: false
+  apparatus_justification: Standard revenue automation
+  last_reviewed: '2026-05-20'
+- gap_id: GAP-012
+  title: Wyoming LLC formation
+  request_ref: REQ-20260510-wyoming-llc-formation
+  disposition: hold
+  validation_status: operator_action_required
+  uniqueness_score: 0.1
+  composability_score: 0.3
+  decay_rate_halflife_days: 365
+  unique_apparatus_required: false
+  apparatus_justification: Legal/business, not research
+  last_reviewed: '2026-05-20'
+- gap_id: GAP-013
+  title: Livestream full surface success gate
+  request_ref: REQ-20260511152000-livestream-full-surface-success-gate
+  disposition: hold
+  validation_status: in_progress
+  uniqueness_score: 0.65
+  composability_score: 0.8
+  decay_rate_halflife_days: 60
+  unique_apparatus_required: false
+  apparatus_justification: Operational gate, not research
+  last_reviewed: '2026-05-20'
+- gap_id: GAP-014
+  title: Disaster recovery plan
+  request_ref: REQ-20260512-disaster-recovery-plan
+  disposition: hold
+  validation_status: phase2_complete
+  uniqueness_score: 0.15
+  composability_score: 0.4
+  decay_rate_halflife_days: 365
+  unique_apparatus_required: false
+  apparatus_justification: Standard DR, not research
+  last_reviewed: '2026-05-20'
+- gap_id: GAP-015
+  title: Governance repair strengthening program
+  request_ref: REQ-20260515-governance-repair-strengthening-program
+  disposition: publish
+  validation_status: ongoing
+  uniqueness_score: 0.82
+  composability_score: 0.6
+  decay_rate_halflife_days: 270
+  unique_apparatus_required: true
+  apparatus_justification: Requires axiom_governance + single_operator_architecture
+    for constitutional repair documentation
+  last_reviewed: '2026-05-20'
+- gap_id: GAP-016
+  title: AoA triangular pane information surfaces
+  request_ref: REQ-20260516122534-aoa-triangular-pane-information-surfaces
+  disposition: hold
+  validation_status: avsdlc_complete
+  uniqueness_score: 0.7
+  composability_score: 0.55
+  decay_rate_halflife_days: 180
+  unique_apparatus_required: true
+  apparatus_justification: Requires perceptual_embodiment for self-visualization of
+    system state on compositor
+  last_reviewed: '2026-05-20'
+- gap_id: GAP-017
+  title: Audio topology hardening program
+  request_ref: REQ-20260520-audio-topology-hardening-program
+  disposition: hold
+  validation_status: in_progress
+  uniqueness_score: 0.35
+  composability_score: 0.5
+  decay_rate_halflife_days: 90
+  unique_apparatus_required: false
+  apparatus_justification: Audio plumbing hardening, not research
+  last_reviewed: '2026-05-20'
+- gap_id: GAP-018
+  title: HN launch preparation
+  request_ref: REQ-20260510-hackernews-launch-prep
+  disposition: hold
+  validation_status: in_progress
+  uniqueness_score: 0.2
+  composability_score: 0.4
+  decay_rate_halflife_days: 30
+  unique_apparatus_required: false
+  apparatus_justification: Launch ops, not research
+  last_reviewed: '2026-05-20'

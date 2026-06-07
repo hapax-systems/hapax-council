@@ -7,6 +7,10 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 from agents.audio_perception.models import (
+    CLAP_SAMPLE_RATE,
+    ESSENTIA_SAMPLE_RATE,
+    PYANNOTE_SAMPLE_RATE,
+    SAMPLE_RATE,
     _resample,
     load_clap,
     load_essentia,
@@ -17,18 +21,23 @@ from agents.audio_perception.models import (
 class TestResample:
     def test_same_rate_returns_identity(self) -> None:
         audio = np.array([1.0, 2.0, 3.0, 4.0])
-        result = _resample(audio, 44100, 44100)
+        result = _resample(audio, SAMPLE_RATE, SAMPLE_RATE)
         np.testing.assert_array_equal(result, audio)
 
-    def test_upsample_increases_length(self) -> None:
-        audio = np.ones(44100, dtype=np.float32)
-        result = _resample(audio, 44100, 48000)
-        assert len(result) == 48000
+    def test_clap_rate_is_native_capture_rate(self) -> None:
+        audio = np.ones(SAMPLE_RATE, dtype=np.float32)
+        result = _resample(audio, SAMPLE_RATE, CLAP_SAMPLE_RATE)
+        assert len(result) == CLAP_SAMPLE_RATE
 
-    def test_downsample_decreases_length(self) -> None:
-        audio = np.ones(44100, dtype=np.float32)
-        result = _resample(audio, 44100, 16000)
-        assert len(result) == 16000
+    def test_essentia_rate_downsamples_to_algorithm_requirement(self) -> None:
+        audio = np.ones(SAMPLE_RATE, dtype=np.float32)
+        result = _resample(audio, SAMPLE_RATE, ESSENTIA_SAMPLE_RATE)
+        assert len(result) == ESSENTIA_SAMPLE_RATE
+
+    def test_pyannote_rate_downsamples_to_model_requirement(self) -> None:
+        audio = np.ones(SAMPLE_RATE, dtype=np.float32)
+        result = _resample(audio, SAMPLE_RATE, PYANNOTE_SAMPLE_RATE)
+        assert len(result) == PYANNOTE_SAMPLE_RATE
 
 
 class TestLoadClap:

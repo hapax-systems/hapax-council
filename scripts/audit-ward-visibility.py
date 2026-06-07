@@ -33,6 +33,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from PIL import Image, ImageStat
@@ -42,6 +43,7 @@ DEFAULT_LAYOUT = REPO_ROOT / "config" / "compositor-layouts" / "default.json"
 DEFAULT_RTMP = "rtmp://127.0.0.1:1935/live"
 DEFAULT_DEVICE = "/dev/video42"
 DEFAULT_ACTIVE_WARDS_FILE = Path("/dev/shm/hapax-compositor/current-layout-state.json")
+DEFAULT_ACTIVE_WARDS_STALE_S = 5.0
 
 # Audit thresholds. Match the 2026-04-19 visual-sweep classification:
 # "visible" = mean luminance ≥ 0.20 with std ≥ 0.05 (real chrome content
@@ -195,8 +197,20 @@ def _verdict(mean_lum: float, std: float) -> str:
     return "visible"
 
 
-def _load_active_wards(path: Path) -> tuple[set[str] | None, str | None]:
-    """Read the active rendered ward set from current-layout-state/active_wards JSON."""
+def _active_readback_is_stale(path: Path, payload: dict[str, object], *, stale_s: float) -> bool:
+    if stale_s <= 0:
+        return False
+    published_t = payload.get("published_t")
+    try:
+        timestamp = float(published_t) if published_t is not None else path.stat().st_mtime
+    except (OSError, TypeError, ValueError):
+        return True
+    return time.time() - timestamp > stale_s
+
+
+def _load_active_payload(
+    path: Path, *, stale_s: float
+) -> tuple[dict[str, object] | None, str | None]:
     if not path.exists():
         return None, None
     try:
@@ -205,6 +219,16 @@ def _load_active_wards(path: Path) -> tuple[set[str] | None, str | None]:
         return None, "active_wards_unreadable"
     if not isinstance(payload, dict):
         return None, "active_wards_unreadable"
+    if _active_readback_is_stale(path, payload, stale_s=stale_s):
+        return None, None
+    return payload, None
+
+
+def _load_active_wards(path: Path, *, stale_s: float) -> tuple[set[str] | None, str | None]:
+    """Read the active rendered ward set from current-layout-state/active_wards JSON."""
+    payload, error = _load_active_payload(path, stale_s=stale_s)
+    if payload is None:
+        return None, error
 
     raw_wards = (
         payload.get("active_ward_ids")
@@ -228,16 +252,13 @@ def _load_active_wards(path: Path) -> tuple[set[str] | None, str | None]:
     return wards, None
 
 
-def _load_active_assignment_rects(path: Path) -> tuple[list[dict[str, object]], str | None]:
+def _load_active_assignment_rects(
+    path: Path, *, stale_s: float
+) -> tuple[list[dict[str, object]], str | None]:
     """Read rendered assignment geometry from current-layout-state, if present."""
-    if not path.exists():
-        return [], None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return [], "active_assignments_unreadable"
-    if not isinstance(payload, dict):
-        return [], "active_assignments_unreadable"
+    payload, error = _load_active_payload(path, stale_s=stale_s)
+    if payload is None:
+        return [], error
     raw_assignments = payload.get("assignments")
     if raw_assignments is None:
         return [], None
@@ -322,6 +343,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--active-wards-stale-s",
+        type=float,
+        default=DEFAULT_ACTIVE_WARDS_STALE_S,
+        help=(
+            "Ignore active-wards/current-layout readback older than this many seconds "
+            "(default 5; <=0 disables freshness filtering)."
+        ),
+    )
+    parser.add_argument(
         "--min-visible-wards",
         type=int,
         default=None,
@@ -367,9 +397,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    active_wards, active_wards_error = _load_active_wards(Path(args.active_wards_file))
+    active_wards, active_wards_error = _load_active_wards(
+        Path(args.active_wards_file), stale_s=args.active_wards_stale_s
+    )
     active_assignment_rects, active_assignments_error = _load_active_assignment_rects(
-        Path(args.active_wards_file)
+        Path(args.active_wards_file), stale_s=args.active_wards_stale_s
     )
     rect_assignments = []
     for assignment in active_assignment_rects:

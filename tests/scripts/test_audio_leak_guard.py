@@ -8,6 +8,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "audio-leak-guard.sh"
+MK5_TARGET = "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0"
 MPC_TARGET = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"
 S4_TARGET = "alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output"
 YETI_TARGET = "alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo"
@@ -122,7 +123,7 @@ context.objects = [
 def _write_private_monitor_bridge(
     conf_dir: Path,
     *,
-    target: str = MPC_TARGET,
+    target: str = MK5_TARGET,
     include_dont_fallback: bool = True,
     include_notification_bridge: bool = False,
 ) -> None:
@@ -245,7 +246,10 @@ def test_fails_when_private_sink_targets_l12(tmp_path: Path) -> None:
     result = _run_guard(conf_dir, tmp_path, pipewire_conf_dir=pipewire_conf_dir)
 
     assert result.returncode == 1
-    assert "FAIL hapax-private-playback static target is broadcast/default path" in result.stdout
+    assert (
+        "FAIL hapax-private-playback static target is broadcast/default/retired path"
+        in result.stdout
+    )
     assert "LEAK RISK DETECTED" in result.stdout
 
 
@@ -260,12 +264,13 @@ def test_fails_when_notification_sink_targets_default_broadcast_path(tmp_path: P
 
     assert result.returncode == 1
     assert (
-        "FAIL hapax-notification-private static target is broadcast/default path" in result.stdout
+        "FAIL hapax-notification-private static target is broadcast/default/retired path"
+        in result.stdout
     )
     assert "LEAK RISK DETECTED" in result.stdout
 
 
-def test_allows_explicit_mpc_private_monitor_bridge(tmp_path: Path) -> None:
+def test_allows_explicit_mk5_private_monitor_bridge(tmp_path: Path) -> None:
     conf_dir = _write_wireplumber_config(tmp_path)
     pipewire_conf_dir = _write_pipewire_config(tmp_path)
     _write_private_monitor_bridge(pipewire_conf_dir)
@@ -273,9 +278,18 @@ def test_allows_explicit_mpc_private_monitor_bridge(tmp_path: Path) -> None:
     result = _run_guard(conf_dir, tmp_path, pipewire_conf_dir=pipewire_conf_dir)
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert (
-        "OK  hapax-private-playback static target is MPC Live III private monitor" in result.stdout
-    )
+    assert "OK  hapax-private-playback static target is mk5 Phones private monitor" in result.stdout
+
+
+def test_fails_when_explicit_private_monitor_bridge_targets_retired_mpc(tmp_path: Path) -> None:
+    conf_dir = _write_wireplumber_config(tmp_path)
+    pipewire_conf_dir = _write_pipewire_config(tmp_path)
+    _write_private_monitor_bridge(pipewire_conf_dir, target=MPC_TARGET)
+
+    result = _run_guard(conf_dir, tmp_path, pipewire_conf_dir=pipewire_conf_dir)
+
+    assert result.returncode == 1
+    assert "static target is broadcast/default/retired path" in result.stdout
 
 
 def test_fails_when_explicit_private_monitor_bridge_includes_notification(
@@ -310,7 +324,7 @@ def test_fails_when_explicit_private_monitor_bridge_targets_s4(tmp_path: Path) -
     result = _run_guard(conf_dir, tmp_path, pipewire_conf_dir=pipewire_conf_dir)
 
     assert result.returncode == 1
-    assert "static target is broadcast/default path" in result.stdout
+    assert "static target is broadcast/default/retired path" in result.stdout
 
 
 def test_fails_when_explicit_private_monitor_bridge_targets_l12(tmp_path: Path) -> None:
@@ -324,7 +338,10 @@ def test_fails_when_explicit_private_monitor_bridge_targets_l12(tmp_path: Path) 
     result = _run_guard(conf_dir, tmp_path, pipewire_conf_dir=pipewire_conf_dir)
 
     assert result.returncode == 1
-    assert "FAIL hapax-private-playback static target is broadcast/default path" in result.stdout
+    assert (
+        "FAIL hapax-private-playback static target is broadcast/default/retired path"
+        in result.stdout
+    )
     assert "LEAK RISK DETECTED" in result.stdout
 
 

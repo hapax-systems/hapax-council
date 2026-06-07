@@ -35,10 +35,12 @@ References:
 from __future__ import annotations
 
 from shared.audio_graph.compiler import (
+    CandidateBundle,
     CompiledArtefacts,
     PactlLoad,
     PostApplyProbe,
     compile_descriptor,
+    compile_port_audio_graph,
 )
 from shared.audio_graph.invariants import (
     INVARIANT_CHECKERS,
@@ -46,6 +48,46 @@ from shared.audio_graph.invariants import (
     InvariantSeverity,
     InvariantViolation,
     check_all_invariants,
+)
+from shared.audio_graph.model import (
+    AudioEdge,
+    BusSpec,
+    ClockSpec,
+    DevicePort,
+    DeviceSpec,
+    ExposureDomain,
+    FenceSpec,
+    GraphNode,
+    GraphPort,
+    HardwareInsert,
+    LoudnessConstantRefs,
+    ModulationPath,
+    MonitorSpec,
+    PortAudioGraph,
+    PortDirection,
+    ReconcilerSpec,
+    RoleSpec,
+    SourceSpec,
+    WetControl,
+    WetProfile,
+)
+from shared.audio_graph.proof import (
+    PortGraph,
+    ProofCode,
+    ProofReport,
+    ProofSeverity,
+    ProofViolation,
+    build_port_graph,
+    run_all_proofs,
+)
+from shared.audio_graph.render_pipewire import (
+    render_forbidden_link_map,
+    render_link_map,
+    render_pipewire_candidates,
+)
+from shared.audio_graph.render_wireplumber import (
+    render_link_deny_lua,
+    render_wireplumber_candidates,
 )
 from shared.audio_graph.schema import (
     AlsaCardRule,
@@ -86,6 +128,7 @@ from shared.audio_graph.validator import (
 
 __all__ = [
     # schema
+    "AudioEdge",
     "AlsaCardRule",
     "AlsaProfilePin",
     "AudioGraph",
@@ -93,27 +136,46 @@ __all__ = [
     "AudioNode",
     "BluezRule",
     "BroadcastInvariant",
+    "BusSpec",
     "ChannelDownmix",
     "ChannelMap",
+    "ClockSpec",
+    "DevicePort",
+    "DeviceSpec",
     "DownmixRoute",
     "DownmixStrategy",
     "DuckPolicy",
+    "ExposureDomain",
     "Fanout",
+    "FenceSpec",
     "FilterChainTemplate",
     "FilterStage",
     "FormatSpec",
     "GainStage",
     "GlobalTunables",
+    "GraphNode",
+    "GraphPort",
+    "HardwareInsert",
     "LoopbackTopology",
+    "LoudnessConstantRefs",
     "MediaRoleSink",
     "MixdownGraph",
     "MixerRoute",
+    "ModulationPath",
+    "MonitorSpec",
     "NodeKind",
+    "PortAudioGraph",
+    "PortDirection",
     "PreferredTargetPin",
+    "ReconcilerSpec",
     "RemapSource",
     "RoleLoopback",
+    "RoleSpec",
+    "SourceSpec",
     "StreamPin",
     "StreamRestoreRule",
+    "WetControl",
+    "WetProfile",
     "WireplumberRule",
     # invariants
     "InvariantKind",
@@ -121,11 +183,27 @@ __all__ = [
     "InvariantViolation",
     "check_all_invariants",
     "INVARIANT_CHECKERS",
+    # port-level proof
+    "PortGraph",
+    "ProofCode",
+    "ProofReport",
+    "ProofSeverity",
+    "ProofViolation",
+    "build_port_graph",
+    "run_all_proofs",
     # compiler
+    "CandidateBundle",
     "CompiledArtefacts",
     "PactlLoad",
     "PostApplyProbe",
     "compile_descriptor",
+    "compile_port_audio_graph",
+    # candidate renderers
+    "render_forbidden_link_map",
+    "render_link_deny_lua",
+    "render_link_map",
+    "render_pipewire_candidates",
+    "render_wireplumber_candidates",
     # validator
     "AudioGraphValidator",
     "DecomposeResult",

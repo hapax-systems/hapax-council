@@ -138,8 +138,8 @@ pub enum ReceiverClass {
 
 impl ReceiverClass {
     /// Classify by receiver name (case-insensitive substring), matching the
-    /// Python helpers' precedence (oarb/youtube/yt → ticker → atlas/ward →
-    /// reverie → camera/cam).
+    /// Python helpers' precedence (oarb/youtube/yt -> ticker -> atlas/ward ->
+    /// reverie -> direct IR BRIO/camera/cam).
     pub fn from_name(name: &str) -> Self {
         let n = name.to_lowercase();
         if n == "yt" || n.contains("oarb") || n.contains("youtube") {
@@ -150,7 +150,7 @@ impl ReceiverClass {
             Self::Atlas
         } else if n.contains("reverie") {
             Self::Reverie
-        } else if n.contains("camera") || n.contains("cam") {
+        } else if n.starts_with("ir-brio-") || n.contains("camera") || n.contains("cam") {
             Self::Camera
         } else {
             Self::Other
@@ -322,7 +322,15 @@ mod tests {
         assert_eq!(ReceiverClass::from_name("oarb_sphere"), ReceiverClass::Oarb);
         assert_eq!(ReceiverClass::from_name("yt"), ReceiverClass::Oarb);
         assert_eq!(ReceiverClass::from_name("cam_bop"), ReceiverClass::Camera);
+        assert_eq!(
+            ReceiverClass::from_name("ir-brio-operator"),
+            ReceiverClass::Camera
+        );
         assert_eq!(ReceiverClass::from_name("ward_atlas"), ReceiverClass::Atlas);
+        assert_eq!(
+            ReceiverClass::from_name("brio-operator-ir-ward"),
+            ReceiverClass::Atlas
+        );
         assert_eq!(
             ReceiverClass::from_name("ticker-grounding"),
             ReceiverClass::Ticker

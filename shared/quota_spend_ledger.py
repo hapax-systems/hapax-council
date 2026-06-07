@@ -884,6 +884,7 @@ def build_dashboard(
         local_resource_state=ledger.local_resource_state,
         overdue_receipts=overdue_receipts,
     )
+    paid_api_route_eligible = paid_state is PaidApiBudgetState.ACTIVE and not ledger_stale
     return QuotaSpendDashboard(
         quality_preserving_routes_available=ledger.quality_preserving_routes_available,
         blocked_quality_floor_reason=ledger.blocked_quality_floor_reason,
@@ -900,8 +901,11 @@ def build_dashboard(
         provider_dependency_count=len(active_dependency_refs),
         support_artifacts_waiting_for_review=len(support_waiting),
         budget_ledger_stale=ledger_stale,
-        paid_api_route_eligible=paid_state is PaidApiBudgetState.ACTIVE and not ledger_stale,
-        paid_api_blocking_reasons=tuple(non_green),
+        paid_api_route_eligible=paid_api_route_eligible,
+        paid_api_blocking_reasons=_paid_api_blocking_reasons(
+            non_green,
+            paid_api_route_eligible=paid_api_route_eligible,
+        ),
         non_green_states=tuple(non_green),
         transition_budget_refs=tuple(budget.budget_id for budget in ledger.transition_budgets),
         unreconciled_spend_refs=tuple(receipt.spend_id for receipt in overdue_receipts),
@@ -973,24 +977,39 @@ def _bootstrap_dependency_state(
 
 
 def _subscription_quota_state(ledger: QuotaSpendLedger) -> SubscriptionQuotaState:
-    if not ledger.quota_snapshots:
+    snapshots = tuple(
+        snapshot
+        for snapshot in ledger.quota_snapshots
+        if snapshot.capacity_pool is CapacityPool.SUBSCRIPTION_QUOTA
+    )
+    if not snapshots:
         return SubscriptionQuotaState.UNKNOWN
     if any(
-        snapshot.subscription_quota_state is SubscriptionQuotaState.FRESH
-        for snapshot in ledger.quota_snapshots
+        snapshot.subscription_quota_state is SubscriptionQuotaState.FRESH for snapshot in snapshots
     ):
         return SubscriptionQuotaState.FRESH
     if any(
         snapshot.subscription_quota_state is SubscriptionQuotaState.EXHAUSTED
-        for snapshot in ledger.quota_snapshots
+        for snapshot in snapshots
     ):
         return SubscriptionQuotaState.EXHAUSTED
     if any(
-        snapshot.subscription_quota_state is SubscriptionQuotaState.STALE
-        for snapshot in ledger.quota_snapshots
+        snapshot.subscription_quota_state is SubscriptionQuotaState.STALE for snapshot in snapshots
     ):
         return SubscriptionQuotaState.STALE
     return SubscriptionQuotaState.UNKNOWN
+
+
+def _paid_api_blocking_reasons(
+    non_green_states: list[str],
+    *,
+    paid_api_route_eligible: bool,
+) -> tuple[str, ...]:
+    if paid_api_route_eligible:
+        return ()
+    return tuple(
+        state for state in non_green_states if not state.startswith("subscription_quota_state:")
+    )
 
 
 def _next_budget_review_at(ledger: QuotaSpendLedger) -> datetime | None:

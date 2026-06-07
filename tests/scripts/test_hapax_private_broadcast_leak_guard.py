@@ -600,10 +600,11 @@ def test_layer_a_disables_state_restore() -> None:
     assert "2026-05-02" in body
 
 
-def test_layer_b_pins_mpc_target_with_fail_closed_props() -> None:
+def test_layer_b_pins_mk5_target_with_fail_closed_props() -> None:
     body = (WP_CONF_DIR / "56-hapax-private-pin-s4-track-1.conf").read_text(encoding="utf-8")
     assert "target.object" in body
-    assert "Akai_Professional_MPC_LIVE_III" in body
+    assert "MOTU_UltraLite-mk5" in body
+    assert "Akai_Professional_MPC_LIVE_III" not in body
     assert "Torso_Electronics_S-4" not in body
     assert "pro-output-0" in body
     assert "multichannel-output" not in body

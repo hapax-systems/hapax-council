@@ -11,9 +11,11 @@ from shared.memory_pressure import (
     DEFAULT_EXPECTED_SWAPPINESS,
     MemoryPressureSignal,
     classify_global_ram_pressure,
+    classify_memory_psi_pressure,
     classify_swap_zram_saturation,
     classify_swappiness_drift,
     parse_meminfo,
+    parse_memory_psi,
     parse_proc_swaps,
 )
 from shared.resource_model import ResourceState
@@ -23,6 +25,7 @@ from ..models import CheckResult, Status
 from ..registry import check_group
 
 _MEMINFO_PATH = Path("/proc/meminfo")
+_MEMORY_PSI_PATH = Path("/proc/pressure/memory")
 _SWAPS_PATH = Path("/proc/swaps")
 _SWAPPINESS_PATH = Path("/proc/sys/vm/swappiness")
 
@@ -45,6 +48,10 @@ async def check_memory_pressure() -> list[CheckResult]:
         ]
 
     signals = [classify_global_ram_pressure(parse_meminfo(meminfo_text))]
+
+    memory_psi_text = _read_text(_MEMORY_PSI_PATH)
+    if memory_psi_text is not None:
+        signals.append(classify_memory_psi_pressure(parse_memory_psi(memory_psi_text)))
 
     swaps_text = _read_text(_SWAPS_PATH) or ""
     signals.append(classify_swap_zram_saturation(parse_proc_swaps(swaps_text)))
@@ -110,8 +117,12 @@ def _status_from_resource_state(state: ResourceState) -> Status:
 def _remediation(signal: MemoryPressureSignal) -> str | None:
     if signal.pressure_class.value == "global_ram_pressure":
         return "Pause discretionary sessions and inspect top RSS consumers before repair."
+    if signal.pressure_class.value == "memory_psi_pressure":
+        return "Inspect memory stall sources before admission or restart gates proceed."
     if signal.pressure_class.value == "zram_saturation":
-        return "Treat swap/zram saturation separately from host RAM exhaustion."
+        return (
+            "Treat swap/zram saturation as telemetry unless RAM availability or PSI shows pressure."
+        )
     if signal.pressure_class.value == "sysctl_drift":
         return "Reconcile live vm.swappiness with source-controlled Hapax policy."
     return None

@@ -4,6 +4,7 @@ import json
 from unittest.mock import patch
 
 import pytest
+from pydantic_ai.messages import CachePoint
 
 from agents.deliberative_council.engine import _parse_phase1_output, deliberate, run_phase1
 from agents.deliberative_council.models import (
@@ -124,6 +125,48 @@ class TestRunPhase1:
 
         assert prompt_seed0 != prompt_seed1
 
+    def test_phase1_prompt_parts_cache_stable_prefix_only(self) -> None:
+        from agents.deliberative_council.prompts import phase1_prompt_parts
+
+        rubric = EpistemicQualityRubric()
+        prompt = phase1_prompt_parts(
+            rubric,
+            "dynamic claim text",
+            "claim-source.md",
+            seed=0,
+            cache_ttl="5m",
+        )
+
+        assert not isinstance(prompt, str)
+        assert isinstance(prompt[1], CachePoint)
+        assert prompt[1].ttl == "5m"
+        assert "Rubric Axes" in prompt[0]
+        assert "dynamic claim text" not in prompt[0]
+        assert "dynamic claim text" in prompt[2]
+        assert "claim-source.md" in prompt[2]
+
+    @pytest.mark.asyncio
+    async def test_phase1_cache_points_only_for_capable_families(self) -> None:
+        mock_output = json.dumps({"scores": {"a": 3}, "rationale": {}, "research_findings": []})
+        prompts: list[object] = []
+
+        async def _mock_call(member, prompt):
+            prompts.append(prompt)
+            return mock_output, []
+
+        with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
+            config = CouncilConfig(model_aliases=("opus", "local-fast"))
+            inp = CouncilInput(text="test", source_ref="ref.md")
+            rubric = EpistemicQualityRubric()
+            await run_phase1(inp, rubric, config)
+
+        opus_score_prompt = prompts[1]
+        local_score_prompt = prompts[3]
+
+        assert not isinstance(opus_score_prompt, str)
+        assert any(isinstance(part, CachePoint) for part in opus_score_prompt)
+        assert isinstance(local_score_prompt, str)
+
     @pytest.mark.asyncio
     async def test_shortcircuit_unanimous(self) -> None:
         unanimous_results = [
@@ -144,6 +187,8 @@ class TestRunPhase1:
 
         assert verdict.receipt.get("shortcircuited") is True
         assert verdict.convergence_status == ConvergenceStatus.CONVERGED
+        assert verdict.receipt["cache_policy"]["opus"]["cache_control"] is True
+        assert verdict.receipt["cache_policy"]["local-fast"]["cache_control"] is False
 
     @pytest.mark.asyncio
     async def test_shortcircuit_skips_when_iqr_high(self) -> None:

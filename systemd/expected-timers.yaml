@@ -6,8 +6,12 @@
 # This file is kept as a SUPERSET-CHECK BASELINE for
 # tests/test_agent_registry.py::test_expected_timers_matches_legacy. The
 # test asserts that the registry-derived timer set is a superset of the
-# 11 historical entries below; if any of these regress, the test breaks
+# retained historical entries below; if any of these regress, the test breaks
 # and we know the registry has dropped a load-bearing timer.
+#
+# Retired entries are removed when a governed policy decision intentionally
+# removes the routine timer expectation. `backup_remote` was retired on
+# 2026-06-06 in favor of GDrive critical offsite coverage.
 #
 # This file therefore has two readers:
 #   1. The regression test (frozen baseline; do not modify).
@@ -27,4 +31,3 @@ timers:
   introspect: manifest-snapshot.timer
   llm_backup: llm-backup.timer
   backup_local: hapax-backup-local.timer
-  backup_remote: hapax-backup-remote.timer

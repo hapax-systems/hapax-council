@@ -16,6 +16,8 @@ class TestDataCache:
         assert cache.timers == []
         assert cache.goals is None
         assert cache.nudges == []
+        assert cache.hosts == []
+        assert cache.host_storage is None
 
     async def test_refresh_fast_populates_health(self):
         cache = DataCache()
@@ -58,6 +60,7 @@ class TestDataCache:
             patch("logos.data.readiness.collect_readiness", return_value=None),
             patch("logos.data.agents.get_agent_registry", return_value=[]),
             patch("logos.data.studio.collect_studio", return_value=None),
+            patch("logos.data.host_storage.collect_host_storage", return_value=None),
             patch(
                 "logos.data.nudges.collect_nudges",
                 return_value=[
@@ -82,6 +85,7 @@ class TestDataCache:
         ):
             await cache.refresh_slow()
         assert len(cache.nudges) == 1
+        assert cache.host_storage is None
 
     async def test_refresh_slow_populates_goals(self):
         from logos.data.goals import GoalSnapshot
@@ -97,6 +101,7 @@ class TestDataCache:
             patch("logos.data.readiness.collect_readiness", return_value=None),
             patch("logos.data.agents.get_agent_registry", return_value=[]),
             patch("logos.data.studio.collect_studio", return_value=None),
+            patch("logos.data.host_storage.collect_host_storage", return_value=None),
             patch("logos.data.nudges.collect_nudges", return_value=[]),
             patch("logos.accommodations.load_accommodations", return_value=None),
             patch("logos.data.orientation.collect_orientation", return_value=None),

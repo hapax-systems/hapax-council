@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from logos.data.goals import GoalSnapshot
     from logos.data.gpu import VramSnapshot
     from logos.data.health import HealthSnapshot
+    from logos.data.host_storage import HostStorageHost, HostStorageSnapshot
     from logos.data.orientation import OrientationState
     from logos.data.readiness import ReadinessSnapshot
     from logos.data.scout import ScoutData
@@ -51,6 +52,8 @@ class DataCache:
     accommodations: AccommodationSet | None = None
     studio: StudioSnapshot | None = None
     orientation: OrientationState | None = None
+    hosts: list[HostStorageHost] = field(default_factory=list)
+    host_storage: HostStorageSnapshot | None = None
 
     # Refresh timestamps (monotonic seconds)
     _fast_refreshed_at: float = 0.0
@@ -111,6 +114,7 @@ class DataCache:
         from logos.data.cost import collect_cost
         from logos.data.drift import collect_drift
         from logos.data.goals import collect_goals
+        from logos.data.host_storage import collect_host_storage
         from logos.data.nudges import collect_nudges
         from logos.data.readiness import collect_readiness
         from logos.data.scout import collect_scout
@@ -152,6 +156,12 @@ class DataCache:
             self.orientation = collect_orientation()
         except Exception as e:
             log.warning("Orientation refresh failed: %s", e)
+
+        try:
+            self.host_storage = collect_host_storage()
+            self.hosts = self.host_storage.hosts
+        except Exception as e:
+            log.warning("Host-storage refresh failed: %s", e)
 
 
 # Singleton cache instance

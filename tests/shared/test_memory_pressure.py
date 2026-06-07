@@ -8,10 +8,12 @@ from shared.memory_pressure import (
     classify_critical_floor_risk,
     classify_global_ram_pressure,
     classify_live_swappiness,
+    classify_memory_psi_pressure,
     classify_swap_zram_saturation,
     memory_threshold,
     parse_cgroup_memory_events,
     parse_meminfo,
+    parse_memory_psi,
     parse_proc_swaps,
     parse_systemd_memory_properties,
     parse_zram_mm_stat,
@@ -47,10 +49,51 @@ def test_zram_saturation_is_separate_from_global_ram_pressure() -> None:
     signal = classify_swap_zram_saturation(devices)
 
     assert signal.pressure_class == MemoryPressureClass.ZRAM_SATURATION
-    assert signal.state == ResourceState.RED
+    assert signal.state == ResourceState.GREEN
     assert signal.threshold_signal == "zram_used_pct"
     assert signal.raw["scope"] == "zram"
+    assert signal.raw["informational_only"] is True
+    assert signal.raw["pressure_driver"] is False
     assert signal.raw["devices"][0]["is_zram"] is True
+
+
+def test_memory_psi_pressure_uses_resource_model_thresholds() -> None:
+    psi = parse_memory_psi(
+        "some avg10=42.50 avg60=18.00 avg300=4.00 total=123\n"
+        "full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+    )
+
+    signal = classify_memory_psi_pressure(psi)
+
+    assert signal.pressure_class == MemoryPressureClass.MEMORY_PSI_PRESSURE
+    assert signal.state == ResourceState.RED
+    assert signal.threshold_signal == "memory_psi_some_avg10_pct"
+    assert (
+        signal.raw["some_threshold"]["signal"]
+        == memory_threshold("memory_psi_some_avg10_pct").signal
+    )
+
+
+def test_high_zram_high_memavailable_no_psi_is_not_pressure() -> None:
+    mem_signal = classify_global_ram_pressure(
+        {
+            "MemTotal": 128 * BYTES_PER_GIB,
+            "MemAvailable": 67 * BYTES_PER_GIB,
+        }
+    )
+    psi_signal = classify_memory_psi_pressure(
+        parse_memory_psi(
+            "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+            "full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+        )
+    )
+    swap_signal = classify_swap_zram_saturation(
+        parse_proc_swaps("Filename Type Size Used Priority\n/dev/zram0 partition 100 100 100\n")
+    )
+
+    assert mem_signal.state == ResourceState.GREEN
+    assert psi_signal.state == ResourceState.GREEN
+    assert swap_signal.state == ResourceState.GREEN
 
 
 def test_live_swappiness_drift_uses_injected_reader() -> None:

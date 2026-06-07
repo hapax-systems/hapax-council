@@ -28,6 +28,11 @@
     "route_selection_authority",
     "quality_floor_satisfied",
     "authority_allowed",
+    "cloud_burst_eligible",
+    "cloud_burst_guard_state",
+    "cloud_burst_spike_reasons",
+    "cloud_burst_guard_reasons",
+    "local_execution_target",
     "reason_codes",
     "message",
     "resource_state_refs"
@@ -70,6 +75,26 @@
     "route_selection_authority": {"const": false},
     "quality_floor_satisfied": {"type": "boolean"},
     "authority_allowed": {"type": "boolean"},
+    "cloud_burst_eligible": {"type": "boolean"},
+    "cloud_burst_guard_state": {
+      "enum": [
+        "not_applicable",
+        "excluded_local",
+        "appendix_default",
+        "ineligible",
+        "blocked",
+        "eligible"
+      ]
+    },
+    "cloud_burst_spike_reasons": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "cloud_burst_guard_reasons": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "local_execution_target": {"type": ["string", "null"]},
     "reason_codes": {
       "type": "array",
       "items": {"type": "string", "minLength": 1}

@@ -451,9 +451,15 @@ fi
 # on skip so the next rebuild cycle retries once pressure drops.
 #
 # Thresholds are conservative defaults; override via env vars when the
-# migration changes the baseline.
+# migration changes the baseline. Swap/zram fullness is intentionally not a
+# restart gate: zram can be nearly full while MemAvailable is high and memory
+# PSI is zero. The old HAPAX_REBUILD_SWAP_PCT_MAX stopgap is obsolete.
 : "${HAPAX_REBUILD_LOAD_MAX:=3.0}"      # load-avg per CPU core
-: "${HAPAX_REBUILD_SWAP_PCT_MAX:=50}"   # swap used as % of total
+: "${HAPAX_REBUILD_MEM_AVAILABLE_GB_MIN:=15}"  # MemAvailable floor
+: "${HAPAX_REBUILD_MEMORY_PSI_SOME_AVG10_MAX:=35}"  # /proc/pressure/memory some avg10
+: "${HAPAX_REBUILD_MEMORY_PSI_FULL_AVG10_MAX:=10}"  # /proc/pressure/memory full avg10
+: "${HAPAX_REBUILD_MEMINFO_PATH:=/proc/meminfo}"
+: "${HAPAX_REBUILD_MEMORY_PSI_PATH:=/proc/pressure/memory}"
 : "${HAPAX_REBUILD_SKIP_GUARD:=0}"      # 1 to bypass the guard entirely
 : "${HAPAX_REBUILD_RESTART_TIMEOUT_SEC:=60}"  # bound any single systemd restart
 : "${HAPAX_REBUILD_RESTART_OBSERVATION_SEC:=30}"
@@ -467,12 +473,19 @@ if [ "$HAPAX_REBUILD_SKIP_GUARD" != "1" ]; then
     if awk -v lpc="$load_per_core" -v max="$HAPAX_REBUILD_LOAD_MAX" 'BEGIN { exit (lpc > max) ? 0 : 1 }'; then
         PRESSURE_REASON="load-per-core=${load_per_core} > ${HAPAX_REBUILD_LOAD_MAX} (load_1min=${load_1min}, cores=${cores})"
     else
-        swap_total=$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo)
-        swap_used=$(awk '/^SwapFree:/ {free=$2} /^SwapTotal:/ {total=$2} END {print total-free}' /proc/meminfo)
-        if [ "${swap_total:-0}" -gt 0 ]; then
-            swap_pct=$((swap_used * 100 / swap_total))
-            if [ "$swap_pct" -gt "$HAPAX_REBUILD_SWAP_PCT_MAX" ]; then
-                PRESSURE_REASON="swap=${swap_pct}% > ${HAPAX_REBUILD_SWAP_PCT_MAX}% (used=${swap_used}kB, total=${swap_total}kB)"
+        mem_available_kb=$(awk '/^MemAvailable:/ {print $2}' "$HAPAX_REBUILD_MEMINFO_PATH" 2>/dev/null || true)
+        if [[ "${mem_available_kb:-}" =~ ^[0-9]+$ ]] && awk -v avail_kb="$mem_available_kb" -v min_gb="$HAPAX_REBUILD_MEM_AVAILABLE_GB_MIN" 'BEGIN { exit ((avail_kb / 1048576) < min_gb) ? 0 : 1 }'; then
+            mem_available_gb=$(awk -v avail_kb="$mem_available_kb" 'BEGIN { printf "%.1f", avail_kb / 1048576 }')
+            PRESSURE_REASON="MemAvailable=${mem_available_gb}GB < ${HAPAX_REBUILD_MEM_AVAILABLE_GB_MIN}GB"
+        elif [ -r "$HAPAX_REBUILD_MEMORY_PSI_PATH" ]; then
+            memory_psi_some=$(awk '/^some / { for (i = 1; i <= NF; i++) if ($i ~ /^avg10=/) { sub("avg10=", "", $i); print $i; exit } }' "$HAPAX_REBUILD_MEMORY_PSI_PATH" 2>/dev/null || true)
+            memory_psi_full=$(awk '/^full / { for (i = 1; i <= NF; i++) if ($i ~ /^avg10=/) { sub("avg10=", "", $i); print $i; exit } }' "$HAPAX_REBUILD_MEMORY_PSI_PATH" 2>/dev/null || true)
+            memory_psi_some="${memory_psi_some:-0}"
+            memory_psi_full="${memory_psi_full:-0}"
+            if awk -v psi="$memory_psi_some" -v max="$HAPAX_REBUILD_MEMORY_PSI_SOME_AVG10_MAX" 'BEGIN { exit (psi > max) ? 0 : 1 }'; then
+                PRESSURE_REASON="memory-psi-some-avg10=${memory_psi_some}% > ${HAPAX_REBUILD_MEMORY_PSI_SOME_AVG10_MAX}%"
+            elif awk -v psi="$memory_psi_full" -v max="$HAPAX_REBUILD_MEMORY_PSI_FULL_AVG10_MAX" 'BEGIN { exit (psi > max) ? 0 : 1 }'; then
+                PRESSURE_REASON="memory-psi-full-avg10=${memory_psi_full}% > ${HAPAX_REBUILD_MEMORY_PSI_FULL_AVG10_MAX}%"
             fi
         fi
     fi

@@ -15,11 +15,11 @@ index f9007caf..7771cf14 100644
  #ifdef WIN32
  // Enable NVIDIA High Performance Graphics while using Integrated Graphics.
  #ifdef __cplusplus
-@@ -110,6 +116,93 @@ cvar_t r_cullentities_trace_eyejitter = {CF_CLIENT, "r_cullentities_trace_eyejit
+@@ -110,6 +116,108 @@ cvar_t r_cullentities_trace_eyejitter = {CF_CLIENT, "r_cullentities_trace_eyejit
  cvar_t r_sortentities = {CF_CLIENT, "r_sortentities", "0", "sort entities before drawing (might be faster)"};
  cvar_t r_speeds = {CF_CLIENT, "r_speeds","0", "displays rendering statistics and per-subsystem timings"};
  cvar_t r_fullbright = {CF_CLIENT, "r_fullbright","0", "makes map very bright and renders faster"};
-+#define HAPAX_LIVE_TEXTURE_SLOT_COUNT 14
++#define HAPAX_LIVE_TEXTURE_SLOT_COUNT 17
 +
 +cvar_t hapax_live_texture_enable[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
 +	{CF_CLIENT, "hapax_live_texture_enable", "0", "enable Hapax raw BGRA live texture upload slot 1"},
@@ -36,6 +36,9 @@ index f9007caf..7771cf14 100644
 +	{CF_CLIENT, "hapax_live_texture12_enable", "0", "enable Hapax raw BGRA live texture upload slot 12"},
 +	{CF_CLIENT, "hapax_live_texture13_enable", "0", "enable Hapax raw BGRA live texture upload slot 13"},
 +	{CF_CLIENT, "hapax_live_texture14_enable", "0", "enable Hapax raw BGRA live texture upload slot 14"},
++	{CF_CLIENT, "hapax_live_texture15_enable", "0", "enable Hapax raw BGRA live texture upload slot 15"},
++	{CF_CLIENT, "hapax_live_texture16_enable", "0", "enable Hapax raw BGRA live texture upload slot 16"},
++	{CF_CLIENT, "hapax_live_texture17_enable", "0", "enable Hapax raw BGRA live texture upload slot 17"},
 +};
 +cvar_t hapax_live_texture_name[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
 +	{CF_CLIENT, "hapax_live_texture_name", "progs/aoa_sphere.mdl_0", "skinframe/BSP texture basename to update from Hapax live texture slot 1"},
@@ -52,6 +55,9 @@ index f9007caf..7771cf14 100644
 +	{CF_CLIENT, "hapax_live_texture12_name", "w05", "skinframe/BSP texture basename to update from Hapax live texture slot 12"},
 +	{CF_CLIENT, "hapax_live_texture13_name", "speech_wave", "skinframe/BSP texture basename to update from Hapax live texture slot 13"},
 +	{CF_CLIENT, "hapax_live_texture14_name", "progs/aoa.mdl_0", "skinframe/BSP texture basename to update from Hapax live texture slot 14"},
++	{CF_CLIENT, "hapax_live_texture15_name", "w18", "skinframe/BSP texture basename to update from Hapax live texture slot 15"},
++	{CF_CLIENT, "hapax_live_texture16_name", "w19", "skinframe/BSP texture basename to update from Hapax live texture slot 16"},
++	{CF_CLIENT, "hapax_live_texture17_name", "w35", "skinframe/BSP texture basename to update from Hapax live texture slot 17"},
 +};
 +cvar_t hapax_live_texture_path[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
 +	{CF_CLIENT, "hapax_live_texture_path", "/dev/shm/hapax-compositor/quake-live-yt.bgra", "raw BGRA frame path for Hapax live texture slot 1"},
@@ -68,6 +74,9 @@ index f9007caf..7771cf14 100644
 +	{CF_CLIENT, "hapax_live_texture12_path", "/dev/shm/hapax-compositor/quake-live-reverie.bgra", "raw BGRA frame path for Hapax live texture slot 12"},
 +	{CF_CLIENT, "hapax_live_texture13_path", "/dev/shm/hapax-compositor/quake-live-speech-wave.bgra", "raw BGRA frame path for Hapax live texture slot 13"},
 +	{CF_CLIENT, "hapax_live_texture14_path", "/dev/shm/hapax-compositor/quake-live-aoa-atlas.bgra", "raw BGRA frame path for Hapax live texture slot 14"},
++	{CF_CLIENT, "hapax_live_texture15_path", "/dev/shm/hapax-compositor/quake-live-ir-brio-operator.bgra", "raw BGRA frame path for Hapax live texture slot 15"},
++	{CF_CLIENT, "hapax_live_texture16_path", "/dev/shm/hapax-compositor/quake-live-ir-brio-room.bgra", "raw BGRA frame path for Hapax live texture slot 16"},
++	{CF_CLIENT, "hapax_live_texture17_path", "/dev/shm/hapax-compositor/quake-live-ir-brio-synths.bgra", "raw BGRA frame path for Hapax live texture slot 17"},
 +};
 +cvar_t hapax_live_texture_width[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
 +	{CF_CLIENT, "hapax_live_texture_width", "2048", "raw BGRA frame width for Hapax live texture slot 1"},
@@ -84,6 +93,9 @@ index f9007caf..7771cf14 100644
 +	{CF_CLIENT, "hapax_live_texture12_width", "960", "raw BGRA frame width for Hapax live texture slot 12"},
 +	{CF_CLIENT, "hapax_live_texture13_width", "512", "raw BGRA frame width for Hapax live texture slot 13"},
 +	{CF_CLIENT, "hapax_live_texture14_width", "2048", "raw BGRA frame width for Hapax live texture slot 14"},
++	{CF_CLIENT, "hapax_live_texture15_width", "340", "raw BGRA frame width for Hapax live texture slot 15"},
++	{CF_CLIENT, "hapax_live_texture16_width", "340", "raw BGRA frame width for Hapax live texture slot 16"},
++	{CF_CLIENT, "hapax_live_texture17_width", "340", "raw BGRA frame width for Hapax live texture slot 17"},
 +};
 +cvar_t hapax_live_texture_height[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
 +	{CF_CLIENT, "hapax_live_texture_height", "1024", "raw BGRA frame height for Hapax live texture slot 1"},
@@ -100,6 +112,9 @@ index f9007caf..7771cf14 100644
 +	{CF_CLIENT, "hapax_live_texture12_height", "540", "raw BGRA frame height for Hapax live texture slot 12"},
 +	{CF_CLIENT, "hapax_live_texture13_height", "128", "raw BGRA frame height for Hapax live texture slot 13"},
 +	{CF_CLIENT, "hapax_live_texture14_height", "2048", "raw BGRA frame height for Hapax live texture slot 14"},
++	{CF_CLIENT, "hapax_live_texture15_height", "340", "raw BGRA frame height for Hapax live texture slot 15"},
++	{CF_CLIENT, "hapax_live_texture16_height", "340", "raw BGRA frame height for Hapax live texture slot 16"},
++	{CF_CLIENT, "hapax_live_texture17_height", "340", "raw BGRA frame height for Hapax live texture slot 17"},
 +};
 +
 +cvar_t hapax_driftfield_enable = {CF_CLIENT, "hapax_driftfield_enable", "0", "enable Hapax drift field standalone BGRA sampler upload"};
@@ -276,8 +291,8 @@ index f9007caf..7771cf14 100644
  	r_waterstate_waterplane_t *waterplane = (r_waterstate_waterplane_t *)surfacewaterplane;
  	if (r_trippy.integer && !notrippy)
  		permutation |= SHADERPERMUTATION_TRIPPY;
-+	// (hapax) GPU world-surface drift: flag drift_* surfaces for the HAPAX_DRIFT permutation.
-+	if (hapax_drift_enable.integer && t->name[0] && (!strncmp(t->name, "drift_", 6) || !strncmp(t->name, "hex_", 4) || !strncmp(t->name, "stipple_", 8) || !strncmp(t->name, "geometry", 8)))
++	// (hapax) GPU world-surface drift: material-load eligibility selects the HAPAX_DRIFT permutation.
++	if (hapax_drift_enable.integer && (t->currentmaterialflags & MATERIALFLAG_HAPAXDRIFT))
 +		permutation |= SHADERPERMUTATION_HAPAXDRIFT;
 +	else if (hapax_drift_enable.integer && rsurface.entity && rsurface.entity != r_refdef.scene.worldentity)
 +		permutation |= SHADERPERMUTATION_HAPAXDRIFT; // (hapax) content geometry (alias models / entities) drifts too
@@ -661,9 +676,51 @@ index f9007caf..7771cf14 100644
  	if (!skipblend)
 -		R_BlendView(viewcolortexture, fbo, depthtexture, colortexture, x, y, width, height);
 +		R_BlendView_N(viewcolortexture, fbo, depthtexture, colortexture, x, y, width, height, NULL, 0);
- 	if (r_timereport_active)
- 		R_TimeReport("blendview");
- 
+	if (r_timereport_active)
+		R_TimeReport("blendview");
+
+diff --git a/model_brush.h b/model_brush.h
+index dae4a3cf..3809c7c7 100644
+--- a/model_brush.h
++++ b/model_brush.h
+@@ -121,0 +122,2 @@ mplane_t;
++// (hapax) eligible for GPU world-surface drift/effects stage
++#define MATERIALFLAG_HAPAXDRIFT 0x00400000
+diff --git a/model_shared.c b/model_shared.c
+index 9a87c4db..07c54a25 100644
+--- a/model_shared.c
++++ b/model_shared.c
+@@ -1993,0 +1994,2 @@ void Mod_LoadQ3Shaders(void)
++				else if (!strcasecmp(parameter[0], "hapax_drift") || !strcasecmp(parameter[0], "dphapaxdrift"))
++					shader.dphapaxdrift = true;
+@@ -2269,0 +2272,10 @@ texture_shaderpass_t *Mod_CreateShaderPassFromQ3ShaderLayer(mempool_t *mempool,
++static qbool Mod_HapaxDriftEligibleTextureName(const char *name)
++{
++	return name && name[0] && (
++		!strncmp(name, "drift_", 6)
++		|| !strncmp(name, "hex_", 4)
++		|| !strncmp(name, "stipple_", 8)
++		|| !strncmp(name, "geometry", 8)
++	);
++}
++
+@@ -2484,0 +2497,2 @@ nothing                GL_ZERO GL_ONE
++		if (shader->dphapaxdrift)
++			texture->basematerialflags |= MATERIALFLAG_HAPAXDRIFT;
+@@ -2640,0 +2655,2 @@ nothing                GL_ZERO GL_ONE
++	if (Mod_HapaxDriftEligibleTextureName(texture->name))
++		texture->basematerialflags |= MATERIALFLAG_HAPAXDRIFT;
+@@ -2660,0 +2677,2 @@ void Mod_LoadCustomMaterial(mempool_t *mempool, texture_t *texture, const char *
++	if (Mod_HapaxDriftEligibleTextureName(texture->name))
++		texture->basematerialflags |= MATERIALFLAG_HAPAXDRIFT;
+diff --git a/r_qshader.h b/r_qshader.h
+index ce38ff7f..61cba25b 100644
+--- a/r_qshader.h
++++ b/r_qshader.h
+@@ -222,0 +223,3 @@ typedef struct shader_s
++	// Hapax GPU drift/effects stage eligibility
++	qbool dphapaxdrift;
++
 diff --git a/render.h b/render.h
 index 7fbcd0b3..0bd77491 100644
 --- a/render.h

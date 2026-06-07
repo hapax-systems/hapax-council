@@ -2139,15 +2139,20 @@ def prep_segment(
         segment_prep_contract=segment_prep_contract,
     )
     segment_live_event_report_sha256 = _live_event_report_hash(segment_live_event_report)
-    if (
-        segment_prep_contract_report.get("ok") is not True
-        or segment_live_event_report.get("ok") is not True
-    ):
+    live_event_viability_report = validate_live_event_viability(live_event_viability)
+    compose_refusal = _compose_refusal_reason(
+        segment_prep_contract_report=segment_prep_contract_report,
+        segment_live_event_report=segment_live_event_report,
+        live_event_viability_report=live_event_viability_report,
+    )
+    if compose_refusal is not None:
         log.warning(
-            "prep_segment: quarantining %s with contract/live-event failures: contract=%s live_event=%s",
+            "prep_segment: quarantining %s (%s): contract=%s live_event=%s viability_ok=%s",
             prog_id,
+            compose_refusal,
             segment_prep_contract_report.get("violations"),
             segment_live_event_report.get("violations"),
+            live_event_viability_report.get("ok"),
         )
         diagnostic_path = prep_dir / _programme_artifact_name(
             prog_id,
@@ -2161,7 +2166,7 @@ def prep_segment(
             **boundary,
             "terminal": True,
             "terminal_status": "refused_no_release",
-            "terminal_reason": "segment_prep_contract_or_live_event_failed",
+            "terminal_reason": compose_refusal,
             "programme_id": prog_id,
             "role": role,
             "topic": topic,
@@ -2172,12 +2177,14 @@ def prep_segment(
             "segment_prep_contract_report": segment_prep_contract_report,
             "segment_live_event_rubric_version": LIVE_EVENT_RUBRIC_VERSION,
             "segment_live_event_report": segment_live_event_report,
+            "live_event_viability": live_event_viability,
+            "live_event_viability_report": live_event_viability_report,
             "prepped_at": datetime.now(tz=UTC).isoformat(),
             "prep_session_id": prep_session["prep_session_id"],
             "model_id": prep_session["model_id"],
             "prompt_sha256": source_hashes["prompt_sha256"],
             "seed_sha256": source_hashes["seed_sha256"],
-            "not_loadable_reason": "segment prep contract or live-event report failed",
+            "not_loadable_reason": compose_refusal.replace("_", " "),
             "boundary_contract": boundary,
         }
         diagnostic["artifact_sha256"] = _artifact_hash(diagnostic)
@@ -2192,13 +2199,14 @@ def prep_segment(
             topic=topic,
             segment_beats=list(beats),
             terminal_status="refused_no_release",
-            terminal_reason="segment_prep_contract_or_live_event_failed",
-            not_loadable_reason="segment prep contract or live-event report failed",
+            terminal_reason=compose_refusal,
+            not_loadable_reason=compose_refusal.replace("_", " "),
             source_hashes=source_hashes,
             diagnostic_refs=[str(diagnostic_path)],
             refusal_metadata={
                 "segment_prep_contract_report": segment_prep_contract_report,
                 "segment_live_event_report": segment_live_event_report,
+                "live_event_viability_report": live_event_viability_report,
             },
         )
         return None
@@ -2784,13 +2792,21 @@ def _council_topic_substance_gate(topic: str, programme_id: str) -> bool:
             source_ref=f"topic_substance_check:{programme_id}",
             metadata={"check_type": "anterior_substance", "programme_id": programme_id},
         )
-        config = CouncilConfig(max_models=3, phase3_rounds=1)
+        config = CouncilConfig()
         verdict = asyncio.run(
             deliberate(council_input, CouncilMode.DISCONFIRMATION, DisconfirmationRubric(), config)
         )
-        mean_score = sum(s for s in verdict.scores.values() if s is not None) / max(
-            1, len(verdict.scores)
-        )
+        valid_scores = [s for s in verdict.scores.values() if s is not None]
+        if not valid_scores:
+            # Council degraded (no model produced a score). Fail-open per this
+            # gate's documented contract — a down council must not silently
+            # reject every topic. A genuine low score still rejects below.
+            log.warning(
+                "council_topic_substance_gate: council degraded (no scores), fail-open: %s",
+                topic[:80],
+            )
+            return True
+        mean_score = sum(valid_scores) / len(valid_scores)
         if mean_score <= 2.0:
             log.warning(
                 "council_topic_substance_gate: topic rejected (mean=%.1f, scores=%s): %s",
@@ -2829,12 +2845,22 @@ def _council_coherence_check(full_script: str, programme_id: str) -> tuple[bool,
             source_ref=f"coherence_check:{programme_id}",
             metadata={"check_type": "coherence", "programme_id": programme_id},
         )
-        config = CouncilConfig(max_models=3, phase3_rounds=1)
+        config = CouncilConfig()
         verdict = asyncio.run(
             deliberate(council_input, CouncilMode.DISCONFIRMATION, CoherenceRubric(), config)
         )
         scores = verdict.scores
-        mean_score = sum(s for s in scores.values() if s is not None) / max(1, len(scores))
+        valid_scores = [s for s in scores.values() if s is not None]
+        if not valid_scores:
+            # Council degraded (no scores) — fail-open, mirroring the topic gate
+            # and this function's except branch; do not block composition on a
+            # down council.
+            log.warning(
+                "_council_coherence_check: council degraded (no scores), fail-open for %s",
+                programme_id,
+            )
+            return True, ""
+        mean_score = sum(valid_scores) / len(valid_scores)
         feedback_lines = [f"Council coherence scores (mean={mean_score:.1f}):"]
         for axis, score in scores.items():
             feedback_lines.append(f"  - {axis}: {score}")
@@ -2854,6 +2880,32 @@ def _council_coherence_check(full_script: str, programme_id: str) -> tuple[bool,
     except Exception:
         log.warning("_council_coherence_check: council unavailable, fail-open", exc_info=True)
         return True, ""
+
+
+def _compose_refusal_reason(
+    *,
+    segment_prep_contract_report: dict[str, Any],
+    segment_live_event_report: dict[str, Any],
+    live_event_viability_report: dict[str, Any],
+) -> str | None:
+    """Terminal refusal reason for a freshly composed segment, or None to save.
+
+    R-A1 (gate, not composer): live-event viability is enforced HERE at WRITE
+    time so a non-viable segment is recorded as an honest refusal dossier
+    instead of being saved as a candidate that is then silently dropped at the
+    eligible-manifest boundary (``_consultation_rejection_reason``). The bar is
+    unchanged — only its enforcement point moves earlier — so the doctrine
+    guardrail (never weaken a release gate to hit yield) holds and a
+    no-candidate stays a successful, recorded outcome rather than a dead
+    artifact.
+    """
+    if segment_prep_contract_report.get("ok") is not True:
+        return "segment_prep_contract_failed"
+    if segment_live_event_report.get("ok") is not True:
+        return "segment_live_event_report_failed"
+    if live_event_viability_report.get("ok") is not True:
+        return "live_event_viability_not_demonstrated"
+    return None
 
 
 def _research_enrich_angle(angle_ctx: str, topic: str) -> str:
@@ -2883,10 +2935,17 @@ def _research_enrich_angle(angle_ctx: str, topic: str) -> str:
             "If you don't know specific examples, say so honestly."
         )
         response = litellm.completion(
-            model=MODELS.get("claude-opus", "claude-opus"),
+            # Route the lightweight research-enrichment call through the LiteLLM
+            # gateway with an explicit provider prefix + api_base. A bare model
+            # name (e.g. "claude-opus") has no provider, so litellm raises
+            # "LLM Provider NOT provided"; the resident local-fast route keeps
+            # this fail-soft helper off cloud rate limits (R-A2).
+            model=f"openai/{MODELS.get('local-fast', 'local-fast')}",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=2000,
             temperature=0.4,
+            api_base=os.environ.get("LITELLM_API_BASE", "http://127.0.0.1:4000"),
+            api_key=os.environ.get("LITELLM_API_KEY", "not-set"),
         )
         result = response.choices[0].message.content or ""
         if len(result) > 100:

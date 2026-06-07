@@ -11,7 +11,9 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,9 +38,12 @@ from shared.sdlc_lifecycle import (  # noqa: E402
 DEFAULT_REQUESTS_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-requests"
 DEFAULT_TASKS_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 DEFAULT_REPORT_PATH = Path.home() / ".cache" / "hapax" / "request-fulfillment-reconciler.json"
+DEFAULT_PR_REPO = "hapax-systems/hapax-council"
+PROSPECTIVE_FULFILLMENT_ACTIVE_STATUSES = frozenset({"pr_open", "merge_queue"})
 
-REQUEST_ID_RE = re.compile(r"\b(REQ-[A-Z0-9][A-Z0-9-]*(?:-\d{6})?)\b")
+REQUEST_ID_RE = re.compile(r"\b(REQ-[A-Za-z0-9][A-Za-z0-9-]*(?:-\d{6})?)\b")
 FRONTMATTER_CLOSE_RE = re.compile(r"(?m)^---[ \t]*$")
+PrStateLookup = Callable[[str, str], str]
 
 
 @dataclass(frozen=True)
@@ -131,6 +136,10 @@ def scalar(value: Any) -> str:
     return "" if text in {"null", "None", "~"} else text
 
 
+def nullish(value: str) -> bool:
+    return value.strip().lower() in {"", "null", "none", "~"}
+
+
 def is_request_type(frontmatter: dict[str, Any]) -> bool:
     return scalar(frontmatter.get("type")) in {"hapax-request", "request"}
 
@@ -146,6 +155,57 @@ def list_value(value: Any) -> list[str]:
     if text.startswith("[") and text.endswith("]"):
         return [part.strip().strip("'\"") for part in text[1:-1].split(",") if part.strip()]
     return [text]
+
+
+def task_pr_number(record: TaskRecord) -> str | None:
+    pr_number = scalar(record.frontmatter.get("pr")).lstrip("#")
+    return None if nullish(pr_number) else pr_number
+
+
+def task_pr_repo(record: TaskRecord) -> str:
+    pr_repo = scalar(record.frontmatter.get("pr_repo"))
+    return DEFAULT_PR_REPO if nullish(pr_repo) else pr_repo
+
+
+def check_pr_merged(pr_number: str, repo: str = DEFAULT_PR_REPO) -> str:
+    """Check PR merge status via gh CLI. Returns merged|open|closed_unmerged|unknown."""
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "view",
+                pr_number,
+                "--repo",
+                repo,
+                "--json",
+                "state,mergedAt",
+                "--jq",
+                '.state + "," + ((.mergedAt != null and .mergedAt != "") | tostring)',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    if result.returncode != 0:
+        return "unknown"
+    parts = result.stdout.strip().split(",")
+    if len(parts) == 2 and parts[1] == "true":
+        return "merged"
+    if parts and parts[0] == "OPEN":
+        return "open"
+    if parts and parts[0] == "CLOSED":
+        return "closed_unmerged"
+    return "unknown"
+
+
+def task_has_merged_pr_evidence(record: TaskRecord, pr_state_lookup: PrStateLookup) -> bool:
+    pr_number = task_pr_number(record)
+    if not pr_number:
+        return False
+    return pr_state_lookup(pr_number, task_pr_repo(record)) == "merged"
 
 
 def request_files_by_key(active_dir: Path, closed_dir: Path) -> dict[str, Path]:
@@ -273,12 +333,36 @@ def avsdlc_blockers_for_request(
     return blockers
 
 
+def is_scoped_prospective_fulfillment(
+    record: TaskRecord,
+    linked_id: str,
+    explicit_fulfillment_tasks: set[str],
+    task_id_filter: set[str],
+    pr_state_lookup: PrStateLookup,
+) -> bool:
+    if not task_id_filter:
+        return False
+    if record.directory != "active":
+        return False
+    if record.status not in PROSPECTIVE_FULFILLMENT_ACTIVE_STATUSES:
+        return False
+    if record.task_id not in task_id_filter and linked_id not in task_id_filter:
+        return False
+    if (
+        record.task_id not in explicit_fulfillment_tasks
+        and linked_id not in explicit_fulfillment_tasks
+    ):
+        return False
+    return task_has_merged_pr_evidence(record, pr_state_lookup)
+
+
 def decide_request(
     request_note: MarkdownNote,
     records: dict[str, TaskRecord],
     closed_dir: Path,
     *,
     task_id_filter: set[str],
+    pr_state_lookup: PrStateLookup,
 ) -> ReconcileDecision:
     frontmatter = request_note.frontmatter
     request_id = scalar(frontmatter.get("request_id")) or request_note.path.stem
@@ -328,7 +412,13 @@ def decide_request(
         record = records.get(linked_id)
         if record is None:
             missing.append(linked_id)
-        elif record.fulfilling:
+        elif record.fulfilling or is_scoped_prospective_fulfillment(
+            record=record,
+            linked_id=linked_id,
+            explicit_fulfillment_tasks=explicit_fulfillment_tasks,
+            task_id_filter=task_id_filter,
+            pr_state_lookup=pr_state_lookup,
+        ):
             fulfilling.append(record.task_id)
             fulfilling_evidence_keys.add(record.task_id)
             fulfilling_evidence_keys.add(linked_id)
@@ -411,13 +501,26 @@ def reconcile(
     closed_dir = requests_root / "closed"
     request_index = request_files_by_key(active_dir, closed_dir)
     records = build_task_records(tasks_root, active_dir, closed_dir, request_index)
+    pr_state_cache: dict[tuple[str, str], str] = {}
+
+    def cached_pr_state(pr_number: str, repo: str) -> str:
+        key = (pr_number, repo)
+        if key not in pr_state_cache:
+            pr_state_cache[key] = check_pr_merged(pr_number, repo)
+        return pr_state_cache[key]
 
     decisions: list[ReconcileDecision] = []
     for path in sorted(active_dir.glob("*.md")) if active_dir.is_dir() else []:
         note = parse_frontmatter(path)
         if not note:
             continue
-        decision = decide_request(note, records, closed_dir, task_id_filter=task_id_filter)
+        decision = decide_request(
+            note,
+            records,
+            closed_dir,
+            task_id_filter=task_id_filter,
+            pr_state_lookup=cached_pr_state,
+        )
         if decision.reason != "filtered":
             if apply and decision.eligible:
                 apply_decision(note, decision, now)

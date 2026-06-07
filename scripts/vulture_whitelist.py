@@ -32,6 +32,7 @@ from shared.archive_replay_sidecar_index import (
     ArchiveReplaySidecarIndexMetrics,
 )
 from shared.artifact_taxonomy import DispositionState, validate_artifact
+from shared.audio_graph.model import AudioEdge, DevicePort, PortAudioGraph, SourceSpec
 from shared.audio_reactivity_runtime_witness import (
     AudioReactivityRuntimeWitnessFixture as _AudioReactivityRuntimeWitnessFixture,
 )
@@ -563,6 +564,15 @@ studio_audio_safe_for_broadcast
 check_l12_forward_invariant
 build_topology_truth
 
+# mk5 port-level audio graph: Pydantic invokes these validators dynamically
+# during model validation; node_for_ref is a public graph helper for follow-on
+# compiler/reconciler work.
+DevicePort._ref_is_port_ref
+SourceSpec._one_modulation_path
+AudioEdge._edge_ref_is_port_ref
+PortAudioGraph._references_are_valid
+PortAudioGraph.node_for_ref
+
 # Director vocabulary is a contract surface for future programme scheduler and
 # content runner consumers. Pydantic calls validators dynamically; exported view
 # methods are public API, not internal dead code.
@@ -703,6 +713,13 @@ WorldCapabilityRegistry.require
 WorldCapabilityRegistry.records_for_domain
 WorldCapabilityRegistry.records_for_surface_ref
 WorldCapabilityRegistry.blocked_reason_codes
+
+# Screwm unified-fx Phase 2a exposes these source-only legibility-floor
+# helpers before the live activation/recruiter task consumes them. The tests
+# pin the contract; the runtime call path deliberately waits for a governed
+# visual witness task.
+screwm_ampmax_safe_from_bounds
+classify_screwm_geometry_legibility
 
 # Semantic recruitment row helpers are the public contract for the downstream
 # classification registry sweep and WCS adapters. Pydantic invokes validators
@@ -3958,9 +3975,12 @@ write_prosody
 
 # FastAPI route handlers: registered via @router.get/post decorators, not direct calls.
 from logos.api.routes.claims import get_triaged_claims
+from logos.api.routes.data import get_hosts, get_infrastructure_storage
 from logos.api.routes.grounding import get_claims, get_progress, get_timeline
 
 get_triaged_claims
+get_hosts
+get_infrastructure_storage
 get_progress
 get_claims
 get_timeline
@@ -3994,3 +4014,17 @@ from shared.liveness_surfaces import (
 legacy_deploy_stalled
 legacy_lane_progress_stalled
 legacy_reaper_stalled
+
+# SDLC blocked-evidence lifecycle: imported by the executable
+# scripts/cc-cascade-unblock path; vulture does not follow that script entrypoint.
+from shared.sdlc_lifecycle import is_active_blocked_with_evidence
+
+is_active_blocked_with_evidence
+
+# Host-provenance + storage receipts (infra-host-storage-formalization): Pydantic
+# invokes these @model_validator(mode="after") methods dynamically at
+# model_validate time; vulture cannot trace through the decorator.
+from shared.host_provenance import HostScopedClaim, StorageReceipt  # noqa: F401, E402
+
+HostScopedClaim._enforce_provenance
+StorageReceipt._transport_consistency

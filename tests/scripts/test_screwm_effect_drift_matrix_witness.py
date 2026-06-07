@@ -13,6 +13,13 @@ def _load_script() -> dict:
     return runpy.run_path(str(SCRIPT), run_name="__test_screwm_matrix__")
 
 
+def _load_map_generator() -> dict:
+    return runpy.run_path(
+        str(REPO_ROOT / "scripts" / "generate-screwm-map.py"),
+        run_name="__test_screwm_matrix_map__",
+    )
+
+
 def test_matrix_pairs_every_geometry_bound_row_with_existing_slotdrift_bank() -> None:
     module = _load_script()
     rows = module["MATRIX_ROWS"]
@@ -31,6 +38,58 @@ def test_matrix_pairs_every_geometry_bound_row_with_existing_slotdrift_bank() ->
     ]
     assert set(paired) <= set(banks)
     assert all(row.expected_cues for row in rows)
+
+
+def test_matrix_witness_pov_stations_match_generated_review_stations() -> None:
+    module = _load_script()
+    mapgen = _load_map_generator()
+
+    generated = {
+        name: (
+            tuple(float(value) for value in origin),
+            tuple(float(value) for value in target),
+        )
+        for name, origin, target in (
+            mapgen["GARDEN_CAMERA_STATIONS"] + mapgen["IR_CAMERA_WARD_STATIONS"]
+        )
+    }
+
+    for name, origin, target in module["POV_STATIONS"]:
+        assert generated[name] == (origin, target)
+
+    assert set(module["DEFAULT_POV_LABELS"]) >= {
+        "brio-operator-ir-ward",
+        "brio-room-ir-ward",
+        "brio-synths-ir-ward",
+    }
+    assert generated["left-media-window"] == (
+        (-250.0, -1420.0, 220.0),
+        (-1580.0, 400.0, 650.0),
+    )
+    assert generated["right-media-window"] == (
+        (250.0, -1420.0, 220.0),
+        (1580.0, 400.0, 650.0),
+    )
+    assert generated["aoa-pause"] == (
+        (-320.0, -1780.0, 208.0),
+        (0.0, -555.0, 224.0),
+    )
+    assert generated["far-garden-view"] == (
+        (720.0, 260.0, 240.0),
+        (-260.0, 980.0, 330.0),
+    )
+    assert generated["brio-operator-ir-ward"] == (
+        (-650.0, -1320.0, 705.0),
+        (-1180.0, -1320.0, 650.0),
+    )
+    assert generated["brio-room-ir-ward"] == (
+        (-650.0, 400.0, 705.0),
+        (-1180.0, 400.0, 650.0),
+    )
+    assert generated["brio-synths-ir-ward"] == (
+        (-1024.0, -1900.0, 1235.0),
+        (-1024.0, -2440.0, 1180.0),
+    )
 
 
 def test_quiet_live_baseline_zeros_prior_effect_state() -> None:
@@ -128,6 +187,25 @@ def test_duration_sweep_perturbs_pov_between_hold_frames() -> None:
     assert first[1] != station[1]
     assert last[1] != station[1]
     assert first[1] != last[1]
+
+
+def test_single_frame_metrics_report_visibility_threshold_inputs(tmp_path: Path) -> None:
+    module = _load_script()
+    image_module = pytest.importorskip("PIL.Image")
+    frame = tmp_path / "frame.png"
+    image = image_module.new("L", (16, 16), 0)
+    for x in range(8, 16):
+        for y in range(16):
+            image.putpixel((x, y), 255)
+    image.save(frame)
+
+    metrics = module["_single_frame_metrics"](frame)
+
+    assert metrics is not None
+    assert 0.45 <= metrics["mean_luma"] <= 0.55
+    assert metrics["black_ratio"] == 0.5
+    assert metrics["white_ratio"] == 0.5
+    assert metrics["edge_energy"] > 0
 
 
 def test_aesthetic_strength_metrics_detect_roomwide_region_coverage() -> None:

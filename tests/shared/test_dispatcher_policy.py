@@ -343,6 +343,245 @@ def test_paid_route_without_active_budget_refuses() -> None:
     assert "refused_expired_budget" in decision.reason_codes
 
 
+def test_ordinary_subscription_route_still_refuses_provider_spend_mutation() -> None:
+    request = _request(mutation_surface="provider_spend")
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert "route_not_mutable_for_provider_spend" in decision.reason_codes
+
+
+def test_ordinary_subscription_route_refuses_runtime_without_task_authority() -> None:
+    request = _request(mutation_surface="runtime")
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert "runtime_actuation_receipt_absent" in decision.reason_codes
+
+
+def test_provider_gateway_route_requires_active_paid_budget() -> None:
+    request = _request(
+        platform="api",
+        profile="provider_gateway",
+        route_id="api.headless.provider_gateway",
+        mutation_surface="provider_spend",
+        capability=_capability(
+            route_id="api.headless.provider_gateway",
+            capacity_pool="api_paid_spend",
+            paid_provider="google",
+            paid_profile="frontier-fast",
+            mutability={
+                "vault_docs": False,
+                "source": False,
+                "runtime": True,
+                "public": False,
+                "provider_spend": True,
+            },
+        ),
+        quota=_quota(
+            paid_api_budget_state="expired",
+            paid_route_eligibility_state="refused_expired_budget",
+            paid_route_eligibility_reasons=("matching TransitionBudget expired",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert "paid_route_without_active_budget" in decision.reason_codes
+    assert "refused_expired_budget" in decision.reason_codes
+
+
+def test_provider_gateway_route_launches_with_paid_budget_and_mutability() -> None:
+    request = _request(
+        platform="api",
+        profile="provider_gateway",
+        route_id="api.headless.provider_gateway",
+        mutation_surface="provider_spend",
+        capability=_capability(
+            route_id="api.headless.provider_gateway",
+            capacity_pool="api_paid_spend",
+            paid_provider="google",
+            paid_profile="frontier-fast",
+            mutability={
+                "vault_docs": False,
+                "source": False,
+                "runtime": True,
+                "public": False,
+                "provider_spend": True,
+            },
+        ),
+        quota=_quota(
+            paid_api_budget_state="active",
+            paid_route_eligibility_state="eligible_active_budget",
+            evidence_refs=("tb-20260510-anthropic-api-steady-state",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.route_policy_green is True
+    assert "policy_launch" in decision.reason_codes
+
+
+def test_provider_gateway_route_ignores_subscription_quota_when_paid_api_is_eligible() -> None:
+    request = _request(
+        platform="api",
+        profile="provider_gateway",
+        route_id="api.headless.provider_gateway",
+        mutation_surface="provider_spend",
+        capability=_capability(
+            route_id="api.headless.provider_gateway",
+            capacity_pool="api_paid_spend",
+            paid_provider="anthropic",
+            paid_profile="frontier-full",
+            mutability={
+                "vault_docs": False,
+                "source": False,
+                "runtime": True,
+                "public": False,
+                "provider_spend": True,
+            },
+        ),
+        quota=_quota(
+            paid_api_budget_state="active",
+            paid_api_route_eligible=True,
+            paid_api_blocking_reasons=("subscription_quota_state:exhausted",),
+            paid_route_eligibility_state="eligible_active_budget",
+            evidence_refs=("tb-20260510-anthropic-api-steady-state",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.route_policy_green is True
+    assert "policy_launch" in decision.reason_codes
+    assert "paid_route_without_active_budget" not in decision.reason_codes
+
+
+def test_spike_workload_refuses_local_fleet_and_points_to_cloud_burst() -> None:
+    request = _request(
+        cloud_burst={
+            "eligible": True,
+            "spike_reasons": ["high_parallelism:12", "multi_agent_fanout:5"],
+            "parallelism": 12,
+            "agent_fanout": 5,
+            "public_repo_only": True,
+            "read_mostly": True,
+            "no_secret_egress": True,
+            "provider_budget_ref": "tb-test-cloud-burst",
+        }
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert "cloud_burst_spike_excludes_local_fleet" in decision.reason_codes
+    assert "cloud_burst_target:api.headless.api_frontier" in decision.reason_codes
+    assert decision.cloud_burst_eligible is True
+    assert decision.cloud_burst_guard_state == "excluded_local"
+    assert decision.local_execution_target == "appendix"
+
+
+def test_non_spike_workload_launch_receipt_records_appendix_default() -> None:
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert "cloud_burst_not_eligible_appendix_default" in decision.reason_codes
+    assert decision.cloud_burst_guard_state == "appendix_default"
+    assert decision.local_execution_target == "appendix"
+
+
+def test_cloud_burst_route_requires_secret_public_read_and_budget_guards() -> None:
+    request = _request(
+        platform="api",
+        profile="api_frontier",
+        route_id="api.headless.api_frontier",
+        capability=_capability(
+            route_id="api.headless.api_frontier",
+            capacity_pool="api_paid_spend",
+        ),
+        quota=_quota(
+            paid_api_budget_state="active",
+            paid_route_eligibility_state="eligible_active_budget",
+            evidence_refs=("tb-test-cloud-burst",),
+        ),
+        cloud_burst={
+            "eligible": True,
+            "spike_reasons": ["ci_matrix"],
+            "ci_matrix": True,
+            "public_repo_only": False,
+            "read_mostly": False,
+            "no_secret_egress": True,
+            "provider_budget_ref": "tb-test-cloud-burst",
+        },
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert "cloud_burst_public_repo_guard_failed" in decision.reason_codes
+    assert "cloud_burst_read_mostly_guard_failed" in decision.reason_codes
+    assert decision.cloud_burst_guard_state == "blocked"
+
+
+def test_cloud_burst_route_ineligible_receipt_points_back_to_appendix() -> None:
+    request = _request(
+        platform="api",
+        profile="api_frontier",
+        route_id="api.headless.api_frontier",
+        capability=_capability(
+            route_id="api.headless.api_frontier",
+            capacity_pool="api_paid_spend",
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert "cloud_burst_not_eligible_appendix_default" in decision.reason_codes
+    assert decision.cloud_burst_guard_state == "ineligible"
+    assert decision.local_execution_target == "appendix"
+
+
+def test_cloud_burst_route_launches_only_after_all_guards_and_budget_match() -> None:
+    request = _request(
+        platform="api",
+        profile="api_frontier",
+        route_id="api.headless.api_frontier",
+        capability=_capability(
+            route_id="api.headless.api_frontier",
+            capacity_pool="api_paid_spend",
+        ),
+        quota=_quota(
+            paid_api_budget_state="active",
+            paid_route_eligibility_state="eligible_active_budget",
+            evidence_refs=("tb-test-cloud-burst",),
+        ),
+        cloud_burst={
+            "eligible": True,
+            "spike_reasons": ["high_parallelism:12", "ci_matrix"],
+            "parallelism": 12,
+            "ci_matrix": True,
+            "public_repo_only": True,
+            "read_mostly": True,
+            "no_secret_egress": True,
+            "provider_budget_ref": "tb-test-cloud-burst",
+        },
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert "cloud_burst_guard_passed" in decision.reason_codes
+    assert decision.cloud_burst_guard_state == "eligible"
+    assert decision.cloud_burst_spike_reasons == ("high_parallelism:12", "ci_matrix")
+
+
 def test_support_artifact_without_eligible_review_refuses() -> None:
     request = _request(
         capability=_capability(authority_ceiling="frontier_review_required"),

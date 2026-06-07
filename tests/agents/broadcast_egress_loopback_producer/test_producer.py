@@ -18,8 +18,10 @@ from pathlib import Path
 
 import pytest
 
+from agents.broadcast_egress_loopback_producer import producer as producer_module
 from agents.broadcast_egress_loopback_producer.producer import (
     DEFAULT_BROADCAST_SOURCE,
+    DEFAULT_SAMPLE_RATE_HZ,
     DEFAULT_TICK_SECONDS,
     DEFAULT_WINDOW_SECONDS,
     EgressLoopbackProducer,
@@ -39,7 +41,7 @@ def _silence_bytes(n_samples: int) -> bytes:
 def _sine_bytes(
     n_samples: int,
     freq_hz: float = 1000.0,
-    sample_rate: int = 44100,
+    sample_rate: int = DEFAULT_SAMPLE_RATE_HZ,
     amplitude: float = 0.5,
 ) -> bytes:
     """Generate a sine wave at the given amplitude (fraction of full scale)."""
@@ -52,7 +54,7 @@ def _sine_bytes(
     return samples.tobytes()
 
 
-def _half_silent_bytes(n_samples: int, sample_rate: int = 44100) -> bytes:
+def _half_silent_bytes(n_samples: int, sample_rate: int = DEFAULT_SAMPLE_RATE_HZ) -> bytes:
     """Half silence + half sine at -6 dBFS — silence_ratio should be ~0.5."""
     silent = _silence_bytes(n_samples // 2)
     audible = _sine_bytes(n_samples - (n_samples // 2), sample_rate=sample_rate)
@@ -72,7 +74,7 @@ def _garbled_bytes(n_samples: int) -> bytes:
 
 class TestComputeLoopbackMetrics:
     def test_silence_returns_floor_metrics(self) -> None:
-        sample = compute_loopback_metrics(_silence_bytes(44100))
+        sample = compute_loopback_metrics(_silence_bytes(DEFAULT_SAMPLE_RATE_HZ))
         assert sample.rms_dbfs == -120.0
         assert sample.peak_dbfs == -120.0
         assert sample.silence_ratio == 1.0
@@ -86,7 +88,7 @@ class TestComputeLoopbackMetrics:
 
     def test_full_scale_sine_rms_near_minus_three_db(self) -> None:
         # Sine wave at amplitude 1.0 → RMS = 1/sqrt(2) → ~-3.01 dBFS
-        sample = compute_loopback_metrics(_sine_bytes(44100, amplitude=1.0))
+        sample = compute_loopback_metrics(_sine_bytes(DEFAULT_SAMPLE_RATE_HZ, amplitude=1.0))
         assert sample.rms_dbfs == pytest.approx(-3.01, abs=0.1)
         # Peak should be at or just below 0 dBFS (full scale int16 is 32767).
         assert sample.peak_dbfs == pytest.approx(0.0, abs=0.1)
@@ -96,14 +98,14 @@ class TestComputeLoopbackMetrics:
         assert sample.crest_factor_db == pytest.approx(3.01, abs=0.2)
 
     def test_half_silent_input_yields_half_silence_ratio(self) -> None:
-        sample = compute_loopback_metrics(_half_silent_bytes(44100))
+        sample = compute_loopback_metrics(_half_silent_bytes(DEFAULT_SAMPLE_RATE_HZ))
         # Half the samples are exact zero → silence_ratio ≈ 0.5
         # Exact value drifts a hair because the boundary sample of the
         # sine half sits just above 0; widen tolerance to suit.
         assert sample.silence_ratio == pytest.approx(0.5, abs=0.05)
 
     def test_garbled_capture_reports_quality_metrics(self) -> None:
-        sample = compute_loopback_metrics(_garbled_bytes(44100))
+        sample = compute_loopback_metrics(_garbled_bytes(DEFAULT_SAMPLE_RATE_HZ))
         assert sample.quality == EgressLoopbackQuality.GARBLED
         assert sample.zero_crossing_rate_hz > 40_000
         assert sample.crest_factor_db == pytest.approx(0.0, abs=0.1)
@@ -359,12 +361,111 @@ class TestProducerConstruction:
     def test_defaults_match_evaluator_expectations(self) -> None:
         p = EgressLoopbackProducer()
         assert p.source == DEFAULT_BROADCAST_SOURCE
+        assert DEFAULT_SAMPLE_RATE_HZ == 48000
+        assert p.sample_rate == DEFAULT_SAMPLE_RATE_HZ
         # Evaluator's freshness threshold is 60s by default; tick must
         # be well below that so witness staleness never trips on
         # benign scheduling jitter.
         assert p.tick_seconds == DEFAULT_TICK_SECONDS
         assert p.window_seconds == DEFAULT_WINDOW_SECONDS
         assert p.tick_seconds * 12.0 <= 60.0
+
+    def test_default_capture_is_persistent(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        instances = []
+
+        class FakePersistentCapture:
+            def __init__(self, *, source: str, sample_rate: int, max_buffer_s: float) -> None:
+                self.source = source
+                self.sample_rate = sample_rate
+                self.max_buffer_s = max_buffer_s
+                self.calls: list[tuple[str, float, int]] = []
+                self.closed = False
+                instances.append(self)
+
+            def capture(self, source: str, duration_s: float, sample_rate: int) -> bytes:
+                self.calls.append((source, duration_s, sample_rate))
+                return _silence_bytes(int(duration_s * sample_rate))
+
+            def close(self) -> None:
+                self.closed = True
+
+        monkeypatch.setattr(producer_module, "PersistentParecCapture", FakePersistentCapture)
+        producer = producer_module.EgressLoopbackProducer(
+            source="hapax-broadcast-normalized",
+            window_seconds=1.0,
+            tick_seconds=1.0,
+            witness_path=tmp_path / "egress-loopback.json",
+        )
+
+        producer.tick_once()
+        producer.tick_once()
+        producer.close()
+
+        assert len(instances) == 1
+        capture = instances[0]
+        assert capture.source == "hapax-broadcast-normalized"
+        assert capture.sample_rate == DEFAULT_SAMPLE_RATE_HZ
+        assert capture.max_buffer_s >= 3.0
+        assert capture.calls == [
+            ("hapax-broadcast-normalized", 1.0, DEFAULT_SAMPLE_RATE_HZ),
+            ("hapax-broadcast-normalized", 1.0, DEFAULT_SAMPLE_RATE_HZ),
+        ]
+        assert capture.closed is True
+
+
+class TestPersistentParecCapture:
+    def test_starts_one_native_rate_parec_stream(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        commands: list[list[str]] = []
+        payload = array.array("h", [1000, -1000] * 1000).tobytes()
+
+        class FakeStdout:
+            def __init__(self) -> None:
+                self._chunks = [payload, b""]
+
+            def read(self, _n: int) -> bytes:
+                return self._chunks.pop(0) if self._chunks else b""
+
+        class FakeProc:
+            def __init__(self) -> None:
+                self.stdout = FakeStdout()
+
+            def poll(self) -> int | None:
+                return None
+
+            def terminate(self) -> None:
+                return None
+
+            def wait(self, timeout: float | None = None) -> int:
+                return 0
+
+            def kill(self) -> None:
+                return None
+
+        def fake_popen(cmd: list[str], **_kwargs: object) -> FakeProc:
+            commands.append(cmd)
+            return FakeProc()
+
+        monkeypatch.setattr(producer_module.shutil, "which", lambda _path: "/usr/bin/parec")
+        monkeypatch.setattr(producer_module.subprocess, "Popen", fake_popen)
+
+        capture = producer_module.PersistentParecCapture(
+            source="hapax-broadcast-normalized",
+            sample_rate=DEFAULT_SAMPLE_RATE_HZ,
+        )
+        first = capture.capture("hapax-broadcast-normalized", 0.001, DEFAULT_SAMPLE_RATE_HZ)
+        second = capture.capture("hapax-broadcast-normalized", 0.001, DEFAULT_SAMPLE_RATE_HZ)
+        capture.close()
+
+        assert first
+        assert second
+        assert len(commands) == 1
+        cmd = commands[0]
+        assert cmd[:3] == ["parec", "--device", "hapax-broadcast-normalized"]
+        assert cmd[cmd.index("--rate") + 1] == "48000"
+        assert cmd[cmd.index("--channels") + 1] == "2"
+        assert cmd[cmd.index("--latency-msec") + 1] == "100"
 
 
 # ── run_forever cadence ─────────────────────────────────────────────
@@ -416,6 +517,7 @@ class TestLoadConfigFromEnv:
             "HAPAX_LOOPBACK_SOURCE",
             "HAPAX_LOOPBACK_WINDOW_S",
             "HAPAX_LOOPBACK_TICK_S",
+            "HAPAX_LOOPBACK_SAMPLE_RATE_HZ",
             "HAPAX_LOOPBACK_WITNESS_PATH",
         ):
             monkeypatch.delenv(var, raising=False)
@@ -423,16 +525,19 @@ class TestLoadConfigFromEnv:
         assert cfg["source"] == DEFAULT_BROADCAST_SOURCE
         assert cfg["window_seconds"] == DEFAULT_WINDOW_SECONDS
         assert cfg["tick_seconds"] == DEFAULT_TICK_SECONDS
+        assert cfg["sample_rate"] == DEFAULT_SAMPLE_RATE_HZ
 
     def test_env_overrides_apply(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HAPAX_LOOPBACK_SOURCE", "hapax-obs-broadcast-remap")
         monkeypatch.setenv("HAPAX_LOOPBACK_WINDOW_S", "10.0")
         monkeypatch.setenv("HAPAX_LOOPBACK_TICK_S", "2.5")
+        monkeypatch.setenv("HAPAX_LOOPBACK_SAMPLE_RATE_HZ", "48000")
         monkeypatch.setenv("HAPAX_LOOPBACK_WITNESS_PATH", "/tmp/test-egress-loopback.json")
         cfg = load_config_from_env()
         assert cfg["source"] == "hapax-obs-broadcast-remap"
         assert cfg["window_seconds"] == 10.0
         assert cfg["tick_seconds"] == 2.5
+        assert cfg["sample_rate"] == 48000
         assert str(cfg["witness_path"]) == "/tmp/test-egress-loopback.json"
 
 

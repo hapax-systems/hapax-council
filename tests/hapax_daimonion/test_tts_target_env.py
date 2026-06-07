@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline
+from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline, ConvState
 from agents.hapax_daimonion.cpal.destination_channel import DestinationChannel
 from agents.hapax_daimonion.pw_audio_output import PlaybackResult
 
@@ -87,6 +87,68 @@ class TestConversationPipelineRoutedAudio:
         )
 
         assert audio_output.calls == [(pcm, {"target": "hapax-private", "media_role": "Assistant"})]
+
+    def test_routed_write_feeds_tts_envelope_before_playback(self):
+        pcm = b"\x00\x01" * 500
+        events = []
+
+        class AudioOutput:
+            def write(self, data, **kwargs):
+                events.append(("write", data, kwargs))
+                return PlaybackResult(
+                    status="completed",
+                    returncode=0,
+                    duration_s=0.04,
+                    timeout_s=0.04,
+                    target=kwargs["target"],
+                    media_role=kwargs["media_role"],
+                )
+
+        publisher = SimpleNamespace(feed=lambda data: events.append(("feed", data)))
+
+        ConversationPipeline._write_audio(
+            AudioOutput(),
+            None,
+            pcm,
+            destination_target="hapax-private",
+            destination_role="Assistant",
+            tts_envelope_publisher=publisher,
+        )
+
+        assert events == [
+            ("feed", pcm),
+            ("write", pcm, {"target": "hapax-private", "media_role": "Assistant"}),
+        ]
+
+    def test_tts_envelope_feed_failure_does_not_block_routed_write(self):
+        pcm = b"\x00\x01" * 500
+        writes = []
+
+        class AudioOutput:
+            def write(self, data, **kwargs):
+                writes.append((data, kwargs))
+                return PlaybackResult(
+                    status="completed",
+                    returncode=0,
+                    duration_s=0.04,
+                    timeout_s=0.04,
+                    target=kwargs["target"],
+                    media_role=kwargs["media_role"],
+                )
+
+        def _feed(_data):
+            raise RuntimeError("ring unavailable")
+
+        ConversationPipeline._write_audio(
+            AudioOutput(),
+            None,
+            pcm,
+            destination_target="hapax-private",
+            destination_role="Assistant",
+            tts_envelope_publisher=SimpleNamespace(feed=_feed),
+        )
+
+        assert writes == [(pcm, {"target": "hapax-private", "media_role": "Assistant"})]
 
     @pytest.mark.asyncio
     async def test_bridge_phrase_drops_when_default_route_is_blocked(self):
@@ -206,6 +268,10 @@ class TestConversationPipelineRoutedAudio:
         pipeline._max_tts_history = 5  # type: ignore[attr-defined]
         pipeline.tts = SimpleNamespace(synthesize=MagicMock(return_value=b"\x00\x01" * 120))  # type: ignore[attr-defined]
         pipeline._echo_canceller = None  # type: ignore[attr-defined]
+        fed = []
+        pipeline._tts_envelope_publisher = SimpleNamespace(  # type: ignore[attr-defined]
+            feed=lambda pcm: fed.append(pcm)
+        )
         pipeline._audio_output = MagicMock()  # type: ignore[attr-defined]
         pipeline._audio_output.write.return_value = PlaybackResult(  # type: ignore[attr-defined]
             status="completed",
@@ -240,3 +306,134 @@ class TestConversationPipelineRoutedAudio:
         assert record_playback.call_args.kwargs["destination"] == "private"
         assert record_playback.call_args.kwargs["target"] == "hapax-private"
         assert record_playback.call_args.kwargs["media_role"] == "Assistant"
+        assert fed == [b"\x00\x01" * 120]
+
+    @pytest.mark.asyncio
+    async def test_spontaneous_speech_uses_litellm_proxy_alias_for_local_fast(self, monkeypatch):
+        pipeline = object.__new__(ConversationPipeline)
+        pipeline._running = True  # type: ignore[attr-defined]
+        pipeline.state = ConvState.LISTENING  # type: ignore[attr-defined]
+        pipeline._system_context = "system context"  # type: ignore[attr-defined]
+        pipeline._update_system_context = MagicMock()  # type: ignore[method-assign]
+        pipeline._speak_sentence = AsyncMock(return_value="Short acknowledgement.")  # type: ignore[method-assign]
+
+        monkeypatch.setattr(
+            "agents.hapax_daimonion.conversation_pipeline._voice_litellm_base",
+            "http://litellm-proxy.test",
+        )
+        monkeypatch.setattr("shared.config.LITELLM_KEY", "test-litellm-key")
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Short acknowledgement."))]
+        )
+        impingement = SimpleNamespace(
+            source="operator.sidechat",
+            strength=1.0,
+            content={
+                "narrative": "private runtime witness for the speech-wave ring",
+                "channel": "sidechat",
+            },
+        )
+
+        with patch("litellm.acompletion", AsyncMock(return_value=response)) as completion:
+            await pipeline.generate_spontaneous_speech(
+                impingement,
+                destination_target="hapax-private",
+                destination_role="Assistant",
+                destination="private",
+            )
+
+        completion.assert_awaited_once()
+        call_kwargs = completion.await_args.kwargs
+        assert call_kwargs["model"] == "litellm_proxy/local-fast"
+        assert call_kwargs["api_base"] == "http://litellm-proxy.test"
+        assert call_kwargs["api_key"] == "test-litellm-key"
+        pipeline._speak_sentence.assert_awaited_once_with(  # type: ignore[attr-defined]
+            "Short acknowledgement.",
+            destination_target="hapax-private",
+            destination_role="Assistant",
+            destination="private",
+        )
+
+    @pytest.mark.asyncio
+    async def test_spontaneous_speech_rebuilds_missing_system_context(self, monkeypatch):
+        pipeline = ConversationPipeline(
+            stt=None,
+            tts_manager=None,
+            system_prompt="system context",
+            experiment_flags={
+                "phenomenal_stimmung_only": True,
+                "salience_context": False,
+                "sentinel": False,
+                "volatile_lockdown": True,
+            },
+        )
+        pipeline._running = True  # type: ignore[attr-defined]
+        pipeline.state = ConvState.LISTENING
+        pipeline.messages = [{"role": "system", "content": "system context"}]
+        del pipeline._system_context
+        pipeline._speak_sentence = AsyncMock(return_value="Short acknowledgement.")  # type: ignore[method-assign]
+
+        monkeypatch.setattr(
+            "agents.hapax_daimonion.conversation_pipeline._voice_litellm_base",
+            "http://litellm-proxy.test",
+        )
+        monkeypatch.setattr("shared.config.LITELLM_KEY", "test-litellm-key")
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Short acknowledgement."))]
+        )
+        impingement = SimpleNamespace(
+            source="operator.sidechat",
+            strength=1.0,
+            content={
+                "narrative": "private runtime witness for the speech-wave ring",
+                "channel": "sidechat",
+            },
+        )
+
+        with patch("litellm.acompletion", AsyncMock(return_value=response)) as completion:
+            await pipeline.generate_spontaneous_speech(
+                impingement,
+                destination_target="hapax-private",
+                destination_role="Assistant",
+                destination="private",
+            )
+
+        system_message = completion.await_args.kwargs["messages"][0]["content"]
+        assert system_message.endswith("system context")
+        pipeline._speak_sentence.assert_awaited_once()  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_spontaneous_speech_generation_failure_records_error(self, monkeypatch):
+        pipeline = object.__new__(ConversationPipeline)
+        pipeline._running = True  # type: ignore[attr-defined]
+        pipeline.state = ConvState.LISTENING  # type: ignore[attr-defined]
+        pipeline._system_context = "system context"  # type: ignore[attr-defined]
+        pipeline._update_system_context = MagicMock()  # type: ignore[method-assign]
+        pipeline._speak_sentence = AsyncMock()  # type: ignore[method-assign]
+
+        monkeypatch.setattr(
+            "agents.hapax_daimonion.conversation_pipeline._voice_litellm_base",
+            "http://litellm-proxy.test",
+        )
+        monkeypatch.setattr("shared.config.LITELLM_KEY", "test-litellm-key")
+        impingement = SimpleNamespace(
+            source="imagination",
+            strength=1.0,
+            content={"narrative": "private runtime witness for the speech-wave ring"},
+        )
+
+        with (
+            patch("litellm.acompletion", AsyncMock(side_effect=RuntimeError("proxy refused"))),
+            patch("agents.hapax_daimonion.voice_output_witness.record_drop") as record_drop,
+        ):
+            await pipeline.generate_spontaneous_speech(
+                impingement,
+                destination_target="hapax-private",
+                destination_role="Assistant",
+                destination="private",
+            )
+
+        record_drop.assert_called_once()
+        assert record_drop.call_args.kwargs["reason"] == "spontaneous_speech_generation_failed"
+        assert record_drop.call_args.kwargs["error"] == "RuntimeError: proxy refused"
+        pipeline._speak_sentence.assert_not_awaited()  # type: ignore[attr-defined]

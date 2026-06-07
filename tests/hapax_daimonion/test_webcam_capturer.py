@@ -7,7 +7,10 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from agents.hapax_daimonion.screen_models import CameraConfig
-from agents.hapax_daimonion.webcam_capturer import WebcamCapturer
+from agents.hapax_daimonion.webcam_capturer import (
+    SCREWM_IR_BRIO_RESERVATION_MARKERS,
+    WebcamCapturer,
+)
 
 
 def test_capturer_init_with_cameras():
@@ -24,6 +27,61 @@ def test_capturer_init_with_cameras():
 def test_capturer_returns_none_for_missing_role():
     cap = WebcamCapturer(cameras=[])
     assert cap.capture("operator") is None
+
+
+def test_screwm_ir_reservations_cover_all_brio_rgb_devices():
+    assert set(SCREWM_IR_BRIO_RESERVATION_MARKERS) == {
+        "/dev/v4l/by-id/usb-046d_Logitech_BRIO_5342C819-video-index0",
+        "/dev/v4l/by-id/usb-046d_Logitech_BRIO_43B0576A-video-index0",
+        "/dev/v4l/by-id/usb-046d_Logitech_BRIO_9726C031-video-index0",
+    }
+
+
+def test_capturer_skips_brio_rgb_reserved_by_screwm_ir_marker(tmp_path):
+    device = tmp_path / "brio-rgb"
+    marker = tmp_path / "quake-live-ir-brio-operator.raw.json"
+    device.touch()
+    marker.write_text('{"frames": 10}\n', encoding="utf-8")
+    cap = WebcamCapturer(
+        cameras=[CameraConfig(device=str(device), role="operator")],
+        cooldown_s=0,
+        screwm_ir_reservation_markers={str(device): (marker,)},
+    )
+
+    with patch("agents.hapax_daimonion.webcam_capturer.subprocess.run") as mock_run:
+        result = cap.capture("operator")
+
+    assert result is None
+    mock_run.assert_not_called()
+
+
+def test_capturer_allows_brio_rgb_when_screwm_ir_marker_absent(tmp_path):
+    device = tmp_path / "brio-rgb"
+    capture_tmp = tmp_path / "capture"
+    marker = tmp_path / "quake-live-ir-brio-operator.raw.json"
+    fake_jpg = b"\xff\xd8\xff\xe0fake-jpeg-data"
+    device.touch()
+    capture_tmp.mkdir()
+    (capture_tmp / "frame.jpg").write_bytes(fake_jpg)
+    cap = WebcamCapturer(
+        cameras=[CameraConfig(device=str(device), role="operator")],
+        cooldown_s=0,
+        screwm_ir_reservation_markers={str(device): (marker,)},
+    )
+
+    with (
+        patch("agents.hapax_daimonion.webcam_capturer.subprocess.run") as mock_run,
+        patch(
+            "agents.hapax_daimonion.webcam_capturer.tempfile.mkdtemp",
+            return_value=str(capture_tmp),
+        ),
+    ):
+        mock_run.return_value = MagicMock(returncode=0)
+        result = cap.capture("operator")
+
+    assert result is not None
+    assert base64.b64decode(result) == fake_jpg
+    mock_run.assert_called_once()
 
 
 def test_capturer_respects_cooldown():

@@ -7,6 +7,7 @@ refresh loop. Clients poll at matching cadence (30s fast, 5min slow).
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict
 from datetime import UTC
 from pathlib import Path
@@ -22,6 +23,36 @@ from logos.api.deps.stream_redaction import (
 )
 
 router = APIRouter(prefix="/api", tags=["data"])
+
+_INFRA_IDENTITY_KEYS = {
+    "by_id",
+    "device_serial",
+    "evidence_host",
+    "evidence_machine_id",
+    "exec_host",
+    "host_id",
+    "hostname",
+    "intent_host",
+    "kernel_dev",
+    "lan_ip_hint",
+    "machine_anchor",
+    "machine_id",
+    "partition_kernel_dev",
+    "partuuid",
+    "pinned_root_serial",
+    "root_disk_serial",
+    "serial",
+    "tailscale_ip",
+    "target_host",
+    "uuid",
+}
+_IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+_UUID_RE = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+)
+_BY_ID_RE = re.compile(r"\b(?:nvme|ata|wwn)-[^\s,;|)]+")
+_HOST_RE = re.compile(r"\b(?:hapax-)?(?:podium|appendix)\b", re.IGNORECASE)
+_SERIAL_RE = re.compile(r"\b[A-Z0-9]{10,}\b")
 
 
 def _load_consent_registry():
@@ -57,6 +88,28 @@ def _to_dict(obj: object) -> object:
     if hasattr(obj, "__dataclass_fields__"):
         return asdict(obj, dict_factory=_dict_factory)
     return obj
+
+
+def _redact_infra_identity(data: object, *, public_safe: bool = False) -> object:
+    """Default-deny host/storage identity fields while publicly visible."""
+    if public_safe or not is_publicly_visible():
+        return data
+    if isinstance(data, list):
+        return [_redact_infra_identity(item) for item in data]
+    if isinstance(data, dict):
+        return {
+            key: _redact_infra_identity(value)
+            for key, value in data.items()
+            if key not in _INFRA_IDENTITY_KEYS
+        }
+    if isinstance(data, str):
+        out = _IP_RE.sub("[redacted-ip]", data)
+        out = _UUID_RE.sub("[redacted-uuid]", out)
+        out = _BY_ID_RE.sub("[redacted-by-id]", out)
+        out = _HOST_RE.sub("[redacted-host]", out)
+        out = _SERIAL_RE.sub("[redacted-serial]", out)
+        return out
+    return data
 
 
 def _fast_response(data: object) -> JSONResponse:
@@ -100,6 +153,27 @@ async def get_infrastructure():
             "timers": _to_dict(cache.timers),
         }
     )
+
+
+@router.get("/hosts")
+async def get_hosts():
+    return _slow_response(_redact_infra_identity(_to_dict(cache.hosts)))
+
+
+@router.get("/infrastructure/storage")
+async def get_infrastructure_storage():
+    return _slow_response(_redact_infra_identity(_to_dict(cache.host_storage)))
+
+
+@router.get("/infrastructure/sop-gate")
+async def get_infrastructure_sop_gate():
+    from logos.data.sop_gate import collect_sop_gate
+
+    return _slow_response(_redact_infra_identity(_to_dict(collect_sop_gate())))
+
+
+# Keep decorator-registered route handlers statically visible to vulture.
+_FASTAPI_ROUTE_HANDLERS = (get_infrastructure_sop_gate,)
 
 
 # ── Slow cadence (5min) ──────────────────────────────────────────────────

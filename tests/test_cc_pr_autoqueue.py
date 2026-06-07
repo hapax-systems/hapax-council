@@ -1309,7 +1309,7 @@ def _eligible_arm_extra() -> dict[str, object]:
     }
 
 
-def test_auto_arms_eligible_pr_open_task_then_merges(tmp_path: Path) -> None:
+def test_auto_arms_release_unauthorized_pr_open_task(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     note = _write_task(
         vault,
@@ -1320,6 +1320,7 @@ def test_auto_arms_eligible_pr_open_task_then_merges(tmp_path: Path) -> None:
     )
     runner = _FakeRunner()
     runner.open_prs = [_pr(701)]
+    ledger = tmp_path / "ledger.jsonl"
 
     report = autoqueue.run_reconciler(
         repo="owner/repo",
@@ -1327,27 +1328,23 @@ def test_auto_arms_eligible_pr_open_task_then_merges(tmp_path: Path) -> None:
         vault_root=vault,
         apply=True,
         runner=runner,
-        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+        auto_arm_ledger_path=ledger,
     )
 
-    # The note is armed in place: release authorized + advanced to S7.
     armed = note.read_text(encoding="utf-8")
     assert "release_authorized: true" in armed
     assert "release_authorized: false" not in armed
     assert "stage: S7_RELEASE" in armed
-    # And the PR is admitted to the merge queue.
-    assert [
-        "gh",
-        "pr",
-        "merge",
-        "701",
-        "--repo",
-        "owner/repo",
-        "--auto",
-        "--squash",
-    ] in runner.calls
+    assert "release auto-arm (system)" in armed
+    assert ["gh", "pr", "merge", "701", "--repo", "owner/repo", "--auto", "--squash"] in (
+        runner.calls
+    )
     decision = next(d for d in report["decisions"] if d["pr"] == 701)
+    assert decision["action"] == "queue"
     assert decision["auto_arm"] is True
+    record = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+    assert record["kind"] == "release_auto_arm"
+    assert record["task_id"] == "stranded-eligible"
 
 
 def test_does_not_auto_arm_governance_sensitive_task(tmp_path: Path) -> None:
@@ -1379,10 +1376,10 @@ def test_does_not_auto_arm_governance_sensitive_task(tmp_path: Path) -> None:
     assert not any(call[:4] == ["gh", "pr", "merge", "702"] for call in runner.calls)
     decision = next(d for d in report["decisions"] if d["pr"] == 702)
     assert decision["action"] == "blocked"
-    assert any("release_auto_arm_ineligible" in reason for reason in decision["reasons"])
+    assert any(reason.startswith("release_auto_arm_ineligible:") for reason in decision["reasons"])
 
 
-def test_dry_run_reports_auto_arm_without_writing_note(tmp_path: Path) -> None:
+def test_dry_run_reports_release_auto_arm_without_writing_note(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     note = _write_task(
         vault,
@@ -1405,10 +1402,53 @@ def test_dry_run_reports_auto_arm_without_writing_note(tmp_path: Path) -> None:
 
     assert "release_authorized: false" in note.read_text(encoding="utf-8")  # untouched
     decision = next(d for d in report["decisions"] if d["pr"] == 703)
+    assert decision["action"] == "queue"
     assert decision["auto_arm"] is True
+    assert not any(call[:4] == ["gh", "pr", "merge", "703"] for call in runner.calls)
 
 
-def test_auto_arm_writes_authority_case_ledger_record(tmp_path: Path) -> None:
+def test_multiple_release_unauthorized_tasks_still_block_auto_arm(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    first = _write_task(
+        vault,
+        task_id="stranded-one",
+        status="pr_open",
+        pr=704,
+        extra_frontmatter=_eligible_arm_extra(),
+    )
+    second = _write_task(
+        vault,
+        task_id="stranded-two",
+        status="pr_open",
+        pr=704,
+        extra_frontmatter=_eligible_arm_extra(),
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(704)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    assert "release_authorized: false" in first.read_text(encoding="utf-8")
+    assert "release_authorized: false" in second.read_text(encoding="utf-8")
+    assert not any(call[:4] == ["gh", "pr", "merge", "704"] for call in runner.calls)
+    decision = next(d for d in report["decisions"] if d["pr"] == 704)
+    assert decision["action"] == "blocked"
+    assert "auto_arm" not in decision
+    assert any("release_authorized_false" in reason for reason in decision["reasons"])
+
+
+def test_auto_armed_task_writes_auto_arm_ledger_record(
+    tmp_path: Path,
+) -> None:
     vault = _make_vault(tmp_path)
     _write_task(
         vault,
@@ -1430,11 +1470,10 @@ def test_auto_arm_writes_authority_case_ledger_record(tmp_path: Path) -> None:
         auto_arm_ledger_path=ledger,
     )
 
-    records = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line]
-    assert any(
-        rec.get("kind") == "release_auto_arm" and rec.get("task_id") == "stranded-ledger"
-        for rec in records
-    )
+    assert ledger.exists()
+    record = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+    assert record["kind"] == "release_auto_arm"
+    assert record["task_id"] == "stranded-ledger"
 
 
 def test_already_release_authorized_task_is_not_rearmed(tmp_path: Path) -> None:
@@ -1893,6 +1932,69 @@ def test_admission_status_reposts_when_stale(tmp_path: Path) -> None:
     assert len(_admission_posts(runner)) == 1
 
 
+def test_admission_status_defers_fresh_failure_description_change(
+    tmp_path: Path,
+) -> None:
+    decision = _admission_decision(action="blocked")
+    runner = _FakeRunner()
+    runner.head_statuses["sha-50"] = [
+        _existing_status(
+            "failure",
+            "cc-pr-autoqueue blocked: old reason",
+            "2026-06-02T00:00:00Z",
+        )
+    ]
+    now = datetime(2026, 6, 2, 0, 1, tzinfo=UTC)
+
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner, now=now
+    )
+
+    assert result == (True, "deferred_failure_description_update")
+    assert _admission_posts(runner) == []
+
+
+def test_admission_status_does_not_repost_unchanged_failure_status(
+    tmp_path: Path,
+) -> None:
+    decision = _admission_decision(action="blocked")
+    state, description = autoqueue._admission_status_for(decision)
+    runner = _FakeRunner()
+    runner.head_statuses["sha-50"] = [_existing_status(state, description, "2026-06-02T00:00:00Z")]
+    now = datetime(2026, 6, 2, 1, 0, tzinfo=UTC)
+
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner, now=now
+    )
+
+    assert result == (True, "unchanged_failure_state")
+    assert _admission_posts(runner) == []
+
+
+def test_admission_status_refreshes_stale_failure_description_change(
+    tmp_path: Path,
+) -> None:
+    decision = _admission_decision(action="blocked")
+    runner = _FakeRunner()
+    runner.head_statuses["sha-50"] = [
+        _existing_status(
+            "failure",
+            "cc-pr-autoqueue blocked: old reason",
+            "2026-06-02T00:00:00Z",
+        )
+    ]
+    now = datetime(2026, 6, 2, 1, 0, tzinfo=UTC)
+
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner, now=now
+    )
+
+    assert result is not None and result[0]
+    posts = _admission_posts(runner)
+    assert len(posts) == 1
+    assert "state=failure" in posts[0]
+
+
 def test_admission_status_posts_when_verdict_changed(tmp_path: Path) -> None:
     decision = _admission_decision()  # success verdict
     runner = _FakeRunner()
@@ -1906,3 +2008,21 @@ def test_admission_status_posts_when_verdict_changed(tmp_path: Path) -> None:
     )
     assert result is not None and result[0]
     assert len(_admission_posts(runner)) == 1
+
+
+def test_admission_status_posts_when_success_flips_to_failure(tmp_path: Path) -> None:
+    decision = _admission_decision(action="blocked")
+    runner = _FakeRunner()
+    runner.head_statuses["sha-50"] = [
+        _existing_status("success", "cc-pr-autoqueue admitted: queue", "2026-06-02T00:00:00Z")
+    ]
+    now = datetime(2026, 6, 2, 0, 1, tzinfo=UTC)
+
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner, now=now
+    )
+
+    assert result is not None and result[0]
+    posts = _admission_posts(runner)
+    assert len(posts) == 1
+    assert "state=failure" in posts[0]

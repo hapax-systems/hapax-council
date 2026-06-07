@@ -21,13 +21,16 @@ import os
 import signal
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from agents.audio_health.m1_dimensions import compute_lufs_s
 from agents.audio_health.probes import (
     OBS_BOUND_STAGE,
+    PersistentProbeSet,
     ProbeConfig,
+    ProbeResult,
     capture_and_measure,
 )
 from agents.audio_health.service_loop import interruptible_sleep
@@ -264,12 +267,14 @@ def _probe_stage(
     *,
     now: float,
     suppress_alert: bool = False,
+    probe: Callable[[str], ProbeResult] | None = None,
 ) -> None:
     """Run one M2 stage probe and record failures as health evidence."""
 
     try:
         probe_cfg = ProbeConfig(duration_s=config.capture_duration_s)
-        result = capture_and_measure(f"{stage}.monitor", config=probe_cfg)
+        capture = probe or (lambda target: capture_and_measure(target, config=probe_cfg))
+        result = capture(f"{stage}.monitor")
         if result is None:
             _mark_error(state, "probe returned None")
             return
@@ -277,7 +282,7 @@ def _probe_stage(
             _mark_error(state, result.error)
             return
 
-        lufs = compute_lufs_s(result.samples_mono_float, sample_rate=44100)
+        lufs = compute_lufs_s(result.samples_mono_float, sample_rate=result.sample_rate)
         state.last_error = None
         state.last_lufs = lufs
 
@@ -337,30 +342,39 @@ def run_daemon(config: M2DaemonConfig | None = None) -> None:
         cfg.stages,
     )
 
-    while not shutdown:
-        now = time.time()
+    probe_cfg = ProbeConfig(duration_s=cfg.capture_duration_s)
+    with PersistentProbeSet(config=probe_cfg) as probes:
+        while not shutdown:
+            now = time.time()
 
-        source_quiet = False
-        for stage in cfg.stages:
-            _probe_stage(stage, states[stage], cfg, now=now, suppress_alert=source_quiet)
-            if stage == cfg.stages[0] and states[stage].last_lufs < cfg.silence_floor_lufs:
-                source_quiet = True
+            source_quiet = False
+            for stage in cfg.stages:
+                _probe_stage(
+                    stage,
+                    states[stage],
+                    cfg,
+                    now=now,
+                    suppress_alert=source_quiet,
+                    probe=probes.capture,
+                )
+                if stage == cfg.stages[0] and states[stage].last_lufs < cfg.silence_floor_lufs:
+                    source_quiet = True
 
-        _emit_textfile(states, cfg)
-        _emit_snapshot(states, cfg, now=now)
+            _emit_textfile(states, cfg)
+            _emit_snapshot(states, cfg, now=now)
 
-        # sd_notify watchdog
-        try:
-            import systemd.daemon  # type: ignore[import-untyped]
+            # sd_notify watchdog
+            try:
+                import systemd.daemon  # type: ignore[import-untyped]
 
-            systemd.daemon.notify("WATCHDOG=1")
-        except ImportError:
-            pass
+                systemd.daemon.notify("WATCHDOG=1")
+            except ImportError:
+                pass
 
-        # Sleep until next probe
-        elapsed = time.time() - now
-        sleep_time = max(0.1, cfg.probe_interval_s - elapsed)
-        interruptible_sleep(sleep_time, lambda: shutdown)
+            # Sleep until next probe
+            elapsed = time.time() - now
+            sleep_time = max(0.1, cfg.probe_interval_s - elapsed)
+            interruptible_sleep(sleep_time, lambda: shutdown)
 
     log.info("M2 LUFS-S daemon shutting down")
 

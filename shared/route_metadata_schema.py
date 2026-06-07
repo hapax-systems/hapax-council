@@ -291,6 +291,35 @@ class ReviewRequirement(_RouteModel):
     authoritative_acceptor_profile: str | None = None
 
 
+class CloudBurst(_RouteModel):
+    eligible: bool = False
+    spike_reasons: list[str] = Field(default_factory=list)
+    parallelism: int = Field(default=1, ge=1)
+    agent_fanout: int = Field(default=1, ge=1)
+    ci_matrix: bool = False
+    release_or_ci_spend: bool = False
+    costly_class: bool = False
+    public_repo_only: bool = False
+    read_mostly: bool = False
+    no_secret_egress: bool = True
+    provider_budget_ref: str | None = None
+
+    @field_validator("spike_reasons", mode="before")
+    @classmethod
+    def _spike_reasons_are_string_lists(cls, value: object) -> list[str]:
+        return _coerce_string_list(value)
+
+    @model_validator(mode="after")
+    def _eligible_requires_reasons_and_no_secret_egress(self) -> Self:
+        if not self.eligible:
+            return self
+        if not self.spike_reasons:
+            raise ValueError("cloud_burst eligibility requires spike_reasons")
+        if not self.no_secret_egress:
+            raise ValueError("cloud_burst eligibility requires no_secret_egress")
+        return self
+
+
 class RouteMetadata(_RouteModel):
     route_metadata_schema: Literal[1] = 1
     quality_floor: QualityFloor
@@ -302,6 +331,7 @@ class RouteMetadata(_RouteModel):
     verification_surface: VerificationSurface = Field(default_factory=VerificationSurface)
     route_constraints: RouteConstraints = Field(default_factory=RouteConstraints)
     review_requirement: ReviewRequirement = Field(default_factory=ReviewRequirement)
+    cloud_burst: CloudBurst = Field(default_factory=CloudBurst)
 
     @field_validator("mutation_scope_refs", mode="before")
     @classmethod
@@ -359,6 +389,8 @@ _PYDANTIC_DYNAMIC_ENTRYPOINTS = (
     RouteMetadata._mutation_scope_refs_are_strings,
     RouteMetadata._support_outputs_need_review,
     RouteMetadataAssessment.planning_status,
+    CloudBurst._spike_reasons_are_string_lists,
+    CloudBurst._eligible_requires_reasons_and_no_secret_egress,
 )
 
 
@@ -374,6 +406,7 @@ ROUTE_METADATA_FIELDS = frozenset(
         "verification_surface",
         "route_constraints",
         "review_requirement",
+        "cloud_burst",
     }
 )
 
@@ -605,6 +638,8 @@ def derive_route_metadata_payload(
     derived_fields.append("route_constraints")
     payload["review_requirement"] = _derive_review_requirement(quality_floor)
     derived_fields.append("review_requirement")
+    payload["cloud_burst"] = _derive_cloud_burst(frontmatter, payload["risk_flags"])
+    derived_fields.append("cloud_burst")
     return payload, derived_fields
 
 
@@ -747,6 +782,125 @@ def _derive_review_requirement(quality_floor: QualityFloor | None) -> dict[str, 
         "support_artifact_allowed": True,
         "independent_review_required": True,
         "authoritative_acceptor_profile": "frontier_full",
+    }
+
+
+HIGH_PARALLELISM_THRESHOLD = 8
+MULTI_AGENT_FANOUT_THRESHOLD = 4
+
+
+def _derive_cloud_burst(
+    frontmatter: Mapping[str, Any],
+    risk_flags: Mapping[str, bool],
+) -> dict[str, object]:
+    tags = _lower_strings(frontmatter.get("tags"))
+    title = _lower_scalar(frontmatter.get("title"))
+    combined = " ".join([title, *tags])
+    parallelism = max(
+        1,
+        _int_or_none(
+            frontmatter.get("parallelism")
+            or frontmatter.get("estimated_parallel_jobs")
+            or frontmatter.get("parallel_jobs")
+        )
+        or 1,
+    )
+    agent_fanout = max(
+        1,
+        _int_or_none(
+            frontmatter.get("agent_fanout")
+            or frontmatter.get("multi_agent_fanout")
+            or frontmatter.get("fanout")
+        )
+        or 1,
+    )
+    ci_matrix = _boolish(frontmatter.get("ci_matrix")) or _contains_any(
+        combined,
+        ("matrix",),
+    )
+    release_or_ci_spend = _boolish(
+        frontmatter.get("release_or_ci_spend") or frontmatter.get("release")
+    ) or _contains_any(combined, ("release", "ci"))
+    costly_class = _boolish(frontmatter.get("costly_class")) or _contains_any(
+        combined,
+        ("spike", "costly", "expensive", "fanout", "parallelism", "benchmark"),
+    )
+
+    spike_reasons: list[str] = []
+    if parallelism >= HIGH_PARALLELISM_THRESHOLD:
+        spike_reasons.append(f"high_parallelism:{parallelism}")
+    if agent_fanout >= MULTI_AGENT_FANOUT_THRESHOLD:
+        spike_reasons.append(f"multi_agent_fanout:{agent_fanout}")
+    if ci_matrix:
+        spike_reasons.append("ci_matrix")
+    if release_or_ci_spend:
+        spike_reasons.append("release_or_ci_spend")
+    if costly_class:
+        spike_reasons.append("costly_class")
+
+    explicit = frontmatter.get("cloud_burst")
+    if isinstance(explicit, Mapping):
+        payload = dict(explicit)
+        explicit_reasons = _coerce_string_list(payload.get("spike_reasons"))
+        if explicit_reasons:
+            spike_reasons = list(dict.fromkeys([*spike_reasons, *explicit_reasons]))
+        parallelism = max(parallelism, _int_or_none(payload.get("parallelism")) or 1)
+        agent_fanout = max(agent_fanout, _int_or_none(payload.get("agent_fanout")) or 1)
+        ci_matrix = ci_matrix or _boolish(payload.get("ci_matrix"))
+        release_or_ci_spend = release_or_ci_spend or _boolish(payload.get("release_or_ci_spend"))
+        costly_class = costly_class or _boolish(payload.get("costly_class"))
+
+    public_repo_only = _boolish(
+        frontmatter.get("public_repo_only")
+        or frontmatter.get("cloud_burst_public_repo_only")
+        or ("public-repo" in tags)
+        or ("public_repo" in tags)
+    )
+    read_mostly = _boolish(
+        frontmatter.get("read_mostly")
+        or frontmatter.get("cloud_burst_read_mostly")
+        or ("read-mostly" in tags)
+        or ("read_mostly" in tags)
+    )
+    no_secret_egress = not bool(risk_flags.get("privacy_or_secret_sensitive"))
+    if "secret-egress" in tags or "secret_egress" in tags:
+        no_secret_egress = False
+    explicit_no_secret = frontmatter.get("no_secret_egress") or frontmatter.get(
+        "cloud_burst_no_secret_egress"
+    )
+    if explicit_no_secret is not None:
+        no_secret_egress = _boolish(explicit_no_secret)
+
+    provider_budget_ref = _optional_frontmatter_string(
+        frontmatter.get("cloud_burst_budget_ref")
+        or frontmatter.get("provider_budget_ref")
+        or frontmatter.get("budget_ref")
+    )
+    eligible = bool(spike_reasons)
+
+    if isinstance(explicit, Mapping):
+        if "eligible" in explicit:
+            eligible = _boolish(explicit.get("eligible"))
+        public_repo_only = _boolish(explicit.get("public_repo_only")) or public_repo_only
+        read_mostly = _boolish(explicit.get("read_mostly")) or read_mostly
+        if "no_secret_egress" in explicit:
+            no_secret_egress = _boolish(explicit.get("no_secret_egress"))
+        provider_budget_ref = (
+            _optional_frontmatter_string(explicit.get("provider_budget_ref")) or provider_budget_ref
+        )
+
+    return {
+        "eligible": eligible,
+        "spike_reasons": spike_reasons,
+        "parallelism": parallelism,
+        "agent_fanout": agent_fanout,
+        "ci_matrix": ci_matrix,
+        "release_or_ci_spend": release_or_ci_spend,
+        "costly_class": costly_class,
+        "public_repo_only": public_repo_only,
+        "read_mostly": read_mostly,
+        "no_secret_egress": no_secret_egress,
+        "provider_budget_ref": provider_budget_ref,
     }
 
 
@@ -1102,6 +1256,17 @@ def _int_or_none(value: object) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _boolish(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    return text in {"1", "true", "yes", "y", "on"}
 
 
 def _float_or_none(value: object) -> float | None:

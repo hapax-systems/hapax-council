@@ -31,6 +31,7 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "token_pole",
         "album",
         "stream_overlay",
+        "aoa_oarb_state",
         "sierpinski",
         "reverie",
         "darkplaces",
@@ -47,6 +48,9 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "coding_session_reveal",
         "m8-display",
         "steamdeck-display",
+        "brio-operator-ir",
+        "brio-room-ir",
+        "brio-synths-ir",
         "egress_footer",
         "gem",
         "programme_banner",
@@ -167,6 +171,7 @@ def test_default_json_source_backends_match_registry_dispatch() -> None:
         "token_pole": "cairo",
         "album": "cairo",
         "stream_overlay": "cairo",
+        "aoa_oarb_state": "cairo",
         "sierpinski": "cairo",
         "reverie": "shm_rgba",
         "darkplaces": "v4l2",
@@ -183,6 +188,9 @@ def test_default_json_source_backends_match_registry_dispatch() -> None:
         "coding_session_reveal": "cairo",
         "m8-display": "shm_rgba",
         "steamdeck-display": "shm_rgba",
+        "brio-operator-ir": "shm_rgba",
+        "brio-room-ir": "shm_rgba",
+        "brio-synths-ir": "shm_rgba",
         "egress_footer": "cairo",
         "programme_banner": "cairo",
         "precedent_ticker": "cairo",
@@ -247,6 +255,56 @@ def test_default_json_darkplaces_points_at_dedicated_loopback() -> None:
     assert darkplaces.params.get("fps") == 30
     assert darkplaces.params.get("role") == "darkplaces_background"
     assert {"darkplaces", "background", "substrate", "screwm"}.issubset(darkplaces.tags)
+
+
+def test_default_json_cbip_dual_ir_points_at_brio_raw_ir_frames() -> None:
+    raw = json.loads(DEFAULT_JSON.read_text())
+    layout = Layout.model_validate(raw)
+
+    source = next(s for s in layout.sources if s.id == "cbip_dual_ir_displacement")
+    assert source.params.get("class_name") == "CBIPDualIrDisplacementCairoSource"
+    assert source.params.get("ir_frame_sources") == [
+        {
+            "label": "brio-operator-ir",
+            "path": "/dev/shm/hapax-compositor/quake-live-ir-brio-operator.raw.bgra",
+            "width": 340,
+            "height": 340,
+        },
+        {
+            "label": "brio-room-ir",
+            "path": "/dev/shm/hapax-compositor/quake-live-ir-brio-room.raw.bgra",
+            "width": 340,
+            "height": 340,
+        },
+        {
+            "label": "brio-synths-ir",
+            "path": "/dev/shm/hapax-compositor/quake-live-ir-brio-synths.raw.bgra",
+            "width": 340,
+            "height": 340,
+        },
+    ]
+
+
+def test_default_json_exposes_brio_ir_feeds_as_first_class_ward_sources() -> None:
+    raw = json.loads(DEFAULT_JSON.read_text())
+    layout = Layout.model_validate(raw)
+    sources = {source.id: source for source in layout.sources}
+
+    expected = {
+        "brio-operator-ir": "quake-live-ir-brio-operator",
+        "brio-room-ir": "quake-live-ir-brio-room",
+        "brio-synths-ir": "quake-live-ir-brio-synths",
+    }
+    for source_id, stem in expected.items():
+        source = sources[source_id]
+        assert source.kind == "external_rgba"
+        assert source.backend == "shm_rgba"
+        assert source.params["natural_w"] == 340
+        assert source.params["natural_h"] == 340
+        assert source.params["shm_path"] == f"/dev/shm/hapax-compositor/{stem}.raw.bgra"
+        assert source.params["sidecar_path"] == f"/dev/shm/hapax-compositor/{stem}.raw.json"
+        assert source.params["max_age_s"] == 8.0
+        assert source.ward_id == source_id
 
 
 def test_default_json_operator_quadrant_defaults() -> None:
@@ -337,6 +395,26 @@ def test_default_json_stream_overlay_source_is_registered() -> None:
     assert cls.__name__ == "StreamOverlayCairoSource"
 
 
+def test_default_json_aoa_oarb_state_source_backs_screwm_ward_atlas() -> None:
+    from agents.studio_compositor.cairo_sources import get_cairo_source_class
+
+    raw = json.loads(DEFAULT_JSON.read_text())
+    layout = Layout.model_validate(raw)
+
+    source = next((s for s in layout.sources if s.id == "aoa_oarb_state"), None)
+    assert source is not None
+    assert source.kind == "cairo"
+    assert source.backend == "cairo"
+    assert source.params.get("class_name") == "AoaOarbStateCairoSource"
+    assert source.params.get("natural_w") == 540
+    assert source.params.get("natural_h") == 180
+    assert source.update_cadence == "rate"
+    assert source.rate_hz == 1.0
+    assert source.ward_id == "aoa-oarb-state"
+    assert {"screwm", "aoa", "oarb", "ward", "state"}.issubset(source.tags)
+    assert get_cairo_source_class("AoaOarbStateCairoSource").__name__ == "AoaOarbStateCairoSource"
+
+
 # chat_ambient retired 2026-04-23 (PR #1239 — aspect-ratio mismatch).
 # Original test pinned its binding to ChatAmbientWard; the source and
 # surface are no longer in default.json so the pin is obsolete.
@@ -363,6 +441,7 @@ def test_load_layout_or_fallback_reads_valid_file(tmp_path: Path) -> None:
         "token_pole",
         "album",
         "stream_overlay",
+        "aoa_oarb_state",
         "sierpinski",
         "reverie",
         "darkplaces",
@@ -379,6 +458,9 @@ def test_load_layout_or_fallback_reads_valid_file(tmp_path: Path) -> None:
         "coding_session_reveal",
         "m8-display",
         "steamdeck-display",
+        "brio-operator-ir",
+        "brio-room-ir",
+        "brio-synths-ir",
         "egress_footer",
         "gem",
         "programme_banner",

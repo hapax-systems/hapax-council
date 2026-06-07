@@ -1,0 +1,21 @@
+[Unit]
+Description=Hapax OBS PipeWire broadcast audio binding refresh
+After=pipewire.service wireplumber.service hapax-obs-livestream.service
+Wants=pipewire.service wireplumber.service
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-obs-audio-bind
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/hapax-obs-audio-bind
+ExecStart=%h/.local/bin/uv run --directory %h/projects/hapax-council --extra audio %h/.cache/hapax/source-activation/worktree/scripts/hapax-obs-audio-bind
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-obs-audio-bind
+
+[Install]
+WantedBy=default.target

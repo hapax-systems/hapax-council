@@ -32,8 +32,10 @@ from agents.studio_compositor.coding_session_reveal import (
     CodingSessionMetadata,
     CodingSessionReveal,
     CodingSessionRevealCore,
+    CodingSessionSnapshot,
     CodingSessionState,
     branch_glyph,
+    build_wcs_row,
     compute_visibility_score,
     discover_coding_sessions,
 )
@@ -42,6 +44,7 @@ from agents.studio_compositor.durf_source import (
     TmuxCaptureResult,
     redact_terminal_lines,
 )
+from agents.studio_compositor.homage.transitional_source import TransitionState
 
 
 def _operator_home_str() -> str:
@@ -49,6 +52,22 @@ def _operator_home_str() -> str:
     bytes don't trip ``pii-guard.sh``. Same trick the production module
     uses (see ``durf_redaction._OPERATOR_HOME_PREFIX``)."""
     return "/" + "home" + "/" + "hapax" + "/"
+
+
+def _surface_has_nonflat_signal(surface) -> bool:
+    surface.flush()
+    data = bytes(surface.get_data())
+    stride = surface.get_stride()
+    width = surface.get_width()
+    height = surface.get_height()
+    samples: set[bytes] = set()
+    for row_frac in (0.14, 0.31, 0.50, 0.69, 0.86):
+        row = min(height - 1, max(0, int(height * row_frac)))
+        for col_frac in (0.10, 0.27, 0.48, 0.71, 0.90):
+            col = min(width - 1, max(0, int(width * col_frac)))
+            start = row * stride + col * 4
+            samples.add(data[start : start + 4])
+    return len(samples) >= 4 and any(sample[:3] != b"\x00\x00\x00" for sample in samples)
 
 
 # ── Extended RISK_PATTERNS redaction ──────────────────────────────────
@@ -500,6 +519,76 @@ class TestMetadataAndVisibility:
         assert claim.want_visible is True
         assert claim.score >= VISIBILITY_THRESHOLD
         assert "affordance:studio.coding_session_reveal" in claim.source_refs
+
+    def test_idle_scaffold_renders_nonflat_without_visible_session(self, tmp_path: Path) -> None:
+        import cairo
+
+        cfg = tmp_path / "panes.yaml"
+        cfg.write_text("panes: []\n", encoding="utf-8")
+        source = CodingSessionReveal(config_path=cfg, start_thread=False)
+        try:
+            metadata = CodingSessionMetadata(
+                branch="codex/durf-foot-coding-session-reveal",
+                branch_glyph="C123",
+                commits_since_main=1,
+                open_pr_count=1,
+                captured_at=1234.0,
+            )
+            source._snapshot = CodingSessionSnapshot(
+                sessions=(),
+                captured_at=1234.0,
+                egress_allowed=False,
+                suppression_reason="consent_safe",
+                metadata=metadata,
+                visibility_score=0.0,
+                wcs_row=build_wcs_row((), now=1234.0, egress_allowed=False),
+            )
+            state = source.state()
+            assert state["alpha"] == 0.0
+            assert source.current_claim().want_visible is False
+
+            surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 960, 720)
+            cr = cairo.Context(surface)
+            source.render_content(cr, 960, 720, 0.0, state)
+
+            assert _surface_has_nonflat_signal(surface)
+            assert source.current_claim().want_visible is False
+        finally:
+            source.stop()
+
+    def test_atlas_idle_scaffold_renders_when_fsm_absent(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "panes.yaml"
+        cfg.write_text("panes: []\n", encoding="utf-8")
+        source = CodingSessionReveal(config_path=cfg, start_thread=False)
+        try:
+            source._state = TransitionState.ABSENT
+            metadata = CodingSessionMetadata(
+                branch="codex/durf-foot-coding-session-reveal",
+                branch_glyph="C123",
+                commits_since_main=1,
+                open_pr_count=1,
+                captured_at=1234.0,
+            )
+            source._snapshot = CodingSessionSnapshot(
+                sessions=(),
+                captured_at=1234.0,
+                egress_allowed=False,
+                suppression_reason="consent_safe",
+                metadata=metadata,
+                visibility_score=0.0,
+                wcs_row=build_wcs_row((), now=1234.0, egress_allowed=False),
+            )
+            state = source.state()
+            assert state["alpha"] == 0.0
+            assert source.current_claim().want_visible is False
+
+            surface = source.render_atlas_idle_surface(960, 720, t=0.0)
+
+            assert _surface_has_nonflat_signal(surface)
+            assert source.transition_state is TransitionState.ABSENT
+            assert source.current_claim().want_visible is False
+        finally:
+            source.stop()
 
     def test_affordance_registry_contains_coding_session_reveal(self) -> None:
         from shared.affordance_registry import ALL_AFFORDANCES

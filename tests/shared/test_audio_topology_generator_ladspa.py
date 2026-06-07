@@ -88,6 +88,91 @@ class TestLoudnormChain:
         second = node_to_conf_fragment(d.nodes[0], d)
         assert first == second  # codegen is deterministic
 
+    def test_reconciler_owned_playback_omits_target_object(self) -> None:
+        d = _wrap(
+            Node(
+                id="tts-loudnorm",
+                kind=NodeKind.FILTER_CHAIN,
+                pipewire_name="hapax-loudnorm-capture",
+                target_object="alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0",
+                chain_kind="loudnorm",
+                limit_db=-18.0,
+                params={
+                    "playback_node": "hapax-loudnorm-playback",
+                    "node.autoconnect": False,
+                },
+            )
+        )
+
+        text = node_to_conf_fragment(d.nodes[0], d)
+
+        assert 'node.name = "hapax-loudnorm-playback"' in text
+        playback_tail = text[text.index("playback.props") :]
+        assert "target.object" not in playback_tail
+        assert "node.autoconnect = false" in playback_tail
+        assert "stream.dont-remix = true" in playback_tail
+
+    def test_audibility_passthrough_uses_builtin_mixers(self) -> None:
+        d = _wrap(
+            Node(
+                id="tts-loudnorm",
+                kind=NodeKind.FILTER_CHAIN,
+                pipewire_name="hapax-loudnorm-capture",
+                chain_kind="loudnorm",
+                limit_db=-18.0,
+                params={
+                    "playback_node": "hapax-loudnorm-playback",
+                    "node.autoconnect": False,
+                    "audibility_passthrough": True,
+                },
+            )
+        )
+
+        text = node_to_conf_fragment(d.nodes[0], d)
+
+        assert "fast_lookahead_limiter_1913" not in text
+        assert "type = ladspa" not in text
+        assert text.count("type = builtin") == 2
+        assert text.count('"Gain 1" = 1.0') == 2
+
+    def test_audibility_passthrough_gain_can_pin_live_attenuation(self) -> None:
+        d = _wrap(
+            Node(
+                id="music-loudnorm",
+                kind=NodeKind.FILTER_CHAIN,
+                pipewire_name="hapax-music-loudnorm",
+                chain_kind="loudnorm",
+                limit_db=-18.0,
+                params={
+                    "node.autoconnect": False,
+                    "audibility_passthrough": True,
+                    "audibility_passthrough_gain": 0.35,
+                },
+            )
+        )
+
+        text = node_to_conf_fragment(d.nodes[0], d)
+
+        assert "fast_lookahead_limiter_1913" not in text
+        assert text.count('"Gain 1" = 0.35') == 2
+
+    def test_audibility_passthrough_gain_is_bounded(self) -> None:
+        d = _wrap(
+            Node(
+                id="too-hot",
+                kind=NodeKind.FILTER_CHAIN,
+                pipewire_name="too-hot",
+                chain_kind="loudnorm",
+                limit_db=-18.0,
+                params={
+                    "audibility_passthrough": True,
+                    "audibility_passthrough_gain": 4.1,
+                },
+            )
+        )
+        with pytest.raises(ConfigError, match="audibility_passthrough_gain"):
+            node_to_conf_fragment(d.nodes[0], d)
+
     def test_loudnorm_requires_limit_db(self) -> None:
         d = _wrap(
             Node(

@@ -1,0 +1,451 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# hapax-appendix-artifact-pull
+#
+# Pull approved model/artifact classes from Synology-backed NFS shares into the
+# appendix-accessible cache tier. Synology remains storage only: this script
+# never starts services there, never treats Synology paths as DB hosts, and never
+# pulls restic/Qdrant/database stores as runtime data.
+
+STATE_DIR="${HAPAX_APPENDIX_ARTIFACT_STATE_DIR:-$HOME/.cache/hapax/appendix-artifact-pull}"
+DEST_ROOT="${HAPAX_APPENDIX_ARTIFACT_DEST_ROOT:-$HOME/.cache/hapax/appendix-artifacts}"
+DEFAULT_CLASSES="${HAPAX_APPENDIX_ARTIFACT_CLASSES:-models-ollama}"
+MODE="${HAPAX_APPENDIX_ARTIFACT_MODE:-dry-run}"
+MAX_SAMPLE_BYTES="${HAPAX_APPENDIX_ARTIFACT_MAX_SAMPLE_BYTES:-1048576}"
+RECEIPT_LABEL="${HAPAX_APPENDIX_ARTIFACT_RECEIPT_LABEL:-manual}"
+
+INVENTORY_ONLY=0
+SAMPLE_ONE=0
+SIMULATE_MISSING=0
+NO_RECEIPT=0
+declare -a SELECTED_CLASSES=()
+
+declare -A CLASS_SOURCE=()
+declare -A CLASS_DEST=()
+declare -A CLASS_OWNER=()
+declare -A CLASS_KIND=()
+declare -A CLASS_FRESHNESS_DAYS=()
+declare -A CLASS_POLICY=()
+
+init_classes() {
+    CLASS_SOURCE[models-ollama]="/mnt/nas/models/ollama"
+    CLASS_DEST[models-ollama]="$DEST_ROOT/models/ollama"
+    CLASS_OWNER[models-ollama]="synology:/volume1/hapax-models"
+    CLASS_KIND[models-ollama]="model_weights_and_manifests"
+    CLASS_FRESHNESS_DAYS[models-ollama]=45
+    CLASS_POLICY[models-ollama]="Safe for Synology vault storage; pulled to appendix cache before model use; not a DB or compute surface."
+
+    CLASS_SOURCE[artifact-sample-packs]="/mnt/nas/archive/sample-packs"
+    CLASS_DEST[artifact-sample-packs]="$DEST_ROOT/artifacts/sample-packs"
+    CLASS_OWNER[artifact-sample-packs]="synology:/volume1/hapax-archive"
+    CLASS_KIND[artifact-sample-packs]="offline_media_artifacts"
+    CLASS_FRESHNESS_DAYS[artifact-sample-packs]=180
+    CLASS_POLICY[artifact-sample-packs]="Offline creative/sample assets only; not live runtime state, DB state, or secrets."
+}
+
+usage() {
+    cat <<'EOF'
+usage: hapax-appendix-artifact-pull [--inventory] [--dry-run|--live]
+                                    [--class NAME ...] [--sample-one]
+                                    [--simulate-missing] [--receipt-label LABEL]
+
+Approved classes:
+  models-ollama          /mnt/nas/models/ollama -> ~/.cache/hapax/appendix-artifacts/models/ollama
+  artifact-sample-packs  /mnt/nas/archive/sample-packs -> ~/.cache/hapax/appendix-artifacts/artifacts/sample-packs
+
+Modes:
+  --inventory        Print artifact path/freshness policy; no pull.
+  --dry-run          Verify source/mount/freshness and rsync plan only.
+  --live             Pull selected classes.
+  --sample-one       Pull or dry-run one bounded non-secret file from each class.
+  --simulate-missing Exercise missing-source failure and receipt path.
+
+Environment:
+  HAPAX_APPENDIX_ARTIFACT_CLASSES       Space/comma list of default classes.
+  HAPAX_APPENDIX_ARTIFACT_DEST_ROOT     Default target root.
+  HAPAX_APPENDIX_ARTIFACT_STATE_DIR     Receipt and rollback state root.
+  HAPAX_APPENDIX_ARTIFACT_MAX_SAMPLE_BYTES
+
+Exit codes:
+  0 success
+  2 usage error
+  20 missing source/mount/tool
+  21 stale source
+  22 no bounded sample available
+  30 rsync failed
+EOF
+}
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --inventory)
+                INVENTORY_ONLY=1
+                shift
+                ;;
+            --dry-run)
+                MODE="dry-run"
+                shift
+                ;;
+            --live)
+                MODE="live"
+                shift
+                ;;
+            --class)
+                [[ $# -ge 2 ]] || { echo "--class requires a value" >&2; exit 2; }
+                SELECTED_CLASSES+=("$2")
+                shift 2
+                ;;
+            --sample-one)
+                SAMPLE_ONE=1
+                shift
+                ;;
+            --simulate-missing)
+                SIMULATE_MISSING=1
+                shift
+                ;;
+            --receipt-label)
+                [[ $# -ge 2 ]] || { echo "--receipt-label requires a value" >&2; exit 2; }
+                RECEIPT_LABEL="$2"
+                shift 2
+                ;;
+            --no-receipt)
+                NO_RECEIPT=1
+                shift
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                echo "Unknown arg: $1" >&2
+                usage >&2
+                exit 2
+                ;;
+        esac
+    done
+
+    case "$MODE" in
+        dry-run|live) ;;
+        *) echo "Invalid mode: $MODE" >&2; exit 2 ;;
+    esac
+
+    if [[ ${#SELECTED_CLASSES[@]} -eq 0 ]]; then
+        local normalized
+        normalized="${DEFAULT_CLASSES//,/ }"
+        read -r -a SELECTED_CLASSES <<< "$normalized"
+    fi
+}
+
+ensure_class() {
+    local class="$1"
+    if [[ -z "${CLASS_SOURCE[$class]+x}" ]]; then
+        echo "Unknown artifact class '$class'. Run --inventory for approved classes." >&2
+        exit 2
+    fi
+}
+
+timestamp_utc() {
+    date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+latest_source_epoch() {
+    local source="$1"
+    find "$source" -mindepth 1 -printf '%T@\n' 2>/dev/null | sort -nr | head -1
+}
+
+epoch_to_utc() {
+    local epoch="$1"
+    date -u -d "@${epoch%.*}" +%Y-%m-%dT%H:%M:%SZ
+}
+
+write_receipt() {
+    [[ "$NO_RECEIPT" == 0 ]] || return 0
+
+    local class="$1" status="$2" reason="$3" next_action="$4" source="$5" dest="$6"
+    local latest_utc="$7" age_days="$8" sample_file="$9" exit_code="${10}"
+    local ts host receipt_dir history
+    ts="$(timestamp_utc)"
+    host="$(hostname -s 2>/dev/null || hostname)"
+    receipt_dir="$STATE_DIR/receipts"
+    history="$STATE_DIR/history.jsonl"
+    mkdir -p "$receipt_dir"
+
+    python3 - "$receipt_dir" "$history" "$ts" "$host" "$RECEIPT_LABEL" "$MODE" \
+        "$class" "$status" "$reason" "$next_action" "$source" "$dest" \
+        "$latest_utc" "$age_days" "$sample_file" "$exit_code" <<'PY'
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+(
+    receipt_dir,
+    history,
+    ts,
+    host,
+    label,
+    mode,
+    artifact_class,
+    status,
+    reason,
+    next_action,
+    source,
+    dest,
+    latest_utc,
+    age_days,
+    sample_file,
+    exit_code,
+) = sys.argv[1:]
+
+record = {
+    "schema_version": 1,
+    "timestamp": ts,
+    "host": host,
+    "label": label,
+    "mode": mode,
+    "artifact_class": artifact_class,
+    "status": status,
+    "reason": reason or None,
+    "next_action": next_action or None,
+    "source": source,
+    "destination": dest,
+    "source_latest_mtime_utc": latest_utc or None,
+    "source_age_days": None if not age_days else int(age_days),
+    "sample_file": sample_file or None,
+    "exit_code": int(exit_code),
+    "synology_role": "vault_artifact_storage_only",
+    "not_db_or_compute_host": True,
+}
+
+safe_ts = ts.replace(":", "").replace("-", "")
+safe_class = re.sub(r"[^A-Za-z0-9_.-]+", "_", artifact_class)
+receipt_path = Path(receipt_dir) / f"{safe_ts}-{safe_class}-{os.getpid()}.json"
+tmp = receipt_path.with_suffix(receipt_path.suffix + ".tmp")
+tmp.write_text(json.dumps(record, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+os.replace(tmp, receipt_path)
+
+history_path = Path(history)
+history_path.parent.mkdir(parents=True, exist_ok=True)
+with history_path.open("a", encoding="utf-8") as fh:
+    fh.write(json.dumps(record, sort_keys=True) + "\n")
+
+print(receipt_path)
+PY
+}
+
+print_inventory() {
+    printf 'class\towner_host\tkind\tsource\tdestination\tfreshness_days\tpolicy\n'
+    local class
+    for class in models-ollama artifact-sample-packs; do
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$class" \
+            "${CLASS_OWNER[$class]}" \
+            "${CLASS_KIND[$class]}" \
+            "${CLASS_SOURCE[$class]}" \
+            "${CLASS_DEST[$class]}" \
+            "${CLASS_FRESHNESS_DAYS[$class]}" \
+            "${CLASS_POLICY[$class]}"
+    done
+    cat <<'EOF'
+
+Blocked classes: restic repositories, Qdrant snapshots, SQLite/Postgres/Redis/ClickHouse state,
+live service worktrees, credential stores, browser profiles, and any artifact whose consumer
+would execute directly from Synology. Those require a separate authority case and are not
+appendix artifact-pull inputs.
+
+Rollback: live pulls use rsync backup directories under
+~/.cache/hapax/appendix-artifact-pull/rollback/<class>/<timestamp>. A bad pull is rolled back
+by rsyncing the relevant rollback directory back into the class destination, then re-running a
+dry-run to confirm the selected class is current.
+
+Stale behavior: if the source latest mtime exceeds the class freshness window, the pull fails
+before copying. Refresh the Synology source from the owner host or create a new task to change
+the freshness policy; do not silently pull stale artifacts.
+EOF
+}
+
+class_source_for_run() {
+    local class="$1"
+    if [[ "$SIMULATE_MISSING" == 1 ]]; then
+        printf '%s\n' "$STATE_DIR/simulated-missing-source/$class"
+    else
+        printf '%s\n' "${CLASS_SOURCE[$class]}"
+    fi
+}
+
+validate_source() {
+    local class="$1" source="$2" dest="$3"
+    local latest_epoch latest_utc age_days max_days now_epoch
+
+    if ! command -v rsync >/dev/null 2>&1; then
+        write_receipt "$class" "failed" "rsync_missing" \
+            "Install rsync on appendix or finish the appendix provisioning task before pulling artifacts." \
+            "$source" "$dest" "" "" "" 20 >/dev/null
+        echo "FAIL class=$class reason=rsync_missing next_action='install rsync on appendix'" >&2
+        return 20
+    fi
+
+    if [[ ! -d "$source" ]]; then
+        write_receipt "$class" "failed" "source_missing" \
+            "Mount the Synology NFS share or fix the class source path; do not use manual scp as the artifact path." \
+            "$source" "$dest" "" "" "" 20 >/dev/null
+        echo "FAIL class=$class reason=source_missing source=$source next_action='mount Synology NFS or fix class source path'" >&2
+        return 20
+    fi
+
+    if ! findmnt -rn --target "$source" >/dev/null 2>&1; then
+        write_receipt "$class" "failed" "source_not_mounted" \
+            "Restore the Synology NFS mount before pulling artifacts." \
+            "$source" "$dest" "" "" "" 20 >/dev/null
+        echo "FAIL class=$class reason=source_not_mounted source=$source next_action='restore Synology NFS mount'" >&2
+        return 20
+    fi
+
+    latest_epoch="$(latest_source_epoch "$source")"
+    if [[ -z "$latest_epoch" ]]; then
+        write_receipt "$class" "failed" "source_empty" \
+            "Populate the Synology artifact class from the owner host before enabling appendix pull." \
+            "$source" "$dest" "" "" "" 20 >/dev/null
+        echo "FAIL class=$class reason=source_empty source=$source next_action='populate source from owner host'" >&2
+        return 20
+    fi
+
+    latest_utc="$(epoch_to_utc "$latest_epoch")"
+    now_epoch="$(date +%s)"
+    age_days=$(( (now_epoch - ${latest_epoch%.*}) / 86400 ))
+    max_days="${CLASS_FRESHNESS_DAYS[$class]}"
+    if (( age_days > max_days )); then
+        write_receipt "$class" "failed" "source_stale" \
+            "Refresh this artifact class on Synology from the owner host or open a task to revise the freshness policy." \
+            "$source" "$dest" "$latest_utc" "$age_days" "" 21 >/dev/null
+        echo "FAIL class=$class reason=source_stale age_days=$age_days max_days=$max_days next_action='refresh source or revise policy under task authority'" >&2
+        return 21
+    fi
+
+    printf '%s\t%s\n' "$latest_utc" "$age_days"
+}
+
+sample_file_for_class() {
+    local source="$1"
+    find "$source" -type f -size +0c -size "-${MAX_SAMPLE_BYTES}c" \
+        ! -path '*/.*' \
+        ! -name 'id_*' \
+        ! -name '*.db' \
+        ! -name '*.sqlite' \
+        ! -name '*.sqlite3' \
+        ! -name '*-wal' \
+        ! -name '*-journal' \
+        -printf '%p\n' 2>/dev/null | sort | head -1
+}
+
+pull_sample() {
+    local class="$1" source="$2" dest="$3" latest_utc="$4" age_days="$5"
+    local sample target_root target sample_rel
+
+    sample="$(sample_file_for_class "$source")"
+    if [[ -z "$sample" ]]; then
+        write_receipt "$class" "failed" "sample_missing" \
+            "No bounded non-secret sample exists for this class; use dry-run full sync or add an approved tiny artifact." \
+            "$source" "$dest" "$latest_utc" "$age_days" "" 22 >/dev/null
+        echo "FAIL class=$class reason=sample_missing max_sample_bytes=$MAX_SAMPLE_BYTES" >&2
+        return 22
+    fi
+
+    sample_rel="${sample#"$source"/}"
+    if [[ "$MODE" == "live" ]]; then
+        target_root="$dest/_sample"
+    else
+        target_root="$STATE_DIR/dry-run-target/$class"
+    fi
+    target="$target_root/$sample_rel"
+    mkdir -p "$(dirname "$target")"
+
+    if [[ "$MODE" == "live" ]]; then
+        rsync -a --safe-links "$sample" "$target"
+    else
+        rsync -an --safe-links "$sample" "$target" >/dev/null
+    fi
+    write_receipt "$class" "ok" "" "" "$source" "$dest" "$latest_utc" "$age_days" "$sample" 0
+    printf 'OK class=%s mode=%s sample=%s dest=%s\n' "$class" "$MODE" "$sample" "$target"
+}
+
+pull_full() {
+    local class="$1" source="$2" dest="$3" latest_utc="$4" age_days="$5"
+    local rollback_dir target_dir
+    local -a args
+
+    if [[ "$MODE" == "live" ]]; then
+        target_dir="$dest"
+        rollback_dir="$STATE_DIR/rollback/$class/$(date -u +%Y%m%dT%H%M%SZ)"
+        mkdir -p "$target_dir" "$rollback_dir"
+        args=(-a --partial --delete-delay --safe-links --backup --backup-dir "$rollback_dir" --info=stats1)
+    else
+        target_dir="$STATE_DIR/dry-run-target/$class"
+        mkdir -p "$target_dir"
+        args=(-an --partial --delete-delay --safe-links --info=stats1)
+    fi
+
+    if ! rsync "${args[@]}" "$source/" "$target_dir/"; then
+        write_receipt "$class" "failed" "rsync_failed" \
+            "Inspect the rsync output, mount state, and rollback directory; do not fall back to manual scp." \
+            "$source" "$dest" "$latest_utc" "$age_days" "" 30 >/dev/null
+        echo "FAIL class=$class reason=rsync_failed next_action='inspect rsync output and mount state'" >&2
+        return 30
+    fi
+
+    write_receipt "$class" "ok" "" "" "$source" "$dest" "$latest_utc" "$age_days" "" 0
+    printf 'OK class=%s mode=%s source=%s dest=%s\n' "$class" "$MODE" "$source" "$target_dir"
+}
+
+run_class() {
+    local class="$1" source dest validation latest_utc age_days rc
+    ensure_class "$class"
+
+    source="$(class_source_for_run "$class")"
+    dest="${CLASS_DEST[$class]}"
+    set +e
+    validation="$(validate_source "$class" "$source" "$dest")"
+    rc=$?
+    set -e
+    if [[ "$rc" -ne 0 ]]; then
+        return "$rc"
+    fi
+
+    latest_utc="${validation%%$'\t'*}"
+    age_days="${validation##*$'\t'}"
+    if [[ "$SAMPLE_ONE" == 1 ]]; then
+        pull_sample "$class" "$source" "$dest" "$latest_utc" "$age_days"
+    else
+        pull_full "$class" "$source" "$dest" "$latest_utc" "$age_days"
+    fi
+}
+
+main() {
+    init_classes
+    parse_args "$@"
+
+    if [[ "$INVENTORY_ONLY" == 1 ]]; then
+        print_inventory
+        exit 0
+    fi
+
+    local overall=0 class rc
+    for class in "${SELECTED_CLASSES[@]}"; do
+        [[ -n "$class" ]] || continue
+        set +e
+        run_class "$class"
+        rc=$?
+        set -e
+        if [[ "$rc" -ne 0 && "$overall" -eq 0 ]]; then
+            overall="$rc"
+        fi
+    done
+    exit "$overall"
+}
+
+main "$@"

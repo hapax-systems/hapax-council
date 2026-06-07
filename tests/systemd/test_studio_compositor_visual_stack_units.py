@@ -11,10 +11,6 @@ BRIDGE_WATCHDOG = UNITS_DIR / "hapax-v4l2-bridge-watchdog.service"
 BRIDGE_WATCHDOG_TIMER = UNITS_DIR / "hapax-v4l2-bridge-watchdog.timer"
 VIDEO42_GUARD = UNITS_DIR / "hapax-video42-format-guard.service"
 OBS = UNITS_DIR / "hapax-obs-livestream.service"
-OBS_SOURCE_RESET = UNITS_DIR / "hapax-obs-v4l2-source-reset.service"
-OBS_SOURCE_RESET_VIDEO52_DROPIN = (
-    UNITS_DIR / "hapax-obs-v4l2-source-reset.service.d" / "zzzz-screwm-quake-video52.conf"
-)
 SCREWM_OBS_MEDIA_STREAM = UNITS_DIR / "hapax-darkplaces-obs-media-stream.service"
 SCREWM_OBS_LIVESTREAM = UNITS_DIR / "hapax-obs-screwm-livestream.service"
 LIVE_SURFACE_GUARD = UNITS_DIR / "hapax-live-surface-guard.service"
@@ -162,9 +158,13 @@ def test_obs_video50_bridge_is_guarded_as_manual_fallback() -> None:
     assert parser.get("Unit", "ConditionPathExists") == "/usr/bin/ffmpeg"
     unit_lines = _active_unit_lines(OBS_YUYV_BRIDGE)
     assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in unit_lines
-    assert "ConditionPathExists=/dev/video52" in unit_lines
+    assert "ConditionPathExists=/tmp/.X11-unix/X82" in unit_lines
+    assert "ConditionPathExists=/dev/video52" not in unit_lines
     assert "ConditionPathExists=/dev/video50" in unit_lines
-    assert parser.get("Unit", "Conflicts") == "studio-fx-output.service"
+    assert parser.get("Unit", "Conflicts") == (
+        "studio-fx-output.service hapax-obs-video42-yuyv-bridge.service "
+        "hapax-screwm-meet-camera.service"
+    )
     assert parser.get("Unit", "After") == "hapax-darkplaces-v4l2.service"
     assert not parser.has_option("Unit", "Wants")
     assert parser.get("Unit", "PartOf") == "hapax-darkplaces-v4l2.service"
@@ -172,15 +172,16 @@ def test_obs_video50_bridge_is_guarded_as_manual_fallback() -> None:
     assert parser.get("Service", "KillMode") == "control-group"
     assert parser.get("Service", "SendSIGKILL") == "yes"
     assert "width=1920,height=1080,pixelformat=YUYV" in "\n".join(unit_lines)
-    assert "--set-parm=60" in "\n".join(unit_lines)
+    assert "--set-parm=30" in "\n".join(unit_lines)
     assert "-c sustain_framerate=1" in "\n".join(unit_lines)
     exec_start = parser.get("Service", "ExecStart")
-    assert "-input_format yuyv422" in exec_start
+    assert "-f x11grab" in exec_start
     assert "-video_size 1920x1080" in exec_start
-    assert "-framerate 60" in exec_start
-    assert "-i /dev/video52" in exec_start
-    assert "-vf fps=60" in exec_start
-    assert "-pix_fmt yuyv422 -r 60 /dev/video50" in exec_start
+    assert "-framerate 30" in exec_start
+    assert "-i :82.0+0,0" in exec_start
+    assert "-i /dev/video52" not in exec_start
+    assert "-vf format=yuyv422" in exec_start
+    assert "-pix_fmt yuyv422 -r 30 /dev/video50" in exec_start
     assert not parser.has_section("Install")
 
 
@@ -236,6 +237,7 @@ def test_screwm_obs_livestream_uses_ffmpeg_media_source_instead_of_v4l2() -> Non
     assert parser.get("Service", "ExecStart") == (
         "/usr/bin/obs --profile LegomenaLive --collection Untitled --scene Scene --startstreaming"
     )
+    assert parser.get("Service", "WorkingDirectory") == SOURCE_ROOT
     assert "hapax-obs-ffmpeg-source-ensure" in parser.get("Service", "ExecStartPre")
     assert "hapax-obs-ffmpeg-source-ensure" in exec_start_post
     assert '--source-name "DarkPlaces Screwm Media"' in exec_start_post
@@ -273,6 +275,8 @@ def test_v4l2_bridge_runs_from_activation_worktree_and_is_supervised_by_studio()
     )
     assert parser.get("Unit", "BindsTo") == "studio-compositor.service"
     assert parser.get("Unit", "PartOf") == "studio-compositor.service"
+    assert parser.get("Unit", "StartLimitIntervalSec") == "300"
+    assert parser.get("Unit", "StartLimitBurst") == "5"
     assert parser.get("Unit", "ConditionPathExists") == f"{SOURCE_ROOT}/scripts/hapax-v4l2-bridge"
     assert parser.get("Service", "WorkingDirectory") == SOURCE_ROOT
     assert parser.get("Service", "ExecStart").startswith(f"{SOURCE_ROOT}/scripts/hapax-v4l2-bridge")
@@ -280,6 +284,12 @@ def test_v4l2_bridge_runs_from_activation_worktree_and_is_supervised_by_studio()
     assert "hapax-compositor-runtime-source-check" in exec_start_pre
     assert "hapax-v4l2-video42-format-guard --verify-only" in exec_start_pre
     assert parser.get("Service", "Restart") == "on-failure"
+    assert parser.get("Service", "RestartSec") == "1s"
+    assert parser.get("Service", "PrivateTmp") == "yes"
+    assert parser.get("Service", "NoNewPrivileges") == "yes"
+    assert parser.get("Service", "CapabilityBoundingSet") == ""
+    assert parser.get("Service", "AmbientCapabilities") == ""
+    assert parser.get("Service", "RestrictSUIDSGID") == "yes"
     lines = _active_unit_lines(BRIDGE)
     assert any("HAPAX_V4L2_BRIDGE_WAIT_SECONDS=60" in line for line in lines)
     assert any("HAPAX_V4L2_BRIDGE_ENABLED=1" in line for line in lines)
@@ -316,80 +326,6 @@ def test_simple_bridge_unit_does_not_claim_systemd_watchdog_without_sd_notify() 
     parser = _load_unit(BRIDGE)
     assert parser.get("Service", "Type") == "simple"
     assert parser.get("Service", "WatchdogSec", fallback=None) is None
-
-
-def test_obs_v4l2_source_reset_runs_from_activation_worktree_with_notify_watchdog() -> None:
-    parser = _load_unit(OBS_SOURCE_RESET)
-    assert parser.get("Unit", "After") == (
-        "pipewire.service hapax-darkplaces-v4l2.service hapax-obs-livestream.service"
-    )
-    assert not parser.has_option("Unit", "Wants")
-    assert parser.get("Unit", "PartOf") == "hapax-visual-stack.target"
-    assert parser.get("Unit", "ConditionPathExists") == (
-        f"{SOURCE_ROOT}/scripts/hapax-obs-v4l2-source-reset"
-    )
-    assert parser.get("Service", "Type") == "notify"
-    assert parser.get("Service", "NotifyAccess") == "main"
-    assert parser.get("Service", "WorkingDirectory") == SOURCE_ROOT
-    assert parser.get("Service", "WatchdogSec") == "120"
-    assert parser.get("Service", "ExecStart").startswith(
-        f"{SOURCE_ROOT}/scripts/hapax-obs-v4l2-source-reset"
-    )
-    assert '--source-name "Video Capture Device (V4L2)"' in parser.get("Service", "ExecStart")
-    assert "--poll-interval 15" in parser.get("Service", "ExecStart")
-    assert "--stall-threshold 60" in parser.get("Service", "ExecStart")
-    assert "--reset-cooldown 60" in parser.get("Service", "ExecStart")
-    assert "--device-id /dev/video50" in parser.get("Service", "ExecStart")
-    assert "--resolution 1920x1080" in parser.get("Service", "ExecStart")
-    assert "--framerate 30" in parser.get("Service", "ExecStart")
-    assert "--pixelformat YUYV" in parser.get("Service", "ExecStart")
-    assert "--disable-buffering" in parser.get("Service", "ExecStart")
-    assert "--auto-reset-input" in parser.get("Service", "ExecStart")
-    assert "--producer-service" not in parser.get("Service", "ExecStart")
-    assert "hapax-obs-video50-yuyv-compat-bridge.service" not in parser.get(
-        "Service",
-        "ExecStart",
-    )
-    assert "--producer-restart-after-obs-resets" not in parser.get("Service", "ExecStart")
-    assert "--obs-log-v4l2-errors" in parser.get("Service", "ExecStart")
-    assert "--ignore-static-screenshot-stalls" in parser.get("Service", "ExecStart")
-    assert "--max-static-ignore-seconds 75" in parser.get("Service", "ExecStart")
-    assert "--screenshot-width 160" in parser.get("Service", "ExecStart")
-    assert "--screenshot-height 90" in parser.get("Service", "ExecStart")
-    assert parser.get("Service", "Restart") == "no"
-    assert "hapax-compositor-runtime-source-check" in parser.get("Service", "ExecStartPre")
-    lines = _active_unit_lines(OBS_SOURCE_RESET)
-    assert all("%h/projects/hapax-council" not in line for line in lines)
-
-
-def test_screwm_obs_v4l2_reset_dropin_pins_obs_to_direct_darkplaces_video52() -> None:
-    lines = _active_unit_lines(OBS_SOURCE_RESET_VIDEO52_DROPIN)
-    joined = "\n".join(lines)
-
-    assert "ConditionPathExists=!%h/.config/hapax/enable-darkplaces-runtime" in lines
-    assert "ExecStart=" in lines
-    assert "--poll-interval 15" in joined
-    assert "--stall-threshold 60" in joined
-    assert "--device-id /dev/video52" in joined
-    assert "--framerate 30" in joined
-    assert "--pixelformat YUYV" in joined
-    assert "--producer-service hapax-darkplaces-v4l2.service" in joined
-    assert "--obs-log-v4l2-errors" not in joined
-    assert "--ignore-static-screenshot-stalls" in joined
-    assert "--producer-restart-after-obs-resets 0" in joined
-    assert "--max-static-ignore-seconds 0" in joined
-    assert "--recreate-input-on-reset" in joined
-    assert "--screenshot-width 160" in joined
-    assert "--screenshot-height 90" in joined
-    assert "--device-id /dev/video50" not in joined
-    assert "--pixelformat NV12" not in joined
-    assert "--obs-log-v4l2-errors" not in joined
-    assert "--recreate-input-on-reset" in joined
-    assert "--producer-service hapax-darkplaces-v4l2.service" in joined
-    assert "--producer-restart-after-obs-resets 0" in joined
-    assert "--max-static-ignore-seconds 0" in joined
-    assert "--ignore-static-screenshot-stalls" in joined
-    assert "--prom-path %h/.local/share/node_exporter/textfile_collector/" in joined
 
 
 def test_live_surface_guard_runs_from_activation_worktree() -> None:

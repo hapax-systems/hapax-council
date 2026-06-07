@@ -218,6 +218,24 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         True,
         "agy CLI interactive path; requires governed dispatch bootstrap and task claim.",
     ),
+    ("api", "headless", "api_frontier"): PlatformPath(
+        "api",
+        "headless",
+        "api_frontier",
+        "receipt-only cloud-burst packet; provider execution requires a follow-up release gate",
+        "Cloud-burst API route for spike dev dry-run packets",
+        True,
+        "Spike-only route; policy requires no-secret egress, public-repo/read-mostly scope, and a matching budget ref before launch eligibility.",
+    ),
+    ("api", "headless", "provider_gateway"): PlatformPath(
+        "api",
+        "headless",
+        "provider_gateway",
+        "receipt-only provider-gateway packet; live config edits require a follow-up runtime/provider-spend task",
+        "Provider gateway maintenance route for governed runtime/provider-spend config changes",
+        True,
+        "Route-authority packet only; policy requires a matching paid-budget ledger and fresh gateway evidence before a downstream live edit may proceed.",
+    ),
 }
 
 RECEIPT_ONLY_ROUTE = PlatformPath(
@@ -1013,8 +1031,7 @@ def write_receipt(
         record["route_decision_receipt_path"] = (
             str(route_decision_receipt_path) if route_decision_receipt_path else None
         )
-    # G2: record where the lane's claude actually ran (Workshop hop vs podium-local).
-    record["dispatch_host"] = os.environ.get("HAPAX_DISPATCH_HOST", "local")
+    record["dispatch_host"] = effective_dispatch_host(platform, mode)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, sort_keys=True) + "\n")
     return path
@@ -1037,10 +1054,28 @@ def _sliced_call(args: list[str], env: dict[str, str] | None = None) -> int:
     base_env = dict(os.environ) if env is None else env
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return subprocess.call(list(args), env=base_env)  # don't probe/create scopes in tests
-    wrapped = sdlc_slice_wrap(args)
+    explicit_env = {
+        key: value
+        for key, value in base_env.items()
+        if key.startswith(("HAPAX_", "CLAUDE_")) and os.environ.get(key) != value
+    }
+    explicit_env["HAPAX_SDLC_SLICE_ATTACHED"] = "1"
+    wrapped = sdlc_slice_wrap(args, setenv=explicit_env)
     if wrapped != list(args):
         base_env = {**base_env, "HAPAX_SDLC_SLICE_ATTACHED": "1"}
     return subprocess.call(wrapped, env=base_env)
+
+
+def effective_dispatch_host(platform: str, mode: str) -> str:
+    explicit = os.environ.get("HAPAX_DISPATCH_HOST", "").strip()
+    if explicit:
+        return explicit
+    default = os.environ.get("HAPAX_DEFAULT_DISPATCH_HOST", "").strip()
+    if default:
+        return default
+    if platform in {"claude", "codex"} and mode == "headless":
+        return "appendix"
+    return "local"
 
 
 def _write_delayed_receipt(args: argparse.Namespace, decision: AdmissionDecision) -> None:
@@ -1109,6 +1144,8 @@ def launch_claude_headless(task_id: str, lane: str, prompt: str, route: Platform
     if route.profile in {"opus", "sonnet"}:
         env["HAPAX_CLAUDE_MODEL"] = route.profile
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(lane_worktree(lane, "claude"))
+    env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("claude", "headless")
     return _sliced_call([str(launcher), "--task", task_id, lane, prompt], env)
 
 
@@ -1139,6 +1176,10 @@ def launch_claude_interactive(task_id: str, lane: str, validation: Validation) -
 
 def normalize_profile(platform: str, profile: str) -> str:
     profile = profile.strip().lower().replace("_", "-")
+    if platform == "api" and profile in {"api-frontier", "cloud", "cloud-burst", "frontier"}:
+        return "api_frontier"
+    if platform == "api" and profile in {"provider-gateway", "gateway", "provider_spend"}:
+        return "provider_gateway"
     if profile in {"default", "max", "pro", "full-capability"}:
         return "full"
     if profile == "quota-fallback":
@@ -1285,6 +1326,7 @@ def launch_codex_headless(
         )
     env = os.environ.copy()
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
+    env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("codex", "headless")
     return _sliced_call(args, env)
 
 
@@ -1535,7 +1577,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task", help="Explicit cc-task id to dispatch")
     parser.add_argument("--lane", help="Target lane, e.g. beta or cx-red")
     parser.add_argument(
-        "--platform", default="claude", choices=["claude", "codex", "gemini", "vibe", "antigrav"]
+        "--platform",
+        default="claude",
+        choices=["api", "claude", "codex", "gemini", "vibe", "antigrav"],
     )
     parser.add_argument(
         "--mode", default="headless", choices=["headless", "interactive", "receipt-only"]
@@ -1782,6 +1826,7 @@ def main(argv: list[str] | None = None) -> int:
         registry_error=policy_sources.registry_error,
         quota_ledger=policy_sources.quota_ledger,
         quota_error=policy_sources.quota_error,
+        route_authority_receipts=policy_sources.route_authority_receipts,
         rollback_mode=args.policy_rollback or env_flag("HAPAX_DISPATCH_POLICY_ROLLBACK"),
         legacy_route_supported=route is not None,
         legacy_route_mutable=route.mutable if route else False,

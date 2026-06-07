@@ -30,7 +30,7 @@ BASE_TOWER_CEIL_M = 26.5
 TOWER_CEIL_M = TOWER_FLOOR_M + (BASE_TOWER_CEIL_M - TOWER_FLOOR_M) * 2.0
 WALL_THICK = 16
 AOA_HEIGHT_M = 7.0
-AOA_RUNTIME_SCALE = 1.0
+AOA_RUNTIME_SCALE = 1.3
 WARD_PANEL_COUNT = 36
 
 TR = int(TOWER_RADIUS_M * UNITS_PER_METER)
@@ -64,6 +64,7 @@ SCROOM_GRID_BOUNDS = (
     ROOM_Y_MIN + SCROOM_GRID_MARGIN,
     ROOM_Y_MAX - SCROOM_GRID_MARGIN,
 )
+BOX_FACE_ORDER = ("min_x", "max_x", "min_y", "max_y", "bottom", "top")
 REVIEW_ALCOVE_Y_MIN = ROOM_Y_MIN
 REVIEW_WARD_Y = AOA_Y
 REVIEW_DRIFT_Y = AOA_Y - 45
@@ -97,8 +98,8 @@ WARD_ANCHORS = [
     "whos_here",
     "durf",
     "coding_session_reveal",
-    "m8-display",
-    "steamdeck-display",
+    "brio-operator-ir",
+    "brio-room-ir",
     "egress_footer",
     "programme_banner",
     "precedent_ticker",
@@ -114,7 +115,7 @@ WARD_ANCHORS = [
     "tufte_density",
     "ascii_schematic",
     "segment_content",
-    "m8_oscilloscope",
+    "brio-synths-ir",
     "cbip_dual_ir_displacement",
 ]
 
@@ -136,8 +137,8 @@ WARD_DOMAINS = {
     "whos_here": "presence",
     "durf": "perception",
     "coding_session_reveal": "cognition",
-    "m8-display": "music",
-    "steamdeck-display": "music",
+    "brio-operator-ir": "perception",
+    "brio-room-ir": "perception",
     "egress_footer": "director",
     "programme_banner": "director",
     "precedent_ticker": "director",
@@ -153,7 +154,7 @@ WARD_DOMAINS = {
     "tufte_density": "cognition",
     "ascii_schematic": "cognition",
     "segment_content": "communication",
-    "m8_oscilloscope": "music",
+    "brio-synths-ir": "perception",
     "cbip_dual_ir_displacement": "perception",
 }
 
@@ -169,12 +170,15 @@ WARD_DEPTH_PLANES = {
     "thinking_indicator": "surface-scrim",
     "whos_here": "surface-scrim",
     "durf": "beyond-scrim",
+    "brio-operator-ir": "near-surface",
+    "brio-room-ir": "near-surface",
     "egress_footer": "surface-scrim",
     "programme_banner": "surface-scrim",
     "precedent_ticker": "surface-scrim",
     "chronicle_ticker": "surface-scrim",
     "programme_state": "surface-scrim",
     "segment_content": "surface-scrim",
+    "brio-synths-ir": "near-surface",
 }
 
 WARD_DEPTH_STYLES = {
@@ -241,16 +245,29 @@ SYNTHWAVE_TICKER_WARDS = {9, 22, 27}
 SPECIAL_WARD_POSITIONS = {
     36: (0, WARD_Y_TOP + 5 * WARD_Y_STEP, FLOOR_Z + 92),
 }
+REVIEW_WORLD_MINLIGHT = 48
+REVIEW_WORLD_MINLIGHT_COLOR = "0.20 0.22 0.26"
+REVIEW_FILL_BASE_MULTIPLIER = 1.28
+REVIEW_FILL_SCALES = (1.22, 0.90, 0.92, 1.12, 1.00, 0.94, 1.12, 0.78)
+REVIEW_MEDIA_TARGET_CLEARANCE = 24
+IR_CAMERA_WARD_INDICES = frozenset({18, 19, 35})
+IR_CAMERA_WARD_TARGET_WIDTH = 1024
 
 GARDEN_CAMERA_STATIONS = [
     ("entry-stone", (0, -2380, 164), (0, AOA_Y, AOA_Z)),
     ("threshold-stone", (-320, -2200, 168), (AOA_X, AOA_Y, AOA_Z)),
     ("left-borrowed-view", (-860, -1880, 184), (-1180, -1600, 240)),
-    ("left-media-window", (-1040, -1480, 196), (-1580, -1320, 230)),
-    ("aoa-pause", (-320, -900, 182), (AOA_X, AOA_Y, AOA_Z)),
+    ("left-media-window", (-250, -1420, 220), (-1580, 400, 650)),
+    ("aoa-pause", (-320, -1780, 208), (AOA_X, AOA_Y, AOA_Z)),
     ("right-borrowed-view", (860, -1000, 184), (1180, -1120, 240)),
-    ("right-media-window", (1040, -1480, 196), (1580, -1320, 230)),
-    ("far-garden-view", (420, -430, 220), (AOA_X, AOA_Y, AOA_Z + 18)),
+    ("right-media-window", (250, -1420, 220), (1580, 400, 650)),
+    ("far-garden-view", (720, 260, 240), (-260, 980, 330)),
+]
+
+IR_CAMERA_WARD_STATIONS = [
+    ("brio-operator-ir-ward", (-650, -1320, 705), (-1180, -1320, 650)),
+    ("brio-room-ir-ward", (-650, 400, 705), (-1180, 400, 650)),
+    ("brio-synths-ir-ward", (-1024, -1900, 1235), (-1024, -2440, 1180)),
 ]
 
 WARD_GARDEN_LAYOUT = {
@@ -275,8 +292,8 @@ WARD_GARDEN_LAYOUT = {
     15: (800, 980, 285, "y"),
     16: (-1180, -420, 150, "x"),
     17: (1180, -760, 290, "x"),
-    18: (-1180, -150, 250, "x"),
-    19: (-1180, -2020, 310, "x"),
+    18: (-1180, -1320, 650, "x"),
+    19: (-1180, 400, 650, "x"),
     20: (520, -2360, 105, "y"),
     21: (1160, 980, 340, "y"),
     22: (1580, -1860, 220, "x"),
@@ -292,7 +309,7 @@ WARD_GARDEN_LAYOUT = {
     32: (1180, -580, 110, "x"),
     33: (1180, -280, 330, "x"),
     34: (1160, 980, 210, "y"),
-    35: (-1180, -1320, 330, "x"),
+    35: (-1024, -2440, 1180, "y"),
     36: (-1180, -600, 330, "x"),
 }
 
@@ -318,12 +335,12 @@ AOA_PAYLOAD_PANES = [
 SCROOM_SCENE_GRAPH_PANES = [
     # Larger media/source surfaces echo the 3D Scroom references. They are
     # room-mounted anchors, not a flat fourth-wall scene.
-    ("camera-source", "brio-operator", "cam_bop", "drift_a", -1580, -2140, 290, 128, 72),
-    ("camera-source", "brio-room", "cam_brm", "drift_g", -1580, -1320, 190, 120, 68),
-    ("camera-source", "brio-synths", "cam_bsy", "drift_r", -1580, -500, 300, 120, 68),
-    ("camera-source", "c920-desk", "cam_cdk", "drift_c", 1580, -2140, 290, 120, 68),
-    ("camera-source", "c920-room", "cam_crm", "drift_g", 1580, -1320, 190, 120, 68),
-    ("camera-source", "c920-overhead", "cam_cov", "drift_c", 1580, -500, 300, 120, 68),
+    ("camera-source", "brio-operator", "cam_bop", "drift_a", -1580, -1510, 650, 256, 144),
+    ("camera-source", "brio-room", "cam_brm", "drift_g", -1580, 400, 650, 240, 136),
+    ("camera-source", "brio-synths", "cam_bsy", "drift_r", -1024, -2532, 1180, 240, 136),
+    ("camera-source", "c920-desk", "cam_cdk", "drift_c", 1580, -1510, 650, 240, 136),
+    ("camera-source", "c920-room", "cam_crm", "drift_g", 1580, 400, 650, 240, 136),
+    ("camera-source", "c920-overhead", "cam_cov", "drift_c", 1024, -2532, 1180, 240, 136),
     ("ir", "cbip-ir", "w36", "drift_g", -1180, -600, 330, 64, 40),
     ("ward-shelf", "programme-history", "w23", "drift_a", 1180, -420, 160, 64, 40),
     ("ward-shelf", "instrument-dashboard", "w24", "drift_c", 1180, -150, 300, 64, 40),
@@ -341,11 +358,11 @@ SCROOM_PATH_STONES = [
     ("roji-entry", "drift_c", 0, -2405, FLOOR_Z + 7, 210, 32),
     ("threshold", "drift_g", -320, -2200, FLOOR_Z + 7, 148, 30),
     ("left-borrowed-view", "drift_g", -860, -1880, FLOOR_Z + 7, 190, 32),
-    ("left-media-pause", "drift_c", -1040, -1480, FLOOR_Z + 7, 196, 32),
-    ("aoa-pause", "drift_a", -320, -900, FLOOR_Z + 7, 208, 34),
+    ("left-media-pause", "drift_c", -250, -1420, FLOOR_Z + 7, 196, 32),
+    ("aoa-pause", "drift_a", -320, -1780, FLOOR_Z + 7, 208, 34),
     ("right-borrowed-view", "drift_g", 860, -1000, FLOOR_Z + 7, 190, 32),
-    ("right-media-pause", "drift_r", 1040, -1480, FLOOR_Z + 7, 196, 32),
-    ("far-garden-view", "drift_g", 420, -430, FLOOR_Z + 7, 188, 32),
+    ("right-media-pause", "drift_r", 250, -1420, FLOOR_Z + 7, 196, 32),
+    ("far-garden-view", "drift_g", 720, 260, FLOOR_Z + 7, 188, 32),
     ("return-ridge", "drift_r", 0, -2380, FLOOR_Z + 7, 156, 30),
 ]
 SCROOM_GARDEN_ISLANDS = [
@@ -1035,17 +1052,22 @@ def box_brush(
     texture_scale=(1, 1),
     texture_rotation=0,
     texture_shift=(0, 0),
+    face_textures=None,
 ):
     mn = [min(x1, x2), min(y1, y2), min(z1, z2)]
     mx = [max(x1, x2), max(y1, y2), max(z1, z2)]
     if mx[0] - mn[0] < 1 or mx[1] - mn[1] < 1 or mx[2] - mn[2] < 1:
         return None
+    if face_textures:
+        textures = [face_textures.get(face, tex) for face in BOX_FACE_ORDER]
+    else:
+        textures = [tex] * len(BOX_FACE_ORDER)
     planes = [
         fmt_plane(
             (mn[0], mn[1], mn[2]),
             (mn[0], mx[1], mn[2]),
             (mn[0], mn[1], mx[2]),
-            tex,
+            textures[0],
             texture_scale,
             texture_rotation,
             texture_shift,
@@ -1054,7 +1076,7 @@ def box_brush(
             (mx[0], mn[1], mn[2]),
             (mx[0], mn[1], mx[2]),
             (mx[0], mx[1], mn[2]),
-            tex,
+            textures[1],
             texture_scale,
             texture_rotation,
             texture_shift,
@@ -1063,7 +1085,7 @@ def box_brush(
             (mn[0], mn[1], mn[2]),
             (mn[0], mn[1], mx[2]),
             (mx[0], mn[1], mn[2]),
-            tex,
+            textures[2],
             texture_scale,
             texture_rotation,
             texture_shift,
@@ -1072,7 +1094,7 @@ def box_brush(
             (mn[0], mx[1], mn[2]),
             (mx[0], mx[1], mn[2]),
             (mn[0], mx[1], mx[2]),
-            tex,
+            textures[3],
             texture_scale,
             texture_rotation,
             texture_shift,
@@ -1081,7 +1103,7 @@ def box_brush(
             (mn[0], mn[1], mn[2]),
             (mx[0], mn[1], mn[2]),
             (mn[0], mx[1], mn[2]),
-            tex,
+            textures[4],
             texture_scale,
             texture_rotation,
             texture_shift,
@@ -1090,13 +1112,43 @@ def box_brush(
             (mn[0], mn[1], mx[2]),
             (mn[0], mx[1], mx[2]),
             (mx[0], mn[1], mx[2]),
-            tex,
+            textures[5],
             texture_scale,
             texture_rotation,
             texture_shift,
         ),
     ]
     return "{\n" + "\n".join(planes) + "\n}"
+
+
+def face_selective_box_brush(
+    x1,
+    y1,
+    z1,
+    x2,
+    y2,
+    z2,
+    tex,
+    display_face,
+    texture_scale=(1, 1),
+    texture_rotation=0,
+    texture_shift=(0, 0),
+):
+    face_textures = dict.fromkeys(BOX_FACE_ORDER, NO_DRAW_SHELL_TEX)
+    face_textures[display_face] = tex
+    return box_brush(
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+        tex,
+        texture_scale=texture_scale,
+        texture_rotation=texture_rotation,
+        texture_shift=texture_shift,
+        face_textures=face_textures,
+    )
 
 
 def line_prism_brush(
@@ -1630,6 +1682,8 @@ def ward_source_aspect(idx, anchor):
 
 
 def ward_source_mount_width(idx, anchor):
+    if idx in IR_CAMERA_WARD_INDICES:
+        return IR_CAMERA_WARD_TARGET_WIDTH
     direct_mount = ACTIVE_WARD_MOUNTS_BY_INDEX.get(idx)
     if direct_mount and direct_mount.get("physical_width"):
         return int(direct_mount["physical_width"])
@@ -1721,6 +1775,12 @@ def ward_mount_is_inherently_rectangular(mount):
     if not mount:
         return False
     return mount.get("mount_kind") in WARD_RECTANGULAR_MOUNT_KINDS
+
+
+def ward_mount_is_live_atlas_receiver(mount):
+    if not mount or not WARD_ATLAS_MOUNT:
+        return False
+    return mount.get("texture") == WARD_ATLAS_MOUNT.get("texture")
 
 
 def ward_homage_receiver_metrics(w=None, h=None):
@@ -1884,8 +1944,11 @@ def append_wall_grid_and_stipple(brushes):
     count = 0
 
     for z in horizontal_z:
-        for label, x1, x2 in (("left", left_x1, left_x2), ("right", right_x1, right_x2)):
-            beam = box_brush(
+        for label, x1, x2, face in (
+            ("left", left_x1, left_x2, "max_x"),
+            ("right", right_x1, right_x2, "min_x"),
+        ):
+            beam = face_selective_box_brush(
                 x1,
                 side_y_min,
                 z - WALL_GRID_LINE_WIDTH // 2,
@@ -1893,13 +1956,17 @@ def append_wall_grid_and_stipple(brushes):
                 side_y_max,
                 z + WALL_GRID_LINE_WIDTH // 2,
                 HEX_GRID_WALL_TEX,
+                face,
                 texture_scale=(8, 8),
             )
             if beam:
                 count += 1
                 brushes.append(f"// scroom-wall-grid-{label}-h {count:03d}\n{beam}")
-        for label, y1, y2 in (("entry", front_y1, front_y2), ("far", back_y1, back_y2)):
-            beam = box_brush(
+        for label, y1, y2, face in (
+            ("entry", front_y1, front_y2, "max_y"),
+            ("far", back_y1, back_y2, "min_y"),
+        ):
+            beam = face_selective_box_brush(
                 end_x_min,
                 y1,
                 z - WALL_GRID_LINE_WIDTH // 2,
@@ -1907,6 +1974,7 @@ def append_wall_grid_and_stipple(brushes):
                 y2,
                 z + WALL_GRID_LINE_WIDTH // 2,
                 HEX_GRID_WALL_TEX,
+                face,
                 texture_scale=(8, 8),
             )
             if beam:
@@ -1914,8 +1982,11 @@ def append_wall_grid_and_stipple(brushes):
                 brushes.append(f"// scroom-wall-grid-{label}-h {count:03d}\n{beam}")
 
     for y in side_y_lines:
-        for label, x1, x2 in (("left", left_x1, left_x2), ("right", right_x1, right_x2)):
-            beam = box_brush(
+        for label, x1, x2, face in (
+            ("left", left_x1, left_x2, "max_x"),
+            ("right", right_x1, right_x2, "min_x"),
+        ):
+            beam = face_selective_box_brush(
                 x1,
                 y - WALL_GRID_LINE_WIDTH // 2,
                 z_min,
@@ -1923,6 +1994,7 @@ def append_wall_grid_and_stipple(brushes):
                 y + WALL_GRID_LINE_WIDTH // 2,
                 z_max,
                 HEX_GRID_WALL_TEX,
+                face,
                 texture_scale=(8, 8),
             )
             if beam:
@@ -1930,8 +2002,11 @@ def append_wall_grid_and_stipple(brushes):
                 brushes.append(f"// scroom-wall-grid-{label}-v {count:03d}\n{beam}")
 
     for x in end_x_lines:
-        for label, y1, y2 in (("entry", front_y1, front_y2), ("far", back_y1, back_y2)):
-            beam = box_brush(
+        for label, y1, y2, face in (
+            ("entry", front_y1, front_y2, "max_y"),
+            ("far", back_y1, back_y2, "min_y"),
+        ):
+            beam = face_selective_box_brush(
                 x - WALL_GRID_LINE_WIDTH // 2,
                 y1,
                 z_min,
@@ -1939,6 +2014,7 @@ def append_wall_grid_and_stipple(brushes):
                 y2,
                 z_max,
                 HEX_GRID_WALL_TEX,
+                face,
                 texture_scale=(8, 8),
             )
             if beam:
@@ -1948,8 +2024,11 @@ def append_wall_grid_and_stipple(brushes):
     for idx in range(24):
         z = FLOOR_Z + 180 + (idx * 241) % max(1, CEIL_Z - FLOOR_Z - 360)
         y = side_y_min + (idx * 421) % max(1, side_y_max - side_y_min)
-        for label, x1, x2 in (("left", left_x1, left_x2), ("right", right_x1, right_x2)):
-            dot = box_brush(
+        for label, x1, x2, face in (
+            ("left", left_x1, left_x2, "max_x"),
+            ("right", right_x1, right_x2, "min_x"),
+        ):
+            dot = face_selective_box_brush(
                 x1,
                 y - WALL_STIPPLE_DOT_SIZE,
                 z - WALL_STIPPLE_DOT_SIZE,
@@ -1957,14 +2036,18 @@ def append_wall_grid_and_stipple(brushes):
                 y + WALL_STIPPLE_DOT_SIZE,
                 z + WALL_STIPPLE_DOT_SIZE,
                 STIPPLE_WALL_TEX,
+                face,
                 texture_scale=(8, 8),
             )
             if dot:
                 brushes.append(f"// scroom-wall-stipple-{label} {idx:02d}\n{dot}")
 
         x = end_x_min + (idx * 557) % max(1, end_x_max - end_x_min)
-        for label, y1, y2 in (("entry", front_y1, front_y2), ("far", back_y1, back_y2)):
-            dot = box_brush(
+        for label, y1, y2, face in (
+            ("entry", front_y1, front_y2, "max_y"),
+            ("far", back_y1, back_y2, "min_y"),
+        ):
+            dot = face_selective_box_brush(
                 x - WALL_STIPPLE_DOT_SIZE,
                 y1,
                 z - WALL_STIPPLE_DOT_SIZE,
@@ -1972,6 +2055,7 @@ def append_wall_grid_and_stipple(brushes):
                 y2,
                 z + WALL_STIPPLE_DOT_SIZE,
                 STIPPLE_WALL_TEX,
+                face,
                 texture_scale=(8, 8),
             )
             if dot:
@@ -2054,7 +2138,7 @@ def scroom_hex_grid_and_stipple(_preset):
             continue
         stipple_points.append((x, y))
     for idx, (x, y) in enumerate(stipple_points, start=1):
-        floor_dot = box_brush(
+        floor_dot = face_selective_box_brush(
             x - STIPPLE_DOT_SIZE,
             y - STIPPLE_DOT_SIZE,
             FLOOR_Z + 1,
@@ -2062,9 +2146,10 @@ def scroom_hex_grid_and_stipple(_preset):
             y + STIPPLE_DOT_SIZE,
             FLOOR_Z + 3,
             STIPPLE_FLOOR_TEX,
+            "top",
             texture_scale=(8, 8),
         )
-        ceil_dot = box_brush(
+        ceil_dot = face_selective_box_brush(
             x - STIPPLE_DOT_SIZE,
             y - STIPPLE_DOT_SIZE,
             CEIL_Z - 3,
@@ -2072,6 +2157,7 @@ def scroom_hex_grid_and_stipple(_preset):
             y + STIPPLE_DOT_SIZE,
             CEIL_Z - 1,
             STIPPLE_CEIL_TEX,
+            "bottom",
             texture_scale=(8, 8),
         )
         if floor_dot:
@@ -2201,6 +2287,28 @@ def ward_review_panes(_preset):
             brushes.extend(
                 framed_garden_pane(
                     "ward-garden-pane",
+                    idx,
+                    anchor,
+                    tex,
+                    glow_tex,
+                    x,
+                    y,
+                    z,
+                    w,
+                    h,
+                    facing,
+                    texture_size,
+                    texture_transform,
+                    mount,
+                )
+            )
+        elif ward_mount_is_live_atlas_receiver(mount):
+            tex = mount["texture"]
+            texture_size = tuple(int(v) for v in mount["texture_size"])
+            texture_transform = mount.get("texture_transform")
+            brushes.extend(
+                framed_garden_pane(
+                    "ward-homage-receiver",
                     idx,
                     anchor,
                     tex,
@@ -2437,9 +2545,9 @@ def lights(preset):
 
     # Review fill lights live inside the scroom corridor. They keep the fixed
     # POV critiqueable without turning the scene into a flat/fullbright level.
-    review_fill = int(level_light * 0.92)
+    review_fill = int(level_light * REVIEW_FILL_BASE_MULTIPLIER)
     for idx, (_name, (x, y, z), _target) in enumerate(GARDEN_CAMERA_STATIONS, start=1):
-        scale = (0.64, 0.72, 0.82, 0.90, 0.94, 0.86, 0.76, 0.66)[idx - 1]
+        scale = REVIEW_FILL_SCALES[idx - 1]
         entities.append(
             f"// review-fill-light {idx}\n"
             "{\n"
@@ -2464,6 +2572,35 @@ def lights(preset):
     for name, (x, y, z), value, (r, g, b) in scroom_keys:
         entities.append(
             f"// {name}\n"
+            "{\n"
+            '"classname" "light"\n'
+            f'"origin" "{x} {y} {z}"\n'
+            f'"light" "{value}"\n'
+            f'"_color" "{r} {g} {b}"\n'
+            "}"
+        )
+    return entities
+
+
+def review_shell_lights(_preset):
+    """Stable iteration-review washers for entry and media inspection POVs."""
+    lightspecs = [
+        ("review-entry-floor-rake", (0, ROOM_Y_MIN + 330, FLOOR_Z + 86), 520, (0.82, 0.70, 0.46)),
+        ("review-entry-left-wall-skim", (-860, ROOM_Y_MIN + 390, 278), 470, (0.42, 0.82, 1.00)),
+        ("review-entry-right-wall-skim", (860, ROOM_Y_MIN + 390, 278), 470, (1.00, 0.48, 0.70)),
+        (
+            "review-entry-ceiling-return",
+            (0, ROOM_Y_MIN + 520, CEIL_Z - 170),
+            390,
+            (0.54, 0.78, 1.00),
+        ),
+        ("review-left-media-reader", (-360, -1320, 350), 540, (0.42, 0.88, 1.00)),
+        ("review-right-media-reader", (360, -1320, 350), 540, (1.00, 0.52, 0.72)),
+    ]
+    entities = []
+    for name, (x, y, z), value, (r, g, b) in lightspecs:
+        entities.append(
+            f"// review-shell-light {name}\n"
             "{\n"
             '"classname" "light"\n'
             f'"origin" "{x} {y} {z}"\n'
@@ -2625,8 +2762,8 @@ def generate_map(preset):
     lines.append(f'"message" "{preset["message"]}"')
     lines.append('"wad" "screwm.wad"')
     lines.append(f'"fog" "{preset["fog"]}"')
-    lines.append('"_minlight" "16"')
-    lines.append('"_minlight_color" "0.12 0.14 0.18"')
+    lines.append(f'"_minlight" "{REVIEW_WORLD_MINLIGHT}"')
+    lines.append(f'"_minlight_color" "{REVIEW_WORLD_MINLIGHT_COLOR}"')
     for brush in worldspawn_brushes:
         lines.append(brush)
     lines.append("}")
@@ -2643,6 +2780,7 @@ def generate_map(preset):
         + aoa_payload_lights(preset)
         + scroom_scene_graph_lights(preset)
         + scroom_local_effect_lights(preset)
+        + review_shell_lights(preset)
         + ward_review_lights(preset)
         + ward_lights(preset)
         + source_lights(preset)
@@ -2671,6 +2809,16 @@ def compile_map(map_path: Path, output_dir: Path, *, full_vis: bool = False):
             print(f"    WARNING: {cmd[0]} returned {result.returncode}")
         else:
             print("    OK")
+    normalize_generated_text(output_dir / f"{bsp_name}.prt")
+    normalize_generated_text(output_dir / f"{bsp_name}.texinfo.json")
+
+
+def normalize_generated_text(path: Path):
+    """Keep external map-tool text artifacts compatible with git diff checks."""
+    if not path.exists():
+        return
+    lines = path.read_text(encoding="utf-8").splitlines()
+    path.write_text("\n".join(line.rstrip() for line in lines) + "\n", encoding="utf-8")
 
 
 def main():

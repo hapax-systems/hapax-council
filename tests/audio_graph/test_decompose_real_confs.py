@@ -143,9 +143,12 @@ def test_role_loopback_infrastructure_decomposes() -> None:
     sink = result.graph.media_role_sinks[0]
     assert sink.duck_policy.duck_level == 0.3
     role_names = {lb.role for lb in sink.loopbacks}
-    # Live conf has 4 roles: Multimedia, Notification, Assistant, Broadcast.
-    # The validator picks the first intended role per loopback; in the
-    # live conf those map to Music (multimedia), Notification, Assistant,
-    # Broadcast.
-    assert len(sink.loopbacks) >= 4
-    assert any("notif" in r.lower() for r in role_names)
+    # Workstations may have only the load-bearing Assistant/Broadcast role
+    # loopbacks installed while the repo-managed conf carries all four roles.
+    assert len(sink.loopbacks) >= 2
+    normalized_roles = {role.lower() for role in role_names}
+    for expected in ("assistant", "broadcast"):
+        assert expected in normalized_roles
+    if len(sink.loopbacks) >= 4:
+        for expected in ("multimedia", "notification"):
+            assert expected in normalized_roles

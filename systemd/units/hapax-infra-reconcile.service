@@ -1,0 +1,13 @@
+[Unit]
+Description=Hapax host-storage registry receipt reconciler
+Documentation=file:///home/hapax/Documents/Personal/30-areas/hapax/infra-registry-schema-spec-2026-06-06.md
+After=hapax-host-storage-inventory.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run python scripts/hapax-infra-reconcile
+Nice=19
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-infra-reconcile

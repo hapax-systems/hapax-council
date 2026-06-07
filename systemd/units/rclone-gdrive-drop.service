@@ -1,8 +1,0 @@
-[Unit]
-Description=rclone bisync gdrive:drop ↔ ~/gdrive-drop
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/rclone bisync gdrive:drop /home/hapax/gdrive-drop --create-empty-src-dirs --resilient -v

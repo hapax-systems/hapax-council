@@ -22,6 +22,30 @@ ward_atlas
 	}
 }
 
+w18
+{
+	surfaceparm nolightmap
+	surfaceparm nomarks
+	surfaceparm nonsolid
+	dpnoshadow
+	{
+		map w18
+		rgbgen const 1.0 1.0 1.0
+	}
+}
+
+w19
+{
+	surfaceparm nolightmap
+	surfaceparm nomarks
+	surfaceparm nonsolid
+	dpnoshadow
+	{
+		map w19
+		rgbgen const 1.0 1.0 1.0
+	}
+}
+
 w09
 {
 	surfaceparm nolightmap
@@ -55,6 +79,18 @@ w27
 	{
 		map w27
 		rgbgen const 0.72 0.72 0.78
+	}
+}
+
+w35
+{
+	surfaceparm nolightmap
+	surfaceparm nomarks
+	surfaceparm nonsolid
+	dpnoshadow
+	{
+		map w35
+		rgbgen const 1.0 1.0 1.0
 	}
 }
 

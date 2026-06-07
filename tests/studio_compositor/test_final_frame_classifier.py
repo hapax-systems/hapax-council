@@ -8,6 +8,9 @@ from PIL import Image
 from agents.studio_compositor.final_frame_classifier import (
     classify_final_frame,
     classify_final_frame_series,
+    classify_screwm_geometry_legibility,
+    screwm_ampmax_safe,
+    screwm_ampmax_safe_from_bounds,
 )
 
 
@@ -214,6 +217,70 @@ def test_series_classifier_allows_stable_sparse_layout_with_brightness_shift(
     assert classification.luma_ratio_median is not None
     assert classification.luma_ratio_median > 1.35
     assert classification.reasons == ()
+
+
+def test_screwm_ampmax_safe_uses_darkplaces_normal_bounds() -> None:
+    assert screwm_ampmax_safe((96, 128, 64), cull_margin=0.125) == 56.0
+    assert (
+        screwm_ampmax_safe_from_bounds(
+            (-48, -64, -32),
+            (48, 64, 32),
+            cull_margin=0.125,
+        )
+        == 56.0
+    )
+
+    assert screwm_ampmax_safe((96, 0, 64), cull_margin=0.125) == 0.0
+    assert screwm_ampmax_safe((96, 128, 64), cull_margin=1.0) == 0.0
+    assert screwm_ampmax_safe_from_bounds((48, 0, 0), (-48, 64, 32)) == 0.0
+
+
+def test_screwm_geometry_legibility_passes_when_all_terms_clear_floor() -> None:
+    score = classify_screwm_geometry_legibility(
+        bbox_extents=(128, 128, 96),
+        max_displacement=20,
+        rest_pose_iou=0.82,
+        edge_correlation=0.75,
+    )
+
+    assert score.ampmax_safe == 86.4
+    assert score.displacement_ratio == 0.231481
+    assert score.score == 0.783556
+    assert score.passed is True
+    assert score.reasons == ()
+
+
+def test_screwm_geometry_legibility_fails_when_displacement_exceeds_safe_bbox() -> None:
+    score = classify_screwm_geometry_legibility(
+        bbox_extents=(64, 64, 64),
+        max_displacement=70,
+        rest_pose_iou=0.9,
+        edge_correlation=0.9,
+    )
+
+    assert score.ampmax_safe == 57.6
+    assert score.displacement_ratio is not None
+    assert score.displacement_ratio > 1.0
+    assert score.score == 0.63
+    assert score.passed is False
+    assert "screwm_geo_legibility:max_displacement_exceeds_ampmax_safe" in score.reasons
+    assert any(
+        reason.startswith("screwm_geo_legibility:score_below_floor") for reason in score.reasons
+    )
+
+
+def test_screwm_geometry_legibility_fails_closed_on_missing_terms() -> None:
+    score = classify_screwm_geometry_legibility(
+        bbox_extents=(128, 128, 96),
+        max_displacement=None,
+        rest_pose_iou=0.9,
+        edge_correlation=None,
+    )
+
+    assert score.score is None
+    assert score.passed is False
+    assert "screwm_geo_legibility:missing_max_displacement" in score.reasons
+    assert "screwm_geo_legibility:missing_edge_correlation" in score.reasons
 
 
 def _pattern_image() -> Image.Image:

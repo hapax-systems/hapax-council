@@ -18,7 +18,7 @@ Daemon behaviour:
 - On change: stop any currently-playing pw-cat, start new playback.
 - Local file → ``pw-cat --playback --target <sink> <path>``.
 - URL → ``yt-dlp -o - <url> | ffmpeg -f s16le -ar 44100 -ac 2 - | pw-cat --playback --target <sink> --raw …``.
-- Sink default: ``hapax-pc-loudnorm`` (operator's loudness-normalizing
+- Sink default: ``hapax-music-loudnorm`` (operator's music-normalizing
   PipeWire filter chain). Per the 2026-04-23 directive, every broadcast-
   bound music source MUST enter the normalization path. Override via
   ``HAPAX_MUSIC_PLAYER_SINK`` env when off-broadcast monitoring is
@@ -92,18 +92,6 @@ DEFAULT_POLL_S = 1.0
 # Override via HAPAX_MUSIC_PLAYER_SINK env when off-broadcast
 # monitoring is required.
 DEFAULT_SINK = "hapax-music-loudnorm"
-
-# MPC Live III chain: hapax-music-loudnorm-playback (FL/FR) →
-# MPC USB IN 1/2 (AUX0/AUX1). The continuous audio reconciler owns
-# these links, but the music player also applies them at startup and
-# track boundaries so a mid-session PipeWire restart does not leave
-# music flowing into a dead loudnorm output while the reconciler catches up.
-_MPC_OUTPUT = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"
-_LOUDNORM_MPC_LINKS: tuple[tuple[str, str], ...] = (
-    ("hapax-music-loudnorm-playback:output_FL", f"{_MPC_OUTPUT}:playback_AUX0"),
-    ("hapax-music-loudnorm-playback:output_FR", f"{_MPC_OUTPUT}:playback_AUX1"),
-)
-
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
@@ -278,52 +266,6 @@ def _spawn_process(cmd: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
     return subprocess.Popen(cmd, **kwargs)  # noqa: S603 — fixed argv built above
 
 
-def _ensure_loudnorm_mpc_links() -> None:
-    """Idempotently create the loudnorm-playback → MPC USB link pair.
-
-    The MPC Live III is the first-class content bus. If PipeWire restarts,
-    the reconciler recreates these links continuously; the player applies
-    the same desired edges as a fast local recovery path before playback.
-
-    `pw-link` is idempotent: it returns success on a duplicate link
-    request and we explicitly tolerate the "File exists" / "already
-    linked" error class. Missing-port errors (the chain hasn't
-    instantiated yet) are logged and skipped — the player will keep
-    going; if the next track restart finds the chain healthy the
-    link will succeed then.
-    """
-    for src, dst in _LOUDNORM_MPC_LINKS:
-        try:
-            result = subprocess.run(  # noqa: S603 — fixed argv
-                ["pw-link", src, dst],  # noqa: S607 — pw-link from PATH
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            log.warning("pw-link %s -> %s failed to invoke: %s", src, dst, exc)
-            continue
-        if result.returncode == 0:
-            log.info("ensured pipewire link: %s -> %s", src, dst)
-            continue
-        stderr = (result.stderr or "").strip().lower()
-        if "file exists" in stderr or "already" in stderr:
-            log.debug("pipewire link already present: %s -> %s", src, dst)
-            continue
-        # Missing ports (chain not yet instantiated) is the common
-        # failure: the loudnorm/duck filter-chains live in pipewire
-        # and may load lazily. Log + continue so the player still
-        # boots; subsequent tick may see the chain alive.
-        log.warning(
-            "pw-link %s -> %s returned %s: %s",
-            src,
-            dst,
-            result.returncode,
-            stderr or "(no stderr)",
-        )
-
-
 # ── Daemon ──────────────────────────────────────────────────────────────────
 
 
@@ -478,11 +420,6 @@ class LocalMusicPlayer:
             log.warning("attribution write failed", exc_info=True)
 
         sink = self.config.sink
-        # Self-heal the music loudnorm → MPC link before each track.
-        # Cheap and idempotent; catches a PipeWire restart mid-session
-        # before the continuous reconciler's next tick.
-        if sink == DEFAULT_SINK:
-            _ensure_loudnorm_mpc_links()
         try:
             if is_url(track_path):
                 yt_cmd, ffmpeg_cmd, pw_cmd = _build_url_pipeline(track_path, sink=sink)
@@ -901,10 +838,6 @@ class LocalMusicPlayer:
             self.config.sink,
             self.config.poll_s,
         )
-        # Self-heal the music loudnorm → MPC link. Safe to call repeatedly
-        # (idempotent at the pw-link layer).
-        if self.config.sink == DEFAULT_SINK:
-            _ensure_loudnorm_mpc_links()
         signal.signal(signal.SIGTERM, lambda *_: self.stop())
         signal.signal(signal.SIGINT, lambda *_: self.stop())
         while not self._stop:

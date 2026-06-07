@@ -123,6 +123,7 @@ _REFLECTION_MAX_ALPHA: float = 0.20
 _REFLECTION_WARP_HZ: float = 0.05
 _REFLECTION_WARP_MAX_PX: float = 4.0
 _REFLECTION_LINE_LIMIT: int = 2
+_IDLE_SCAFFOLD_ALPHA: float = 0.34
 
 
 def _reflection_lines(lines: tuple[str, ...]) -> tuple[str, ...]:
@@ -140,6 +141,10 @@ def _reflection_region(rect: tuple[int, int, int, int]) -> tuple[int, int, int, 
     x, y, w, h = rect
     reflection_h = min(h, max(_REFLECTION_MIN_HEIGHT_PX, int(h * _REFLECTION_HEIGHT_FRACTION)))
     return (x, y + h - reflection_h, w, reflection_h)
+
+
+def _idle_phase(t: float, ordinal: int) -> float:
+    return 0.5 + 0.5 * math.sin(t * (0.42 + ordinal * 0.035) + ordinal * 0.77)
 
 
 class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
@@ -497,6 +502,32 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
         ramped_state["alpha"] = base * (1.0 - progress)
         self.render_content(cr, canvas_w, canvas_h, t, ramped_state)
 
+    def render_atlas_idle_surface(
+        self,
+        canvas_w: int,
+        canvas_h: int,
+        t: float | None = None,
+    ) -> cairo.ImageSurface:
+        """Render a privacy-safe ward-atlas substrate even when FSM-hidden."""
+        import cairo
+
+        w = max(1, int(canvas_w))
+        h = max(1, int(canvas_h))
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
+        cr = cairo.Context(surface)
+        cr.set_operator(cairo.OPERATOR_CLEAR)
+        cr.paint()
+        cr.set_operator(cairo.OPERATOR_OVER)
+        self._render_idle_scaffold(
+            cr,
+            w,
+            h,
+            time.monotonic() if t is None else t,
+            _IDLE_SCAFFOLD_ALPHA,
+        )
+        surface.flush()
+        return surface
+
     def render_content(
         self,
         cr: cairo.Context,
@@ -508,6 +539,7 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
         alpha = float(state.get("alpha", 0.0))
         self._last_rendered_alpha = alpha
         if alpha <= 0.001:
+            self._render_idle_scaffold(cr, canvas_w, canvas_h, t, _IDLE_SCAFFOLD_ALPHA)
             return
 
         # ── Segment mode: display programme content instead of tmux ──
@@ -520,6 +552,7 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
         with self._snapshot_lock:
             panes = [pane for pane in self._snapshot.panes if pane.visible]
         if not panes:
+            self._render_idle_scaffold(cr, canvas_w, canvas_h, t, min(0.55, alpha))
             return
 
         cr.save()
@@ -531,6 +564,94 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
         rects = _layout_for_count(len(panes), canvas_w, canvas_h)
         for pane, rect in zip(panes, rects, strict=False):
             self._render_text_pane(cr, rect, pane, alpha, t)
+
+    def _render_idle_scaffold(
+        self,
+        cr: cairo.Context,
+        canvas_w: int,
+        canvas_h: int,
+        t: float,
+        alpha: float,
+    ) -> None:
+        """Render a non-sensitive idle substrate when no pane can be shown."""
+        import cairo
+
+        from agents.studio_compositor.homage.rendering import active_package
+
+        pkg = active_package()
+        bg = pkg.palette.background
+        muted = pkg.palette.muted
+        bright = pkg.palette.bright
+        accent = pkg.palette.accent_cyan
+        w = max(1, canvas_w)
+        h = max(1, canvas_h)
+        a = max(0.0, min(1.0, alpha))
+
+        cr.save()
+        cr.rectangle(0, 0, w, h)
+        cr.clip()
+        grad = cairo.LinearGradient(0, 0, w, h)
+        grad.add_color_stop_rgba(0.0, bg[0] * 0.42, bg[1] * 0.42, bg[2] * 0.56, 0.84 * a)
+        grad.add_color_stop_rgba(
+            0.58,
+            muted[0] * 0.32,
+            muted[1] * 0.34,
+            muted[2] * 0.38,
+            0.72 * a,
+        )
+        grad.add_color_stop_rgba(
+            1.0,
+            accent[0] * 0.18,
+            accent[1] * 0.20,
+            accent[2] * 0.24,
+            0.62 * a,
+        )
+        cr.set_source(grad)
+        cr.paint()
+
+        step = max(18.0, min(w, h) / 6.0)
+        cr.set_line_width(max(1.0, min(w, h) * 0.006))
+        for idx in range(-4, int((w + h) / step) + 5):
+            phase = _idle_phase(t, idx + 7)
+            cr.set_source_rgba(
+                accent[0],
+                accent[1],
+                accent[2],
+                (0.06 + 0.11 * phase) * a,
+            )
+            x0 = idx * step - h
+            cr.move_to(x0, h)
+            cr.line_to(x0 + h + w, 0)
+            cr.stroke()
+
+        cr.set_line_width(max(1.0, min(w, h) * 0.010))
+        for idx in range(5):
+            pulse = _idle_phase(t, idx)
+            inset = 8.0 + idx * max(8.0, min(w, h) * 0.045)
+            if inset * 2 >= min(w, h):
+                break
+            cr.set_source_rgba(
+                bright[0],
+                bright[1],
+                bright[2],
+                (0.09 + 0.11 * pulse) * a,
+            )
+            cr.rectangle(inset, inset, max(1.0, w - inset * 2), max(1.0, h - inset * 2))
+            cr.stroke()
+
+        band_h = max(2.0, h * 0.035)
+        for idx in range(7):
+            pulse = _idle_phase(t, idx + 12)
+            x = (t * 18.0 + idx * w * 0.19) % (w + 80.0) - 80.0
+            cr.set_source_rgba(
+                muted[0],
+                muted[1],
+                muted[2],
+                (0.16 + 0.18 * pulse) * a,
+            )
+            cr.rectangle(x, h - (idx + 1) * band_h * 1.45, 54.0 + pulse * 42.0, band_h)
+            cr.fill()
+        cr.restore()
 
     # ── Segment state reader ─────────────────────────────────────────
 
