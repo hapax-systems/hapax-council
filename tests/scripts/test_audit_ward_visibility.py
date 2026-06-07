@@ -157,6 +157,62 @@ def test_audit_ward_visibility_prefers_rendered_assignment_readback(
     assert "active_ward_missing:runtime-panel" not in payload["reasons"]
 
 
+def test_audit_ward_visibility_ignores_stale_runtime_readback(
+    tmp_path: Path,
+) -> None:
+    layout = _write_layout(tmp_path)
+    snapshot = _write_snapshot(tmp_path)
+    active_wards = tmp_path / "current-layout-state.json"
+    active_wards.write_text(
+        json.dumps(
+            {
+                "active_ward_ids": ["runtime-panel"],
+                "assignments": [
+                    {
+                        "ward": "runtime-panel",
+                        "surface": "runtime-panel-surface",
+                        "x": 0,
+                        "y": 0,
+                        "w": 50,
+                        "h": 50,
+                    }
+                ],
+                "published_t": 1.0,
+                "schema_version": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            str(SCRIPT),
+            "--snapshot",
+            str(snapshot),
+            "--layout",
+            str(layout),
+            "--active-wards-file",
+            str(active_wards),
+            "--canvas-w",
+            "100",
+            "--canvas-h",
+            "100",
+            "--json",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        cwd=REPO_ROOT,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["assignment_source"] == "layout-json"
+    assert payload["active_ward_ids"] is None
+    assert [ward["ward"] for ward in payload["wards"]] == ["visible", "absent", "inactive"]
+
+
 def _write_layout(tmp_path: Path) -> Path:
     layout = {
         "surfaces": [
