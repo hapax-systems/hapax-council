@@ -30,7 +30,7 @@ BASE_TOWER_CEIL_M = 26.5
 TOWER_CEIL_M = TOWER_FLOOR_M + (BASE_TOWER_CEIL_M - TOWER_FLOOR_M) * 2.0
 WALL_THICK = 16
 AOA_HEIGHT_M = 7.0
-AOA_RUNTIME_SCALE = 1.0
+AOA_RUNTIME_SCALE = 1.3
 WARD_PANEL_COUNT = 36
 
 TR = int(TOWER_RADIUS_M * UNITS_PER_METER)
@@ -265,9 +265,9 @@ GARDEN_CAMERA_STATIONS = [
 ]
 
 IR_CAMERA_WARD_STATIONS = [
-    ("brio-operator-ir-ward", (-120, -1320, 760), (-1180, -1320, 650)),
-    ("brio-room-ir-ward", (-120, 400, 760), (-1180, 400, 650)),
-    ("brio-synths-ir-ward", (-120, -2240, 1290), (-1180, -2240, 1180)),
+    ("brio-operator-ir-ward", (-650, -1320, 705), (-1180, -1320, 650)),
+    ("brio-room-ir-ward", (-650, 400, 705), (-1180, 400, 650)),
+    ("brio-synths-ir-ward", (-1024, -1900, 1235), (-1024, -2440, 1180)),
 ]
 
 WARD_GARDEN_LAYOUT = {
@@ -309,7 +309,7 @@ WARD_GARDEN_LAYOUT = {
     32: (1180, -580, 110, "x"),
     33: (1180, -280, 330, "x"),
     34: (1160, 980, 210, "y"),
-    35: (-1180, -2240, 1180, "x"),
+    35: (-1024, -2440, 1180, "y"),
     36: (-1180, -600, 330, "x"),
 }
 

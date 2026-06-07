@@ -2820,7 +2820,7 @@ void() screwm_add_dynamic_lights =
     screwm_add_ward_light('1180 -580 110', 32, screwm_cyan, screwm_active_32, screwm_presence_32);
     screwm_add_ward_light('1180 -280 330', 33, screwm_cyan, screwm_active_33, screwm_presence_33);
     screwm_add_ward_light('1160 980 210', 34, screwm_green, screwm_active_34, screwm_presence_34);
-    screwm_add_ward_light('-1180 -2240 1180', 35, screwm_rose, screwm_active_35, screwm_presence_35);
+    screwm_add_ward_light('-1024 -2440 1180', 35, screwm_rose, screwm_active_35, screwm_presence_35);
     screwm_add_ward_light('-1180 -600 330', 36, screwm_green, screwm_active_36, screwm_presence_36);
 
     screwm_add_drift_light('-1240 -2110 175', 1, screwm_cyan, screwm_active_01, screwm_active_09);
@@ -2843,7 +2843,7 @@ void() screwm_add_dynamic_lights =
     screwm_add_drift_light('-210 0 285', 18, screwm_amber, screwm_active_27, screwm_active_34);
     screwm_add_drift_light('-1180 -1430 447', 19, screwm_cyan, screwm_active_04, screwm_active_18);
     screwm_add_drift_light('0 -950 380', 20, screwm_green, screwm_active_18, screwm_active_32);
-    screwm_add_drift_light('-1180 -1060 762', 21, screwm_rose, screwm_active_29, screwm_active_35);
+    screwm_add_drift_light('-1102 -1160 762', 21, screwm_rose, screwm_active_29, screwm_active_35);
     screwm_add_drift_light('1180 -1150 222', 22, screwm_cyan, screwm_active_30, screwm_active_33);
     screwm_add_drift_light('1170 -130 255', 23, screwm_cyan, screwm_active_31, screwm_active_34);
     screwm_add_drift_light('0 -440 330', 24, screwm_cyan, screwm_active_33, screwm_active_36);
