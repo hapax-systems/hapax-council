@@ -104,22 +104,22 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
             "brio-operator-ir",
             "brio-operator",
             "brio-operator-ir-ward",
-            (-120, -1320, 760),
+            (-650, -1320, 705),
             (-1180, -1320, 650),
         ),
         19: (
             "brio-room-ir",
             "brio-room",
             "brio-room-ir-ward",
-            (-120, 400, 760),
+            (-650, 400, 705),
             (-1180, 400, 650),
         ),
         35: (
             "brio-synths-ir",
             "brio-synths",
             "brio-synths-ir-ward",
-            (-120, -2240, 1290),
-            (-1180, -2240, 1180),
+            (-1024, -1900, 1235),
+            (-1024, -2440, 1180),
         ),
     }
     ir_stations = {
@@ -151,7 +151,7 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
         assert station_origin == expected_origin
         assert station_target == expected_position
         assert width == height == module["IR_CAMERA_WARD_TARGET_WIDTH"]
-        assert 50 <= _visual_angle(width, station_origin, station_target) <= 54
+        assert 86 <= _visual_angle(width, station_origin, station_target) <= 89
         assert mount["id"] == f"{ward_anchor}-ward"
         assert mount["role"] == "state-ward"
         assert mount["mount_kind"] == "live-camera-instrument"
@@ -169,6 +169,15 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
         assert mount["receiver_light_multiplier"] == 2.6
         assert mount["receiver_light_distance"] == 18
         assert expected_slot in mount["hybrid_contract"]["update_semantics"]
+        if mount["facing"] == "x":
+            assert module["ROOM_Y_MIN"] <= ward_position[1] - width // 2
+            assert ward_position[1] + width // 2 <= module["ROOM_Y_MAX"]
+        else:
+            assert -module["ROOM_X_EXT"] <= ward_position[0] - width // 2
+            assert ward_position[0] + width // 2 <= module["ROOM_X_EXT"]
+            assert module["ROOM_Y_MIN"] < ward_position[1] < module["ROOM_Y_MAX"]
+        assert module["FLOOR_Z"] < ward_position[2] - height // 2
+        assert ward_position[2] + height // 2 < module["CEIL_Z"]
         assert abs(ward_position[0] - source_position[0]) <= 420
         assert abs(ward_position[1] - source_position[1]) <= 320
         assert abs(ward_position[2] - source_position[2]) <= 40
@@ -435,7 +444,7 @@ def test_screwm_aoa_pause_keeps_expanded_aoa_inspectable_without_whiteout() -> N
 
     assert origin == (-320, -1780, 208)
     assert target == (module["AOA_X"], module["AOA_Y"], module["AOA_Z"])
-    assert 65 <= _visual_angle(aoa_width, origin, target) <= 72
+    assert 80 <= _visual_angle(aoa_width, origin, target) <= 84
     assert module["SCROOM_PATH_STONES"][4][2:4] == (-320, -1780)
 
 
@@ -752,7 +761,7 @@ def test_screwm_review_geometry_keeps_wards_primary_not_architecture() -> None:
     assert "WARD_GARDEN_LAYOUT" in source
     assert "AOA_Y = -555" in source
     assert "AOA_HEIGHT_M = 7.0" in source
-    assert "AOA_RUNTIME_SCALE = 1.0" in source
+    assert "AOA_RUNTIME_SCALE = 1.3" in source
     assert "TOWER_CEIL_M = TOWER_FLOOR_M + (BASE_TOWER_CEIL_M - TOWER_FLOOR_M) * 2.0" in source
     assert "REVIEW_DRIFT_Y = AOA_Y - 45" in source
     assert "WARD_FRAME_PAD = 6" in source
