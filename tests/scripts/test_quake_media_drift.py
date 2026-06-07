@@ -208,3 +208,23 @@ def test_media_drift_disabled_is_identity(tmp_path: Path) -> None:
     assert (
         renderer.apply(frame, width=4, height=4, receiver="ticker:test", frame=1, now=1.0) == frame
     )
+
+
+def test_aces_tonemap_is_filmic_and_not_blown() -> None:
+    import numpy as np
+
+    module = _load_module()
+    aces = module["_aces_tonemap"]
+    # aces(0) == 0; input 255 (1.0) -> filmic shoulder ~0.80*255
+    assert float(aces(np.array([0.0]))[0]) == 0.0
+    mid = float(aces(np.array([255.0]))[0])
+    assert 195.0 < mid < 215.0
+    # 3x overdrive -> rolls off smoothly, NEVER flat-white-clips
+    big = float(aces(np.array([255.0 * 3.0]))[0])
+    assert big < 250.0
+    # monotonic increasing (no inversion)
+    xs = np.array([0.0, 64.0, 128.0, 255.0, 512.0, 1024.0])
+    ys = aces(xs)
+    assert bool(np.all(np.diff(ys) > 0))
+    # bounded [0,255]
+    assert float(ys.min()) >= 0.0 and float(ys.max()) <= 255.0

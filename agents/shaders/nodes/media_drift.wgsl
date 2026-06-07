@@ -68,6 +68,16 @@ struct DriftUniforms {
 fn S(i: u32) -> f32 { return U.scalars[i / 4u][i % 4u]; }
 fn clamp01(v: f32) -> f32 { return clamp(v, 0.0, 1.0); }
 
+// Narkowicz ACES-fitted filmic tonemap. Maps scene-referred RGB (incl. >1 drift
+// peaks) to display [0,1] with a smooth highlight shoulder instead of a hard clamp
+// (the hard clamp flat-blew-out: any region >1 became flat white). aces(1.0)~=0.80,
+// aces(3.0)~=0.95 -> bright drift rolls off, never flat-white (rich AND not blown).
+fn aces_tonemap(x: vec3<f32>) -> vec3<f32> {
+    let c = max(x, vec3<f32>(0.0));
+    return clamp((c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14),
+                 vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
 // DriftState.intensity property (quake_media_drift.py:71-93).
 fn base_intensity() -> f32 {
     let mode_pressure = max(max(max(S(I_MODE_TONAL), S(I_MODE_ATMOSPHERIC)),
@@ -366,5 +376,5 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let amber = vec3<f32>(0.93, 1.0 + S(I_TONAL) * 0.06, 1.0 + S(I_TONAL) * 0.13);
     rgb *= cyan_magenta * pulse + amber * (1.0 - pulse);
 
-    return vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
+    return vec4<f32>(aces_tonemap(rgb), 1.0);
 }
