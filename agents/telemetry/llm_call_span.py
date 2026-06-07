@@ -36,6 +36,7 @@ from agents.telemetry.condition_metrics import (
     record_llm_call_cost,
     record_llm_call_finish,
     record_llm_call_start,
+    record_llm_call_tokens,
 )
 
 
@@ -47,6 +48,8 @@ class LlmCallSpan:
     route: str
     outcome: str = "success"
     cost_dollars: float | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
     def set_outcome(self, outcome: str) -> None:
         """Override the default "success" outcome label before span exit.
@@ -65,6 +68,15 @@ class LlmCallSpan:
         proxies that don't return cost).
         """
         self.cost_dollars = cost_dollars
+
+    def set_tokens(self, *, prompt_tokens: int, completion_tokens: int) -> None:
+        """Record per-call token VOLUME (e.g. from a local TabbyAPI ``usage`` block).
+
+        Emitted to ``hapax_llm_tokens_total`` on exit. Volume only — NOT dollars;
+        local inference uses this instead of ``set_cost`` (no marginal $).
+        """
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
 
 
 @contextmanager
@@ -99,4 +111,11 @@ def llm_call_span(*, model: str, route: str):
                 model=model,
                 route=route,
                 cost_dollars=span.cost_dollars,
+            )
+        if span.prompt_tokens or span.completion_tokens:
+            record_llm_call_tokens(
+                model=model,
+                route=route,
+                prompt_tokens=span.prompt_tokens,
+                completion_tokens=span.completion_tokens,
             )
