@@ -14,6 +14,12 @@ REPO_DIR="$(cd "$(dirname "$0")/../units" && pwd)"
 PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 DEST_DIR="${HOME}/.config/systemd/user"
 DECOMMISSIONED_UNITS=(
+    # Retired 2026-06-07: superseded by the direct video50/video52 + UDP
+    # ffmpeg media-source topology (#3819/#3827/#3837). The OBS V4L2 capture
+    # source it monitored no longer exists in the live runtime; the compositor
+    # ingests /dev/video52 directly. No runtime puller; was Restart=no +
+    # WatchdogSec=120 (no self-recovery). Script kept as a manual one-shot tool.
+    hapax-obs-v4l2-source-reset.service
     hapax-logos.service
     hapax-build-reload.path
     hapax-build-reload.service

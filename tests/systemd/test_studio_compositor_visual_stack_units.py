@@ -11,10 +11,6 @@ BRIDGE_WATCHDOG = UNITS_DIR / "hapax-v4l2-bridge-watchdog.service"
 BRIDGE_WATCHDOG_TIMER = UNITS_DIR / "hapax-v4l2-bridge-watchdog.timer"
 VIDEO42_GUARD = UNITS_DIR / "hapax-video42-format-guard.service"
 OBS = UNITS_DIR / "hapax-obs-livestream.service"
-OBS_SOURCE_RESET = UNITS_DIR / "hapax-obs-v4l2-source-reset.service"
-OBS_SOURCE_RESET_VIDEO52_DROPIN = (
-    UNITS_DIR / "hapax-obs-v4l2-source-reset.service.d" / "zzzz-screwm-quake-video52.conf"
-)
 SCREWM_OBS_MEDIA_STREAM = UNITS_DIR / "hapax-darkplaces-obs-media-stream.service"
 SCREWM_OBS_LIVESTREAM = UNITS_DIR / "hapax-obs-screwm-livestream.service"
 LIVE_SURFACE_GUARD = UNITS_DIR / "hapax-live-surface-guard.service"
@@ -330,80 +326,6 @@ def test_simple_bridge_unit_does_not_claim_systemd_watchdog_without_sd_notify() 
     parser = _load_unit(BRIDGE)
     assert parser.get("Service", "Type") == "simple"
     assert parser.get("Service", "WatchdogSec", fallback=None) is None
-
-
-def test_obs_v4l2_source_reset_runs_from_activation_worktree_with_notify_watchdog() -> None:
-    parser = _load_unit(OBS_SOURCE_RESET)
-    assert parser.get("Unit", "After") == (
-        "pipewire.service hapax-darkplaces-v4l2.service hapax-obs-livestream.service"
-    )
-    assert not parser.has_option("Unit", "Wants")
-    assert parser.get("Unit", "PartOf") == "hapax-visual-stack.target"
-    assert parser.get("Unit", "ConditionPathExists") == (
-        f"{SOURCE_ROOT}/scripts/hapax-obs-v4l2-source-reset"
-    )
-    assert parser.get("Service", "Type") == "notify"
-    assert parser.get("Service", "NotifyAccess") == "main"
-    assert parser.get("Service", "WorkingDirectory") == SOURCE_ROOT
-    assert parser.get("Service", "WatchdogSec") == "120"
-    assert parser.get("Service", "ExecStart").startswith(
-        f"{SOURCE_ROOT}/scripts/hapax-obs-v4l2-source-reset"
-    )
-    assert '--source-name "Video Capture Device (V4L2)"' in parser.get("Service", "ExecStart")
-    assert "--poll-interval 15" in parser.get("Service", "ExecStart")
-    assert "--stall-threshold 60" in parser.get("Service", "ExecStart")
-    assert "--reset-cooldown 60" in parser.get("Service", "ExecStart")
-    assert "--device-id /dev/video50" in parser.get("Service", "ExecStart")
-    assert "--resolution 1920x1080" in parser.get("Service", "ExecStart")
-    assert "--framerate 30" in parser.get("Service", "ExecStart")
-    assert "--pixelformat YUYV" in parser.get("Service", "ExecStart")
-    assert "--disable-buffering" in parser.get("Service", "ExecStart")
-    assert "--auto-reset-input" in parser.get("Service", "ExecStart")
-    assert "--producer-service" not in parser.get("Service", "ExecStart")
-    assert "hapax-obs-video50-yuyv-compat-bridge.service" not in parser.get(
-        "Service",
-        "ExecStart",
-    )
-    assert "--producer-restart-after-obs-resets" not in parser.get("Service", "ExecStart")
-    assert "--obs-log-v4l2-errors" in parser.get("Service", "ExecStart")
-    assert "--ignore-static-screenshot-stalls" in parser.get("Service", "ExecStart")
-    assert "--max-static-ignore-seconds 75" in parser.get("Service", "ExecStart")
-    assert "--screenshot-width 160" in parser.get("Service", "ExecStart")
-    assert "--screenshot-height 90" in parser.get("Service", "ExecStart")
-    assert parser.get("Service", "Restart") == "no"
-    assert "hapax-compositor-runtime-source-check" in parser.get("Service", "ExecStartPre")
-    lines = _active_unit_lines(OBS_SOURCE_RESET)
-    assert all("%h/projects/hapax-council" not in line for line in lines)
-
-
-def test_screwm_obs_v4l2_reset_dropin_pins_obs_to_direct_darkplaces_video52() -> None:
-    lines = _active_unit_lines(OBS_SOURCE_RESET_VIDEO52_DROPIN)
-    joined = "\n".join(lines)
-
-    assert "ConditionPathExists=!%h/.config/hapax/enable-darkplaces-runtime" in lines
-    assert "ExecStart=" in lines
-    assert "--poll-interval 15" in joined
-    assert "--stall-threshold 60" in joined
-    assert "--device-id /dev/video52" in joined
-    assert "--framerate 30" in joined
-    assert "--pixelformat YUYV" in joined
-    assert "--producer-service hapax-darkplaces-v4l2.service" in joined
-    assert "--obs-log-v4l2-errors" not in joined
-    assert "--ignore-static-screenshot-stalls" in joined
-    assert "--producer-restart-after-obs-resets 0" in joined
-    assert "--max-static-ignore-seconds 0" in joined
-    assert "--recreate-input-on-reset" in joined
-    assert "--screenshot-width 160" in joined
-    assert "--screenshot-height 90" in joined
-    assert "--device-id /dev/video50" not in joined
-    assert "--pixelformat NV12" not in joined
-    assert "--obs-log-v4l2-errors" not in joined
-    assert "--recreate-input-on-reset" in joined
-    assert "--producer-service hapax-darkplaces-v4l2.service" in joined
-    assert "--producer-restart-after-obs-resets 0" in joined
-    assert "--max-static-ignore-seconds 0" in joined
-    assert "--ignore-static-screenshot-stalls" in joined
-    assert "--prom-path %h/.local/share/node_exporter/textfile_collector/" in joined
 
 
 def test_live_surface_guard_runs_from_activation_worktree() -> None:
