@@ -18,12 +18,19 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import statistics
 import time as _time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+# Effort word-limit envelope (the documented EffortDecision range). These are range
+# bounds, not presets: word_limit is a continuum across [WORD_MIN, WORD_MAX], never
+# discrete buckets (no-presets — variance comes from parametric modulation).
+WORD_MIN = 22
+WORD_MAX = 48
 
 
 class DUState(enum.Enum):
@@ -83,8 +90,8 @@ class GroundingLedger:
         self._acceptance_history: deque[float] = deque(maxlen=20)
         self._ewma_acceptance: float = 0.5  # cold start: neutral
         self._consecutive_negative: int = 0
-        self._effort_level: str = "BASELINE"
-        self._effort_hold_turns: int = 0  # hysteresis: de-escalation delay
+        self._effort_level: str = "BASELINE"  # latest band label (snapshot/display only)
+        self._effort_ewma: float = 0.5  # smoothed effort score (asymmetric slew)
 
     def add_du(self, turn: int, summary: str, concern_overlap: float = 0.5) -> DiscourseUnit:
         """Register a new system utterance as a Discourse Unit."""
@@ -187,61 +194,58 @@ class GroundingLedger:
         gqi = 0.50 * ewma + 0.25 * trend + 0.15 * neg_penalty + 0.10 * engagement
         return max(0.0, min(1.0, gqi))
 
+    def _gqi_discount(self) -> float:
+        """Ledger-fit coefficient for how much GQI discounts effort (replaces the
+        former fixed 0.6).
+
+        GQI is trusted to reduce effort MORE when grounding has proven reliable
+        (high, stable acceptance) and LESS when acceptance has been low or volatile
+        — fitted from the acceptance ledger, never a preset. Coefficient ∈ [0, 1].
+        """
+        hist = self._acceptance_history
+        if len(hist) < 3:
+            return self._ewma_acceptance  # cold prior: trust ∝ early acceptance (0.5 neutral)
+        volatility = statistics.pstdev(hist)
+        # high + stable acceptance trusts GQI; volatility erodes that trust.
+        fit = self._ewma_acceptance * (1.0 - min(1.0, 2.0 * volatility))
+        return max(0.0, min(1.0, fit))
+
+    @staticmethod
+    def _effort_label(score: float) -> str:
+        """Qualitative band label for the directive/snapshot. Display only — the
+        actual verbosity is the continuum word_limit, not this label."""
+        if score > 0.66:
+            return "ELABORATIVE"
+        if score > 0.33:
+            return "BASELINE"
+        return "EFFICIENT"
+
     def effort_calibration(self, activation: float = 0.5) -> EffortDecision:
-        """2D effort calibration: activation × (1 - gqi_discount).
+        """2D effort calibration: activation × (1 − GQI·discount), slewed.
 
-        High activation + low GQI = maximum effort (complex + poorly grounded).
-        Low activation + high GQI = minimum effort (simple + well grounded).
-
-        Hysteresis: escalation immediate, de-escalation requires 2 consecutive
-        turns at the lower level.
+        High activation + low GQI ⇒ maximum effort (complex + poorly grounded);
+        low activation + high GQI ⇒ minimum effort. The word limit is a continuum
+        over [WORD_MIN, WORD_MAX] (no preset buckets); the GQI discount is
+        ledger-fit (no fixed 0.6). De-escalation is damped by an asymmetric EWMA
+        (escalation immediate) — the parametric successor to the former discrete
+        level hysteresis.
         """
         gqi = self.compute_gqi()
-        effort_score = activation * (1.0 - gqi * 0.6)  # GQI discounts up to 60%
-        effort_score = max(0.0, min(1.0, effort_score))
+        raw = max(0.0, min(1.0, activation * (1.0 - gqi * self._gqi_discount())))
 
-        # Map to discrete level
-        if effort_score > 0.6:
-            raw_level = "ELABORATIVE"
-            word_limit = 45
-        elif effort_score > 0.3:
-            raw_level = "BASELINE"
-            word_limit = 33
+        # Asymmetric slew: escalate immediately, de-escalate gradually.
+        if raw >= self._effort_ewma:
+            self._effort_ewma = raw
         else:
-            raw_level = "EFFICIENT"
-            word_limit = 23
+            self._effort_ewma = 0.5 * raw + 0.5 * self._effort_ewma
+        score = self._effort_ewma
 
-        # Hysteresis: escalation is immediate, de-escalation is damped
-        level_order = {"EFFICIENT": 0, "BASELINE": 1, "ELABORATIVE": 2}
-        current_rank = level_order.get(self._effort_level, 1)
-        new_rank = level_order.get(raw_level, 1)
-
-        if new_rank > current_rank:
-            # Escalation: immediate
-            self._effort_level = raw_level
-            self._effort_hold_turns = 0
-        elif new_rank < current_rank:
-            # De-escalation: require 2 consecutive turns at lower level
-            self._effort_hold_turns += 1
-            if self._effort_hold_turns >= 2:
-                self._effort_level = raw_level
-                self._effort_hold_turns = 0
-            else:
-                # Hold at current level
-                raw_level = self._effort_level
-                word_limit = {
-                    "EFFICIENT": 23,
-                    "BASELINE": 33,
-                    "ELABORATIVE": 45,
-                }[self._effort_level]
-        else:
-            # Same rank: preserve hold counter for in-progress de-escalation
-            pass
-
+        word_limit = round(WORD_MIN + score * (WORD_MAX - WORD_MIN))
+        self._effort_level = self._effort_label(score)
         return EffortDecision(
-            effort_score=round(effort_score, 3),
+            effort_score=round(score, 3),
             word_limit=word_limit,
-            level_name=raw_level,
+            level_name=self._effort_level,
         )
 
     def grounding_directive(self) -> str:

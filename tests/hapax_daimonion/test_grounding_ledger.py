@@ -150,61 +150,90 @@ class TestGQI:
 
 
 class TestEffortCalibration:
-    def test_high_activation_low_gqi_elaborative(self):
+    # No-presets: word_limit is a continuum (no 23/33/45 buckets) and the GQI
+    # discount is ledger-fit (no fixed 0.6). These tests assert qualitative
+    # monotonicity, not bucket equality.
+
+    def test_high_activation_low_gqi_yields_more_words_than_low_activation_high_gqi(self):
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
+
+        poorly_grounded = GroundingLedger()
+        for i in range(5):
+            poorly_grounded.add_du(i, f"s{i}")
+            poorly_grounded.update_from_acceptance("REJECT")
+        hi = poorly_grounded.effort_calibration(activation=0.9)
+
+        well_grounded = GroundingLedger()
+        for i in range(5):
+            well_grounded.add_du(i, f"s{i}")
+            well_grounded.update_from_acceptance("ACCEPT")
+        well_grounded.effort_calibration(activation=0.2)  # allow the slew to settle
+        lo = well_grounded.effort_calibration(activation=0.2)
+
+        # complex + poorly grounded ⇒ strictly more effort/words than simple + well grounded
+        assert hi.word_limit > lo.word_limit
+        assert hi.effort_score > lo.effort_score
+
+    def test_word_limit_is_continuum_within_envelope(self):
+        from agents.hapax_daimonion.grounding_ledger import WORD_MAX, WORD_MIN, GroundingLedger
+
+        limits = set()
+        for activation in (0.0, 0.25, 0.5, 0.75, 1.0):
+            e = GroundingLedger().effort_calibration(activation=activation)
+            assert WORD_MIN <= e.word_limit <= WORD_MAX
+            limits.add(e.word_limit)
+        # a continuum produces more than the 3 legacy bucket values
+        assert len(limits) > 3
+
+    def test_word_limit_monotonic_in_activation(self):
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
+
+        low = GroundingLedger().effort_calibration(activation=0.1).word_limit
+        high = GroundingLedger().effort_calibration(activation=0.9).word_limit
+        assert high > low
+
+    def test_deescalation_is_gradual_not_immediate(self):
         from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
-        # Low GQI: feed rejects
         for i in range(5):
             ledger.add_du(i, f"s{i}")
             ledger.update_from_acceptance("REJECT")
-        effort = ledger.effort_calibration(activation=0.9)
-        assert effort.level_name == "ELABORATIVE"
-        assert effort.word_limit >= 40
+        e1 = ledger.effort_calibration(activation=0.9)  # escalated
 
-    def test_low_activation_high_gqi_efficient(self):
-        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
-
-        ledger = GroundingLedger()
-        # High GQI: feed accepts
-        for i in range(5):
-            ledger.add_du(i, f"s{i}")
-            ledger.update_from_acceptance("ACCEPT")
-        # First call: hysteresis holds at BASELINE (de-escalation from cold start)
-        ledger.effort_calibration(activation=0.2)
-        # Second call: de-escalation allowed
-        effort = ledger.effort_calibration(activation=0.2)
-        assert effort.level_name == "EFFICIENT"
-        assert effort.word_limit <= 25
-
-    def test_moderate_is_baseline(self):
-        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
-
-        ledger = GroundingLedger()
-        effort = ledger.effort_calibration(activation=0.5)
-        assert effort.level_name == "BASELINE"
-
-    def test_hysteresis_delays_deescalation(self):
-        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
-
-        ledger = GroundingLedger()
-        # Escalate to ELABORATIVE
-        for i in range(5):
-            ledger.add_du(i, f"s{i}")
-            ledger.update_from_acceptance("REJECT")
-        e1 = ledger.effort_calibration(activation=0.9)
-        assert e1.level_name == "ELABORATIVE"
-
-        # Now conditions improve — should NOT immediately de-escalate
+        # conditions improve; de-escalation is damped (asymmetric slew), so the
+        # word limit decreases GRADUALLY over turns rather than snapping down.
         for i in range(5):
             ledger.add_du(10 + i, f"s{10 + i}")
             ledger.update_from_acceptance("ACCEPT")
         e2 = ledger.effort_calibration(activation=0.2)
-        assert e2.level_name == "ELABORATIVE"  # held by hysteresis
-
-        # Second consecutive turn at lower level → de-escalation allowed
         e3 = ledger.effort_calibration(activation=0.2)
-        assert e3.level_name != "ELABORATIVE"  # now de-escalated
+        assert e1.word_limit >= e2.word_limit > e3.word_limit
+
+    def test_escalation_is_immediate(self):
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
+
+        ledger = GroundingLedger()
+        ledger.effort_calibration(activation=0.1)  # settle low
+        for i in range(5):
+            ledger.add_du(i, f"s{i}")
+            ledger.update_from_acceptance("REJECT")
+        e = ledger.effort_calibration(activation=0.95)  # high effort
+        # escalation jumps in one step (not damped)
+        assert e.effort_score > 0.6
+
+    def test_gqi_discount_is_ledger_fit_not_fixed(self):
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
+
+        accepting = GroundingLedger()
+        rejecting = GroundingLedger()
+        for i in range(5):
+            accepting.add_du(i, f"a{i}")
+            accepting.update_from_acceptance("ACCEPT")
+            rejecting.add_du(i, f"r{i}")
+            rejecting.update_from_acceptance("REJECT")
+        # the discount adapts to the ledger — it is not a constant 0.6
+        assert accepting._gqi_discount() != rejecting._gqi_discount()
 
     def test_effort_score_bounded(self):
         from agents.hapax_daimonion.grounding_ledger import GroundingLedger
@@ -287,36 +316,11 @@ class TestIgnoreBranch:
         assert result == "ungrounded_caution"
 
 
-class TestEffortHoldCounter:
-    def test_same_rank_preserves_hold_counter(self):
-        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
-
-        ledger = GroundingLedger()
-        ledger.effort_calibration(activation=0.5)
-        ledger.effort_calibration(activation=0.9)
-        ledger.effort_calibration(activation=0.2)
-        e4 = ledger.effort_calibration(activation=0.2)
-        assert e4.level_name == "EFFICIENT"
-
-    def test_true_escalation_resets_hold_counter(self):
-        # A true escalation (new_rank > current_rank) resets the hold counter.
-        # After escalation from BASELINE to ELABORATIVE and back to EFFICIENT-level,
-        # de-escalation requires 2 consecutive turns. A same-rank turn preserves
-        # the counter (M5 fix), so: de-escalate(hold=1) → same-rank(hold=1 preserved)
-        # → de-escalate(hold=2) → de-escalates immediately.
-        # But a true re-escalation (EFFICIENT→ELABORATIVE) resets hold to 0.
-        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
-
-        ledger = GroundingLedger()
-        # Start at BASELINE (cold start), escalate to ELABORATIVE
-        ledger.effort_calibration(activation=0.9)  # → ELABORATIVE, hold=0
-        # Begin de-escalation (hold=1, stays ELABORATIVE)
-        ledger.effort_calibration(activation=0.2)  # → hold=1, ELABORATIVE
-        # True escalation: resets hold counter to 0
-        ledger.effort_calibration(activation=0.9)  # → same rank (ELABORATIVE), hold preserved
-        # With M5 fix, hold=1 preserved from step 2; next de-escalation will complete
-        e = ledger.effort_calibration(activation=0.2)  # hold=1+1=2, de-escalates
-        assert e.level_name == "EFFICIENT"
+# TestEffortHoldCounter removed: the discrete-level hold-counter hysteresis it
+# pinned was replaced by the asymmetric EWMA slew (no-presets continuum). The
+# escalation-immediate / de-escalation-gradual behavior is now covered by
+# TestEffortCalibration.test_escalation_is_immediate and
+# .test_deescalation_is_gradual_not_immediate.
 
 
 class TestUngroundedCount:
