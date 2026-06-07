@@ -2,16 +2,32 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from agents.hapax_daimonion import daily_segment_prep as prep
 from scripts.review_one_segment_iteration import main as review_cli_main
+from shared.operator_quality_feedback import build_operator_quality_rating
+from shared.operator_quality_posterior import (
+    GOVERNED_QUALITY_BARS,
+    DerivedQualityBars,
+    derive_quality_bars,
+    load_derived_quality_bars,
+    resolve_quality_bar,
+    write_derived_quality_bars,
+)
 from shared.segment_iteration_review import (
     SegmentCanaryGateError,
     assert_next_nine_canary_ready,
     review_one_segment_iteration,
     validate_next_nine_canary_receipt,
+)
+from shared.segment_live_event_quality import (
+    LIVE_EVENT_GOOD_FLOOR,
+    _band,
+    evaluate_segment_live_event_quality,
+    resolve_live_event_band_cuts,
 )
 from shared.segment_prep_consultation import (
     build_consultation_manifest,
@@ -852,3 +868,249 @@ def test_one_segment_review_replays_hard_layout_contract_for_bounded_vocabulary(
 
         assert receipt["ready_for_next_nine"] is False
         assert "layout.hard_contract_replay" in _failed_criteria(receipt)
+
+
+# ---------------------------------------------------------------------------
+# Segment-prep calibration: wire the operator-quality posterior to the gate
+# bars (replaces the magic constants; uncertainty-aware, loud + advisory).
+# Task: segment-prep-calibration-posterior-wiring-20260607.
+# ---------------------------------------------------------------------------
+
+
+def _ratings(
+    rating: int,
+    *,
+    axis: str = "overall",
+    count: int,
+    base: datetime | None = None,
+) -> list[Any]:
+    base = base or datetime(2026, 6, 1, tzinfo=UTC)
+    return [
+        build_operator_quality_rating(
+            rating=rating,
+            rating_axis=axis,
+            source_surface="test",
+            occurred_at=base,
+            idempotency_key=f"{axis}-{rating}-{index}",
+            evidence_refs=(f"artifact-sha-{axis}-{index}",),
+        )
+        for index in range(count)
+    ]
+
+
+def _bar(bars: DerivedQualityBars, name: str) -> Any:
+    return {bar.name: bar for bar in bars.bars}[name]
+
+
+def test_empty_corpus_yields_advisory_seed_default_bars() -> None:
+    bars = derive_quality_bars(events=[])
+
+    assert {bar.name for bar in bars.bars} == {spec.name for spec in GOVERNED_QUALITY_BARS}
+    overall = _bar(bars, "automated_script_overall")
+    assert overall.value == 3.5
+    assert overall.seed_default == 3.5
+    assert overall.sample_count == 0
+    assert overall.derivation_status == "advisory_insufficient_evidence"
+    assert overall.uncertainty_reason == "no_observations"
+    good = _bar(bars, "live_event_good_floor")
+    assert good.value == 82.0
+    assert bars.bar_derivation_sha256
+    # Deterministic: same (empty) corpus -> identical derivation digest.
+    assert derive_quality_bars(events=[]).bar_derivation_sha256 == bars.bar_derivation_sha256
+
+
+def test_resolve_quality_bar_without_derived_bars_is_seed_default_advisory() -> None:
+    resolved = resolve_quality_bar("automated_script_overall", bars=None)
+
+    assert resolved.value == 3.5
+    assert resolved.advisory is True
+    assert resolved.derivation_status == "advisory_insufficient_evidence"
+
+
+def test_quorum_high_satisfaction_tightens_overall_bar_and_enforces() -> None:
+    bars = derive_quality_bars(events=_ratings(5, count=4))
+
+    overall = _bar(bars, "automated_script_overall")
+    assert overall.sample_count == 4
+    assert overall.value > 3.5
+    assert overall.advisory is False
+    assert overall.derivation_status == "derived_enforced"
+
+
+def test_below_quorum_stays_advisory_seed_default() -> None:
+    bars = derive_quality_bars(events=_ratings(5, count=2))
+
+    overall = _bar(bars, "automated_script_overall")
+    assert overall.sample_count == 2
+    assert overall.value == 3.5
+    assert overall.derivation_status == "advisory_insufficient_evidence"
+    assert overall.uncertainty_reason == "low_support"
+
+
+def test_derived_bar_never_lowers_below_seed() -> None:
+    bars = derive_quality_bars(events=_ratings(1, count=4))
+
+    overall = _bar(bars, "automated_script_overall")
+    # Operator evidence projects below the seed; the bar is floored, never relaxed.
+    assert overall.value == 3.5
+    assert overall.derivation_status == "derived_floored_at_seed"
+
+
+def test_hung_axis_is_unresolved_and_kept_in_denominator() -> None:
+    events = _ratings(5, axis="overall", count=3) + _ratings(1, axis="overall", count=3)
+    bars = derive_quality_bars(events=events)
+
+    overall = _bar(bars, "automated_script_overall")
+    # Conflicting evidence must not silently tighten or relax the bar.
+    assert overall.value == 3.5
+    assert overall.derivation_status == "advisory_conflicting_evidence"
+    # Axis-aware verdict: a hung axis is unresolved -> cannot pass, never dropped.
+    assert bars.axis_verdict["overall"] == "unresolved"
+    assert overall.uncertainty_reason == "conflicting_evidence"
+
+
+def test_unrated_axis_is_unresolved_not_dropped_from_denominator() -> None:
+    bars = derive_quality_bars(events=_ratings(5, axis="overall", count=4))
+
+    # Only "overall" has evidence; every other governed axis stays in the verdict
+    # denominator as "unresolved" rather than being silently excluded.
+    governed_axes = {spec.rating_axis for spec in GOVERNED_QUALITY_BARS}
+    assert governed_axes <= set(bars.axis_verdict)
+    assert bars.axis_verdict["overall"] == "pass"
+    assert bars.axis_verdict["substantive"] == "unresolved"
+
+
+def test_derived_bars_round_trip_through_file(tmp_path: Path) -> None:
+    bars = derive_quality_bars(events=_ratings(5, count=4))
+    path = tmp_path / "derived-quality-bars.json"
+    write_derived_quality_bars(bars, path=path)
+
+    reloaded = load_derived_quality_bars(path=path)
+    assert reloaded is not None
+    assert reloaded.bar_derivation_sha256 == bars.bar_derivation_sha256
+    assert (
+        _bar(reloaded, "automated_script_overall").value
+        == _bar(bars, "automated_script_overall").value
+    )
+
+
+def test_load_derived_bars_missing_file_returns_none(tmp_path: Path) -> None:
+    assert load_derived_quality_bars(path=tmp_path / "absent.json") is None
+
+
+def test_review_receipt_carries_calibration_block_no_corpus() -> None:
+    artifact = _artifact(EXCELLENT_SCRIPT)
+    receipt = review_one_segment_iteration(
+        [artifact],
+        team_critique_receipts=_team_receipts_for(artifact),
+        derived_bars=derive_quality_bars(events=[]),
+    )
+
+    calibration = receipt["operator_quality_calibration"]
+    assert calibration["min_samples"] == 3
+    assert calibration["bar_derivation_sha256"]
+    assert calibration["corpus_sha256"]
+    bars = {bar["name"]: bar for bar in calibration["bars"]}
+    assert bars["automated_script_overall"]["value"] == 3.5
+    assert bars["automated_script_overall"]["derivation_status"] == (
+        "advisory_insufficient_evidence"
+    )
+    # No corpus -> behaviour is byte-identical to the legacy magic constant.
+    assert receipt["automated_gate"]["minimum_script_score"] == 3.5
+    assert receipt["automated_gate"]["passed"] is True
+
+
+def test_review_receipt_default_path_matches_no_corpus_when_absent(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    # With no derived-bars file on disk, the review falls back to seed defaults.
+    monkeypatch.setenv("HAPAX_DERIVED_QUALITY_BARS_PATH", str(tmp_path / "absent.json"))
+    artifact = _artifact(EXCELLENT_SCRIPT)
+    receipt = review_one_segment_iteration(
+        [artifact],
+        team_critique_receipts=_team_receipts_for(artifact),
+    )
+    assert receipt["automated_gate"]["minimum_script_score"] == 3.5
+    assert receipt["automated_gate"]["passed"] is True
+
+
+def test_tightened_overall_bar_is_enforced_loudly_and_traced() -> None:
+    bars = derive_quality_bars(events=_ratings(5, count=4))
+    overall_bar = _bar(bars, "automated_script_overall")
+    assert overall_bar.value > 3.93  # above EXCELLENT_SCRIPT's automated overall (3.93)
+
+    artifact = _artifact(EXCELLENT_SCRIPT)
+    receipt = review_one_segment_iteration(
+        [artifact],
+        team_critique_receipts=_team_receipts_for(artifact),
+        derived_bars=bars,
+    )
+
+    # The previously-passing script now fails the tightened, evidence-derived bar.
+    assert receipt["automated_gate"]["minimum_script_score"] == overall_bar.value
+    assert "script.quality_floor" in _failed_criteria(receipt)
+    assert receipt["automated_gate"]["passed"] is False
+    # Loud + traced: the receipt records which derived bar made the decision.
+    calibration = receipt["operator_quality_calibration"]
+    assert calibration["bar_derivation_sha256"] == bars.bar_derivation_sha256
+    cal_bar = {bar["name"]: bar for bar in calibration["bars"]}["automated_script_overall"]
+    assert cal_bar["derivation_status"] == "derived_enforced"
+
+
+def test_review_loads_derived_bars_from_env_path(tmp_path: Path, monkeypatch: Any) -> None:
+    bars = derive_quality_bars(events=_ratings(5, count=4))
+    path = tmp_path / "derived-quality-bars.json"
+    write_derived_quality_bars(bars, path=path)
+    monkeypatch.setenv("HAPAX_DERIVED_QUALITY_BARS_PATH", str(path))
+
+    artifact = _artifact(EXCELLENT_SCRIPT)
+    receipt = review_one_segment_iteration(
+        [artifact],
+        team_critique_receipts=_team_receipts_for(artifact),
+    )
+    assert (
+        receipt["automated_gate"]["minimum_script_score"]
+        == _bar(bars, "automated_script_overall").value
+    )
+
+
+def test_live_event_band_default_cuts_match_seed_constants() -> None:
+    assert _band(93) == "excellent"
+    assert _band(82) == "good"
+    assert _band(75) == "review_only"
+    assert _band(50) == "thin"
+    assert _band(10) == "generic"
+    assert _band(0) == "invalid"
+
+
+def test_live_event_band_uses_injected_operative_cuts() -> None:
+    cuts = {"excellent": 95, "good": 90, "review_only": 80, "thin": 60}
+    assert _band(85, cuts=cuts) == "review_only"  # 80 <= 85 < 90
+    assert _band(85) == "good"  # seed: 82 <= 85 < 93
+
+
+def test_live_event_good_floor_tightens_from_substantive_posterior() -> None:
+    bars = derive_quality_bars(events=_ratings(5, axis="substantive", count=4))
+    cuts = resolve_live_event_band_cuts(bars)
+
+    assert cuts["good"] > LIVE_EVENT_GOOD_FLOOR
+    assert _band(82, cuts=cuts) == "review_only"  # below the tightened good floor
+    assert _band(82) == "good"  # seed default unchanged
+
+
+def test_evaluate_live_event_default_report_shape_is_stable() -> None:
+    base = evaluate_segment_live_event_quality([], [], [], [])
+
+    assert set(base) == {
+        "live_event_rubric_version",
+        "ok",
+        "score",
+        "band",
+        "dimensions",
+        "violations",
+        "plan",
+        "observed",
+    }
+    # Threading derived_bars=None must be byte-identical (no report-shape drift,
+    # so stored live-event reports stay replay-stable for the freshness gate).
+    assert evaluate_segment_live_event_quality([], [], [], [], derived_bars=None) == base

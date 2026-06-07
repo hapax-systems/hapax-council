@@ -14,6 +14,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from shared.operator_quality_posterior import DerivedQualityBars, resolve_quality_bar
 from shared.segment_prep_contract import (
     framework_vocabulary_leaks,
     is_source_evidence_ref,
@@ -22,7 +23,21 @@ from shared.segment_prep_contract import (
 from shared.segment_quality_actionability import segment_personage_violations
 
 LIVE_EVENT_RUBRIC_VERSION = 1
+# Seed defaults for the live-event score bands. These are read through
+# ``resolve_live_event_band_cuts`` (operator-quality derived bars, file-backed)
+# rather than hardcoded at the decision site; absent a derived corpus they hold
+# at these legacy values, so default behavior is unchanged. The good floor is a
+# one-way ratchet (it can only tighten upward), so the lower bands stay ordered.
 LIVE_EVENT_GOOD_FLOOR = 82
+LIVE_EVENT_EXCELLENT_FLOOR = 93
+LIVE_EVENT_REVIEW_ONLY_FLOOR = 75
+LIVE_EVENT_THIN_FLOOR = 50
+_SEED_BAND_CUTS: dict[str, int] = {
+    "excellent": LIVE_EVENT_EXCELLENT_FLOOR,
+    "good": LIVE_EVENT_GOOD_FLOOR,
+    "review_only": LIVE_EVENT_REVIEW_ONLY_FLOOR,
+    "thin": LIVE_EVENT_THIN_FLOOR,
+}
 
 _CONCRETE_ACTION_KINDS = {
     "argument_posture_shift",
@@ -142,14 +157,40 @@ def _role_required_actions(role: str) -> set[str]:
     }.get(role, set())
 
 
-def _band(score: int) -> str:
-    if score >= 93:
+def resolve_live_event_band_cuts(
+    derived_bars: DerivedQualityBars | None = None,
+) -> dict[str, int]:
+    """Resolve operative live-event band cuts from the derived quality bars.
+
+    Returns the seed defaults when no derived bars are supplied. The good floor
+    is ratcheted (it can only tighten upward) in the posterior layer; here
+    ``excellent`` is clamped to stay at or above ``good`` so band ordering is
+    preserved even when the floor tightens past the seed excellent cut.
+    """
+
+    if derived_bars is None:
+        return dict(_SEED_BAND_CUTS)
+    good = int(round(resolve_quality_bar("live_event_good_floor", bars=derived_bars).value))
+    excellent = max(
+        int(round(resolve_quality_bar("live_event_band_excellent", bars=derived_bars).value)),
+        good,
+    )
+    review_only = int(
+        round(resolve_quality_bar("live_event_band_review_only", bars=derived_bars).value)
+    )
+    thin = int(round(resolve_quality_bar("live_event_band_thin", bars=derived_bars).value))
+    return {"excellent": excellent, "good": good, "review_only": review_only, "thin": thin}
+
+
+def _band(score: int, *, cuts: Mapping[str, int] | None = None) -> str:
+    cuts = cuts if cuts is not None else _SEED_BAND_CUTS
+    if score >= cuts["excellent"]:
         return "excellent"
-    if score >= LIVE_EVENT_GOOD_FLOOR:
+    if score >= cuts["good"]:
         return "good"
-    if score >= 75:
+    if score >= cuts["review_only"]:
         return "review_only"
-    if score >= 50:
+    if score >= cuts["thin"]:
         return "thin"
     if score > 0:
         return "generic"
@@ -176,8 +217,14 @@ def evaluate_segment_live_event_quality(
     *,
     role: str = "",
     segment_prep_contract: Mapping[str, Any] | None = None,
+    derived_bars: DerivedQualityBars | None = None,
 ) -> dict[str, Any]:
-    """Return a blocking quality report for the live-event shape of a segment."""
+    """Return a blocking quality report for the live-event shape of a segment.
+
+    ``derived_bars`` lets callers tighten the score bands from the
+    operator-quality posterior. When ``None`` the seed defaults apply, so the
+    report is byte-identical to the legacy behavior.
+    """
 
     script_list = [str(item) for item in script]
     text = " ".join(script_list)
@@ -316,7 +363,7 @@ def evaluate_segment_live_event_quality(
         score = min(score, 49)
         cap_reasons.append({"reason": "perspective_or_framework_leak"})
 
-    band = _band(score)
+    band = _band(score, cuts=resolve_live_event_band_cuts(derived_bars))
     violations = [
         {"reason": item["name"], "detail": item["detail"], "observed": item["observed"]}
         for item in dimensions
