@@ -32,6 +32,31 @@ RAG_INGEST_STATE_DIR = _HAPAX_HOME / ".cache" / "rag-ingest"
 HAPAX_PROJECTS_DIR = _HAPAX_HOME / "projects"
 PLAIN_TEXT_SOURCE_EXTENSIONS = {".html", ".md", ".py", ".txt"}
 
+# Embedding-model context windows (tokens). Ollama SILENTLY TRUNCATES input past the
+# window before embedding, so any chunk larger than the window loses its tail — the
+# embedding no longer represents the whole chunk, which degrades retrieval invisibly.
+# This was the documents_v2 p@5 plateau: nomic-embed-cpu's window is 512 but
+# chunk_max_tokens was 1024 (2x). Keep chunks under the window with headroom for the
+# "search_document: " prefix and Qwen-vs-nomic tokenizer drift. Source of truth:
+# `ollama show <model>` -> "context length".
+EMBED_CONTEXT_WINDOW: dict[str, int] = {
+    "nomic-embed-cpu": 512,
+    "nomic-embed-text": 2048,
+}
+_EMBED_WINDOW_HEADROOM = 64  # prefix tokens + tokenizer-drift safety
+_FALLBACK_CONTEXT_WINDOW = 512  # conservative default for an unrecognized model
+
+
+def embed_context_window(model: str) -> int:
+    """Context window (tokens) for an embedding model; conservative default."""
+    return EMBED_CONTEXT_WINDOW.get(model, _FALLBACK_CONTEXT_WINDOW)
+
+
+def safe_chunk_max_tokens(model: str, requested: int = 1024) -> int:
+    """Largest chunk size that won't be truncated by ``model``'s context window."""
+    return min(requested, embed_context_window(model) - _EMBED_WINDOW_HEADROOM)
+
+
 from agents._log_setup import configure_logging
 
 configure_logging(agent="ingest")
@@ -88,7 +113,7 @@ class Config:
     qdrant_url: str = QDRANT_URL
     collection: str = field(default_factory=resolve_documents_collection)
     embedding_model: str = EMBEDDING_MODEL
-    chunk_max_tokens: int = 1024
+    chunk_max_tokens: int = field(default_factory=lambda: safe_chunk_max_tokens(EMBEDDING_MODEL))
     chunk_tokenizer: str = "Qwen/Qwen2.5-7B-Instruct"
     debounce_seconds: float = 2.0  # Wait before processing (avoid partial writes)
 
@@ -139,11 +164,30 @@ def get_chunker():
     if _chunker is None:
         from docling.chunking import HybridChunker
 
+        window = embed_context_window(CFG.embedding_model)
+        max_tokens = CFG.chunk_max_tokens
+        if max_tokens > window:
+            # Fail loud: never silently truncate at embed time (the documents_v2
+            # regression). Clamp + error so misconfiguration is visible, not invisible.
+            max_tokens = window - _EMBED_WINDOW_HEADROOM
+            log.error(
+                "chunk_max_tokens=%d exceeds %s context window (%d); clamped to %d to "
+                "avoid silent embedding truncation",
+                CFG.chunk_max_tokens,
+                CFG.embedding_model,
+                window,
+                max_tokens,
+            )
         _chunker = HybridChunker(
             tokenizer=CFG.chunk_tokenizer,
-            max_tokens=CFG.chunk_max_tokens,
+            max_tokens=max_tokens,
         )
-        log.info(f"Chunker initialized: {CFG.chunk_max_tokens} max tokens")
+        log.info(
+            "Chunker initialized: %d max tokens (%s context window=%d)",
+            max_tokens,
+            CFG.embedding_model,
+            window,
+        )
     return _chunker
 
 
@@ -176,7 +220,10 @@ def extract_chunks(path: Path) -> list[TextChunk]:
     if path.suffix.lower() in PLAIN_TEXT_SOURCE_EXTENSIONS:
         return plain_text_chunks(
             path.read_text(encoding="utf-8", errors="replace"),
-            max_chars=CFG.chunk_max_tokens * 4,
+            # ~3 chars/token is the dense-content (code) lower bound, so chars*(1/3)
+            # upper-bounds tokens at chunk_max_tokens — keeps even .py chunks under the
+            # embedder window (4x would let token-dense files exceed it and truncate).
+            max_chars=CFG.chunk_max_tokens * 3,
         )
     result = get_converter().convert(str(path))
     return [TextChunk(text=chunk.text) for chunk in get_chunker().chunk(result.document)]
