@@ -23,9 +23,14 @@ def test_segment_prep_service_checks_resident_command_r_without_loading_models()
     body = _read(UNITS / "hapax-segment-prep.service")
 
     assert f"Environment=HAPAX_SEGMENT_PREP_MODEL={COMMAND_R_MODEL}" in body
-    assert "ExecStartPre=%h/.local/bin/uv run python -m shared.resident_command_r --check" in body
+    # Resident-command-r check now runs from the source-activation deploy tree
+    # (main-tracking) via its own .venv, not `uv run` from the operator's
+    # canonical interactive worktree which ran stale code — see
+    # docs/research/2026-06-07-canonical-rooted-unit-audit.md.
+    activ = "%h/.cache/hapax/source-activation/worktree"
+    assert f"ExecStartPre={activ}/.venv/bin/python -m shared.resident_command_r --check" in body
     assert (
-        "ExecStart=%h/.local/bin/uv run python -m agents.hapax_daimonion.daily_segment_prep" in body
+        f"ExecStart={activ}/.venv/bin/python -m agents.hapax_daimonion.daily_segment_prep" in body
     )
     assert "tabbyapi.service" in body
     assert "WantedBy=default.target" not in body

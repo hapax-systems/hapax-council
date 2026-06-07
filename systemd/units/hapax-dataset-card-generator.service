@@ -5,10 +5,10 @@ ConditionPathExists=%h/projects/hapax-council/config/research-corpus-export-ledg
 
 [Service]
 Type=oneshot
-WorkingDirectory=%h/projects/hapax-council
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
-Environment=PYTHONPATH=%h/projects/hapax-council
-ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.dataset_card_generator --output %h/hapax-state/research/dataset-cards.md
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.dataset_card_generator --output %h/hapax-state/research/dataset-cards.md
 
 [Install]
 WantedBy=default.target

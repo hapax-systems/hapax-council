@@ -6,9 +6,10 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple
-WorkingDirectory=/home/hapax/projects/hapax-council
-ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.conversion_broker
-Environment=PATH=/home/hapax/.local/bin:/home/hapax/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.conversion_broker
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:/home/hapax/.local/bin:/home/hapax/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Restart=on-failure
 RestartSec=5s

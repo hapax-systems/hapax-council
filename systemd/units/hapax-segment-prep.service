@@ -6,15 +6,24 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=%h/projects/hapax-council
+# Run from the source-activation deploy tree (main-tracking) via its own .venv
+# python directly, NOT `uv run` from the operator's canonical interactive
+# worktree. The canonical worktree tracks a feature branch with local edits and
+# ran STALE code — a removed CouncilConfig(max_models=…) signature crashed this
+# unit daily until fixed in main by #3989 but the fix was unreachable from the
+# stale checkout. Mirrors hapax-daimonion.service. Source freshness is
+# fail-closed via hapax-compositor-runtime-source-check before the resident gate.
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 EnvironmentFile=-/run/user/1000/hapax-secrets.env
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
 Environment=HAPAX_TABBY_URL=http://localhost:5000/v1/chat/completions
 Environment=HAPAX_SEGMENT_PREP_MODEL=command-r-08-2024-exl3-5.0bpw
-ExecCondition=%h/.local/bin/uv run python -m shared.segment_prep_pause --check --activity pool_generation
-ExecStartPre=%h/.local/bin/uv run python -m shared.resident_command_r --check
-ExecStart=%h/.local/bin/uv run python -m agents.hapax_daimonion.daily_segment_prep
+ExecCondition=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m shared.segment_prep_pause --check --activity pool_generation
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file agents/hapax_daimonion/daily_segment_prep.py
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m shared.resident_command_r --check
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.hapax_daimonion.daily_segment_prep
 TimeoutStartSec=7200
 StandardOutput=journal
 StandardError=journal

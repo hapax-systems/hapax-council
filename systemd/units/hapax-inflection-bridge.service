@@ -8,8 +8,9 @@ Type=oneshot
 Nice=19
 StandardOutput=journal
 StandardError=journal
-WorkingDirectory=/home/hapax/projects/hapax-council
-ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.inflection_to_impingement
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.inflection_to_impingement
 
 [Install]
 WantedBy=default.target
