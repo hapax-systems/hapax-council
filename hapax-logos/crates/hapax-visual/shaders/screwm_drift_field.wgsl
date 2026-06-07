@@ -114,13 +114,21 @@ fn fs_main(@location(0) uv: vec2<f32>) -> FragOut {
     // slow (anti_visualizer: no global flash). Active zones (currency) evolve more (hybrid).
     let flow = clamp(vec2<f32>(-(an - as_), ae - aw), vec2<f32>(-0.6), vec2<f32>(0.6)) * 0.006;
     let advected = textureSample(prev_tex, s_in, uv - flow).rgb;
+    // ── Phase 2c-A: slitscan (per-zone temporal-shear rake of prev) ──
+    // Rake prev along a per-zone shear axis from the wide-tap reverie gradient, so each zone reads its
+    // history at a different effective age — a continuous family of warped pasts (temporal slicing).
+    // Currency scales the rake; bounded (reads bounded prev, feeds the egress clamp); ClampToEdge
+    // sampler prevents wrap seams. Spatial + slow (anti_visualizer).
+    let slit_phase = (an - as_) * 3.1 + (ae - aw) * 2.7;
+    let slit = clamp(vec2<f32>(cos(slit_phase), sin(slit_phase)), vec2<f32>(-1.0), vec2<f32>(1.0)) * (0.004 + currency * 0.006);
+    let scanned = textureSample(prev_tex, s_in, uv - flow - slit).rgb;
     let lap = (
         textureSample(prev_tex, s_in, uv + vec2<f32>(px.x, 0.0)).rgb
         + textureSample(prev_tex, s_in, uv - vec2<f32>(px.x, 0.0)).rgb
         + textureSample(prev_tex, s_in, uv + vec2<f32>(0.0, px.y)).rgb
         + textureSample(prev_tex, s_in, uv - vec2<f32>(0.0, px.y)).rgb
     ) * 0.25;
-    let diffused = mix(advected, lap, 0.5);
+    let diffused = mix(mix(advected, lap, 0.5), scanned, 0.35);  // 2c-A slitscan blended in
     let evolve_amt = 0.18 + currency * 0.22;  // hybrid: active zones flow/spread more
     let field_2b = clamp(mix(field_evolved, diffused, evolve_amt), vec3<f32>(0.14), vec3<f32>(0.97));
 
