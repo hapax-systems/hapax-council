@@ -169,14 +169,19 @@ def apply_council_verdicts(
     survived: list[str] = []
     contested: list[str] = []
     refuted: list[str] = []
+    degraded: list[str] = []
     no_candidate_triggered = False
     updated_map = list(source_consequence_map)
 
     for claim_input, verdict in verdicts:
         claim_id = claim_input.metadata.get("claim_id", "")
 
+        # R-A4: a fallback verdict means the council did NOT actually run for this
+        # claim. It is degraded, never a "survival" — counting it as survived made
+        # council_disconfirmation_passed fail OPEN (True even though the council
+        # never executed).
         if verdict.receipt.get("council_unavailable"):
-            survived.append(claim_id)
+            degraded.append(claim_id)
             continue
 
         if verdict.convergence_status == ConvergenceStatus.CONVERGED:
@@ -219,10 +224,13 @@ def apply_council_verdicts(
         "survived_claims": survived,
         "contested_claims": contested,
         "refuted_claims": refuted,
+        "degraded_claims": degraded,
         "updated_source_consequence_map": updated_map,
         "no_candidate_triggered": no_candidate_triggered,
         "council_verdict_sha256": verdict_sha,
-        "council_disconfirmation_passed": len(refuted) == 0,
+        "council_degraded": bool(degraded),
+        # R-A4: a degraded (non-executed) council can never report a pass.
+        "council_disconfirmation_passed": len(refuted) == 0 and not degraded,
     }
 
 

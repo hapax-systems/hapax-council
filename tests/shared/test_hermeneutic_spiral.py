@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from shared.hermeneutic_spiral import (
@@ -79,6 +80,9 @@ def test_persist_returns_zero_on_empty_map() -> None:
 def test_persist_upserts_points(mock_embed: MagicMock, mock_qdrant: MagicMock) -> None:
     mock_embed.return_value = [[0.1] * 768, [0.2] * 768]
     client = MagicMock()
+    client.get_collections.return_value = SimpleNamespace(
+        collections=[SimpleNamespace(name=COLLECTION_NAME)]
+    )
     mock_qdrant.return_value = client
 
     result = persist_source_consequences(
@@ -98,6 +102,58 @@ def test_persist_upserts_points(mock_embed: MagicMock, mock_qdrant: MagicMock) -
     assert points[0].payload["source_ref"] == "vault:zuboff-note"
     assert points[0].payload["programme_id"] == "prog-1"
     assert points[1].payload["source_ref"] == "vault:nancy-corps-sonore"
+
+
+@patch("shared.config.get_qdrant")
+@patch("shared.config.embed_batch_safe")
+def test_persist_creates_collection_when_missing(
+    mock_embed: MagicMock, mock_qdrant: MagicMock
+) -> None:
+    """R-A3: persisting source-consequences must ensure the collection exists,
+    otherwise the run path raises a Qdrant 404 (collection not found)."""
+    mock_embed.return_value = [[0.1] * 768, [0.2] * 768]
+    client = MagicMock()
+    client.get_collections.return_value = SimpleNamespace(collections=[])
+    mock_qdrant.return_value = client
+
+    result = persist_source_consequences(
+        _sample_map(),
+        programme_id="prog-1",
+        role="tier_list",
+        topic="surveillance capitalism",
+        prep_session_id="sess-1",
+    )
+
+    assert result == 2
+    client.create_collection.assert_called_once()
+    assert client.create_collection.call_args.kwargs["collection_name"] == COLLECTION_NAME
+    client.upsert.assert_called_once()
+
+
+@patch("shared.config.get_qdrant")
+@patch("shared.config.embed_batch_safe")
+def test_persist_skips_create_when_collection_exists(
+    mock_embed: MagicMock, mock_qdrant: MagicMock
+) -> None:
+    """R-A3: ensure_collection is idempotent — an existing collection is not
+    recreated."""
+    mock_embed.return_value = [[0.1] * 768, [0.2] * 768]
+    client = MagicMock()
+    client.get_collections.return_value = SimpleNamespace(
+        collections=[SimpleNamespace(name=COLLECTION_NAME)]
+    )
+    mock_qdrant.return_value = client
+
+    persist_source_consequences(
+        _sample_map(),
+        programme_id="prog-1",
+        role="tier_list",
+        topic="surveillance capitalism",
+        prep_session_id="sess-1",
+    )
+
+    client.create_collection.assert_not_called()
+    client.upsert.assert_called_once()
 
 
 @patch("shared.config.embed_batch_safe")
@@ -133,6 +189,9 @@ def test_retrieve_queries_qdrant(mock_embed: MagicMock, mock_qdrant: MagicMock) 
 
     client = MagicMock()
     client.query_points.return_value = mock_result
+    client.get_collections.return_value = SimpleNamespace(
+        collections=[SimpleNamespace(name=COLLECTION_NAME)]
+    )
     mock_qdrant.return_value = client
 
     priors = retrieve_fore_understanding(topic="surveillance capitalism", role="tier_list")
