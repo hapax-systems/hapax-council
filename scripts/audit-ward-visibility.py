@@ -43,6 +43,8 @@ DEFAULT_LAYOUT = REPO_ROOT / "config" / "compositor-layouts" / "default.json"
 DEFAULT_RTMP = "rtmp://127.0.0.1:1935/live"
 DEFAULT_DEVICE = "/dev/video42"
 DEFAULT_ACTIVE_WARDS_FILE = Path("/dev/shm/hapax-compositor/current-layout-state.json")
+DEFAULT_DARKPLACES_META = Path("/dev/shm/hapax-compositor/quake-live-ward-atlas.raw.json")
+DEFAULT_DARKPLACES_STALE_S = 10.0
 DEFAULT_ACTIVE_WARDS_STALE_S = 5.0
 
 # Audit thresholds. Match the 2026-04-19 visual-sweep classification:
@@ -328,6 +330,31 @@ def _visibility_failures(
     return failures
 
 
+def _load_darkplaces_readback(path: Path, *, stale_s: float) -> dict[str, object] | None:
+    """Read the producer's DarkPlaces-mode audit_readback (RT-2). Returns None when
+    absent/unreadable/stale so the caller falls back to frame-capture auditing."""
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    readback = payload.get("audit_readback")
+    if not isinstance(readback, dict) or readback.get("mode") != "darkplaces":
+        return None
+    if stale_s > 0:
+        published = payload.get("observed_at")
+        try:
+            ts = float(published) if published is not None else path.stat().st_mtime
+        except (OSError, TypeError, ValueError):
+            return None
+        if time.time() - ts > stale_s:
+            return None
+    return readback
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--rtmp", default=DEFAULT_RTMP)
@@ -395,7 +422,84 @@ def main() -> int:
         default=1080,
         help="Layout canvas height (default 1080) used for coord scaling.",
     )
+    parser.add_argument(
+        "--darkplaces-meta",
+        default=str(DEFAULT_DARKPLACES_META),
+        help=(
+            "DarkPlaces ward-atlas producer meta (audit_readback). When fresh, the "
+            "audit reads the producer's own per-ward visibility instead of cropping a "
+            "frame against the 2D compositor layout (wrong coord space for the 3D render)."
+        ),
+    )
+    parser.add_argument(
+        "--darkplaces-stale-s",
+        type=float,
+        default=DEFAULT_DARKPLACES_STALE_S,
+        help="Ignore DarkPlaces readback older than this many seconds (default 10; <=0 disables).",
+    )
+    parser.add_argument(
+        "--no-darkplaces",
+        action="store_true",
+        help="Skip the DarkPlaces readback path and always crop a captured frame.",
+    )
     args = parser.parse_args()
+
+    if not args.no_darkplaces:
+        readback = _load_darkplaces_readback(
+            Path(args.darkplaces_meta), stale_s=args.darkplaces_stale_s
+        )
+        if readback is not None:
+            rb_wards = [w for w in readback.get("wards", []) if isinstance(w, dict)]
+            verdict_counts: dict[str, int] = {}
+            ward_payloads: list[dict[str, object]] = []
+            for w in rb_wards:
+                verdict = str(w.get("classification") or "unknown")
+                verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
+                ward_payloads.append(
+                    {
+                        "ward": w.get("ward_id"),
+                        "verdict": verdict,
+                        "visible": bool(w.get("visible")),
+                        "mean_luminance": w.get("mean_luma"),
+                        "std": w.get("luma_std"),
+                    }
+                )
+            visible_count = int(readback.get("visible", verdict_counts.get("visible", 0)))
+            considered_count = int(readback.get("considered", len(rb_wards)))
+            reasons = _visibility_failures(
+                visible_count=visible_count,
+                considered_count=considered_count,
+                min_visible_wards=args.min_visible_wards,
+                min_visible_fraction=args.min_visible_fraction,
+                missing_active_wards=set(),
+                active_wards_error=None,
+            )
+            payload = {
+                "ok": not reasons,
+                "reasons": reasons,
+                "assignment_source": "darkplaces-readback",
+                "darkplaces_meta": str(args.darkplaces_meta),
+                "active_ward_ids": readback.get("ward_ids"),
+                "considered_wards": considered_count,
+                "visible_wards": visible_count,
+                "visible_fraction": round(visible_count / considered_count, 6)
+                if considered_count
+                else 0.0,
+                "verdict_counts": verdict_counts,
+                "min_visible_wards": args.min_visible_wards,
+                "min_visible_fraction": args.min_visible_fraction,
+                "suspect_wards": readback.get("suspect_wards", []),
+                "wards": ward_payloads,
+            }
+            if args.json:
+                print(json.dumps(payload, sort_keys=True))
+            else:
+                print(f"assignment_source: darkplaces-readback ({args.darkplaces_meta})")
+                for verdict, count in sorted(verdict_counts.items()):
+                    print(f"  {verdict}: {count}")
+                for reason in reasons:
+                    print(f"FAIL: {reason}", file=sys.stderr)
+            return 0 if payload["ok"] else 10
 
     active_wards, active_wards_error = _load_active_wards(
         Path(args.active_wards_file), stale_s=args.active_wards_stale_s
