@@ -13,6 +13,15 @@ from shared.segment_live_event_quality import LIVE_EVENT_GOOD_FLOOR
 from shared.segment_prep_contract import CANDIDATE_LEDGER, SELECTED_RELEASE_MANIFEST
 
 SEGMENT_CANDIDATE_SELECTION_VERSION = 1
+AUTO_EXCELLENCE_RECEIPT_VERSION = 1
+AUTO_EXCELLENCE_REVIEWER = "auto:segment_candidate_selection.derive_excellence_receipt"
+# Roles whose live-event rubric defines required action mechanics. A role OUTSIDE
+# this set (e.g. lecture, rant, interview) earns the live-event ``role_standard_fit``
+# dimension vacuously — the points are awarded with no role-specific mechanic to
+# satisfy. Auto-derivation flags this so the manifest records that the points were not
+# mechanic-earned (anti-gaming transparency); it never silently inflates a verdict and
+# never auto-rejects an otherwise floor-clearing artifact.
+ROLES_WITH_LIVE_EVENT_REQUIRED_ACTIONS = frozenset({"iceberg", "react", "tier_list", "top_10"})
 PASSING_VERDICTS = {"approved", "pass", "passed", "selected"}
 REQUIRED_RELEASE_RECEIPT_FIELDS = (
     "receipt_id",
@@ -229,6 +238,191 @@ def _ledger_artifact_hashes(rows: Sequence[Mapping[str, Any]]) -> set[str]:
     return hashes
 
 
+def _live_event_dimension(report: Mapping[str, Any], name: str) -> Mapping[str, Any]:
+    for dim in report.get("dimensions") or ():
+        if isinstance(dim, Mapping) and dim.get("name") == name:
+            return dim
+    return {}
+
+
+def _live_event_criterion_vector(report: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Compact, re-checkable vector of the live-event dimensions (name -> passed/points)."""
+    vector: dict[str, dict[str, Any]] = {}
+    for dim in report.get("dimensions") or ():
+        if not isinstance(dim, Mapping):
+            continue
+        name = str(dim.get("name") or "").strip()
+        if not name:
+            continue
+        vector[name] = {"passed": bool(dim.get("passed")), "points": dim.get("points")}
+    return vector
+
+
+def _anti_gaming_flags(
+    *, role_standard_fit_vacuous: bool, clears_floor_without_vacuous_role_fit: bool
+) -> list[str]:
+    flags: list[str] = []
+    if role_standard_fit_vacuous:
+        flags.append("role_standard_fit_points_awarded_vacuously")
+        if not clears_floor_without_vacuous_role_fit:
+            flags.append("clears_floor_only_via_vacuous_role_fit_points")
+    return flags
+
+
+def derive_excellence_receipt(
+    artifact: Mapping[str, Any],
+    *,
+    checked_at: str,
+    reviewer: str = AUTO_EXCELLENCE_REVIEWER,
+) -> dict[str, Any]:
+    """Auto-derive an auditable excellence receipt from a prepared artifact.
+
+    Operator decision OD-2: auto-derivation is permitted ONLY when it is transparent and
+    re-checkable. The receipt therefore records the computed live-event criterion vector
+    and the scores that produced the verdict, keyed by ``artifact_sha256`` — never a bare
+    boolean. A verdict is ``approved`` only when the deterministic live-event report
+    already clears ``LIVE_EVENT_GOOD_FLOOR``; this gate is read, never weakened.
+    """
+    live = artifact.get("segment_live_event_report")
+    live = live if isinstance(live, Mapping) else {}
+    quality = artifact.get("segment_quality_report")
+    quality = quality if isinstance(quality, Mapping) else {}
+    artifact_sha = str(artifact.get("artifact_sha256") or "").strip()
+    programme_id = str(artifact.get("programme_id") or "").strip()
+    role = _artifact_role(artifact)
+
+    raw_score = live.get("score")
+    live_score = float(raw_score) if isinstance(raw_score, int | float) else None
+    band = str(live.get("band") or "")
+    report_ok = live.get("ok") is True
+
+    role_fit_dim = _live_event_dimension(live, "role_standard_fit")
+    observed = role_fit_dim.get("observed")
+    required_action_kinds = (
+        observed.get("required_action_kinds") if isinstance(observed, Mapping) else None
+    )
+    role_fit_passed = bool(role_fit_dim.get("passed"))
+    raw_points = role_fit_dim.get("points")
+    role_fit_points = float(raw_points) if isinstance(raw_points, int | float) else 0.0
+    role_standard_fit_vacuous = bool(
+        role_fit_passed
+        and not (required_action_kinds or [])
+        and role not in ROLES_WITH_LIVE_EVENT_REQUIRED_ACTIONS
+    )
+    adjusted_live_event_score = (
+        live_score - role_fit_points
+        if (live_score is not None and role_standard_fit_vacuous)
+        else live_score
+    )
+    clears_floor_without_vacuous_role_fit = (
+        adjusted_live_event_score is not None and adjusted_live_event_score >= LIVE_EVENT_GOOD_FLOOR
+    )
+
+    criteria = [
+        {
+            "name": "live_event_score_meets_floor",
+            "passed": live_score is not None and live_score >= LIVE_EVENT_GOOD_FLOOR,
+            "observed": {"live_event_score": live_score, "floor": LIVE_EVENT_GOOD_FLOOR},
+        },
+        {
+            "name": "live_event_band_good_or_excellent",
+            "passed": band in {"good", "excellent"},
+            "observed": {"band": band},
+        },
+        {
+            "name": "live_event_report_ok",
+            "passed": report_ok,
+            "observed": {"ok": live.get("ok")},
+        },
+    ]
+    passed = all(item["passed"] for item in criteria)
+    criterion_vector = _live_event_criterion_vector(live)
+    dimension_points_total = sum(
+        float(entry["points"])
+        for entry in criterion_vector.values()
+        if isinstance(entry.get("points"), int | float)
+    )
+    scores = {
+        "live_event_score": live_score,
+        "live_event_band": band,
+        "live_event_floor": LIVE_EVENT_GOOD_FLOOR,
+        "live_event_dimension_points_total": dimension_points_total,
+        "adjusted_live_event_score": adjusted_live_event_score,
+        "quality_overall": quality.get("overall"),
+    }
+    receipt = {
+        "auto_excellence_receipt_version": AUTO_EXCELLENCE_RECEIPT_VERSION,
+        "artifact_sha256": artifact_sha,
+        "programme_id": programme_id,
+        "role": role,
+        "verdict": "approved" if passed else "rejected",
+        "reviewer": reviewer,
+        "checked_at": checked_at,
+        "receipt_id": f"auto-excellence:{programme_id or artifact_sha[:12] or 'unknown'}",
+        "notes": (
+            "Auto-derived excellence receipt: live-event criterion vector and scores "
+            f"recomputed from the prepared artifact; verdict gates on live_event_score >= "
+            f"{LIVE_EVENT_GOOD_FLOOR}. Role-standard-fit "
+            f"{'vacuous (no role-required actions)' if role_standard_fit_vacuous else 'mechanic-bound'}."
+        ),
+        "auto_derived": True,
+        "criteria": criteria,
+        "criterion_vector": criterion_vector,
+        "scores": scores,
+        "role_standard_fit_vacuous": role_standard_fit_vacuous,
+        "clears_floor_without_vacuous_role_fit": clears_floor_without_vacuous_role_fit,
+        "anti_gaming_flags": _anti_gaming_flags(
+            role_standard_fit_vacuous=role_standard_fit_vacuous,
+            clears_floor_without_vacuous_role_fit=clears_floor_without_vacuous_role_fit,
+        ),
+    }
+    receipt["auto_excellence_receipt_sha256"] = _sha256_json(
+        {key: value for key, value in receipt.items() if key != "auto_excellence_receipt_sha256"}
+    )
+    return receipt
+
+
+def derive_excellence_receipts(
+    eligible_artifacts: Sequence[Mapping[str, Any]],
+    *,
+    checked_at: str,
+    reviewer: str = AUTO_EXCELLENCE_REVIEWER,
+) -> list[dict[str, Any]]:
+    """Auto-derive one auditable excellence receipt per eligible artifact."""
+    return [
+        derive_excellence_receipt(artifact, checked_at=checked_at, reviewer=reviewer)
+        for artifact in eligible_artifacts
+        if str(artifact.get("artifact_sha256") or "").strip()
+    ]
+
+
+def _excellence_receipt_record(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Auditable per-artifact excellence record embedded into the manifest.
+
+    Carries the criterion vector + scores for auto-derived receipts so the chosen
+    candidate is re-checkable from the manifest alone; degrades to the receipt identity
+    fields for externally-authored (manual-review) receipts.
+    """
+    record: dict[str, Any] = {
+        "receipt_id": receipt.get("receipt_id"),
+        "reviewer": receipt.get("reviewer"),
+        "checked_at": receipt.get("checked_at"),
+        "verdict": receipt.get("verdict") or receipt.get("status"),
+        "auto_derived": bool(receipt.get("auto_derived")),
+    }
+    for key in (
+        "criterion_vector",
+        "scores",
+        "role_standard_fit_vacuous",
+        "clears_floor_without_vacuous_role_fit",
+        "anti_gaming_flags",
+        "auto_excellence_receipt_sha256",
+    ):
+        if key in receipt:
+            record[key] = receipt[key]
+    return record
+
+
 def selected_release_manifest(
     eligible_artifacts: Sequence[Mapping[str, Any]],
     excellence_receipts: Sequence[Mapping[str, Any]] | None,
@@ -372,6 +566,9 @@ def selected_release_manifest(
                 ),
                 "checked_at": receipt_by_sha[str(artifact.get("artifact_sha256") or "")].get(
                     "checked_at"
+                ),
+                "excellence_receipt": _excellence_receipt_record(
+                    receipt_by_sha[str(artifact.get("artifact_sha256") or "")]
                 ),
             }
             for artifact in selected

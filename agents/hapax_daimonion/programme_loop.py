@@ -721,48 +721,24 @@ async def programme_manager_loop(daemon: VoiceDaemon) -> None:
                 daemon.programme_manager = manager  # type: ignore[attr-defined]
                 log.info("programme_manager_loop: ProgrammeManager constructed")
 
-                # Prep-to-store bridge: load today's accepted prep artifacts,
-                # create Programme objects, and add+activate them. Prepared
-                # scripts are projected into live priors by default; they are
-                # not direct TTS authority for responsible live delivery.
+                # Prep-to-store bridge: promote today's SELECTED prep pool into the
+                # store and activate one so the DirectorLoop renders it. The bridge
+                # refuses any non-prior-only artifact, so no layout command or
+                # non-prior content is laundered into runtime. Prepared artifacts are
+                # prior-only with layout NEEDS only; runtime owns layout decisions.
                 try:
                     from agents.hapax_daimonion.daily_segment_prep import (
-                        load_prepped_programmes,
+                        activate_selected_prepped_segment,
                     )
 
-                    prepped = load_prepped_programmes()
-                    loaded_any = False
-                    for p in prepped:
-                        pid = p.get("programme_id")
-                        script = p.get("prepared_script", [])
-                        if not pid or not script:
-                            continue
-                        try:
-                            prog = programme_from_prepped_artifact(
-                                p,
-                                planned_duration_s=3600.0,
-                                parent_show_id=f"show-{_dt.datetime.now(tz=_dt.UTC).strftime('%Y%m%d')}",
-                            )
-                            manager.store.add(prog)
-                            log.info(
-                                "prep-to-store: added %s (%s, %d beats, live priors ready)",
-                                pid,
-                                prog.role.value,
-                                len(script),
-                            )
-                            loaded_any = True
-                        except Exception:
-                            log.warning("prep-to-store: failed to add %s", pid, exc_info=True)
-
-                    # Activate the first prepped segment
-                    if loaded_any and prepped:
-                        first_pid = prepped[0].get("programme_id")
-                        if first_pid:
-                            try:
-                                manager.store.activate(first_pid)
-                                log.info("prep-to-store: activated %s", first_pid)
-                            except Exception:
-                                log.debug("prep-to-store: activate failed", exc_info=True)
+                    bridge = activate_selected_prepped_segment(manager.store)
+                    log.info(
+                        "prep-to-store: loaded=%d added=%d activated=%s refused_non_prior_only=%d",
+                        bridge["loaded"],
+                        len(bridge["added"]),
+                        bridge["activated"],
+                        len(bridge["refused_non_prior_only"]),
+                    )
                 except Exception:
                     log.debug("prep-to-store bridge failed", exc_info=True)
             except Exception:

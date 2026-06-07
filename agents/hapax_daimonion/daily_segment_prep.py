@@ -26,6 +26,7 @@ import os
 import re
 import re as _re
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,12 @@ from shared.resident_command_r import (
     configured_resident_model,
     loaded_tabby_model,
     tabby_chat_url,
+)
+from shared.segment_candidate_selection import (
+    derive_excellence_receipts,
+    read_candidate_ledger,
+    review_segment_candidate_set,
+    write_selected_release_manifest,
 )
 from shared.segment_iteration_review import (
     SegmentCanaryGateError,
@@ -115,6 +122,10 @@ PREP_BUDGET_S = float(os.environ.get("HAPAX_SEGMENT_PREP_BUDGET_S", "6600"))  # 
 # segment for iterative refinement.  Each segment gets an initial
 # composition pass PLUS a critic/rewrite pass.
 MAX_SEGMENTS = int(os.environ.get("HAPAX_SEGMENT_PREP_MAX", "4"))
+# Cap on how many eligible candidates the post-generation selector promotes into the
+# release manifest. The bound is enforced at SELECTION; the runtime pool loader keeps no
+# independent cap (it loads exactly what the manifest names).
+SEGMENT_SELECTED_COUNT = int(os.environ.get("HAPAX_SEGMENT_SELECTED_COUNT", "10"))
 PREP_ARTIFACT_SCHEMA_VERSION = 1
 PREP_ARTIFACT_AUTHORITY = "prior_only"
 PREP_DIAGNOSTIC_SCHEMA_VERSION = 1
@@ -2377,13 +2388,18 @@ def _emit_self_evaluation(
         log.debug("self-eval: impingement emission failed (non-fatal)", exc_info=True)
 
 
-def run_prep(prep_dir: Path | None = None) -> list[Path]:
+def run_prep(
+    prep_dir: Path | None = None,
+    *,
+    selected_count: int = SEGMENT_SELECTED_COUNT,
+) -> list[Path]:
     """Run the daily prep window.
 
     1. Call the planner to generate programme plans
     2. For each segmented-content programme, compose the full script
     3. Save results to the prep directory
     4. Write a manifest summarizing what was prepped
+    5. Select the eligible pool and write the selected-release manifest
 
     Returns list of saved file paths.
     """
@@ -2738,6 +2754,19 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
         encoding="utf-8",
     )
     manifest_tmp.replace(manifest)
+
+    # Step 5: Select the eligible pool and write the selected-release manifest.
+    # Pool generation only — the one-segment canary feeds the iteration gate, not a
+    # release. A no-eligible-pool / failed-review outcome writes no manifest and is a
+    # successful no-release result, not an error.
+    selection_result: dict[str, Any] | None = None
+    if prep_activity == "pool_generation":
+        try:
+            selection_result = select_release_pool(prep_dir, selected_count=selected_count)
+        except Exception:
+            log.warning("daily_segment_prep: selected-release selection failed", exc_info=True)
+            selection_result = {"ok": False, "reason": "selection_raised"}
+
     final_status = "completed" if saved else "completed_no_programmes"
     if segmented and not saved:
         final_status = "completed_no_segments_saved"
@@ -2750,15 +2779,17 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
         manifest_path=str(manifest),
         manifest_programmes=manifest_programmes,
         run_saved_programmes=[p.name for p in saved],
+        selected_release=selection_result,
     )
 
     # Step 4: Upsert programme summaries into Qdrant so the affordance
     # pipeline can semantically match impingements against available
     # pre-composed content.
     log.info(
-        "daily_segment_prep: done. %d segments prepped in %.0fs",
+        "daily_segment_prep: done. %d segments prepped in %.0fs (selected_release_ok=%s)",
         len(saved),
         time.monotonic() - start,
+        bool(selection_result and selection_result.get("ok")),
     )
     return saved
 
@@ -3757,11 +3788,190 @@ def publish_selected_release_feedback(
     }
 
 
+def select_release_pool(
+    prep_dir: Path | None = None,
+    *,
+    selected_count: int = SEGMENT_SELECTED_COUNT,
+) -> dict[str, Any]:
+    """Select today's eligible pool and write ``selected-release-manifest.json``.
+
+    This is the automated counterpart to ``scripts/review_segment_candidate_set.py``:
+    after pool generation it loads the eligible (release-contract-strict) artifacts,
+    AUTO-DERIVES a transparent, re-checkable excellence receipt per artifact (criterion
+    vector + scores, gated on ``LIVE_EVENT_GOOD_FLOOR``), reviews the candidate set under
+    the ``selected_count`` bound, and — only when the review passes the authority gate —
+    writes the manifest and publishes prior-only feedback.
+
+    A no-eligible-pool or failed review is a SUCCESSFUL no-release outcome: no manifest is
+    written and ``ok`` is ``False`` with a ``reason``. This never relaxes a release gate to
+    raise yield; it reads the deterministic live-event gate and records what it found.
+    """
+    if prep_dir is None:
+        prep_dir = DEFAULT_PREP_DIR
+    today = _today_path(prep_dir)
+    today.mkdir(parents=True, exist_ok=True)
+
+    result: dict[str, Any] = {
+        "ok": False,
+        "reason": None,
+        "selected_count": 0,
+        "target_selected_count": selected_count,
+        "eligible_artifact_count": 0,
+        "excellence_receipts_derived": 0,
+        "manifest_written": False,
+        "manifest_path": None,
+        "selected_release_manifest_sha256": None,
+        "review_receipt_sha256": None,
+    }
+
+    artifacts = load_prepped_programmes(
+        prep_dir,
+        require_selected=False,
+        strict_release_contract=True,
+    )
+    result["eligible_artifact_count"] = len(artifacts)
+    if not artifacts:
+        result["reason"] = "no_eligible_pool"
+        return result
+
+    checked_at = datetime.now(tz=UTC).isoformat()
+    receipts = derive_excellence_receipts(artifacts, checked_at=checked_at)
+    result["excellence_receipts_derived"] = len(receipts)
+    review = review_segment_candidate_set(
+        artifacts,
+        read_candidate_ledger(today),
+        receipts,
+        selected_count=selected_count,
+    )
+    manifest = review.get("selected_release_manifest") or {}
+    result["review_receipt_sha256"] = review.get("segment_candidate_selection_sha256")
+    result["selected_count"] = manifest.get("selected_count", 0)
+
+    if review.get("ok") is not True:
+        result["reason"] = "review_not_ok"
+        return result
+
+    try:
+        assert_segment_prep_allowed("runtime_pool_load")
+    except (SegmentPrepPaused, SegmentPrepPauseError) as exc:
+        result["reason"] = "segment_prep_authority_gate"
+        result["authority_error"] = f"{type(exc).__name__}: {exc}"
+        return result
+
+    manifest_path = write_selected_release_manifest(today, manifest)
+    result["manifest_written"] = True
+    result["manifest_path"] = str(manifest_path)
+    result["selected_release_manifest_sha256"] = manifest.get("selected_release_manifest_sha256")
+
+    publication = publish_selected_release_feedback(prep_dir=prep_dir, review_receipt=review)
+    result["selected_release_publication"] = publication
+    if publication.get("ok") is not True:
+        # Mirror the manual CLI: a failed publication revokes the release — remove the
+        # manifest so the runtime loader cannot pick up an unpublished artifact.
+        try:
+            manifest_path.unlink()
+        except FileNotFoundError:
+            pass
+        result["manifest_written"] = False
+        result["reason"] = "selected_release_publication_blocked"
+        return result
+
+    result["ok"] = True
+    return result
+
+
+def _prepped_artifact_is_prior_only(payload: Mapping[str, Any]) -> tuple[bool, str | None]:
+    """Return whether a loaded prep artifact is prior-only (no laundered authority)."""
+    authority = payload.get("authority")
+    if authority != PREP_ARTIFACT_AUTHORITY:
+        return False, str(authority) if authority is not None else None
+    ref = payload.get("prepared_artifact_ref")
+    if isinstance(ref, Mapping):
+        projected = ref.get("projected_authority")
+        if projected is not None and projected != PREP_ARTIFACT_AUTHORITY:
+            return False, str(projected)
+    return True, PREP_ARTIFACT_AUTHORITY
+
+
+def activate_selected_prepped_segment(
+    store: Any,
+    *,
+    prep_dir: Path | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Promote the selected prep pool into the programme store and activate one.
+
+    This is the prep-pool -> active-Programme bridge the DirectorLoop renders. It loads
+    only the SELECTED release pool (``require_selected=True``), refuses any artifact whose
+    authority is not ``prior_only`` (no laundering of layout commands or non-prior content
+    into runtime), builds prior-only Programmes, adds them, and activates the first one
+    that was successfully added. Prepared artifacts carry layout NEEDS only; runtime owns
+    the layout decision.
+    """
+    from agents.hapax_daimonion.programme_loop import programme_from_prepped_artifact
+
+    result: dict[str, Any] = {
+        "loaded": 0,
+        "added": [],
+        "activated": None,
+        "refused_non_prior_only": [],
+        "skipped_empty": [],
+        "prior_only_ok": True,
+    }
+    prepped = load_prepped_programmes(prep_dir, require_selected=True)
+    result["loaded"] = len(prepped)
+    parent_show_id = f"show-{datetime.now(tz=UTC).strftime('%Y%m%d')}"
+    for payload in prepped:
+        pid = payload.get("programme_id")
+        script = payload.get("prepared_script") or []
+        if not pid or not script:
+            result["skipped_empty"].append(pid)
+            continue
+        prior_only, observed_authority = _prepped_artifact_is_prior_only(payload)
+        if not prior_only:
+            result["refused_non_prior_only"].append(
+                {"programme_id": pid, "authority": observed_authority}
+            )
+            result["prior_only_ok"] = False
+            log.warning(
+                "prep-to-store: refused non-prior-only artifact %s (authority=%s)",
+                pid,
+                observed_authority,
+            )
+            continue
+        try:
+            prog = programme_from_prepped_artifact(
+                payload,
+                planned_duration_s=3600.0,
+                parent_show_id=parent_show_id,
+            )
+            store.add(prog)
+            result["added"].append(pid)
+            log.info("prep-to-store: added prior-only %s (%d beats)", pid, len(script))
+        except Exception:
+            log.warning("prep-to-store: failed to add %s", pid, exc_info=True)
+    if result["added"]:
+        first_added = result["added"][0]
+        try:
+            store.activate(first_added, now=now)
+            result["activated"] = first_added
+            log.info("prep-to-store: activated %s", first_added)
+        except Exception:
+            log.warning("prep-to-store: activate failed for %s", first_added, exc_info=True)
+    return result
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(description="Daily segment prep runner")
     parser.add_argument("--prep-dir", type=Path, default=None)
+    parser.add_argument(
+        "--selected-count",
+        type=int,
+        default=SEGMENT_SELECTED_COUNT,
+        help="cap on candidates promoted into the release manifest (enforced at selection)",
+    )
     args = parser.parse_args()
-    saved = run_prep(prep_dir=args.prep_dir)
+    saved = run_prep(prep_dir=args.prep_dir, selected_count=args.selected_count)
     for p in saved:
         print(f"  ✓ {p}")
