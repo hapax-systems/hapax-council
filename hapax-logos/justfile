@@ -8,7 +8,7 @@
 
 set dotenv-load := false
 
-prod_target := env("HOME") / ".cache/hapax/build-target"
+prod_target := env("HAPAX_BUILD_TARGET", env("HOME") / ".cache/hapax/build-target")
 bin_dir     := env("HOME") / ".local/bin"
 state_dir   := env("HOME") / ".cache/hapax/rebuild"
 repo_root   := justfile_directory() / ".."
@@ -92,6 +92,28 @@ install-screwm-ward-atlas:
     [ -f "$DST" ] && cp "$DST" "$DST.prev"
     cp "$SRC" "$DST.new" && mv -f "$DST.new" "$DST"
     echo "Installed screwm-ward-atlas (dormant; enable hapax-ward-atlas-gpu.service)."
+
+# Build + install the screwm drift-field GPU daemon (reverie+temporal-feedback -> drift-field + per-zone currency BGRA).
+install-screwm-drift-field:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --release -p hapax-visual --bin screwm_drift_field
+    SRC="{{prod_target}}/release/screwm_drift_field"
+    DST="{{bin_dir}}/screwm-drift-field"
+    [ -f "$DST" ] && cp "$DST" "$DST.prev"
+    cp "$SRC" "$DST.new" && mv -f "$DST.new" "$DST"
+    echo "Installed screwm-drift-field (restart hapax-quake-drift-field.service to pick up)."
+
+# Build + install the screwm media-drift GPU daemon (14-slot live-texture drift + ACES egress tonemap).
+install-screwm-media-drift:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --release -p hapax-visual --bin screwm_media_drift
+    SRC="{{prod_target}}/release/screwm_media_drift"
+    DST="{{bin_dir}}/screwm-media-drift"
+    [ -f "$DST" ] && cp "$DST" "$DST.prev"
+    cp "$SRC" "$DST.new" && mv -f "$DST.new" "$DST"
+    echo "Installed screwm-media-drift (restart hapax-screwm-media-drift.service to pick up)."
 
 # ── Rollback ──────────────────────────────────────────────────────
 
