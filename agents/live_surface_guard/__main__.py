@@ -82,14 +82,13 @@ class CommandRemediationExecutor:
                 "systemctl",
                 "--user",
                 "restart",
-                "hapax-obs-v4l2-source-reset.service",
+                "hapax-darkplaces-obs-media-stream.service",
             ],
             RemediationAction.BRIDGE_RECONNECT_OBS_REBIND: [
                 "systemctl",
                 "--user",
                 "restart",
                 "hapax-v4l2-bridge.service",
-                "hapax-obs-v4l2-source-reset.service",
             ],
             RemediationAction.HLS_CACHE_BUST: [
                 "systemctl",

@@ -163,7 +163,6 @@ hapax-v4l2-bridge.service (BindsTo + PartOf compositor)
     ↓ After
 hapax-v4l2-bridge-watchdog.timer (10s poll)
     → hapax-v4l2-bridge-watchdog.service (oneshot, checks bridge egress health)
-hapax-obs-v4l2-source-reset.service (monitors OBS capture source, resets on stall)
 ```
 
 ### 4.3 Drop-in override
@@ -183,8 +182,10 @@ To activate the sidecar path: change to `HAPAX_V4L2_BRIDGE_ENABLED=1`, then
   `hapax_v4l2_bridge_heartbeat_seconds_ago`. Triggers recovery if stale.
 - **V4L2 heartbeat watchdog** (`hapax-v4l2-watchdog.timer`, 10s): legacy watchdog that
   detects stalled frame output regardless of which path is active.
-- **OBS v4l2 source reset** (`hapax-obs-v4l2-source-reset.service`): monitors OBS's V4L2
-  capture source and resets it on disconnect/stall events (WatchdogSec=120s, Type=notify).
+- **OBS v4l2 source reset**: RETIRED 2026-06-07 (#3819/#3827/#3837 superseded it — the live
+  OBS ingest is the `DarkPlaces Screwm Media` UDP ffmpeg source, not a V4L2 capture source;
+  the compositor ingests `/dev/video52` directly). The `hapax-obs-v4l2-source-reset` script
+  remains as a manual one-shot remediation tool; the always-on unit is decommissioned.
 
 ## 5. Failure modes and recovery
 
