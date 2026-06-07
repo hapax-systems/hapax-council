@@ -897,7 +897,7 @@ index 7fbcd0b3..c9939bb6 100644
  extern rtexture_t *r_texture_notexture;
  extern rtexture_t *r_texture_whitecube;
 diff --git a/shader_glsl.h b/shader_glsl.h
-index dc56d085..1d26bc5c 100644
+index dc56d085..a210b714 100644
 --- a/shader_glsl.h
 +++ b/shader_glsl.h
 @@ -178,6 +178,62 @@
@@ -1085,7 +1085,7 @@ index dc56d085..1d26bc5c 100644
  "void main(void)\n",
  "{\n",
  "#ifdef USEOFFSETMAPPING\n",
-@@ -1797,6 +1916,49 @@
+@@ -1797,6 +1916,69 @@
  "   color.rgb *= clamp(float(visiblepixels) / float(allpixels), 0.0, 1.0);\n",
  "#endif\n",
  "\n",
@@ -1130,6 +1130,26 @@ index dc56d085..1d26bc5c 100644
 +"		// live reverie currency drives the stipple too (brightness shimmer), so EVERY drift\n",
 +"		// element responds to the currency, not just the grid hue-rotation.\n",
 +"		color.rgb += hpx_wc * hpx_dot * hpx_scol * 0.42 * (0.65 + 0.7*hpx_field);\n",
++"		// (4) STANDING-NEON EDGE ACCENT \u2014 thin vertical neon tube-lines on standing\n",
++"		// surfaces (walls); luma-normalised neon hue (sets HUE only, never luminance), a slow\n",
++"		// horizontal march on its own clock, currency-reactive. Synthwave room tubes.\n",
++"		float hpx_horiz = (hpx_an.x > hpx_an.y) ? HapaxModelPos.y : HapaxModelPos.x;\n",
++"		float hpx_neon_t = fract(hpx_horiz * 0.18 + ClientTime * 0.04 + hpx_field * 0.5);\n",
++"		float hpx_neon = smoothstep(0.060, 0.0, abs(hpx_neon_t - 0.5));\n",
++"		vec3 hpx_neoncol = 0.5 + 0.5*cos(6.2831853*(hpx_horiz*0.03 + ClientTime*0.06 + hpx_currency*0.8 + vec3(0.0, 0.45, 0.85)));\n",
++"		hpx_neoncol = hpx_neoncol / max(dot(hpx_neoncol, vec3(0.299, 0.587, 0.114)), 0.05);\n",
++"		color.rgb += hpx_wc * hpx_neon * hpx_neoncol * hpx_wl * 0.55 * (0.6 + 0.6*hpx_currency);\n",
++"		// (5) SCRIM-FLOOR WEAVE \u2014 woven moir\u00e9 scrim on the floor (up-facing): two\n",
++"		// perpendicular gratings interfere into a fabric weave, centred so it modulates\n",
++"		// (+/-) the wire luma-neutrally rather than washing it. Slow, currency/field-reactive.\n",
++"		float hpx_floor = step(0.60, hpx_nn.z);\n",
++"		vec2 hpx_wuv = HapaxModelPos.xy * 0.22;\n",
++"		float hpx_warp = sin(hpx_wuv.x * 6.2831853 + ClientTime*0.05 + hpx_field*3.0);\n",
++"		float hpx_weft = sin(hpx_wuv.y * 6.2831853 - ClientTime*0.04 + hpx_currency*2.0);\n",
++"		float hpx_weave = hpx_warp * hpx_weft;\n",
++"		vec3 hpx_wvcol = 0.5 + 0.5*cos(6.2831853*(hpx_weave*0.35 + ClientTime*0.03 + vec3(0.10, 0.40, 0.70)));\n",
++"		hpx_wvcol = hpx_wvcol / max(dot(hpx_wvcol, vec3(0.299, 0.587, 0.114)), 0.05);\n",
++"		color.rgb += hpx_floor * hpx_weave * hpx_wvcol * hpx_wl * 0.26 * (0.6 + 0.5*hpx_field);\n",
 +"	}\n",
 +"#endif\n",
  "	dp_FragColor = vec4(color);\n",
