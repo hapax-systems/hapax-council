@@ -333,7 +333,6 @@ async fn run() {
 
     log::info!("drift-field live: reverie {in_w}x{in_h} -> field {size}x{size} @ {fps}fps -> {OUT_PATH}");
     let period = Duration::from_secs_f32(1.0 / fps.max(1.0));
-    let mut last_sig: Option<(u64, u128)> = None;
     let mut last_out_hash = [0u8; 8];
     let mut last_cur_hash = [0u8; 8];
     // previous field output, round-tripped as the temporal-feedback input (init neutral)
@@ -342,15 +341,15 @@ async fn run() {
     loop {
         let tick = Instant::now();
         let sig = input_sig(REVERIE_IN);
-        let changed = match (sig, last_sig) {
-            (Some(s), Some(p)) => s != p,
-            (Some(_), None) => true,
-            _ => false,
-        };
+        // Render EVERY tick (the fps cadence) whenever reverie is readable, not only when it CHANGES.
+        // The temporal substrate (2a feedback/echo/trail/diff + 2b advection/diffusion + 2c) lives in the
+        // prev_tex feedback, so it evolves ONLY when the field re-renders. The old change-gate froze the
+        // field between reverie updates (spatially varied but temporally still) — so the drift never
+        // visibly moved in the live render. Re-reading reverie each tick is cheap (tmpfs).
+        let changed = sig.is_some();
         if changed {
             if let Ok(raw) = std::fs::read(REVERIE_IN) {
                 if raw.len() == in_bytes {
-                    last_sig = sig;
                     queue.write_texture(
                         wgpu::TexelCopyTextureInfo {
                             texture: &in_tex,
