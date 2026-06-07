@@ -71,6 +71,26 @@ def _embed_text(entry: Mapping[str, Any], *, topic: str, role: str) -> str:
     )
 
 
+def ensure_collection() -> None:
+    """Create the ``source-consequences`` collection if missing. Idempotent.
+
+    The hermeneutic spiral upserts to and queries this collection every prep
+    cycle; without this guard the run path hits a Qdrant 404 (collection not
+    found) and cross-cycle fore-understanding silently never accumulates (R-A3).
+    """
+    from qdrant_client.models import Distance, VectorParams
+
+    from shared.config import EXPECTED_EMBED_DIMENSIONS, get_qdrant
+
+    client = get_qdrant()
+    existing = {c.name for c in client.get_collections().collections}
+    if COLLECTION_NAME not in existing:
+        client.create_collection(
+            collection_name=COLLECTION_NAME,
+            vectors_config=VectorParams(size=EXPECTED_EMBED_DIMENSIONS, distance=Distance.COSINE),
+        )
+
+
 def persist_source_consequences(
     source_consequence_map: Sequence[Mapping[str, Any]],
     *,
@@ -140,6 +160,7 @@ def persist_source_consequences(
         return 0
 
     try:
+        ensure_collection()
         get_qdrant().upsert(collection_name=COLLECTION_NAME, points=points)
         _log.info(
             "persist_source_consequences: upserted %d points for %s", len(points), programme_id
@@ -175,6 +196,7 @@ def retrieve_fore_understanding(
 
     try:
         client = get_qdrant()
+        ensure_collection()
         results = client.query_points(
             collection_name=COLLECTION_NAME,
             query=vector,

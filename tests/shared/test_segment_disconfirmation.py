@@ -196,3 +196,40 @@ class TestApplyCouncilVerdicts:
         )
         assert len(result["updated_source_consequence_map"]) == 2
         assert result["updated_source_consequence_map"][0]["source_ref"] == "existing:ref"
+
+    def test_council_unavailable_marks_degraded_not_passed(self) -> None:
+        """R-A4: a fallback (council_unavailable) verdict must NOT be counted as
+        a survival and must NOT report council_disconfirmation_passed=True. A
+        degraded council is recorded, never silently passed open."""
+        claim = _mock_claim()
+        fallback = CouncilVerdict(
+            scores={},
+            confidence_bands={},
+            convergence_status=ConvergenceStatus.HUNG,
+            disagreement_log=["Council unavailable: boom"],
+            research_findings=[],
+            evidence_matrix=None,
+            receipt={"council_unavailable": True, "error": "boom"},
+        )
+        result = apply_council_verdicts(
+            [(claim, fallback)],
+            source_consequence_map=[],
+            claim_map=[{"claim_id": "claim:seg1:001", "grounds": ["source:test.md"]}],
+        )
+        assert result["council_disconfirmation_passed"] is False
+        assert result["council_degraded"] is True
+        assert "claim:seg1:001" not in result["survived_claims"]
+        assert "claim:seg1:001" in result["degraded_claims"]
+
+    def test_real_survival_is_not_degraded(self) -> None:
+        """R-A4: a genuine converged survival still passes and is not degraded."""
+        claim = _mock_claim()
+        verdict = _mock_verdict(ConvergenceStatus.CONVERGED, {"a": 4, "b": 5})
+        result = apply_council_verdicts(
+            [(claim, verdict)],
+            source_consequence_map=[],
+            claim_map=[{"claim_id": "claim:seg1:001", "grounds": ["source:test.md"]}],
+        )
+        assert result["council_disconfirmation_passed"] is True
+        assert result["council_degraded"] is False
+        assert result["degraded_claims"] == []

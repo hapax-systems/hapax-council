@@ -61,7 +61,7 @@ async def _run_narrative_critique_async(
 
     rubric = NarrativeQualityRubric()
     if config is None:
-        config = CouncilConfig(max_models=3, phase3_rounds=1)
+        config = CouncilConfig()
 
     council_input = CouncilInput(
         text=script_text[:6000],
