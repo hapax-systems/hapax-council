@@ -6,21 +6,33 @@ import json
 import logging
 from collections.abc import Sequence
 
-from pydantic_ai import Agent  # noqa: TC002 — used at runtime in _call_member
+from pydantic_ai import (  # noqa: TC002 — runtime use in _call_member
+    Agent,
+    NativeOutput,
+    UsageLimits,
+)
 from pydantic_ai.messages import UserContent
 
-from .aggregation import aggregate_scores, should_shortcircuit
-from .members import build_member, cache_control_ttl_for_alias, cache_policy_for_aliases
+from .aggregation import AxisAggregate, aggregate_scores, should_shortcircuit
+from .members import (
+    ToolLevel,
+    build_member,
+    cache_control_ttl_for_alias,
+    cache_policy_for_aliases,
+    model_family,
+)
 from .models import (
     AdversarialExchange,
     ConvergenceStatus,
     CouncilConfig,
+    CouncilHealth,
     CouncilInput,
     CouncilMode,
     CouncilVerdict,
     EvidenceMatrix,
     EvidenceMatrixAxis,
     MemberFailure,
+    Phase1Output,
     PhaseOneResult,
 )
 from .prompts import (
@@ -36,12 +48,47 @@ _log = logging.getLogger(__name__)
 
 _MEMBER_TIMEOUT_S = 120.0
 
+# ── PRINCIPLED EXECUTION BOUNDS ──────────────────────────────────────────────
+# cc-task cctv-council-perfect-health-faillloud-convergence. pydantic-ai 1.63's
+# default UsageLimits leaves ``tool_calls_limit=None`` (UNBOUNDED): a member ran
+# 1124 tool calls in one GATE-1 run before the 120s wall-clock timeout fired,
+# producing an empty "Phase 1 failure" (TimeoutError) and budget exhaustion.
+# Every member call is now EXPLICITLY bounded; ``retries=0`` is set at Agent
+# construction (members.py) so a non-conforming structured output fails loud
+# instead of silently retrying.
+#
+# Research pass: a member needs a few rounds of tool calls to verify a claim,
+# never hundreds. Scoring pass: a single provider-enforced structured answer
+# with NO tools (tool_calls_limit=0). FLAGGED: these caps are deliberately
+# generous-but-finite — tune via the tool_calls_log if a healthy member
+# legitimately needs more research depth.
+_RESEARCH_LIMITS = UsageLimits(request_limit=6, tool_calls_limit=8)
+_SCORE_LIMITS = UsageLimits(request_limit=2, tool_calls_limit=0)
+
 
 PromptPayload = str | Sequence[UserContent]
 
 
-async def _call_member(member: Agent[None, str], prompt: PromptPayload) -> tuple[str, list[str]]:
-    result = await asyncio.wait_for(member.run(prompt), timeout=_MEMBER_TIMEOUT_S)
+async def _call_member(
+    member: Agent[None, Any],
+    prompt: PromptPayload,
+    *,
+    output_type: Any | None = None,
+    usage_limits: UsageLimits | None = None,
+) -> tuple[Any, list[str]]:
+    """Run a member, bounded and (optionally) under a structured output contract.
+
+    ``usage_limits`` caps tool iterations + requests (the runaway fix);
+    ``output_type`` (e.g. ``NativeOutput(Phase1Output)``) forces provider-enforced
+    structured output. ``result.output`` is the typed object when output_type is
+    set, otherwise the raw text. Wrapped in the per-member wall-clock timeout.
+    """
+    run_kwargs: dict[str, Any] = {}
+    if output_type is not None:
+        run_kwargs["output_type"] = output_type
+    if usage_limits is not None:
+        run_kwargs["usage_limits"] = usage_limits
+    result = await asyncio.wait_for(member.run(prompt, **run_kwargs), timeout=_MEMBER_TIMEOUT_S)
     tool_calls: list[str] = []
     try:
         for msg in result.all_messages():
@@ -67,25 +114,6 @@ def _append_prompt_suffix(prompt: PromptPayload, suffix: str) -> PromptPayload:
     return (*prompt, suffix)
 
 
-def _parse_phase1_output(model_alias: str, raw: str) -> PhaseOneResult:
-    try:
-        text = raw.strip()
-        if "```json" in text:
-            text = text.split("```json", 1)[1].split("```", 1)[0].strip()
-        elif "```" in text:
-            text = text.split("```", 1)[1].split("```", 1)[0].strip()
-        data = json.loads(text, strict=False)
-    except (json.JSONDecodeError, IndexError):
-        _log.warning("Model %s returned non-JSON, using empty scores", model_alias)
-        data = {"scores": {}, "rationale": {}, "research_findings": []}
-    return PhaseOneResult(
-        model_alias=model_alias,
-        scores={k: int(v) for k, v in data.get("scores", {}).items()},
-        rationale=data.get("rationale", {}),
-        research_findings=data.get("research_findings", []),
-    )
-
-
 async def run_phase1(
     inp: CouncilInput,
     rubric: Rubric,
@@ -103,7 +131,7 @@ async def run_phase1(
 
     async def _run_one(alias: str, seed: int) -> PhaseOneResult | None:
         try:
-            member = build_member(alias)
+            research_member = build_member(alias)
 
             source_ctx_block = ""
             if inp.source_context:
@@ -118,9 +146,11 @@ async def run_phase1(
                 "Report your findings as a JSON list:\n"
                 '{"research_findings": ["finding 1", "finding 2", ...]}'
             )
-            investigate_raw, tool_calls = await _call_member(member, investigate_prompt)
+            investigate_raw, tool_calls = await _call_member(
+                research_member, investigate_prompt, usage_limits=_RESEARCH_LIMITS
+            )
 
-            findings_text = investigate_raw[:2000]
+            findings_text = str(investigate_raw)[:2000]
 
             score_prompt = phase1_prompt_parts(
                 rubric,
@@ -132,18 +162,21 @@ async def run_phase1(
             score_prompt = _append_prompt_suffix(
                 score_prompt,
                 f"\n\n## Your Prior Research Findings\n{findings_text}\n\n"
-                "Score based on your research above. Do NOT re-investigate.",
+                "Score based on your research above. Do NOT re-investigate. "
+                "Respond ONLY with the structured score object (an integer 1-5 per axis).",
             )
-            score_raw, score_tools = await _call_member(member, score_prompt)
-            all_tools = tool_calls + score_tools
-
-            result = _parse_phase1_output(alias, score_raw)
-            return PhaseOneResult(
-                model_alias=result.model_alias,
-                scores=result.scores,
-                rationale=result.rationale,
-                research_findings=result.research_findings,
-                tool_calls_log=all_tools,
+            # Scoring is a single provider-enforced structured answer with NO
+            # tools (tool_calls_limit=0 + ToolLevel.NONE): the runaway tool-loop
+            # cannot recur, and a non-conforming output makes pydantic-ai raise
+            # (retries=0) instead of degrading to empty scores. NativeOutput ->
+            # response_format json_schema (cloud routes + TabbyAPI/Formatron for
+            # the local-fast Command-R member).
+            score_member = build_member(alias, tool_level=ToolLevel.NONE)
+            phase1_output, score_tools = await _call_member(
+                score_member,
+                score_prompt,
+                output_type=NativeOutput(Phase1Output),
+                usage_limits=_SCORE_LIMITS,
             )
         except Exception as e:
             # Full detail (which may include a request URL or auth header from
@@ -157,10 +190,77 @@ async def run_phase1(
                 failures_out.append(MemberFailure(model_alias=alias, reason=type(e).__name__))
             return None
 
+        if not phase1_output.scores:
+            # Structure validated but produced NO usable scores. This is a LOUD
+            # member failure, never a phantom abstainer that survives into the
+            # panel with empty scores — which would shrink the denominator and
+            # let a lone real survivor masquerade as consensus.
+            _log.error("Phase 1 failure for %s: structured output carried no scores", alias)
+            if failures_out is not None:
+                failures_out.append(MemberFailure(model_alias=alias, reason="EmptyScores"))
+            return None
+
+        return PhaseOneResult(
+            model_alias=alias,
+            scores=dict(phase1_output.scores),
+            rationale=phase1_output.rationale,
+            research_findings=phase1_output.research_findings,
+            tool_calls_log=tool_calls + score_tools,
+        )
+
     results_or_none = await asyncio.gather(
         *(_run_one(alias, i) for i, alias in enumerate(config.model_aliases))
     )
     return [r for r in results_or_none if r is not None]
+
+
+def _assess_health(
+    results: list[PhaseOneResult],
+    failed: list[MemberFailure],
+    config: CouncilConfig,
+) -> CouncilHealth:
+    """Typed health of a panel measured against the principled quorum floor.
+
+    A verdict is trustworthy only across INDEPENDENT families, so coverage is
+    counted both by member and by DISTINCT family. ``below_quorum`` is True when
+    either floor is unmet — the engine turns that into ConvergenceStatus.REFUSED.
+    """
+    requested = config.model_aliases
+    valid_aliases = [r.model_alias for r in results]
+    families_valid = {model_family(a) for a in valid_aliases}
+    families_requested = {model_family(a) for a in requested}
+    below = (
+        len(valid_aliases) < config.min_valid_members
+        or len(families_valid) < config.min_valid_families
+    )
+    return CouncilHealth(
+        members_requested=len(requested),
+        members_valid=len(valid_aliases),
+        families_requested=len(families_requested),
+        families_valid=len(families_valid),
+        failed_members=tuple(failed),
+        below_quorum=below,
+        quorum_floor_members=config.min_valid_members,
+        quorum_floor_families=config.min_valid_families,
+    )
+
+
+def _fold_overall(agg: dict[str, AxisAggregate]) -> ConvergenceStatus:
+    """Fold per-axis statuses into one verdict — REFUSED-priority, fail-CLOSED.
+
+    A REFUSED (under-covered) axis, or an empty axis set, can NEVER fall through
+    to CONVERGED — closing the original ``else -> CONVERGED`` fail-open. Genuine
+    disagreement (HUNG, always with real scores) and partial disagreement
+    (CONTESTED) keep their meaning.
+    """
+    statuses = [v.status for v in agg.values()]
+    if not statuses or ConvergenceStatus.REFUSED in statuses:
+        return ConvergenceStatus.REFUSED
+    if ConvergenceStatus.HUNG in statuses:
+        return ConvergenceStatus.HUNG
+    if ConvergenceStatus.CONTESTED in statuses:
+        return ConvergenceStatus.CONTESTED
+    return ConvergenceStatus.CONVERGED
 
 
 async def deliberate(
@@ -189,35 +289,56 @@ async def deliberate(
     failed_members_payload = [
         {"model_alias": f.model_alias, "reason": f.reason} for f in failed_members
     ]
+    health = _assess_health(phase1_results, failed_members, config)
+    health_payload = health.model_dump(mode="json")
 
-    if not phase1_results:
+    if health.below_quorum:
+        # Refuse LOUDLY. The panel is below the principled quorum / family-
+        # diversity floor (or every member failed). A broken panel is typed
+        # REFUSED — never HUNG (genuine disagreement) and never a silent pass.
+        reason = "all_models_failed" if not phase1_results else "below_quorum_or_family_floor"
+        _log.warning(
+            "Council REFUSED (%s): members_valid=%d/%d (floor %d), families_valid=%d/%d (floor %d)",
+            reason,
+            health.members_valid,
+            health.members_requested,
+            config.min_valid_members,
+            health.families_valid,
+            health.families_requested,
+            config.min_valid_families,
+        )
         return CouncilVerdict(
             scores={},
             confidence_bands={},
-            convergence_status=ConvergenceStatus.HUNG,
-            disagreement_log=["All models failed in Phase 1"],
-            research_findings=[],
+            convergence_status=ConvergenceStatus.REFUSED,
+            disagreement_log=[f"Council refused: {reason}"],
+            research_findings=[f for r in phase1_results for f in r.research_findings],
             evidence_matrix=None,
             receipt={
                 "input_hash": input_hash,
-                "error": "all_models_failed",
+                "refused": True,
+                "refusal_reason": reason,
+                "council_health": health_payload,
                 "failed_members": failed_members_payload,
                 "cache_policy": cache_policy,
             },
         )
 
     if should_shortcircuit(phase1_results, config.shortcircuit_iqr_threshold):
-        agg = aggregate_scores(phase1_results, config.contested_iqr_threshold)
+        agg = aggregate_scores(
+            phase1_results, config.contested_iqr_threshold, min_values=config.min_axis_values
+        )
         return CouncilVerdict(
             scores={k: v.score for k, v in agg.items()},
             confidence_bands={k: v.confidence_band for k, v in agg.items()},
-            convergence_status=ConvergenceStatus.CONVERGED,
+            convergence_status=_fold_overall(agg),
             disagreement_log=[],
             research_findings=[f for r in phase1_results for f in r.research_findings],
             evidence_matrix=None,
             receipt={
                 "input_hash": input_hash,
                 "shortcircuited": True,
+                "council_health": health_payload,
                 "models_used": [r.model_alias for r in phase1_results],
                 "failed_members": failed_members_payload,
                 "cache_policy": cache_policy,
@@ -243,14 +364,10 @@ async def deliberate(
 
     # Phase 5: Final convergence on revised scores
     final_results = phase4_results if phase4_results else phase1_results
-    agg = aggregate_scores(final_results, config.contested_iqr_threshold)
-    statuses = [v.status for v in agg.values()]
-    if ConvergenceStatus.HUNG in statuses:
-        overall = ConvergenceStatus.HUNG
-    elif ConvergenceStatus.CONTESTED in statuses:
-        overall = ConvergenceStatus.CONTESTED
-    else:
-        overall = ConvergenceStatus.CONVERGED
+    agg = aggregate_scores(
+        final_results, config.contested_iqr_threshold, min_values=config.min_axis_values
+    )
+    overall = _fold_overall(agg)
 
     return CouncilVerdict(
         scores={k: v.score for k, v in agg.items()},
@@ -265,6 +382,7 @@ async def deliberate(
         receipt={
             "input_hash": input_hash,
             "shortcircuited": False,
+            "council_health": health_payload,
             "models_used": [r.model_alias for r in phase1_results],
             "failed_members": failed_members_payload,
             "cache_policy": cache_policy,

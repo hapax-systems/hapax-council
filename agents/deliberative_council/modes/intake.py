@@ -82,6 +82,12 @@ def derive_verdict(
     convergence: ConvergenceStatus,
     has_research_refs: bool = False,
 ) -> IntakeVerdict:
+    # A REFUSED panel cannot certify readiness — fail CLOSED to NEEDS_HARDENING,
+    # never READY_TO_PLAN, even if partial fold scores clear the floor. cc-task
+    # cctv-council-perfect-health-faillloud-convergence.
+    if convergence == ConvergenceStatus.REFUSED:
+        return IntakeVerdict.NEEDS_HARDENING
+
     valid = {k: v for k, v in scores.items() if v is not None}
     if not valid:
         return IntakeVerdict.NEEDS_HARDENING

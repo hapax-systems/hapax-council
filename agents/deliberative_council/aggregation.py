@@ -43,7 +43,16 @@ def aggregate_scores(
     results: list[PhaseOneResult],
     contested_threshold: float = 2.0,
     weights: dict[str, float] | None = None,
+    min_values: int = 2,
 ) -> dict[str, AxisAggregate]:
+    """Aggregate per-axis scores into convergence verdicts.
+
+    ``min_values`` is the per-axis coverage floor: an axis scored by FEWER than
+    ``min_values`` independent members cannot certify convergence. ``compute_iqr``
+    of a single value is 0.0, which previously read as CONVERGED — a lone
+    survivor masquerading as consensus. Such an under-covered axis is REFUSED,
+    never CONVERGED (cc-task cctv-council-perfect-health-faillloud-convergence).
+    """
     axes: set[str] = set()
     for r in results:
         axes.update(r.scores.keys())
@@ -54,7 +63,12 @@ def aggregate_scores(
         iqr = compute_iqr(values)
         band = compute_confidence_band(values)
 
-        if iqr <= 1.0:
+        if len(values) < min_values:
+            # Insufficient independent coverage — a lone (or too-thin) survivor
+            # is NOT consensus. Refuse the axis loudly rather than certify it.
+            status = ConvergenceStatus.REFUSED
+            score = None
+        elif iqr <= 1.0:
             status = ConvergenceStatus.CONVERGED
             score = round(statistics.median(values))
         elif iqr <= contested_threshold:

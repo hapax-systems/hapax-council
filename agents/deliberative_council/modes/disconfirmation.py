@@ -80,7 +80,11 @@ _PYDANTIC_VALIDATORS = (DisconfirmationReceipt._validate_verdict_payload,)
 
 
 def derive_verdict(verdict: CouncilVerdict) -> DisconfirmationVerdict:
-    if verdict.convergence_status == ConvergenceStatus.HUNG:
+    # A REFUSED panel (below quorum / family floor / all-failed) cannot be
+    # trusted to survive OR refute a claim — fail CLOSED to INSUFFICIENT_EVIDENCE,
+    # never a survival, even if some fold axes carry partial scores. cc-task
+    # cctv-council-perfect-health-faillloud-convergence.
+    if verdict.convergence_status in (ConvergenceStatus.REFUSED, ConvergenceStatus.HUNG):
         return DisconfirmationVerdict.INSUFFICIENT_EVIDENCE
 
     scores = [s for s in verdict.scores.values() if s is not None]
