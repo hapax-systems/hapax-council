@@ -73,7 +73,7 @@ fn drain_target(
     size: u32,
     path: &str,
     last_hash: &mut [u8; 8],
-) {
+) -> Option<Vec<u8>> {
     let (tx, rx) = std::sync::mpsc::channel();
     staging.slice(..).map_async(wgpu::MapMode::Read, move |r| {
         let _ = tx.send(r);
@@ -96,8 +96,10 @@ fn drain_target(
         if h != *last_hash && atomic_write(path, &out).is_ok() {
             *last_hash = h;
         }
+        Some(out)
     } else {
         staging.unmap();
+        None
     }
 }
 
@@ -174,6 +176,16 @@ async fn run() {
                 binding: 1,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
                 count: None,
             },
         ],
@@ -270,6 +282,21 @@ async fn run() {
         view_formats: &[],
     });
     let cur_view = cur_tex.create_view(&wgpu::TextureViewDescriptor::default());
+    let prev_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("drift-field prev (feedback)"),
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: OUT_FORMAT,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let prev_view = prev_tex.create_view(&wgpu::TextureViewDescriptor::default());
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("drift-field bg"),
         layout: &bgl,
@@ -281,6 +308,10 @@ async fn run() {
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&prev_view),
             },
         ],
     });
@@ -305,6 +336,8 @@ async fn run() {
     let mut last_sig: Option<(u64, u128)> = None;
     let mut last_out_hash = [0u8; 8];
     let mut last_cur_hash = [0u8; 8];
+    // previous field output, round-tripped as the temporal-feedback input (init neutral)
+    let mut last_field_bytes: Vec<u8> = vec![128u8; (size as usize) * (size as usize) * 4];
 
     loop {
         let tick = Instant::now();
@@ -334,6 +367,26 @@ async fn run() {
                         wgpu::Extent3d {
                             width: in_w,
                             height: in_h,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                    // upload the previous field as the temporal-feedback input (prev_tex)
+                    queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &prev_tex,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        &last_field_bytes,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(size * 4),
+                            rows_per_image: Some(size),
+                        },
+                        wgpu::Extent3d {
+                            width: size,
+                            height: size,
                             depth_or_array_layers: 1,
                         },
                     );
@@ -413,7 +466,7 @@ async fn run() {
                     );
                     queue.submit(Some(enc.finish()));
 
-                    drain_target(
+                    if let Some(field_bytes) = drain_target(
                         &device,
                         &staging,
                         bytes_per_row,
@@ -421,8 +474,10 @@ async fn run() {
                         size,
                         OUT_PATH,
                         &mut last_out_hash,
-                    );
-                    drain_target(
+                    ) {
+                        last_field_bytes = field_bytes;
+                    }
+                    let _ = drain_target(
                         &device,
                         &cur_staging,
                         bytes_per_row,
