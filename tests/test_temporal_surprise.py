@@ -142,6 +142,29 @@ class TestComputeSurpriseFromIDF:
         )
         assert out[0].surprise == 1.0
 
+    def test_non_numeric_surprise_is_skipped(self):
+        # A corrupt/non-numeric SHM value must not crash — it yields no surprise.
+        ds = {"sources": {"biometric.heart_rate": {"surprise": "N/A"}}}
+        out = compute_surprise(
+            _snap(hr=95),
+            [ProtentionEntry(predicted_state="stress_rising", confidence=0.5, basis="x")],
+            density_state=ds,
+        )
+        assert out == []
+
+    def test_unknown_prediction_uses_default_field(self):
+        # An unmapped predicted_state falls back to the default field (activity)
+        # and reads that field's source posterior.
+        ds = _density(**{"desk.activity": 0.6})
+        out = compute_surprise(
+            _snap(activity="coding"),
+            [ProtentionEntry(predicted_state="some_new_unmapped_state", confidence=0.5, basis="x")],
+            density_state=ds,
+        )
+        act = [s for s in out if s.field == "activity"]
+        assert len(act) == 1
+        assert act[0].surprise == 0.6
+
     def test_no_rule_table_artifacts_in_source(self):
         # AC1 structural guard: the expert-system rule table is gone — surprise is
         # never derived from prediction confidence or hardcoded expected outcomes.

@@ -100,11 +100,16 @@ def compute_surprise(
     surprises: list[SurpriseField] = []
     for pred in last_protention:
         field = _PREDICTION_FIELD.get(pred.predicted_state, _DEFAULT_FIELD)
-        source_id = _FIELD_SOURCE[field]
-        source = sources.get(source_id)
+        source_id = _FIELD_SOURCE.get(field)
+        source = sources.get(source_id) if source_id else None
         if not isinstance(source, Mapping):
             continue
-        surprise = _clamp_unit(float(source.get("surprise", 0.0) or 0.0))
+        try:
+            surprise = _clamp_unit(float(source.get("surprise", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            # Corrupt/non-numeric SHM value — skip rather than crash. No rule
+            # fallback: an unreadable posterior simply yields no surprise.
+            continue
         surprises.append(
             SurpriseField(
                 field=field,
