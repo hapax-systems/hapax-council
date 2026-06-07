@@ -226,8 +226,17 @@ def test_ward_atlas_lifts_low_detail_rendered_cells_with_trace(tmp_path: Path) -
     assert payload["wards"][ward_id]["pre_readability_visibility"]["classification"] == (
         "weak-rendered"
     )
-    assert payload["visibility_summary"]["counts"]["visible"] == 1
-    assert payload["visibility_summary"]["suspect_wards"] == []
+    # The lift renders the cell legibly, but the summary must report the PRE-lift
+    # classification so a genuinely weak/dead source is still surfaced to the audit
+    # (a content-free source must not count as "visible" or vanish from suspects).
+    assert payload["visibility_summary"]["counts"].get("visible", 0) == 0
+    assert payload["visibility_summary"]["counts"]["weak-rendered"] == 1
+    assert payload["visibility_summary"]["readability_lift_count"] == 1
+    suspects = payload["visibility_summary"]["suspect_wards"]
+    assert [s["ward_id"] for s in suspects] == [ward_id]
+    assert suspects[0]["readability_lift"] is True
+    assert suspects[0]["visibility_classification"] == "weak-rendered"
+    assert suspects[0]["post_lift_classification"] == "visible"
     assert payload["visibility_thresholds"]["mean_luma_floor"] == atlas.VISIBILITY_MEAN_LUMA_FLOOR
 
 
