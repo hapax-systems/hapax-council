@@ -23,10 +23,14 @@ def test_mail_monitor_fallback_service_runs_one_shot_module() -> None:
     service = SERVICE.read_text(encoding="utf-8")
 
     assert "Type=oneshot" in service
-    assert "WorkingDirectory=%h/projects/hapax-council" in service
+    # Runs from the source-activation deploy tree (main-tracking), not the
+    # operator's canonical interactive worktree — see
+    # docs/research/2026-06-07-canonical-rooted-unit-audit.md.
+    assert "WorkingDirectory=%h/.cache/hapax/source-activation/worktree" in service
     assert "EnvironmentFile=-/run/user/1000/hapax-secrets.env" in service
     assert (
-        "ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.mail_monitor.fallback"
+        "ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python "
+        "-m agents.mail_monitor.fallback"
     ) in service
     assert "Restart=always" not in service
 

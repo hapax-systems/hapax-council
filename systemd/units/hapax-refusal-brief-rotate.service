@@ -15,9 +15,10 @@ Documentation=https://github.com/ryanklee/hapax-council/blob/main/agents/refusal
 
 [Service]
 Type=oneshot
-WorkingDirectory=%h/projects/hapax-council
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 EnvironmentFile=-%h/.config/hapax/env
-ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.refusal_brief --rotate
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.refusal_brief --rotate
 
 [Install]
 WantedBy=default.target

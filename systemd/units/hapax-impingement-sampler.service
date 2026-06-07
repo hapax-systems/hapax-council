@@ -7,14 +7,15 @@ PartOf=hapax.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/projects/hapax-council
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 EnvironmentFile=-/run/user/1000/hapax-secrets.env
-Environment=PATH=%h/projects/hapax-council/.venv/bin:/usr/bin
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:/usr/bin
 Environment=HAPAX_IMPINGEMENT_SAMPLER_METRICS_PORT=9496
 Environment=HAPAX_IMPINGEMENT_SAMPLER_TICK_S=5
 Environment=HAPAX_IMPINGEMENT_NOVELTY_WINDOW_S=300
 Environment=HAPAX_LOG_LEVEL=INFO
-ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.quality_observability.impingement_sampler
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.quality_observability.impingement_sampler
 Restart=on-failure
 RestartSec=15
 MemoryMax=128M

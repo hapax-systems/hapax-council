@@ -5,8 +5,9 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/hapax/projects/hapax-council
-ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.health_connect_parser --watch
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.health_connect_parser --watch
 Environment=HOME=/home/hapax
 Environment=HAPAX_HOME=/home/hapax
 StandardOutput=journal
