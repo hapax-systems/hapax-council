@@ -1019,6 +1019,149 @@ def test_run_prep_one_segment_writes_status_and_exact_planner_target(
     assert dossier["qdrant_eligible"] is False
 
 
+def test_substance_feedback_persist_round_trip(tmp_path: Path) -> None:
+    """A3: downstream substance rationale persists per-day so the NEXT batch
+    invocation's planner can re-author informed by it. Overwrite semantics — an
+    empty list clears the file so stale rationale never haunts later runs."""
+    today = prep._today_dir(tmp_path)
+
+    assert prep._read_prior_substance_feedback(today) is None
+
+    prep._write_substance_feedback(today, ["[a] claims thin", "[b] unsupported topic"])
+    out = prep._read_prior_substance_feedback(today)
+    assert out is not None
+    assert "claims thin" in out
+    assert "unsupported topic" in out
+
+    prep._write_substance_feedback(today, [])
+    assert prep._read_prior_substance_feedback(today) is None
+
+
+def test_run_prep_threads_prior_substance_feedback_into_planner(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A3: run_prep seeds the planner with the prior batch invocation's persisted
+    downstream substance rationale, so the planner re-authors informed by why the
+    last run's segments were found thin (segment prep runs in repeated batches —
+    'the next round' is the next invocation)."""
+    import agents.programme_manager.planner as planner_module
+
+    today = prep._today_dir(tmp_path)
+    rationale = "[prog-x] council refuted 3/4 claims as unsupported by any source"
+    (today / prep.PLANNER_SUBSTANCE_FEEDBACK_FILENAME).write_text(rationale, encoding="utf-8")
+
+    captured: list[str | None] = []
+
+    class FakePlanner:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def plan(
+            self,
+            *,
+            show_id: str,  # noqa: ARG002
+            prior_substance_feedback: str | None = None,
+            **_kw: Any,
+        ) -> None:
+            captured.append(prior_substance_feedback)
+            return None
+
+    monkeypatch.setattr(prep, "MAX_SEGMENTS", 1)
+    monkeypatch.setattr(
+        prep,
+        "_new_prep_session",
+        lambda: {
+            "prep_session_id": "segment-prep-substance",
+            "model_id": prep.RESIDENT_PREP_MODEL,
+            "llm_calls": [],
+        },
+    )
+    monkeypatch.setattr(prep, "_assert_resident_prep_model", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        prep,
+        "assert_segment_prep_allowed",
+        lambda _activity: SimpleNamespace(mode="open", reason="test", source="test"),
+    )
+    monkeypatch.setattr(planner_module, "ProgrammePlanner", FakePlanner)
+
+    prep.run_prep(tmp_path)
+
+    assert captured, "planner was never called"
+    assert captured[0] == rationale
+
+
+def test_record_substance_feedback_accumulates_and_skips_blank() -> None:
+    """A3 helper: rationale text is accumulated per-programme on the session;
+    blank rationale is ignored (no empty feedback fed to the planner)."""
+    session: dict[str, Any] = {}
+    prep._record_substance_feedback(session, "prog-1", "claims unsupported by sources")
+    prep._record_substance_feedback(session, "prog-2", "   ")
+    prep._record_substance_feedback(session, "prog-3", "topic too abstract for evidence")
+
+    assert session["planner_substance_feedback"] == [
+        "[prog-1] claims unsupported by sources",
+        "[prog-3] topic too abstract for evidence",
+    ]
+
+
+def test_prep_segment_records_substance_feedback_on_no_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A3: when disconfirmation refutes a structural claim (no-candidate), the
+    gap rationale is recorded on the session so the NEXT batch invocation's
+    planner re-authors instead of re-proposing the same thin topic. The segment
+    is still honestly refused (returns None)."""
+    import shared.segment_disconfirmation as disc
+
+    programme = SimpleNamespace(
+        programme_id="prog-nc",
+        role=SimpleNamespace(value="rant"),
+        content=_ready_content(
+            narrative_beat="A thin claim",
+            segment_beats=["argue the point with a source receipt"],
+            role="rant",
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+    }
+
+    monkeypatch.setattr(prep, "_build_seed", lambda _programme: "seed")
+    monkeypatch.setattr(prep, "_build_full_segment_prompt", lambda _programme, _seed: "prompt")
+    monkeypatch.setattr(
+        prep,
+        "_call_llm",
+        lambda _prompt, **_kwargs: json.dumps(
+            ["According to the receipt, the launch claim changes once the source is visible."]
+        ),
+    )
+    monkeypatch.setattr(prep, "_refine_script", lambda script, _programme, **_kwargs: script)
+    monkeypatch.setattr(prep, "_emit_self_evaluation", lambda *_args, **_kwargs: None)
+
+    # Force the disconfirmation no-candidate verdict deterministically.
+    monkeypatch.setattr(disc, "extract_claims", lambda **_kwargs: ["claim:1"])
+    monkeypatch.setattr(disc, "run_council_disconfirmation", lambda _claims: ["verdict"])
+    monkeypatch.setattr(
+        disc, "apply_council_verdicts", lambda *_a, **_kw: {"no_candidate_triggered": True}
+    )
+    monkeypatch.setattr(
+        disc,
+        "build_substance_gap_report",
+        lambda *_a, **_kw: "GAP: claims unsupported by any cited source",
+    )
+
+    saved = prep.prep_segment(programme, tmp_path, prep_session=session)
+
+    assert saved is None
+    assert session["planner_substance_feedback"] == [
+        "[prog-nc] GAP: claims unsupported by any cited source"
+    ]
+
+
 def test_prep_segment_no_beats_writes_non_loadable_diagnostic_dossier(
     tmp_path: Path,
 ) -> None:
@@ -1494,6 +1637,98 @@ def test_research_enrich_angle_routes_through_gateway(
     assert out.startswith("## Research Enrichment")
 
 
+def test_select_angle_routes_through_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A1.1: angle selection must resolve a provider via explicit gateway routing
+    (provider prefix + api_base) instead of raising ``LLM Provider NOT provided``
+    on a bare ``local-fast`` model. The bare call crashed every angle resolution
+    into the degenerate ``except`` fallback (topic-as-thesis, no challenge)."""
+    import litellm
+
+    from agents.hapax_daimonion import angle_resolver
+    from shared.source_packet import SourcePacket
+
+    captured: dict[str, Any] = {}
+
+    def fake_completion(**kwargs: Any) -> SimpleNamespace:
+        captured.update(kwargs)
+        content = (
+            "THESIS: a contested thesis\n"
+            "CHALLENGE: a real tension\n"
+            "OPENING_PRESSURE: why does it matter?\n"
+            "SUPPORTING_SOURCES: 1\n"
+            "CHALLENGING_SOURCES: 2"
+        )
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+
+    monkeypatch.setattr(litellm, "completion", fake_completion)
+
+    packets = [
+        SourcePacket(
+            source_ref="vault:a", content_hash="h1", snippet="position one", freshness="fresh"
+        ),
+        SourcePacket(
+            source_ref="vault:b", content_hash="h2", snippet="position two", freshness="fresh"
+        ),
+    ]
+    angle = angle_resolver._select_angle("a topic", packets)
+
+    assert captured, "litellm.completion was never called"
+    model = captured["model"]
+    # An explicit provider prefix + api_base is what lets litellm resolve a
+    # provider; without either the call raises 'LLM Provider NOT provided'.
+    assert "/" in model, f"model {model!r} has no explicit provider prefix"
+    assert captured.get("api_base"), "no api_base passed; provider cannot resolve"
+    litellm.get_llm_provider(model)  # resolved model string must not raise
+    # The angle came from the parsed LLM response, not the crash fallback.
+    assert angle.thesis_position == "a contested thesis"
+
+
+def test_web_supplement_is_excised_loud_noop(caplog: pytest.LogCaptureFixture) -> None:
+    """A1.3: the sparse-source web supplement is EXCISED to a loud no-op. The
+    prior code called the async ``web_verify`` WITHOUT ``await`` — a coroutine is
+    never a ``str``, so it silently did nothing. The fix does NOT add ``await``
+    (that routes to the ``web-research`` alias the research found mis-routes to a
+    non-grounded model, laundering ungrounded output as 'verification'). The
+    supplement stays disabled with a loud ledger entry until a real grounded web
+    provider exists; sparse local sources stay sparse and a no-candidate is the
+    honest outcome."""
+    import logging
+
+    from agents.hapax_daimonion import angle_resolver
+    from shared.source_packet import SourcePacket
+
+    existing = [
+        SourcePacket(
+            source_ref="vault:a", content_hash="h1", snippet="only local", freshness="fresh"
+        )
+    ]
+
+    with caplog.at_level(logging.WARNING, logger="agents.hapax_daimonion.angle_resolver"):
+        out = angle_resolver._web_supplement("a topic", existing)
+
+    # Disabled: nothing appended, the original list is returned unchanged.
+    assert out == existing
+    assert len(out) == 1
+    # Loud ledger entry — not a silent no-op.
+    assert any("web supplement" in record.message.lower() for record in caplog.records)
+    # Negative-existence: the broken async web_verify route is gone from the module.
+    source = Path(angle_resolver.__file__).read_text(encoding="utf-8")
+    assert "web_verify" not in source
+
+
+def test_anterior_topic_substance_gate_is_removed() -> None:
+    """A2: the mis-staged anterior topic-substance gate is REMOVED. It ran the
+    adversarial ``DisconfirmationRubric`` (which needs attached evidence) on a
+    BARE pre-source topic STRING, structurally flooring ~2.0 for any abstract
+    topic. Disconfirmation keeps its correct home DOWNSTREAM — on extracted
+    claims (``segment_disconfirmation``) and the composed script
+    (``_council_coherence_check``). No replacement anterior phrase/length/keyword
+    gate may be reintroduced (that is the forbidden expert-rule)."""
+    assert not hasattr(prep, "_council_topic_substance_gate")
+    source = Path(prep.__file__).read_text(encoding="utf-8")
+    assert "_council_topic_substance_gate" not in source
+
+
 def test_compose_refusal_reason_allows_viable_segment() -> None:
     """R-A1 pass path: a segment whose contract, live-event report, and
     live-event viability all pass is NOT refused at compose time."""
@@ -1537,32 +1772,6 @@ def test_compose_refusal_reason_refuses_non_viable_segment() -> None:
         )
         == "segment_live_event_report_failed"
     )
-
-
-def test_council_topic_substance_gate_constructs_valid_config(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """R-A3: the topic-substance council config must be constructible (no
-    pydantic extra_forbidden) so the council actually executes rather than
-    silently failing open on a ValidationError."""
-    from agents.deliberative_council import engine as council_engine
-    from agents.deliberative_council.models import CouncilConfig
-
-    captured: dict[str, Any] = {}
-
-    async def fake_deliberate(
-        council_input: Any, mode: Any, rubric: Any, config: Any = None
-    ) -> Any:
-        captured["config"] = config
-        return _council_verdict({"substance": 4})
-
-    monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
-
-    result = prep._council_topic_substance_gate("a substantive topic", "prog-1")
-
-    assert "config" in captured, "deliberate never reached — CouncilConfig construction raised"
-    assert isinstance(captured["config"], CouncilConfig)
-    assert result is True
 
 
 def test_council_coherence_check_constructs_valid_config(
@@ -1612,24 +1821,6 @@ def test_run_narrative_critique_constructs_valid_config(
 
     assert "config" in captured, "deliberate never reached — CouncilConfig construction raised"
     assert isinstance(captured["config"], CouncilConfig)
-
-
-def test_council_topic_substance_gate_fails_open_when_degraded(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """R-A3 downstream: now that the council actually executes, a DEGRADED
-    council (no model produced a score) must fail-open per this gate's
-    documented contract — a down council must not silently reject every topic."""
-    from agents.deliberative_council import engine as council_engine
-
-    async def fake_deliberate(
-        council_input: Any, mode: Any, rubric: Any, config: Any = None
-    ) -> Any:
-        return _council_verdict({})  # empty scores == degraded / unavailable
-
-    monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
-
-    assert prep._council_topic_substance_gate("a topic", "prog-1") is True
 
 
 def test_council_coherence_check_fails_open_when_degraded(

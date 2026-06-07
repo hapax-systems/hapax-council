@@ -181,6 +181,7 @@ class ProgrammePlanner:
         target_programmes: int | None = None,
         density_field: dict | None = None,
         stream_biography: str | None = None,
+        prior_substance_feedback: str | None = None,
     ) -> ProgrammePlan | None:
         """Compose a context block, call the LLM, validate + return.
 
@@ -202,6 +203,15 @@ class ProgrammePlanner:
             density_field=density_field,
             stream_biography=stream_biography,
         )
+
+        # A3: carry a prior round's downstream substance verdict into THIS
+        # authoring so the planner re-authors a source-denser angle. It rides in
+        # base_prompt so it is present from attempt 1 and survives the validation
+        # retry (which rebuilds from base_prompt).
+        if prior_substance_feedback:
+            base_prompt = self._build_substance_feedback_prompt(
+                base_prompt, prior_substance_feedback
+            )
 
         prompt = base_prompt
         last_error: str | None = None
@@ -303,6 +313,27 @@ class ProgrammePlanner:
             "`main point 1: ...` with source-bound beats that name the "
             "object/source/consequence, and bind layout intents to content evidence with "
             "`default_static_success_allowed: false`."
+        )
+
+    def _build_substance_feedback_prompt(self, base_prompt: str, substance_feedback: str) -> str:
+        """Fold a prior round's council/disconfirmation substance rationale in.
+
+        Sibling to ``_build_retry_prompt`` — same prompt-feedback channel, a
+        different signal. ``_build_retry_prompt`` carries a SCHEMA/validation
+        error from a within-call retry; this carries the DOWNSTREAM substance
+        verdict from a prior planning round (why the council or disconfirmation
+        pass found the last plan's topic/claims thin) so the planner RE-AUTHORS a
+        source-denser angle instead of re-proposing the same under-supported
+        topic. It is rationale TEXT — never a score/threshold or an
+        "add N keywords" rule.
+        """
+        return (
+            f"{base_prompt}\n\n## Prior-round substance feedback\n\n"
+            "A plan you authored in an earlier round was found THIN by the "
+            "downstream council / disconfirmation pass. Re-author with a "
+            "source-denser angle and concrete, source-bound claims; do not "
+            "re-propose the same under-supported topic. Rationale:\n\n"
+            f"```\n{substance_feedback}\n```"
         )
 
     def _read_prompt_template(self) -> str:

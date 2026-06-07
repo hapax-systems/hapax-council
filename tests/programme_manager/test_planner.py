@@ -570,6 +570,69 @@ class TestRetryPath:
         assert DEFAULT_MAX_RETRIES == 1
 
 
+# ── Substance feedback (A3) ─────────────────────────────────────────────
+
+
+class TestSubstanceFeedback:
+    """A3: the planner already feeds the last SCHEMA error back via
+    ``_build_retry_prompt``. The same prompt-feedback path is extended to also
+    carry the DOWNSTREAM council/disconfirmation SUBSTANCE rationale from a prior
+    planning round, so the planner RE-AUTHORS informed by why the last plan's
+    topic/claims were found thin — rather than re-proposing the same
+    under-supported topic. It is rationale TEXT, not a score/threshold or an
+    'add N keywords' rule.
+    """
+
+    def test_prior_substance_feedback_enters_first_attempt_prompt(self) -> None:
+        captured: list[str] = []
+
+        def capture(prompt: str) -> str:
+            captured.append(prompt)
+            return json.dumps(_well_formed_plan_payload())
+
+        planner = ProgrammePlanner(llm_fn=capture)
+        rationale = (
+            "topic 'abstract musings' was thin: council refuted 3 of 4 claims as "
+            "unsupported by any source"
+        )
+        plan = planner.plan(show_id="show-test-001", prior_substance_feedback=rationale)
+
+        assert plan is not None
+        # Present from the FIRST attempt — re-author from the start, not only on retry.
+        assert rationale in captured[0]
+        assert "substance" in captured[0].lower()
+
+    def test_substance_feedback_survives_validation_retry(self) -> None:
+        bad = json.dumps({"not": "a plan"})
+        good = json.dumps(_well_formed_plan_payload())
+        captured: list[str] = []
+
+        def capture(prompt: str) -> str:
+            captured.append(prompt)
+            return bad if len(captured) == 1 else good
+
+        planner = ProgrammePlanner(llm_fn=capture)
+        rationale = "claims were unsupported by any cited source"
+        planner.plan(show_id="show-test-001", prior_substance_feedback=rationale)
+
+        assert len(captured) == 2
+        # The substance rationale AND the schema-retry error both appear on retry —
+        # the planner must not forget WHY the last round was thin.
+        assert rationale in captured[1]
+        assert "Validation error on previous attempt" in captured[1]
+
+    def test_no_substance_feedback_leaves_prompt_unchanged(self) -> None:
+        captured: list[str] = []
+
+        def capture(prompt: str) -> str:
+            captured.append(prompt)
+            return json.dumps(_well_formed_plan_payload())
+
+        planner = ProgrammePlanner(llm_fn=capture)
+        planner.plan(show_id="show-test-001")
+        assert "Prior-round substance feedback" not in captured[0]
+
+
 # ── Hard-gate attempts ──────────────────────────────────────────────────
 
 
