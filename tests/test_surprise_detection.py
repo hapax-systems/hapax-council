@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from agents.hapax_daimonion.perception_ring import PerceptionRing
 from agents.temporal_bands import (
-    ProtentionEntry,
     SurpriseField,
     TemporalBandFormatter,
     TemporalBands,
 )
-from agents.temporal_surprise import compute_surprise
+
+# compute_surprise's behaviour (now sourced from the IDF posterior) is covered
+# by tests/test_temporal_surprise.py. This file keeps the SurpriseField model,
+# TemporalBands aggregation, and formatter/XML integration tests.
 
 
 def _ring_with(*snapshots: dict) -> PerceptionRing:
@@ -64,117 +66,6 @@ class TestTemporalBandsWithSurprise:
             ]
         )
         assert bands.max_surprise == 0.8
-
-
-class TestComputeSurprise:
-    def test_no_prior_protention_no_surprise(self):
-        surprises = compute_surprise(_snap(), [])
-        assert surprises == []
-
-    def test_confirmed_flow_prediction(self):
-        """Predicted deep work, operator IS in deep work → surprise=0."""
-        protention = [
-            ProtentionEntry(
-                predicted_state="entering_deep_work",
-                confidence=0.7,
-                basis="flow rising",
-            )
-        ]
-        current = _snap(flow_score=0.8, activity="coding")  # active flow
-        surprises = compute_surprise(current, protention)
-        flow_surprises = [s for s in surprises if s.field == "flow_state"]
-        assert len(flow_surprises) == 1
-        assert flow_surprises[0].surprise == 0.0  # confirmed
-
-    def test_violated_flow_prediction(self):
-        """Predicted deep work, operator went idle → surprise=confidence."""
-        protention = [
-            ProtentionEntry(
-                predicted_state="entering_deep_work",
-                confidence=0.7,
-                basis="flow rising",
-            )
-        ]
-        current = _snap(flow_score=0.1, activity="browsing")  # idle
-        surprises = compute_surprise(current, protention)
-        flow_surprises = [s for s in surprises if s.field == "flow_state"]
-        assert len(flow_surprises) == 1
-        assert flow_surprises[0].surprise == 0.7
-
-    def test_flow_breaking_confirmed(self):
-        """Predicted flow breaking, it broke → surprise=0."""
-        protention = [
-            ProtentionEntry(
-                predicted_state="flow_breaking",
-                confidence=0.6,
-                basis="flow declining",
-            )
-        ]
-        current = _snap(flow_score=0.1)
-        surprises = compute_surprise(current, protention)
-        flow_surprises = [s for s in surprises if s.field == "flow_state"]
-        assert flow_surprises[0].surprise == 0.0
-
-    def test_flow_breaking_violated(self):
-        """Predicted flow breaking, but flow persisted → surprise."""
-        protention = [
-            ProtentionEntry(
-                predicted_state="flow_breaking",
-                confidence=0.6,
-                basis="flow declining",
-            )
-        ]
-        current = _snap(flow_score=0.8)  # still in flow
-        surprises = compute_surprise(current, protention)
-        flow_surprises = [s for s in surprises if s.field == "flow_state"]
-        assert flow_surprises[0].surprise == 0.6
-        assert "persisted" in flow_surprises[0].note
-
-    def test_stress_prediction_confirmed(self):
-        protention = [
-            ProtentionEntry(
-                predicted_state="stress_rising",
-                confidence=0.5,
-                basis="HR climbing",
-            )
-        ]
-        current = _snap(hr=95)
-        surprises = compute_surprise(current, protention)
-        hr_surprises = [s for s in surprises if s.field == "heart_rate"]
-        assert hr_surprises[0].surprise == 0.0
-
-    def test_stress_prediction_violated(self):
-        protention = [
-            ProtentionEntry(
-                predicted_state="stress_rising",
-                confidence=0.5,
-                basis="HR climbing",
-            )
-        ]
-        current = _snap(hr=65)  # HR dropped
-        surprises = compute_surprise(current, protention)
-        hr_surprises = [s for s in surprises if s.field == "heart_rate"]
-        assert hr_surprises[0].surprise == 0.5
-
-    def test_deduplication_keeps_highest(self):
-        """Multiple predictions for same field → keep highest surprise."""
-        protention = [
-            ProtentionEntry(
-                predicted_state="entering_deep_work",
-                confidence=0.4,
-                basis="flow rising",
-            ),
-            ProtentionEntry(
-                predicted_state="flow_continuing",
-                confidence=0.7,
-                basis="stable flow",
-            ),
-        ]
-        current = _snap(flow_score=0.1)  # both violated
-        surprises = compute_surprise(current, protention)
-        flow_surprises = [s for s in surprises if s.field == "flow_state"]
-        assert len(flow_surprises) == 1
-        assert flow_surprises[0].surprise == 0.7  # higher confidence
 
 
 class TestFormatterSurpriseIntegration:
