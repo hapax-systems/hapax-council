@@ -68,7 +68,7 @@ def format_temporal_xml(bands: TemporalBands) -> str:
     # Impression — fields sorted by surprise (low→high) so high-surprise
     # fields appear last, exploiting RoPE recency-attention boost
     if bands.impression:
-        parts.append("  <impression>")
+        parts.append('  <impression scale="tick">')
         surprise_map = {s.field: s for s in bands.surprises}
         _null_sf = SurpriseField(field="", observed="", expected="", surprise=0.0)
         sorted_items = sorted(
@@ -88,11 +88,14 @@ def format_temporal_xml(bands: TemporalBands) -> str:
 
     # Protention (end of context — highest RoPE attention)
     if bands.protention:
-        parts.append("  <protention>")
+        parts.append('  <protention scale="tick">')
         for p in bands.protention:
+            # precision AFTER confidence: phenomenal_parsing matches
+            # state-then-confidence; never insert attrs between them.
             parts.append(
                 f'    <prediction state="{p.predicted_state}" '
-                f'confidence="{p.confidence:.2f}">{p.basis}</prediction>'
+                f'confidence="{p.confidence:.2f}" '
+                f'precision="{p.precision:.2f}">{p.basis}</prediction>'
             )
         parts.append("  </protention>")
 
