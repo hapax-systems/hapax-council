@@ -14,6 +14,7 @@
 
 @group(0) @binding(0) var t_in: texture_2d<f32>;
 @group(0) @binding(1) var s_in: sampler;
+@group(0) @binding(2) var prev_tex: texture_2d<f32>;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -91,8 +92,21 @@ fn fs_main(@location(0) uv: vec2<f32>) -> FragOut {
     // bounded [0.2,1.0]; engine maps to an amplitude multiplier (0.2 = calm zone, 1.0 = active)
     let currency = clamp(0.42 + activity * 0.5, 0.2, 1.0);
 
+    // ── Phase 2a temporal substrate: feedback / echo / trail / diff (prev-frame family) ──
+    // prev_tex is the PREVIOUS field output (CPU round-trip). The field gains temporal memory
+    // so it evolves + never exactly repeats (endless variety) beyond reverie's spatial content.
+    // All sampled around the neutral 0.5 baseline + bounded, so it stays luma-neutral. Currency
+    // modulates persistence (hybrid: active zones hold their drift longer).
+    let prev_c = textureSample(prev_tex, s_in, uv).rgb;                                 // feedback
+    let prev_trail = textureSample(prev_tex, s_in, uv + vec2<f32>(0.0018, 0.0011)).rgb; // trail (advected smear)
+    let prev_echo = textureSample(prev_tex, s_in, uv + vec2<f32>(-0.0065, 0.0042)).rgb; // echo (offset ghost)
+    let persisted = mix(vec3<f32>(0.5), mix(prev_trail, prev_echo, 0.35), 0.94);        // decay toward neutral
+    let fdiff = abs(field - prev_c);                                                    // diff (motion/change)
+    let fb = clamp(0.74 + currency * 0.18, 0.0, 0.94);                                  // currency-modulated persistence
+    let field_evolved = clamp(mix(field, persisted, fb) + fdiff * 0.22, vec3<f32>(0.14), vec3<f32>(0.97));
+
     var out: FragOut;
-    out.field = vec4<f32>(field, presence);
+    out.field = vec4<f32>(field_evolved, presence);
     out.currency = vec4<f32>(vec3<f32>(currency), 1.0);
     return out;
 }
