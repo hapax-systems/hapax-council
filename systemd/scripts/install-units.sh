@@ -99,6 +99,7 @@ AUTO_ENABLE_PRIVACY_TIMERS=(
 # explicit default-on treatment as persistent daemon services.
 AUTO_ENABLE_PATHS=(
     hapax-darkplaces-live-texture-rebuild.path
+    hapax-screwm-gpu-drift-rebuild.path
 )
 
 EXPECTED_PRIMARY="${HOME}/projects/hapax-council"

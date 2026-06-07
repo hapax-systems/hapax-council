@@ -1,0 +1,24 @@
+[Unit]
+Description=Rebuild deployed screwm GPU drift daemons after source activation
+After=hapax-source-activate.service
+ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
+ConditionPathExists=%h/.cache/hapax/source-activation/last-success-sha
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/ensure-screwm-gpu-drift-build.sh
+OnFailure=notify-failure@%n.service
+StartLimitIntervalSec=600
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/ensure-screwm-gpu-drift-build.sh
+ExecStartPost=/usr/bin/systemctl --user try-restart hapax-quake-drift-field.service
+ExecStartPost=/usr/bin/systemctl --user try-restart hapax-screwm-media-drift.service
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-screwm-gpu-drift-rebuild
+TimeoutStartSec=900
+MemoryHigh=4G
+MemoryMax=6G
