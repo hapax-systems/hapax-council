@@ -2196,7 +2196,19 @@ def build_visual_chain_lines(
         lines[f"effect-drift-{family}.txt"] = f"{value:.4f}"
     for family, value in family_modes.items():
         lines[f"effect-drift-mode-{family}.txt"] = f"{value:.4f}"
-    lines.update(build_drift_geo_lines(spatial_pressure))
+    # INC-1: drive the GEOMETRY handles from a dynamic-range intensity, NOT the saturating
+    # spatial_pressure (sum over base 0.24) which pegged all six drift-geo-*.txt flat at 1.0 — geometry
+    # pinned at constant peak = no baseline->peak motion = no visible drift. This intensity (drift peak +
+    # kind variance + active ratio) varies with live slotdrift activity, so geometry modulates
+    # moderate->peak. spatial_pressure stays for the edge/compositing family synthesis above. The
+    # recognizability cap is the constant HAPAXDRIFT vertex clamp (hapax-live-texture.patch), unchanged.
+    geo_intensity = 0.0
+    if is_live > 0.0:
+        geo_intensity = _clamp01(
+            drift_strength_peak * 0.45 + kind_variance * 0.30 + active_ratio * 0.25
+        )
+    lines["effect-drift-intensity.txt"] = f"{geo_intensity:.4f}"
+    lines.update(build_drift_geo_lines(geo_intensity))
     return lines
 
 
