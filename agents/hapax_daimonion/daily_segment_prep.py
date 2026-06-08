@@ -4043,6 +4043,7 @@ def _upsert_artifact_dicts_to_qdrant(
 
         from shared.affordance_pipeline import COLLECTION_NAME, embed_batch_safe
         from shared.config import get_qdrant
+        from shared.geal_grounding_classifier import classify_source_or_quarantine
 
         texts: list[str] = []
         payloads: list[dict[str, Any]] = []
@@ -4053,6 +4054,19 @@ def _upsert_artifact_dicts_to_qdrant(
             texts.append(
                 f"Selected prepared livestream segment {programme_id}: {topic}. {script_preview}"
             )
+            # Carry the recruited handles into the RAG payload (don't drop them) and
+            # QUARANTINE any packet whose source ref is not a known grounding source —
+            # an unknown ref is not affirmed as grounded on re-entry (stop laundering).
+            resolved_set = artifact.get("resolved_source_set")
+            grounded_handles: list[str] = []
+            quarantined_refs: list[str] = []
+            if isinstance(resolved_set, dict):
+                for index, packet in enumerate(resolved_set.get("packets") or []):
+                    ref = str((packet or {}).get("source_ref") or "")
+                    if classify_source_or_quarantine(ref) is None:
+                        quarantined_refs.append(ref)
+                        continue
+                    grounded_handles.append(f"src:{index}")
             payloads.append(
                 {
                     "capability_name": f"programme.prepped.selected.{programme_id}",
@@ -4078,6 +4092,11 @@ def _upsert_artifact_dicts_to_qdrant(
                     "segment_quality_report": artifact.get("segment_quality_report"),
                     "segment_live_event_report": artifact.get("segment_live_event_report"),
                     "segment_prep_contract_report": artifact.get("segment_prep_contract_report"),
+                    "resolved_source_handles": grounded_handles,
+                    "resolved_source_quarantined_refs": quarantined_refs,
+                    "resolved_source_provenance_sha256": (artifact.get("source_hashes") or {}).get(
+                        "resolved_source_provenance_sha256"
+                    ),
                 }
             )
         embeddings = embed_batch_safe(texts, prefix="search_document")

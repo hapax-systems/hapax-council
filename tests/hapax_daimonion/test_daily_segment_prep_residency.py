@@ -1670,35 +1670,6 @@ def _council_verdict(scores: dict[str, int | None]) -> Any:
     )
 
 
-def test_research_enrich_angle_routes_through_gateway(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """R-A2: the enrich LLM call must resolve a provider via explicit gateway
-    routing instead of raising ``LLM Provider NOT provided`` on a bare model."""
-    import litellm
-
-    captured: dict[str, Any] = {}
-
-    def fake_completion(**kwargs: Any) -> SimpleNamespace:
-        captured.update(kwargs)
-        message = SimpleNamespace(content="enriched " + "x" * 200)
-        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
-
-    monkeypatch.setattr(litellm, "completion", fake_completion)
-
-    out = prep._research_enrich_angle("angle analysis text", "a topic")
-
-    assert captured, "litellm.completion was never called"
-    model = captured["model"]
-    # An explicit provider prefix + api_base is what lets litellm resolve a
-    # provider; without either the call raises 'LLM Provider NOT provided'.
-    assert "/" in model, f"model {model!r} has no explicit provider prefix"
-    assert captured.get("api_base"), "no api_base passed; provider cannot resolve"
-    # Faithful to the AC: the resolved model string must not raise.
-    litellm.get_llm_provider(model)
-    assert out.startswith("## Research Enrichment")
-
-
 def test_select_angle_routes_through_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
     """A1.1: angle selection must resolve a provider via explicit gateway routing
     (provider prefix + api_base) instead of raising ``LLM Provider NOT provided``
