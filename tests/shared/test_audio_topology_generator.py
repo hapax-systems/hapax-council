@@ -258,6 +258,7 @@ class TestGenerateConfs:
         (
             "pipewire/tts-loudnorm.conf",
             "pipewire/music-loudnorm.conf",
+            "pipewire/music-duck-mk5.conf",
             "pipewire/pc-loudnorm.conf",
             "pipewire/yt-loudnorm.conf",
         ),

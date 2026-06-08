@@ -291,7 +291,8 @@ def test_tts_broadcast_path_has_mk5_s4_wet_return_and_livestream_forward_path() 
     assert mic_rode.params["capture_positions"] == "AUX0"
     assert mic_rode.params["playback_node"] == "hapax-mic-rode-playback"
     assert mic_rode.params["playback_target"] == "hapax-livestream-tap"
-    assert music.params["playback_target"] == "hapax-livestream-tap"
+    # Music now routes through the mk5-native dedicated ducker before the sum.
+    assert music.params["playback_target"] == "hapax-music-duck-mk5"
     assert music.params["audibility_passthrough"] is True
     assert music.params["audibility_passthrough_gain"] == 0.35
 
@@ -301,8 +302,36 @@ def test_tts_broadcast_path_has_mk5_s4_wet_return_and_livestream_forward_path() 
     assert ("voice-wet", "livestream-tap") in edge_pairs
     assert ("mk5-input", "mic-rode") in edge_pairs
     assert ("mic-rode", "livestream-tap") in edge_pairs
-    assert ("music-loudnorm", "livestream-tap") in edge_pairs
+    # mk5 music ducker inserted between music-loudnorm and the livestream sum.
+    assert ("music-loudnorm", "music-duck-mk5") in edge_pairs
+    assert ("music-duck-mk5", "livestream-tap") in edge_pairs
+    assert ("music-loudnorm", "livestream-tap") not in edge_pairs
     assert ("yt-loudnorm", "livestream-tap") in edge_pairs
+
+
+def test_music_duck_mk5_is_content_only_reconciler_owned_failopen() -> None:
+    """The mk5-native dedicated music ducker: a passive content-path gain node
+    the hapax-audio-ducker daemon modulates. Reconciler-owned (no target.object),
+    fail-OPEN by default, and NEVER on the operator path."""
+    d = _descriptor()
+    duck = d.node_by_id("music-duck-mk5")
+
+    assert duck.pipewire_name == "hapax-music-duck-mk5"
+    assert duck.chain_kind == "duck"
+    # Reconciler owns the FL/FR links (autoconnect off, no target.object emitted).
+    assert duck.params["node.autoconnect"] is False
+    assert duck.params["playback_target"] == "hapax-livestream-tap"
+    assert duck.params["playback_node"] == "hapax-music-duck-mk5-playback"
+
+    # operator_voice_never_drop: the duck sits ONLY on the music/content leg.
+    edge_pairs = {(edge.source, edge.target) for edge in d.edges}
+    incoming = {src for src, dst in edge_pairs if dst == "music-duck-mk5"}
+    outgoing = {dst for src, dst in edge_pairs if src == "music-duck-mk5"}
+    assert incoming == {"music-loudnorm"}
+    assert outgoing == {"livestream-tap"}
+    # It must never touch the operator mic / broadcast-voice paths.
+    assert "mic-rode" not in incoming and "mic-rode" not in outgoing
+    assert "voice-wet" not in incoming and "voice-wet" not in outgoing
 
 
 def test_pc_loudnorm_is_fail_closed_and_notifications_do_not_enter_multimedia() -> None:
