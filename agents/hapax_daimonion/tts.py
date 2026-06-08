@@ -42,8 +42,34 @@ _INTERVIEW_EXAGGERATION = 0.20
 _INTERVIEW_CFG_WEIGHT = 0.50
 
 
+# Expressiveness gained from arc open (0.0) to arc peak (1.0). Small + bounded
+# so delivery stays natural — this is a continuous controller of prosody, not a
+# per-beat preset table.
+_ARC_EXAGGERATION_GAIN = 0.15
+
+
 def select_tier(use_case: str) -> str:
     return _TIER_MAP.get(use_case, "chatterbox")
+
+
+def _arc_prosody(
+    arc_position: float | None,
+    *,
+    base_exag: float,
+    base_cfg: float,
+) -> tuple[float, float]:
+    """Modulate (exaggeration, cfg_weight) by position in the segment arc.
+
+    ``arc_position`` is the clause's fractional position in the segment arc
+    (0.0 = open, 1.0 = peak/close); ``None`` leaves prosody at the base.
+    Expressiveness rises smoothly toward the peak, bounded to the valid
+    ``[0, 1]`` exaggeration range so the rise can never distort delivery.
+    """
+    if arc_position is None:
+        return base_exag, base_cfg
+    position = max(0.0, min(1.0, arc_position))
+    exag = max(0.0, min(1.0, base_exag + _ARC_EXAGGERATION_GAIN * position))
+    return exag, base_cfg
 
 
 class TTSManager:
@@ -87,6 +113,8 @@ class TTSManager:
         *,
         speed: float = 1.0,
         interview_mode: bool = False,
+        role: str | None = None,
+        arc_position: float | None = None,
     ) -> bytes:
         if not text or not text.strip():
             return b""
@@ -101,17 +129,34 @@ class TTSManager:
 
         if self._backend == "chatterbox":
             try:
-                return self._synthesize_chatterbox(lexicon.text, interview_mode=interview_mode)
+                return self._synthesize_chatterbox(
+                    lexicon.text,
+                    interview_mode=interview_mode,
+                    role=role,
+                    arc_position=arc_position,
+                )
             except Exception:
                 log.warning("Chatterbox synthesis failed, falling back to Kokoro", exc_info=True)
                 return self._synthesize_kokoro(lexicon.text, speed=speed)
         return self._synthesize_kokoro(lexicon.text, speed=speed)
 
-    def _synthesize_chatterbox(self, text: str, *, interview_mode: bool = False) -> bytes:
+    def _synthesize_chatterbox(
+        self,
+        text: str,
+        *,
+        interview_mode: bool = False,
+        role: str | None = None,
+        arc_position: float | None = None,
+    ) -> bytes:
         model = self._get_chatterbox()
         voice_path = str(_VOICE_SAMPLE_PATH) if _VOICE_SAMPLE_PATH.exists() else None
-        exag = _INTERVIEW_EXAGGERATION if interview_mode else _CHATTERBOX_EXAGGERATION
-        cfg = _INTERVIEW_CFG_WEIGHT if interview_mode else _CHATTERBOX_CFG_WEIGHT
+        # Interview / dialogic roles deliver with restraint; everything else
+        # uses the default base. Arc position then modulates expressiveness
+        # continuously around that base.
+        restrained = interview_mode or role == "interview"
+        base_exag = _INTERVIEW_EXAGGERATION if restrained else _CHATTERBOX_EXAGGERATION
+        base_cfg = _INTERVIEW_CFG_WEIGHT if restrained else _CHATTERBOX_CFG_WEIGHT
+        exag, cfg = _arc_prosody(arc_position, base_exag=base_exag, base_cfg=base_cfg)
         wav = model.generate(
             text,
             audio_prompt_path=voice_path,

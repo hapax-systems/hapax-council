@@ -215,6 +215,7 @@ class PwAudioOutput:
         *,
         target: str | None = None,
         media_role: str | None = None,
+        pace: bool = True,
     ) -> PlaybackResult:
         """Write PCM data to the playback stream. Thread-safe, blocking.
 
@@ -222,6 +223,12 @@ class PwAudioOutput:
         real-time pacing (matching PyAudio's blocking stream.write behavior).
         Without this, all sentences dump into pw-cat's pipe buffer at once
         and play back-to-back with no gaps.
+
+        ``pace=False`` suppresses that trailing sleep: the
+        ``GaplessHostStream`` feeds one persistent stream back-to-back and
+        owns its own real-time pacing, so re-blocking per write here would
+        defeat gaplessness. Existing callers keep the default ``pace=True``
+        blocking behavior (never-remove).
 
         ``target`` overrides the constructor default for this call only.
         ``media_role`` overrides the constructor default for this call only.
@@ -307,8 +314,10 @@ class PwAudioOutput:
                     error=str(exc),
                 )
 
-        # Block for audio duration — paces sentence delivery
-        if duration_s > 0:
+        # Block for audio duration — paces sentence delivery. Suppressed when
+        # the caller (GaplessHostStream) owns pacing on a single persistent
+        # stream and must not be re-blocked per write.
+        if pace and duration_s > 0:
             time.sleep(duration_s)
         return PlaybackResult(
             status="completed",

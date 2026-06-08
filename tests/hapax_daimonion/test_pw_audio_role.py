@@ -196,3 +196,40 @@ class TestPwAudioReaper:
         assert not out._stop_event.is_set()
         out.close()
         assert out._stop_event.is_set()
+
+
+class TestNonBlockingStreamWrite:
+    """``write(pace=False)`` writes to the persistent stream WITHOUT the
+    trailing real-time sleep — the gapless host stream owns pacing itself, so
+    the per-write block must be suppressible. ``pace=True`` (default) keeps the
+    legacy blocking behavior every existing caller depends on (never-remove)."""
+
+    @staticmethod
+    def _pcm_100ms() -> bytes:
+        # 2400 samples @ 24 kHz mono int16 = 0.1 s of audio.
+        return b"\x00\x00" * 2400
+
+    def test_pace_false_does_not_sleep_for_audio_duration(self) -> None:
+        out = PwAudioOutput(sample_rate=24000, channels=1, target=None, idle_timeout_s=None)
+        with (
+            patch("subprocess.Popen") as mock_popen,
+            patch("agents.hapax_daimonion.pw_audio_output.time.sleep") as mock_sleep,
+        ):
+            mock_proc = MagicMock()
+            mock_proc.poll.return_value = None
+            mock_popen.return_value = mock_proc
+            result = out.write(self._pcm_100ms(), pace=False)
+        assert result.completed
+        mock_sleep.assert_not_called()
+
+    def test_pace_true_blocks_for_audio_duration(self) -> None:
+        out = PwAudioOutput(sample_rate=24000, channels=1, target=None, idle_timeout_s=None)
+        with (
+            patch("subprocess.Popen") as mock_popen,
+            patch("agents.hapax_daimonion.pw_audio_output.time.sleep") as mock_sleep,
+        ):
+            mock_proc = MagicMock()
+            mock_proc.poll.return_value = None
+            mock_popen.return_value = mock_proc
+            out.write(self._pcm_100ms(), pace=True)
+        mock_sleep.assert_called_once_with(0.1)
