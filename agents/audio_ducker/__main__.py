@@ -1,9 +1,13 @@
 """Hapax audio ducker daemon — VAD-driven duck-gain controller.
 
-Phase 4 of the unified audio architecture. Watches operator voice
-(Rode mic on L-12 USB AUX4) and TTS chain envelopes; writes duck
-gain values to `hapax-music-duck` and `hapax-tts-duck` PipeWire
-mixer nodes via `pw-cli set-param`.
+Phase 4 of the unified audio architecture, re-homed onto the mk5/S-4
+baseline (segment-audio-hosting-readiness). Watches operator voice (the
+live mk5 Rode → `hapax-mic-rode-capture`) and the broadcast TTS chain
+envelope, plus a hosting-segment subscription; writes the music duck gain
+to the mk5-native `hapax-music-duck-mk5` node via `pw-cli set-param`. Node
+names resolve from the topology SSOT (fail-open). There is no software TTS
+duck on mk5 (Hapax voice routes mk5 OUT3/4 → Torso S-4 → mk5 IN3/4, analog),
+so the daemon owns the single music-bed duck.
 
 ARCHITECTURE
 ============
@@ -80,6 +84,7 @@ from shared.audio_loudness import (
     DUCK_DEPTH_TTS_DB,
     DUCK_RELEASE_MS,
 )
+from shared.audio_node_resolver import resolve_audio_node
 from shared.audio_working_mode_couplings import (
     current_audio_constraints,
     working_mode_changed_since,
@@ -89,34 +94,46 @@ log = logging.getLogger("audio_ducker")
 
 # ── Source taps ───────────────────────────────────────────────────────
 
-# L-12 multichannel USB capture: 14 channels at 48 kHz s32le.
-# AUX4 (channel 5) = Rode wireless RX (per hapax-l12-evilpet-capture.conf
-# operator-confirmed channel map).
-L12_MULTICHANNEL_NODE = (
-    "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input"
-)
-L12_CHANNELS = 14
-RODE_AUX_INDEX = 4  # AUX4 = CH5 = Rode
+# Operator-mic VAD tap — the LIVE mk5 Rode. The L-12 → mk5 migration retired the
+# Zoom L-12 14ch multichannel node this daemon used to read (AUX4 = Rode, line
+# level pre-fader). The operator mic now lands on mk5 capture_AUX0 →
+# hapax-mic-rode-capture, a 2ch FL/FR filter-chain (Rode mono duplicated).
+# Resolved from the topology SSOT so the NEXT hardware migration is picked up
+# instead of silently re-breaking this daemon; fallback fail-open to the literal.
+RODE_CAPTURE_NODE = resolve_audio_node("mic-rode", "hapax-mic-rode-capture")
+RODE_CHANNELS = 2
 
-# TTS chain pre-limiter input. The sink is named `hapax-loudnorm-capture`
-# (renamed from the legacy `hapax-loudnorm` in Phase 1.7 to avoid name
-# conflict with the playback node). Its monitor reflects whatever the
-# WirePlumber role.assistant → hapax-voice-fx → hapax-loudnorm-capture
-# loopback chain feeds into it — i.e. live TTS audio whenever daimonion
-# is speaking.
+# TTS chain monitor. `hapax-loudnorm-capture` is the broadcast-bound TTS chain
+# (role.broadcast → hapax-voice-fx → hapax-loudnorm-capture); its monitor
+# reflects live TTS audio whenever Hapax is hosting on broadcast. This is the
+# physical-truth "hosting TTS present" detector and stays live on mk5.
 TTS_TAP_NODE = "hapax-loudnorm-capture.monitor"
 TTS_TAP_CHANNELS = 2  # stereo
 
-# Duck mixer node names.
-MUSIC_DUCK_NODE = "hapax-music-duck"
-TTS_DUCK_NODE = "hapax-tts-duck"
+# Music duck gain node — the mk5-native dedicated ducker (config/audio-topology.yaml
+# id music-duck-mk5, inserted hapax-music-loudnorm → hapax-music-duck-mk5 →
+# hapax-livestream-tap). The daemon writes duck_l/duck_r "Gain 1" here. Resolved
+# from SSOT; fail-open fallback (an absent node leaves the bed un-ducked, never
+# silenced — the duck defaults to transparent passthrough).
+MUSIC_DUCK_NODE = resolve_audio_node("music-duck-mk5", "hapax-music-duck-mk5")
+
+# No SOFTWARE TTS duck on the mk5 graph: Hapax voice routes mk5 OUT3/4 → Torso
+# S-4 → mk5 IN3/4 (analog), so there is no software gain node to duck. The
+# L-12-era hapax-tts-duck node is dead. The daemon keeps a SINGLE duck owner
+# (the music bed); TTS_DUCK_NODE=None disables the second-duck output path.
+# Never-remove: the code path stays, guarded, for a future TTS-duck topology.
+TTS_DUCK_NODE: str | None = None
 
 # Audio capture format.
 SAMPLE_RATE = 44100
 RMS_WINDOW_MS = 50
 RMS_WINDOW_SAMPLES = int(SAMPLE_RATE * RMS_WINDOW_MS / 1000)
 
-# VAD thresholds (dBFS).
+# VAD thresholds (dBFS). PROVISIONAL for mk5: these were tuned for the retired
+# L-12 PRE-FADER line-level tap. The live hapax-mic-rode-capture node is
+# post-filter-chain (a different reference level), so the on/off points need a
+# live dBFS readback at idle vs speech before the operator-VAD duck is trusted
+# live (state.json publishes last_rms_dbfs for that tune). Alpha actuates.
 TRIGGER_ON_DBFS = -45.0
 TRIGGER_OFF_DBFS = -55.0
 HOLD_OPEN_MS = 200
@@ -175,7 +192,7 @@ class MixerGainReadback:
         return abs(self.left - self.right) <= GAIN_READBACK_TOLERANCE
 
 
-def write_mixer_gain(node_name: str, gain_lin: float) -> MixerGainWriteResult:
+def write_mixer_gain(node_name: str | None, gain_lin: float) -> MixerGainWriteResult:
     """Write `duck_l:Gain 1` AND `duck_r:Gain 1` on the named filter-chain
     node via a single pw-cli call.
 
@@ -183,7 +200,13 @@ def write_mixer_gain(node_name: str, gain_lin: float) -> MixerGainWriteResult:
     stereo passthrough — both must receive the same gain value. Sending
     both in one Props update keeps L/R atomic-ish (single message to
     PipeWire) so the operator never hears L/R drift during a duck event.
+
+    ``node_name is None`` (e.g. the disabled mk5 TTS-duck path) is a no-op
+    success — there is no node to write, and an absent duck must never be
+    treated as a write failure (which would force fail-open on the music bed).
     """
+    if node_name is None:
+        return MixerGainWriteResult(ok=True)
     try:
         subprocess.run(
             [
@@ -220,8 +243,14 @@ def write_mixer_gain(node_name: str, gain_lin: float) -> MixerGainWriteResult:
         return MixerGainWriteResult(ok=False, error=str(exc))
 
 
-def read_mixer_gain(node_name: str) -> MixerGainReadback:
-    """Read actual `duck_l/r:Gain 1` from the PipeWire filter-chain node."""
+def read_mixer_gain(node_name: str | None) -> MixerGainReadback:
+    """Read actual `duck_l/r:Gain 1` from the PipeWire filter-chain node.
+
+    ``node_name is None`` (disabled TTS-duck path) reports unity so the
+    inert duck never produces a readback mismatch / blocker.
+    """
+    if node_name is None:
+        return MixerGainReadback(ok=True, left=1.0, right=1.0)
     try:
         result = subprocess.run(
             ["pw-cli", "enum-params", node_name, "Props"],
@@ -380,19 +409,25 @@ def _read_aligned(stream: object, want_bytes: int, frame_bytes: int) -> bytes:
 
 
 def _read_rode_loop(state: EnvelopeState, stop: threading.Event) -> None:
-    """Read L-12 multichannel input, isolate AUX4 (Rode), feed envelope."""
-    proc = _spawn_capture(L12_MULTICHANNEL_NODE, L12_CHANNELS, "s32")
-    bytes_per_frame = 4 * L12_CHANNELS  # s32 = 4 bytes/sample
+    """Read the live mk5 operator-mic node (hapax-mic-rode-capture, 2ch FL/FR),
+    fold to mono, feed the envelope.
+
+    The retired L-12 path read a 14ch multichannel node and sliced AUX4; the mk5
+    Rode lands as a 2ch filter-chain (mono source duplicated FL/FR), so there is
+    no channel-isolation slice — just average the two channels.
+    """
+    proc = _spawn_capture(RODE_CAPTURE_NODE, RODE_CHANNELS, "s16")
+    bytes_per_frame = 2 * RODE_CHANNELS  # s16 = 2 bytes/sample
     chunk_bytes = RMS_WINDOW_SAMPLES * bytes_per_frame
-    log.info("Rode capture started (target=%s aux=%d)", L12_MULTICHANNEL_NODE, RODE_AUX_INDEX)
+    log.info("Rode capture started (target=%s, %dch)", RODE_CAPTURE_NODE, RODE_CHANNELS)
     try:
         while not stop.is_set():
             assert proc.stdout is not None
             buf = _read_aligned(proc.stdout, chunk_bytes, bytes_per_frame)
             if not buf:
                 continue
-            arr = np.frombuffer(buf, dtype=np.int32).reshape(-1, L12_CHANNELS)
-            mono = arr[:, RODE_AUX_INDEX].astype(np.float64) / (2**31)
+            arr = np.frombuffer(buf, dtype=np.int16).reshape(-1, RODE_CHANNELS)
+            mono = arr.astype(np.float64).mean(axis=1) / (2**15)
             state.update(mono, time.monotonic() * 1000.0)
     except Exception as exc:
         state.mark_error(f"{type(exc).__name__}: {exc}", time.monotonic() * 1000.0)
@@ -436,9 +471,13 @@ def _read_tts_loop(state: EnvelopeState, stop: threading.Event) -> None:
 
 @dataclass
 class DuckState:
-    """Per-mixer current vs target gain (linear) with ramp."""
+    """Per-mixer current vs target gain (linear) with ramp.
 
-    node: str
+    ``node`` is ``None`` for a disabled duck path (e.g. the mk5 TTS duck, which
+    has no software gain node): all writes/readbacks no-op at unity.
+    """
+
+    node: str | None
     current_gain: float = 1.0
     target_gain: float = 1.0
     commanded_gain: float = 1.0
@@ -462,31 +501,85 @@ def compute_targets(
     rode_active: bool,
     tts_active: bool,
     *,
+    segment_active: bool = False,
     allow_tts_into_broadcast: bool = True,
 ) -> tuple[float, float]:
     """Return (music_target_gain, tts_target_gain) given trigger states.
 
-    Music: take the DEEPEST duck (min gain) when both Rode + TTS active.
-    TTS:   only Rode triggers TTS duck (TTS doesn't duck itself).
+    Music: take the DEEPEST duck (min gain) when multiple triggers fire. Three
+    triggers engage the music bed:
+      - operator voice (Rode) → -12 dB (priority);
+      - TTS present on the broadcast chain → -8 dB;
+      - a live hosting SEGMENT (active-segment.json subscription) → -8 dB, held
+        for the whole spoken span. A segment is the same content class as TTS, so
+        it reuses the TTS depth — NO new dB and NO per-role table (no-presets).
+    TTS: only Rode triggers the TTS duck (TTS doesn't duck itself).
 
-    ``allow_tts_into_broadcast`` is the working-mode coupling: when
-    fortress mode disables ``duck_role_assistant_into_broadcast``, the
-    TTS trigger no longer drives the music duck (only operator voice
-    does). Operator-voice ducking is unaffected — the operator IS the
-    broadcast voice and always takes priority.
+    ``allow_tts_into_broadcast`` is the working-mode coupling: when fortress mode
+    disables ``duck_role_assistant_into_broadcast``, the TTS trigger no longer
+    drives the music duck (only operator voice does). The hosting-segment hold is
+    governed by the same coupling (a segment IS broadcast TTS content).
+    Operator-voice ducking is unaffected — the operator IS the broadcast voice and
+    always takes priority.
     """
     effective_tts = tts_active and allow_tts_into_broadcast
-    if rode_active and effective_tts:
+    # A hosting segment holds the bed at the TTS depth for the whole span; gate it
+    # by the same fortress coupling so it cannot duck broadcast when TTS-into-
+    # broadcast is disabled.
+    tts_class_engaged = (effective_tts or segment_active) and allow_tts_into_broadcast
+    if rode_active and tts_class_engaged:
         music = min(MUSIC_DUCK_OPERATOR, MUSIC_DUCK_TTS)
     elif rode_active:
         music = MUSIC_DUCK_OPERATOR
-    elif effective_tts:
+    elif tts_class_engaged:
         music = MUSIC_DUCK_TTS
     else:
         music = UNITY
 
     tts = TTS_DUCK_OPERATOR if rode_active else UNITY
     return music, tts
+
+
+# Hosting-segment subscription (AC#2 hosting-mode hold-open). programme_loop
+# writes /dev/shm/hapax-compositor/active-segment.json at ~1 Hz while a paced
+# hosting segment is live and UNLINKS it at segment end / when the active role
+# isn't a segmented hosting role. So a FRESH file with a non-empty programme_id
+# means "a hosting segment is currently live" — hold the music bed ducked for the
+# whole span. This is a SUBSCRIPTION, not a hold timer: the hold lasts exactly as
+# long as the producer keeps rewriting the file.
+SEGMENT_STATE_PATH = Path("/dev/shm/hapax-compositor/active-segment.json")
+# Staleness bound (a fail-open safety threshold, NOT a duck duration): >= 3x the
+# 1 Hz producer cadence so a single skipped rewrite doesn't falsely release.
+SEGMENT_FRESH_S = 3.0
+
+
+def read_segment_active(
+    path: Path = SEGMENT_STATE_PATH,
+    *,
+    now_s: float | None = None,
+) -> bool:
+    """True iff a paced hosting segment is currently live (hold the bed ducked).
+
+    Release is producer-driven: the instant programme_loop unlinks the file at
+    segment end, the next read returns False and the normal 400 ms release ramp
+    recovers the bed. Fail-OPEN on any fault (missing / stale / corrupt /
+    non-dict / no programme_id) → no hold, never a silenced bed.
+    """
+    current_s = time.time() if now_s is None else now_s
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return False
+    if current_s - mtime > SEGMENT_FRESH_S:
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    programme_id = data.get("programme_id")
+    return isinstance(programme_id, str) and bool(programme_id)
 
 
 def ramp_gain(current: float, target: float, dt_ms: float) -> float:
@@ -509,8 +602,8 @@ def ramp_gain(current: float, target: float, dt_ms: float) -> float:
     return max(0.0, min(1.0, new))
 
 
-GainWriter = Callable[[str, float], MixerGainWriteResult]
-GainReader = Callable[[str], MixerGainReadback]
+GainWriter = Callable[[str | None, float], MixerGainWriteResult]
+GainReader = Callable[[str | None], MixerGainReadback]
 
 
 def source_blockers(
@@ -776,9 +869,11 @@ def main() -> int:
             if blockers:
                 music_target, tts_target = UNITY, UNITY
             else:
+                segment_active = read_segment_active(now_s=now_s)
                 music_target, tts_target = compute_targets(
                     rode_state.is_active,
                     tts_state.is_active,
+                    segment_active=segment_active,
                     allow_tts_into_broadcast=allow_tts_broadcast,
                 )
             music_duck.target_gain = music_target
