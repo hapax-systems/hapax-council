@@ -20,6 +20,7 @@ from concurrent.futures import Future
 from agents.hapax_daimonion.gapless_host_stream import (
     ClauseRequest,
     GaplessHostStream,
+    _main,
     build_gapless_host_stream,
     segment_clauses,
 )
@@ -274,3 +275,10 @@ def test_factory_wires_manager_output_and_envelope_with_pace_false() -> None:
     )
     # envelope tap is fed once per clause (oscilloscope preserved)
     assert len(fed) == 2
+
+
+def test_main_self_check_drives_the_pipeline_and_returns_zero(capsys) -> None:  # noqa: ANN001
+    rc = _main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "clauses_played=3" in out  # three-clause sample driven end to end

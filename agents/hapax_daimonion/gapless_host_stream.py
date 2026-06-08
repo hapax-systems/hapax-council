@@ -216,3 +216,53 @@ def build_gapless_host_stream(
         channels=channels,
         executor=executor,
     )
+
+
+def _main() -> int:
+    """Diagnostic smoke check for the gapless hosting pipeline.
+
+    ``python -m agents.hapax_daimonion.gapless_host_stream`` drives the real
+    factory + look-ahead + clause segmentation over in-memory stubs (no audio
+    device), printing the clause/write counts. This is also the in-scope static
+    entry exercising ``build_gapless_host_stream`` + ``GaplessHostStream.speak``
+    until the director cutover (the alpha-gated go-live) wires the live hosting
+    consumer.
+    """
+
+    class _SilentSynth:
+        def synthesize(
+            self,
+            text: str,
+            use_case: str = "conversation",
+            *,
+            role: str | None = None,
+            arc_position: float | None = None,
+        ) -> bytes:
+            return b"\x00\x00" * 240  # 10 ms of silence @ 24 kHz mono
+
+    class _CountingSink:
+        def __init__(self) -> None:
+            self.writes = 0
+
+        def write(
+            self,
+            pcm: bytes,
+            *,
+            target: str | None = None,
+            media_role: str | None = None,
+            pace: bool = True,
+        ) -> None:
+            self.writes += 1
+
+    sink = _CountingSink()
+    stream = build_gapless_host_stream(_SilentSynth(), sink, pace_fn=lambda _s: None)
+    played = stream.speak(
+        "Gapless self check. Clause two. Clause three.", role="lecture", arc_position=0.5
+    )
+    stream.close()
+    print(f"gapless_host_stream self-check: clauses_played={played} stream_writes={sink.writes}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
