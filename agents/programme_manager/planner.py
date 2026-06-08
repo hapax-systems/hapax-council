@@ -37,7 +37,7 @@ import logging
 import os
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +51,11 @@ from shared.resident_command_r import (
     tabby_chat_url,
 )
 from shared.segment_prep_contract import is_content_evidence_ref, programme_source_readiness
+from shared.source_packet import (
+    ResolvedSourceSet,
+    ThesisObject,
+    affirmative_grounds,
+)
 
 log = logging.getLogger(__name__)
 
@@ -182,11 +187,15 @@ class ProgrammePlanner:
         density_field: dict | None = None,
         stream_biography: str | None = None,
         prior_substance_feedback: str | None = None,
+        resolved_sources: Sequence[ResolvedSourceSet] | None = None,
     ) -> ProgrammePlan | None:
         """Compose a context block, call the LLM, validate + return.
 
         Every input is optional — missing inputs render as "(unavailable)"
-        in the prompt so the LLM knows what's known. Returns ``None`` on
+        in the prompt so the LLM knows what's known. ``resolved_sources`` are
+        the content-hash-bound source sets recruited BEFORE planning, so the
+        planner authors topics FROM resolved material (densest first) and cites
+        real ``src:N`` handles instead of inventing them. Returns ``None`` on
         repeated failure; the caller should treat this as "no active
         programme" (Phase 4 fall-through behaviour).
         """
@@ -202,6 +211,7 @@ class ProgrammePlanner:
             target_programmes=target_programmes,
             density_field=density_field,
             stream_biography=stream_biography,
+            resolved_sources=resolved_sources,
         )
 
         # A3: carry a prior round's downstream substance verdict into THIS
@@ -259,6 +269,7 @@ class ProgrammePlanner:
         target_programmes: int | None,
         density_field: dict | None = None,
         stream_biography: str | None = None,
+        resolved_sources: Sequence[ResolvedSourceSet] | None = None,
     ) -> str:
         """Render the prompt template + per-call context."""
         template = self._read_prompt_template()
@@ -275,6 +286,7 @@ class ProgrammePlanner:
             fore_understanding=fore_understanding,
             density_field=density_field,
             stream_biography=stream_biography,
+            resolved_sources=resolved_sources,
         )
         blocks = [block for block in (target_directive, template) if block]
         prompt_body = "\n\n".join(blocks)
@@ -371,6 +383,7 @@ class ProgrammePlanner:
         fore_understanding: list[dict] | None = None,
         density_field: dict | None = None,
         stream_biography: str | None = None,
+        resolved_sources: Sequence[ResolvedSourceSet] | None = None,
     ) -> str:
         """Render the per-call inputs as a Markdown context block.
 
@@ -417,6 +430,7 @@ class ProgrammePlanner:
             )
         else:
             _section("Fore-understanding (prior source-consequences)", None)
+        parts.append(_render_resolved_sources(resolved_sources))
         return "\n".join(parts)
 
     # --- response parsing ------------------------------------------
@@ -463,6 +477,122 @@ class ProgrammePlanner:
         if source_readiness_error:
             return source_readiness_error
         return plan
+
+
+def _render_resolved_sources(resolved_sources: Sequence[ResolvedSourceSet] | None) -> str:
+    """Render recruited source sets densest-first as authoring material.
+
+    Each packet is addressed by its ``src:N`` handle — the only citable token,
+    the antidote to blind authorship. Densest sets come first so the topic slate
+    emerges where resolved material is thickest rather than being invented and
+    back-filled.
+    """
+    if not resolved_sources:
+        return "- **Resolved source material**: (unavailable)"
+    ranked = sorted(resolved_sources, key=lambda source_set: len(source_set.packets), reverse=True)
+    lines = [
+        "- **Resolved source material** — author topics ONLY from the handles below, "
+        "preferring the topics where resolved material is DENSEST. Cite these `src:N` "
+        "handles verbatim; do NOT invent or reference any source not listed here:",
+    ]
+    for source_set in ranked:
+        lines.append(
+            f"  - topic `{source_set.topic}` ({len(source_set.packets)} resolved sources):"
+        )
+        for handle, packet in zip(source_set.handles, source_set.packets, strict=True):
+            lines.append(f"    - `{handle}`: {packet.snippet[:200]}")
+    return "\n".join(lines)
+
+
+def _build_thesis_prompt(source_set: ResolvedSourceSet) -> str:
+    """Render the resolved handles into a Toulmin-thesis authoring prompt.
+
+    The ``src:N`` handles are spelled out so the model authors FROM them instead
+    of inventing source refs — the upstream inversion the keystone research
+    diagnosed. The prompt forbids refusal/empty grounds (affirmative binding);
+    relevance was already decided upstream by recruitment.
+    """
+    handles = "\n".join(
+        f"- `{handle}`: {packet.snippet[:300]}"
+        for handle, packet in zip(source_set.handles, source_set.packets, strict=True)
+    )
+    return (
+        "You are Hapax authoring a grounded thesis from RESOLVED sources.\n\n"
+        f"Topic: {source_set.topic}\n\n"
+        "You may cite ONLY these resolved source handles — do not invent or "
+        "reference any source not listed below:\n"
+        f"{handles}\n\n"
+        "Emit ONLY a JSON object with this Toulmin shape:\n"
+        '{"claim": "...", "grounds": ["src:N", ...], "warrant": "...", '
+        '"qualifier": "...", "falsifier": "...", "source_consequence": "..."}\n\n'
+        "Rules:\n"
+        "- `grounds` must be a non-empty subset of the `src:N` handles above, cited verbatim.\n"
+        "- These ARE the relevant sources; bind to them affirmatively. Do NOT "
+        "refuse, hedge, or return empty grounds — author the strongest claim "
+        "these sources collectively support.\n"
+        "- No prose outside the JSON object."
+    )
+
+
+def _parse_thesis_fields(raw: str) -> dict[str, Any]:
+    """Extract thesis fields from a raw LLM response; tolerant of fences/garbage."""
+    text = (raw or "").strip()
+    if not text:
+        return {}
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines)
+    try:
+        obj = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(obj, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key in ("claim", "warrant", "qualifier", "falsifier", "source_consequence"):
+        value = obj.get(key)
+        if isinstance(value, str) and value.strip():
+            out[key] = value.strip()
+    grounds = obj.get("grounds")
+    if isinstance(grounds, list):
+        out["grounds"] = tuple(g.strip() for g in grounds if isinstance(g, str) and g.strip())
+    return out
+
+
+def author_thesis(source_set: ResolvedSourceSet, *, llm_fn: LLMCallable) -> ThesisObject:
+    """Author a Toulmin thesis FROM a resolved source set — affirmative, never None.
+
+    Command-R is handed the ``src:N`` handles + snippets and asked to emit a claim
+    grounded in those handles. Grounds are affirmatively bound to the resolved set
+    (invented handles dropped; empty grounds re-bound to every handle). A failed or
+    unparseable call still yields a grounded thesis — refusal is reserved for a
+    separately gated relevance check and the anti-hallucination refuse-on-empty,
+    NOT this authoring step.
+    """
+    prompt = _build_thesis_prompt(source_set)
+    raw = ""
+    try:
+        raw = llm_fn(prompt)
+    except Exception:
+        log.warning("author_thesis: LLM call failed; affirmative fallback", exc_info=True)
+    parsed = _parse_thesis_fields(raw)
+    grounds = affirmative_grounds(parsed.get("grounds") or (), source_set)
+    first_consequence = source_set.packets[0].source_consequence
+    return ThesisObject(
+        topic=source_set.topic,
+        claim=parsed.get("claim") or f"{source_set.topic}: grounded by the resolved sources",
+        grounds=grounds,
+        warrant=parsed.get("warrant") or "the resolved sources collectively support the claim",
+        qualifier=parsed.get("qualifier", ""),
+        falsifier=parsed.get("falsifier") or "a resolved source showing the opposite consequence",
+        source_consequence=parsed.get("source_consequence")
+        or first_consequence
+        or "without these resolved sources the claim is ungrounded",
+    )
 
 
 def _normalize_role_contract_shape(plan_obj: dict[str, Any]) -> None:
@@ -719,4 +849,10 @@ def _default_llm_fn(prompt: str) -> str:
     return result
 
 
-__all__ = ["DEFAULT_MAX_RETRIES", "DEFAULT_MODEL", "LLMCallable", "ProgrammePlanner"]
+__all__ = [
+    "DEFAULT_MAX_RETRIES",
+    "DEFAULT_MODEL",
+    "LLMCallable",
+    "ProgrammePlanner",
+    "author_thesis",
+]

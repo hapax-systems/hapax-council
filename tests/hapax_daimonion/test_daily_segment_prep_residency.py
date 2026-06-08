@@ -12,6 +12,12 @@ from agents.hapax_daimonion import daily_segment_prep as prep
 from agents.hapax_daimonion import programme_loop
 from shared.programme_store import ProgrammePlanStore
 from shared.segment_candidate_selection import SEGMENT_CANDIDATE_SELECTION_VERSION
+from shared.source_packet import (
+    ResolvedSourceSet,
+    SourcePacket,
+    build_resolved_source_set,
+    validate_cited_handles,
+)
 
 SOURCE_REF = "vault:test-segment-source"
 
@@ -2194,3 +2200,225 @@ def test_prep_segment_refuses_when_no_sources_resolve(
     assert ledger_row["terminal_status"] == "no_candidate"
     assert ledger_row["terminal_reason"] == "no_resolved_sources"
     assert ledger_row["loadable"] is False
+
+
+# ── recruit-before-plan + thesis-object: dominant 04:00 path ─────────────────
+# segment-recruit-before-plan-thesis-20260607 — inform authorship from RESOLVED
+# sources, built on main's src:N handle primitives.
+
+
+def _prep_clock(*values: float):
+    seq = iter(values)
+    last = [0.0]
+
+    def _now() -> float:
+        try:
+            last[0] = next(seq)
+        except StopIteration:
+            pass
+        return last[0]
+
+    return _now
+
+
+def _mk_source_set(topic: str, n: int) -> ResolvedSourceSet:
+    packets = tuple(
+        SourcePacket(
+            source_ref=f"vault:{topic}-{i}.md",
+            content_hash=f"hash-{topic}-{i}",
+            snippet=f"{topic} :: src {i}",
+            freshness="fresh",
+            source_consequence=f"without {topic}-{i}, this perspective is absent",
+        )
+        for i in range(n)
+    )
+    source_set = build_resolved_source_set(topic, packets)
+    assert source_set is not None
+    return source_set
+
+
+def _inert_channels() -> dict[str, Any]:
+    return {
+        "perception": None,
+        "vault_state": None,
+        "profile": None,
+        "density_field": None,
+        "stream_biography": None,
+    }
+
+
+def _inert_plan_time_context(*_args: Any, **_kwargs: Any) -> tuple[dict[str, Any], list[Any]]:
+    return ({"resolved_sources": [], **_inert_channels()}, [])
+
+
+@pytest.fixture
+def real_plan_time_context() -> bool:
+    """Opt out of the hermetic patch to exercise the real plan-time executor."""
+    return True
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_plan_time_context(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep run_prep tests off the network. Plan-time recruitment hits Qdrant,
+    the vault, /dev/shm, and the resident LLM; tests that target plan-time
+    context request ``real_plan_time_context`` to opt out of this patch."""
+    if "real_plan_time_context" in request.fixturenames:
+        return
+    monkeypatch.setattr(prep, "_plan_time_context", _inert_plan_time_context, raising=False)
+
+
+class TestSeedTopics:
+    def test_prefers_fore_understanding_then_supplements_from_vault(
+        self, real_plan_time_context: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(prep, "_recent_vault_topics", lambda *_a, **_k: ["live vault topic"])
+        seeds = prep._candidate_seed_topics([{"topic": "evidence discipline"}], limit=5)
+        assert seeds[0] == "evidence discipline"
+        assert "live vault topic" in seeds
+
+    def test_routes_around_dead_fore_understanding_via_live_vault(
+        self, real_plan_time_context: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(prep, "_recent_vault_topics", lambda *_a, **_k: ["live vault topic"])
+        seeds = prep._candidate_seed_topics([], limit=5)
+        assert seeds == ["live vault topic"]
+
+    def test_dedupes_and_caps_the_slate(
+        self, real_plan_time_context: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(prep, "_recent_vault_topics", lambda *_a, **_k: [])
+        fore = [{"topic": "a"}, {"topic": "a"}, {"topic": "b"}, {"topic": "c"}]
+        assert prep._candidate_seed_topics(fore, limit=2) == ["a", "b"]
+
+
+class TestPlanTimeContext:
+    def _patch_recruit(
+        self, monkeypatch: pytest.MonkeyPatch, sets: list[ResolvedSourceSet]
+    ) -> None:
+        monkeypatch.setattr(
+            prep, "_candidate_seed_topics", lambda *_a, **_k: [s.topic for s in sets]
+        )
+        monkeypatch.setattr(
+            "agents.hapax_daimonion.angle_resolver.recruit_source_sets",
+            lambda *_a, **_k: list(sets),
+        )
+        monkeypatch.setattr(prep, "_gather_planner_channels", _inert_channels)
+
+    def test_recruits_resolved_sources_for_the_planner(
+        self, real_plan_time_context: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sets = [_mk_source_set("dense topic", 2)]
+        self._patch_recruit(monkeypatch, sets)
+        kwargs, _theses = prep._plan_time_context(
+            [{"topic": "x"}], llm_fn=lambda _p: "", recruit_budget_s=100.0, thesis_budget_s=100.0
+        )
+        assert kwargs["resolved_sources"] == sets
+
+    def test_authors_theses_bound_to_resolved_handles(
+        self, real_plan_time_context: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sets = [_mk_source_set("dense topic", 2)]
+        self._patch_recruit(monkeypatch, sets)
+        thesis_json = (
+            '{"claim":"evidence beats vibes","grounds":["src:0"],'
+            '"warrant":"w","falsifier":"f","source_consequence":"s"}'
+        )
+        _kwargs, theses = prep._plan_time_context(
+            [], llm_fn=lambda _p: thesis_json, recruit_budget_s=100.0, thesis_budget_s=100.0
+        )
+        assert len(theses) == 1
+        assert validate_cited_handles(sets[0], theses[0].grounds)["ok"] is True
+
+    def test_threads_live_context_channels(
+        self, real_plan_time_context: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._patch_recruit(monkeypatch, [])
+        monkeypatch.setattr(
+            prep,
+            "_gather_planner_channels",
+            lambda: {**_inert_channels(), "perception": {"zone": "voice"}},
+        )
+        kwargs, theses = prep._plan_time_context(
+            [], llm_fn=lambda _p: "", recruit_budget_s=10.0, thesis_budget_s=10.0
+        )
+        assert kwargs["perception"] == {"zone": "voice"}
+        assert theses == []
+
+    def test_thesis_authoring_halts_on_budget(
+        self, real_plan_time_context: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sets = [_mk_source_set(f"topic-{i}", 1) for i in range(3)]
+        self._patch_recruit(monkeypatch, sets)
+        calls: list[int] = []
+
+        def _llm(_p: str) -> str:
+            calls.append(1)
+            return ""
+
+        _kwargs, theses = prep._plan_time_context(
+            [],
+            llm_fn=_llm,
+            recruit_budget_s=100.0,
+            thesis_budget_s=50.0,
+            now=_prep_clock(0.0, 0.0, 999.0),
+        )
+        assert len(theses) == 1
+        assert len(calls) == 1
+
+
+def test_run_prep_informs_planner_with_resolved_sources(
+    real_plan_time_context: bool, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The dominant 04:00 path hands the planner recruited resolved sources +
+    live context channels — it does not author blind on fore_understanding."""
+    import agents.programme_manager.planner as planner_module
+
+    captured: dict[str, Any] = {}
+    sentinel_sets = [_mk_source_set("dense topic", 1)]
+
+    class CapturingPlanner:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def plan(
+            self, *, show_id: str, target_programmes: int | None = None, **kw: Any
+        ) -> SimpleNamespace:  # noqa: ARG002
+            captured.update(kw)
+            return SimpleNamespace(programmes=[])
+
+    monkeypatch.setattr(
+        prep,
+        "_plan_time_context",
+        lambda *_a, **_k: (
+            {
+                "resolved_sources": sentinel_sets,
+                **_inert_channels(),
+                "perception": {"zone": "voice"},
+            },
+            [],
+        ),
+    )
+    monkeypatch.setattr(planner_module, "ProgrammePlanner", CapturingPlanner)
+    monkeypatch.setattr(prep, "MAX_SEGMENTS", 1)
+    monkeypatch.setattr(
+        prep,
+        "_new_prep_session",
+        lambda: {
+            "prep_session_id": "segment-prep-wiring",
+            "model_id": prep.RESIDENT_PREP_MODEL,
+            "llm_calls": [],
+        },
+    )
+    monkeypatch.setattr(prep, "_assert_resident_prep_model", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        prep,
+        "assert_segment_prep_allowed",
+        lambda _activity: SimpleNamespace(mode="open", reason="test", source="test"),
+    )
+    prep.run_prep(tmp_path)
+
+    assert captured.get("resolved_sources") == sentinel_sets
+    assert captured.get("perception") == {"zone": "voice"}
+    assert "fore_understanding" in captured

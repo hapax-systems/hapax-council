@@ -186,3 +186,46 @@ def bind_source_hashes(source_set: ResolvedSourceSet) -> dict[str, str]:
         "source_set_hash": source_set.compute_set_hash(),
         **{f"source_packet_{i}_hash": p.content_hash for i, p in enumerate(source_set.packets)},
     }
+
+
+class ThesisObject(BaseModel):
+    """A Toulmin thesis the planner authors FROM a resolved source set.
+
+    The thesis is the point Hapax can ground — a claim whose ``grounds`` are
+    citable ``src:N`` handles into a recruited ``ResolvedSourceSet``, not
+    free-text refs the model invents. The keystone research
+    (CASE-AUDIT-REMEDIATION-20260606) found the planner authored topics blind
+    and invented source refs to satisfy the contract; the thesis-object closes
+    that by carrying handles that :func:`validate_cited_handles` dereferences
+    against the resolved set — a fabricated handle cannot resolve.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    topic: str = Field(min_length=1)
+    claim: str = Field(min_length=1)
+    grounds: tuple[str, ...] = Field(min_length=1)
+    warrant: str = Field(min_length=1)
+    qualifier: str = ""
+    falsifier: str = Field(min_length=1)
+    source_consequence: str = Field(min_length=1)
+
+
+def affirmative_grounds(
+    candidate_grounds: tuple[str, ...] | list[str], source_set: ResolvedSourceSet
+) -> tuple[str, ...]:
+    """Bind candidate handles to the resolved set — affirmatively, never empty.
+
+    Keeps candidate grounds that dereference to a packet (dedup, order-
+    preserving). If the author cited nothing resolvable — the over-bail the
+    eval found on the operator's reflective first-person vault notes — bind to
+    EVERY handle in the set rather than returning empty. Relevance was already
+    decided upstream by recruitment; refusal is reserved for a separately gated
+    relevance check and the anti-hallucination refuse-on-empty.
+    """
+    kept = [
+        ground for ground in candidate_grounds if source_set.packet_for_handle(ground) is not None
+    ]
+    if kept:
+        return tuple(dict.fromkeys(kept))
+    return source_set.handles

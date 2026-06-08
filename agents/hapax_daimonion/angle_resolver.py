@@ -14,6 +14,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from shared.source_packet import ResolvedSourceSet, SourcePacket, build_resolved_source_set
@@ -23,6 +25,16 @@ log = logging.getLogger(__name__)
 QDRANT_COLLECTIONS = ("documents", "operator-episodes", "stream-reactions", "studio-moments")
 VAULT_ROOTS = ("30-areas", "20-projects", "50-resources")
 MIN_SOURCES_FOR_ANGLE = 3
+
+# Plan-time slate recruitment bounds. recruit_source_sets runs BEFORE planning
+# over a candidate slate, so it must fit the prep budget — bound the slate width
+# and per-candidate retrieval so a slate-wide recruit cannot blow PREP_BUDGET_S.
+RECRUIT_MAX_CANDIDATES = 6
+RECRUIT_PER_CANDIDATE_LIMIT = 5
+RECRUIT_BUDGET_S = 600.0
+# Below this many local packets a candidate is "sparse" and we recruit the open
+# world (Tavily, directly — never the dead LiteLLM web-* routes).
+_MIN_LOCAL_PACKETS_BEFORE_WEB = 1
 
 
 def recruit_source_set(
@@ -46,6 +58,122 @@ def recruit_source_set(
         log.warning("recruit_source_set: no sources resolved for topic: %s", topic[:80])
         return None
     return build_resolved_source_set(topic, packets)
+
+
+def rank_source_sets_by_density(
+    sets: Sequence[ResolvedSourceSet],
+) -> list[ResolvedSourceSet]:
+    """Order resolved sets by how dense their resolved material is (most first).
+
+    Density = count of resolved packets. Topics emerge where the corpus is
+    thickest, so the planner sees the best-grounded candidates first.
+    """
+    return sorted(sets, key=lambda source_set: len(source_set.packets), reverse=True)
+
+
+def _tavily_packets(topic: str, *, max_results: int = 3) -> list[SourcePacket]:
+    """Recruit open-world sources via Tavily DIRECTLY (lane ``narrative_grounding``).
+
+    Calls ``shared.tavily_client`` rather than the dead LiteLLM ``web-*`` routes
+    (which silently fall back to non-grounded Claude). Fails soft — a Tavily
+    outage degrades to local-only recruitment, never an exception. (main's
+    ``_web_supplement`` was excised as a no-op because the only web route was the
+    unawaited async web-verify; this is the grounded provider it flagged missing.)
+    """
+    try:
+        from shared.tavily_client import TavilyClient, TavilySearchRequest
+
+        client = TavilyClient()
+        response = client.search(
+            TavilySearchRequest(query=topic, max_results=max_results, lane="narrative_grounding")
+        )
+    except Exception:
+        log.debug("recruit: tavily search failed for topic=%s", topic[:60], exc_info=True)
+        return []
+
+    packets: list[SourcePacket] = []
+    seen_hashes: set[str] = set()
+    for result in response.results:
+        text = (result.content or "").strip()
+        if not text:
+            continue
+        content_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
+        if content_hash in seen_hashes:
+            continue
+        seen_hashes.add(content_hash)
+        url = (result.url or "").strip()
+        packets.append(
+            SourcePacket(
+                source_ref=(f"web:tavily:{url}" if url else f"web:tavily:{topic[:40]}")[:300],
+                content_hash=content_hash,
+                snippet=text[:500],
+                freshness="fresh",
+                rights_status="web",
+                source_consequence="without this web source, only the local corpus is available",
+            )
+        )
+    return packets
+
+
+def recruit_source_sets(
+    seed_topics: Sequence[str],
+    *,
+    max_candidates: int = RECRUIT_MAX_CANDIDATES,
+    per_candidate_limit: int = RECRUIT_PER_CANDIDATE_LIMIT,
+    budget_s: float = RECRUIT_BUDGET_S,
+    use_web: bool = True,
+    now: Callable[[], float] = time.monotonic,
+) -> list[ResolvedSourceSet]:
+    """Recruit a density-ranked slate of ``ResolvedSourceSet``s BEFORE planning.
+
+    The plan-time recruiter: it resolves real source material across a candidate
+    slate so Hapax authors FROM resolved sources rather than inventing handles
+    blind. Reuses ``_gather_sources`` (Qdrant + vault) and ``build_resolved_source_set``
+    (the same primitives ``recruit_source_set`` uses), supplementing the open world
+    via Tavily when a candidate is sparse. Bounded by ``max_candidates`` and
+    ``budget_s`` so a slate-wide recruit cannot blow the prep budget; topics with
+    zero resolved material are dropped (never a naked topic to decorate). Returned
+    densest-first.
+    """
+    topics: list[str] = []
+    seen_topics: set[str] = set()
+    for raw_topic in seed_topics:
+        topic = (raw_topic or "").strip()
+        if not topic or topic in seen_topics:
+            continue
+        seen_topics.add(topic)
+        topics.append(topic)
+        if len(topics) >= max_candidates:
+            break
+
+    start = now()
+    sets: list[ResolvedSourceSet] = []
+    for topic in topics:
+        if now() - start >= budget_s:
+            log.info(
+                "recruit_source_sets: budget %.0fs exhausted after %d candidate(s)",
+                budget_s,
+                len(sets),
+            )
+            break
+        packets = list(_gather_sources(topic, max_per_collection=per_candidate_limit))
+        if use_web and len(packets) < _MIN_LOCAL_PACKETS_BEFORE_WEB:
+            packets.extend(
+                _tavily_packets(topic, max_results=max(1, per_candidate_limit - len(packets)))
+            )
+        source_set = build_resolved_source_set(topic, packets)
+        if source_set is None:
+            log.debug("recruit_source_sets: no resolved material for topic=%s", topic[:60])
+            continue
+        sets.append(source_set)
+
+    log.info(
+        "recruit_source_sets: recruited %d/%d candidate set(s) from %d seed topic(s)",
+        len(sets),
+        len(topics),
+        len(seen_topics),
+    )
+    return rank_source_sets_by_density(sets)
 
 
 @dataclass(frozen=True)
