@@ -153,6 +153,16 @@ def _controller(
 _CLEAN = {"trigger_cause": "none", "commanded_music_duck_gain": 1.0, "fail_open": False}
 
 
+def _ok_actuator(sink: list[float]):  # noqa: ANN202
+    """Actuator that records the value and reports a successful live actuation."""
+
+    def _act(value: float) -> bool:
+        sink.append(value)
+        return True
+
+    return _act
+
+
 def test_dark_by_default_never_actuates() -> None:
     actuations: list[float] = []
     ctrl = _controller(enabled=False, measured=-20.0, duck=_CLEAN, actuator=actuations.append)
@@ -164,10 +174,24 @@ def test_dark_by_default_never_actuates() -> None:
 
 def test_enabled_actuates_toward_target_when_clean() -> None:
     actuations: list[float] = []
-    ctrl = _controller(enabled=True, measured=-20.0, duck=_CLEAN, actuator=actuations.append)
+    ctrl = _controller(enabled=True, measured=-20.0, duck=_CLEAN, actuator=_ok_actuator(actuations))
     ctrl.tick()
     assert actuations == [16.5]
     assert ctrl.makeup_db == 16.5
+
+
+def test_makeup_does_not_advance_when_actuation_fails() -> None:
+    # The actuator reports failure (e.g. the live set-param did not take) →
+    # the believed-live makeup must NOT advance, so the next tick retries.
+    ctrl = MasterLufsController(
+        lufs_reader=lambda: -20.0,
+        ducker_state_reader=lambda: _CLEAN,
+        actuator=lambda _value: False,
+        enabled=True,
+    )
+    status = ctrl.tick()
+    assert ctrl.makeup_db == MASTER_INPUT_MAKEUP_DB
+    assert status["actuated"] is False
 
 
 def test_frozen_while_ducked_does_not_measure_or_actuate() -> None:
@@ -206,7 +230,7 @@ def test_converges_in_bounded_steps_and_caps_at_band() -> None:
     ctrl = MasterLufsController(
         lufs_reader=lambda: -30.0,  # persistently too quiet
         ducker_state_reader=lambda: _CLEAN,
-        actuator=actuations.append,
+        actuator=_ok_actuator(actuations),
         enabled=True,
     )
     for _ in range(40):
@@ -241,6 +265,22 @@ def test_parse_ebur128_integrated_reads_the_summary_value() -> None:
 
 def test_parse_ebur128_returns_none_when_absent() -> None:
     assert parse_ebur128_integrated_lufs("no loudness here") is None
+
+
+def test_lufs_reader_reaps_capture_and_closes_pipe(monkeypatch) -> None:  # noqa: ANN001
+    # The live reader pipes pw-cat → ffmpeg every tick; it MUST close the pipe
+    # and reap the capture child or it leaks an fd + a zombie process per tick.
+    capture = MagicMock()
+    ffmpeg = MagicMock()
+    ffmpeg.stderr = b"  I:         -16.0 LUFS\n"
+    monkeypatch.setattr(mll.subprocess, "Popen", lambda *a, **k: capture)
+    monkeypatch.setattr(mll.subprocess, "run", lambda *a, **k: ffmpeg)
+
+    result = mll.read_broadcast_lufs_i(window_s=0.01)
+
+    assert result == -16.0
+    capture.stdout.close.assert_called_once()
+    capture.wait.assert_called_once()
 
 
 # ── reachability: the supervised loop actually ticks, and stays dark ─────────

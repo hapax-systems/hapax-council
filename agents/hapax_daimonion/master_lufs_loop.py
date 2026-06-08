@@ -141,7 +141,7 @@ class MasterLufsController:
         *,
         lufs_reader: Callable[[], float | None],
         ducker_state_reader: Callable[[], dict[str, Any] | None],
-        actuator: Callable[[float], None] | None = None,
+        actuator: Callable[[float], bool] | None = None,
         publisher: Callable[[dict[str, Any]], None] | None = None,
         enabled: bool = False,
         initial_makeup_db: float = MASTER_INPUT_MAKEUP_DB,
@@ -205,12 +205,14 @@ class MasterLufsController:
             max_step_db=self._max_step,
             makeup_band=self._band,
         )
+        # Advance the believed-live makeup ONLY when actuation reports success,
+        # so a silently-failed set-param can't drift the controller's model away
+        # from the real port — the next tick simply retries the same step.
         actuated = False
-        if self._enabled and proposed != self._makeup:
-            if self._actuator is not None:
-                self._actuator(proposed)
-            self._makeup = proposed
-            actuated = True
+        if self._enabled and proposed != self._makeup and self._actuator is not None:
+            if self._actuator(proposed):
+                self._makeup = proposed
+                actuated = True
 
         return self._publish(
             {
@@ -315,11 +317,22 @@ def read_broadcast_lufs_i(
         log.debug("master LUFS-I read failed", exc_info=True)
         return None
     finally:
+        # Close our copy of the pipe and reap the capture child, or each tick
+        # leaks an fd + a zombie pw-cat.
         if capture is not None:
+            if capture.stdout is not None:
+                try:
+                    capture.stdout.close()
+                except OSError:
+                    pass
             try:
                 capture.terminate()
-            except Exception:  # noqa: BLE001
-                pass
+                capture.wait(timeout=2.0)
+            except Exception:  # noqa: BLE001 — never let teardown raise
+                try:
+                    capture.kill()
+                except Exception:  # noqa: BLE001
+                    pass
 
 
 def actuate_master_makeup(
@@ -327,15 +340,17 @@ def actuate_master_makeup(
     *,
     node: str = MASTER_MAKEUP_NODE,
     control: str = MASTER_MAKEUP_CONTROL,
-) -> None:
+) -> bool:
     """Nudge the EXISTING master makeup control port to ``makeup_db``.
 
-    Adds no conf node — the static +16 dB stays as the fallback. Only invoked
-    when the controller is enabled. Best-effort; the precise live set-param
-    syntax for the LADSPA control port is confirmed at the alpha-gated go-live.
+    Returns ``True`` only when the set-param reports success, so the controller
+    advances its believed-live makeup solely on confirmed actuation. Adds no
+    conf node — the static +16 dB stays as the fallback. Only invoked when the
+    controller is enabled. Best-effort; the precise live set-param syntax for
+    the LADSPA control port is confirmed at the alpha-gated go-live.
     """
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["pw-cli", "set-param", node, "Props", f'{{ params = [ "{control}" {makeup_db} ] }}'],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -344,6 +359,8 @@ def actuate_master_makeup(
         )
     except Exception:  # noqa: BLE001 — actuation failure must not crash the loop
         log.warning("master makeup actuation failed (node=%s)", node, exc_info=True)
+        return False
+    return result.returncode == 0
 
 
 def publish_status(status: dict[str, Any], path: Path = STATUS_PATH) -> None:
