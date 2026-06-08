@@ -9,6 +9,7 @@ recruited packet; a fabricated handle cannot resolve.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from agents.hapax_daimonion.angle_resolver import (
     rank_source_sets_by_density,
     recruit_source_sets,
 )
+from agents.programme_manager.planner import ProgrammePlanner, author_thesis
 from shared.source_packet import (
     ResolvedSourceSet,
     SourcePacket,
@@ -226,6 +228,101 @@ class TestRankSourceSetsByDensity:
         a = _set(0, topic="one")
         b = _set(1, 2, topic="two")
         assert [s.topic for s in rank_source_sets_by_density([a, b])] == ["two", "one"]
+
+
+# ── Layer 3: author_thesis + plan(resolved_sources=...) ──────────────────────
+
+
+def _thesis_response(*, claim: str, grounds: list[str]) -> str:
+    return json.dumps(
+        {
+            "claim": claim,
+            "grounds": grounds,
+            "warrant": "the resolved sources support the claim",
+            "qualifier": "where the operator's documented position holds",
+            "falsifier": "a source showing the opposite consequence",
+            "source_consequence": "without these sources the claim is ungrounded",
+        }
+    )
+
+
+class TestAuthorThesis:
+    def test_authors_thesis_bound_to_resolved_handles(self) -> None:
+        source_set = _set(0, 1, topic="evidence discipline")
+        thesis = author_thesis(
+            source_set,
+            llm_fn=lambda _p: _thesis_response(
+                claim="evidence beats vibes", grounds=["src:0", "src:1"]
+            ),
+        )
+        assert isinstance(thesis, ThesisObject)
+        assert thesis.topic == "evidence discipline"
+        assert validate_cited_handles(source_set, thesis.grounds)["ok"] is True
+
+    def test_prompt_carries_the_handles(self) -> None:
+        source_set = _set(0, topic="reflective practice")
+        captured: dict[str, str] = {}
+
+        def _capture(prompt: str) -> str:
+            captured["prompt"] = prompt
+            return _thesis_response(claim="c", grounds=["src:0"])
+
+        author_thesis(source_set, llm_fn=_capture)
+        assert "src:0" in captured["prompt"]
+
+    def test_invented_grounds_dropped_to_resolved_handles(self) -> None:
+        source_set = _set(0, topic="t")
+        thesis = author_thesis(
+            source_set,
+            llm_fn=lambda _p: _thesis_response(claim="c", grounds=["src:0", "vault:made-up.md"]),
+        )
+        assert validate_cited_handles(source_set, thesis.grounds)["ok"] is True
+        assert "vault:made-up.md" not in thesis.grounds
+
+    def test_model_bail_binds_to_full_set_not_empty(self) -> None:
+        source_set = _set(0, 1, topic="t")
+        thesis = author_thesis(
+            source_set, llm_fn=lambda _p: _thesis_response(claim="c", grounds=[])
+        )
+        assert set(thesis.grounds) == set(source_set.handles)
+
+    def test_unparseable_response_still_yields_grounded_thesis(self) -> None:
+        source_set = _set(0, topic="resilient topic")
+        thesis = author_thesis(source_set, llm_fn=lambda _p: "not json at all")
+        assert isinstance(thesis, ThesisObject)
+        assert thesis.grounds == ("src:0",)
+        assert thesis.topic == "resilient topic"
+
+
+def _capturing_planner() -> tuple[ProgrammePlanner, dict[str, str]]:
+    captured: dict[str, str] = {}
+
+    def _llm(prompt: str) -> str:
+        captured["prompt"] = prompt
+        return ""  # empty → plan() returns None; assert on the captured prompt
+
+    return ProgrammePlanner(llm_fn=_llm, max_retries=0), captured
+
+
+class TestPlanRendersResolvedSources:
+    def test_handles_reach_the_prompt(self) -> None:
+        planner, captured = _capturing_planner()
+        planner.plan(show_id="show-x", resolved_sources=[_set(0, topic="reflective practice")])
+        assert "src:0" in captured["prompt"]
+        assert "reflective practice" in captured["prompt"]
+
+    def test_densest_material_presented_first(self) -> None:
+        planner, captured = _capturing_planner()
+        thin = _set(0, topic="thin topic")
+        dense = _set(1, 2, 3, topic="dense topic")
+        planner.plan(show_id="show-x", resolved_sources=[thin, dense])
+        prompt = captured["prompt"]
+        assert prompt.index("dense topic") < prompt.index("thin topic")
+
+    def test_no_resolved_sources_is_backward_compatible(self) -> None:
+        planner, captured = _capturing_planner()
+        assert planner.plan(show_id="show-x", resolved_sources=None) is None
+        assert "prompt" in captured
 
 
 class TestTavilyPackets:
