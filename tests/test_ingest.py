@@ -263,8 +263,13 @@ class TestPlainTextSourceChunking:
 
         assert [chunk.text for chunk in chunks] == ["def a():\n    return 1", "x" * 20]
 
-    def test_default_chunk_budget_moves_to_1024_tokens(self):
-        assert ingest.Config().chunk_max_tokens == 1024
+    def test_default_chunk_budget_respects_embedding_window(self):
+        # The default chunk budget must stay within the embedding model's context
+        # window (no silent truncation) — superseded the old hardcoded 1024, which
+        # exceeded nomic-embed-cpu's 512-token window. See safe_chunk_max_tokens.
+        cfg = ingest.Config()
+        assert cfg.chunk_max_tokens == ingest.safe_chunk_max_tokens(ingest.EMBEDDING_MODEL)
+        assert cfg.chunk_max_tokens <= ingest.embed_context_window(ingest.EMBEDDING_MODEL)
 
 
 # ── point_id ─────────────────────────────────────────────────────────────────
