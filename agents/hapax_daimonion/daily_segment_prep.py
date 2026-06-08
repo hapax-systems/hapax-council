@@ -536,9 +536,18 @@ def _build_full_segment_prompt(
         "Compose the COMPLETE narration for this segment — one SUBSTANTIAL block of "
         "broadcast-ready prose per beat. Also emit a model-authored "
         "segment_prep_contract object for the final script.\n\n"
+        "== SOURCE CITATION — CITE ONLY RECRUITED HANDLES ==\n"
+        "The RECRUITED SOURCES list in the research section below is the ONLY set of\n"
+        "sources you may cite. Cite a source by its handle (src:N). Do NOT invent\n"
+        "sources, vault paths, papers, or refs — a citation that is not a recruited\n"
+        "handle is REFUSED, not accepted. If the recruited sources cannot support a\n"
+        "claim, drop the claim; never fabricate a source to fill.\n\n"
         "== REQUIRED CONTRACT FIELDS (validators reject if missing) ==\n"
         "The segment_prep_contract MUST include ALL of these:\n"
-        "- source_packet_refs: at least one source with evidence_refs pointing to vault/rag\n"
+        "- cited_handles: the src:N handles you actually cited (members of the\n"
+        "  RECRUITED SOURCES list); every claim's grounds must use these handles\n"
+        "- source_packet_refs: one packet per cited handle, using the src:N handle as\n"
+        "  both source_ref and evidence_refs\n"
         "- role_live_bit_mechanic: how this segment works as a live bit\n"
         "- event_object: the specific thing being ranked/discussed/reacted-to\n"
         "- audience_job: what the audience does during this segment\n"
@@ -566,7 +575,8 @@ def _build_full_segment_prompt(
         '    "Second beat — continues with depth and names sources with context..."\n'
         "  ],\n"
         '  "segment_prep_contract": {\n'
-        '    "source_packet_refs": [{"id": "packet:topic-sources", "source_ref": "vault:research-notes", "evidence_refs": ["vault:research-notes"]}],\n'
+        '    "cited_handles": ["src:0", "src:1"],\n'
+        '    "source_packet_refs": [{"id": "packet:src-0", "source_ref": "src:0", "evidence_refs": ["src:0"]}, {"id": "packet:src-1", "source_ref": "src:1", "evidence_refs": ["src:1"]}],\n'
         '    "role_live_bit_mechanic": "ranked tier placement with source-backed criteria",\n'
         '    "event_object": "the specific items being ranked",\n'
         '    "audience_job": "predict placements, challenge via chat",\n'
@@ -579,12 +589,12 @@ def _build_full_segment_prompt(
             if role_value == "top_10"
             else ""
         )
-        + '    "claim_map": [{"claim_id": "claim:segment:1", "beat_id": "beat-1", "claim_text": "the source-backed claim spoken in beat one", "grounds": ["vault:research-notes"], "source_consequence": "vault:research-notes changes the ranking confidence"}],\n'
-        '    "source_consequence_map": [{"source_ref": "vault:research-notes", "claim_ids": ["claim:segment:1"], "changed_field": "ranking confidence", "failure_if_missing": "quarantine before release"}],\n'
+        + '    "claim_map": [{"claim_id": "claim:segment:1", "beat_id": "beat-1", "claim_text": "the source-backed claim spoken in beat one", "grounds": ["src:0"], "source_consequence": "src:0 changes the ranking confidence"}],\n'
+        '    "source_consequence_map": [{"source_ref": "src:0", "claim_ids": ["claim:segment:1"], "changed_field": "ranking confidence", "failure_if_missing": "quarantine before release"}],\n'
         '    "actionability_map": [{"action_id": "action:segment:1", "beat_id": "beat-1", "claim_ids": ["claim:segment:1"], "kind": "tier_chart", "object": "the ranked item", "operation": "place the item under the stated criterion", "feedback": "the placement changes the public chart", "fallback": "narrow to spoken source argument if readback is unavailable"}],\n'
-        '    "layout_need_map": [{"layout_need_id": "need:segment:1", "beat_id": "beat-1", "claim_ids": ["claim:segment:1"], "action_ids": ["action:segment:1"], "source_packet_refs": ["vault:research-notes"], "need_kind": "tier_visual", "why_visible": "viewer must inspect the placement consequence"}],\n'
+        '    "layout_need_map": [{"layout_need_id": "need:segment:1", "beat_id": "beat-1", "claim_ids": ["claim:segment:1"], "action_ids": ["action:segment:1"], "source_packet_refs": ["src:0"], "need_kind": "tier_visual", "why_visible": "viewer must inspect the placement consequence"}],\n'
         '    "readback_obligations": [{"readback_id": "readback:segment:1", "layout_need_id": "need:segment:1", "must_show": "the ranked item and cited source", "must_not_claim": "layout success before runtime readback", "success_signal": "rendered readback names the same item and source", "failure_signal": "missing or mismatched readback", "timeout_or_ttl": "30s"}],\n'
-        '    "loop_cards": [{"loop_card_version": 1, "loop_id": "loop:segment:1", "admissibility": "feedforward_plan", "plant_boundary": "future runtime delivery for this segment", "controlled_variable": "layout_need", "reference_signal": "show the source-backed placement", "sensor_ref": "readback:segment:1", "actuator_ref": "runtime_layout_controller", "sample_period_s": 1.0, "latency_budget_s": 30.0, "readback_ref": "readback:segment:1", "fallback_mode": "narrow to spoken argument", "authority_boundary": "prep prior only; runtime must close readback", "privacy_ceiling": "public_archive_candidate", "evidence_refs": ["vault:research-notes"], "disturbance_refs": ["stale_readback"], "failure_mode": "runtime readback missing or mismatched", "limits": ["prepared artifact declares the reference but cannot command layout"]}],\n'
+        '    "loop_cards": [{"loop_card_version": 1, "loop_id": "loop:segment:1", "admissibility": "feedforward_plan", "plant_boundary": "future runtime delivery for this segment", "controlled_variable": "layout_need", "reference_signal": "show the source-backed placement", "sensor_ref": "readback:segment:1", "actuator_ref": "runtime_layout_controller", "sample_period_s": 1.0, "latency_budget_s": 30.0, "readback_ref": "readback:segment:1", "fallback_mode": "narrow to spoken argument", "authority_boundary": "prep prior only; runtime must close readback", "privacy_ceiling": "public_archive_candidate", "evidence_refs": ["src:0"], "disturbance_refs": ["stale_readback"], "failure_mode": "runtime readback missing or mismatched", "limits": ["prepared artifact declares the reference but cannot command layout"]}],\n'
         '    "role_excellence_plan": {"live_event_plan": {"bit_engine": "...", "audience_job": "...", "payoff": "..."}}\n'
         "  }\n"
         "}\n\n"

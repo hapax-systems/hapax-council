@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from shared.loop_card import LoopAdmissibility, validate_loop_cards
-from shared.source_packet import handle_for_index, validate_cited_handles
+from shared.source_packet import handle_for_index, parse_handle, validate_cited_handles
 
 if TYPE_CHECKING:
     from shared.source_packet import ResolvedSourceSet
@@ -306,12 +306,19 @@ def validate_return_to_prep(dossier: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def is_content_evidence_ref(value: Any) -> bool:
-    """Return whether a ref looks like content/source evidence, not parser provenance."""
+    """Return whether a ref looks like content/source evidence, not parser provenance.
+
+    A recruited handle (``src:N``) is content evidence by construction — it indexes
+    into the recruited set. This is a (demoted, defense-in-depth) shape check; the
+    load-bearing gate is dereferencing the handle against the ResolvedSourceSet.
+    """
     if not isinstance(value, str):
         return False
     ref = value.strip()
     if not ref or is_internal_evidence_ref(ref):
         return False
+    if parse_handle(ref) is not None:
+        return True
     lowered = ref.lower()
     if lowered in {"source", "evidence", "receipt", "proof", "packet"}:
         return False
@@ -338,10 +345,15 @@ def is_content_evidence_ref(value: Any) -> bool:
 
 
 def is_source_evidence_ref(value: Any) -> bool:
-    """Return whether a ref names an external/source packet, not derived prep state."""
+    """Return whether a ref names an external/source packet, not derived prep state.
+
+    A recruited handle (``src:N``) names a source packet by index, so it qualifies.
+    """
     if not is_content_evidence_ref(value):
         return False
     ref = str(value).strip().lower()
+    if parse_handle(ref) is not None:
+        return True
     if ref.startswith(("action:", "object:", "claim:", "prepared_artifact:", "standard:")):
         return False
     return ref.startswith(
@@ -1545,6 +1557,7 @@ def build_segment_prep_contract(
             segment_beats=segment_beats,
         ),
         "source_packet_refs": source_packets,
+        "cited_handles": _string_list(model_contract.get("cited_handles")),
         "claim_map": claim_map,
         "source_consequence_map": source_consequence_map,
         "actionability_map": actionability_map,

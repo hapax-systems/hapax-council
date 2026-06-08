@@ -293,12 +293,15 @@ class TestSourceConsequenceBinding:
 _CONTRACT_SOURCE_REF = "vault:test-segment-source"
 
 
-def _built_contract(*, cited_handles: list[str] | None = ("src:0",)) -> tuple:
+def _built_contract(
+    *, ref: str = _CONTRACT_SOURCE_REF, cited_handles: list[str] | None = ("src:0",)
+) -> tuple:
     """A model-emitted contract that passes no-set validation, plus its script/beats.
 
-    Grounds reference the real recruited ref (``vault:test-segment-source``) — the
-    composer cites from the recruited menu, not free text. ``cited_handles`` is the
-    index-based citation that dereferences against the recruited set.
+    ``ref`` is what claim grounds / source_packet_refs / consequences cite. The
+    default is the real recruited ref; pass ``ref="src:0"`` to exercise the
+    handle-form citation (cite ONLY by handle). ``cited_handles`` is the index-
+    based citation that dereferences against the recruited set.
     """
     from agents.hapax_daimonion import daily_segment_prep as prep
 
@@ -318,31 +321,25 @@ def _built_contract(*, cited_handles: list[str] | None = ("src:0",)) -> tuple:
         "source_packet_refs": [
             {
                 "id": "packet:test-source",
-                "source_ref": _CONTRACT_SOURCE_REF,
-                "evidence_refs": [_CONTRACT_SOURCE_REF],
+                "source_ref": ref,
+                "evidence_refs": [ref],
             }
         ],
         "claim_map": [
-            {
-                "claim": "the receipt changes launch confidence",
-                "evidence_ref": _CONTRACT_SOURCE_REF,
-            },
-            {
-                "claim": "the narrowed claim must resolve the opening receipt",
-                "evidence_ref": _CONTRACT_SOURCE_REF,
-            },
+            {"claim": "the receipt changes launch confidence", "evidence_ref": ref},
+            {"claim": "the narrowed claim must resolve the opening receipt", "evidence_ref": ref},
         ],
         "source_consequence_map": [
-            {"source_ref": _CONTRACT_SOURCE_REF, "consequence": "launch confidence changes"},
-            {"source_ref": _CONTRACT_SOURCE_REF, "consequence": "the final scope narrows"},
+            {"source_ref": ref, "consequence": "launch confidence changes"},
+            {"source_ref": ref, "consequence": "the final scope narrows"},
         ],
         "actionability_map": [
             {"beat_index": 0, "action": "comparison", "target": "launch receipt"},
             {"beat_index": 1, "action": "comparison", "target": "narrowed claim"},
         ],
         "layout_need_map": [
-            {"beat_index": 0, "need": "source_visible", "evidence_ref": _CONTRACT_SOURCE_REF},
-            {"beat_index": 1, "need": "source_visible", "evidence_ref": _CONTRACT_SOURCE_REF},
+            {"beat_index": 0, "need": "source_visible", "evidence_ref": ref},
+            {"beat_index": 1, "need": "source_visible", "evidence_ref": ref},
         ],
         "readback_obligations": [],
         "loop_cards": [],
@@ -362,7 +359,7 @@ def _built_contract(*, cited_handles: list[str] | None = ("src:0",)) -> tuple:
         script=script,
         actionability=actionability,
         layout_responsibility=layout,
-        source_refs=[_CONTRACT_SOURCE_REF],
+        source_refs=[ref],
         model_contract=model_contract,
     )
     if cited_handles is not None:
@@ -429,3 +426,47 @@ class TestContractDereference:
         )
         assert report["ok"] is False
         assert "cited_handles_unresolved" in _reasons(report)
+
+
+class TestHandleFormCitation:
+    """The composer cites ONLY by handle (src:N); shape checks accept handles and
+    the dereference is the load-bearing gate."""
+
+    def test_shape_checks_accept_handles(self) -> None:
+        from shared.segment_prep_contract import is_content_evidence_ref, is_source_evidence_ref
+
+        assert is_content_evidence_ref("src:0") is True
+        assert is_source_evidence_ref("src:0") is True
+        # Real refs still recognized; bare/short non-handles still rejected.
+        assert is_source_evidence_ref("vault:30-areas/note.md") is True
+        assert is_content_evidence_ref("src:") is False
+
+    def test_build_preserves_cited_handles(self) -> None:
+        contract, _script, _beats = _built_contract(ref="src:0", cited_handles=["src:0"])
+        assert contract["cited_handles"] == ["src:0"]
+
+    def test_handle_form_contract_dereferences(self) -> None:
+        from shared.segment_prep_contract import validate_segment_prep_contract
+
+        # Everything cites src:0 — the recruited handle. The set has one packet at
+        # index 0, so src:0 resolves regardless of its underlying source_ref.
+        contract, script, beats = _built_contract(ref="src:0", cited_handles=["src:0"])
+        rset = _set(("qdrant:documents:recruited", "rh0"))
+        report = validate_segment_prep_contract(
+            contract, prepared_script=script, segment_beats=beats, resolved_source_set=rset
+        )
+        assert report == {"ok": True, "violations": []}
+
+    def test_handle_form_fabricated_ground_refused(self) -> None:
+        from shared.segment_prep_contract import validate_segment_prep_contract
+
+        # The model cited src:5 — beyond the recruited set (one packet) — so the
+        # ground does not dereference and the contract is refused.
+        contract, script, beats = _built_contract(ref="src:5", cited_handles=["src:5"])
+        rset = _set(("qdrant:documents:recruited", "rh0"))
+        report = validate_segment_prep_contract(
+            contract, prepared_script=script, segment_beats=beats, resolved_source_set=rset
+        )
+        assert report["ok"] is False
+        reasons = _reasons(report)
+        assert "claim_ground_not_resolved" in reasons or "cited_handles_unresolved" in reasons
