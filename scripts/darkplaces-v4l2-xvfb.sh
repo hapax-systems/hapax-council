@@ -295,7 +295,7 @@ DISPLAY="$DISPLAY_NUM" SDL_VIDEODRIVER=x11 "$DARKPLACES_BIN" \
     +r_glsl_postprocess_uservec2 "0 0 0 0" \
     +r_glsl_postprocess_uservec3 "0 0 0 0" \
     +r_glsl_postprocess_uservec4 "0 0 0 0" \
-    +set screwm_qc_screen_postprocess 0 &
+    +set screwm_qc_screen_postprocess 1 &
 darkplaces_pid="$!"
 
 sleep 3
