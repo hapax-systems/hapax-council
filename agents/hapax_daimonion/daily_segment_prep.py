@@ -26,7 +26,7 @@ import os
 import re
 import re as _re
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -100,7 +100,12 @@ from shared.segment_quality_actionability import (
     validate_layout_responsibility,
     validate_segment_actionability,
 )
-from shared.source_packet import ResolvedSourceSet, source_provenance_sha256
+from shared.source_packet import (
+    ResolvedSourceSet,
+    ThesisObject,
+    source_provenance_sha256,
+    validate_cited_handles,
+)
 
 log = logging.getLogger(__name__)
 
@@ -124,6 +129,13 @@ PREP_BUDGET_S = float(os.environ.get("HAPAX_SEGMENT_PREP_BUDGET_S", "6600"))  # 
 # segment for iterative refinement.  Each segment gets an initial
 # composition pass PLUS a critic/rewrite pass.
 MAX_SEGMENTS = int(os.environ.get("HAPAX_SEGMENT_PREP_MAX", "4"))
+
+# Plan-time informed-authorship budgets. Recruitment + thesis authoring run
+# BEFORE planning, so they are bounded and measured — a slate-wide recruit or a
+# thesis-per-candidate sweep must not blow PREP_BUDGET_S.
+RECRUIT_BUDGET_S = float(os.environ.get("HAPAX_SEGMENT_RECRUIT_BUDGET_S", "600"))  # 10 min
+THESIS_BUDGET_S = float(os.environ.get("HAPAX_SEGMENT_THESIS_BUDGET_S", "600"))  # 10 min
+RECRUIT_MAX_CANDIDATES = int(os.environ.get("HAPAX_SEGMENT_RECRUIT_MAX_CANDIDATES", "6"))
 # Cap on how many eligible candidates the post-generation selector promotes into the
 # release manifest. The bound is enforced at SELECTION; the runtime pool loader keeps no
 # independent cap (it loads exactly what the manifest names).
@@ -668,6 +680,184 @@ def _retrieve_broad_fore_understanding() -> list[dict[str, Any]]:
     except Exception:
         log.debug("_retrieve_broad_fore_understanding: unavailable", exc_info=True)
         return []
+
+
+def _humanize_note_stem(stem: str) -> str:
+    return re.sub(r"[-_]+", " ", stem).strip()
+
+
+def _recent_vault_topics(*, limit: int) -> list[str]:
+    """Recent operator vault note stems as live candidate topics.
+
+    Source-consequences (fore-understanding) is near-dead, so candidate topics
+    are seeded from the live vault corpus — most-recently-touched operator
+    notes — rather than from an empty channel.
+    """
+    try:
+        from agents.programme_authors.asset_resolver import (
+            VAULT_AREAS,
+            VAULT_PROJECTS,
+            VAULT_RESOURCES,
+        )
+    except Exception:
+        return []
+    notes: list[tuple[float, str]] = []
+    for root in (VAULT_AREAS, VAULT_PROJECTS, VAULT_RESOURCES):
+        try:
+            if not root.exists():
+                continue
+            for path in root.rglob("*.md"):
+                try:
+                    notes.append((path.stat().st_mtime, path.stem))
+                except OSError:
+                    continue
+        except OSError:
+            continue
+    notes.sort(reverse=True)
+    topics: list[str] = []
+    seen: set[str] = set()
+    for _mtime, stem in notes:
+        topic = _humanize_note_stem(stem)
+        key = topic.lower()
+        if topic and key not in seen:
+            seen.add(key)
+            topics.append(topic)
+        if len(topics) >= limit:
+            break
+    return topics
+
+
+def _candidate_seed_topics(
+    fore_understanding: list[dict[str, Any]] | None, *, limit: int
+) -> list[str]:
+    """Derive candidate seed topics for plan-time recruitment.
+
+    Prefers prior source-consequence topics (fore-understanding) and supplements
+    from the live vault when that channel is thin — routing around the near-dead
+    source-consequences channel rather than wiring its emptiness.
+    """
+    seeds: list[str] = []
+    seen: set[str] = set()
+    for entry in fore_understanding or []:
+        if not isinstance(entry, dict):
+            continue
+        topic = str(entry.get("topic") or "").strip()
+        key = topic.lower()
+        if topic and key not in seen:
+            seen.add(key)
+            seeds.append(topic)
+        if len(seeds) >= limit:
+            return seeds
+    for topic in _recent_vault_topics(limit=limit):
+        key = topic.lower()
+        if key not in seen:
+            seen.add(key)
+            seeds.append(topic)
+        if len(seeds) >= limit:
+            break
+    return seeds
+
+
+def _gather_planner_channels() -> dict[str, Any]:
+    """Gather the live context channels for the planner; route around empty.
+
+    Reuses programme_loop's fail-safe gathers. An empty channel passes as
+    ``None`` (the planner renders "(unavailable)") with a signal log — we never
+    wire emptiness as if it were signal.
+    """
+    channels: dict[str, Any] = {
+        "perception": None,
+        "vault_state": None,
+        "profile": None,
+        "density_field": None,
+        "stream_biography": None,
+    }
+    try:
+        from agents.hapax_daimonion.programme_loop import (
+            _gather_density_field,
+            _gather_perception,
+            _gather_profile,
+            _gather_vault_state,
+        )
+
+        channels["perception"] = _gather_perception() or None
+        channels["vault_state"] = _gather_vault_state() or None
+        channels["profile"] = _gather_profile() or None
+        channels["density_field"] = _gather_density_field() or None
+    except Exception:
+        log.debug("daily_segment_prep: planner channel gather failed", exc_info=True)
+    try:
+        from shared.stream_biography import read_shm as _read_bio_shm
+
+        bio = _read_bio_shm()
+        summary = bio.to_planner_summary() if bio is not None else ""
+        channels["stream_biography"] = summary or None
+    except Exception:
+        log.debug("daily_segment_prep: stream biography gather failed", exc_info=True)
+    live = sorted(name for name, value in channels.items() if value)
+    log.info(
+        "daily_segment_prep: planner channels with signal: %s",
+        ", ".join(live) if live else "none (all routed around)",
+    )
+    return channels
+
+
+def _plan_time_context(
+    fore_understanding: list[dict[str, Any]] | None,
+    *,
+    llm_fn: Callable[[str], str],
+    recruit_budget_s: float,
+    thesis_budget_s: float,
+    max_candidates: int = RECRUIT_MAX_CANDIDATES,
+    now: Callable[[], float] = time.monotonic,
+) -> tuple[dict[str, Any], list[ThesisObject]]:
+    """Recruit resolved sources, gather channels, author theses — BEFORE planning.
+
+    The recruit-at-plan executor for the dominant 04:00 path. It resolves real
+    source material, authors a Toulmin thesis per recruited set (bound to ``src:N``
+    handles), and assembles the informed-authorship kwargs for ``ProgrammePlanner.plan``
+    so Hapax authors FROM resolved sources rather than inventing handles blind.
+    Bounded by ``recruit_budget_s`` and ``thesis_budget_s`` so plan-time informing
+    cannot blow the prep budget. Returns ``(planner_kwargs, theses)``.
+    """
+    from agents.hapax_daimonion.angle_resolver import recruit_source_sets
+    from agents.programme_manager.planner import author_thesis
+
+    seeds = _candidate_seed_topics(fore_understanding, limit=max_candidates)
+    resolved_sources = recruit_source_sets(
+        seeds,
+        max_candidates=max_candidates,
+        budget_s=recruit_budget_s,
+        now=now,
+    )
+
+    theses: list[ThesisObject] = []
+    thesis_start = now()
+    for source_set in resolved_sources:
+        if now() - thesis_start >= thesis_budget_s:
+            log.info(
+                "daily_segment_prep: thesis budget %.0fs reached after %d thesis/es",
+                thesis_budget_s,
+                len(theses),
+            )
+            break
+        thesis = author_thesis(source_set, llm_fn=llm_fn)
+        binding = validate_cited_handles(source_set, thesis.grounds)
+        if not binding["ok"]:
+            log.warning(
+                "daily_segment_prep: thesis cited unresolved handles %s",
+                binding["unresolved"],
+            )
+        theses.append(thesis)
+
+    channels = _gather_planner_channels()
+    planner_kwargs: dict[str, Any] = {"resolved_sources": resolved_sources, **channels}
+    log.info(
+        "daily_segment_prep: plan-time context — %d resolved set(s), %d thesis/es",
+        len(resolved_sources),
+        len(theses),
+    )
+    return planner_kwargs, theses
 
 
 def _prep_model() -> str:
@@ -2859,6 +3049,43 @@ def run_prep(
     # freshest signal for re-authoring a source-denser angle.
     prior_substance_feedback = _read_prior_substance_feedback(today)
 
+    # Recruit-before-plan: resolve real source material + gather live context
+    # channels + author theses ONCE before the planning rounds, so the planner
+    # authors FROM resolved sources (densest first) rather than inventing handles
+    # blind. Reused across rounds; bounded so it cannot blow the prep budget.
+    plan_recruit_fore = _retrieve_broad_fore_understanding()
+    recruit_budget = min(RECRUIT_BUDGET_S, max(0.0, PREP_BUDGET_S - (time.monotonic() - start)))
+
+    def _thesis_llm_fn(prompt: str) -> str:
+        return _call_llm(
+            prompt,
+            prep_session=prep_session,
+            phase="thesis",
+            programme_id="thesis-author",
+            max_tokens=2048,
+        )
+
+    try:
+        planner_kwargs, plan_time_theses = _plan_time_context(
+            plan_recruit_fore,
+            llm_fn=_thesis_llm_fn,
+            recruit_budget_s=recruit_budget,
+            thesis_budget_s=THESIS_BUDGET_S,
+        )
+    except Exception:
+        log.warning(
+            "daily_segment_prep: plan-time recruitment failed; planning on fore-understanding only",
+            exc_info=True,
+        )
+        planner_kwargs, plan_time_theses = {"resolved_sources": []}, []
+    _update_prep_status(
+        prep_session,
+        status="in_progress",
+        phase="plan_time_recruited",
+        resolved_source_sets=len(planner_kwargs.get("resolved_sources") or []),
+        plan_time_theses=len(plan_time_theses),
+    )
+
     while len(segmented) < max_segments_for_run and plan_round < max_rounds:
         elapsed = time.monotonic() - start
         if elapsed >= PREP_BUDGET_S:
@@ -2885,12 +3112,12 @@ def run_prep(
             segmented_count=len(segmented),
         )
         try:
-            recent_fore = _retrieve_broad_fore_understanding()
             plan = planner.plan(
                 show_id=show_id,
                 target_programmes=planner_target_programmes,
-                fore_understanding=recent_fore or None,
+                fore_understanding=plan_recruit_fore or None,
                 prior_substance_feedback=prior_substance_feedback,
+                **planner_kwargs,
             )
         except Exception as exc:
             _update_prep_status(
