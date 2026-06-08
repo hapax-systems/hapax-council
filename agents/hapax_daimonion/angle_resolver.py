@@ -16,13 +16,36 @@ import logging
 import os
 from dataclasses import dataclass
 
-from shared.source_packet import SourcePacket
+from shared.source_packet import ResolvedSourceSet, SourcePacket, build_resolved_source_set
 
 log = logging.getLogger(__name__)
 
 QDRANT_COLLECTIONS = ("documents", "operator-episodes", "stream-reactions", "studio-moments")
 VAULT_ROOTS = ("30-areas", "20-projects", "50-resources")
 MIN_SOURCES_FOR_ANGLE = 3
+
+
+def recruit_source_set(
+    topic: str,
+    *,
+    max_sources_per_collection: int = 5,
+) -> ResolvedSourceSet | None:
+    """Recruit a content-hash-bound ResolvedSourceSet for a topic — the citable surface.
+
+    This is the LLM-free recruiter: it gathers real packets (Qdrant + vault) and
+    binds them into a closed, deduplicated, set-hashed ``ResolvedSourceSet`` whose
+    handles (``src:0..N``) are the ONLY things a composer may cite. Returns None
+    when no source resolves — the caller must REFUSE, never fabricate to fill.
+
+    Unlike ``resolve_angle`` (which adds an advisory thesis/tension via an LLM call
+    that may fail), this surface is load-bearing and depends only on retrieval, so a
+    degraded LLM cannot collapse the citation set.
+    """
+    packets = _gather_sources(topic, max_per_collection=max_sources_per_collection)
+    if not packets:
+        log.warning("recruit_source_set: no sources resolved for topic: %s", topic[:80])
+        return None
+    return build_resolved_source_set(topic, packets)
 
 
 @dataclass(frozen=True)
@@ -136,8 +159,14 @@ def _web_supplement(topic: str, existing: list[SourcePacket]) -> list[SourcePack
     return existing
 
 
-def _select_angle(topic: str, packets: list[SourcePacket]) -> AngleHypothesis:
-    """Use the LLM to identify competing positions and select the angle."""
+def _select_angle(topic: str, packets: list[SourcePacket]) -> AngleHypothesis | None:
+    """Use the LLM to identify competing positions and select the angle.
+
+    Returns None on LLM failure — the advisory angle is NOT fabricated over all
+    packets. The recruited citation set (``recruit_source_set``) is independent of
+    this call, so a missing angle costs only the thesis/tension prose, never the
+    citable handles.
+    """
     from shared.config import MODELS
 
     try:
@@ -180,15 +209,11 @@ def _select_angle(topic: str, packets: list[SourcePacket]) -> AngleHypothesis:
         text = response.choices[0].message.content or ""
         return _parse_angle_response(topic, text, packets)
     except Exception:
-        log.warning("angle_resolver: LLM angle selection failed, using all sources", exc_info=True)
-        return AngleHypothesis(
-            topic=topic,
-            thesis_position=topic,
-            supporting_sources=tuple(packets),
-            challenging_sources=(),
-            opening_pressure=topic,
-            angle_hash=hashlib.sha256(topic.encode()).hexdigest()[:16],
+        log.warning(
+            "angle_resolver: LLM angle selection failed — no advisory angle (sources intact)",
+            exc_info=True,
         )
+        return None
 
 
 def _parse_angle_response(topic: str, text: str, packets: list[SourcePacket]) -> AngleHypothesis:
@@ -212,8 +237,8 @@ def _parse_angle_response(topic: str, text: str, packets: list[SourcePacket]) ->
     supporting = tuple(packets[i - 1] for i in supporting_idx if 0 < i <= len(packets))
     challenging = tuple(packets[i - 1] for i in challenging_idx if 0 < i <= len(packets))
 
-    if not supporting:
-        supporting = tuple(packets[:3])
+    # No fabricate-to-fill: if the model named no supporting sources, the advisory
+    # angle simply lists none. The citable surface is the recruited set, not this.
 
     h = hashlib.sha256(f"{thesis}|{opening}".encode()).hexdigest()[:16]
     return AngleHypothesis(

@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from shared.source_packet import ResolvedSourceSet
 
 SEGMENT_CONSULTATION_VERSION = 1
 
@@ -250,6 +253,8 @@ def validate_consultation_manifest(value: Any, *, role: str) -> dict[str, Any]:
 def build_source_consequence_map(
     script: Sequence[str],
     beat_action_intents: Sequence[Mapping[str, Any]] | None = None,
+    *,
+    resolved_source_set: ResolvedSourceSet | None = None,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for beat_index, text in enumerate(script):
@@ -259,17 +264,42 @@ def build_source_consequence_map(
         if not targets and _has_sourceish_text(text):
             targets = [f"beat:{beat_index}:source_context"]
         for source_ref in targets:
+            evidence_ref = _bind_evidence_ref(source_ref, resolved_source_set)
+            if evidence_ref is None:
+                # A cited handle that does not resolve against the recruited set is
+                # not bound to real evidence — drop it, never fabricate a consequence.
+                continue
             out.append(
                 {
                     "beat_index": beat_index,
                     "source_ref": source_ref,
-                    "evidence_ref": f"prepared_script[{beat_index}]",
+                    "evidence_ref": evidence_ref,
                     "consequence": _consequence_kind(text),
                     "changed_dimensions": _changed_dimensions(text),
                     "advisory_only": True,
                 }
             )
     return out
+
+
+def _bind_evidence_ref(
+    source_ref: str, resolved_source_set: ResolvedSourceSet | None
+) -> str | None:
+    """Bind a source target to real evidence — its resolved content hash.
+
+    A handle (``src:N``) binds to the recruited packet's ``content_hash`` when it
+    resolves; an unresolvable handle returns None (drop, do not fabricate). A
+    non-handle target binds to the named source itself — NEVER to
+    ``prepared_script[N]`` (the script being grounded cannot be its own evidence).
+    """
+    from shared.source_packet import parse_handle
+
+    if parse_handle(source_ref) is not None:
+        if resolved_source_set is None:
+            return None
+        content_hash = resolved_source_set.content_hash_for_handle(source_ref)
+        return f"content_hash:{content_hash}" if content_hash is not None else None
+    return source_ref
 
 
 def validate_source_consequence_map(value: Any) -> dict[str, Any]:

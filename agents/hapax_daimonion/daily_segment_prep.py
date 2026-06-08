@@ -100,6 +100,7 @@ from shared.segment_quality_actionability import (
     validate_layout_responsibility,
     validate_segment_actionability,
 )
+from shared.source_packet import ResolvedSourceSet, source_provenance_sha256
 
 log = logging.getLogger(__name__)
 
@@ -535,9 +536,18 @@ def _build_full_segment_prompt(
         "Compose the COMPLETE narration for this segment — one SUBSTANTIAL block of "
         "broadcast-ready prose per beat. Also emit a model-authored "
         "segment_prep_contract object for the final script.\n\n"
+        "== SOURCE CITATION — CITE ONLY RECRUITED HANDLES ==\n"
+        "The RECRUITED SOURCES list in the research section below is the ONLY set of\n"
+        "sources you may cite. Cite a source by its handle (src:N). Do NOT invent\n"
+        "sources, vault paths, papers, or refs — a citation that is not a recruited\n"
+        "handle is REFUSED, not accepted. If the recruited sources cannot support a\n"
+        "claim, drop the claim; never fabricate a source to fill.\n\n"
         "== REQUIRED CONTRACT FIELDS (validators reject if missing) ==\n"
         "The segment_prep_contract MUST include ALL of these:\n"
-        "- source_packet_refs: at least one source with evidence_refs pointing to vault/rag\n"
+        "- cited_handles: the src:N handles you actually cited (members of the\n"
+        "  RECRUITED SOURCES list); every claim's grounds must use these handles\n"
+        "- source_packet_refs: one packet per cited handle, using the src:N handle as\n"
+        "  both source_ref and evidence_refs\n"
         "- role_live_bit_mechanic: how this segment works as a live bit\n"
         "- event_object: the specific thing being ranked/discussed/reacted-to\n"
         "- audience_job: what the audience does during this segment\n"
@@ -565,7 +575,8 @@ def _build_full_segment_prompt(
         '    "Second beat — continues with depth and names sources with context..."\n'
         "  ],\n"
         '  "segment_prep_contract": {\n'
-        '    "source_packet_refs": [{"id": "packet:topic-sources", "source_ref": "vault:research-notes", "evidence_refs": ["vault:research-notes"]}],\n'
+        '    "cited_handles": ["src:0", "src:1"],\n'
+        '    "source_packet_refs": [{"id": "packet:src-0", "source_ref": "src:0", "evidence_refs": ["src:0"]}, {"id": "packet:src-1", "source_ref": "src:1", "evidence_refs": ["src:1"]}],\n'
         '    "role_live_bit_mechanic": "ranked tier placement with source-backed criteria",\n'
         '    "event_object": "the specific items being ranked",\n'
         '    "audience_job": "predict placements, challenge via chat",\n'
@@ -578,12 +589,12 @@ def _build_full_segment_prompt(
             if role_value == "top_10"
             else ""
         )
-        + '    "claim_map": [{"claim_id": "claim:segment:1", "beat_id": "beat-1", "claim_text": "the source-backed claim spoken in beat one", "grounds": ["vault:research-notes"], "source_consequence": "vault:research-notes changes the ranking confidence"}],\n'
-        '    "source_consequence_map": [{"source_ref": "vault:research-notes", "claim_ids": ["claim:segment:1"], "changed_field": "ranking confidence", "failure_if_missing": "quarantine before release"}],\n'
+        + '    "claim_map": [{"claim_id": "claim:segment:1", "beat_id": "beat-1", "claim_text": "the source-backed claim spoken in beat one", "grounds": ["src:0"], "source_consequence": "src:0 changes the ranking confidence"}],\n'
+        '    "source_consequence_map": [{"source_ref": "src:0", "claim_ids": ["claim:segment:1"], "changed_field": "ranking confidence", "failure_if_missing": "quarantine before release"}],\n'
         '    "actionability_map": [{"action_id": "action:segment:1", "beat_id": "beat-1", "claim_ids": ["claim:segment:1"], "kind": "tier_chart", "object": "the ranked item", "operation": "place the item under the stated criterion", "feedback": "the placement changes the public chart", "fallback": "narrow to spoken source argument if readback is unavailable"}],\n'
-        '    "layout_need_map": [{"layout_need_id": "need:segment:1", "beat_id": "beat-1", "claim_ids": ["claim:segment:1"], "action_ids": ["action:segment:1"], "source_packet_refs": ["vault:research-notes"], "need_kind": "tier_visual", "why_visible": "viewer must inspect the placement consequence"}],\n'
+        '    "layout_need_map": [{"layout_need_id": "need:segment:1", "beat_id": "beat-1", "claim_ids": ["claim:segment:1"], "action_ids": ["action:segment:1"], "source_packet_refs": ["src:0"], "need_kind": "tier_visual", "why_visible": "viewer must inspect the placement consequence"}],\n'
         '    "readback_obligations": [{"readback_id": "readback:segment:1", "layout_need_id": "need:segment:1", "must_show": "the ranked item and cited source", "must_not_claim": "layout success before runtime readback", "success_signal": "rendered readback names the same item and source", "failure_signal": "missing or mismatched readback", "timeout_or_ttl": "30s"}],\n'
-        '    "loop_cards": [{"loop_card_version": 1, "loop_id": "loop:segment:1", "admissibility": "feedforward_plan", "plant_boundary": "future runtime delivery for this segment", "controlled_variable": "layout_need", "reference_signal": "show the source-backed placement", "sensor_ref": "readback:segment:1", "actuator_ref": "runtime_layout_controller", "sample_period_s": 1.0, "latency_budget_s": 30.0, "readback_ref": "readback:segment:1", "fallback_mode": "narrow to spoken argument", "authority_boundary": "prep prior only; runtime must close readback", "privacy_ceiling": "public_archive_candidate", "evidence_refs": ["vault:research-notes"], "disturbance_refs": ["stale_readback"], "failure_mode": "runtime readback missing or mismatched", "limits": ["prepared artifact declares the reference but cannot command layout"]}],\n'
+        '    "loop_cards": [{"loop_card_version": 1, "loop_id": "loop:segment:1", "admissibility": "feedforward_plan", "plant_boundary": "future runtime delivery for this segment", "controlled_variable": "layout_need", "reference_signal": "show the source-backed placement", "sensor_ref": "readback:segment:1", "actuator_ref": "runtime_layout_controller", "sample_period_s": 1.0, "latency_budget_s": 30.0, "readback_ref": "readback:segment:1", "fallback_mode": "narrow to spoken argument", "authority_boundary": "prep prior only; runtime must close readback", "privacy_ceiling": "public_archive_candidate", "evidence_refs": ["src:0"], "disturbance_refs": ["stale_readback"], "failure_mode": "runtime readback missing or mismatched", "limits": ["prepared artifact declares the reference but cannot command layout"]}],\n'
         '    "role_excellence_plan": {"live_event_plan": {"bit_engine": "...", "audience_job": "...", "payoff": "..."}}\n'
         "  }\n"
         "}\n\n"
@@ -1508,6 +1519,96 @@ def _append_candidate_ledger(prep_dir: Path, payload: dict[str, Any], artifact_p
         fh.write(json.dumps(row, sort_keys=True) + "\n")
 
 
+def _format_recruited_source_menu(resolved_source_set: ResolvedSourceSet) -> str:
+    """Format the recruited set as a citable menu for the composer's seed.
+
+    Each line binds a handle (``src:N`` — the ONLY thing the composer may cite) to
+    its real recruited ref and a snippet. The composer cites by handle; it cannot
+    invent a source because the citation space IS this closed menu.
+    """
+    lines = [
+        "== RECRUITED SOURCES (cite ONLY these) ==",
+        "Cite sources by their handle (src:N) in the contract's `cited_handles`, and",
+        "use the recruited ref shown below as the claim `grounds`. Do NOT invent refs",
+        "or cite anything not listed here — fabricated citations are refused.",
+    ]
+    for index, packet in enumerate(resolved_source_set.packets):
+        handle = f"src:{index}"
+        lines.append(f"  {handle}  [{packet.source_ref}]  {packet.snippet[:240]}")
+    return "\n".join(lines)
+
+
+def _refuse_no_resolved_sources(
+    prep_dir: Path,
+    *,
+    prep_session: dict[str, Any],
+    programme_id: str,
+    role: str,
+    topic: str,
+    segment_beats: list[str],
+    topic_str: str,
+) -> None:
+    """Record a first-class no-candidate REFUSAL when nothing resolves (no fabrication).
+
+    Wires ``inquiry_blackboard``: an unfillable ``SourceGap`` and a
+    ``NoCandidateReason`` are recorded, and quiescence (no positive bid left to
+    pursue) confirms the terminal. Open-world / current-event topics with no wired
+    recruiter terminate here too — refused, recorded as data, never invented.
+    """
+    from shared.inquiry_blackboard import (
+        BlackboardState,
+        NoCandidateReason,
+        SourceGap,
+        detect_quiescence,
+    )
+
+    source_gap = SourceGap(
+        gap_id=f"gap:{programme_id}:sources",
+        description=f"no recruited source resolved for topic: {topic_str[:160]}",
+        claim_it_changes="every claim in the segment",
+        risk=1.0,
+    )
+    no_candidate = NoCandidateReason(
+        reason_id=f"no_resolved_sources:{programme_id}",
+        description=(
+            "recruitment returned no content-hash-bound sources; the segment is "
+            "refused rather than fabricated to fill"
+        ),
+        source_gaps=[source_gap.gap_id],
+        budget_exhausted=False,
+    )
+    # No bid can fill the gap (no wired recruiter for this topic) — the blackboard
+    # has quiesced with a recorded no-candidate reason: a terminal, not a loop.
+    quiescent_terminal = detect_quiescence(
+        BlackboardState(gaps=[], bids=[], no_candidate_reasons=[no_candidate]),
+        risk_threshold=0.5,
+    )
+    log.warning(
+        "prep_segment: no resolved sources for %s — refusing (no fabricate-to-fill)",
+        programme_id,
+    )
+    _write_prep_diagnostic_outcome(
+        prep_dir,
+        prep_session=prep_session,
+        programme_id=programme_id,
+        role=role,
+        topic=topic,
+        segment_beats=segment_beats,
+        terminal_status="no_candidate",
+        terminal_reason="no_resolved_sources",
+        not_loadable_reason=(
+            "no recruited source resolved; segment refused rather than fabricated"
+        ),
+        no_candidate_metadata={
+            "candidate_source": "recruit_source_set",
+            "candidate_count": 0,
+            "no_candidate_reason": no_candidate.model_dump(mode="json"),
+            "source_gap": source_gap.model_dump(mode="json"),
+            "recruiter_quiescent_terminal": quiescent_terminal,
+        },
+    )
+
+
 def prep_segment(
     programme: Any,
     prep_dir: Path,
@@ -1636,40 +1737,62 @@ def prep_segment(
 
     log.info("prep_segment: composing %s (%s, %d beats)", prog_id, role, len(beats))
 
-    # Pass 0: Angle resolution — gather competing sources, identify thesis + tension
+    topic_str = _extract_topic_string(programme) or topic
+
+    # Pass 0: RECRUIT the closed, content-hash-bound citable source set BEFORE
+    # composition. Claims are constructed from RESOLVED handles into this set; a
+    # claim with no recruited source is REFUSED, never fabricated to fill. Open-
+    # world / current-event topics with no wired recruiter resolve nothing here
+    # and refuse until a recruiter exists (recorded as data, never invented).
+    resolved_source_set: ResolvedSourceSet | None = None
+    try:
+        from agents.hapax_daimonion.angle_resolver import recruit_source_set
+
+        if topic_str:
+            resolved_source_set = recruit_source_set(topic_str)
+    except Exception:
+        log.warning("prep_segment: source recruitment failed", exc_info=True)
+
+    if resolved_source_set is None:
+        _refuse_no_resolved_sources(
+            prep_dir,
+            prep_session=prep_session,
+            programme_id=prog_id,
+            role=role,
+            topic=topic,
+            segment_beats=list(beats),
+            topic_str=topic_str,
+        )
+        return None
+
+    # Downstream uses the extracted topic (declared_topic or narrative_beat), as
+    # before — recruitment confirmed it resolves to real sources.
+    topic = topic_str
+
+    # Pass 0.5: advisory angle prose (best-effort; NOT load-bearing — the citable
+    # surface is the recruited set above, not this thesis/tension hint).
     angle_ctx = ""
     try:
         from agents.hapax_daimonion.angle_resolver import format_angle_for_composer, resolve_angle
 
-        topic = _extract_topic_string(programme)
-        if topic:
-            angle = resolve_angle(topic)
+        if topic_str:
+            angle = resolve_angle(topic_str)
             if angle and angle.source_count > 0:
                 angle_ctx = format_angle_for_composer(angle)
-                log.info(
-                    "prep_segment: angle resolved — %d supporting, %d challenging sources",
-                    len(angle.supporting_sources),
-                    len(angle.challenging_sources),
-                )
     except Exception:
-        log.warning("prep_segment: angle resolution failed, proceeding without", exc_info=True)
+        log.warning("prep_segment: advisory angle failed, proceeding without", exc_info=True)
 
-    # Pass 0.5: Research enrichment — deepen angle sources with research tools
-    research_ctx = ""
-    if angle_ctx:
-        try:
-            research_ctx = _research_enrich_angle(angle_ctx, _extract_topic_string(programme) or "")
-        except Exception:
-            log.warning("prep_segment: research enrichment failed", exc_info=True)
-
-    # Pass 1: Initial composition
+    # Pass 1: Initial composition — cite ONLY recruited handles (menu in the seed).
     seed = _build_seed(programme)
     if angle_ctx:
         seed = f"{seed}\n\n{angle_ctx}" if seed else angle_ctx
-    if research_ctx:
-        seed = f"{seed}\n\n{research_ctx}"
+    source_menu = _format_recruited_source_menu(resolved_source_set)
+    seed = f"{seed}\n\n{source_menu}" if seed else source_menu
     prompt = _build_full_segment_prompt(programme, seed)
     source_hashes = _source_hashes(programme, seed=seed, prompt=prompt)
+    source_hashes["resolved_source_provenance_sha256"] = source_provenance_sha256(
+        resolved_source_set
+    )
     raw = _call_llm(
         prompt,
         prep_session=prep_session,
@@ -2179,6 +2302,7 @@ def prep_segment(
     source_consequence_map = build_source_consequence_map(
         script,
         actionability["beat_action_intents"],
+        resolved_source_set=resolved_source_set,
     )
     fore_understanding = retrieve_fore_understanding(topic=topic, role=role)
     hermeneutic_deltas = compute_hermeneutic_delta(
@@ -2313,6 +2437,7 @@ def prep_segment(
         segment_prep_contract,
         prepared_script=script,
         segment_beats=[str(item) for item in beats],
+        resolved_source_set=resolved_source_set,
     )
     segment_prep_contract_sha256 = _contract_hash(segment_prep_contract)
     source_hashes["segment_prep_contract_sha256"] = segment_prep_contract_sha256
@@ -2447,6 +2572,7 @@ def prep_segment(
         "seed_sha256": source_hashes["seed_sha256"],
         "source_hashes": source_hashes,
         "source_provenance_sha256": _sha256_json(source_hashes),
+        "resolved_source_set": resolved_source_set.model_dump(mode="json"),
         "llm_calls": [
             call
             for call in prep_session.get("llm_calls", [])
@@ -3249,54 +3375,6 @@ def _compose_refusal_reason(
     return None
 
 
-def _research_enrich_angle(angle_ctx: str, topic: str) -> str:
-    """Use research tools to deepen the angle's source material.
-
-    Runs a lightweight LLM call with web search + qdrant lookup to
-    gather concrete evidence, examples, and counter-examples for the
-    angle hypothesis. Returns a formatted research block for the
-    composer's seed.
-    """
-    try:
-        import litellm
-
-        from shared.config import MODELS
-
-        prompt = (
-            f"Topic: {topic}\n\n"
-            f"Angle analysis:\n{angle_ctx}\n\n"
-            "You are a research assistant preparing material for a segment producer. "
-            "Based on the angle analysis above, provide:\n"
-            "1. CONCRETE EXAMPLE: A specific real-world case that illustrates the thesis\n"
-            "2. COUNTER EXAMPLE: A specific case that illustrates the challenge\n"
-            "3. KEY TERM DEFINITIONS: 2-3 technical terms the audience needs defined\n"
-            "4. OPENING HOOK: A specific question, paradox, or provocation that would "
-            "make the audience want to hear the rest\n\n"
-            "Be specific. Name real systems, papers, incidents, or frameworks. "
-            "If you don't know specific examples, say so honestly."
-        )
-        response = litellm.completion(
-            # Route the lightweight research-enrichment call through the LiteLLM
-            # gateway with an explicit provider prefix + api_base. A bare model
-            # name (e.g. "claude-opus") has no provider, so litellm raises
-            # "LLM Provider NOT provided"; the resident local-fast route keeps
-            # this fail-soft helper off cloud rate limits (R-A2).
-            model=f"openai/{MODELS.get('local-fast', 'local-fast')}",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=2000,
-            temperature=0.4,
-            api_base=os.environ.get("LITELLM_API_BASE", "http://127.0.0.1:4000"),
-            api_key=os.environ.get("LITELLM_API_KEY", "not-set"),
-        )
-        result = response.choices[0].message.content or ""
-        if len(result) > 100:
-            log.info("_research_enrich_angle: enrichment returned %d chars", len(result))
-            return f"## Research Enrichment\n{result}"
-    except Exception:
-        log.warning("_research_enrich_angle: enrichment failed", exc_info=True)
-    return ""
-
-
 _PROGRAMME_ID_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
@@ -3602,7 +3680,10 @@ def _artifact_rejection_reason(
         seed_sha256=data["seed_sha256"],
         prompt_sha256=data["prompt_sha256"],
     )
-    allowed_extra_source_hashes = {"segment_prep_contract_sha256"}
+    allowed_extra_source_hashes = {
+        "segment_prep_contract_sha256",
+        "resolved_source_provenance_sha256",
+    }
     if any(source_hashes.get(key) != value for key, value in expected_source_hashes.items()):
         return "source hash mismatch"
     if set(source_hashes) - set(expected_source_hashes) - allowed_extra_source_hashes:
@@ -3623,10 +3704,22 @@ def _artifact_rejection_reason(
             return "segment prep contract hash mismatch"
         if source_hashes.get("segment_prep_contract_sha256") != contract_sha:
             return "source hash missing segment prep contract binding"
+        # Re-dereference cited handles against the persisted recruited set before
+        # RAG re-entry — the same load-bearing gate as at prep time, so a launder-
+        # on-re-entry cannot pass. Artifacts without a persisted set fall back to
+        # shape validation (defense-in-depth) for backward compatibility.
+        reentry_source_set = None
+        raw_resolved_set = data.get("resolved_source_set")
+        if isinstance(raw_resolved_set, dict):
+            try:
+                reentry_source_set = ResolvedSourceSet(**raw_resolved_set)
+            except Exception:
+                return "invalid persisted resolved source set"
         expected_contract_report = validate_segment_prep_contract(
             contract,
             prepared_script=script,
             segment_beats=beats,
+            resolved_source_set=reentry_source_set,
         )
         if data.get("segment_prep_contract_report") != expected_contract_report:
             return "stale segment prep contract report"
@@ -3950,6 +4043,7 @@ def _upsert_artifact_dicts_to_qdrant(
 
         from shared.affordance_pipeline import COLLECTION_NAME, embed_batch_safe
         from shared.config import get_qdrant
+        from shared.geal_grounding_classifier import classify_source_or_quarantine
 
         texts: list[str] = []
         payloads: list[dict[str, Any]] = []
@@ -3960,6 +4054,19 @@ def _upsert_artifact_dicts_to_qdrant(
             texts.append(
                 f"Selected prepared livestream segment {programme_id}: {topic}. {script_preview}"
             )
+            # Carry the recruited handles into the RAG payload (don't drop them) and
+            # QUARANTINE any packet whose source ref is not a known grounding source —
+            # an unknown ref is not affirmed as grounded on re-entry (stop laundering).
+            resolved_set = artifact.get("resolved_source_set")
+            grounded_handles: list[str] = []
+            quarantined_refs: list[str] = []
+            if isinstance(resolved_set, dict):
+                for index, packet in enumerate(resolved_set.get("packets") or []):
+                    ref = str((packet or {}).get("source_ref") or "")
+                    if classify_source_or_quarantine(ref) is None:
+                        quarantined_refs.append(ref)
+                        continue
+                    grounded_handles.append(f"src:{index}")
             payloads.append(
                 {
                     "capability_name": f"programme.prepped.selected.{programme_id}",
@@ -3985,6 +4092,11 @@ def _upsert_artifact_dicts_to_qdrant(
                     "segment_quality_report": artifact.get("segment_quality_report"),
                     "segment_live_event_report": artifact.get("segment_live_event_report"),
                     "segment_prep_contract_report": artifact.get("segment_prep_contract_report"),
+                    "resolved_source_handles": grounded_handles,
+                    "resolved_source_quarantined_refs": quarantined_refs,
+                    "resolved_source_provenance_sha256": (artifact.get("source_hashes") or {}).get(
+                        "resolved_source_provenance_sha256"
+                    ),
                 }
             )
         embeddings = embed_batch_safe(texts, prefix="search_document")
