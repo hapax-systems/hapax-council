@@ -159,8 +159,8 @@ _consolidation_scheduler = QuietWindowScheduler(quiet_window_s=300)
 
 async def _handle_pattern_consolidation(*, ignore_fn=None) -> str:
     from agents._correction_memory import CorrectionStore
-    from logos._episodic_memory import EpisodeStore
     from logos._pattern_consolidation import PatternStore, run_consolidation
+    from shared.episodic_memory import EpisodeStore
 
     episode_store = EpisodeStore()
     correction_store = CorrectionStore()
