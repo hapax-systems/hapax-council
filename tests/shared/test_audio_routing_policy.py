@@ -165,7 +165,10 @@ def test_generated_route_maps_only_allow_specified_mk5_and_sum_bus_links() -> No
     assert "hapax-voice-wet-playback:output_FL|hapax-livestream-tap:playback_FL" in desired
     assert f"{MK5_IN}:capture_AUX0|hapax-mic-rode-capture:input_AUX0" in desired
     assert "hapax-mic-rode-playback:output_FL|hapax-livestream-tap:playback_FL" in desired
-    assert "hapax-music-loudnorm-playback:output_FL|hapax-livestream-tap:playback_FL" in desired
+    # Music routes through the mk5-native dedicated ducker before the sum.
+    assert "hapax-music-loudnorm-playback:output_FL|hapax-music-duck-mk5:playback_FL" in desired
+    assert "hapax-music-duck-mk5-playback:output_FL|hapax-livestream-tap:playback_FL" in desired
+    assert "hapax-music-loudnorm-playback:output_FL|hapax-livestream-tap:playback_FL" not in desired
     assert "hapax-yt-loudnorm-playback:output_FL|hapax-livestream-tap:playback_FL" in desired
     assert f"hapax-private-playback:output_FL|{MK5_OUT}:playback_AUX10" in desired
     assert f"hapax-private-playback:output_FR|{MK5_OUT}:playback_AUX11" in desired

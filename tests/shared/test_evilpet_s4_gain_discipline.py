@@ -67,6 +67,13 @@ EXPECTED_MIXER_GAINS: dict[str, set[float]] = {
     # which is the unity passthrough.
     "hapax-music-duck.conf": {1.0},
     "hapax-tts-duck.conf": {1.0},
+    # mk5-native dedicated music ducker (segment-audio-hosting-readiness): two
+    # mono mixers (duck_l/duck_r) default 1.0 = transparent passthrough so a
+    # dead hapax-audio-ducker fails OPEN. The daemon writes the SSOT duck depth
+    # (operator-VAD 0.251 / TTS+hosting-segment 0.398) at runtime; static
+    # inspection only sees the unity baseline. Replaces the retired
+    # hapax-music-duck.conf (which targeted the dead L-12 USB return).
+    "hapax-music-duck-mk5.conf": {1.0},
     # MPC-first wet return sums MPC content and Hapax voice from L-12
     # AUX8-AUX11 into the livestream tap. Static gains stay at unity;
     # level responsibility belongs to the MPC/L-12 hardware stages and
