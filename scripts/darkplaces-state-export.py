@@ -2204,7 +2204,9 @@ def build_visual_chain_lines(
     # recognizability cap is the constant HAPAXDRIFT vertex clamp (hapax-live-texture.patch), unchanged.
     geo_intensity = 0.0
     if is_live > 0.0:
-        geo_intensity = _clamp01(drift_strength_peak * 0.45 + kind_variance * 0.30 + active_ratio * 0.25)
+        geo_intensity = _clamp01(
+            drift_strength_peak * 0.45 + kind_variance * 0.30 + active_ratio * 0.25
+        )
     lines["effect-drift-intensity.txt"] = f"{geo_intensity:.4f}"
     lines.update(build_drift_geo_lines(geo_intensity))
     return lines
