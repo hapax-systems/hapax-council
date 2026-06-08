@@ -2173,12 +2173,15 @@ def build_visual_chain_lines(
     # moderate "disoriented but legible" baseline and a strong "illegible but recognizable" peak.
     # Neutral unless the tune file sets content_depth>0; quiet/non-slotdrift never touched.
     _dt = _read_json(DEFAULT_DRIFT_TUNE_FILE)
-    if is_live > 0.0 and now is not None:
+    # export_state's `now` is None on the live CLI path -> use wall-clock so the
+    # breathing envelope actually advances live (it only fired in tests before).
+    _now = time.time() if now is None else now
+    if is_live > 0.0:
         _cd = float(_dt.get("content_depth", 0.0))
         if _cd > 0.0:
             _cb = float(_dt.get("content_baseline", 0.30))
             _cp = float(_dt.get("content_period", 30.0)) or 30.0
-            _cenv = _clamp01(_cb + _cd * (1.0 - abs(2.0 * ((now % _cp) / _cp) - 1.0)))
+            _cenv = _clamp01(_cb + _cd * (1.0 - abs(2.0 * ((_now % _cp) / _cp) - 1.0)))
             family_strengths = {k: _clamp01(v * _cenv) for k, v in family_strengths.items()}
             color_pressure = _clamp01(color_pressure * _cenv)
             noise_pressure = _clamp01(noise_pressure * _cenv)
@@ -2227,11 +2230,11 @@ def build_visual_chain_lines(
     if is_live > 0.0:
         _geo_base = drift_strength_peak * 0.45 + kind_variance * 0.30 + active_ratio * 0.25
         _gd = float(_dt.get("geo_depth", 0.0))
-        if _gd > 0.0 and now is not None:
+        if _gd > 0.0:
             _gb = float(_dt.get("geo_baseline", 0.35))
             _gp = float(_dt.get("geo_period", 24.0)) or 24.0
             _geo_base = _geo_base * _clamp01(
-                _gb + _gd * (1.0 - abs(2.0 * ((now % _gp) / _gp) - 1.0))
+                _gb + _gd * (1.0 - abs(2.0 * ((_now % _gp) / _gp) - 1.0))
             )
         geo_intensity = _clamp01(_geo_base)
     lines["effect-drift-intensity.txt"] = f"{geo_intensity:.4f}"
