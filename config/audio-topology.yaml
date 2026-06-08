@@ -812,7 +812,7 @@ nodes:
     pipewire_name: hapax-music-loudnorm
     industrial_name: chain.music.loudnorm
     description: Music loudnorm capture side routed into livestream-tap software sum
-    target_object: hapax-livestream-tap
+    target_object: hapax-music-duck-mk5
     channels:
       count: 2
       positions: [FL, FR]
@@ -820,12 +820,38 @@ nodes:
     limit_db: -18.0
     release_s: 0.20
     params:
-      playback_target: hapax-livestream-tap
+      playback_target: hapax-music-duck-mk5
       node.autoconnect: false
       audibility_passthrough: true
       audibility_passthrough_gain: 0.35
       audibility_passthrough_reason: 2026-05-22 live music route used builtin passthrough after LADSPA silence risk; 2026-06-05 pins source to deployed audibility-preserving gain
       no_software_duck: true
+
+  # mk5-native dedicated music ducker (segment-audio-hosting-readiness 2026-06-07).
+  # Inserted between hapax-music-loudnorm and the livestream-tap software sum so
+  # hapax-audio-ducker.service can apply the SSOT duck depth (operator-VAD -12 dB,
+  # TTS/hosting-segment -8 dB, deepest-duck-wins) WITHOUT co-opting the loudnorm
+  # node's 0.35 passthrough gain (forbidden, pinned) and WITHOUT reviving the
+  # retired L-12-era hapax-music-duck (which targeted the dead L-12 USB return).
+  # node.autoconnect=false → hapax-audio-reconciler owns the FL/FR sum links.
+  # Default Gain 1 = 1.0 (transparent) so a dormant/dead daemon fails OPEN
+  # (music never silenced). Targets the CONTENT path only — never the operator mic.
+  - id: music-duck
+    kind: filter_chain
+    pipewire_name: hapax-music-duck-mk5
+    industrial_name: chain.music.duck
+    description: Music duck inserted between hapax-music-loudnorm and the livestream-tap software sum
+    channels:
+      count: 2
+      positions: [FL, FR]
+    chain_kind: duck
+    params:
+      playback_node: hapax-music-duck-mk5-playback
+      playback_target: hapax-livestream-tap
+      node.autoconnect: false
+      mk5_native_replacement_for: hapax-music-duck
+      operator_voice_never_drop_passthrough: true
+      no_software_duck: false
 
   - id: yt-loudnorm
     kind: filter_chain
@@ -1024,6 +1050,9 @@ edges:
     target: livestream-tap
 
   - source: music-loudnorm
+    target: music-duck
+
+  - source: music-duck
     target: livestream-tap
 
   - source: yt-loudnorm
