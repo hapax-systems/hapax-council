@@ -51,6 +51,7 @@ RECREATE_TASKS: frozenset[str] = frozenset(
         "prepared_playback_loop",
         "narrative_drive_loop",
         "salience_publish_loop",
+        "master_lufs_loop",
     }
 )
 LOG_AND_CONTINUE_TASKS: frozenset[str] = frozenset()
@@ -524,9 +525,24 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         "salience_publish_loop",
         lambda: salience_publish_loop(daemon),
     )
+
+    # Closed master −14 LUFS-I makeup loop (segment-audio-remainder AC#2).
+    # Slow, bounded, duck-aware controller toward EGRESS_TARGET_LUFS_I; DARK
+    # BY DEFAULT (daemon.cfg.master_lufs_controller_enabled) so it measures +
+    # publishes but never actuates the live master until the alpha-gated
+    # go-live. Supervised here because the new daemon has no in-scope systemd
+    # home and hapax-daimonion is already PipeWire-attached and long-lived.
+    from agents.hapax_daimonion.master_lufs_loop import master_lufs_loop
+
+    _make_task(
+        daemon,
+        "master_lufs_loop",
+        lambda: master_lufs_loop(daemon),
+    )
     log.info(
         "CPAL runner + impingement consumers "
-        "(CPAL + affordance + sidechat + gem) + programme manager + salience publish started"
+        "(CPAL + affordance + sidechat + gem) + programme manager + salience publish "
+        "+ master LUFS loop started"
     )
 
     if daemon.cfg.mc_enabled or daemon.cfg.obs_enabled:
