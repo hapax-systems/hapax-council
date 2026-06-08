@@ -14,9 +14,13 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from shared.loop_card import LoopAdmissibility, validate_loop_cards
+from shared.source_packet import handle_for_index, validate_cited_handles
+
+if TYPE_CHECKING:
+    from shared.source_packet import ResolvedSourceSet
 
 SEGMENT_PREP_CONTRACT_VERSION = 1
 SEGMENT_PREP_OUTCOME_VERSION = 1
@@ -1566,11 +1570,25 @@ def build_segment_prep_contract(
     }
 
 
+def _resolved_ref_universe(resolved_source_set: ResolvedSourceSet) -> set[str]:
+    """Every citable identifier in the recruited set: real source_refs AND handles.
+
+    A citation is valid iff it dereferences to this set — membership in the
+    RECRUITED content, not in the model's own self-declared packets.
+    """
+    universe: set[str] = set()
+    for index, packet in enumerate(resolved_source_set.packets):
+        universe.add(packet.source_ref)
+        universe.add(handle_for_index(index))
+    return universe
+
+
 def validate_segment_prep_contract(
     contract: Mapping[str, Any] | None,
     *,
     prepared_script: Sequence[str] | None = None,
     segment_beats: Sequence[str] | None = None,
+    resolved_source_set: ResolvedSourceSet | None = None,
 ) -> dict[str, Any]:
     violations: list[dict[str, Any]] = []
     if not isinstance(contract, Mapping):
@@ -1786,5 +1804,35 @@ def validate_segment_prep_contract(
     role_plan = contract.get("role_excellence_plan")
     if not isinstance(role_plan, Mapping) or not role_plan.get("live_event_plan"):
         violations.append({"reason": "missing_role_excellence_live_event_plan"})
+
+    # LOAD-BEARING constructive dereference. When a recruited source set is
+    # supplied, the contract's citations must DEREFERENCE against it — a fabricated
+    # or never-recruited ref is unconstructable here, not merely shape-checked. The
+    # shape checks above (is_content_evidence_ref / is_source_evidence_ref / claim-
+    # ground-in-the-model's-own-packets) remain as defense-in-depth, but the gate
+    # is membership in the RECRUITED content, never self-closure to what the model
+    # declared.
+    if resolved_source_set is not None:
+        resolved_refs = _resolved_ref_universe(resolved_source_set)
+        cited_handles = _string_list(contract.get("cited_handles"))
+        if not cited_handles:
+            violations.append({"reason": "missing_cited_handles"})
+        else:
+            handle_check = validate_cited_handles(resolved_source_set, cited_handles)
+            if not handle_check["ok"]:
+                violations.append(
+                    {
+                        "reason": "cited_handles_unresolved",
+                        "unresolved": handle_check["unresolved"],
+                    }
+                )
+        for index, claim in enumerate(claim_map):
+            grounds = _string_list(claim.get("grounds"))
+            if grounds and not all(ground in resolved_refs for ground in grounds):
+                violations.append({"reason": "claim_ground_not_resolved", "index": index})
+        for index, consequence in enumerate(source_consequences):
+            consequence_ref = str(consequence.get("source_ref") or "").strip()
+            if consequence_ref and consequence_ref not in resolved_refs:
+                violations.append({"reason": "source_consequence_not_resolved", "index": index})
 
     return {"ok": not violations, "violations": violations}

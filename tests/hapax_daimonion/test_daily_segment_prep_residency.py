@@ -95,6 +95,37 @@ def _healthy_council_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(council_engine, "deliberate", _healthy)
 
 
+@pytest.fixture(autouse=True)
+def _recruited_sources_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default source recruitment to a HEALTHY non-empty ResolvedSourceSet.
+
+    prep_segment now RECRUITS a content-hash-bound source set before composition
+    and REFUSES (no-candidate) when nothing resolves. Most tests exercise the
+    compose/gate gauntlet, not recruitment, so a healthy default set (containing
+    the canonical test SOURCE_REF) lets them proceed. The refuse-on-empty
+    behavior has a dedicated pin (test_prep_segment_refuses_when_no_sources_resolve).
+    Tests that set recruit_source_set themselves override this (later wins).
+    """
+    import agents.hapax_daimonion.angle_resolver as angle_resolver
+    from shared.source_packet import SourcePacket, build_resolved_source_set
+
+    def _recruit(topic: str, **_kwargs: Any) -> Any:
+        return build_resolved_source_set(
+            topic or "topic",
+            (
+                SourcePacket(
+                    source_ref=SOURCE_REF,
+                    content_hash="testrecruithash0",
+                    snippet="recruited test source snippet",
+                    freshness="fresh",
+                    source_consequence="the cited source changes the claim",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(angle_resolver, "recruit_source_set", _recruit)
+
+
 def test_prep_model_is_command_r_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HAPAX_SEGMENT_PREP_MODEL", raising=False)
     assert prep._prep_model() == prep.RESIDENT_PREP_MODEL
@@ -2148,3 +2179,47 @@ def test_bridge_active_segment_payload_reflects_prepped_artifact(
     assert payload["prepared_artifact_ref"] is not None
     assert payload["authority"] == "prior_only"
     assert payload["current_beat_layout_intents"]
+
+
+def test_prep_segment_refuses_when_no_sources_resolve(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Refuse-on-empty: no recruited source → a first-class no-candidate terminal,
+    composition is never reached, and nothing is fabricated to fill. Open-world /
+    current-event topics with no wired recruiter resolve nothing and land here too.
+    """
+    import agents.hapax_daimonion.angle_resolver as angle_resolver
+
+    programme = SimpleNamespace(
+        programme_id="prog-norsrc",
+        role=SimpleNamespace(value="rant"),
+        content=_ready_content(
+            narrative_beat="An open-world claim with no recruited source",
+            segment_beats=["argue the point with a source receipt"],
+            role="rant",
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+    }
+    # Nothing resolves (open-world topic / no wired recruiter).
+    monkeypatch.setattr(angle_resolver, "recruit_source_set", lambda *_a, **_k: None)
+
+    def _no_compose(*_a: Any, **_k: Any) -> str:
+        raise AssertionError("composition must not run when no source resolves")
+
+    monkeypatch.setattr(prep, "_call_llm", _no_compose)
+
+    saved = prep.prep_segment(programme, tmp_path, prep_session=session)
+
+    assert saved is None
+    assert not (tmp_path / "prog-norsrc.json").exists()
+    ledger_row = json.loads(
+        (tmp_path / prep.PREP_DIAGNOSTIC_LEDGER_FILENAME).read_text(encoding="utf-8")
+    )
+    assert ledger_row["terminal_status"] == "no_candidate"
+    assert ledger_row["terminal_reason"] == "no_resolved_sources"
+    assert ledger_row["loadable"] is False

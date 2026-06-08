@@ -70,6 +70,11 @@ def classify_source(source_id: str) -> Apex:
     Empty / unknown ids fall into the memory bucket (``"bl"``). Matching
     is case-insensitive and prefix-based — callers pass raw source
     identifiers and don't need to normalise first.
+
+    This is the RENDER-safe path: the visual layer always needs a concrete
+    apex to paint and must never crash on a freshly-introduced tag. Grounding-
+    AFFIRMATION sites (where an unknown ref must NOT be laundered as grounded
+    memory) use :func:`classify_source_or_quarantine` instead.
     """
     if not source_id:
         return "bl"
@@ -80,4 +85,34 @@ def classify_source(source_id: str) -> Apex:
     return "bl"
 
 
-__all__ = ["Apex", "classify_source"]
+def is_known_grounding_source(source_id: str) -> bool:
+    """Whether ``source_id`` matches a registered grounding-source prefix.
+
+    Unknown ids are NOT known grounding sources — affirming them as memory
+    (``bl``) would launder an unresolved ref as grounded provenance.
+    """
+    if not source_id:
+        return False
+    needle = source_id.lower()
+    return any(needle.startswith(prefix) for prefix, _ in _PREFIX_APEX)
+
+
+def classify_source_or_quarantine(source_id: str) -> Apex | None:
+    """Classify a grounding ref, or QUARANTINE it (return None) when unknown.
+
+    Use at grounding-affirmation / RAG-upsert sites. Unlike
+    :func:`classify_source`, this does NOT silently default an unknown ref to the
+    memory apex — an unresolvable ref returns None so the caller can refuse to
+    affirm it as grounded rather than launder it downstream.
+    """
+    if not is_known_grounding_source(source_id):
+        return None
+    return classify_source(source_id)
+
+
+__all__ = [
+    "Apex",
+    "classify_source",
+    "classify_source_or_quarantine",
+    "is_known_grounding_source",
+]
