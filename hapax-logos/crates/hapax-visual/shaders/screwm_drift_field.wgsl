@@ -129,7 +129,14 @@ fn fs_main(@location(0) uv: vec2<f32>) -> FragOut {
         + textureSample(prev_tex, s_in, uv - vec2<f32>(0.0, px.y)).rgb
     ) * 0.25;
     let diffused = mix(mix(advected, lap, 0.5), scanned, 0.35);  // 2c-A slitscan blended in
-    let evolve_amt = 0.18 + currency * 0.22;  // hybrid: active zones flow/spread more
+    // ── Phase 2c-B: granular hold/flow (per-zone, content-driven — no time uniform) ──
+    // Tile into a 9x9 zone lattice; each zone HOLDS (nearly freezes) or FLOWS by a hash of the cell +
+    // its own evolving content (advected.r), so the held-zone pattern MIGRATES with the substrate — a
+    // syncopated granular frame-held texture. Held zones evolve less (never brighter); bounded. (A
+    // time-rhythmic variant needs a phase uniform — deferred to a bind-group change under focused care.)
+    let cell = floor(uv * 9.0);
+    let hold = step(0.62, fract(sin(dot(cell, vec2<f32>(91.7, 47.3)) + advected.r * 7.0) * 21813.1));
+    let evolve_amt = (0.18 + currency * 0.22) * mix(1.0, 0.3, hold);  // 2c-B granular hold/flow
     let field_2b = clamp(mix(field_evolved, diffused, evolve_amt), vec3<f32>(0.14), vec3<f32>(0.97));
 
     var out: FragOut;
