@@ -108,6 +108,13 @@ class DaimonionConfig(BaseModel):
     gemini_model: str = "gemini-2.5-flash-preview-native-audio"
     local_stt_model: str = "distil-large-v3"
     tts_voice: str = "af_heart"
+
+    # Closed master −14 LUFS-I makeup loop (segment-audio-remainder AC#2).
+    # DARK BY DEFAULT: the slow controller measures + publishes what it would
+    # do but never actuates the live master makeup until proven at the
+    # alpha-gated broadcast go-live. Flip to True only after the safety
+    # precondition (live leak meter) and the live tap are confirmed.
+    master_lufs_controller_enabled: bool = False
     # Consent
     consent_debounce_s: float = 5.0  # sustained presence before triggering
     consent_absence_clear_s: float = 30.0  # how long guest must be absent to clear

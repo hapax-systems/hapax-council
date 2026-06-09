@@ -129,6 +129,27 @@ PC_BROADCAST_LIMITER_RELEASE_MS: float = 200.0
 # wet-only signal flow, with master-bus makeup now carrying the
 # loudness-target compensation (see MASTER_INPUT_MAKEUP_DB above).
 
+# ── Closed master LUFS-I loop (segment-audio-remainder AC#2) ──────────
+#
+# A SLOW, bounded controller nudges the broadcast master makeup toward
+# EGRESS_TARGET_LUFS_I, measured as integrated LUFS-I on the public
+# source `hapax-broadcast-normalized`. It replaces RELIANCE on the
+# open-loop MASTER_INPUT_MAKEUP_DB while keeping that static makeup as
+# the never-remove fallback (the controller is dark by default and only
+# trims within a bounded band around it).
+#
+# Time-constant separation from the duck (DUCK_ATTACK_MS=10 /
+# DUCK_RELEASE_MS=400) is the load-bearing invariant: the loop integrates
+# over tens of seconds and nudges only every several seconds, ≥10× slower
+# than the duck's release, and freezes entirely while the bus is ducked —
+# so the slow makeup loop can never chase the fast duck up.
+MASTER_LUFS_INTEGRATION_WINDOW_S: float = 30.0
+MASTER_LUFS_UPDATE_INTERVAL_S: float = 8.0
+MASTER_LUFS_MAX_STEP_DB: float = 0.5
+# Makeup may trim ±this band around MASTER_INPUT_MAKEUP_DB. 16 ± 3 = [13, 19],
+# inside the LADSPA fast_lookahead_limiter accepted range [-20, +20].
+MASTER_LUFS_MAKEUP_BAND_DB: float = 3.0
+
 # ── Headroom budget ───────────────────────────────────────────────────
 #
 # Reserved per stage for transients. Means: each stage's nominal output
