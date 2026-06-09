@@ -6,7 +6,8 @@
 // so a field value of 0.5 is NEUTRAL (no change). This encoder therefore outputs each
 // channel CENTERED at ~0.5: flat / dark reverie leaves the wire at its baseline, while
 // reverie STRUCTURE (luma, edges, chroma) modulates it spatially + temporally. The
-// reverie is the existing evolving RD/fluid/feedback substrate, so the field — and thus
+// reverie is the existing evolving RD/fluid/feedback substrate; the field gains its OWN 2a
+// (feedback/echo/trail/diff) + 2b (fluid advection + laplacian diffusion) temporal substrate, so it — and thus
 // the wire — never exactly repeats (endless variety) without a second DynamicPipeline.
 //
 // Anti-visualizer: bounded output (never blows out or goes dark), no global temporal
@@ -90,7 +91,7 @@ fn fs_main(@location(0) uv: vec2<f32>) -> FragOut {
     let aw = dot(textureSample(t_in, s_in, uv - vec2<f32>(wr.x, 0.0)).rgb, LUMA);
     let activity = clamp((abs(l - an) + abs(l - as_) + abs(l - ae) + abs(l - aw)) * 2.0 + edge * 0.5, 0.0, 1.0);
     // bounded [0.2,1.0]; engine maps to an amplitude multiplier (0.2 = calm zone, 1.0 = active)
-    let currency = clamp(0.42 + activity * 0.5, 0.2, 1.0);
+    let currency = clamp(0.2 + activity * 0.8, 0.2, 1.0);
 
     // ── Phase 2a temporal substrate: feedback / echo / trail / diff (prev-frame family) ──
     // prev_tex is the PREVIOUS field output (CPU round-trip). The field gains temporal memory
@@ -105,8 +106,34 @@ fn fs_main(@location(0) uv: vec2<f32>) -> FragOut {
     let fb = clamp(0.74 + currency * 0.18, 0.0, 0.94);                                  // currency-modulated persistence
     let field_evolved = clamp(mix(field, persisted, fb) + fdiff * 0.22, vec3<f32>(0.14), vec3<f32>(0.97));
 
+    // ── Phase 2b temporal substrate: fluid advection + diffusion (organic, never-repeating) ──
+    // 2a persists/echoes; 2b makes the substrate FLOW + SPREAD like a reaction-diffusion medium.
+    // Advect the previous field along a flow PERPENDICULAR to the wide-tap reverie gradient (it
+    // swirls along iso-luma contours, not a fixed offset), then gently diffuse it (4-neighbour
+    // laplacian) so micro-structure grows + softens. Heavily bounded + neutral-centered; spatial +
+    // slow (anti_visualizer: no global flash). Active zones (currency) evolve more (hybrid).
+    let flow = clamp(vec2<f32>(-(an - as_), ae - aw), vec2<f32>(-0.6), vec2<f32>(0.6)) * 0.006;
+    let advected = textureSample(prev_tex, s_in, uv - flow).rgb;
+    // ── Phase 2c-A: slitscan (per-zone temporal-shear rake of prev) ──
+    // Rake prev along a per-zone shear axis from the wide-tap reverie gradient, so each zone reads its
+    // history at a different effective age — a continuous family of warped pasts (temporal slicing).
+    // Currency scales the rake; bounded (reads bounded prev, feeds the egress clamp); ClampToEdge
+    // sampler prevents wrap seams. Spatial + slow (anti_visualizer).
+    let slit_phase = (an - as_) * 3.1 + (ae - aw) * 2.7;
+    let slit = clamp(vec2<f32>(cos(slit_phase), sin(slit_phase)), vec2<f32>(-1.0), vec2<f32>(1.0)) * (0.004 + currency * 0.006);
+    let scanned = textureSample(prev_tex, s_in, uv - flow - slit).rgb;
+    let lap = (
+        textureSample(prev_tex, s_in, uv + vec2<f32>(px.x, 0.0)).rgb
+        + textureSample(prev_tex, s_in, uv - vec2<f32>(px.x, 0.0)).rgb
+        + textureSample(prev_tex, s_in, uv + vec2<f32>(0.0, px.y)).rgb
+        + textureSample(prev_tex, s_in, uv - vec2<f32>(0.0, px.y)).rgb
+    ) * 0.25;
+    let diffused = mix(mix(advected, lap, 0.5), scanned, 0.35);  // 2c-A slitscan blended in
+    let evolve_amt = 0.18 + currency * 0.22;  // hybrid: active zones flow/spread more
+    let field_2b = clamp(mix(field_evolved, diffused, evolve_amt), vec3<f32>(0.14), vec3<f32>(0.97));
+
     var out: FragOut;
-    out.field = vec4<f32>(field_evolved, presence);
+    out.field = vec4<f32>(field_2b, presence);
     out.currency = vec4<f32>(vec3<f32>(currency), 1.0);
     return out;
 }

@@ -4028,3 +4028,18 @@ from shared.host_provenance import HostScopedClaim, StorageReceipt  # noqa: F401
 
 HostScopedClaim._enforce_provenance
 StorageReceipt._transport_consistency
+
+# World-language node validators (keystone) — invoked by Pydantic at
+# model_validate time; vulture cannot trace through @model_validator.
+from shared.world_language import ImageSchemaNode, WorldLanguageNode  # noqa: F401, E402
+
+ImageSchemaNode._force_requires_efferent_terminus
+WorldLanguageNode._invariants
+
+# HACL Surface Registry — SurfaceSpec policy properties consulted by the Lens +
+# Compressibility Gate (subsequent HACL tasks) and asserted by the registry tests;
+# vulture does not scan tests and the Lens caller doesn't exist on main yet.
+from shared.compression.registry import SurfaceSpec  # noqa: F401, E402
+
+SurfaceSpec.lossy_allowed
+SurfaceSpec.lossless_allowed

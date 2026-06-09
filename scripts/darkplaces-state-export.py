@@ -28,6 +28,10 @@ DEFAULT_IMAGINATION_CURRENT_FILE = Path("/dev/shm/hapax-imagination/current.json
 DEFAULT_SHADER_PLAN_FILE = Path("/dev/shm/hapax-imagination/pipeline/plan.json")
 DEFAULT_GEM_RECRUITMENT_FILE = Path("/dev/shm/hapax-gem/recruitment.json")
 DEFAULT_GEM_FRAMES_FILE = Path("/dev/shm/hapax-gem/gem-frames.json")
+# Runtime drift-tuning knob: lives OUTSIDE the repo so source-activation rebuilds do
+# not reset it -> content/geo breathing magnitudes are editable live. Neutral (no
+# breathing) unless present with depth>0, so default behavior is unchanged.
+DEFAULT_DRIFT_TUNE_FILE = Path.home() / ".cache" / "hapax" / "screwm-drift-tune.json"
 DEFAULT_LEGACY_GEM_FRAMES_FILE = Path("/dev/shm/hapax-compositor/gem-frames.json")
 DEFAULT_RECENT_IMPINGEMENTS_FILE = Path("/dev/shm/hapax-compositor/recent-impingements.json")
 DEFAULT_RECENT_RECRUITMENT_FILE = Path("/dev/shm/hapax-compositor/recent-recruitment.json")
@@ -2164,6 +2168,26 @@ def build_visual_chain_lines(
             _clamp01(family_strengths["edge"] * 0.48 + spatial_pressure * 0.22),
         )
 
+    # CONTENT BREATHING (task #9): families pinned near-max -> coupling.qc UserVecs sit at clamp
+    # ceilings -> content CONSTANTLY blown/red, no perceived CHANGE. Ramp content drivers between a
+    # moderate "disoriented but legible" baseline and a strong "illegible but recognizable" peak.
+    # Neutral unless the tune file sets content_depth>0; quiet/non-slotdrift never touched.
+    _dt = _read_json(DEFAULT_DRIFT_TUNE_FILE)
+    # export_state's `now` is None on the live CLI path -> use wall-clock so the
+    # breathing envelope actually advances live (it only fired in tests before).
+    _now = time.time() if now is None else now
+    if is_live > 0.0:
+        _cd = float(_dt.get("content_depth", 0.0))
+        if _cd > 0.0:
+            _cb = float(_dt.get("content_baseline", 0.30))
+            _cp = float(_dt.get("content_period", 30.0)) or 30.0
+            _cenv = _clamp01(_cb + _cd * (1.0 - abs(2.0 * ((_now % _cp) / _cp) - 1.0)))
+            family_strengths = {k: _clamp01(v * _cenv) for k, v in family_strengths.items()}
+            color_pressure = _clamp01(color_pressure * _cenv)
+            noise_pressure = _clamp01(noise_pressure * _cenv)
+            drift_pressure = _clamp01(drift_pressure * _cenv)
+            feedback_pressure = _clamp01(feedback_pressure * _cenv)
+            aperture_pressure = _clamp01(aperture_pressure * _cenv)
     lines.update(
         {
             "visual-chain-noise.txt": f"{noise_pressure:.4f}",
@@ -2196,7 +2220,25 @@ def build_visual_chain_lines(
         lines[f"effect-drift-{family}.txt"] = f"{value:.4f}"
     for family, value in family_modes.items():
         lines[f"effect-drift-mode-{family}.txt"] = f"{value:.4f}"
-    lines.update(build_drift_geo_lines(spatial_pressure))
+    # INC-1: drive the GEOMETRY handles from a dynamic-range intensity, NOT the saturating
+    # spatial_pressure (sum over base 0.24) which pegged all six drift-geo-*.txt flat at 1.0 — geometry
+    # pinned at constant peak = no baseline->peak motion = no visible drift. This intensity (drift peak +
+    # kind variance + active ratio) varies with live slotdrift activity, so geometry modulates
+    # moderate->peak. spatial_pressure stays for the edge/compositing family synthesis above. The
+    # recognizability cap is the constant HAPAXDRIFT vertex clamp (hapax-live-texture.patch), unchanged.
+    geo_intensity = 0.0
+    if is_live > 0.0:
+        _geo_base = drift_strength_peak * 0.45 + kind_variance * 0.30 + active_ratio * 0.25
+        _gd = float(_dt.get("geo_depth", 0.0))
+        if _gd > 0.0:
+            _gb = float(_dt.get("geo_baseline", 0.35))
+            _gp = float(_dt.get("geo_period", 24.0)) or 24.0
+            _geo_base = _geo_base * _clamp01(
+                _gb + _gd * (1.0 - abs(2.0 * ((_now % _gp) / _gp) - 1.0))
+            )
+        geo_intensity = _clamp01(_geo_base)
+    lines["effect-drift-intensity.txt"] = f"{geo_intensity:.4f}"
+    lines.update(build_drift_geo_lines(geo_intensity))
     return lines
 
 

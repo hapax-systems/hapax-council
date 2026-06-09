@@ -89,8 +89,15 @@ Daimonion (role.broadcast) → input.loopback.sink.role.broadcast-output
 ```
 
 Only the **wet** (S-4-processed) voice reaches broadcast; the dry send leaves the PC
-and never enters the sum bus. Music ducking: `hapax-audio-ducker` lowers
-`hapax-music-loudnorm` gain when operator-VAD or TTS is active.
+and never enters the sum bus. Music ducking: `hapax-audio-ducker` writes the SSOT
+duck depth (operator-VAD −12 dB, TTS / hosting-segment −8 dB, deepest-duck-wins) to
+the dedicated `hapax-music-duck-mk5` node inserted between `hapax-music-loudnorm` and
+the `livestream-tap` sum (`music-loudnorm → music-duck-mk5 → livestream-tap`,
+reconciler-owned). It does **not** lower the `hapax-music-loudnorm` 0.35 passthrough
+gain — that node is a pinned audited passthrough, and co-opting it would conflate
+loudness-normalization with ducking. Default duck gain 1.0 = transparent (a dead
+daemon fails OPEN; music never silenced). Deploying the `hapax-music-duck-mk5` conf
+is alpha-gated: the node must exist live before the regenerated link map is applied.
 
 ## 5. Critical Invariants (validated by `scripts/hapax-audio-routing-check`)
 
@@ -114,7 +121,12 @@ and never enters the sum bus. Music ducking: `hapax-audio-ducker` lowers
 - **Reconciler** `hapax-audio-reconciler.service` — reads
   `~/.config/hapax/audio-link-map.conf` + `audio-forbidden-links.conf`, ticks ~2 s,
   creates missing desired links, destroys forbidden ones.
-- **Ducker** `hapax-audio-ducker.service` — lowers music gain under operator/TTS voice.
+- **Ducker** `hapax-audio-ducker.service` — writes the SSOT duck depth to the
+  dedicated `hapax-music-duck-mk5` node under operator voice, broadcast TTS, or a
+  live hosting segment (deepest-duck-wins). Single duck owner; no software TTS duck
+  on mk5 (Hapax voice is analog via the S-4 insert). Reads the live mk5 Rode
+  (`hapax-mic-rode-capture`) for operator VAD. Resolves node names from the topology
+  SSOT (fail-open) so a future migration is picked up, not silently re-broken.
 - **Dynamic router** `hapax-audio-router.service` — 5 Hz arbiter; recalls S-4 Bypass
   voice scenes over MIDI (Evil Pet decommissioned 2026-06).
 - **Faderfox MX12 bridge** `hapax-faderfox-bridge.service` — `agents/faderfox_bridge.py`
@@ -131,6 +143,7 @@ and never enters the sum bus. Music ducking: `hapax-audio-ducker` lowers
 | Akai MPC Live III | 2026-06 | USB interface; replaced by MOTU mk5 |
 | "Evil Pet" hardware FX | 2026-06 | Replaced by the Torso S-4 analog insert |
 | hapax-tts-duck (software ducker) | 2026-04-23 | Replaced by MPC-routed voice chain (now mk5) |
+| hapax-music-duck (L-12 USB return ducker) | 2026-06 | Replaced by `hapax-music-duck-mk5` (governed mk5-native node, reconciler-owned) |
 
 ## 8. Key Files
 

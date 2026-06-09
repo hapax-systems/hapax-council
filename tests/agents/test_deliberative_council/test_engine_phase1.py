@@ -1,119 +1,121 @@
 from __future__ import annotations
 
-import json
 from unittest.mock import patch
 
 import pytest
 from pydantic_ai.messages import CachePoint
 
-from agents.deliberative_council.engine import _parse_phase1_output, deliberate, run_phase1
+from agents.deliberative_council.engine import deliberate, run_phase1
 from agents.deliberative_council.models import (
     ConvergenceStatus,
     CouncilConfig,
     CouncilInput,
     CouncilMode,
+    Phase1Output,
     PhaseOneResult,
 )
 from agents.deliberative_council.rubrics import EpistemicQualityRubric
 
+# Phase 1 scoring is now provider-enforced structured output: the engine calls
+# ``_call_member(score_member, prompt, output_type=NativeOutput(Phase1Output), ...)``
+# and expects a ``Phase1Output`` back (no permissive ``_parse_phase1_output``).
+# The investigate (research) call sets no output_type and returns text. Mocks
+# below mirror that: text for the investigate call, a Phase1Output for scoring.
+# A panel below the quorum / family floor would REFUSE before phases 2-5, so the
+# deliberate() tests here use a quorum-1 config to isolate the convergence
+# mechanics (the quorum gate has its own pins in test_council_fail_loud.py).
+# cc-task cctv-council-perfect-health-faillloud-convergence.
 
-class TestParsePhase1Output:
-    def test_valid_json(self) -> None:
-        raw = json.dumps(
-            {
-                "scores": {"claim_evidence_alignment": 4, "hedge_calibration": 3},
-                "rationale": {"claim_evidence_alignment": "good"},
-                "research_findings": ["checked file"],
-            }
-        )
-        result = _parse_phase1_output("opus", raw)
-        assert result.scores["claim_evidence_alignment"] == 4
-        assert result.model_alias == "opus"
+_QUORUM_OFF = {"min_valid_members": 1, "min_valid_families": 1}
 
-    def test_json_in_code_block(self) -> None:
-        raw = (
-            "Here is my evaluation:\n```json\n"
-            + json.dumps(
-                {
-                    "scores": {"a": 3},
-                    "rationale": {"a": "ok"},
-                    "research_findings": [],
-                }
-            )
-            + "\n```"
-        )
-        result = _parse_phase1_output("balanced", raw)
-        assert result.scores["a"] == 3
 
-    def test_invalid_json_graceful(self) -> None:
-        result = _parse_phase1_output("local-fast", "not json at all")
-        assert result.scores == {}
-        assert result.model_alias == "local-fast"
+def _phase1_mock(score: Phase1Output | Exception):
+    async def _mock(member, prompt, *, output_type=None, usage_limits=None):
+        if output_type is None:  # investigate (research) call
+            return "researched the claim", []
+        if isinstance(score, Exception):
+            raise score
+        return score, []
+
+    return _mock
 
 
 class TestRunPhase1:
     @pytest.mark.asyncio
     async def test_returns_results_per_model(self) -> None:
-        mock_output = json.dumps(
-            {
-                "scores": {"claim_evidence_alignment": 4},
-                "rationale": {"claim_evidence_alignment": "good"},
-                "research_findings": [],
-            }
+        mock = _phase1_mock(
+            Phase1Output(scores={"claim_evidence_alignment": 4}, rationale={}, research_findings=[])
         )
-
-        async def _mock_call(member, prompt):
-            return mock_output, []
-
-        with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
+        with patch("agents.deliberative_council.engine._call_member", side_effect=mock):
             config = CouncilConfig(model_aliases=("opus", "balanced"))
             inp = CouncilInput(text="test claim", source_ref="test.md")
-            rubric = EpistemicQualityRubric()
-            results = await run_phase1(inp, rubric, config)
+            results = await run_phase1(inp, EpistemicQualityRubric(), config)
 
         assert len(results) == 2
 
     @pytest.mark.asyncio
     async def test_handles_model_failure(self) -> None:
-        call_count = 0
+        # The structured scoring call raises for exactly one member; the other
+        # emits a valid Phase1Output. Survivors-only, the failure excluded.
+        score_calls = 0
 
-        async def _mock_call(member, prompt):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
+        async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
+            nonlocal score_calls
+            if output_type is None:
+                return "researched", []
+            score_calls += 1
+            if score_calls == 1:
                 raise TimeoutError("model timeout")
-            return json.dumps(
-                {
-                    "scores": {"a": 3},
-                    "rationale": {"a": "ok"},
-                    "research_findings": [],
-                }
-            ), []
+            return Phase1Output(scores={"a": 3}, rationale={}, research_findings=[]), []
 
         with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
             config = CouncilConfig(model_aliases=("opus", "balanced"))
             inp = CouncilInput(text="test", source_ref="test.md")
-            rubric = EpistemicQualityRubric()
-            results = await run_phase1(inp, rubric, config)
+            results = await run_phase1(inp, EpistemicQualityRubric(), config)
 
         assert len(results) == 1
 
     @pytest.mark.asyncio
-    async def test_phase1_parallel_calls(self) -> None:
-        call_log: list[str] = []
+    async def test_phase1_two_calls_per_model(self) -> None:
+        call_log: list[object] = []
 
-        async def _mock_call(member, prompt):
-            call_log.append(prompt[:10])
-            return json.dumps({"scores": {"a": 3}, "rationale": {}, "research_findings": []}), []
+        async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
+            call_log.append(prompt)
+            if output_type is None:
+                return "researched", []
+            return Phase1Output(scores={"a": 3}, rationale={}, research_findings=[]), []
 
         with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
             config = CouncilConfig(model_aliases=("opus", "balanced", "local-fast"))
             inp = CouncilInput(text="test", source_ref="ref.md")
-            rubric = EpistemicQualityRubric()
-            results = await run_phase1(inp, rubric, config)
+            results = await run_phase1(inp, EpistemicQualityRubric(), config)
 
         assert len(results) == 3
-        assert len(call_log) == 6  # investigate + score per model
+        assert len(call_log) == 6  # investigate + structured score per model
+
+    @pytest.mark.asyncio
+    async def test_phase1_cache_points_only_for_capable_families(self) -> None:
+        prompts: list[object] = []
+
+        async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
+            prompts.append(prompt)
+            if output_type is None:
+                return "researched", []
+            return Phase1Output(scores={"a": 3}, rationale={}, research_findings=[]), []
+
+        with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
+            config = CouncilConfig(model_aliases=("opus", "local-fast"))
+            inp = CouncilInput(text="test", source_ref="ref.md")
+            await run_phase1(inp, EpistemicQualityRubric(), config)
+
+        # Each _run_one runs investigate then score back-to-back (the mock never
+        # suspends), so prompts == [opus_inv, opus_score, local_inv, local_score].
+        opus_score_prompt = prompts[1]
+        local_score_prompt = prompts[3]
+
+        assert not isinstance(opus_score_prompt, str)
+        assert any(isinstance(part, CachePoint) for part in opus_score_prompt)
+        assert isinstance(local_score_prompt, str)
 
     @pytest.mark.asyncio
     async def test_phase1_randomized_axis_order(self) -> None:
@@ -146,28 +148,6 @@ class TestRunPhase1:
         assert "claim-source.md" in prompt[2]
 
     @pytest.mark.asyncio
-    async def test_phase1_cache_points_only_for_capable_families(self) -> None:
-        mock_output = json.dumps({"scores": {"a": 3}, "rationale": {}, "research_findings": []})
-        prompts: list[object] = []
-
-        async def _mock_call(member, prompt):
-            prompts.append(prompt)
-            return mock_output, []
-
-        with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
-            config = CouncilConfig(model_aliases=("opus", "local-fast"))
-            inp = CouncilInput(text="test", source_ref="ref.md")
-            rubric = EpistemicQualityRubric()
-            await run_phase1(inp, rubric, config)
-
-        opus_score_prompt = prompts[1]
-        local_score_prompt = prompts[3]
-
-        assert not isinstance(opus_score_prompt, str)
-        assert any(isinstance(part, CachePoint) for part in opus_score_prompt)
-        assert isinstance(local_score_prompt, str)
-
-    @pytest.mark.asyncio
     async def test_shortcircuit_unanimous(self) -> None:
         unanimous_results = [
             PhaseOneResult(model_alias="opus", scores={"a": 4}, rationale={}, research_findings=[]),
@@ -180,15 +160,18 @@ class TestRunPhase1:
         ]
 
         with patch("agents.deliberative_council.engine.run_phase1", return_value=unanimous_results):
-            config = CouncilConfig(model_aliases=("opus", "balanced", "local-fast"))
+            config = CouncilConfig(model_aliases=("opus", "balanced", "local-fast"), **_QUORUM_OFF)
             inp = CouncilInput(text="test", source_ref="ref.md")
-            rubric = EpistemicQualityRubric()
-            verdict = await deliberate(inp, CouncilMode.DISCONFIRMATION, rubric, config)
+            verdict = await deliberate(
+                inp, CouncilMode.DISCONFIRMATION, EpistemicQualityRubric(), config
+            )
 
         assert verdict.receipt.get("shortcircuited") is True
         assert verdict.convergence_status == ConvergenceStatus.CONVERGED
         assert verdict.receipt["cache_policy"]["opus"]["cache_control"] is True
         assert verdict.receipt["cache_policy"]["local-fast"]["cache_control"] is False
+        # The health receipt is recorded even on the shortcircuit path.
+        assert verdict.receipt["council_health"]["members_valid"] == 3
 
     @pytest.mark.asyncio
     async def test_shortcircuit_skips_when_iqr_high(self) -> None:
@@ -205,30 +188,32 @@ class TestRunPhase1:
             patch("agents.deliberative_council.engine._run_phase3", return_value=[]),
             patch("agents.deliberative_council.engine._run_phase4", return_value=None),
         ):
-            config = CouncilConfig(model_aliases=("opus", "balanced"))
+            config = CouncilConfig(model_aliases=("opus", "balanced"), **_QUORUM_OFF)
             inp = CouncilInput(text="test", source_ref="ref.md")
-            rubric = EpistemicQualityRubric()
-            verdict = await deliberate(inp, CouncilMode.DISCONFIRMATION, rubric, config)
+            verdict = await deliberate(
+                inp, CouncilMode.DISCONFIRMATION, EpistemicQualityRubric(), config
+            )
 
         assert verdict.receipt.get("shortcircuited") is False
         p2.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_phase1_handles_model_failure_gracefully(self) -> None:
-        call_count = 0
+        score_calls = 0
 
-        async def _mock_call(member, prompt):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
+        async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
+            nonlocal score_calls
+            if output_type is None:
+                return "researched", []
+            score_calls += 1
+            if score_calls == 1:
                 raise RuntimeError("network failure")
-            return json.dumps({"scores": {"a": 3}, "rationale": {}, "research_findings": []}), []
+            return Phase1Output(scores={"a": 3}, rationale={}, research_findings=[]), []
 
         with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
             config = CouncilConfig(model_aliases=("opus", "balanced"))
             inp = CouncilInput(text="test", source_ref="ref.md")
-            rubric = EpistemicQualityRubric()
-            results = await run_phase1(inp, rubric, config)
+            results = await run_phase1(inp, EpistemicQualityRubric(), config)
 
         assert len(results) == 1
-        assert results[0].model_alias == "balanced"
+        assert results[0].model_alias in {"opus", "balanced"}

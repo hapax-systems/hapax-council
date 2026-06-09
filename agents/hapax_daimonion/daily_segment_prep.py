@@ -26,7 +26,8 @@ import os
 import re
 import re as _re
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -99,6 +100,12 @@ from shared.segment_quality_actionability import (
     validate_layout_responsibility,
     validate_segment_actionability,
 )
+from shared.source_packet import (
+    ResolvedSourceSet,
+    ThesisObject,
+    source_provenance_sha256,
+    validate_cited_handles,
+)
 
 log = logging.getLogger(__name__)
 
@@ -122,6 +129,13 @@ PREP_BUDGET_S = float(os.environ.get("HAPAX_SEGMENT_PREP_BUDGET_S", "6600"))  # 
 # segment for iterative refinement.  Each segment gets an initial
 # composition pass PLUS a critic/rewrite pass.
 MAX_SEGMENTS = int(os.environ.get("HAPAX_SEGMENT_PREP_MAX", "4"))
+
+# Plan-time informed-authorship budgets. Recruitment + thesis authoring run
+# BEFORE planning, so they are bounded and measured — a slate-wide recruit or a
+# thesis-per-candidate sweep must not blow PREP_BUDGET_S.
+RECRUIT_BUDGET_S = float(os.environ.get("HAPAX_SEGMENT_RECRUIT_BUDGET_S", "600"))  # 10 min
+THESIS_BUDGET_S = float(os.environ.get("HAPAX_SEGMENT_THESIS_BUDGET_S", "600"))  # 10 min
+RECRUIT_MAX_CANDIDATES = int(os.environ.get("HAPAX_SEGMENT_RECRUIT_MAX_CANDIDATES", "6"))
 # Cap on how many eligible candidates the post-generation selector promotes into the
 # release manifest. The bound is enforced at SELECTION; the runtime pool loader keeps no
 # independent cap (it loads exactly what the manifest names).
@@ -534,9 +548,18 @@ def _build_full_segment_prompt(
         "Compose the COMPLETE narration for this segment — one SUBSTANTIAL block of "
         "broadcast-ready prose per beat. Also emit a model-authored "
         "segment_prep_contract object for the final script.\n\n"
+        "== SOURCE CITATION — CITE ONLY RECRUITED HANDLES ==\n"
+        "The RECRUITED SOURCES list in the research section below is the ONLY set of\n"
+        "sources you may cite. Cite a source by its handle (src:N). Do NOT invent\n"
+        "sources, vault paths, papers, or refs — a citation that is not a recruited\n"
+        "handle is REFUSED, not accepted. If the recruited sources cannot support a\n"
+        "claim, drop the claim; never fabricate a source to fill.\n\n"
         "== REQUIRED CONTRACT FIELDS (validators reject if missing) ==\n"
         "The segment_prep_contract MUST include ALL of these:\n"
-        "- source_packet_refs: at least one source with evidence_refs pointing to vault/rag\n"
+        "- cited_handles: the src:N handles you actually cited (members of the\n"
+        "  RECRUITED SOURCES list); every claim's grounds must use these handles\n"
+        "- source_packet_refs: one packet per cited handle, using the src:N handle as\n"
+        "  both source_ref and evidence_refs\n"
         "- role_live_bit_mechanic: how this segment works as a live bit\n"
         "- event_object: the specific thing being ranked/discussed/reacted-to\n"
         "- audience_job: what the audience does during this segment\n"
@@ -564,7 +587,8 @@ def _build_full_segment_prompt(
         '    "Second beat — continues with depth and names sources with context..."\n'
         "  ],\n"
         '  "segment_prep_contract": {\n'
-        '    "source_packet_refs": [{"id": "packet:topic-sources", "source_ref": "vault:research-notes", "evidence_refs": ["vault:research-notes"]}],\n'
+        '    "cited_handles": ["src:0", "src:1"],\n'
+        '    "source_packet_refs": [{"id": "packet:src-0", "source_ref": "src:0", "evidence_refs": ["src:0"]}, {"id": "packet:src-1", "source_ref": "src:1", "evidence_refs": ["src:1"]}],\n'
         '    "role_live_bit_mechanic": "ranked tier placement with source-backed criteria",\n'
         '    "event_object": "the specific items being ranked",\n'
         '    "audience_job": "predict placements, challenge via chat",\n'
@@ -577,12 +601,12 @@ def _build_full_segment_prompt(
             if role_value == "top_10"
             else ""
         )
-        + '    "claim_map": [{"claim_id": "claim:segment:1", "beat_id": "beat-1", "claim_text": "the source-backed claim spoken in beat one", "grounds": ["vault:research-notes"], "source_consequence": "vault:research-notes changes the ranking confidence"}],\n'
-        '    "source_consequence_map": [{"source_ref": "vault:research-notes", "claim_ids": ["claim:segment:1"], "changed_field": "ranking confidence", "failure_if_missing": "quarantine before release"}],\n'
+        + '    "claim_map": [{"claim_id": "claim:segment:1", "beat_id": "beat-1", "claim_text": "the source-backed claim spoken in beat one", "grounds": ["src:0"], "source_consequence": "src:0 changes the ranking confidence"}],\n'
+        '    "source_consequence_map": [{"source_ref": "src:0", "claim_ids": ["claim:segment:1"], "changed_field": "ranking confidence", "failure_if_missing": "quarantine before release"}],\n'
         '    "actionability_map": [{"action_id": "action:segment:1", "beat_id": "beat-1", "claim_ids": ["claim:segment:1"], "kind": "tier_chart", "object": "the ranked item", "operation": "place the item under the stated criterion", "feedback": "the placement changes the public chart", "fallback": "narrow to spoken source argument if readback is unavailable"}],\n'
-        '    "layout_need_map": [{"layout_need_id": "need:segment:1", "beat_id": "beat-1", "claim_ids": ["claim:segment:1"], "action_ids": ["action:segment:1"], "source_packet_refs": ["vault:research-notes"], "need_kind": "tier_visual", "why_visible": "viewer must inspect the placement consequence"}],\n'
+        '    "layout_need_map": [{"layout_need_id": "need:segment:1", "beat_id": "beat-1", "claim_ids": ["claim:segment:1"], "action_ids": ["action:segment:1"], "source_packet_refs": ["src:0"], "need_kind": "tier_visual", "why_visible": "viewer must inspect the placement consequence"}],\n'
         '    "readback_obligations": [{"readback_id": "readback:segment:1", "layout_need_id": "need:segment:1", "must_show": "the ranked item and cited source", "must_not_claim": "layout success before runtime readback", "success_signal": "rendered readback names the same item and source", "failure_signal": "missing or mismatched readback", "timeout_or_ttl": "30s"}],\n'
-        '    "loop_cards": [{"loop_card_version": 1, "loop_id": "loop:segment:1", "admissibility": "feedforward_plan", "plant_boundary": "future runtime delivery for this segment", "controlled_variable": "layout_need", "reference_signal": "show the source-backed placement", "sensor_ref": "readback:segment:1", "actuator_ref": "runtime_layout_controller", "sample_period_s": 1.0, "latency_budget_s": 30.0, "readback_ref": "readback:segment:1", "fallback_mode": "narrow to spoken argument", "authority_boundary": "prep prior only; runtime must close readback", "privacy_ceiling": "public_archive_candidate", "evidence_refs": ["vault:research-notes"], "disturbance_refs": ["stale_readback"], "failure_mode": "runtime readback missing or mismatched", "limits": ["prepared artifact declares the reference but cannot command layout"]}],\n'
+        '    "loop_cards": [{"loop_card_version": 1, "loop_id": "loop:segment:1", "admissibility": "feedforward_plan", "plant_boundary": "future runtime delivery for this segment", "controlled_variable": "layout_need", "reference_signal": "show the source-backed placement", "sensor_ref": "readback:segment:1", "actuator_ref": "runtime_layout_controller", "sample_period_s": 1.0, "latency_budget_s": 30.0, "readback_ref": "readback:segment:1", "fallback_mode": "narrow to spoken argument", "authority_boundary": "prep prior only; runtime must close readback", "privacy_ceiling": "public_archive_candidate", "evidence_refs": ["src:0"], "disturbance_refs": ["stale_readback"], "failure_mode": "runtime readback missing or mismatched", "limits": ["prepared artifact declares the reference but cannot command layout"]}],\n'
         '    "role_excellence_plan": {"live_event_plan": {"bit_engine": "...", "audience_job": "...", "payoff": "..."}}\n'
         "  }\n"
         "}\n\n"
@@ -656,6 +680,184 @@ def _retrieve_broad_fore_understanding() -> list[dict[str, Any]]:
     except Exception:
         log.debug("_retrieve_broad_fore_understanding: unavailable", exc_info=True)
         return []
+
+
+def _humanize_note_stem(stem: str) -> str:
+    return re.sub(r"[-_]+", " ", stem).strip()
+
+
+def _recent_vault_topics(*, limit: int) -> list[str]:
+    """Recent operator vault note stems as live candidate topics.
+
+    Source-consequences (fore-understanding) is near-dead, so candidate topics
+    are seeded from the live vault corpus — most-recently-touched operator
+    notes — rather than from an empty channel.
+    """
+    try:
+        from agents.programme_authors.asset_resolver import (
+            VAULT_AREAS,
+            VAULT_PROJECTS,
+            VAULT_RESOURCES,
+        )
+    except Exception:
+        return []
+    notes: list[tuple[float, str]] = []
+    for root in (VAULT_AREAS, VAULT_PROJECTS, VAULT_RESOURCES):
+        try:
+            if not root.exists():
+                continue
+            for path in root.rglob("*.md"):
+                try:
+                    notes.append((path.stat().st_mtime, path.stem))
+                except OSError:
+                    continue
+        except OSError:
+            continue
+    notes.sort(reverse=True)
+    topics: list[str] = []
+    seen: set[str] = set()
+    for _mtime, stem in notes:
+        topic = _humanize_note_stem(stem)
+        key = topic.lower()
+        if topic and key not in seen:
+            seen.add(key)
+            topics.append(topic)
+        if len(topics) >= limit:
+            break
+    return topics
+
+
+def _candidate_seed_topics(
+    fore_understanding: list[dict[str, Any]] | None, *, limit: int
+) -> list[str]:
+    """Derive candidate seed topics for plan-time recruitment.
+
+    Prefers prior source-consequence topics (fore-understanding) and supplements
+    from the live vault when that channel is thin — routing around the near-dead
+    source-consequences channel rather than wiring its emptiness.
+    """
+    seeds: list[str] = []
+    seen: set[str] = set()
+    for entry in fore_understanding or []:
+        if not isinstance(entry, dict):
+            continue
+        topic = str(entry.get("topic") or "").strip()
+        key = topic.lower()
+        if topic and key not in seen:
+            seen.add(key)
+            seeds.append(topic)
+        if len(seeds) >= limit:
+            return seeds
+    for topic in _recent_vault_topics(limit=limit):
+        key = topic.lower()
+        if key not in seen:
+            seen.add(key)
+            seeds.append(topic)
+        if len(seeds) >= limit:
+            break
+    return seeds
+
+
+def _gather_planner_channels() -> dict[str, Any]:
+    """Gather the live context channels for the planner; route around empty.
+
+    Reuses programme_loop's fail-safe gathers. An empty channel passes as
+    ``None`` (the planner renders "(unavailable)") with a signal log — we never
+    wire emptiness as if it were signal.
+    """
+    channels: dict[str, Any] = {
+        "perception": None,
+        "vault_state": None,
+        "profile": None,
+        "density_field": None,
+        "stream_biography": None,
+    }
+    try:
+        from agents.hapax_daimonion.programme_loop import (
+            _gather_density_field,
+            _gather_perception,
+            _gather_profile,
+            _gather_vault_state,
+        )
+
+        channels["perception"] = _gather_perception() or None
+        channels["vault_state"] = _gather_vault_state() or None
+        channels["profile"] = _gather_profile() or None
+        channels["density_field"] = _gather_density_field() or None
+    except Exception:
+        log.debug("daily_segment_prep: planner channel gather failed", exc_info=True)
+    try:
+        from shared.stream_biography import read_shm as _read_bio_shm
+
+        bio = _read_bio_shm()
+        summary = bio.to_planner_summary() if bio is not None else ""
+        channels["stream_biography"] = summary or None
+    except Exception:
+        log.debug("daily_segment_prep: stream biography gather failed", exc_info=True)
+    live = sorted(name for name, value in channels.items() if value)
+    log.info(
+        "daily_segment_prep: planner channels with signal: %s",
+        ", ".join(live) if live else "none (all routed around)",
+    )
+    return channels
+
+
+def _plan_time_context(
+    fore_understanding: list[dict[str, Any]] | None,
+    *,
+    llm_fn: Callable[[str], str],
+    recruit_budget_s: float,
+    thesis_budget_s: float,
+    max_candidates: int = RECRUIT_MAX_CANDIDATES,
+    now: Callable[[], float] = time.monotonic,
+) -> tuple[dict[str, Any], list[ThesisObject]]:
+    """Recruit resolved sources, gather channels, author theses — BEFORE planning.
+
+    The recruit-at-plan executor for the dominant 04:00 path. It resolves real
+    source material, authors a Toulmin thesis per recruited set (bound to ``src:N``
+    handles), and assembles the informed-authorship kwargs for ``ProgrammePlanner.plan``
+    so Hapax authors FROM resolved sources rather than inventing handles blind.
+    Bounded by ``recruit_budget_s`` and ``thesis_budget_s`` so plan-time informing
+    cannot blow the prep budget. Returns ``(planner_kwargs, theses)``.
+    """
+    from agents.hapax_daimonion.angle_resolver import recruit_source_sets
+    from agents.programme_manager.planner import author_thesis
+
+    seeds = _candidate_seed_topics(fore_understanding, limit=max_candidates)
+    resolved_sources = recruit_source_sets(
+        seeds,
+        max_candidates=max_candidates,
+        budget_s=recruit_budget_s,
+        now=now,
+    )
+
+    theses: list[ThesisObject] = []
+    thesis_start = now()
+    for source_set in resolved_sources:
+        if now() - thesis_start >= thesis_budget_s:
+            log.info(
+                "daily_segment_prep: thesis budget %.0fs reached after %d thesis/es",
+                thesis_budget_s,
+                len(theses),
+            )
+            break
+        thesis = author_thesis(source_set, llm_fn=llm_fn)
+        binding = validate_cited_handles(source_set, thesis.grounds)
+        if not binding["ok"]:
+            log.warning(
+                "daily_segment_prep: thesis cited unresolved handles %s",
+                binding["unresolved"],
+            )
+        theses.append(thesis)
+
+    channels = _gather_planner_channels()
+    planner_kwargs: dict[str, Any] = {"resolved_sources": resolved_sources, **channels}
+    log.info(
+        "daily_segment_prep: plan-time context — %d resolved set(s), %d thesis/es",
+        len(resolved_sources),
+        len(theses),
+    )
+    return planner_kwargs, theses
 
 
 def _prep_model() -> str:
@@ -1507,11 +1709,102 @@ def _append_candidate_ledger(prep_dir: Path, payload: dict[str, Any], artifact_p
         fh.write(json.dumps(row, sort_keys=True) + "\n")
 
 
+def _format_recruited_source_menu(resolved_source_set: ResolvedSourceSet) -> str:
+    """Format the recruited set as a citable menu for the composer's seed.
+
+    Each line binds a handle (``src:N`` — the ONLY thing the composer may cite) to
+    its real recruited ref and a snippet. The composer cites by handle; it cannot
+    invent a source because the citation space IS this closed menu.
+    """
+    lines = [
+        "== RECRUITED SOURCES (cite ONLY these) ==",
+        "Cite sources by their handle (src:N) in the contract's `cited_handles`, and",
+        "use the recruited ref shown below as the claim `grounds`. Do NOT invent refs",
+        "or cite anything not listed here — fabricated citations are refused.",
+    ]
+    for index, packet in enumerate(resolved_source_set.packets):
+        handle = f"src:{index}"
+        lines.append(f"  {handle}  [{packet.source_ref}]  {packet.snippet[:240]}")
+    return "\n".join(lines)
+
+
+def _refuse_no_resolved_sources(
+    prep_dir: Path,
+    *,
+    prep_session: dict[str, Any],
+    programme_id: str,
+    role: str,
+    topic: str,
+    segment_beats: list[str],
+    topic_str: str,
+) -> None:
+    """Record a first-class no-candidate REFUSAL when nothing resolves (no fabrication).
+
+    Wires ``inquiry_blackboard``: an unfillable ``SourceGap`` and a
+    ``NoCandidateReason`` are recorded, and quiescence (no positive bid left to
+    pursue) confirms the terminal. Open-world / current-event topics with no wired
+    recruiter terminate here too — refused, recorded as data, never invented.
+    """
+    from shared.inquiry_blackboard import (
+        BlackboardState,
+        NoCandidateReason,
+        SourceGap,
+        detect_quiescence,
+    )
+
+    source_gap = SourceGap(
+        gap_id=f"gap:{programme_id}:sources",
+        description=f"no recruited source resolved for topic: {topic_str[:160]}",
+        claim_it_changes="every claim in the segment",
+        risk=1.0,
+    )
+    no_candidate = NoCandidateReason(
+        reason_id=f"no_resolved_sources:{programme_id}",
+        description=(
+            "recruitment returned no content-hash-bound sources; the segment is "
+            "refused rather than fabricated to fill"
+        ),
+        source_gaps=[source_gap.gap_id],
+        budget_exhausted=False,
+    )
+    # No bid can fill the gap (no wired recruiter for this topic) — the blackboard
+    # has quiesced with a recorded no-candidate reason: a terminal, not a loop.
+    quiescent_terminal = detect_quiescence(
+        BlackboardState(gaps=[], bids=[], no_candidate_reasons=[no_candidate]),
+        risk_threshold=0.5,
+    )
+    log.warning(
+        "prep_segment: no resolved sources for %s — refusing (no fabricate-to-fill)",
+        programme_id,
+    )
+    _write_prep_diagnostic_outcome(
+        prep_dir,
+        prep_session=prep_session,
+        programme_id=programme_id,
+        role=role,
+        topic=topic,
+        segment_beats=segment_beats,
+        terminal_status="no_candidate",
+        terminal_reason="no_resolved_sources",
+        not_loadable_reason=(
+            "no recruited source resolved; segment refused rather than fabricated"
+        ),
+        no_candidate_metadata={
+            "candidate_source": "recruit_source_set",
+            "candidate_count": 0,
+            "no_candidate_reason": no_candidate.model_dump(mode="json"),
+            "source_gap": source_gap.model_dump(mode="json"),
+            "recruiter_quiescent_terminal": quiescent_terminal,
+        },
+    )
+
+
 def prep_segment(
     programme: Any,
     prep_dir: Path,
     *,
     prep_session: dict[str, Any] | None = None,
+    deadline_monotonic: float | None = None,
 ) -> Path | None:
     """Compose the full narration script for one programme and save it.
 
@@ -1634,40 +1927,62 @@ def prep_segment(
 
     log.info("prep_segment: composing %s (%s, %d beats)", prog_id, role, len(beats))
 
-    # Pass 0: Angle resolution — gather competing sources, identify thesis + tension
+    topic_str = _extract_topic_string(programme) or topic
+
+    # Pass 0: RECRUIT the closed, content-hash-bound citable source set BEFORE
+    # composition. Claims are constructed from RESOLVED handles into this set; a
+    # claim with no recruited source is REFUSED, never fabricated to fill. Open-
+    # world / current-event topics with no wired recruiter resolve nothing here
+    # and refuse until a recruiter exists (recorded as data, never invented).
+    resolved_source_set: ResolvedSourceSet | None = None
+    try:
+        from agents.hapax_daimonion.angle_resolver import recruit_source_set
+
+        if topic_str:
+            resolved_source_set = recruit_source_set(topic_str)
+    except Exception:
+        log.warning("prep_segment: source recruitment failed", exc_info=True)
+
+    if resolved_source_set is None:
+        _refuse_no_resolved_sources(
+            prep_dir,
+            prep_session=prep_session,
+            programme_id=prog_id,
+            role=role,
+            topic=topic,
+            segment_beats=list(beats),
+            topic_str=topic_str,
+        )
+        return None
+
+    # Downstream uses the extracted topic (declared_topic or narrative_beat), as
+    # before — recruitment confirmed it resolves to real sources.
+    topic = topic_str
+
+    # Pass 0.5: advisory angle prose (best-effort; NOT load-bearing — the citable
+    # surface is the recruited set above, not this thesis/tension hint).
     angle_ctx = ""
     try:
         from agents.hapax_daimonion.angle_resolver import format_angle_for_composer, resolve_angle
 
-        topic = _extract_topic_string(programme)
-        if topic:
-            angle = resolve_angle(topic)
+        if topic_str:
+            angle = resolve_angle(topic_str)
             if angle and angle.source_count > 0:
                 angle_ctx = format_angle_for_composer(angle)
-                log.info(
-                    "prep_segment: angle resolved — %d supporting, %d challenging sources",
-                    len(angle.supporting_sources),
-                    len(angle.challenging_sources),
-                )
     except Exception:
-        log.warning("prep_segment: angle resolution failed, proceeding without", exc_info=True)
+        log.warning("prep_segment: advisory angle failed, proceeding without", exc_info=True)
 
-    # Pass 0.5: Research enrichment — deepen angle sources with research tools
-    research_ctx = ""
-    if angle_ctx:
-        try:
-            research_ctx = _research_enrich_angle(angle_ctx, _extract_topic_string(programme) or "")
-        except Exception:
-            log.warning("prep_segment: research enrichment failed", exc_info=True)
-
-    # Pass 1: Initial composition
+    # Pass 1: Initial composition — cite ONLY recruited handles (menu in the seed).
     seed = _build_seed(programme)
     if angle_ctx:
         seed = f"{seed}\n\n{angle_ctx}" if seed else angle_ctx
-    if research_ctx:
-        seed = f"{seed}\n\n{research_ctx}"
+    source_menu = _format_recruited_source_menu(resolved_source_set)
+    seed = f"{seed}\n\n{source_menu}" if seed else source_menu
     prompt = _build_full_segment_prompt(programme, seed)
     source_hashes = _source_hashes(programme, seed=seed, prompt=prompt)
+    source_hashes["resolved_source_provenance_sha256"] = source_provenance_sha256(
+        resolved_source_set
+    )
     raw = _call_llm(
         prompt,
         prep_session=prep_session,
@@ -1730,22 +2045,52 @@ def prep_segment(
         avg_chars,
     )
 
-    # Pass 1.5: Council coherence check — reject segments with no narrative force
-    coherence_passed = True
-    try:
-        coherence_passed, coherence_feedback = _council_coherence_check(
-            "\n\n".join(script), prog_id
+    # Pass 1.5: Council coherence check. A degraded / unavailable / REFUSED
+    # council is a TERMINAL no-release (fail-LOUD) — never a soft feedback inject
+    # (the prior fail-open let a down council wave the segment through). A HEALTHY
+    # council with low coherence injects feedback into refinement (recoverable).
+    # council_decisions accumulates the council audit receipt for the manifest.
+    council_decisions: dict[str, Any] = {}
+    if _prep_deadline_exceeded(
+        deadline_monotonic,
+        prep_dir=prep_dir,
+        prep_session=prep_session,
+        programme_id=prog_id,
+        role=role,
+        topic=topic,
+        beats=beats,
+        council_decisions=council_decisions,
+        phase="coherence_check",
+    ):
+        return None
+    coherence_outcome = _council_coherence_check("\n\n".join(script), prog_id)
+    council_decisions["coherence"] = coherence_outcome.council_decisions
+    if coherence_outcome.refused:
+        log.warning("prep_segment: council coherence REFUSED for %s — no release", prog_id)
+        _emit_council_degradation_signal(prog_id, "coherence", coherence_outcome.council_decisions)
+        _append_council_decisions_ledger(
+            prep_dir, prog_id, council_decisions, terminal_status="refused_no_release"
         )
-        if not coherence_passed and coherence_feedback:
-            log.warning(
-                "prep_segment: coherence check failed for %s, injecting feedback into refinement",
-                prog_id,
-            )
-            seed = f"{seed}\n\n## Council Coherence Feedback\n{coherence_feedback}"
-            # A3: carry the coherence rationale to the next batch's planner too.
-            _record_substance_feedback(prep_session, prog_id, coherence_feedback)
-    except Exception:
-        log.warning("prep_segment: coherence check failed", exc_info=True)
+        _write_prep_diagnostic_outcome(
+            prep_dir,
+            prep_session=prep_session,
+            programme_id=prog_id,
+            role=role,
+            topic=topic,
+            segment_beats=list(beats),
+            terminal_status="refused_no_release",
+            terminal_reason="council_degraded_refused_no_release",
+            not_loadable_reason="council degraded — coherence could not be certified",
+            refusal_metadata={"council_decisions": council_decisions},
+        )
+        return None
+    if not coherence_outcome.passed and coherence_outcome.feedback:
+        log.warning(
+            "prep_segment: low coherence for %s, injecting feedback into refinement", prog_id
+        )
+        seed = f"{seed}\n\n## Council Coherence Feedback\n{coherence_outcome.feedback}"
+        # A3: carry the coherence rationale to the next batch's planner too.
+        _record_substance_feedback(prep_session, prog_id, coherence_outcome.feedback)
 
     # Pass 2: Iterative refinement
     refine_result = _refine_script(
@@ -1779,6 +2124,18 @@ def prep_segment(
     script = _repair_live_event_payoff(script)
 
     # Pass 3: Council disconfirmation — adversarially test material claims
+    if _prep_deadline_exceeded(
+        deadline_monotonic,
+        prep_dir=prep_dir,
+        prep_session=prep_session,
+        programme_id=prog_id,
+        role=role,
+        topic=topic,
+        beats=beats,
+        council_decisions=council_decisions,
+        phase="disconfirmation",
+    ):
+        return None
     council_disconfirmation_result: dict[str, Any] | None = None
     try:
         from shared.segment_disconfirmation import (
@@ -1815,6 +2172,18 @@ def prep_segment(
                     source_consequence_map=list(sc_map),
                     claim_map=list(claim_map),
                 )
+                council_decisions["disconfirmation"] = {
+                    "check": "disconfirmation",
+                    "convergence_status": "degraded"
+                    if council_disconfirmation_result.get("council_degraded")
+                    else "ran",
+                    "passed": council_disconfirmation_result.get("council_disconfirmation_passed"),
+                    "degraded": council_disconfirmation_result.get("council_degraded"),
+                    "survived": len(council_disconfirmation_result.get("survived_claims", [])),
+                    "contested": len(council_disconfirmation_result.get("contested_claims", [])),
+                    "refuted": len(council_disconfirmation_result.get("refuted_claims", [])),
+                    "degraded_claims": council_disconfirmation_result.get("degraded_claims", []),
+                }
                 if council_disconfirmation_result.get("no_candidate_triggered"):
                     log.warning(
                         "prep_segment: council refuted structural claim in %s — no candidate",
@@ -1889,7 +2258,47 @@ def prep_segment(
     except Exception as exc:
         log.warning("prep_segment: council disconfirmation failed for %s: %s", prog_id, exc)
 
+    # FAIL-LOUD (outside the broad except so a diagnostic-write error cannot
+    # swallow the refusal): a degraded disconfirmation panel (unavailable, below
+    # quorum, or HUNG-with-empty-scores routed to degraded) means the gate cannot
+    # be trusted — terminal no-release. cc-task cctv-council-perfect-health-faillloud.
+    if council_disconfirmation_result is not None and council_disconfirmation_result.get(
+        "council_degraded"
+    ):
+        log.warning("prep_segment: council disconfirmation DEGRADED for %s — no release", prog_id)
+        _emit_council_degradation_signal(
+            prog_id, "disconfirmation", council_decisions.get("disconfirmation", {})
+        )
+        _append_council_decisions_ledger(
+            prep_dir, prog_id, council_decisions, terminal_status="refused_no_release"
+        )
+        _write_prep_diagnostic_outcome(
+            prep_dir,
+            prep_session=prep_session,
+            programme_id=prog_id,
+            role=role,
+            topic=topic,
+            segment_beats=list(beats),
+            terminal_status="refused_no_release",
+            terminal_reason="council_degraded_refused_no_release",
+            not_loadable_reason="council degraded — disconfirmation could not be certified",
+            refusal_metadata={"council_decisions": council_decisions},
+        )
+        return None
+
     # Pass 4: Narrative quality council — structural/rhetorical critique
+    if _prep_deadline_exceeded(
+        deadline_monotonic,
+        prep_dir=prep_dir,
+        prep_session=prep_session,
+        programme_id=prog_id,
+        role=role,
+        topic=topic,
+        beats=beats,
+        council_decisions=council_decisions,
+        phase="narrative_critique",
+    ):
+        return None
     narrative_verdict_data: dict[str, Any] | None = None
     try:
         from shared.segment_narrative_critique import (
@@ -1903,6 +2312,11 @@ def prep_segment(
         narrative_verdict_data["scores"] = narrative_verdict.scores
         narrative_verdict_data["verdict_status"] = narrative_verdict.verdict_status.value
         narrative_verdict_data["revision_directives"] = narrative_verdict.revision_directives
+        council_decisions["narrative"] = {
+            "check": "narrative",
+            "convergence_status": narrative_verdict.convergence_status.value,
+            "verdict_status": narrative_verdict.verdict_status.value,
+        }
 
         from agents.deliberative_council.models import NarrativeVerdictStatus
 
@@ -2078,6 +2492,7 @@ def prep_segment(
     source_consequence_map = build_source_consequence_map(
         script,
         actionability["beat_action_intents"],
+        resolved_source_set=resolved_source_set,
     )
     fore_understanding = retrieve_fore_understanding(topic=topic, role=role)
     hermeneutic_deltas = compute_hermeneutic_delta(
@@ -2212,6 +2627,7 @@ def prep_segment(
         segment_prep_contract,
         prepared_script=script,
         segment_beats=[str(item) for item in beats],
+        resolved_source_set=resolved_source_set,
     )
     segment_prep_contract_sha256 = _contract_hash(segment_prep_contract)
     source_hashes["segment_prep_contract_sha256"] = segment_prep_contract_sha256
@@ -2346,6 +2762,7 @@ def prep_segment(
         "seed_sha256": source_hashes["seed_sha256"],
         "source_hashes": source_hashes,
         "source_provenance_sha256": _sha256_json(source_hashes),
+        "resolved_source_set": resolved_source_set.model_dump(mode="json"),
         "llm_calls": [
             call
             for call in prep_session.get("llm_calls", [])
@@ -2362,11 +2779,18 @@ def prep_segment(
         )
     if narrative_verdict_data is not None:
         payload["narrative_quality_verdict"] = narrative_verdict_data
+    # AC 2d: the council is otherwise an UNRECORDED LLM consumer — thread its
+    # decisions (coherence / disconfirmation / narrative health, with
+    # members_valid/families_valid) into the manifest artifact + append-only ledger.
+    payload["council_decisions"] = council_decisions
     payload["artifact_sha256"] = _artifact_hash(payload)
     tmp = out_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     tmp.replace(out_path)
     _append_candidate_ledger(prep_dir, payload, out_path)
+    _append_council_decisions_ledger(
+        prep_dir, prog_id, council_decisions, terminal_status="released"
+    )
     log.info(
         "prep_segment: saved %s (%d blocks, avg %.0f chars/beat)",
         out_path,
@@ -2625,6 +3049,43 @@ def run_prep(
     # freshest signal for re-authoring a source-denser angle.
     prior_substance_feedback = _read_prior_substance_feedback(today)
 
+    # Recruit-before-plan: resolve real source material + gather live context
+    # channels + author theses ONCE before the planning rounds, so the planner
+    # authors FROM resolved sources (densest first) rather than inventing handles
+    # blind. Reused across rounds; bounded so it cannot blow the prep budget.
+    plan_recruit_fore = _retrieve_broad_fore_understanding()
+    recruit_budget = min(RECRUIT_BUDGET_S, max(0.0, PREP_BUDGET_S - (time.monotonic() - start)))
+
+    def _thesis_llm_fn(prompt: str) -> str:
+        return _call_llm(
+            prompt,
+            prep_session=prep_session,
+            phase="thesis",
+            programme_id="thesis-author",
+            max_tokens=2048,
+        )
+
+    try:
+        planner_kwargs, plan_time_theses = _plan_time_context(
+            plan_recruit_fore,
+            llm_fn=_thesis_llm_fn,
+            recruit_budget_s=recruit_budget,
+            thesis_budget_s=THESIS_BUDGET_S,
+        )
+    except Exception:
+        log.warning(
+            "daily_segment_prep: plan-time recruitment failed; planning on fore-understanding only",
+            exc_info=True,
+        )
+        planner_kwargs, plan_time_theses = {"resolved_sources": []}, []
+    _update_prep_status(
+        prep_session,
+        status="in_progress",
+        phase="plan_time_recruited",
+        resolved_source_sets=len(planner_kwargs.get("resolved_sources") or []),
+        plan_time_theses=len(plan_time_theses),
+    )
+
     while len(segmented) < max_segments_for_run and plan_round < max_rounds:
         elapsed = time.monotonic() - start
         if elapsed >= PREP_BUDGET_S:
@@ -2651,12 +3112,12 @@ def run_prep(
             segmented_count=len(segmented),
         )
         try:
-            recent_fore = _retrieve_broad_fore_understanding()
             plan = planner.plan(
                 show_id=show_id,
                 target_programmes=planner_target_programmes,
-                fore_understanding=recent_fore or None,
+                fore_understanding=plan_recruit_fore or None,
                 prior_substance_feedback=prior_substance_feedback,
+                **planner_kwargs,
             )
         except Exception as exc:
             _update_prep_status(
@@ -2746,7 +3207,14 @@ def run_prep(
             segmented_count=len(segmented),
         )
         try:
-            path = prep_segment(prog, today, prep_session=prep_session)
+            # AC 3a: pass the absolute prep deadline so prep_segment can fail
+            # LOUD mid-segment instead of overrunning the budget unbounded.
+            path = prep_segment(
+                prog,
+                today,
+                prep_session=prep_session,
+                deadline_monotonic=start + PREP_BUDGET_S,
+            )
         except Exception as exc:
             _update_prep_status(
                 prep_session,
@@ -2886,20 +3354,161 @@ def _extract_topic_string(programme: Any) -> str | None:
     return None
 
 
-def _council_coherence_check(full_script: str, programme_id: str) -> tuple[bool, str]:
-    """Run the council coherence rubric on a composed script.
+COUNCIL_DECISIONS_LEDGER_FILENAME = "council-decisions.ndjson"
 
-    Returns (passed, feedback_string). Feedback is a summary of the
-    council's scoring across the 4 coherence axes. When mean < 3.0,
-    passed=False and feedback contains specific axis-level critique.
+
+def _emit_council_degradation_signal(
+    programme_id: str, check: str, decision: dict[str, Any]
+) -> None:
+    """Loud degradation signal: ntfy (operator) + Prometheus counter (scrape).
+
+    The council is otherwise an UNRECORDED LLM consumer; a degraded/refused panel
+    must be loud, not silent. Best-effort — a failing signal never crashes prep.
+    cc-task cctv-council-perfect-health-faillloud-convergence.
     """
+    status = str(decision.get("convergence_status", "degraded"))
+    reason = f"{check}_{status}"
     try:
-        import asyncio
+        from agents.deliberative_council.members import model_family
+        from agents.deliberative_council.metrics import record_panel_degraded
 
-        from agents.deliberative_council.engine import deliberate
-        from agents.deliberative_council.models import CouncilConfig, CouncilInput, CouncilMode
-        from agents.deliberative_council.rubrics import CoherenceRubric
+        failed = decision.get("failed_members") or []
+        families = sorted(
+            {model_family(str(f.get("model_alias", ""))) for f in failed if isinstance(f, dict)}
+        )
+        for fam in families or ["panel"]:
+            record_panel_degraded(fam, reason)
+    except Exception:
+        log.debug("council degradation metric emit failed", exc_info=True)
+    try:
+        from shared.notify import send_notification
 
+        send_notification(
+            "Council panel degraded — segment refused",
+            f"{check} council {status} for {programme_id}: "
+            f"members_valid={decision.get('members_valid')}, "
+            f"families_valid={decision.get('families_valid')}. Segment NOT released.",
+            priority="high",
+            tags=["warning"],
+        )
+    except Exception:
+        log.debug("council degradation ntfy emit failed", exc_info=True)
+
+
+def _append_council_decisions_ledger(
+    prep_dir: Path,
+    programme_id: str,
+    decisions: dict[str, Any],
+    *,
+    terminal_status: str,
+) -> None:
+    """Append a programme's council decisions to the append-only ledger.
+
+    Durable audit trail of every council decision (coherence / disconfirmation /
+    narrative) with health counts and whether the segment was released or refused
+    — the council is otherwise unrecorded in the prep manifest. Best-effort.
+    """
+    row = {
+        "schema_version": PREP_DIAGNOSTIC_SCHEMA_VERSION,
+        "record_type": "council_decisions_ledger_entry",
+        "ledgered_at": datetime.now(tz=UTC).isoformat(),
+        "programme_id": programme_id,
+        "terminal_status": terminal_status,
+        "council_decisions": decisions,
+    }
+    try:
+        ledger_path = prep_dir / COUNCIL_DECISIONS_LEDGER_FILENAME
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        with ledger_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, sort_keys=True) + "\n")
+    except Exception:
+        log.debug("council decisions ledger append failed", exc_info=True)
+
+
+def _prep_deadline_exceeded(
+    deadline_monotonic: float | None,
+    *,
+    prep_dir: Path,
+    prep_session: dict[str, Any] | None,
+    programme_id: str,
+    role: str,
+    topic: str,
+    beats: list[Any],
+    council_decisions: dict[str, Any],
+    phase: str,
+) -> bool:
+    """True (and records a terminal budget-exhausted dossier) if the mid-segment
+    deadline has passed.
+
+    AC 3a: ``PREP_BUDGET_S`` was previously checked only BETWEEN segments, so a
+    single in-flight gauntlet overran by 1398s. Budget exhaustion is now a LOUD,
+    recorded terminal outcome (checked before each expensive council pass), not an
+    unbounded overrun. cc-task cctv-council-perfect-health-faillloud-convergence.
+    """
+    if deadline_monotonic is None or time.monotonic() <= deadline_monotonic:
+        return False
+    log.warning(
+        "prep_segment: prep budget exhausted before %s for %s — no release", phase, programme_id
+    )
+    _append_council_decisions_ledger(
+        prep_dir, programme_id, council_decisions, terminal_status="budget_exhausted_no_release"
+    )
+    _write_prep_diagnostic_outcome(
+        prep_dir,
+        prep_session=prep_session,
+        programme_id=programme_id,
+        role=role,
+        topic=topic,
+        segment_beats=list(beats),
+        terminal_status="budget_exhausted_no_release",
+        terminal_reason="prep_budget_exhausted_mid_segment",
+        not_loadable_reason=f"prep budget exhausted before {phase}",
+        refusal_metadata={"phase": phase, "council_decisions": council_decisions},
+    )
+    return True
+
+
+@dataclass(frozen=True)
+class _CoherenceOutcome:
+    """Result of the council coherence check (cc-task cctv-council-perfect-health).
+
+    ``refused`` is the FAIL-LOUD signal: a degraded / unavailable / REFUSED
+    council cannot certify coherence, so the segment must NOT be released (the
+    caller writes a terminal ``council_degraded_refused_no_release`` diagnostic
+    and produces no candidate). ``passed`` is the quality verdict for a HEALTHY
+    council (mean >= 3.0); ``passed=False`` with feedback is a recoverable quality
+    miss that feeds refinement. ``council_decisions`` is the receipt fragment
+    recorded into the prep manifest + the council-decisions ledger.
+    """
+
+    passed: bool
+    feedback: str
+    refused: bool
+    council_decisions: dict[str, Any]
+
+
+def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceOutcome:
+    """Run the council coherence rubric on a composed script — FAIL-LOUD.
+
+    A degraded / unavailable / REFUSED council yields ``refused=True``; the caller
+    must treat that as a terminal no-release, NOT a soft feedback injection. The
+    prior implementation returned ``(True, "")`` on a down council (fail-OPEN),
+    letting an unavailable council wave a segment through — that is the bug this
+    fixes. A healthy council with mean < 3.0 yields ``passed=False`` with
+    axis-level feedback (a genuine, recoverable quality gate).
+    """
+    import asyncio
+
+    from agents.deliberative_council.engine import deliberate
+    from agents.deliberative_council.models import (
+        ConvergenceStatus,
+        CouncilConfig,
+        CouncilInput,
+        CouncilMode,
+    )
+    from agents.deliberative_council.rubrics import CoherenceRubric
+
+    try:
         council_input = CouncilInput(
             text=full_script[:4000],
             source_ref=f"coherence_check:{programme_id}",
@@ -2909,37 +3518,62 @@ def _council_coherence_check(full_script: str, programme_id: str) -> tuple[bool,
         verdict = asyncio.run(
             deliberate(council_input, CouncilMode.DISCONFIRMATION, CoherenceRubric(), config)
         )
-        scores = verdict.scores
-        valid_scores = [s for s in scores.values() if s is not None]
-        if not valid_scores:
-            # Council degraded (no scores) — fail-open, mirroring the topic gate
-            # and this function's except branch; do not block composition on a
-            # down council.
-            log.warning(
-                "_council_coherence_check: council degraded (no scores), fail-open for %s",
-                programme_id,
-            )
-            return True, ""
-        mean_score = sum(valid_scores) / len(valid_scores)
-        feedback_lines = [f"Council coherence scores (mean={mean_score:.1f}):"]
-        for axis, score in scores.items():
-            feedback_lines.append(f"  - {axis}: {score}")
-        for note in verdict.disagreement_log[:3]:
-            feedback_lines.append(f"  Council note: {note[:200]}")
-        feedback = "\n".join(feedback_lines)
-
-        if mean_score < 3.0:
-            log.warning(
-                "_council_coherence_check: FAILED (mean=%.1f) for %s",
-                mean_score,
-                programme_id,
-            )
-            return False, feedback
-        log.info("_council_coherence_check: passed (mean=%.1f) for %s", mean_score, programme_id)
-        return True, feedback
     except Exception:
-        log.warning("_council_coherence_check: council unavailable, fail-open", exc_info=True)
-        return True, ""
+        log.warning(
+            "_council_coherence_check: council UNAVAILABLE — REFUSING (no release) for %s",
+            programme_id,
+            exc_info=True,
+        )
+        return _CoherenceOutcome(
+            passed=False,
+            feedback="",
+            refused=True,
+            council_decisions={"check": "coherence", "convergence_status": "unavailable"},
+        )
+
+    health = verdict.receipt.get("council_health", {})
+    scores = verdict.scores
+    valid_scores = [s for s in scores.values() if s is not None]
+    mean_score = (sum(valid_scores) / len(valid_scores)) if valid_scores else None
+    decision: dict[str, Any] = {
+        "check": "coherence",
+        "convergence_status": verdict.convergence_status.value,
+        "members_valid": health.get("members_valid"),
+        "families_valid": health.get("families_valid"),
+        "failed_members": verdict.receipt.get("failed_members", []),
+        "mean_score": round(mean_score, 2) if mean_score is not None else None,
+    }
+
+    if verdict.convergence_status == ConvergenceStatus.REFUSED or not valid_scores:
+        log.warning(
+            "_council_coherence_check: council REFUSED/degraded (status=%s, valid_scores=%d) — "
+            "no release for %s",
+            verdict.convergence_status.value,
+            len(valid_scores),
+            programme_id,
+        )
+        return _CoherenceOutcome(
+            passed=False, feedback="", refused=True, council_decisions=decision
+        )
+
+    feedback_lines = [f"Council coherence scores (mean={mean_score:.1f}):"]
+    for axis, score in scores.items():
+        feedback_lines.append(f"  - {axis}: {score}")
+    for note in verdict.disagreement_log[:3]:
+        feedback_lines.append(f"  Council note: {note[:200]}")
+    feedback = "\n".join(feedback_lines)
+
+    if mean_score < 3.0:
+        log.warning(
+            "_council_coherence_check: low coherence (mean=%.1f) for %s", mean_score, programme_id
+        )
+        return _CoherenceOutcome(
+            passed=False, feedback=feedback, refused=False, council_decisions=decision
+        )
+    log.info("_council_coherence_check: passed (mean=%.1f) for %s", mean_score, programme_id)
+    return _CoherenceOutcome(
+        passed=True, feedback=feedback, refused=False, council_decisions=decision
+    )
 
 
 def _compose_refusal_reason(
@@ -2966,54 +3600,6 @@ def _compose_refusal_reason(
     if live_event_viability_report.get("ok") is not True:
         return "live_event_viability_not_demonstrated"
     return None
-
-
-def _research_enrich_angle(angle_ctx: str, topic: str) -> str:
-    """Use research tools to deepen the angle's source material.
-
-    Runs a lightweight LLM call with web search + qdrant lookup to
-    gather concrete evidence, examples, and counter-examples for the
-    angle hypothesis. Returns a formatted research block for the
-    composer's seed.
-    """
-    try:
-        import litellm
-
-        from shared.config import MODELS
-
-        prompt = (
-            f"Topic: {topic}\n\n"
-            f"Angle analysis:\n{angle_ctx}\n\n"
-            "You are a research assistant preparing material for a segment producer. "
-            "Based on the angle analysis above, provide:\n"
-            "1. CONCRETE EXAMPLE: A specific real-world case that illustrates the thesis\n"
-            "2. COUNTER EXAMPLE: A specific case that illustrates the challenge\n"
-            "3. KEY TERM DEFINITIONS: 2-3 technical terms the audience needs defined\n"
-            "4. OPENING HOOK: A specific question, paradox, or provocation that would "
-            "make the audience want to hear the rest\n\n"
-            "Be specific. Name real systems, papers, incidents, or frameworks. "
-            "If you don't know specific examples, say so honestly."
-        )
-        response = litellm.completion(
-            # Route the lightweight research-enrichment call through the LiteLLM
-            # gateway with an explicit provider prefix + api_base. A bare model
-            # name (e.g. "claude-opus") has no provider, so litellm raises
-            # "LLM Provider NOT provided"; the resident local-fast route keeps
-            # this fail-soft helper off cloud rate limits (R-A2).
-            model=f"openai/{MODELS.get('local-fast', 'local-fast')}",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=2000,
-            temperature=0.4,
-            api_base=os.environ.get("LITELLM_API_BASE", "http://127.0.0.1:4000"),
-            api_key=os.environ.get("LITELLM_API_KEY", "not-set"),
-        )
-        result = response.choices[0].message.content or ""
-        if len(result) > 100:
-            log.info("_research_enrich_angle: enrichment returned %d chars", len(result))
-            return f"## Research Enrichment\n{result}"
-    except Exception:
-        log.warning("_research_enrich_angle: enrichment failed", exc_info=True)
-    return ""
 
 
 _PROGRAMME_ID_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -3321,7 +3907,10 @@ def _artifact_rejection_reason(
         seed_sha256=data["seed_sha256"],
         prompt_sha256=data["prompt_sha256"],
     )
-    allowed_extra_source_hashes = {"segment_prep_contract_sha256"}
+    allowed_extra_source_hashes = {
+        "segment_prep_contract_sha256",
+        "resolved_source_provenance_sha256",
+    }
     if any(source_hashes.get(key) != value for key, value in expected_source_hashes.items()):
         return "source hash mismatch"
     if set(source_hashes) - set(expected_source_hashes) - allowed_extra_source_hashes:
@@ -3342,10 +3931,22 @@ def _artifact_rejection_reason(
             return "segment prep contract hash mismatch"
         if source_hashes.get("segment_prep_contract_sha256") != contract_sha:
             return "source hash missing segment prep contract binding"
+        # Re-dereference cited handles against the persisted recruited set before
+        # RAG re-entry — the same load-bearing gate as at prep time, so a launder-
+        # on-re-entry cannot pass. Artifacts without a persisted set fall back to
+        # shape validation (defense-in-depth) for backward compatibility.
+        reentry_source_set = None
+        raw_resolved_set = data.get("resolved_source_set")
+        if isinstance(raw_resolved_set, dict):
+            try:
+                reentry_source_set = ResolvedSourceSet(**raw_resolved_set)
+            except Exception:
+                return "invalid persisted resolved source set"
         expected_contract_report = validate_segment_prep_contract(
             contract,
             prepared_script=script,
             segment_beats=beats,
+            resolved_source_set=reentry_source_set,
         )
         if data.get("segment_prep_contract_report") != expected_contract_report:
             return "stale segment prep contract report"
@@ -3669,6 +4270,7 @@ def _upsert_artifact_dicts_to_qdrant(
 
         from shared.affordance_pipeline import COLLECTION_NAME, embed_batch_safe
         from shared.config import get_qdrant
+        from shared.geal_grounding_classifier import classify_source_or_quarantine
 
         texts: list[str] = []
         payloads: list[dict[str, Any]] = []
@@ -3679,6 +4281,19 @@ def _upsert_artifact_dicts_to_qdrant(
             texts.append(
                 f"Selected prepared livestream segment {programme_id}: {topic}. {script_preview}"
             )
+            # Carry the recruited handles into the RAG payload (don't drop them) and
+            # QUARANTINE any packet whose source ref is not a known grounding source —
+            # an unknown ref is not affirmed as grounded on re-entry (stop laundering).
+            resolved_set = artifact.get("resolved_source_set")
+            grounded_handles: list[str] = []
+            quarantined_refs: list[str] = []
+            if isinstance(resolved_set, dict):
+                for index, packet in enumerate(resolved_set.get("packets") or []):
+                    ref = str((packet or {}).get("source_ref") or "")
+                    if classify_source_or_quarantine(ref) is None:
+                        quarantined_refs.append(ref)
+                        continue
+                    grounded_handles.append(f"src:{index}")
             payloads.append(
                 {
                     "capability_name": f"programme.prepped.selected.{programme_id}",
@@ -3704,6 +4319,11 @@ def _upsert_artifact_dicts_to_qdrant(
                     "segment_quality_report": artifact.get("segment_quality_report"),
                     "segment_live_event_report": artifact.get("segment_live_event_report"),
                     "segment_prep_contract_report": artifact.get("segment_prep_contract_report"),
+                    "resolved_source_handles": grounded_handles,
+                    "resolved_source_quarantined_refs": quarantined_refs,
+                    "resolved_source_provenance_sha256": (artifact.get("source_hashes") or {}).get(
+                        "resolved_source_provenance_sha256"
+                    ),
                 }
             )
         embeddings = embed_batch_safe(texts, prefix="search_document")

@@ -526,6 +526,7 @@ def _desired_links_mk5(
     voice_fx = _node(topology, "voice-fx")
     tts = _node(topology, "tts-loudnorm")
     music = _node(topology, "music-loudnorm")
+    music_duck = _node(topology, "music-duck-mk5")
     youtube = _node(topology, "yt-loudnorm")
     private_sink = _node(topology, "private-sink")
     private_capture = _node(topology, "private-monitor-capture")
@@ -577,7 +578,13 @@ def _desired_links_mk5(
         links.extend(_pair_links(_playback_name(mic_rode), livestream.pipewire_name))
 
     if _broadcast_route_enabled(policy, "music-bed"):
-        links.extend(_pair_links(_playback_name(music), livestream.pipewire_name))
+        # mk5 music ducker inserted between music-loudnorm and the livestream sum
+        # (segment-audio-hosting-readiness): hapax-audio-ducker writes the SSOT
+        # duck depth on hapax-music-duck-mk5; default Gain 1.0 is transparent so a
+        # dead daemon fails OPEN (music never silenced). Two reconciler-owned hops
+        # replace the former direct music-loudnorm-playback -> livestream link.
+        links.extend(_pair_links(_playback_name(music), music_duck.pipewire_name))
+        links.extend(_pair_links(_playback_name(music_duck), livestream.pipewire_name))
 
     # YouTube remains policy-gated for public claims, but the mk5/S-4 migration
     # deliberately wires the bed into the software sum bus for operator control.

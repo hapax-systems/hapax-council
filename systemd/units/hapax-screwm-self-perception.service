@@ -1,0 +1,27 @@
+[Unit]
+Description=Hapax CNS drift self-perception (audit-only re-perceivable surface — Chiasm Contract get)
+# DORMANT by default: not in install-units AUTO_ENABLE / preset. Enable to begin observing the drift
+# entity's realized state. Closing the chiasm (feeding select()) is the gated loop-closure (spec PR-E).
+After=hapax-secrets.service
+Wants=hapax-secrets.service
+ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
+
+[Service]
+Type=simple
+# Root at the source-activation worktree (non-stale deployed code), NOT the canonical
+# interactive worktree which may sit on a feature branch and run STALE code. Enforced
+# by tests/systemd/test_source_activation_rooted_python_units.py. Mirrors hapax-daimonion.
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.screwm_self_perception
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-screwm-self-perception
+MemoryMax=512M
+
+[Install]
+WantedBy=default.target

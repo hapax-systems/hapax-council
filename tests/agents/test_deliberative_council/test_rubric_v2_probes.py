@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import patch
 
 import pytest
@@ -134,25 +133,30 @@ class TestDryRun:
 class TestScoringIntegration:
     @pytest.mark.asyncio
     async def test_floor_probe_scores_low_with_mock(self) -> None:
-        low_scores = json.dumps(
-            {
-                "scores": {
-                    "evidence_adequacy": 1,
-                    "counter_evidence_resilience": 1,
-                    "scope_honesty": 2,
-                    "falsifiability": 1,
-                },
-                "rationale": {
-                    "evidence_adequacy": "No evidence cited",
-                    "counter_evidence_resilience": "No counter-evidence addressed",
-                    "scope_honesty": "Unbounded claim",
-                    "falsifiability": "Unfalsifiable",
-                },
-                "research_findings": ["file not found"],
-            }
+        # Phase 1 scoring is now provider-enforced structured output: the engine
+        # expects a Phase1Output from the scoring call (output_type set) and text
+        # from the investigate call. cc-task cctv-council-perfect-health-faillloud.
+        from agents.deliberative_council.models import Phase1Output
+
+        low_scores = Phase1Output(
+            scores={
+                "evidence_adequacy": 1,
+                "counter_evidence_resilience": 1,
+                "scope_honesty": 2,
+                "falsifiability": 1,
+            },
+            rationale={
+                "evidence_adequacy": "No evidence cited",
+                "counter_evidence_resilience": "No counter-evidence addressed",
+                "scope_honesty": "Unbounded claim",
+                "falsifiability": "Unfalsifiable",
+            },
+            research_findings=["file not found"],
         )
 
-        async def _mock_call(member, prompt):
+        async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
+            if output_type is None:  # investigate (research) call
+                return "researched the claim", ["read_source(path) → File not found"]
             return low_scores, ["read_source(path) → File not found"]
 
         with patch("agents.deliberative_council.engine._call_member", _mock_call):

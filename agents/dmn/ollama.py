@@ -75,6 +75,9 @@ async def _tabby_fast(prompt: str, system: str) -> str:
                 )
                 if resp.status_code == 200:
                     data = resp.json()
+                    if metrics_span is not None:
+                        _pt, _ct = _extract_openai_usage(data)
+                        metrics_span.set_tokens(prompt_tokens=_pt, completion_tokens=_ct)
                     return data["choices"][0]["message"]["content"].strip()
                 if metrics_span is not None:
                     metrics_span.set_outcome("refused")
@@ -110,6 +113,9 @@ async def _tabby_think(prompt: str, system: str) -> str:
                 )
                 if resp.status_code == 200:
                     data = resp.json()
+                    if metrics_span is not None:
+                        _pt, _ct = _extract_openai_usage(data)
+                        metrics_span.set_tokens(prompt_tokens=_pt, completion_tokens=_ct)
                     return data["choices"][0]["message"]["content"].strip()
                 if metrics_span is not None:
                     metrics_span.set_outcome("refused")
@@ -121,6 +127,22 @@ async def _tabby_think(prompt: str, system: str) -> str:
 
 
 _pending: dict[str, asyncio.Task[str]] = {}
+
+
+def _extract_openai_usage(data: dict) -> tuple[int, int]:
+    """(prompt_tokens, completion_tokens) from a raw OpenAI-compatible JSON body.
+
+    TabbyAPI returns these at ``data['usage']`` (unlike LiteLLM's hidden cost).
+    Local inference has no dollar cost, so we record token VOLUME, not cost.
+    Defensive: returns (0, 0) on any malformed body (telemetry must never raise).
+    """
+    usage = data.get("usage") if isinstance(data, dict) else None
+    if not isinstance(usage, dict):
+        return 0, 0
+    try:
+        return int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0))
+    except (TypeError, ValueError):
+        return 0, 0
 
 
 def _extract_litellm_response_cost(resp: object) -> float | None:

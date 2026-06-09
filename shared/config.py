@@ -480,6 +480,12 @@ def embed(text: str, model: str | None = None, prefix: str = "search_query") -> 
                 f"Expected {EXPECTED_EMBED_DIMENSIONS}-dim embedding, got {len(vec)}"
             )
         span.set_attribute("rag.embed.dimensions", len(vec))
+        try:
+            from agents.telemetry.condition_metrics import record_embed
+
+            record_embed(model=model_name, kind="single", n_calls=1, input_chars=len(text))
+        except Exception:  # noqa: BLE001 — telemetry must never break embedding
+            _log.debug("embed volume telemetry skipped", exc_info=True)
         return vec
 
 
@@ -549,6 +555,17 @@ def embed_batch(
                     f"Expected {EXPECTED_EMBED_DIMENSIONS}-dim embedding at index {i}, got {len(vec)}"
                 )
         span.set_attribute("rag.embed_batch.dimensions", len(embeddings[0]) if embeddings else 0)
+        try:
+            from agents.telemetry.condition_metrics import record_embed
+
+            record_embed(
+                model=model_name,
+                kind="batch",
+                n_calls=len(texts),
+                input_chars=sum(len(t) for t in texts),
+            )
+        except Exception:  # noqa: BLE001 — telemetry must never break embedding
+            _log.debug("embed_batch volume telemetry skipped", exc_info=True)
         return embeddings
 
 

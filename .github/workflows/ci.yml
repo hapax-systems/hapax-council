@@ -694,6 +694,7 @@ jobs:
             tests/test_ci_required_coverage_claims.py \
             tests/shared/test_ci_discovery.py \
             tests/scripts/test_screwm_aggregate_port_owner_gate.py \
+            tests/systemd/test_source_activation_rooted_python_units.py \
             -q --tb=line
       - name: Install system deps (cairo, gobject, gst, pango, hook transports)
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'

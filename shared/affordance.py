@@ -73,7 +73,7 @@ class OperationalProperties(BaseModel, frozen=True):
     # MUST be serialized into BOTH Qdrant payload writers in affordance_pipeline
     # (index_capability + index_capabilities_batch) — a miss silently falls back
     # to "content" with no error.
-    domain: Literal["content", "geometry", "both"] = "content"
+    domain: Literal["content", "geometry", "both", "drift", "audio", "physics"] = "content"
 
     # Monetization-safety classification (task #165, demonet plan Phase 1).
     # "high": unconditionally blocked at the affordance pipeline level (the
@@ -100,11 +100,29 @@ class OperationalProperties(BaseModel, frozen=True):
     evidence_refs: tuple[str, ...] = Field(default_factory=tuple)
 
 
+class RePerceivableProperties(BaseModel, frozen=True):
+    """The re-perceivable (``get``) surface of a chiasmic entity — dual to OperationalProperties.
+
+    Per the Chiasm Contract (docs/superpowers/specs/2026-06-07-cns-chiasm-contract-design.md), an
+    entity's realized state re-enters the recruitment loop as impingement. ``dim_projection`` names the
+    expressive dimensions the entity reports its realized state in — the SAME basis ``put`` modulates;
+    ``readback_source`` is the artifact the state is read from; ``provenance_ref`` is mandatory at mint
+    time (ep-claim-001). Optional on CapabilityRecord: absent ⇒ the capability is expression-only (no
+    get surface) — the one-sided affordance is the degenerate two-sided one.
+    """
+
+    dim_projection: tuple[str, ...] = Field(default_factory=tuple)
+    readback_source: str | None = None
+    provenance_ref: str | None = None
+
+
 class CapabilityRecord(BaseModel, frozen=True):
     name: str
     description: str
     daemon: str
     operational: OperationalProperties = Field(default_factory=OperationalProperties)
+    # The get surface (Chiasm Contract). None ⇒ expression-only (the degenerate one-sided affordance).
+    re_perceivable: RePerceivableProperties | None = None
 
 
 class ActivationState(BaseModel):

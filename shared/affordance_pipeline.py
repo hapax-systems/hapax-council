@@ -33,6 +33,9 @@ if TYPE_CHECKING:
 
 ACTIVATION_STATE_PATH = Path("/home/hapax/.cache/hapax/affordance-activation-state.json")
 _DISK_CACHE_PATH = Path.home() / ".cache" / "hapax" / "embed-cache.json"
+# World-language Layer-2 manifest (written by shared/materialize_world_language.py).
+# Absent until materialization runs → the registry is inert and selection is unchanged.
+_WL_MANIFEST_PATH = Path("/dev/shm/hapax-world-language/layer2-manifest.json")
 COLLECTION_NAME = "affordances"
 DEFAULT_TOP_K = 10
 SUPPRESSION_FACTOR = 0.3
@@ -683,7 +686,72 @@ class AffordancePipeline:
             InterruptHandler(capability_name=capability_name, daemon=daemon)
         )
 
+    def _world_language_manifest(self) -> dict[str, dict[str, Any]]:
+        """Layer-2 manifest indexed by node_id, cached + mtime-invalidated.
+
+        Returns ``{}`` when the manifest is absent/unreadable — the world-language
+        registry is then inert and selection is byte-identical to pre-registry
+        behavior. ``select`` is hot-pathed (per-frame), so this does at most one
+        ``stat`` per call and re-parses only when the manifest changes on disk.
+        """
+        try:
+            mtime = _WL_MANIFEST_PATH.stat().st_mtime
+        except OSError:
+            return {}
+        cache = getattr(self, "_wl_manifest_cache", None)
+        if cache is not None and getattr(self, "_wl_manifest_mtime", None) == mtime:
+            return cache
+        try:
+            data = json.loads(_WL_MANIFEST_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        self._wl_manifest_cache = {
+            n["node_id"]: n for n in data.get("nodes", []) if isinstance(n, dict) and "node_id" in n
+        }
+        self._wl_manifest_mtime = mtime
+        return self._wl_manifest_cache
+
+    def _bind_interpretants(self, candidates: list[SelectionCandidate]) -> list[SelectionCandidate]:
+        """Attach each selected candidate's use-time interpretant — its matching
+        ``WorldLanguageNode`` resolved from the manifest by ``node_id ==
+        capability_name`` — to ``payload['world_language_node']``.
+
+        The interpretant FOLLOWS the posterior selection (Peirce: it is the
+        affordance posterior, not a static symbol→referent lookup). No-op — returns
+        the candidates unchanged — when the manifest is absent, so selection stays
+        byte-identical while the registry is inert.
+        """
+        manifest = self._world_language_manifest()
+        if not manifest:
+            return candidates
+        bound: list[SelectionCandidate] = []
+        for candidate in candidates:
+            node = manifest.get(candidate.capability_name)
+            if node is None:
+                bound.append(candidate)
+            else:
+                bound.append(
+                    candidate.model_copy(
+                        update={"payload": {**candidate.payload, "world_language_node": node}}
+                    )
+                )
+        return bound
+
     def select(
+        self,
+        impingement: Impingement,
+        top_k: int = DEFAULT_TOP_K,
+        context: dict[str, Any] | None = None,
+    ) -> list[SelectionCandidate]:
+        """Posterior affordance selection, then use-time world-language binding.
+
+        Thin wrapper over ``_select_candidates`` so the interpretant binding applies
+        uniformly across every return path — and is a no-op when the manifest is
+        absent (the registry is additive; selection degrades to prior behavior).
+        """
+        return self._bind_interpretants(self._select_candidates(impingement, top_k, context))
+
+    def _select_candidates(
         self,
         impingement: Impingement,
         top_k: int = DEFAULT_TOP_K,

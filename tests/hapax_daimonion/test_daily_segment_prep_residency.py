@@ -12,6 +12,12 @@ from agents.hapax_daimonion import daily_segment_prep as prep
 from agents.hapax_daimonion import programme_loop
 from shared.programme_store import ProgrammePlanStore
 from shared.segment_candidate_selection import SEGMENT_CANDIDATE_SELECTION_VERSION
+from shared.source_packet import (
+    ResolvedSourceSet,
+    SourcePacket,
+    build_resolved_source_set,
+    validate_cited_handles,
+)
 
 SOURCE_REF = "vault:test-segment-source"
 
@@ -63,6 +69,67 @@ def _ready_content(
             for index, _beat in enumerate(segment_beats)
         ],
     )
+
+
+@pytest.fixture(autouse=True)
+def _healthy_council_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default the deliberative council to a HEALTHY verdict for prep tests.
+
+    prep_segment is now fail-LOUD: a degraded / unavailable council (no LiteLLM
+    in the test env) is a TERMINAL no-release. These tests exercise the
+    DETERMINISTIC gauntlet (actionability / layout / tier-list / manifest), not
+    the council, so a healthy default lets them reach their actual concern. The
+    council fail-loud behavior has dedicated pins (test_council_coherence_check_*
+    here, and tests/deliberative_council/test_council_fail_loud.py). Tests that
+    patch ``deliberate`` themselves override this (later monkeypatch wins).
+    cc-task cctv-council-perfect-health-faillloud-convergence.
+    """
+    from agents.deliberative_council import engine as council_engine
+    from agents.deliberative_council.models import ConvergenceStatus, CouncilVerdict
+
+    async def _healthy(council_input: Any, mode: Any, rubric: Any, config: Any = None) -> Any:
+        return CouncilVerdict(
+            scores={"coherence": 4},
+            confidence_bands={},
+            convergence_status=ConvergenceStatus.CONVERGED,
+            disagreement_log=[],
+            research_findings=[],
+            evidence_matrix=None,
+            receipt={"council_health": {"members_valid": 6, "families_valid": 5}},
+        )
+
+    monkeypatch.setattr(council_engine, "deliberate", _healthy)
+
+
+@pytest.fixture(autouse=True)
+def _recruited_sources_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default source recruitment to a HEALTHY non-empty ResolvedSourceSet.
+
+    prep_segment now RECRUITS a content-hash-bound source set before composition
+    and REFUSES (no-candidate) when nothing resolves. Most tests exercise the
+    compose/gate gauntlet, not recruitment, so a healthy default set (containing
+    the canonical test SOURCE_REF) lets them proceed. The refuse-on-empty
+    behavior has a dedicated pin (test_prep_segment_refuses_when_no_sources_resolve).
+    Tests that set recruit_source_set themselves override this (later wins).
+    """
+    import agents.hapax_daimonion.angle_resolver as angle_resolver
+    from shared.source_packet import SourcePacket, build_resolved_source_set
+
+    def _recruit(topic: str, **_kwargs: Any) -> Any:
+        return build_resolved_source_set(
+            topic or "topic",
+            (
+                SourcePacket(
+                    source_ref=SOURCE_REF,
+                    content_hash="testrecruithash0",
+                    snippet="recruited test source snippet",
+                    freshness="fresh",
+                    source_consequence="the cited source changes the claim",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(angle_resolver, "recruit_source_set", _recruit)
 
 
 def test_prep_model_is_command_r_only(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -847,6 +914,7 @@ def test_run_prep_appends_manifest_without_readmitting_invalid_or_unlisted_artif
         prep_dir: Path,
         *,
         prep_session: dict[str, Any],
+        deadline_monotonic: float | None = None,  # noqa: ARG001 — accept run_prep's AC-3a deadline
     ) -> Path:
         path = prep_dir / f"{programme.programme_id}.json"
         payload = _valid_artifact_for(
@@ -1608,35 +1676,6 @@ def _council_verdict(scores: dict[str, int | None]) -> Any:
     )
 
 
-def test_research_enrich_angle_routes_through_gateway(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """R-A2: the enrich LLM call must resolve a provider via explicit gateway
-    routing instead of raising ``LLM Provider NOT provided`` on a bare model."""
-    import litellm
-
-    captured: dict[str, Any] = {}
-
-    def fake_completion(**kwargs: Any) -> SimpleNamespace:
-        captured.update(kwargs)
-        message = SimpleNamespace(content="enriched " + "x" * 200)
-        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
-
-    monkeypatch.setattr(litellm, "completion", fake_completion)
-
-    out = prep._research_enrich_angle("angle analysis text", "a topic")
-
-    assert captured, "litellm.completion was never called"
-    model = captured["model"]
-    # An explicit provider prefix + api_base is what lets litellm resolve a
-    # provider; without either the call raises 'LLM Provider NOT provided'.
-    assert "/" in model, f"model {model!r} has no explicit provider prefix"
-    assert captured.get("api_base"), "no api_base passed; provider cannot resolve"
-    # Faithful to the AC: the resolved model string must not raise.
-    litellm.get_llm_provider(model)
-    assert out.startswith("## Research Enrichment")
-
-
 def test_select_angle_routes_through_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
     """A1.1: angle selection must resolve a provider via explicit gateway routing
     (provider prefix + api_base) instead of raising ``LLM Provider NOT provided``
@@ -1791,11 +1830,12 @@ def test_council_coherence_check_constructs_valid_config(
 
     monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
 
-    passed, _feedback = prep._council_coherence_check("a coherent composed script", "prog-1")
+    outcome = prep._council_coherence_check("a coherent composed script", "prog-1")
 
     assert "config" in captured, "deliberate never reached — CouncilConfig construction raised"
     assert isinstance(captured["config"], CouncilConfig)
-    assert passed is True
+    assert outcome.passed is True
+    assert outcome.refused is False
 
 
 def test_run_narrative_critique_constructs_valid_config(
@@ -1823,11 +1863,12 @@ def test_run_narrative_critique_constructs_valid_config(
     assert isinstance(captured["config"], CouncilConfig)
 
 
-def test_council_coherence_check_fails_open_when_degraded(
+def test_council_coherence_check_refuses_when_degraded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """R-A3 downstream: a degraded coherence council fails open (does not block
-    composition on an unavailable council)."""
+    """Fail-LOUD (cc-task cctv-council-perfect-health-faillloud-convergence):
+    a degraded coherence council (no trustworthy scores) REFUSES — it must NOT
+    wave the segment through. Replaces the prior fail-open behavior."""
     from agents.deliberative_council import engine as council_engine
 
     async def fake_deliberate(
@@ -1837,8 +1878,85 @@ def test_council_coherence_check_fails_open_when_degraded(
 
     monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
 
-    passed, _feedback = prep._council_coherence_check("a script", "prog-1")
-    assert passed is True
+    outcome = prep._council_coherence_check("a script", "prog-1")
+    assert outcome.refused is True
+    assert outcome.passed is False
+
+
+def test_council_coherence_check_refuses_when_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """council-unavailable (deliberate raises) → the consumer REFUSES the
+    segment, never returns a silent pass."""
+    from agents.deliberative_council import engine as council_engine
+
+    async def boom(council_input: Any, mode: Any, rubric: Any, config: Any = None) -> Any:
+        raise RuntimeError("litellm down")
+
+    monkeypatch.setattr(council_engine, "deliberate", boom)
+
+    outcome = prep._council_coherence_check("a script", "prog-1")
+    assert outcome.refused is True
+    assert outcome.passed is False
+
+
+def test_council_coherence_check_refuses_on_refused_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A REFUSED panel verdict (below quorum / family floor) → coherence refuses
+    and records the council decision for the manifest receipt."""
+    from agents.deliberative_council import engine as council_engine
+    from agents.deliberative_council.models import ConvergenceStatus, CouncilVerdict
+
+    async def fake_deliberate(
+        council_input: Any, mode: Any, rubric: Any, config: Any = None
+    ) -> Any:
+        return CouncilVerdict(
+            scores={},
+            confidence_bands={},
+            convergence_status=ConvergenceStatus.REFUSED,
+            disagreement_log=[],
+            research_findings=[],
+            evidence_matrix=None,
+            receipt={"council_health": {"members_valid": 1, "families_valid": 1}},
+        )
+
+    monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
+
+    outcome = prep._council_coherence_check("a script", "prog-1")
+    assert outcome.refused is True
+    assert outcome.council_decisions["convergence_status"] == "refused"
+    assert outcome.council_decisions["members_valid"] == 1
+
+
+def test_council_coherence_check_records_health_when_healthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A healthy, good-quality panel passes AND records members_valid/
+    families_valid into the council_decisions receipt for the manifest."""
+    from agents.deliberative_council import engine as council_engine
+    from agents.deliberative_council.models import ConvergenceStatus, CouncilVerdict
+
+    async def fake_deliberate(
+        council_input: Any, mode: Any, rubric: Any, config: Any = None
+    ) -> Any:
+        return CouncilVerdict(
+            scores={"a": 4, "b": 4},
+            confidence_bands={},
+            convergence_status=ConvergenceStatus.CONVERGED,
+            disagreement_log=[],
+            research_findings=[],
+            evidence_matrix=None,
+            receipt={"council_health": {"members_valid": 5, "families_valid": 5}},
+        )
+
+    monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
+
+    outcome = prep._council_coherence_check("a script", "prog-1")
+    assert outcome.passed is True
+    assert outcome.refused is False
+    assert outcome.council_decisions["members_valid"] == 5
+    assert outcome.council_decisions["families_valid"] == 5
 
 
 # --- Phase C: selection + manifest automation and prep->active-Programme bridge ----
@@ -2038,3 +2156,269 @@ def test_bridge_active_segment_payload_reflects_prepped_artifact(
     assert payload["prepared_artifact_ref"] is not None
     assert payload["authority"] == "prior_only"
     assert payload["current_beat_layout_intents"]
+
+
+def test_prep_segment_refuses_when_no_sources_resolve(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Refuse-on-empty: no recruited source → a first-class no-candidate terminal,
+    composition is never reached, and nothing is fabricated to fill. Open-world /
+    current-event topics with no wired recruiter resolve nothing and land here too.
+    """
+    import agents.hapax_daimonion.angle_resolver as angle_resolver
+
+    programme = SimpleNamespace(
+        programme_id="prog-norsrc",
+        role=SimpleNamespace(value="rant"),
+        content=_ready_content(
+            narrative_beat="An open-world claim with no recruited source",
+            segment_beats=["argue the point with a source receipt"],
+            role="rant",
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+    }
+    # Nothing resolves (open-world topic / no wired recruiter).
+    monkeypatch.setattr(angle_resolver, "recruit_source_set", lambda *_a, **_k: None)
+
+    def _no_compose(*_a: Any, **_k: Any) -> str:
+        raise AssertionError("composition must not run when no source resolves")
+
+    monkeypatch.setattr(prep, "_call_llm", _no_compose)
+
+    saved = prep.prep_segment(programme, tmp_path, prep_session=session)
+
+    assert saved is None
+    assert not (tmp_path / "prog-norsrc.json").exists()
+    ledger_row = json.loads(
+        (tmp_path / prep.PREP_DIAGNOSTIC_LEDGER_FILENAME).read_text(encoding="utf-8")
+    )
+    assert ledger_row["terminal_status"] == "no_candidate"
+    assert ledger_row["terminal_reason"] == "no_resolved_sources"
+    assert ledger_row["loadable"] is False
+
+
+# ── recruit-before-plan + thesis-object: dominant 04:00 path ─────────────────
+# segment-recruit-before-plan-thesis-20260607 — inform authorship from RESOLVED
+# sources, built on main's src:N handle primitives.
+
+
+def _prep_clock(*values: float):
+    seq = iter(values)
+    last = [0.0]
+
+    def _now() -> float:
+        try:
+            last[0] = next(seq)
+        except StopIteration:
+            pass
+        return last[0]
+
+    return _now
+
+
+def _mk_source_set(topic: str, n: int) -> ResolvedSourceSet:
+    packets = tuple(
+        SourcePacket(
+            source_ref=f"vault:{topic}-{i}.md",
+            content_hash=f"hash-{topic}-{i}",
+            snippet=f"{topic} :: src {i}",
+            freshness="fresh",
+            source_consequence=f"without {topic}-{i}, this perspective is absent",
+        )
+        for i in range(n)
+    )
+    source_set = build_resolved_source_set(topic, packets)
+    assert source_set is not None
+    return source_set
+
+
+def _inert_channels() -> dict[str, Any]:
+    return {
+        "perception": None,
+        "vault_state": None,
+        "profile": None,
+        "density_field": None,
+        "stream_biography": None,
+    }
+
+
+def _inert_plan_time_context(*_args: Any, **_kwargs: Any) -> tuple[dict[str, Any], list[Any]]:
+    return ({"resolved_sources": [], **_inert_channels()}, [])
+
+
+@pytest.fixture
+def real_plan_time_context() -> bool:
+    """Opt out of the hermetic patch to exercise the real plan-time executor."""
+    return True
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_plan_time_context(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep run_prep tests off the network. Plan-time recruitment hits Qdrant,
+    the vault, /dev/shm, and the resident LLM; tests that target plan-time
+    context request ``real_plan_time_context`` to opt out of this patch."""
+    if "real_plan_time_context" in request.fixturenames:
+        return
+    monkeypatch.setattr(prep, "_plan_time_context", _inert_plan_time_context, raising=False)
+
+
+class TestSeedTopics:
+    def test_prefers_fore_understanding_then_supplements_from_vault(
+        self, real_plan_time_context: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(prep, "_recent_vault_topics", lambda *_a, **_k: ["live vault topic"])
+        seeds = prep._candidate_seed_topics([{"topic": "evidence discipline"}], limit=5)
+        assert seeds[0] == "evidence discipline"
+        assert "live vault topic" in seeds
+
+    def test_routes_around_dead_fore_understanding_via_live_vault(
+        self, real_plan_time_context: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(prep, "_recent_vault_topics", lambda *_a, **_k: ["live vault topic"])
+        seeds = prep._candidate_seed_topics([], limit=5)
+        assert seeds == ["live vault topic"]
+
+    def test_dedupes_and_caps_the_slate(
+        self, real_plan_time_context: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(prep, "_recent_vault_topics", lambda *_a, **_k: [])
+        fore = [{"topic": "a"}, {"topic": "a"}, {"topic": "b"}, {"topic": "c"}]
+        assert prep._candidate_seed_topics(fore, limit=2) == ["a", "b"]
+
+
+class TestPlanTimeContext:
+    def _patch_recruit(
+        self, monkeypatch: pytest.MonkeyPatch, sets: list[ResolvedSourceSet]
+    ) -> None:
+        monkeypatch.setattr(
+            prep, "_candidate_seed_topics", lambda *_a, **_k: [s.topic for s in sets]
+        )
+        monkeypatch.setattr(
+            "agents.hapax_daimonion.angle_resolver.recruit_source_sets",
+            lambda *_a, **_k: list(sets),
+        )
+        monkeypatch.setattr(prep, "_gather_planner_channels", _inert_channels)
+
+    def test_recruits_resolved_sources_for_the_planner(
+        self, real_plan_time_context: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sets = [_mk_source_set("dense topic", 2)]
+        self._patch_recruit(monkeypatch, sets)
+        kwargs, _theses = prep._plan_time_context(
+            [{"topic": "x"}], llm_fn=lambda _p: "", recruit_budget_s=100.0, thesis_budget_s=100.0
+        )
+        assert kwargs["resolved_sources"] == sets
+
+    def test_authors_theses_bound_to_resolved_handles(
+        self, real_plan_time_context: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sets = [_mk_source_set("dense topic", 2)]
+        self._patch_recruit(monkeypatch, sets)
+        thesis_json = (
+            '{"claim":"evidence beats vibes","grounds":["src:0"],'
+            '"warrant":"w","falsifier":"f","source_consequence":"s"}'
+        )
+        _kwargs, theses = prep._plan_time_context(
+            [], llm_fn=lambda _p: thesis_json, recruit_budget_s=100.0, thesis_budget_s=100.0
+        )
+        assert len(theses) == 1
+        assert validate_cited_handles(sets[0], theses[0].grounds)["ok"] is True
+
+    def test_threads_live_context_channels(
+        self, real_plan_time_context: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._patch_recruit(monkeypatch, [])
+        monkeypatch.setattr(
+            prep,
+            "_gather_planner_channels",
+            lambda: {**_inert_channels(), "perception": {"zone": "voice"}},
+        )
+        kwargs, theses = prep._plan_time_context(
+            [], llm_fn=lambda _p: "", recruit_budget_s=10.0, thesis_budget_s=10.0
+        )
+        assert kwargs["perception"] == {"zone": "voice"}
+        assert theses == []
+
+    def test_thesis_authoring_halts_on_budget(
+        self, real_plan_time_context: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sets = [_mk_source_set(f"topic-{i}", 1) for i in range(3)]
+        self._patch_recruit(monkeypatch, sets)
+        calls: list[int] = []
+
+        def _llm(_p: str) -> str:
+            calls.append(1)
+            return ""
+
+        _kwargs, theses = prep._plan_time_context(
+            [],
+            llm_fn=_llm,
+            recruit_budget_s=100.0,
+            thesis_budget_s=50.0,
+            now=_prep_clock(0.0, 0.0, 999.0),
+        )
+        assert len(theses) == 1
+        assert len(calls) == 1
+
+
+def test_run_prep_informs_planner_with_resolved_sources(
+    real_plan_time_context: bool, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The dominant 04:00 path hands the planner recruited resolved sources +
+    live context channels — it does not author blind on fore_understanding."""
+    import agents.programme_manager.planner as planner_module
+
+    captured: dict[str, Any] = {}
+    sentinel_sets = [_mk_source_set("dense topic", 1)]
+
+    class CapturingPlanner:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def plan(
+            self, *, show_id: str, target_programmes: int | None = None, **kw: Any
+        ) -> SimpleNamespace:  # noqa: ARG002
+            captured.update(kw)
+            return SimpleNamespace(programmes=[])
+
+    monkeypatch.setattr(
+        prep,
+        "_plan_time_context",
+        lambda *_a, **_k: (
+            {
+                "resolved_sources": sentinel_sets,
+                **_inert_channels(),
+                "perception": {"zone": "voice"},
+            },
+            [],
+        ),
+    )
+    monkeypatch.setattr(planner_module, "ProgrammePlanner", CapturingPlanner)
+    monkeypatch.setattr(prep, "MAX_SEGMENTS", 1)
+    monkeypatch.setattr(
+        prep,
+        "_new_prep_session",
+        lambda: {
+            "prep_session_id": "segment-prep-wiring",
+            "model_id": prep.RESIDENT_PREP_MODEL,
+            "llm_calls": [],
+        },
+    )
+    monkeypatch.setattr(prep, "_assert_resident_prep_model", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        prep,
+        "assert_segment_prep_allowed",
+        lambda _activity: SimpleNamespace(mode="open", reason="test", source="test"),
+    )
+    prep.run_prep(tmp_path)
+
+    assert captured.get("resolved_sources") == sentinel_sets
+    assert captured.get("perception") == {"zone": "voice"}
+    assert "fore_understanding" in captured

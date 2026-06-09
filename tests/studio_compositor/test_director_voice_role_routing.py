@@ -1,22 +1,15 @@
-"""Director audio routing uses the role-keyed VoiceOutputRouter API.
+"""Director audio routing: fail-closed broadcast gate + private fallback.
 
-Per cc-task ``director-loop-semantic-audio-route`` (WSJF 8.5,
-2026-05-01): the director's ``_play_audio`` previously hard-coded the
-PipeWire target literal ``input.loopback.sink.role.assistant``. This
-test pins that the director now resolves the target through
-``shared.voice_output_router.VoiceOutputRouter`` (semantic
-``private_monitor`` role) so the canonical role → sink mapping lives
-in one place (``config/voice-output-routes.yaml``).
+History: per cc-task ``director-loop-semantic-audio-route`` (2026-05-01) the
+director stopped hard-coding the PipeWire loopback sink literal and resolved the
+``private_monitor`` role through ``shared.voice_output_router.VoiceOutputRouter``.
 
-Stacks on the role-API delivery in cc-task
-``voice-output-router-semantic-api`` (beta) — beta added the
-``VoiceOutputRouter`` class + ``VoiceRole`` literal alongside the
-existing ``resolve_voice_output_route()`` policy machinery in the
-same module.
-
-Source pin only — no runtime path execution. The director_loop module
-is too large + hardware-coupled to instantiate in unit tests; pinning
-the source contract is the right granularity for this PR.
+Now (``segment-audio-hosting-readiness-20260607``, AC#4) ``_play_audio`` also
+offers hosting speech to PUBLIC_BROADCAST *through* the fail-closed
+``resolve_playback_decision`` classifier, keeping ``private_monitor`` as the
+never-removed fallback. These are SOURCE pins for the invariants that must not
+silently regress; behavioural coverage lives in
+``test_director_broadcast_routing.py``.
 """
 
 from __future__ import annotations
@@ -27,60 +20,69 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DIRECTOR_LOOP = REPO_ROOT / "agents" / "studio_compositor" / "director_loop.py"
 
 
-def _play_audio_body() -> str:
-    """Extract the body of the ``_play_audio`` method as a string."""
+def _method_body(name: str) -> str:
+    """Extract the body of a director method as a string."""
     body = DIRECTOR_LOOP.read_text(encoding="utf-8")
-    marker = "    def _play_audio(self, pcm: bytes) -> None:"
+    marker = f"    def {name}(self"
     start = body.index(marker)
     rest = body[start + len(marker) :]
     end = rest.index("\n    def ")
     return marker + rest[:end]
 
 
-def test_play_audio_imports_voice_output_router() -> None:
-    """The role-keyed semantic API is imported inside _play_audio."""
-    body = _play_audio_body()
+def test_play_audio_keeps_private_monitor_fallback() -> None:
+    """The private_monitor role remains the never-removed fallback path."""
+    body = _method_body("_play_audio")
     assert "from shared.voice_output_router import VoiceOutputRouter" in body
-
-
-def test_play_audio_routes_private_monitor_role() -> None:
-    """The director's TTS routes through the ``private_monitor`` role.
-    Pin that the director picks the assistant-equivalent semantic role
-    (``private_monitor``) and not ``broadcast`` or ``notification``,
-    which are separate surfaces."""
-    body = _play_audio_body()
-    assert 'router.route("private_monitor")' in body
-    assert '"broadcast"' not in body
+    assert 'route("private_monitor")' in body
+    assert "result.sink_name" in body
+    # notification is a separate surface and must never be the director's route.
     assert '"notification"' not in body
 
 
-def test_play_audio_uses_sink_name_attribute() -> None:
-    """The router's RouteResult exposes ``sink_name`` for the concrete
-    PipeWire target. Pin its use rather than re-constructing the target
-    inline."""
-    body = _play_audio_body()
-    assert "result.sink_name" in body
+def test_play_audio_routes_through_fail_closed_gate() -> None:
+    """Broadcast is offered THROUGH resolve_playback_decision, not swapped in.
+
+    The director must consult the fail-closed classifier (via the helper) and
+    only broadcast on an allowed ``livestream`` decision."""
+    play_body = _method_body("_play_audio")
+    assert "_resolve_broadcast_decision()" in play_body
+    assert 'decision.destination == "livestream"' in play_body
+    assert "decision.allowed" in play_body
+
+    helper_body = _method_body("_resolve_broadcast_decision")
+    assert "resolve_playback_decision" in helper_body
+    # No self-minted authorization: the director only forwards an authorization
+    # the Programme already carries.
+    assert "programme_authorization" in helper_body
+    assert 'getattr(programme, "programme_authorization"' in helper_body
 
 
 def test_play_audio_drops_when_sink_unavailable() -> None:
-    """When the router reports ``sink_name == None`` (provenance
-    ``unavailable``), the director must fail closed instead of using a
-    default or legacy assistant sink."""
-    body = _play_audio_body()
+    """When the private route reports no sink, the director fails closed."""
+    body = _method_body("_play_audio")
     assert "if target is None:" in body
     assert "Audio playback dropped" in body
     assert "return" in body
 
 
+def test_tts_active_published_only_while_broadcasting() -> None:
+    """tts_active is bracketed around the broadcast write, never off-broadcast.
+
+    The ``publish_tts_state`` calls live inside the ``if broadcasting:`` guards
+    so private monitor speech does not duck the broadcast music bed."""
+    body = _method_body("_play_audio")
+    assert "publish_tts_state(True)" in body
+    assert "publish_tts_state(False)" in body
+    # Both publishes are guarded by the broadcasting flag.
+    assert body.count("if broadcasting:") >= 2
+
+
 def test_no_other_hardcoded_voice_sinks_in_director_loop() -> None:
-    """The hardcoded sink replacement is exhaustive for director_loop:
-    there must be no remaining literal loopback role sink. Pin so future
-    patches don't sneak new hard-coded sinks past the role-keyed API."""
+    """No remaining literal loopback role sink anywhere in director_loop."""
     body = DIRECTOR_LOOP.read_text(encoding="utf-8")
     occurrences = body.count("input.loopback.sink.role.")
     assert occurrences == 0, (
-        f"Expected 0 hardcoded loopback-sink references; found {occurrences}. Each new occurrence "
-        f"should go through the VoiceOutputRouter API."
+        f"Expected 0 hardcoded loopback-sink references; found {occurrences}. "
+        f"Each new occurrence should go through the VoiceOutputRouter API."
     )
-    body_block = _play_audio_body()
-    assert body_block.count("input.loopback.sink.role.") == 0

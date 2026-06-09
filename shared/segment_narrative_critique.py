@@ -38,9 +38,11 @@ def run_narrative_critique(
 ) -> NarrativeVerdict:
     """Run the narrative quality council on a composed segment script.
 
-    Returns a NarrativeVerdict with scores, verdict status, and
-    revision directives. Fail-open: returns BROADCAST_READY if
-    the council is unavailable.
+    Returns a NarrativeVerdict with scores, verdict status, and revision
+    directives. Fail-LOUD: an unavailable / refused / no-trustworthy-scores
+    council yields STRUCTURAL_REWORK (convergence REFUSED), never BROADCAST_READY
+    — a down council can never wave a segment through. cc-task
+    cctv-council-perfect-health-faillloud-convergence.
     """
     if not script_text or len(script_text.strip()) < 100:
         return _empty_verdict("script_too_short")
@@ -85,10 +87,21 @@ def _convert_to_narrative_verdict(
     opening = scores.get("information_gap_integrity")
     escalation = scores.get("escalation_architecture")
 
-    if focalization is not None and focalization <= 2:
+    valid_scores = [s for s in scores.values() if s is not None]
+    if verdict.convergence_status == ConvergenceStatus.REFUSED or not valid_scores:
+        # A panel that REFUSED (below quorum / family floor / all-failed) or
+        # produced no trustworthy scores can NEVER be BROADCAST_READY, regardless
+        # of any thin/degraded mean. Fail loud, not open. cc-task
+        # cctv-council-perfect-health-faillloud-convergence.
+        status = NarrativeVerdictStatus.STRUCTURAL_REWORK
+    elif focalization is not None and focalization <= 2:
         status = NarrativeVerdictStatus.GENERIC_DETECTED
     elif (opening is not None and opening <= 2) or (escalation is not None and escalation <= 2):
         status = NarrativeVerdictStatus.STRUCTURAL_REWORK
+    elif verdict.convergence_status == ConvergenceStatus.HUNG:
+        # Genuine cross-member disagreement on narrative quality is not a clean
+        # pass — send it back for revision rather than broadcasting.
+        status = NarrativeVerdictStatus.REVISE_AND_RESUBMIT
     elif mean_score < 3.0:
         status = NarrativeVerdictStatus.REVISE_AND_RESUBMIT
     else:
@@ -186,11 +199,15 @@ def format_narrative_verdict_for_composer(verdict: NarrativeVerdict) -> str:
 
 
 def _empty_verdict(reason: str) -> NarrativeVerdict:
+    # Fail-LOUD: an unavailable council (or a too-short script) REFUSES — it must
+    # never certify BROADCAST_READY. The old fail-open (HUNG + BROADCAST_READY)
+    # let a down council wave a segment through. cc-task
+    # cctv-council-perfect-health-faillloud-convergence.
     return NarrativeVerdict(
         scores={},
         confidence_bands={},
-        convergence_status=ConvergenceStatus.HUNG,
-        verdict_status=NarrativeVerdictStatus.BROADCAST_READY,
+        convergence_status=ConvergenceStatus.REFUSED,
+        verdict_status=NarrativeVerdictStatus.STRUCTURAL_REWORK,
         disagreement_log=[f"Council unavailable: {reason}"],
         receipt={"council_unavailable": True, "reason": reason},
     )

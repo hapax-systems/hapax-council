@@ -1,0 +1,124 @@
+# HACL Surface Registry — static, reviewable classification of every LLM-context surface.
+#
+# Spec: hapax-research/specs/2026-06-08-hacl-context-compression-design.md
+#
+# TIERS (codec each tier permits):
+#   lossless_ok    — to_toon (and, opt-in stage 2, a deterministic Headroom codec)
+#   lossless_only  — to_toon ONLY (no information loss tolerable)
+#   deny           — NEVER compress (governance / consent / operator-speech / person-adjacent)
+#   hot_path       — inline lossless-fast only; NEVER lossy (latency is a governance requirement)
+#
+# FAIL-CLOSED: a surface NOT listed here resolves to the `default_tier` (deny) — an unknown
+# surface is never compressed. `headroom_enabled` is structurally forbidden on deny/hot_path.
+version: 1
+default_tier: deny
+
+surfaces:
+  # ── lossless_ok: regenerable read-only data; to_toon now, Headroom pilot later ──────────
+  knowledge_search:
+    tier: lossless_ok
+    codec: toon
+    headroom_enabled: false   # stage-2 pilot allowlists this surface first
+    max_ratio: 0.60
+    alert_threshold: 0.85
+    route_constraint: any
+  env_context:
+    tier: lossless_ok
+    codec: toon
+    headroom_enabled: false
+    max_ratio: 0.55
+    alert_threshold: 0.85
+    route_constraint: any
+  director_programme_context:
+    tier: lossless_ok
+    codec: toon
+    headroom_enabled: false
+    max_ratio: 0.55
+    alert_threshold: 0.85
+    route_constraint: any
+  dmn_sensor_text:
+    tier: lossless_ok
+    codec: toon
+    headroom_enabled: false
+    max_ratio: 0.55
+    alert_threshold: 0.85
+    route_constraint: any
+  health_goals_digest:
+    tier: lossless_ok
+    codec: toon
+    headroom_enabled: false
+    max_ratio: 0.55
+    alert_threshold: 0.85
+    route_constraint: any
+
+  # ── lossless_only: structured but information-critical; to_toon only, never lossy ───────
+  axioms_manifest:
+    tier: lossless_only
+    codec: toon
+    headroom_enabled: false
+    max_ratio: 0.50
+    alert_threshold: 0.80
+    route_constraint: any
+  grounding_act:
+    tier: lossless_only
+    codec: toon
+    headroom_enabled: false
+    max_ratio: 0.40
+    floor: 0.90
+    alert_threshold: 0.80
+    route_constraint: any
+  chat_author_attribution:
+    tier: lossless_only
+    codec: toon
+    headroom_enabled: false
+    max_ratio: 0.40
+    alert_threshold: 0.80
+    route_constraint: any
+  profiler_regen_context:
+    tier: lossless_only
+    codec: toon
+    headroom_enabled: false
+    max_ratio: 0.50
+    alert_threshold: 0.80
+    route_constraint: any
+  claim_envelope:
+    tier: lossless_only
+    codec: toon
+    headroom_enabled: false
+    max_ratio: 0.40
+    alert_threshold: 0.80
+    route_constraint: any
+
+  # ── deny: NEVER compress — governance / consent / operator-speech / person-adjacent ────
+  imagination_thought:
+    tier: deny
+    codec: passthrough
+  spontaneous_speech_act:
+    tier: deny
+    codec: passthrough
+  operator_neuro_disclosure:
+    tier: deny
+    codec: passthrough
+  voice_register_hint:
+    tier: deny
+    codec: passthrough
+  person_adjacent_profile:
+    tier: deny
+    codec: passthrough
+  dmn_image_frame:
+    tier: deny
+    codec: passthrough
+
+  # ── hot_path: turn-synchronous; inline lossless-fast only, never lossy ─────────────────
+  spontaneous_speech_gen:
+    tier: hot_path
+    codec: passthrough
+  director_tick:
+    tier: hot_path
+    codec: passthrough
+  dmn_evaluative_multimodal:
+    tier: hot_path
+    codec: passthrough
+  veto_chain_marker:
+    tier: hot_path
+    codec: passthrough

@@ -4786,44 +4786,107 @@ class DirectorLoop:
         # planning with an explicit reason.
         return self._tts_client.synthesize(text, "conversation")
 
-    def _play_audio(self, pcm: bytes) -> None:
-        """Play PCM via the role-keyed VoiceOutputRouter.
+    def _resolve_broadcast_decision(self) -> Any | None:
+        """Offer director hosting speech to the fail-closed broadcast gate.
 
-        Asks the router for the ``private_monitor`` semantic role
-        instead of hard-coding the legacy assistant loopback sink.
-        The role → sink mapping lives in
-        ``config/voice-output-routes.yaml`` so the canonical decision
-        is operator-editable in one place.
+        When an active Programme makes the director a hosting source, build an
+        impingement that carries explicit public-broadcast intent and resolve
+        it through ``resolve_playback_decision`` — the same fail-closed
+        classifier every other voice callsite uses (explicit intent + fresh
+        ≤120 s programme authorization + ``audio_safe_for_broadcast`` + TTS
+        permission). Returns the ``VoicePlaybackDecision`` (which may be
+        blocked), or ``None`` when there is no programme (→ private monitor).
 
-        Closes cc-task ``director-loop-semantic-audio-route`` (WSJF 8.5).
-        Stacks on the role-API delivery in cc-task
-        ``voice-output-router-semantic-api`` (beta) which adds
-        ``VoiceOutputRouter`` to ``shared.voice_output_router``.
-
-        If the router reports the private route as unavailable, playback is
-        dropped. The router is the boundary between private and public audio;
-        there is no default-sink fallback.
+        The director NEVER self-mints broadcast authorization: it only
+        forwards a ``programme_authorization`` artifact the active Programme
+        already carries. Absent an externally minted authorization the gate
+        keeps hosting speech private — connecting the executor without opening
+        a private-narration leak. Any error → ``None`` (fail-closed private).
         """
         try:
-            if not hasattr(self, "_audio_output") or self._audio_output is None:
-                from agents.hapax_daimonion.pw_audio_output import PwAudioOutput
+            from types import SimpleNamespace
+
+            from agents.hapax_daimonion.cpal.destination_channel import (
+                resolve_playback_decision,
+            )
+
+            programme = self._active_programme()
+            if programme is None:
+                return None
+            content: dict[str, Any] = {
+                "impingement_id": f"director-host-{int(time.time() * 1000)}",
+                "public_broadcast_intent": True,
+            }
+            programme_id = getattr(programme, "programme_id", None)
+            if programme_id is not None:
+                content["programme_id"] = str(programme_id)
+            authorization = getattr(programme, "programme_authorization", None) or getattr(
+                programme, "broadcast_authorization", None
+            )
+            if authorization is not None:
+                content["programme_authorization"] = authorization
+            impingement = SimpleNamespace(
+                source="studio_compositor.director.host",
+                content=content,
+            )
+            return resolve_playback_decision(impingement)
+        except Exception:
+            log.debug(
+                "director broadcast decision failed; private fallback",
+                exc_info=True,
+            )
+            return None
+
+    def _play_audio(self, pcm: bytes) -> None:
+        """Route director hosting speech through the fail-closed playback gate.
+
+        Hosting narration is offered to PUBLIC_BROADCAST *through*
+        ``resolve_playback_decision`` (see :meth:`_resolve_broadcast_decision`).
+        Only when every fail-closed gate passes does audio reach the broadcast
+        target; otherwise it falls back to the ``private_monitor`` role — the
+        never-removed default (additive broadcast, not a sink swap). The role →
+        sink mapping lives in ``config/voice-output-routes.yaml``. If the
+        private route is unavailable, playback is dropped (no default-sink
+        fallback).
+
+        ``tts_active`` is published to the compositor ducker ONLY while audio is
+        actually on the broadcast bus, so the broadcast music bed is not ducked
+        for private monitor speech the stream audience cannot hear.
+        """
+        try:
+            decision = self._resolve_broadcast_decision()
+            broadcasting = (
+                decision is not None and decision.allowed and decision.destination == "livestream"
+            )
+            if broadcasting:
+                target = decision.target
+                media_role = decision.media_role
+            else:
                 from shared.voice_output_router import VoiceOutputRouter
 
-                router = VoiceOutputRouter()
-                result = router.route("private_monitor")
+                result = VoiceOutputRouter().route("private_monitor")
                 target = result.sink_name
-                if target is None:
-                    log.warning(
-                        "Audio playback dropped: private_monitor route unavailable (%s)",
-                        result.provenance,
+                media_role = "Assistant"
+            if target is None:
+                log.warning("Audio playback dropped: private_monitor route unavailable")
+                return
+            if not hasattr(self, "_audio_output") or self._audio_output is None:
+                from agents.hapax_daimonion.pw_audio_output import PwAudioOutput
+
+                self._audio_output = PwAudioOutput(sample_rate=24000, channels=1)
+            if broadcasting:
+                from agents.studio_compositor.vad_ducking import publish_tts_state
+
+                publish_tts_state(True)
+            try:
+                self._audio_output.write(pcm, target=target, media_role=media_role)
+            finally:
+                if broadcasting:
+                    from agents.studio_compositor.vad_ducking import (
+                        publish_tts_state,
                     )
-                    return
-                self._audio_output = PwAudioOutput(
-                    sample_rate=24000,
-                    channels=1,
-                    target=target,
-                )
-            self._audio_output.write(pcm)
+
+                    publish_tts_state(False)
         except Exception:
             log.exception("Audio playback error")
 
