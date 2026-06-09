@@ -192,6 +192,33 @@ old_unmerged=0
 skipped=0
 alert_lines=()
 
+# Release-worktree retention. source-activate adds one detached worktree per
+# activation under .../source-activation/releases/<sha> and only ever runs
+# `git worktree prune` (removes missing-dir entries, never present-but-stale
+# ones), so the releases dir grows unbounded (observed: 142). Reap stale release
+# snapshots here, keeping the active + candidate release (from current.json).
+release_retain_shas=""
+for sacur in \
+    "${HAPAX_SOURCE_ACTIVATION_CURRENT:-}" \
+    "$HOME/.cache/hapax/source-activation/current.json" \
+    /data/cache/hapax/source-activation/current.json; do
+    [[ -n "$sacur" && -r "$sacur" ]] || continue
+    while IFS= read -r _sha; do
+        [[ -n "$_sha" ]] && release_retain_shas+=" $_sha"
+    done < <(python3 -c '
+import json, os, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+for k in ("active_source_path", "active_source_head", "candidate_source_path"):
+    v = d.get(k)
+    if isinstance(v, str) and v:
+        print(os.path.basename(v))
+' "$sacur" 2>/dev/null)
+    break
+done
+
 process_worktree() {
     local path="$worktree_path"
     local branch="$branch_ref"
@@ -234,6 +261,30 @@ process_worktree() {
     fi
 
     if [[ -z "$branch" ]]; then
+        # Reap stale source-activation release worktrees (detached snapshots of
+        # main) once older than the clean threshold, except the active/candidate
+        # release. Root-cause fix for unbounded release accumulation.
+        if [[ "$real_path" == */source-activation/releases/* && -n "$head" ]]; then
+            local rel_sha="${real_path##*/}"
+            if ((age >= clean_age_seconds)) && [[ " $release_retain_shas " != *" $rel_sha "* ]]; then
+                old_merged_clean=$((old_merged_clean + 1))
+                printf 'hapax-worktree-gc: removable release %s age=%s\n' \
+                    "$path" "$(format_age "$age")"
+                if [[ -n "$locked" ]]; then
+                    printf 'hapax-worktree-gc: skip locked release: %s (%s)\n' "$path" "$locked"
+                    skipped=$((skipped + 1))
+                    return 0
+                fi
+                if ((dry_run)); then
+                    printf 'hapax-worktree-gc: dry-run would remove release %s\n' "$path"
+                else
+                    git -C "$repo" worktree remove --force "$path"
+                    removed=$((removed + 1))
+                    printf 'hapax-worktree-gc: removed release %s\n' "$path"
+                fi
+                return 0
+            fi
+        fi
         if ((age >= alert_age_seconds)); then
             old_unmerged=$((old_unmerged + 1))
             alert_lines+=("- $path ($branch_label), age $(format_age "$age"), no branch attached")
