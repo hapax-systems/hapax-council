@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=%h/projects/hapax-council/scripts/hapax-lane-idle-watchdog
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-lane-idle-watchdog
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=%h
 Environment=HAPAX_LOCAL_DEV_MAINTENANCE_MODE=appendix-only
