@@ -163,7 +163,7 @@ trap cleanup EXIT
 CLAUDE_BIN="$(command -v claude || true)"
 [[ -n "$CLAUDE_BIN" ]] || { echo "hapax-claude-headless: claude not found" >&2; exit 4; }
 
-EFFORT="${HAPAX_CLAUDE_EFFORT:-max}"
+EFFORT="${HAPAX_CLAUDE_EFFORT:-xhigh}"
 MODEL="${HAPAX_CLAUDE_MODEL:-}"
 CLAUDE_ARGS=(
   -p
