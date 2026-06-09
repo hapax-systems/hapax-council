@@ -15,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shared.platform_capability_registry import (  # noqa: E402
+    DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_REGISTRY,
     PlatformCapabilityRegistryError,
     check_registry_freshness,
@@ -48,7 +49,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--receipt-dir",
         type=Path,
-        help="Overlay fresh platform capability receipts from this directory",
+        default=DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
+        help="Overlay fresh platform capability receipts from this directory. "
+        "Defaults to the live receipt cache so freshness mirrors the dispatch "
+        "read-path (the gate applies receipts; the display previously did not, "
+        "which made every route read as stale/blocked). Pass an empty/nonexistent "
+        "dir to inspect the inert registry.",
     )
     parser.add_argument(
         "--route",
