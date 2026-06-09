@@ -157,6 +157,7 @@ RTMP_BITRATE_BPS: Any = None
 HAPAX_MOBILE_SUBSTREAM_FRAMES_TOTAL: Any = None
 HAPAX_MOBILE_SUBSTREAM_BITRATE_KBPS: Any = None
 HAPAX_BROADCAST_MODE: Any = None
+HAPAX_MEDIA_EGRESS_TOTAL: Any = None
 HAPAX_MOBILE_CAIRO_RENDER_DURATION_MS: Any = None
 REVERIE_POOL_BUCKET_COUNT: Any = None
 REVERIE_POOL_TOTAL_TEXTURES: Any = None
@@ -359,6 +360,7 @@ def _init_metrics() -> None:
     global WARD_BLIT_TOTAL
     global WARD_BLIT_SKIPPED_TOTAL
     global WARD_SOURCE_SURFACE_PIXELS
+    global HAPAX_MEDIA_EGRESS_TOTAL
 
     if not _PROMETHEUS_AVAILABLE:
         return
@@ -877,6 +879,12 @@ def _init_metrics() -> None:
             surface="director",
             outcome=_outcome,
         ).inc(0)
+    HAPAX_MEDIA_EGRESS_TOTAL = Counter(
+        "hapax_media_egress_total",
+        "Recruited segment media (image/YT) egress-gate outcomes.",
+        ["outcome", "media_kind"],
+        registry=REGISTRY,
+    )
     COMP_CAMERAS_TOTAL = Gauge(
         "studio_compositor_cameras_total",
         "Total registered cameras",
@@ -1373,6 +1381,20 @@ def record_refusal_gate_reroll(*, surface: str, outcome: str) -> None:
     if HAPAX_REFUSAL_GATE_REROLLS is None:
         return
     HAPAX_REFUSAL_GATE_REROLLS.labels(surface=surface, outcome=outcome).inc()
+
+
+def record_media_egress(outcome: str, media_kind: str) -> None:
+    """Increment the recruited-media egress-gate outcome counter.
+
+    Called from ``media_egress_gate`` on every allow/refuse decision so the
+    consent thread is observable. Lazily initialises metrics so the gate can
+    fire outside the compositor boot path; a no-op when prometheus is absent.
+    """
+
+    _init_metrics()
+    if HAPAX_MEDIA_EGRESS_TOTAL is None:
+        return
+    HAPAX_MEDIA_EGRESS_TOTAL.labels(outcome=outcome, media_kind=media_kind).inc()
 
 
 def record_preset_load_failed(*, preset: str, reason: str) -> None:

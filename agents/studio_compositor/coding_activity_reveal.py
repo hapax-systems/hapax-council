@@ -50,6 +50,9 @@ import logging
 import math
 import threading
 import time
+from collections.abc import Mapping
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -90,6 +93,46 @@ if TYPE_CHECKING:
     import cairo
 
 log = logging.getLogger(__name__)
+
+# Max on-panel height for a blitted segment image thumbnail.
+SEGMENT_IMAGE_THUMB_H: int = 132
+
+
+class AssetRenderAction(StrEnum):
+    """How the reveal panel should render one authored segment asset."""
+
+    BLIT = "blit"  # decode + blit the image (replaces the [IMAGE] label)
+    SKIP = "skip"  # youtube: the materializer cues the OARB sphere, panel is silent
+    LABEL = "label"  # plain caption text (text/url assets, or image fallback)
+
+
+@dataclass(frozen=True)
+class AssetRenderPlan:
+    """A per-asset rendering decision, free of the old narrating label."""
+
+    action: AssetRenderAction
+    media_ref: str | None = None
+    label: str | None = None
+
+
+def plan_asset_render(asset: Mapping[str, Any]) -> AssetRenderPlan:
+    """Decide how to render one authored segment asset (show, don't tell).
+
+    Pure and per-frame-safe — it never narrates the move as ``[KIND] caption``
+    and never calls the consent gate (recruited-media consent is the
+    materializer's once-per-beat concern). Images blit, youtube is left to the
+    OARB cue, everything else renders its plain caption.
+    """
+
+    kind = str(asset.get("kind") or "text")
+    caption = (str(asset.get("caption") or "")).strip() or None
+    url = asset.get("url")
+    if kind == "youtube":
+        return AssetRenderPlan(AssetRenderAction.SKIP)
+    if kind == "image" and isinstance(url, str) and url:
+        return AssetRenderPlan(AssetRenderAction.BLIT, media_ref=url)
+    return AssetRenderPlan(AssetRenderAction.LABEL, label=caption)
+
 
 # Ramp durations match the legacy ``durf_source._ENTER_RAMP_MS`` (400 ms)
 # and ``_EXIT_RAMP_MS`` (600 ms) so the visible alpha envelope on the
@@ -690,6 +733,45 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
 
     # ── Segment content renderer ─────────────────────────────────────
 
+    def _blit_segment_image(
+        self,
+        cr: cairo.Context,
+        path: str,
+        x: float,
+        y: float,
+        max_w: float,
+        alpha: float,
+    ) -> bool:
+        """Decode + blit an authored segment image, scaled to a panel thumb.
+
+        Returns ``False`` on any decode/load failure so the caller can fall
+        back to the plain caption (the never-removed DURF text fallback).
+        """
+
+        try:
+            from agents.studio_compositor.image_loader import get_image_loader
+
+            surface = get_image_loader().load(path)
+        except Exception:
+            log.debug("segment image load failed: %s", path, exc_info=True)
+            return False
+        if surface is None:
+            return False
+        iw = surface.get_width()
+        ih = surface.get_height()
+        if iw <= 0 or ih <= 0:
+            return False
+        scale = min(max_w / iw, SEGMENT_IMAGE_THUMB_H / ih)
+        if scale <= 0:
+            return False
+        cr.save()
+        cr.translate(x, y)
+        cr.scale(scale, scale)
+        cr.set_source_surface(surface, 0, 0)
+        cr.paint_with_alpha(alpha)
+        cr.restore()
+        return True
+
     def _render_segment_content(
         self,
         cr: cairo.Context,
@@ -770,14 +852,24 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
         render_text(cr, header_style, text_x, text_y)
         text_y += 32
 
-        # Asset info (if present)
+        # Asset rendering: SHOW the media — blit the image (youtube is cued to
+        # the OARB sphere by the materializer, so the panel stays silent on it).
+        # The old "[IMAGE]/[YOUTUBE] caption" label narrated the move; that
+        # show-don't-tell breach is gone. Plain caption is only a fallback.
         for asset in assets[:2]:
-            kind = asset.get("kind", "text")
-            caption = asset.get("caption") or asset.get("url") or ""
-            if caption:
-                asset_label = f"  [{kind.upper()}] {caption[:80]}"
+            if not isinstance(asset, dict):
+                continue
+            plan = plan_asset_render(asset)
+            if plan.action is AssetRenderAction.SKIP:
+                continue
+            if plan.action is AssetRenderAction.BLIT and plan.media_ref:
+                if self._blit_segment_image(cr, plan.media_ref, text_x, text_y, max_w, alpha):
+                    text_y += SEGMENT_IMAGE_THUMB_H + 8
+                    continue
+                # decode failed — fall through to the caption fallback below.
+            if plan.label:
                 asset_style = TextStyle(
-                    text=asset_label,
+                    text=f"  {plan.label[:80]}",
                     font_description=self._font_description,
                     color_rgba=(muted[0], muted[1], muted[2], 0.72 * alpha),
                     outline_color_rgba=(0.0, 0.0, 0.0, 0.80 * alpha),

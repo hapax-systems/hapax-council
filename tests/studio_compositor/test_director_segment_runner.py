@@ -154,6 +154,159 @@ def test_runner_emits_layout_activate_command_for_manual_segment(tmp_path: Path)
     assert any("segment-tier" in line for line in prompt_lines)
 
 
+def test_runner_materializes_declared_needs_when_no_authored_layout_intents(
+    tmp_path: Path,
+) -> None:
+    """A beat with declared needs but no authored layout intents no longer
+    refuses with no_layout_needs: the materializer derives the posture AND
+    recruits + dispatches the matching compositional effect."""
+
+    from types import SimpleNamespace
+
+    from agents.studio_compositor.media_egress_gate import (
+        MediaEgressDecision,
+        MediaEgressOutcome,
+    )
+    from agents.studio_compositor.segment_action_materializer import (
+        SegmentActionMaterializer,
+    )
+
+    default = _layout("default", "default-panel")
+    ranked = _layout("segment-list", "ranked-list-panel")
+    layouts = {"default": default, "segment-list": ranked}
+    state = LayoutState(default)
+    segment_path = tmp_path / "active-segment.json"
+    _write_json(
+        segment_path,
+        {
+            "programme_id": "prog-declared",
+            "role": "tier_list",
+            "topic": "declared needs only",
+            "current_beat_index": 0,
+            "hosting_context": {"mode": "responsible_hosting"},
+            "source_affordance_kinds": ["ranked_list_visible"],
+            "source_refs": ["packet:declared:evidence"],
+            # NOTE: no current_beat_layout_intents authored.
+        },
+    )
+    commands: list[DirectorSegmentCommand] = []
+
+    def _sink(command: DirectorSegmentCommand) -> dict[str, Any]:
+        commands.append(command)
+        state.mutate(lambda _previous: layouts[command.args["layout_name"]])
+        return {"status": "ok", "layout_name": command.args["layout_name"]}
+
+    dispatched: list[Any] = []
+    materializer = SegmentActionMaterializer(
+        select=lambda imp, *, top_k=10, context=None: [
+            SimpleNamespace(capability_name="ward.highlight.ranked-list-panel.glow", combined=0.8)
+        ],
+        is_compositional=lambda name: True,
+        dispatch=lambda action: dispatched.append(action) or True,
+        cue_media=lambda ref, kind: True,
+        media_gate=lambda ref, kind: MediaEgressDecision(
+            outcome=MediaEgressOutcome.ALLOWED, reason="ok", media_ref=ref, media_kind=kind
+        ),
+        clock=lambda: 1000.0,
+    )
+    runner = DirectorSegmentRunner(
+        layout_state=state,
+        available_layouts=lambda: layouts.keys(),
+        command_sink=_sink,
+        segment_state_path=segment_path,
+        receipt_path=tmp_path / "receipt.json",
+        prompt_binding_path=tmp_path / "binding.json",
+        command_jsonl_path=tmp_path / "commands.jsonl",
+        materializer=materializer,
+    )
+
+    receipt = runner.process_once(now=1000.0)
+
+    assert receipt is not None
+    # Stopped refusing: the derived ranked-list need postured segment-list.
+    assert state.get().name == "segment-list"
+    assert [command.args["layout_name"] for command in commands] == ["segment-list"]
+    # And the abstract need recruited + dispatched a compositional effect.
+    assert [action.capability for action in dispatched] == ["ward.highlight.ranked-list-panel.glow"]
+
+
+def test_runner_records_witnessed_media_render_verdicts(tmp_path: Path) -> None:
+    """A cued media move is recorded with a witnessed rendered verdict, so a
+    move cannot fake-succeed: the receipt carries the readback outcome."""
+
+    from types import SimpleNamespace
+
+    from agents.studio_compositor.media_egress_gate import (
+        MediaEgressDecision,
+        MediaEgressOutcome,
+    )
+    from agents.studio_compositor.segment_action_materializer import (
+        SegmentActionMaterializer,
+    )
+
+    default = _layout("default", "default-panel")
+    ranked = _layout("segment-list", "ranked-list-panel")
+    layouts = {"default": default, "segment-list": ranked}
+    state = LayoutState(default)
+    segment_path = tmp_path / "active-segment.json"
+    playback_path = tmp_path / "segment-playback.json"
+    _write_json(
+        segment_path,
+        {
+            "programme_id": "prog-media",
+            "role": "tier_list",
+            "current_beat_index": 0,
+            "hosting_context": {"mode": "responsible_hosting"},
+            "source_affordance_kinds": ["ranked_list_visible"],
+            "source_refs": ["packet:media:evidence"],
+        },
+    )
+    _write_json(
+        playback_path,
+        {"assets": [{"kind": "image", "url": "/srv/a/diagram.png", "caption": "diagram"}]},
+    )
+
+    def _sink(command: DirectorSegmentCommand) -> dict[str, Any]:
+        state.mutate(lambda _previous: layouts[command.args["layout_name"]])
+        return {"status": "ok", "layout_name": command.args["layout_name"]}
+
+    materializer = SegmentActionMaterializer(
+        select=lambda imp, *, top_k=10, context=None: [
+            SimpleNamespace(capability_name="ward.highlight.ranked-list-panel.glow", combined=0.8)
+        ],
+        is_compositional=lambda name: True,
+        dispatch=lambda action: True,
+        cue_media=lambda ref, kind: True,
+        media_gate=lambda ref, kind: MediaEgressDecision(
+            outcome=MediaEgressOutcome.ALLOWED, reason="ok", media_ref=ref, media_kind=kind
+        ),
+        clock=lambda: 1000.0,
+    )
+    runner = DirectorSegmentRunner(
+        layout_state=state,
+        available_layouts=lambda: layouts.keys(),
+        command_sink=_sink,
+        segment_state_path=segment_path,
+        segment_playback_path=playback_path,
+        receipt_path=tmp_path / "receipt.json",
+        prompt_binding_path=tmp_path / "binding.json",
+        command_jsonl_path=tmp_path / "commands.jsonl",
+        materializer=materializer,
+    )
+
+    runner.process_once(now=1000.0)
+
+    saved = json.loads((tmp_path / "receipt.json").read_text(encoding="utf-8"))
+    assert "media_render" in saved
+    verdicts = saved["media_render"]
+    assert len(verdicts) == 1
+    assert verdicts[0]["object_ref"] == "object:image:diagram.png"
+    assert verdicts[0]["media_kind"] == "image"
+    # The fake layout did not blit the image, so the witnessed verdict is False
+    # (the move did not fake-succeed).
+    assert verdicts[0]["rendered"] is False
+
+
 def test_runner_command_composes_segment_fragment_without_escape_env(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
