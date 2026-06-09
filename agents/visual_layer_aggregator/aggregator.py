@@ -17,7 +17,6 @@ import httpx
 
 from agents._active_correction import CorrectionSeeker
 from agents._correction_memory import CorrectionStore
-from agents._episodic_memory import EpisodeBuilder, EpisodeStore
 from agents._stimmung import StimmungCollector, SystemStimmung
 from agents._telemetry import (
     hapax_interaction,
@@ -56,6 +55,7 @@ from agents.visual_layer_state import (
 )
 from shared.apperception_tick import ApperceptionTick
 from shared.eigenform_logger import log_state_vector
+from shared.episodic_memory import EpisodeBuilder, EpisodeStore
 from shared.mesh_health import aggregate_mesh_health
 from shared.sheaf_health import compute_restriction_consistency
 
@@ -506,7 +506,7 @@ class VisualLayerAggregator:
         self._ws3_retries += 1
         try:
             from agents._correction_memory import CorrectionStore as _CS
-            from agents._episodic_memory import EpisodeStore as _ES
+            from shared.episodic_memory import EpisodeStore as _ES
 
             self._correction_store = _CS()
             self._correction_store.ensure_collection()

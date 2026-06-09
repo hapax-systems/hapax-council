@@ -26,7 +26,7 @@ def persist_session_digest(daemon: VoiceDaemon) -> None:
         from qdrant_client.models import PointStruct
 
         from agents._config import embed
-        from agents._episodic_memory import Episode, EpisodeStore
+        from shared.episodic_memory import Episode, EpisodeStore
 
         store = EpisodeStore()
         store.ensure_collection()
@@ -88,8 +88,8 @@ def load_seed_entries(daemon: VoiceDaemon) -> list:
     try:
         from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-        from agents._episodic_memory import EpisodeStore
         from agents.hapax_daimonion.conversation_pipeline import ThreadEntry
+        from shared.episodic_memory import EpisodeStore
 
         store = EpisodeStore()
         points, _offset = store.client.scroll(
@@ -171,7 +171,7 @@ def load_recent_memory(daemon: VoiceDaemon) -> str:
     try:
         from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-        from agents._episodic_memory import EpisodeStore
+        from shared.episodic_memory import EpisodeStore
 
         store = EpisodeStore()
         points, _offset = store.client.scroll(
