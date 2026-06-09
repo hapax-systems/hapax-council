@@ -113,6 +113,19 @@ class TestYoutubeDirection:
         data = json.loads((tmp_shm / "youtube-direction.json").read_text())
         assert data["action"] == "advance-queue"
 
+    def test_cue_to_surface_carries_media_ref(self, tmp_shm):
+        assert cc.dispatch_youtube_direction(
+            "youtube.cue-to-surface", 30.0, media_ref="object:yt:abc123"
+        )
+        data = json.loads((tmp_shm / "youtube-direction.json").read_text())
+        assert data["action"] == "cue-to-surface"
+        assert data["media_ref"] == "object:yt:abc123"
+
+    def test_legacy_action_has_no_media_ref(self, tmp_shm):
+        assert cc.dispatch_youtube_direction("youtube.cut-away", 10.0)
+        data = json.loads((tmp_shm / "youtube-direction.json").read_text())
+        assert data.get("media_ref") is None
+
 
 class TestAttentionWinner:
     def test_unwired_dispatcher_records_pending(self, tmp_shm):

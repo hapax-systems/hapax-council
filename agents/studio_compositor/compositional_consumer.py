@@ -532,23 +532,33 @@ def dispatch_overlay_emphasis(
 
 
 @observe_dispatch("youtube.direction")
-def dispatch_youtube_direction(capability_name: str, ttl_s: float) -> bool:
+def dispatch_youtube_direction(
+    capability_name: str,
+    ttl_s: float,
+    *,
+    media_ref: str | None = None,
+) -> bool:
     """youtube.<action> → youtube-direction.json. Consumed by the director
-    loop's slot rotator on next advance decision."""
+    loop's slot rotator on next advance decision.
+
+    The ``cue-to-surface`` action carries a specific ``media_ref`` so the
+    director can cue a chosen video to the OARB slot (resolved by the single
+    OARB owner in ``_honor_youtube_direction``); legacy actions
+    (cut-to/advance-queue/cut-away) carry no target."""
     parts = capability_name.split(".", 1)
     if len(parts) < 2 or parts[0] != "youtube":
         log.warning("malformed youtube.* name: %s", capability_name)
         return False
-    action = parts[1]  # e.g. "cut-to", "advance-queue", "cut-away"
-    _atomic_write_json(
-        _YOUTUBE_DIRECTION,
-        {
-            "action": action,
-            "ttl_s": ttl_s,
-            "set_at": time.time(),
-            "source_capability": capability_name,
-        },
-    )
+    action = parts[1]  # e.g. "cut-to", "advance-queue", "cut-away", "cue-to-surface"
+    payload: dict[str, Any] = {
+        "action": action,
+        "ttl_s": ttl_s,
+        "set_at": time.time(),
+        "source_capability": capability_name,
+    }
+    if media_ref:
+        payload["media_ref"] = media_ref
+    _atomic_write_json(_YOUTUBE_DIRECTION, payload)
     _mark_recruitment("youtube.direction")
     return True
 
@@ -1665,6 +1675,55 @@ def dispatch_attention_refocus(capability_name: str, ttl_s: float) -> bool:
     )
     _mark_recruitment("attention.refocus", extra={"ttl_s": ttl_s, "variant": variant})
     return True
+
+
+# Canonical director/compositional capability prefixes. Mirrors the live
+# consumer's set (``run_loops_aux._COMPOSITIONAL_PREFIXES``) and the dispatch
+# routing below; a drift guard in the tests asserts the two stay in sync.
+# Colocated with ``_dispatch_without_receipt`` so the predicate and the router
+# cannot diverge within this module.
+COMPOSITIONAL_CAPABILITY_PREFIXES: tuple[str, ...] = (
+    "cam.hero.",
+    "fx.family.",
+    "overlay.",
+    "youtube.",
+    "attention.winner.",
+    "stream.mode.",
+    "ward.",
+    "homage.",
+    "novelty.",
+    "transition.",
+    "gem.",
+    "composition.",
+    "pace.",
+    "mood.",
+    "programme.",
+    "intensity.",
+    "silence.",
+    "chrome.",
+    "attention.refocus.",
+    "node.add.",
+    "node.remove.",
+    "node.compose.",
+    "node.fork.",
+    "node.merge.",
+    "node.route.",
+)
+
+
+def is_compositional_capability(name: str) -> bool:
+    """True if ``name`` is a director/compositional capability.
+
+    A recruited capability is a director move (dispatchable by
+    :func:`dispatch`) when its name carries one of the catalogue family
+    prefixes. The segment materializer uses this to keep a higher-scoring
+    non-director capability (e.g. a Reverie satellite shader recruited
+    globally) from claiming a director slot.
+    """
+
+    if not isinstance(name, str) or not name:
+        return False
+    return name.startswith(COMPOSITIONAL_CAPABILITY_PREFIXES)
 
 
 def _dispatch_without_receipt(

@@ -38,6 +38,7 @@ DEFAULT_RUNNER_INTERVAL_S = 1.0
 DEFAULT_PROMPT_BINDING_TTL_S = 15.0
 
 ACTIVE_SEGMENT_FILE = Path("/dev/shm/hapax-compositor/active-segment.json")
+SEGMENT_PLAYBACK_FILE = Path("/dev/shm/hapax-compositor/segment-playback.json")
 RECEIPT_FILE = Path("/dev/shm/hapax-compositor/director-segment-runner-receipt.json")
 PROMPT_BINDING_FILE = Path("/dev/shm/hapax-compositor/director-segment-binding.json")
 COMMAND_JSONL = Path("/dev/shm/hapax-compositor/director-segment-commands.jsonl")
@@ -106,23 +107,32 @@ class DirectorSegmentRunner:
         available_layouts: Callable[[], Iterable[str]],
         command_sink: SegmentCommandSink,
         segment_state_path: Path = ACTIVE_SEGMENT_FILE,
+        segment_playback_path: Path = SEGMENT_PLAYBACK_FILE,
         receipt_path: Path = RECEIPT_FILE,
         prompt_binding_path: Path = PROMPT_BINDING_FILE,
         command_jsonl_path: Path = COMMAND_JSONL,
         interval_s: float = DEFAULT_RUNNER_INTERVAL_S,
         hysteresis_s: float = DEFAULT_HYSTERESIS_S,
         readback_ttl_s: float = DEFAULT_READBACK_TTL_S,
+        materializer: Any | None = None,
     ) -> None:
         self.layout_state = layout_state
         self.available_layouts = available_layouts
         self.command_sink = command_sink
         self.segment_state_path = Path(segment_state_path)
+        self.segment_playback_path = Path(segment_playback_path)
         self.receipt_path = Path(receipt_path)
         self.prompt_binding_path = Path(prompt_binding_path)
         self.command_jsonl_path = Path(command_jsonl_path)
         self.interval_s = interval_s
         self.hysteresis_s = hysteresis_s
         self.readback_ttl_s = readback_ttl_s
+        # Optional segment director materializer. When set, each tick resolves
+        # the beat's declared needs into recruited surface actions (dispatched
+        # through the live Via, media gated) and derives bounded layout-pressure
+        # intents so a beat that authored no layout intents still postures
+        # instead of refusing with no_layout_needs.
+        self._materializer = materializer
         self._responsible_state: dict[str, Any] = {}
         self._last_successful_command_key: (
             tuple[str | None, int | None, str | None, str, str] | None
@@ -181,6 +191,18 @@ class DirectorSegmentRunner:
         )
         intents = pressure.get("segment_layout_intents")
         intent_tuple = intents if isinstance(intents, tuple) else ()
+
+        # Materialize declared needs: recruit + dispatch surface effects, cue
+        # media (gated), and derive layout-pressure intents. Idempotent per
+        # beat (the materializer's loop guard), so this is safe every tick.
+        materialization: Any | None = None
+        if self._materializer is not None and raw_segment.get("programme_id"):
+            materialization = self._materialize_beat(raw_segment, now=ts)
+            layout_intents = tuple(getattr(materialization, "layout_intents", ()) or ())
+            if layout_intents:
+                intent_tuple = intent_tuple + layout_intents
+                pressure_seen = True
+
         if not pressure_seen and not intent_tuple:
             return None
 
@@ -248,9 +270,38 @@ class DirectorSegmentRunner:
             command_result=command_result,
             now=ts,
         )
+        # Witnessed media readback: assert each cued media move actually
+        # rendered (OARB selector / blitted object_ref) so it can't fake-succeed.
+        media_moves = getattr(materialization, "media", ()) if materialization is not None else ()
+        if media_moves:
+            payload["media_render"] = _media_render_payload(
+                media_moves, readback.rendered_object_refs
+            )
         _write_json_atomic(self.receipt_path, payload)
         _write_json_atomic(self.prompt_binding_path, _prompt_binding_payload(payload, now=ts))
         return payload
+
+    def _materialize_beat(
+        self,
+        raw_segment: dict[str, Any],
+        *,
+        now: float,
+    ) -> Any | None:
+        """Run the materializer for this beat; return its receipt (or None).
+
+        Dispatch of recruited effects and media cueing happen as side effects
+        of ``materialize_beat`` (idempotent per beat). Failures are swallowed
+        so the layout-responsibility loop keeps running on its own.
+        """
+
+        assets = _read_segment_assets(self.segment_playback_path)
+        try:
+            return self._materializer.materialize_beat(raw_segment, assets=assets, now=now)
+        except Exception:
+            log.warning(
+                "segment materializer tick failed; layout pressure unchanged", exc_info=True
+            )
+            return None
 
     def _command_for_receipt(
         self,
@@ -432,6 +483,34 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return raw if isinstance(raw, dict) else {}
+
+
+def _read_segment_assets(path: Path) -> list[dict[str, Any]]:
+    """Read the playback assets list from segment-playback.json (best-effort)."""
+
+    assets = _read_json_object(path).get("assets")
+    if not isinstance(assets, list):
+        return []
+    return [asset for asset in assets if isinstance(asset, dict)]
+
+
+def _media_render_payload(
+    media_moves: Any,
+    rendered_object_refs: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    """Witnessed media-render verdicts for the receipt (fail-soft)."""
+
+    try:
+        from agents.studio_compositor.segment_media_readback import media_render_verdicts
+
+        verdicts = media_render_verdicts(media_moves, rendered_object_refs=rendered_object_refs)
+    except Exception:
+        log.debug("media render verdict computation failed", exc_info=True)
+        return []
+    return [
+        {"object_ref": v.object_ref, "media_kind": v.media_kind, "rendered": v.rendered}
+        for v in verdicts
+    ]
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:

@@ -2579,6 +2579,8 @@ class DirectorLoop:
         """Read + act on youtube-direction.json written by compositional_consumer.
 
         Epic 2 Phase B. Actions:
+        - ``cue-to-surface`` → cue a specific ``media_ref`` to the OARB slot
+          via the single OARB owner (the director's targeted-media verb).
         - ``advance-queue`` → rotate to the next active slot (mod len).
         - ``cut-away`` → pause the active slot via its audio control.
         - ``cut-to`` → alias for advance-queue for now (operator-intent
@@ -2603,7 +2605,17 @@ class DirectorLoop:
             direction_path.unlink(missing_ok=True)
             return
         log.info("youtube-direction: %s", action)
-        if action in ("advance-queue", "cut-to"):
+        if action == "cue-to-surface":
+            # Cue a specific media_ref to the OARB slot via the single owner.
+            # Rides the existing YT selector — no new playback path — so the
+            # slot's level + cut-away-mute discipline is inherited.
+            from agents.studio_compositor.oarb_media_slot import cue_from_youtube_direction
+
+            try:
+                cue_from_youtube_direction(data)
+            except Exception:
+                log.debug("oarb cue-to-surface failed", exc_info=True)
+        elif action in ("advance-queue", "cut-to"):
             new_slot = (self._active_slot + 1) % len(self._slots)
             self._active_slot = new_slot
         elif action == "cut-away":
