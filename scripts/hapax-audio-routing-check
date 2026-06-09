@@ -15,7 +15,7 @@
 #       -> S-4 line in -> [S-4 Material=Bypass FX] -> S-4 line out
 #       -> mk5 IN 3/4 (pro-input AUX2/3) -> hapax-voice-wet -> livestream-tap
 #   Rode -> mk5 IN 1 (pro-input AUX0) -> hapax-mic-rode -> livestream-tap
-#   music -> music-loudnorm -> livestream-tap ; youtube -> yt-loudnorm -> livestream-tap
+#   music -> music-loudnorm -> music-duck-mk5 -> livestream-tap ; youtube -> yt-loudnorm -> livestream-tap
 #   livestream-tap (software sum) -> broadcast-master -> broadcast-normalized
 #       -> obs-broadcast-remap -> OBS
 #   private/notification/PC -> fail-closed (no broadcast egress); private monitor -> mk5 Phones AUX10/11
@@ -186,12 +186,17 @@ else
 fi
 echo ""
 
-# ── Invariant 4: Music + YouTube into the software sum bus ──
+# ── Invariant 4: Music + YouTube into the software sum bus (mk5: loudnorm → music-duck-mk5 → tap) ──
 echo "Chain 4: Music / YouTube → livestream-tap (software mix)"
-if link_present "hapax-music-loudnorm-playback:output_FL" "hapax-livestream-tap:playback_FL"; then
-    check "music-loudnorm → livestream-tap" "PASS"
+if link_present "hapax-music-loudnorm-playback:output_FL" "hapax-music-duck-mk5:playback_FL"; then
+    check "music-loudnorm → music-duck-mk5 (mk5 ducker)" "PASS"
 else
-    check "music-loudnorm → livestream-tap" "missing — music not reaching broadcast sum bus"
+    check "music-loudnorm → music-duck-mk5 (mk5 ducker)" "missing — music not loudness-normalized into the mk5 ducker"
+fi
+if link_present "hapax-music-duck-mk5-playback:output_FL" "hapax-livestream-tap:playback_FL"; then
+    check "music-duck-mk5 → livestream-tap" "PASS"
+else
+    check "music-duck-mk5 → livestream-tap" "missing — music not reaching broadcast sum bus"
 fi
 if link_present "hapax-yt-loudnorm-playback:output_FL" "hapax-livestream-tap:playback_FL"; then
     check "yt-loudnorm → livestream-tap" "PASS (linked)"
@@ -208,7 +213,7 @@ UNEXPECTED_TAP_INPUTS=""
 while IFS= read -r source_port; do
     [ -n "$source_port" ] || continue
     case "$source_port" in
-        hapax-voice-wet-playback:output_FL|hapax-voice-wet-playback:output_FR|hapax-mic-rode-playback:output_FL|hapax-mic-rode-playback:output_FR|hapax-music-loudnorm-playback:output_FL|hapax-music-loudnorm-playback:output_FR|hapax-yt-loudnorm-playback:output_FL|hapax-yt-loudnorm-playback:output_FR)
+        hapax-voice-wet-playback:output_FL|hapax-voice-wet-playback:output_FR|hapax-mic-rode-playback:output_FL|hapax-mic-rode-playback:output_FR|hapax-music-loudnorm-playback:output_FL|hapax-music-loudnorm-playback:output_FR|hapax-music-duck-mk5-playback:output_FL|hapax-music-duck-mk5-playback:output_FR|hapax-yt-loudnorm-playback:output_FL|hapax-yt-loudnorm-playback:output_FR)
             ;;
         *)
             if [ -n "$UNEXPECTED_TAP_INPUTS" ]; then
