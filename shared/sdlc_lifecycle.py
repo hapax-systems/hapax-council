@@ -6,6 +6,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -265,6 +266,87 @@ def is_active_blocked_with_evidence(frontmatter: Mapping[str, Any]) -> bool:
     return bool(
         status == "blocked" and reason and witness and not is_dependency_blocked_reason(reason)
     )
+
+
+# --- Acceptance-receipt enforcement (capacity routing Phase 0.2) -------------
+# ``frontier_review_required`` is only honest if acceptance is enforced: a
+# review-floor task may close (cc-close) or queue (cc-pr-autoqueue) only with a
+# signed review receipt — acceptor identity, verdict, timestamp, artifact ref —
+# stored beside the task note as ``<task_id>.acceptance.yaml``. Non-review-floor
+# tasks are untouched. Spec: REQ-20260609 model-capability-cost-routing report.
+
+#: The quality floor whose closure demands a signed acceptance receipt.
+REVIEW_FLOOR_QUALITY_FLOOR = "frontier_review_required"
+
+#: Receipt filename suffix; the receipt lives beside the task note.
+ACCEPTANCE_RECEIPT_SUFFIX = ".acceptance.yaml"
+
+#: Minimal receipt schema — every field must be present and non-null.
+ACCEPTANCE_RECEIPT_REQUIRED_FIELDS = ("acceptor", "verdict", "timestamp", "artifact")
+
+#: Verdicts that satisfy the gate. A present-but-rejected receipt still blocks.
+ACCEPTANCE_RECEIPT_ACCEPTED_VERDICTS = frozenset({"accepted"})
+
+
+def requires_acceptance_receipt(frontmatter: Mapping[str, Any]) -> bool:
+    """True when the task declares the review floor (top-level or nested).
+
+    Checks both the top-level ``quality_floor`` and the mirrored
+    ``route_metadata.quality_floor`` — if either declares
+    ``frontier_review_required`` the receipt gate applies (fail-closed on
+    disagreement).
+    """
+
+    floors = {_frontmatter_scalar(frontmatter.get("quality_floor")).lower()}
+    route_metadata = frontmatter.get("route_metadata")
+    if isinstance(route_metadata, Mapping):
+        floors.add(_frontmatter_scalar(route_metadata.get("quality_floor")).lower())
+    return REVIEW_FLOOR_QUALITY_FLOOR in floors
+
+
+def acceptance_receipt_path(note_path: Path, task_id: str) -> Path:
+    """Canonical receipt location: ``<task_id>.acceptance.yaml`` beside the note."""
+
+    return note_path.parent / f"{task_id}{ACCEPTANCE_RECEIPT_SUFFIX}"
+
+
+def _acceptance_receipt_validity_blockers(receipt_path: Path) -> tuple[str, ...]:
+    if not receipt_path.is_file():
+        return ("missing_acceptance_receipt",)
+    try:
+        loaded = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        return (f"acceptance_receipt_malformed:{type(exc).__name__}",)
+    if not isinstance(loaded, Mapping):
+        return (f"acceptance_receipt_malformed:not_a_mapping:{type(loaded).__name__}",)
+
+    blockers = [
+        f"acceptance_receipt_missing_field:{field}"
+        for field in ACCEPTANCE_RECEIPT_REQUIRED_FIELDS
+        if not _frontmatter_non_null_scalar(loaded.get(field))
+    ]
+    verdict = _frontmatter_non_null_scalar(loaded.get("verdict"))
+    if verdict and verdict.lower() not in ACCEPTANCE_RECEIPT_ACCEPTED_VERDICTS:
+        blockers.append(f"acceptance_receipt_verdict_not_accepted:{verdict.lower()}")
+    return tuple(blockers)
+
+
+def acceptance_receipt_blockers(
+    frontmatter: Mapping[str, Any], note_path: Path
+) -> tuple[str, ...]:
+    """Receipt blockers for a review-floor task; empty for non-review-floor tasks.
+
+    A review-floor note without a resolvable ``task_id`` fails closed with
+    ``missing_acceptance_receipt`` — the receipt is keyed by task_id, so an
+    anonymous note can never present one.
+    """
+
+    if not requires_acceptance_receipt(frontmatter):
+        return ()
+    task_id = _frontmatter_non_null_scalar(frontmatter.get("task_id"))
+    if not task_id:
+        return ("missing_acceptance_receipt",)
+    return _acceptance_receipt_validity_blockers(acceptance_receipt_path(note_path, task_id))
 
 
 def _frontmatter_pr_number(frontmatter: Mapping[str, Any]) -> str | None:
