@@ -1,0 +1,575 @@
+#!/usr/bin/env python3
+"""hapax-invariant-touch-report — pre-review invariant touch report (Phase 0.3).
+
+Matches changed paths against ``config/invariant-manifest.yaml`` (invariant ->
+path globs -> checker command) and reports which protected invariants,
+governance surfaces, and operator-coupled surfaces a change touches, with the
+registered checker command for each. Guards cheap-execution routes from
+silently crossing invariant boundaries.
+
+Input modes::
+
+    git diff origin/main...HEAD | scripts/hapax-invariant-touch-report
+    scripts/hapax-invariant-touch-report --pr 4321        # gh pr diff --name-only
+    scripts/hapax-invariant-touch-report --paths a.py b/  # explicit path list
+
+Advisory by default: prints the report and exits 0 even when invariants are
+touched (blocking comes later). ``--strict`` exits 1 when any invariant is
+touched OR anything could not be resolved.
+
+Fail-closed (``unknown_path_policy: flag``):
+  - diff headers that cannot be parsed are FLAGGED as unresolved, not dropped;
+  - manifest globs that match nothing in the repo tree are flagged as dead
+    (protection that silently lapsed when a surface moved);
+  - checker commands referencing missing scripts/tests are flagged;
+  - a missing/invalid manifest or empty input always exits 3, never 0.
+
+Exit codes: 0 ok/advisory, 1 strict violation, 3 manifest/input error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+
+try:
+    import yaml
+except ModuleNotFoundError:  # pragma: no cover - environment guard
+    print(
+        "hapax-invariant-touch-report: FAIL-CLOSED: PyYAML not available in "
+        "this interpreter. Next action: run via the project env, e.g.\n"
+        "    uv run scripts/hapax-invariant-touch-report ...",
+        file=sys.stderr,
+    )
+    sys.exit(3)
+
+EXIT_OK = 0
+EXIT_STRICT_VIOLATION = 1
+EXIT_FAIL_CLOSED = 3
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_MANIFEST = REPO_ROOT / "config" / "invariant-manifest.yaml"
+
+#: Classes whose invariants MUST register an executable checker command.
+COMMAND_CLASSES = frozenset({"protected_invariant", "governance_protected"})
+
+#: Policy keys the operator_coupled class must declare (operator directive
+#: 2026-06-10): interactive-only dispatch, human release, visual evidence.
+OPERATOR_COUPLED_REQUIRED_POLICY = ("dispatch_mode", "auto_merge", "evidence")
+
+#: Prefixes of repo-relative path tokens inside checker/evidence commands that
+#: are verified to exist (fail-closed checker registry).
+_CHECKER_PATH_PREFIXES = ("scripts/", "tests/", "hooks/", "config/", "docs/")
+
+
+class ManifestError(Exception):
+    """The invariant manifest is missing, unparseable, or invalid."""
+
+
+@dataclass(frozen=True)
+class InvariantClass:
+    name: str
+    description: str
+    policy: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Invariant:
+    id: str
+    cls: str
+    description: str
+    reference: str
+    globs: tuple[str, ...]
+    checker: str | None
+    evidence_tool: str | None = None
+
+
+@dataclass(frozen=True)
+class Manifest:
+    path: Path
+    unknown_path_policy: str
+    classes: dict[str, InvariantClass]
+    invariants: tuple[Invariant, ...]
+
+
+@dataclass(frozen=True)
+class Touch:
+    invariant: Invariant
+    matched_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Report:
+    manifest: Manifest
+    examined_paths: tuple[str, ...]
+    touches: tuple[Touch, ...]
+    unclassified_paths: tuple[str, ...]
+    unresolved_paths: tuple[str, ...]
+    dead_globs: tuple[tuple[str, str], ...] = ()
+    missing_checker_paths: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def strict_violation(self) -> bool:
+        return bool(
+            self.touches or self.unresolved_paths or self.dead_globs or self.missing_checker_paths
+        )
+
+
+# ---------------------------------------------------------------------------
+# Manifest loading (fail-closed validation)
+# ---------------------------------------------------------------------------
+
+
+def load_manifest(path: Path) -> Manifest:
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ManifestError(f"cannot read manifest {path}: {exc}") from exc
+    except yaml.YAMLError as exc:
+        raise ManifestError(f"cannot parse manifest {path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ManifestError(f"manifest {path} is not a mapping")
+    if raw.get("schema_version") != 1:
+        raise ManifestError(f"unsupported schema_version {raw.get('schema_version')!r} (want 1)")
+    if raw.get("unknown_path_policy") != "flag":
+        raise ManifestError(
+            "unknown_path_policy must be 'flag' (fail-closed); got "
+            f"{raw.get('unknown_path_policy')!r}"
+        )
+
+    raw_classes = raw.get("classes")
+    if not isinstance(raw_classes, dict) or not raw_classes:
+        raise ManifestError("manifest must declare a non-empty 'classes' mapping")
+    classes: dict[str, InvariantClass] = {}
+    for name, spec in raw_classes.items():
+        spec = spec or {}
+        if not isinstance(spec, dict):
+            raise ManifestError(f"class {name!r} must be a mapping")
+        policy = spec.get("policy") or {}
+        if not isinstance(policy, dict):
+            raise ManifestError(f"class {name!r} policy must be a mapping")
+        if name == "operator_coupled":
+            missing = [k for k in OPERATOR_COUPLED_REQUIRED_POLICY if not policy.get(k)]
+            if missing:
+                raise ManifestError(
+                    f"operator_coupled class missing required policy keys: {missing}"
+                )
+        classes[name] = InvariantClass(
+            name=name,
+            description=str(spec.get("description", "")),
+            policy={str(k): str(v) for k, v in policy.items()},
+        )
+
+    raw_invariants = raw.get("invariants")
+    if not isinstance(raw_invariants, list) or not raw_invariants:
+        raise ManifestError("manifest must declare a non-empty 'invariants' list")
+    invariants: list[Invariant] = []
+    seen_ids: set[str] = set()
+    for entry in raw_invariants:
+        if not isinstance(entry, dict):
+            raise ManifestError(f"invariant entry is not a mapping: {entry!r}")
+        inv_id = entry.get("id")
+        if not inv_id or not isinstance(inv_id, str):
+            raise ManifestError(f"invariant missing 'id': {entry!r}")
+        if inv_id in seen_ids:
+            raise ManifestError(f"duplicate invariant id {inv_id!r}")
+        seen_ids.add(inv_id)
+        cls = entry.get("class")
+        if cls not in classes:
+            raise ManifestError(
+                f"invariant {inv_id!r} has unknown class {cls!r} (declared: {sorted(classes)})"
+            )
+        globs = entry.get("globs")
+        if (
+            not isinstance(globs, list)
+            or not globs
+            or not all(isinstance(g, str) and g for g in globs)
+        ):
+            raise ManifestError(f"invariant {inv_id!r} needs a non-empty glob list")
+        checker = entry.get("checker")
+        if checker is not None and not isinstance(checker, str):
+            raise ManifestError(f"invariant {inv_id!r} checker must be string or null")
+        checker = " ".join(checker.split()) if checker else None
+        if cls in COMMAND_CLASSES and not checker:
+            raise ManifestError(
+                f"invariant {inv_id!r} (class {cls}) must register a checker command"
+            )
+        evidence_tool = entry.get("evidence_tool")
+        if evidence_tool is not None and not isinstance(evidence_tool, str):
+            raise ManifestError(f"invariant {inv_id!r} evidence_tool must be a string")
+        invariants.append(
+            Invariant(
+                id=inv_id,
+                cls=cls,
+                description=" ".join(str(entry.get("description", "")).split()),
+                reference=str(entry.get("reference", "")),
+                globs=tuple(globs),
+                checker=checker,
+                evidence_tool=evidence_tool,
+            )
+        )
+
+    return Manifest(
+        path=path,
+        unknown_path_policy="flag",
+        classes=classes,
+        invariants=tuple(invariants),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Glob matching (gitignore-style: ** crosses directories, * does not)
+# ---------------------------------------------------------------------------
+
+
+def _glob_to_regex(glob: str) -> re.Pattern[str]:
+    out: list[str] = []
+    i = 0
+    while i < len(glob):
+        if glob.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif glob.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif glob[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif glob[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(glob[i]))
+            i += 1
+    return re.compile("^" + "".join(out) + "$")
+
+
+def path_matches(path: str, glob: str) -> bool:
+    return _glob_to_regex(glob).match(path) is not None
+
+
+def classify_paths(manifest: Manifest, paths: list[str]) -> list[Touch]:
+    touches: list[Touch] = []
+    for inv in manifest.invariants:
+        regexes = [_glob_to_regex(g) for g in inv.globs]
+        matched = tuple(p for p in paths if any(rx.match(p) for rx in regexes))
+        if matched:
+            touches.append(Touch(invariant=inv, matched_paths=matched))
+    return touches
+
+
+def dead_globs(manifest: Manifest, repo_paths: list[str]) -> list[tuple[str, str]]:
+    """Globs that match nothing in the repo tree — protection that lapsed."""
+    dead: list[tuple[str, str]] = []
+    for inv in manifest.invariants:
+        for glob in inv.globs:
+            rx = _glob_to_regex(glob)
+            if not any(rx.match(p) for p in repo_paths):
+                dead.append((inv.id, glob))
+    return dead
+
+
+def missing_checker_paths(manifest: Manifest, repo_root: Path) -> list[tuple[str, str]]:
+    """Repo-relative path tokens in checker/evidence commands that don't exist."""
+    missing: list[tuple[str, str]] = []
+    for inv in manifest.invariants:
+        tokens: list[str] = []
+        if inv.checker:
+            tokens.extend(inv.checker.split())
+        if inv.evidence_tool:
+            tokens.append(inv.evidence_tool)
+        if inv.reference:
+            tokens.append(inv.reference)
+        for token in tokens:
+            if token.startswith(_CHECKER_PATH_PREFIXES) or token == ".github/CODEOWNERS":
+                if not (repo_root / token).exists():
+                    missing.append((inv.id, token))
+    return missing
+
+
+# ---------------------------------------------------------------------------
+# Diff / PR input (fail-closed parsing)
+# ---------------------------------------------------------------------------
+
+_DIFF_GIT_RE = re.compile(r'^diff --git (?:"a/(.+)"|a/(.+?)) (?:"b/(.+)"|b/(.+))$')
+_PLUS_MINUS_RE = re.compile(r'^(?:\+\+\+|---) (?:"?[ab]/(.+?)"?|/dev/null)(?:\t.*)?$')
+_RENAME_RE = re.compile(r"^rename (?:from|to) (.+)$")
+
+
+def _unquote(path: str) -> str:
+    # git quotes paths with special characters; undo simple backslash escapes.
+    try:
+        return path.encode("latin-1", "backslashreplace").decode("unicode_escape")
+    except UnicodeDecodeError:
+        return path
+
+
+def paths_from_diff(text: str) -> tuple[list[str], list[str]]:
+    """Extract changed paths from a unified diff.
+
+    Returns ``(paths, unresolved)``. File-header-looking lines whose path
+    cannot be extracted land in ``unresolved`` (fail-closed), never silently
+    dropped.
+    """
+    paths: set[str] = set()
+    unresolved: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("diff --git "):
+            match = _DIFF_GIT_RE.match(line)
+            if not match:
+                unresolved.append(line)
+                continue
+            for group in match.groups():
+                if group:
+                    paths.add(_unquote(group))
+        elif line.startswith(("+++ ", "--- ")):
+            match = _PLUS_MINUS_RE.match(line)
+            if not match:
+                unresolved.append(line)
+                continue
+            if match.group(1):
+                paths.add(_unquote(match.group(1)))
+        elif line.startswith(("rename from ", "rename to ")):
+            match = _RENAME_RE.match(line)
+            if match:
+                paths.add(_unquote(match.group(1)))
+    return sorted(paths), unresolved
+
+
+def _default_gh_runner(cmd: list[str]) -> str:
+    return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+
+
+def paths_from_pr(pr_number: int, runner: Callable[[list[str]], str] | None = None) -> list[str]:
+    runner = runner or _default_gh_runner
+    out = runner(["gh", "pr", "diff", str(pr_number), "--name-only"])
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+# ---------------------------------------------------------------------------
+# Report
+# ---------------------------------------------------------------------------
+
+
+def build_report(
+    manifest: Manifest,
+    paths: list[str],
+    unresolved: list[str],
+    dead: list[tuple[str, str]] | None = None,
+    missing_checkers: list[tuple[str, str]] | None = None,
+) -> Report:
+    touches = classify_paths(manifest, paths)
+    touched = {p for t in touches for p in t.matched_paths}
+    return Report(
+        manifest=manifest,
+        examined_paths=tuple(paths),
+        touches=tuple(touches),
+        unclassified_paths=tuple(p for p in paths if p not in touched),
+        unresolved_paths=tuple(unresolved),
+        dead_globs=tuple(dead or ()),
+        missing_checker_paths=tuple(missing_checkers or ()),
+    )
+
+
+_CLASS_SECTIONS = (
+    (
+        "protected_invariant",
+        "PROTECTED INVARIANTS TOUCHED (run checker before AND after; revert on failure)",
+    ),
+    ("governance_protected", "GOVERNANCE-PROTECTED SURFACES TOUCHED"),
+    (
+        "operator_coupled",
+        "OPERATOR-COUPLED SURFACES TOUCHED (operator directive 2026-06-10: "
+        "waits for an interactive session)",
+    ),
+)
+
+
+def render_text(report: Report) -> str:
+    lines: list[str] = []
+    lines.append("invariant touch report (advisory)")
+    lines.append(f"manifest: {report.manifest.path}")
+    lines.append(f"paths examined: {len(report.examined_paths)}")
+    lines.append("")
+
+    if not report.touches:
+        lines.append("no invariant touches")
+
+    by_class: dict[str, list[Touch]] = {}
+    for touch in report.touches:
+        by_class.setdefault(touch.invariant.cls, []).append(touch)
+
+    known_classes = {name for name, _ in _CLASS_SECTIONS}
+    sections = list(_CLASS_SECTIONS) + [
+        (cls, f"{cls.upper()} SURFACES TOUCHED") for cls in by_class if cls not in known_classes
+    ]
+    for cls, heading in sections:
+        touches = by_class.get(cls)
+        if not touches:
+            continue
+        lines.append(f"== {heading} ==")
+        policy = report.manifest.classes[cls].policy
+        if policy:
+            lines.append("   policy: " + " | ".join(f"{k}: {v}" for k, v in policy.items()))
+        for touch in touches:
+            inv = touch.invariant
+            lines.append(f" - {inv.id}: {inv.description}")
+            if inv.reference:
+                lines.append(f"     reference: {inv.reference}")
+            if inv.checker:
+                lines.append(f"     checker: {inv.checker}")
+            if inv.evidence_tool:
+                lines.append(f"     evidence tool: {inv.evidence_tool}")
+            for path in touch.matched_paths:
+                lines.append(f"     touched: {path}")
+        lines.append("")
+
+    if report.unresolved_paths:
+        lines.append("== UNRESOLVED PATHS (fail-closed: investigate before review) ==")
+        for raw in report.unresolved_paths:
+            lines.append(f" ! {raw}")
+        lines.append("")
+    if report.dead_globs:
+        lines.append("== DEAD MANIFEST GLOBS (protection lapsed — fix manifest) ==")
+        for inv_id, glob in report.dead_globs:
+            lines.append(f" ! {inv_id}: {glob}")
+        lines.append("")
+    if report.missing_checker_paths:
+        lines.append("== MISSING CHECKER PATHS (fail-closed: fix manifest) ==")
+        for inv_id, token in report.missing_checker_paths:
+            lines.append(f" ! {inv_id}: {token}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_json(report: Report) -> str:
+    payload = {
+        "schema_version": 1,
+        "manifest": str(report.manifest.path),
+        "examined_paths": list(report.examined_paths),
+        "touches": [
+            {
+                "invariant": t.invariant.id,
+                "class": t.invariant.cls,
+                "description": t.invariant.description,
+                "reference": t.invariant.reference,
+                "checker": t.invariant.checker,
+                "evidence_tool": t.invariant.evidence_tool,
+                "policy": report.manifest.classes[t.invariant.cls].policy,
+                "paths": list(t.matched_paths),
+            }
+            for t in report.touches
+        ],
+        "unclassified_paths": list(report.unclassified_paths),
+        "unresolved_paths": list(report.unresolved_paths),
+        "dead_globs": [list(item) for item in report.dead_globs],
+        "missing_checker_paths": [list(item) for item in report.missing_checker_paths],
+        "strict_violation": report.strict_violation,
+    }
+    return json.dumps(payload, indent=2, sort_keys=False)
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def _repo_tracked_paths(repo_root: Path) -> list[str] | None:
+    try:
+        result = subprocess.run(
+            ["git", "ls-files"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return result.stdout.strip().splitlines()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="hapax-invariant-touch-report",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=DEFAULT_MANIFEST,
+        help=f"manifest path (default: {DEFAULT_MANIFEST})",
+    )
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--pr", type=int, help="report on a PR via gh pr diff --name-only")
+    source.add_argument("--paths", nargs="+", metavar="PATH", help="explicit changed-path list")
+    parser.add_argument("--format", choices=("text", "json"), default="text", help="output format")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit 1 on any invariant touch or unresolved/fail-closed flag",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        manifest = load_manifest(args.manifest)
+    except ManifestError as exc:
+        print(f"hapax-invariant-touch-report: FAIL-CLOSED: {exc}", file=sys.stderr)
+        return EXIT_FAIL_CLOSED
+
+    unresolved: list[str] = []
+    if args.pr is not None:
+        try:
+            paths = paths_from_pr(args.pr)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            print(
+                f"hapax-invariant-touch-report: FAIL-CLOSED: gh pr diff failed: {exc}",
+                file=sys.stderr,
+            )
+            return EXIT_FAIL_CLOSED
+    elif args.paths:
+        paths = list(args.paths)
+    else:
+        diff_text = sys.stdin.read()
+        if not diff_text.strip():
+            print(
+                "hapax-invariant-touch-report: FAIL-CLOSED: no diff on stdin "
+                "(pipe `git diff` or use --pr/--paths)",
+                file=sys.stderr,
+            )
+            return EXIT_FAIL_CLOSED
+        paths, unresolved = paths_from_diff(diff_text)
+        if not paths and not unresolved:
+            print(
+                "hapax-invariant-touch-report: FAIL-CLOSED: stdin did not look "
+                "like a unified diff (no file headers found)",
+                file=sys.stderr,
+            )
+            return EXIT_FAIL_CLOSED
+
+    repo_root = args.manifest.resolve().parent.parent
+    tracked = _repo_tracked_paths(repo_root)
+    if tracked is None:
+        # Cannot verify manifest health without a repo tree: flag, don't skip.
+        dead = [("<manifest-health>", "git ls-files unavailable")]
+        missing = []
+    else:
+        dead = dead_globs(manifest, tracked)
+        missing = missing_checker_paths(manifest, repo_root)
+
+    report = build_report(manifest, paths, unresolved, dead=dead, missing_checkers=missing)
+    print(render_text(report) if args.format == "text" else render_json(report))
+
+    if args.strict and report.strict_violation:
+        return EXIT_STRICT_VIOLATION
+    return EXIT_OK
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,48 @@
+name: invariant-touch-report
+
+# Advisory pre-review report (Phase 0.3,
+# routing-phase0-invariant-manifest-20260609): which protected invariants,
+# governance-protected surfaces, and operator-coupled surfaces does this PR
+# touch? Reads config/invariant-manifest.yaml via
+# scripts/hapax-invariant-touch-report.
+#
+# ADVISORY: invariant touches never fail this job (blocking comes later).
+# The job only fails when the tool itself fails closed (exit 3: manifest
+# missing/invalid or PR diff unavailable) — that is manifest rot and must
+# surface, not pass silently.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: invariant-touch-report-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  touch-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Invariant touch report (advisory)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          uv run --no-project --with pyyaml python \
+            scripts/hapax-invariant-touch-report \
+            --pr "$PR_NUMBER" \
+            | tee touch-report.txt
+          {
+            echo "## Invariant touch report (advisory)"
+            echo '```'
+            cat touch-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
