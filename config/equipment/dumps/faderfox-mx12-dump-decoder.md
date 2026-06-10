@@ -8,6 +8,7 @@ Record: [channel-1, cc, lower, upper, mode]. Row order: potA, potB, FADERS, btnC
   (matches pot A1's factory assignment — learn accident). Repair: learn-mode + emit ch1 CC95 via MX12 MIDI-in.
 - potB-1 also carries a stray ch1 CC95.
 - All other setups factory (channel gradient confirms: setup N saturated with N-1).
+## Post-repair (same day): rF01 row-learn taught ch1 CC95 -> ALL 12 faders certified chN/CC95 (see setup01-post-repair dump). Display ack: C095.
 ## Witnesses landed against this dump
 - 2026-06-10 wet-return: s4_wet_return_signal=true
 - 2026-06-10 faderfox: 246 mapped events, drift=false (fader 2 ride)
