@@ -144,19 +144,27 @@ def _run_with_graph(
         bin_dir / "pw-link",
         "#!/usr/bin/env bash\n"
         "if [[ \"${1:-}\" == '-l' ]]; then\n"
-        f"count_file='{bin_dir}/pw-link-calls'\n"
-        'calls=$(cat "$count_file" 2>/dev/null || echo 0)\n'
-        'echo $((calls + 1)) > "$count_file"\n'
-        'if [[ "${HAPAX_TEST_PW_LINK_SINGLE_SHOT:-}" == "1" && "$calls" -ge 1 ]]; then\n'
-        "exit 1\n"
+        'if [[ "${HAPAX_TEST_PW_LINK_SINGLE_SHOT:-}" == "1" ]]; then\n'
+        f"marker='{bin_dir}/pw-link-served'\n"
+        '[[ -e "$marker" ]] && exit 1\n'
+        ': > "$marker"\n'
         "fi\n"
         "cat <<'EOF'\n"
         f"{graph}\n"
         "EOF\n"
         "fi\n",
     )
+    # Realistic block shape: the real `pw-cli ls Node` puts several property
+    # lines between the id line and node.name, so the script's `grep -B5`
+    # window never bleeds into the previous node's block.
     pw_cli_blocks = "\n".join(
-        f'id {101 + idx},\n    node.name = "{name}"' for idx, name in enumerate(pw_cli_nodes)
+        f"id {101 + idx}, type PipeWire:Interface:Node/3\n"
+        f'    object.serial = "{101 + idx}"\n'
+        '    factory.id = "10"\n'
+        '    client.id = "32"\n'
+        '    node.description = "mock node"\n'
+        f'    node.name = "{name}"'
+        for idx, name in enumerate(pw_cli_nodes)
     )
     _write_executable(
         bin_dir / "pw-cli",
