@@ -1,0 +1,28 @@
+[Unit]
+Description=Hapax live quota/resource telemetry writer (routing Phase 0.4 / R3 slice)
+Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/hapax-quota-telemetry-writer
+After=hapax-secrets.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+# Refreshes per-provider platform capability receipts (quota stale_after=15m —
+# the paired timer fires every 10m to stay inside that window) and rebuilds the
+# live quota/spend ledger at ~/.cache/hapax/orchestration/quota-spend-ledger-live.json,
+# which load_dispatch_policy_sources prefers over the checked-in fixtures.
+# No secrets are read or persisted; the EnvironmentFile is wired only so future
+# account-live probes inherit the standard credential surface.
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/hapax-quota-telemetry-writer
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-quota-telemetry
+MemoryMax=256M
+TimeoutStartSec=180
+# Killswitch: `systemctl --user mask hapax-quota-telemetry.timer` stops the
+# writer; receipts then lapse after quota stale_after (15m) and the live ledger
+# goes stale after its TTL — the dispatcher falls back to fail-closed HOLDs,
+# never to silently trusting old telemetry.

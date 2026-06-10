@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from shared.dispatcher_policy import (
     ClogRouteState,
@@ -12,6 +14,7 @@ from shared.dispatcher_policy import (
     QuotaSpendState,
     RouteCapabilityState,
     evaluate_dispatch_policy,
+    load_dispatch_policy_sources,
     write_route_decision_receipt,
 )
 from shared.platform_capability_registry import (
@@ -19,7 +22,14 @@ from shared.platform_capability_registry import (
     build_supply_vector,
     load_platform_capability_registry,
 )
+from shared.quota_spend_ledger import (
+    QUOTA_SPEND_LEDGER_FIXTURES,
+    QUOTA_SPEND_LEDGER_LIVE_ENV,
+)
 from shared.route_metadata_schema import DemandVector, build_demand_vector
+
+if TYPE_CHECKING:
+    import pytest
 
 NOW = datetime(2026, 5, 9, 22, 30, tzinfo=UTC)
 
@@ -757,3 +767,64 @@ def test_policy_rollback_retirement_does_not_fall_back_to_legacy_route_checks() 
         "policy_rollback_retired",
         "signed_route_authority_receipt_required",
     )
+
+
+def test_policy_sources_prefer_live_quota_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    live = tmp_path / "quota-spend-ledger-live.json"
+    payload = json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
+    payload["ledger_id"] = "quota-spend-ledger-live-policy-test"
+    payload["captured_at"] = "2026-06-10T00:00:00Z"
+    live.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv(QUOTA_SPEND_LEDGER_LIVE_ENV, str(live))
+
+    sources = load_dispatch_policy_sources()
+
+    assert sources.quota_ledger is not None
+    assert sources.quota_ledger.ledger_id == "quota-spend-ledger-live-policy-test"
+    assert sources.quota_ledger_source == "live"
+    assert sources.quota_live_error is None
+
+
+def test_policy_sources_fall_back_to_fixtures_without_live_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(QUOTA_SPEND_LEDGER_LIVE_ENV, str(tmp_path / "absent.json"))
+
+    sources = load_dispatch_policy_sources()
+
+    assert sources.quota_ledger is not None
+    assert sources.quota_ledger_source == "fixtures"
+    assert sources.quota_live_error is None
+
+
+def test_policy_sources_flag_invalid_live_ledger_on_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    live = tmp_path / "quota-spend-ledger-live.json"
+    live.write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv(QUOTA_SPEND_LEDGER_LIVE_ENV, str(live))
+
+    sources = load_dispatch_policy_sources()
+
+    assert sources.quota_ledger is not None
+    assert sources.quota_ledger_source == "fixtures"
+    assert sources.quota_live_error is not None
+    assert "invalid quota/spend ledger" in sources.quota_live_error
+
+
+def test_policy_sources_explicit_path_bypasses_live_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    live = tmp_path / "quota-spend-ledger-live.json"
+    payload = json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
+    payload["ledger_id"] = "quota-spend-ledger-live-ignored"
+    live.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv(QUOTA_SPEND_LEDGER_LIVE_ENV, str(live))
+
+    sources = load_dispatch_policy_sources(quota_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES)
+
+    assert sources.quota_ledger is not None
+    assert sources.quota_ledger.ledger_id != "quota-spend-ledger-live-ignored"
+    assert sources.quota_ledger_source == "explicit"

@@ -45,6 +45,10 @@ def test_dashboard_aggregates_required_non_green_routing_state() -> None:
             },
         ],
         route_metadata_generated_at=NOW,
+        # Pin the checked-in fixtures: the default resolves the machine's live
+        # telemetry ledger when one exists, and this test asserts
+        # fixture-derived quota state.
+        quota_spend_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES,
         now=NOW,
     )
 

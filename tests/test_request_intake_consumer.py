@@ -130,6 +130,10 @@ def _run(
         "HAPAX_STALE_OFFERED_HOURS": stale_hours,
         "HAPAX_STALE_COMPLETION_HOURS": stale_hours,
         "HAPAX_CAPACITY_ROUTING_NOW": "2026-05-17T08:00:00Z",
+        # Pin the quota read to the fixture fallback: the default resolves the
+        # machine's live telemetry ledger when one exists, and these tests
+        # assert fixture-derived capacity state.
+        "HAPAX_QUOTA_SPEND_LEDGER_LIVE": str(tmp_path / "no-live-ledger.json"),
     }
     return subprocess.run(
         [str(SCRIPT), *args],
