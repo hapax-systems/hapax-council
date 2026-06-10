@@ -2109,9 +2109,7 @@ def test_blocks_review_floor_pr_with_rejected_receipt(tmp_path: Path) -> None:
     )
 
     assert report["counts"]["blocked"] == 1
-    assert (
-        "acceptance_receipt_verdict_not_accepted:rejected" in report["decisions"][0]["reasons"]
-    )
+    assert "acceptance_receipt_verdict_not_accepted:rejected" in report["decisions"][0]["reasons"]
 
 
 def test_review_floor_receipt_detected_from_nested_route_metadata(tmp_path: Path) -> None:

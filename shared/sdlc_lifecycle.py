@@ -331,9 +331,7 @@ def _acceptance_receipt_validity_blockers(receipt_path: Path) -> tuple[str, ...]
     return tuple(blockers)
 
 
-def acceptance_receipt_blockers(
-    frontmatter: Mapping[str, Any], note_path: Path
-) -> tuple[str, ...]:
+def acceptance_receipt_blockers(frontmatter: Mapping[str, Any], note_path: Path) -> tuple[str, ...]:
     """Receipt blockers for a review-floor task; empty for non-review-floor tasks.
 
     A review-floor note without a resolvable ``task_id`` fails closed with

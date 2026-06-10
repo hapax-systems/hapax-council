@@ -159,6 +159,22 @@ if [[ "$final_status" == "done" ]]; then
     fi
   fi
 
+  # Acceptance-receipt gate (routing Phase 0.2) — review-floor
+  # (frontier_review_required) tasks close only with a signed acceptance
+  # receipt (<task_id>.acceptance.yaml beside the note). The checker honors
+  # HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1 directly; non-review-floor tasks
+  # pass through untouched.
+  RECEIPT_CHECKER="$SCRIPT_DIR/cc-close-acceptance-receipt-check.py"
+  if [[ -f "$RECEIPT_CHECKER" ]]; then
+    set +e
+    python3 "$RECEIPT_CHECKER" "$note_path"
+    receipt_rc=$?
+    set -e
+    if [[ "$receipt_rc" -ne 0 ]]; then
+      exit "$receipt_rc"
+    fi
+  fi
+
   # PR-merge evidence gate — verify PR is merged before allowing done status.
   # Prevents "status: done but PR is open" false-completion pattern.
   # Bypass: HAPAX_PR_MERGE_GATE_OFF=1
@@ -233,6 +249,14 @@ tmp.write_text(text, encoding="utf-8")
 tmp.replace(new_path)
 path.unlink()
 print(f"cc-close: moved '{task_id}' to closed/, status={final_status}")
+
+# The acceptance receipt (routing Phase 0.2) lives ALONGSIDE the note —
+# keep that invariant across the move so closed review-floor tasks stay
+# closure-valid for the autoqueue and audits.
+receipt = path.parent / f"{task_id}.acceptance.yaml"
+if receipt.is_file():
+    receipt.replace(new_path.parent / receipt.name)
+    print(f"cc-close: moved acceptance receipt '{receipt.name}' to closed/")
 PYEOF
 
 # Clear the claim file(s) that still name this task. cc-claim writes BOTH a
