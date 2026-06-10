@@ -58,6 +58,7 @@ from shared.merge_queue_lineage import (  # noqa: E402
 from shared.release_gate import evaluate_avsdlc_release_gate  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_MERGE_READY_STATUSES,
+    acceptance_receipt_blockers,
     apply_release_auto_arm,
     assess_release_auto_arm,
     task_closure_validity,
@@ -623,6 +624,11 @@ def _task_blockers(
         blockers.append("task_missing_parent_spec")
     if require_route_metadata and task.route_metadata_schema != 1:
         blockers.append("task_missing_route_metadata_schema_1")
+
+    # Routing Phase 0.2: review-floor (frontier_review_required) tasks admit
+    # only with a signed acceptance receipt beside the note. Applies to active
+    # and closed task links alike; non-review-floor tasks return no blockers.
+    blockers.extend(acceptance_receipt_blockers(task.frontmatter, task.path))
 
     if task.folder == "closed":
         if task.status not in CLOSED_READY_STATUSES:

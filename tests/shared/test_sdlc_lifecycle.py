@@ -19,10 +19,13 @@ from shared.sdlc_lifecycle import (
     STAGE_RE,
     TASK_CLAIMABLE_STATUSES,
     TASK_DISPATCHABLE_STATUSES,
+    acceptance_receipt_blockers,
+    acceptance_receipt_path,
     active_blocked_task_blockers,
     frontmatter_from_text,
     is_active_blocked_with_evidence,
     is_dependency_blocked_reason,
+    requires_acceptance_receipt,
     stage_token,
     task_closure_validity,
 )
@@ -223,3 +226,106 @@ class TestStageVocabulary:
         }
         assert "_STAGE_RE" in patterns, "cc-stage-advance _STAGE_RE = re.compile(...) not found"
         assert patterns["_STAGE_RE"] == STAGE_RE.pattern
+
+
+class TestAcceptanceReceiptEnforcement:
+    """Acceptance-receipt vocabulary for review-floor tasks (routing Phase 0.2).
+
+    frontier_review_required is only honest if acceptance is enforced: closing
+    or queueing a review-floor task demands a signed receipt
+    (``<task_id>.acceptance.yaml`` beside the note) carrying acceptor identity,
+    verdict, timestamp, and an artifact ref.
+    """
+
+    def _note(self, tmp_path: Path, task_id: str, frontmatter: dict[str, object]) -> Path:
+        path = tmp_path / f"{task_id}.md"
+        lines = [f"{key}: {value}" for key, value in frontmatter.items()]
+        path.write_text(
+            "---\ntype: cc-task\ntask_id: " + task_id + "\n" + "\n".join(lines) + "\n---\n",
+            encoding="utf-8",
+        )
+        return path
+
+    def _receipt(self, tmp_path: Path, task_id: str, body: str) -> Path:
+        path = tmp_path / f"{task_id}.acceptance.yaml"
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    VALID_RECEIPT = (
+        "acceptor: operator\n"
+        "verdict: accepted\n"
+        "timestamp: 2026-06-10T17:00:00Z\n"
+        "artifact: https://github.com/hapax-systems/hapax-council/pull/4100\n"
+    )
+
+    def test_review_floor_declared_top_level_requires_receipt(self) -> None:
+        assert requires_acceptance_receipt({"quality_floor": "frontier_review_required"})
+
+    def test_review_floor_declared_in_nested_route_metadata_requires_receipt(self) -> None:
+        frontmatter = {
+            "quality_floor": None,
+            "route_metadata": {"quality_floor": "frontier_review_required"},
+        }
+        assert requires_acceptance_receipt(frontmatter)
+
+    def test_non_review_floor_task_requires_no_receipt(self) -> None:
+        assert not requires_acceptance_receipt({"quality_floor": "frontier_required"})
+        assert not requires_acceptance_receipt({"quality_floor": "deterministic_ok"})
+        assert not requires_acceptance_receipt({})
+
+    def test_receipt_path_is_task_id_acceptance_yaml_beside_note(self, tmp_path: Path) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        assert acceptance_receipt_path(note, "task-r") == tmp_path / "task-r.acceptance.yaml"
+
+    def test_missing_receipt_blocks_review_floor_task(self, tmp_path: Path) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+        assert acceptance_receipt_blockers(frontmatter, note) == ("missing_acceptance_receipt",)
+
+    def test_non_review_floor_task_has_no_receipt_blockers(self, tmp_path: Path) -> None:
+        note = self._note(tmp_path, "task-n", {"quality_floor": "frontier_required"})
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+        assert acceptance_receipt_blockers(frontmatter, note) == ()
+
+    def test_valid_receipt_clears_blockers(self, tmp_path: Path) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        self._receipt(tmp_path, "task-r", self.VALID_RECEIPT)
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+        assert acceptance_receipt_blockers(frontmatter, note) == ()
+
+    def test_receipt_missing_fields_block(self, tmp_path: Path) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        self._receipt(tmp_path, "task-r", "acceptor: operator\nverdict: accepted\n")
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+        blockers = acceptance_receipt_blockers(frontmatter, note)
+        assert "acceptance_receipt_missing_field:timestamp" in blockers
+        assert "acceptance_receipt_missing_field:artifact" in blockers
+
+    def test_rejected_verdict_blocks(self, tmp_path: Path) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        self._receipt(
+            tmp_path,
+            "task-r",
+            self.VALID_RECEIPT.replace("verdict: accepted", "verdict: rejected"),
+        )
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+        assert acceptance_receipt_blockers(frontmatter, note) == (
+            "acceptance_receipt_verdict_not_accepted:rejected",
+        )
+
+    def test_malformed_receipt_blocks(self, tmp_path: Path) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        self._receipt(tmp_path, "task-r", "- just\n- a\n- list\n")
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+        blockers = acceptance_receipt_blockers(frontmatter, note)
+        assert len(blockers) == 1
+        assert blockers[0].startswith("acceptance_receipt_malformed:")
+
+    def test_review_floor_task_without_task_id_fails_closed(self, tmp_path: Path) -> None:
+        note = tmp_path / "anonymous.md"
+        note.write_text(
+            "---\ntype: cc-task\nquality_floor: frontier_review_required\n---\n",
+            encoding="utf-8",
+        )
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+        assert acceptance_receipt_blockers(frontmatter, note) == ("missing_acceptance_receipt",)
