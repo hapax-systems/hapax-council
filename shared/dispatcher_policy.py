@@ -36,13 +36,14 @@ from shared.platform_capability_registry import (
     normalize_route_id,
 )
 from shared.quota_spend_ledger import (
-    QUOTA_SPEND_LEDGER_FIXTURES,
+    QUOTA_SPEND_LEDGER_LIVE_ENV,
     PaidRouteRequest,
     QuotaSpendLedger,
     QuotaSpendLedgerError,
     build_dashboard,
     evaluate_paid_route_eligibility,
     load_quota_spend_ledger,
+    load_quota_spend_ledger_resolved,
 )
 from shared.route_metadata_schema import (
     DemandVector,
@@ -347,6 +348,8 @@ class DispatchPolicySources(_PolicyModel):
     registry_error: str | None = None
     quota_ledger: QuotaSpendLedger | None = None
     quota_error: str | None = None
+    quota_ledger_source: str | None = None
+    quota_live_error: str | None = None
     route_authority_receipts: tuple[RouteAuthorityReceipt, ...] = Field(default=())
 
 
@@ -367,6 +370,8 @@ def load_dispatch_policy_sources(
     registry_error: str | None = None
     quota_ledger: QuotaSpendLedger | None = None
     quota_error: str | None = None
+    quota_ledger_source: str | None = None
+    quota_live_error: str | None = None
     route_authority_receipts: tuple[RouteAuthorityReceipt, ...] = ()
 
     try:
@@ -391,7 +396,16 @@ def load_dispatch_policy_sources(
         registry_error = str(exc)
 
     try:
-        quota_ledger = load_quota_spend_ledger(quota_ledger_path or QUOTA_SPEND_LEDGER_FIXTURES)
+        if quota_ledger_path is not None:
+            quota_ledger = load_quota_spend_ledger(quota_ledger_path)
+            quota_ledger_source = "explicit"
+        else:
+            resolved = load_quota_spend_ledger_resolved(
+                live_path=quota_spend_ledger_live_path_from_env()
+            )
+            quota_ledger = resolved.ledger
+            quota_ledger_source = resolved.source
+            quota_live_error = resolved.live_error
     except (IndexError, QuotaSpendLedgerError, OSError, ValueError) as exc:
         quota_ledger = None
         quota_error = str(exc)
@@ -401,8 +415,23 @@ def load_dispatch_policy_sources(
         registry_error=registry_error,
         quota_ledger=quota_ledger,
         quota_error=quota_error,
+        quota_ledger_source=quota_ledger_source,
+        quota_live_error=quota_live_error,
         route_authority_receipts=route_authority_receipts,
     )
+
+
+def quota_spend_ledger_live_path_from_env() -> Path | None:
+    """Resolve the live quota ledger path, honoring the env override.
+
+    Returns None to use the inert module default; the env value (when set)
+    redirects the live read for tests and relocation.
+    """
+
+    configured = os.environ.get(QUOTA_SPEND_LEDGER_LIVE_ENV)
+    if configured:
+        return Path(configured).expanduser()
+    return None
 
 
 def _receipt_dir_from_env() -> Path | None:

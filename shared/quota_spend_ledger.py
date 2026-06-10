@@ -19,6 +19,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 REPO_ROOT = Path(__file__).resolve().parents[1]
 QUOTA_SPEND_LEDGER_FIXTURES = REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json"
 
+QUOTA_SPEND_LEDGER_LIVE_ENV = "HAPAX_QUOTA_SPEND_LEDGER_LIVE"
+DEFAULT_QUOTA_SPEND_LEDGER_LIVE = (
+    Path.home() / ".cache" / "hapax" / "orchestration" / "quota-spend-ledger-live.json"
+)
+
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
 
 
@@ -929,6 +934,53 @@ def load_quota_spend_ledger(path: Path = QUOTA_SPEND_LEDGER_FIXTURES) -> QuotaSp
         raise QuotaSpendLedgerError(f"invalid quota/spend ledger at {path}: {exc}") from exc
 
 
+class ResolvedQuotaSpendLedger(StrictModel):
+    """Quota/spend ledger plus the provenance of where it was read from."""
+
+    ledger: QuotaSpendLedger
+    path: Path
+    source: Literal["live", "fixtures"]
+    live_error: str | None = None
+
+
+def load_quota_spend_ledger_resolved(
+    *,
+    live_path: Path | None = None,
+    fixtures_path: Path = QUOTA_SPEND_LEDGER_FIXTURES,
+) -> ResolvedQuotaSpendLedger:
+    """Load the live telemetry ledger when present, else the checked-in fixtures.
+
+    The live ledger is written on a timer by ``scripts/hapax-quota-telemetry-writer``.
+    A missing live file is the normal fixture-fallback path; a present-but-invalid
+    live file also falls back but carries the validation error so consumers can
+    surface the degraded read instead of silently trusting stale fixtures. The
+    fixture fallback stays honest on its own: its old ``captured_at`` keeps
+    ``ledger_stale()`` / ``budget_ledger_stale`` flagged.
+
+    This module stays inert (no env reads); callers honoring the
+    ``HAPAX_QUOTA_SPEND_LEDGER_LIVE`` override resolve it themselves and pass
+    ``live_path`` explicitly.
+    """
+
+    candidate = live_path if live_path is not None else DEFAULT_QUOTA_SPEND_LEDGER_LIVE
+    live_error: str | None = None
+    if candidate.exists():
+        try:
+            return ResolvedQuotaSpendLedger(
+                ledger=load_quota_spend_ledger(candidate),
+                path=candidate,
+                source="live",
+            )
+        except QuotaSpendLedgerError as exc:
+            live_error = str(exc)
+    return ResolvedQuotaSpendLedger(
+        ledger=load_quota_spend_ledger(fixtures_path),
+        path=fixtures_path,
+        source="fixtures",
+        live_error=live_error,
+    )
+
+
 def _paid_api_budget_state(ledger: QuotaSpendLedger, now: datetime) -> PaidApiBudgetState:
     if not ledger.transition_budgets:
         return PaidApiBudgetState.NONE
@@ -1105,8 +1157,10 @@ _PYDANTIC_DYNAMIC_ENTRYPOINTS = (
 
 
 __all__ = [
+    "DEFAULT_QUOTA_SPEND_LEDGER_LIVE",
     "PAID_CAPACITY_POOLS",
     "QUOTA_SPEND_LEDGER_FIXTURES",
+    "QUOTA_SPEND_LEDGER_LIVE_ENV",
     "ArtifactProvenanceRecord",
     "AuthSurface",
     "BootstrapDependencyState",
@@ -1124,6 +1178,7 @@ __all__ = [
     "QuotaSpendLedger",
     "QuotaSpendLedgerError",
     "RenewalRecord",
+    "ResolvedQuotaSpendLedger",
     "RouteAvailability",
     "SpendReason",
     "SpendGateDecisionRecord",
@@ -1136,4 +1191,5 @@ __all__ = [
     "build_dashboard",
     "evaluate_paid_route_eligibility",
     "load_quota_spend_ledger",
+    "load_quota_spend_ledger_resolved",
 ]

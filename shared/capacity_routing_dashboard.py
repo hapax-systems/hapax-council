@@ -16,6 +16,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from shared.dispatcher_policy import quota_spend_ledger_live_path_from_env
 from shared.platform_capability_registry import (
     PLATFORM_CAPABILITY_REGISTRY,
     PlatformCapabilityRegistryError,
@@ -28,6 +29,7 @@ from shared.quota_spend_ledger import (
     QuotaSpendLedger,
     QuotaSpendLedgerError,
     load_quota_spend_ledger,
+    load_quota_spend_ledger_resolved,
 )
 from shared.quota_spend_ledger import (
     build_dashboard as build_quota_spend_dashboard,
@@ -117,10 +119,14 @@ def build_capacity_routing_dashboard(
     route_metadata_generated_at: datetime | None = None,
     route_metadata_stale_after_s: int = ROUTE_METADATA_STALE_AFTER_S,
     registry_path: Path = PLATFORM_CAPABILITY_REGISTRY,
-    quota_spend_ledger_path: Path = QUOTA_SPEND_LEDGER_FIXTURES,
+    quota_spend_ledger_path: Path | None = None,
     now: datetime | None = None,
 ) -> CapacityRoutingDashboard:
-    """Build the private observe-only routing dashboard, failing closed."""
+    """Build the private observe-only routing dashboard, failing closed.
+
+    ``quota_spend_ledger_path=None`` resolves the live telemetry ledger when
+    present, falling back to the checked-in fixtures.
+    """
 
     generated_at = _coerce_now(now)
     non_green: list[CapacityRoutingNonGreenState] = []
@@ -405,12 +411,19 @@ def _registry_dashboard_state(
 
 def _quota_dashboard_state(
     *,
-    ledger_path: Path,
+    ledger_path: Path | None,
     now: datetime,
     non_green: list[CapacityRoutingNonGreenState],
 ) -> dict[str, object]:
     try:
-        ledger = load_quota_spend_ledger(ledger_path)
+        if ledger_path is None:
+            resolved = load_quota_spend_ledger_resolved(
+                live_path=quota_spend_ledger_live_path_from_env()
+            )
+            ledger = resolved.ledger
+            ledger_path = resolved.path
+        else:
+            ledger = load_quota_spend_ledger(ledger_path)
         dashboard = build_quota_spend_dashboard(ledger, now=now)
     except QuotaSpendLedgerError as exc:
         non_green.append(
@@ -419,7 +432,7 @@ def _quota_dashboard_state(
                 state="quota_spend_ledger_unavailable",
                 severity="unknown",
                 summary=f"quota/spend ledger cannot be trusted: {exc}",
-                evidence_refs=(_path_ref(ledger_path),),
+                evidence_refs=(_path_ref(ledger_path or QUOTA_SPEND_LEDGER_FIXTURES),),
             )
         )
         return {

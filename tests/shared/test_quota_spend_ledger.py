@@ -12,7 +12,9 @@ import pytest
 from pydantic import ValidationError
 
 from shared.quota_spend_ledger import (
+    DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
     QUOTA_SPEND_LEDGER_FIXTURES,
+    QUOTA_SPEND_LEDGER_LIVE_ENV,
     ArtifactProvenanceRecord,
     BootstrapDependencyState,
     BudgetLifecycleState,
@@ -28,6 +30,7 @@ from shared.quota_spend_ledger import (
     build_dashboard,
     evaluate_paid_route_eligibility,
     load_quota_spend_ledger,
+    load_quota_spend_ledger_resolved,
 )
 
 NOW = datetime(2026, 5, 17, 8, 0, 0, tzinfo=UTC)
@@ -391,3 +394,53 @@ def test_fixture_file_contains_no_private_payload_or_credential_material() -> No
     ]
     for token in forbidden_tokens:
         assert token not in text
+
+
+def _valid_live_payload(captured_at: str = "2026-06-10T00:00:00Z") -> dict[str, Any]:
+    payload = deepcopy(_payload())
+    payload["ledger_id"] = "quota-spend-ledger-live-test"
+    payload["captured_at"] = captured_at
+    return payload
+
+
+def test_resolved_loader_prefers_live_ledger_when_present(tmp_path: Path) -> None:
+    live = tmp_path / "quota-spend-ledger-live.json"
+    live.write_text(json.dumps(_valid_live_payload()), encoding="utf-8")
+
+    resolved = load_quota_spend_ledger_resolved(live_path=live)
+
+    assert resolved.source == "live"
+    assert resolved.path == live
+    assert resolved.live_error is None
+    assert resolved.ledger.ledger_id == "quota-spend-ledger-live-test"
+
+
+def test_resolved_loader_falls_back_to_fixtures_when_live_missing(tmp_path: Path) -> None:
+    resolved = load_quota_spend_ledger_resolved(live_path=tmp_path / "absent.json")
+
+    assert resolved.source == "fixtures"
+    assert resolved.path == QUOTA_SPEND_LEDGER_FIXTURES
+    assert resolved.live_error is None
+
+
+def test_resolved_loader_reports_invalid_live_ledger_on_fallback(tmp_path: Path) -> None:
+    live = tmp_path / "quota-spend-ledger-live.json"
+    live.write_text("{not json", encoding="utf-8")
+
+    resolved = load_quota_spend_ledger_resolved(live_path=live)
+
+    assert resolved.source == "fixtures"
+    assert resolved.live_error is not None
+    assert "invalid quota/spend ledger" in resolved.live_error
+
+
+def test_live_env_override_resolution_lives_outside_the_inert_module() -> None:
+    # The inert ledger module exports the env var name + default path but must
+    # not read the environment itself (pinned by
+    # test_module_has_no_provider_or_runtime_imports). The env-aware resolution
+    # lives in shared.dispatcher_policy.
+    from shared.dispatcher_policy import quota_spend_ledger_live_path_from_env
+
+    assert QUOTA_SPEND_LEDGER_LIVE_ENV == "HAPAX_QUOTA_SPEND_LEDGER_LIVE"
+    assert DEFAULT_QUOTA_SPEND_LEDGER_LIVE.name == "quota-spend-ledger-live.json"
+    assert callable(quota_spend_ledger_live_path_from_env)

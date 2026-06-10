@@ -279,11 +279,8 @@ capacity_registry_path = (
     if capacity_registry_env
     else Path(os.environ["REPO_ROOT"]) / "config" / "platform-capability-registry.json"
 )
-capacity_ledger_path = (
-    Path(capacity_ledger_env)
-    if capacity_ledger_env
-    else Path(os.environ["REPO_ROOT"]) / "config" / "quota-spend-ledger-fixtures.json"
-)
+# None resolves the live telemetry ledger when present (fixture fallback).
+capacity_ledger_path = Path(capacity_ledger_env) if capacity_ledger_env else None
 capacity_route_decision_env = os.environ.get("HAPAX_ROUTE_DECISION_LEDGER")
 if capacity_route_decision_env:
     capacity_route_decision_path = Path(capacity_route_decision_env)

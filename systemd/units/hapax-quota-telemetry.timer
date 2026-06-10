@@ -1,0 +1,14 @@
+[Unit]
+Description=Write live quota/resource telemetry every 10m (quota stale_after=15m window)
+
+[Timer]
+# Fire shortly after boot so the first dispatch of a fresh session sees live
+# telemetry, then every 10 minutes — inside the 15m quota-surface stale_after
+# with margin for a slipped fire.
+OnBootSec=2min
+OnUnitActiveSec=10min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
