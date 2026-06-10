@@ -28,13 +28,13 @@ def _base_graph(extra_tap_inputs: str = "") -> str:
     tap_inputs_fl = textwrap.dedent(f"""
         |<- hapax-voice-wet-playback:output_FL
         |<- hapax-mic-rode-playback:output_FL
-        |<- hapax-music-loudnorm-playback:output_FL
+        |<- hapax-music-duck-mk5-playback:output_FL
         |<- hapax-yt-loudnorm-playback:output_FL
         {extra_tap_inputs}""")
     tap_inputs_fr = textwrap.dedent("""
         |<- hapax-voice-wet-playback:output_FR
         |<- hapax-mic-rode-playback:output_FR
-        |<- hapax-music-loudnorm-playback:output_FR
+        |<- hapax-music-duck-mk5-playback:output_FR
         |<- hapax-yt-loudnorm-playback:output_FR
     """)
     return textwrap.dedent(f"""
@@ -65,8 +65,12 @@ def _base_graph(extra_tap_inputs: str = "") -> str:
     hapax-mic-rode-playback:output_FR
     |-> hapax-livestream-tap:playback_FR
     hapax-music-loudnorm-playback:output_FL
-    |-> hapax-livestream-tap:playback_FL
+    |-> hapax-music-duck-mk5:playback_FL
     hapax-music-loudnorm-playback:output_FR
+    |-> hapax-music-duck-mk5:playback_FR
+    hapax-music-duck-mk5-playback:output_FL
+    |-> hapax-livestream-tap:playback_FL
+    hapax-music-duck-mk5-playback:output_FR
     |-> hapax-livestream-tap:playback_FR
     hapax-yt-loudnorm-playback:output_FL
     |-> hapax-livestream-tap:playback_FL
