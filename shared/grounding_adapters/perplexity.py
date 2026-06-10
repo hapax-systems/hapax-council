@@ -7,14 +7,25 @@ envelope defined by ``shared.grounding_provider_router.REQUIRED_EVIDENCE_FIELDS`
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
+import sys
 from datetime import UTC, datetime
+from decimal import Decimal
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
 _log = logging.getLogger(__name__)
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+#: USD-per-1M-token price table, pinned to Perplexity published pricing as of
+#: the 2026-05-15 plan date. Data, not code — update the JSON when pricing
+#: changes, never these sources.
+PRICING_TABLE_PATH = _REPO_ROOT / "config" / "perplexity-pricing.json"
 
 _REFUSAL_PATTERNS = re.compile(
     r"I cannot find|no results|I'm not sure|I don't have|unable to find|"
@@ -70,13 +81,120 @@ _MODEL_ALIAS_TO_ID = {
 }
 
 
+class PerplexityPricingError(ValueError):
+    """The pricing table is missing, malformed, or lacks a model entry."""
+
+
+class PerplexitySpendMetadata(BaseModel):
+    """Per-call token counts and USD cost estimate for a Perplexity route."""
+
+    model: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+    request_id: str | None = None
+
+
+def load_pricing_table(path: Path = PRICING_TABLE_PATH) -> dict[str, dict[str, float]]:
+    """Load the per-model USD/1M-token price table from config."""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        models = payload["models"]
+        return {
+            model_id: {
+                "input_usd_per_mtok": float(rates["input_usd_per_mtok"]),
+                "output_usd_per_mtok": float(rates["output_usd_per_mtok"]),
+            }
+            for model_id, rates in models.items()
+        }
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise PerplexityPricingError(
+            f"invalid Perplexity pricing table at {path}: {exc} — "
+            "restore config/perplexity-pricing.json from the design doc's "
+            "Model Routes table"
+        ) from exc
+
+
+def build_spend_metadata(
+    model_id: str,
+    usage: dict,
+    request_id: str | None = None,
+    pricing_path: Path = PRICING_TABLE_PATH,
+) -> PerplexitySpendMetadata:
+    """Compute spend metadata for one call from its usage block.
+
+    ``usage`` is the OpenAI-compatible block Perplexity returns
+    (``prompt_tokens``/``completion_tokens``/``total_tokens``).
+    """
+
+    table = load_pricing_table(pricing_path)
+    rates = table.get(model_id)
+    if rates is None:
+        raise PerplexityPricingError(
+            f"no pricing for Perplexity model '{model_id}' — "
+            f"add it to config/perplexity-pricing.json (have: {sorted(table)})"
+        )
+
+    prompt_tokens = int(usage.get("prompt_tokens", 0))
+    completion_tokens = int(usage.get("completion_tokens", 0))
+    total_tokens = int(usage.get("total_tokens", prompt_tokens + completion_tokens))
+
+    # Decimal end-to-end so 1000 tokens at $3/1M is exactly 0.003, not a
+    # float-accumulation artifact; single float conversion at the boundary.
+    cost = (
+        Decimal(prompt_tokens) * Decimal(str(rates["input_usd_per_mtok"]))
+        + Decimal(completion_tokens) * Decimal(str(rates["output_usd_per_mtok"]))
+    ) / Decimal(1_000_000)
+
+    return PerplexitySpendMetadata(
+        model=model_id,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        estimated_cost_usd=float(cost),
+        request_id=request_id,
+    )
+
+
+def _emit_spend_to_token_ledger(spend: PerplexitySpendMetadata) -> None:
+    """Best-effort emission to the shared cost-tracking hook.
+
+    Same idiom as the director loop's LiteLLM call site: cost tracking must
+    never break the grounding call, so any ledger failure is logged and
+    swallowed.
+    """
+
+    try:
+        sys.path.insert(0, str(_REPO_ROOT / "scripts"))
+        from token_ledger import record_spend
+
+        record_spend(
+            f"perplexity:{spend.model}",
+            spend.prompt_tokens,
+            spend.completion_tokens,
+            spend.estimated_cost_usd,
+        )
+    except Exception:
+        _log.warning("token_ledger spend emission failed", exc_info=True)
+
+
 def build_envelope_from_response(
     request: PerplexityClaimRequest,
     response_text: str,
     citation_urls: list[str],
     cost: dict | None = None,
+    usage: dict | None = None,
+    request_id: str | None = None,
 ) -> GroundingEvidenceEnvelope:
-    """Build a standard evidence envelope from a Perplexity API response."""
+    """Build a standard evidence envelope from a Perplexity API response.
+
+    When the response's OpenAI-compatible ``usage`` block is supplied, the
+    envelope carries a ``perplexity_spend`` retrieval event with per-call
+    token counts and the USD cost estimate from the config price table, and
+    the spend is emitted to the shared token ledger.
+    """
 
     now = datetime.now(UTC).isoformat()
     model_id = _MODEL_ALIAS_TO_ID.get(request.model_alias, request.model_alias)
@@ -102,6 +220,10 @@ def build_envelope_from_response(
     retrieval_events = []
     if cost:
         retrieval_events.append({"type": "perplexity_search", "cost": cost})
+    if usage is not None:
+        spend = build_spend_metadata(model_id, usage, request_id=request_id)
+        retrieval_events.append({"type": "perplexity_spend", "spend": spend.model_dump()})
+        _emit_spend_to_token_ledger(spend)
 
     return GroundingEvidenceEnvelope(
         model_id=model_id,
