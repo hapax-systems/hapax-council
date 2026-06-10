@@ -1,0 +1,167 @@
+# invariant-manifest.yaml — machine-readable protected-invariant manifest
+# (Phase 0.3, routing-phase0-invariant-manifest-20260609).
+#
+# Codifies the CLAUDE.md protected invariants as: invariant -> path globs ->
+# checker command, so cheap-execution routes cannot silently cross invariant
+# boundaries. Consumed by scripts/hapax-invariant-touch-report, which turns a
+# diff/PR into a pre-review report of which invariants it touches.
+#
+# Fail-closed posture:
+#   - unknown_path_policy: flag — diff paths that cannot be resolved are
+#     flagged in the report, never dropped.
+#   - every glob must match at least one tracked path
+#     (tests/scripts/test_invariant_touch_report.py pins this), so a renamed
+#     protected surface surfaces as a dead glob instead of lapsed protection.
+#   - checker commands must reference existing scripts/tests (same pin).
+#
+# Classes:
+#   protected_invariant  — hard runtime/config invariants with an executable
+#                          checker; run it before AND after touching matched
+#                          paths, REVERT on failure.
+#   governance_protected — governance SSOT surfaces; checkers pin the
+#                          governing test suites.
+#   operator_coupled     — operator directive 2026-06-10: correctness depends
+#                          on continuous operator aesthetic/directorial
+#                          judgment. NEVER headless-dispatchable, human
+#                          release only, visual before/after evidence.
+
+schema_version: 1
+unknown_path_policy: flag
+
+classes:
+  protected_invariant:
+    description: >-
+      Hard runtime/config invariants with an executable checker. Run the
+      checker before and after any change to matched paths; revert on
+      failure.
+  governance_protected:
+    description: >-
+      Governance single-source-of-truth surfaces (axioms, consent gates,
+      publication hardening, CODEOWNERS/CLAUDE.md, SDLC vocabulary).
+      Mutations require operator-visible review; checkers pin the governing
+      tests.
+  operator_coupled:
+    description: >-
+      Surfaces whose correctness depends on continuous operator
+      aesthetic/directorial judgment with frequent inflections (operator
+      directive 2026-06-10). Work here waits for an interactive session and
+      is always human-released, with visual before/after evidence.
+    policy:
+      dispatch_mode: interactive_only
+      auto_merge: never
+      evidence: visual
+
+invariants:
+  - id: audio-routing
+    class: protected_invariant
+    description: >-
+      PipeWire broadcast audio chain golden topology. Single source of
+      truth: docs/audio-topology-reference.md. Never bypass the broadcast
+      chain; never modify PipeWire configs without approval; run the
+      routing check before and after ANY audio change and revert on
+      failure (CLAUDE.md "Audio Routing — PROTECTED INVARIANTS").
+    reference: docs/audio-topology-reference.md
+    globs:
+      - config/pipewire/**
+      - config/wireplumber/**
+      - config/audio-*.yaml
+      - docs/audio-topology-reference.md
+      - scripts/hapax-audio-routing-check
+    checker: scripts/hapax-audio-routing-check
+
+  - id: axiom-registry
+    class: governance_protected
+    description: >-
+      Local axiom registry, constitutive rules, roles/personas, and
+      enforcement patterns (axiom weights govern all agent behavior).
+    reference: axioms/registry.yaml
+    globs:
+      - axioms/**
+    checker: uv run pytest tests/axioms tests/hooks/test_axiom_audit.py -q
+
+  - id: consent-governance
+    class: governance_protected
+    description: >-
+      Consent gate fail-closed on consent_required capabilities;
+      interpersonal_transparency axiom (no persistent state on
+      non-operator without consent).
+    reference: shared/governance/consent.py
+    globs:
+      - shared/governance/**
+    checker: >-
+      uv run pytest tests/governance tests/test_consent_gate.py
+      tests/test_consent_gate_egress.py -q
+
+  - id: publication-hardening
+    class: governance_protected
+    description: >-
+      V5 publication bus guards: AllowlistGate, legal-name guard,
+      known-entity attribution registry, cold-contact limits.
+    reference: config/publication-hardening/known-entities.yaml
+    globs:
+      - config/publication-hardening/**
+      - agents/publication_bus/**
+      - hooks/scripts/attribution-entity-check.sh
+    checker: uv run pytest tests/agents/publication_bus -q
+
+  - id: governance-meta
+    class: governance_protected
+    description: >-
+      Governance-protected path registry (CODEOWNERS), project constitution
+      surface (CLAUDE.md), and the SDLC lifecycle vocabulary incl.
+      SENSITIVE_PATH_MARKERS (#4046).
+    reference: .github/CODEOWNERS
+    globs:
+      - .github/CODEOWNERS
+      - "**/CLAUDE.md"
+      - shared/sdlc_lifecycle.py
+    checker: uv run pytest tests/shared/test_sdlc_lifecycle.py -q
+
+  - id: reverie-vocab
+    class: protected_invariant
+    description: >-
+      WGSL node vocabulary affordance coverage regression pin (CLAUDE.md
+      "Reverie Vocabulary Integrity"; satellites must use sat_ prefix).
+    reference: tests/test_wgsl_node_affordance_coverage.py
+    globs:
+      - agents/shaders/nodes/**
+    checker: uv run pytest tests/test_wgsl_node_affordance_coverage.py -q
+
+  - id: invariant-manifest
+    class: governance_protected
+    description: >-
+      Self-protection: this manifest and its touch-report tool are
+      themselves governance surfaces — weakening a glob or checker here
+      silently un-protects everything downstream.
+    reference: config/invariant-manifest.yaml
+    globs:
+      - config/invariant-manifest.yaml
+      - scripts/hapax-invariant-touch-report
+      - tests/scripts/test_invariant_touch_report.py
+      - .github/workflows/invariant-touch-report.yml
+    checker: uv run pytest tests/scripts/test_invariant_touch_report.py -q
+
+  - id: operator-coupled-broadcast-visual
+    class: operator_coupled
+    description: >-
+      Broadcast/visual surfaces under continuous operator aesthetic and
+      directorial judgment: studio compositor
+      (segment/director/programme/compose, wards), screwm/darkplaces
+      spatial rendering, ward atlas, drift/modulation currency, GL effects
+      chain, layout switching. Mirrors the operator-coupled
+      SENSITIVE_PATH_MARKERS (shared/sdlc_lifecycle.py, #4046).
+    reference: shared/sdlc_lifecycle.py
+    globs:
+      - agents/studio_compositor/**
+      - agents/screwm_self_perception/**
+      - agents/scribble_strip_ward/**
+      - agents/parametric_modulation_heartbeat/**
+      - agents/studio_fx/**
+      - config/darkplaces/**
+      - config/screwm-*.json
+      - config/compositor-layouts/**
+      - config/layouts/**
+      - config/ward_enhancement_profiles.yaml
+      - assets/quake/**
+    checker: null
+    evidence_tool: scripts/compositor-frame-capture.sh
