@@ -370,6 +370,12 @@ SENSITIVE_PATH_MARKERS = (
     "codeowners",
     "claude.md",
     "hapax-constitution",
+    # Operator-coupled broadcast/visual surfaces (operator directive 2026-06-10):
+    # correctness depends on continuous operator aesthetic/directorial judgment,
+    # so release is ALWAYS human-armed — never system auto-arm.
+    "agents/studio_compositor/",
+    "screwm",
+    "darkplaces",
 )
 
 _AUTO_ARM_TRUTHY = {"1", "true", "yes", "y", "required"}
