@@ -321,7 +321,9 @@ echo ""
 
 # ── Invariant 10: webcam / optional-device fallback guards ──
 echo "Chain 10: Webcam / Optional-Device Fallback Guards"
-WEBCAM_LEAK=$(pw-link -l 2>/dev/null | grep -B1 -E "hapax-(voice-wet-capture|mic-rode-capture):input" 2>/dev/null | grep -E "C920|Brio|Logitech" 2>/dev/null || true)
+# Read the $GRAPH snapshot, not a fresh pw-link query — a re-query that fails
+# (PipeWire dying mid-run) would silently hide an existing leak.
+WEBCAM_LEAK=$(printf '%s\n' "$GRAPH" | grep -B1 -E "hapax-(voice-wet-capture|mic-rode-capture):input" | grep -iE "C920|Brio|Logitech" || true)
 if [ -n "$WEBCAM_LEAK" ]; then
     check "no webcam mic in mk5 voice/mic capture chains" "LEAK:${WEBCAM_LEAK:0:80}..."
 else
@@ -343,17 +345,22 @@ else
 fi
 echo ""
 
-# ── Invariant 12: critical nodes not muted ──
+# ── Invariant 12: critical nodes not muted (fail-closed: a node we cannot
+# prove audible is a violation — silent skips here are how RED exits 0) ──
 echo "Chain 12: Mute State Guard"
 for NODE_NAME in input.loopback.sink.role.broadcast hapax-voice-fx-capture hapax-loudnorm-capture hapax-voice-wet-capture hapax-mic-rode-capture; do
     NODE_ID=$(pw-cli ls Node 2>/dev/null | grep -B5 "$NODE_NAME" | grep -oE '^[[:space:]]*id [0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
-    if [ -n "$NODE_ID" ]; then
-        MUTE_STATE=$(wpctl get-volume "$NODE_ID" 2>/dev/null || echo "UNKNOWN")
-        if echo "$MUTE_STATE" | grep -qi "muted"; then
-            check "$NODE_NAME not muted" "MUTED — unmute with: wpctl set-mute $NODE_ID 0"
-        elif echo "$MUTE_STATE" | grep -qi "volume"; then
-            check "$NODE_NAME not muted" "PASS"
-        fi
+    if [ -z "$NODE_ID" ]; then
+        check "$NODE_NAME not muted" "critical chain node absent from the live graph"
+        continue
+    fi
+    MUTE_STATE=$(wpctl get-volume "$NODE_ID" 2>/dev/null || echo "")
+    if echo "$MUTE_STATE" | grep -qi "muted"; then
+        check "$NODE_NAME not muted" "MUTED — unmute with: wpctl set-mute $NODE_ID 0"
+    elif echo "$MUTE_STATE" | grep -qi "volume"; then
+        check "$NODE_NAME not muted" "PASS"
+    else
+        check "$NODE_NAME not muted" "mute state unreadable (wpctl said: '${MUTE_STATE:-nothing}')"
     fi
 done
 if sink_unmuted "hapax-music-loudnorm" && sink_volume_nonzero "hapax-music-loudnorm"; then

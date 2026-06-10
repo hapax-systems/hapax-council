@@ -116,6 +116,15 @@ def _install_deny_policy(home: Path) -> None:
     shutil.copy2(LINK_MAP_SOURCE, hapax_conf_dir / LINK_MAP_SOURCE.name)
 
 
+DEFAULT_PW_CLI_NODES = (
+    "input.loopback.sink.role.broadcast",
+    "hapax-voice-fx-capture",
+    "hapax-loudnorm-capture",
+    "hapax-voice-wet-capture",
+    "hapax-mic-rode-capture",
+)
+
+
 def _run_with_graph(
     tmp_path: Path,
     graph: str,
@@ -123,40 +132,51 @@ def _run_with_graph(
     install_deny: bool = True,
     env_overrides: dict[str, str] | None = None,
     default_sink: str = "hapax-pc-loudnorm",
+    pw_cli_nodes: tuple[str, ...] = DEFAULT_PW_CLI_NODES,
 ) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
 
+    # HAPAX_TEST_PW_LINK_SINGLE_SHOT=1 makes the mock serve the graph on the
+    # first call only (simulating PipeWire dying mid-run); the check must rely
+    # on its initial $GRAPH snapshot, not re-query, or it fails open.
     _write_executable(
         bin_dir / "pw-link",
         "#!/usr/bin/env bash\n"
         "if [[ \"${1:-}\" == '-l' ]]; then\n"
+        f"count_file='{bin_dir}/pw-link-calls'\n"
+        'calls=$(cat "$count_file" 2>/dev/null || echo 0)\n'
+        'echo $((calls + 1)) > "$count_file"\n'
+        'if [[ "${HAPAX_TEST_PW_LINK_SINGLE_SHOT:-}" == "1" && "$calls" -ge 1 ]]; then\n'
+        "exit 1\n"
+        "fi\n"
         "cat <<'EOF'\n"
         f"{graph}\n"
         "EOF\n"
         "fi\n",
+    )
+    pw_cli_blocks = "\n".join(
+        f'id {101 + idx},\n    node.name = "{name}"' for idx, name in enumerate(pw_cli_nodes)
     )
     _write_executable(
         bin_dir / "pw-cli",
         "#!/usr/bin/env bash\n"
         "if [[ \"${1:-}\" == 'ls' && \"${2:-}\" == 'Node' ]]; then\n"
         "cat <<'EOF'\n"
-        "id 101,\n"
-        '    node.name = "input.loopback.sink.role.broadcast"\n'
-        "id 102,\n"
-        '    node.name = "hapax-voice-fx-capture"\n'
-        "id 103,\n"
-        '    node.name = "hapax-loudnorm-capture"\n'
-        "id 104,\n"
-        '    node.name = "hapax-voice-wet-capture"\n'
-        "id 105,\n"
-        '    node.name = "hapax-mic-rode-capture"\n'
+        f"{pw_cli_blocks}\n"
         "EOF\n"
         "fi\n",
     )
     _write_executable(
         bin_dir / "wpctl",
-        "#!/usr/bin/env bash\nif [[ \"${1:-}\" == 'get-volume' ]]; then\necho 'Volume: 1.00'\nfi\n",
+        "#!/usr/bin/env bash\n"
+        "if [[ \"${1:-}\" == 'get-volume' ]]; then\n"
+        'if [[ -n "${HAPAX_TEST_WPCTL_OUTPUT:-}" ]]; then\n'
+        'echo "$HAPAX_TEST_WPCTL_OUTPUT"\n'
+        "else\n"
+        "echo 'Volume: 1.00'\n"
+        "fi\n"
+        "fi\n",
     )
     _write_executable(
         bin_dir / "pactl",
@@ -537,3 +557,82 @@ def test_deny_policy_fully_installed_passes(tmp_path: Path) -> None:
     assert "WirePlumber deny policy installed matches source" in result.stdout
     assert "forbidden links runtime conf matches source" in result.stdout
     assert "link-map runtime targets the mk5" in result.stdout
+
+
+# ── Canonical exit-semantics pins (Phase 0.1: exit-0-while-RED) ──────────────
+# The contract every audio-adjacent gate leans on: a RED topology MUST exit
+# nonzero, a GREEN topology MUST exit 0. routing-phase0-audio-check-exit-code-fix.
+
+
+def _graph_without_dry_voice_send() -> str:
+    """Known-RED fixture: the loudnorm → mk5 OUT AUX2/3 dry-voice send is absent."""
+    lines: list[str] = []
+    skip_targets = False
+    for line in _base_graph().splitlines():
+        if "hapax-loudnorm-playback:output" in line:
+            skip_targets = True
+            continue
+        if skip_targets and line.lstrip().startswith("|->"):
+            continue
+        skip_targets = False
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def test_known_red_topology_exits_nonzero(tmp_path: Path) -> None:
+    result = _run_with_graph(tmp_path, _graph_without_dry_voice_send())
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "INVARIANT(S) VIOLATED" in result.stdout
+    assert "TTS not reaching the S-4 insert" in result.stdout
+
+
+def test_known_green_topology_exits_zero(tmp_path: Path) -> None:
+    result = _run_with_graph(tmp_path, _base_graph())
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "ALL INVARIANTS PASSED" in result.stdout
+
+
+def test_missing_critical_mute_node_hard_fails(tmp_path: Path) -> None:
+    """A critical chain node absent from pw-cli must FAIL, not silently skip."""
+    nodes = tuple(n for n in DEFAULT_PW_CLI_NODES if n != "hapax-voice-fx-capture")
+
+    result = _run_with_graph(tmp_path, _base_graph(), pw_cli_nodes=nodes)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "hapax-voice-fx-capture not muted" in result.stdout
+    assert "critical chain node absent" in result.stdout
+
+
+def test_unreadable_mute_state_hard_fails(tmp_path: Path) -> None:
+    """wpctl output that proves neither muted nor audible must FAIL closed."""
+    result = _run_with_graph(
+        tmp_path,
+        _base_graph(),
+        env_overrides={"HAPAX_TEST_WPCTL_OUTPUT": "Error: invalid id"},
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "mute state unreadable" in result.stdout
+
+
+def test_webcam_leak_detected_from_graph_snapshot(tmp_path: Path) -> None:
+    """The webcam-leak guard must read the $GRAPH snapshot, not re-query pw-link."""
+    graph = _base_graph() + textwrap.dedent(
+        """
+
+        alsa_input.usb-046d_Logitech_BRIO_43B0576A-03.analog-stereo:capture_FL
+        |-> hapax-voice-wet-capture:input_AUX2
+        """
+    )
+
+    result = _run_with_graph(
+        tmp_path,
+        graph,
+        env_overrides={"HAPAX_TEST_PW_LINK_SINGLE_SHOT": "1"},
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "no webcam mic in mk5 voice/mic capture chains" in result.stdout
+    assert "LEAK" in result.stdout
