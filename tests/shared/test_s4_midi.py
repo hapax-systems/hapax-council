@@ -9,6 +9,7 @@ from shared.s4_midi import (
     S4_MIDI_CHANNEL,
     emit_cc,
     emit_cc_burst,
+    emit_note_on,
     emit_program_change,
     find_s4_midi_output,
     is_s4_reachable,
@@ -202,3 +203,30 @@ def test_emit_cc_burst_returns_zero_for_empty_dict() -> None:
 def test_emit_cc_burst_default_delay_is_20ms() -> None:
     """Spec §4.2 — 20 ms inter-message delay protects S-4 firmware drops."""
     assert DEFAULT_CC_DELAY_MS == 20.0
+
+
+# ── Note emit ───────────────────────────────────────────────────────
+
+
+def test_emit_note_on_sends_message_with_post_emit_delay() -> None:
+    port = MagicMock()
+    fake_msg = MagicMock()
+    with (
+        patch("shared.s4_midi._MIDO_AVAILABLE", True),
+        patch("shared.s4_midi.Message", return_value=fake_msg) as msg_cls,
+        patch("shared.s4_midi.time.sleep") as sleep_mock,
+    ):
+        result = emit_note_on(port, note=41, velocity=127, channel=15, delay_ms=10.0)
+    assert result is True
+    msg_cls.assert_called_once_with("note_on", note=41, velocity=127, channel=15)
+    port.send.assert_called_once_with(fake_msg)
+    sleep_mock.assert_called_once_with(10.0 / 1000.0)
+
+
+def test_emit_note_on_rejects_out_of_range_values() -> None:
+    port = MagicMock()
+    with patch("shared.s4_midi._MIDO_AVAILABLE", True):
+        assert emit_note_on(port, note=128) is False
+        assert emit_note_on(port, note=1, velocity=128) is False
+        assert emit_note_on(port, note=1, channel=16) is False
+    port.send.assert_not_called()
