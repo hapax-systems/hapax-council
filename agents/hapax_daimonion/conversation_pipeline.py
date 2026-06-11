@@ -384,15 +384,18 @@ class ConversationPipeline:
 
             # Bayesian Phase 4 — surface-specific envelope. Spontaneous-speech
             # uses 0.70 floor (vs voice_persona's 0.80 baked into
-            # ``self._system_context`` via persona.system_prompt). Phase 4
-            # ships call site; Phase 6 wires the actual claims source.
+            # the persona prompt). Phase 4 ships call site; Phase 6 wires the
+            # actual claims source. Keep this out of the first system message
+            # so TabbyAPI can reuse the stable persona/thread prefix.
             spontaneous_envelope = render_envelope([], floor=SURFACE_FLOORS["spontaneous_speech"])
+            turn_local = self._build_turn_local_context(spontaneous_envelope)
             messages = [
-                {
-                    "role": "system",
-                    "content": f"{spontaneous_envelope}\n\n{self._system_context}",
-                },
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": self._stable_context_for_tier("")},
+                self._with_turn_local_preamble(
+                    {"role": "user", "content": prompt},
+                    turn_local,
+                    heading="Impingement Prompt",
+                ),
             ]
 
             from shared.config import LITELLM_KEY, MODELS  # noqa: PLC0415
@@ -703,28 +706,49 @@ class ConversationPipeline:
         self._last_env_hash = content_hash
         self.messages[0]["content"] = stable
 
+    def _stable_context_for_tier(self, tier_name: str) -> str:
+        """Return the cache-friendly stable system prefix for this model tier."""
+        stable_context = getattr(self, "_stable_system_context", None)
+        if stable_context is None:
+            messages = getattr(self, "messages", None)
+            if messages and messages[0].get("role") == "system":
+                stable_context = str(messages[0].get("content", ""))
+            else:
+                stable_context = getattr(
+                    self,
+                    "system_prompt",
+                    getattr(self, "_system_context", ""),
+                )
+
+        if tier_name == "LOCAL":
+            stable_context = self._LOCAL_SYSTEM_PROMPT
+            if getattr(self, "_conversation_thread", None) and getattr(
+                self, "_experiment_flags", {}
+            ).get("stable_frame", True):
+                thread_text = _render_thread(self._conversation_thread)
+                stable_context += f"\n\n## Conversation Thread (most recent last)\n{thread_text}"
+            if getattr(self, "_experiment_flags", {}).get("sentinel", True) and hasattr(
+                self, "_sentinel_line"
+            ):
+                stable_context += self._sentinel_line
+
+        return stable_context
+
+    def _build_turn_local_context(self, *extra_blocks: str | None) -> str:
+        """Return volatile context blocks that must trail the stable prefix."""
+        turn_local = "\n\n".join(
+            part.strip()
+            for part in (getattr(self, "_volatile_context", ""), *extra_blocks)
+            if part and part.strip()
+        )
+        return turn_local
+
     def _build_llm_messages(self, *, envelope, tier_name: str) -> list[dict]:
         """Build chat messages with stable prefix, reusable history, then turn-local context."""
         from shared.grounding_context import GroundingContextVerifier
 
-        stable_context = getattr(self, "_stable_system_context", None)
-        if stable_context is None:
-            if self.messages and self.messages[0].get("role") == "system":
-                stable_context = str(self.messages[0].get("content", ""))
-            else:
-                stable_context = self.system_prompt
-
-        if tier_name == "LOCAL":
-            stable_context = self._LOCAL_SYSTEM_PROMPT
-
-        turn_local = "\n\n".join(
-            part.strip()
-            for part in (
-                getattr(self, "_volatile_context", ""),
-                GroundingContextVerifier.render_xml(envelope),
-            )
-            if part and part.strip()
-        )
+        stable_context = self._stable_context_for_tier(tier_name)
+        turn_local = self._build_turn_local_context(GroundingContextVerifier.render_xml(envelope))
 
         history = self.messages[1:] if self.messages else []
         messages: list[dict] = [{"role": "system", "content": stable_context}]
@@ -740,14 +764,16 @@ class ConversationPipeline:
         return messages
 
     @staticmethod
-    def _with_turn_local_preamble(message: dict, turn_local: str) -> dict:
+    def _with_turn_local_preamble(
+        message: dict, turn_local: str, *, heading: str = "Operator Utterance"
+    ) -> dict:
         """Return a user message with volatile runtime context prepended."""
         if not turn_local:
             return message
 
         updated = dict(message)
         content = updated.get("content", "")
-        preamble = f"{turn_local}\n\n## Operator Utterance"
+        preamble = f"{turn_local}\n\n## {heading}"
         if isinstance(content, str):
             updated["content"] = f"{preamble}\n{content}"
         elif isinstance(content, list):
