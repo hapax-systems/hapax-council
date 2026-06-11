@@ -1461,9 +1461,7 @@ class CpalRunner:
                 # the buffer stays live — if the operator starts speaking,
                 # the post-compose re-check below yields to the
                 # conversation (drop-with-witness, never spoken errors).
-                budget = TurnBudget(
-                    kind="spontaneous", budget_s=SPONTANEOUS_LLM_TIMEOUT_S
-                )
+                budget = TurnBudget(kind="spontaneous", budget_s=SPONTANEOUS_LLM_TIMEOUT_S)
                 text: str | None = None
                 try:
                     text = await pipeline.compose_spontaneous_speech(
@@ -1481,9 +1479,7 @@ class CpalRunner:
                 # Re-check: a conversational turn may have claimed the
                 # floor while the LLM was composing.
                 if self._speech_lock.locked() or self._processing_utterance:
-                    log.debug(
-                        "CPAL: exploration surfacing dropped post-compose: floor claimed"
-                    )
+                    log.debug("CPAL: exploration surfacing dropped post-compose: floor claimed")
                     record_drop(
                         reason="speech_lock_held_post_compose"
                         if self._speech_lock.locked()

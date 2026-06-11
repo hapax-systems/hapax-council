@@ -552,7 +552,8 @@ class ConversationPipeline:
             text,
             destination_target=destination_target,
             destination_role=destination_role,
-            destination=destination or _destination_value_for_route(
+            destination=destination
+            or _destination_value_for_route(
                 destination_target=destination_target,
                 destination_role=destination_role,
             ),
