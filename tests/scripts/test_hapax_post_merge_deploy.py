@@ -1106,3 +1106,25 @@ def test_check_symlink_drift_ignores_non_script_install_symlinks(tmp_path: Path)
     )
 
     assert result.returncode == 0, result.stderr
+
+
+# --- 2026-06-11 P0 regression: archive resurrection + conf parse-lint ---
+
+
+def test_archive_confs_are_not_classified_as_deployable(tmp_path):
+    """Bash case-globs match across slashes: config/pipewire/archive/** must be
+    explicitly excluded or it deploys (the 09:34 P0: 25 archived confs
+    resurrected, one syntax-invalid, audio stack start-limit dead)."""
+
+    script = SCRIPT.read_text()
+    assert "config/pipewire/archive/*" in script, "archive exclusion branch missing"
+    # the exclusion must appear BEFORE the matching deploy branch
+    excl = script.index("config/pipewire/archive/*")
+    match = script.index("config/pipewire/*.conf)")
+    assert excl < match, "exclusion must precede the deploy classification"
+
+
+def test_pw_deploy_parse_lints_confs(tmp_path):
+    script = SCRIPT.read_text()
+    assert "spa-json-dump" in script, "conf parse-lint missing from PW deploy path"
+    assert "REFUSED (spa-json parse error" in script
