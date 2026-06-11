@@ -1,0 +1,477 @@
+#!/usr/bin/env python3
+"""Bounded live S-4 wet-return signal probe.
+
+This script injects a short, low-level marker into the governed voice dry
+path, captures the dry send and S-4 wet return, and updates the FX witness
+only when the wet return carries a usable signal level. It intentionally
+does not run from the router tick loop; live marker playback is an explicit
+evidence collection action.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.audio_marker_probe_fft import detect_marker_in_capture
+from shared.s4_audio_witness import (
+    is_s4_analog_insert_route_present,
+    update_fx_device_witness,
+)
+
+DEFAULT_RATE = 44100
+DEFAULT_TONE_HZ = 1397.0
+DEFAULT_TONE_DURATION_S = 0.75
+DEFAULT_LEAD_S = 0.20
+DEFAULT_TRAIL_S = 0.40
+DEFAULT_AMPLITUDE = 0.03
+DEFAULT_SNR_THRESHOLD_DB = 12.0
+DEFAULT_WET_MIN_RMS_DBFS = -65.0
+DEFAULT_WET_MIN_PEAK_DBFS = -55.0
+DEFAULT_PLAY_TARGET = "input.loopback.sink.role.broadcast"
+DEFAULT_DRY_TARGET = "hapax-loudnorm-playback"
+DEFAULT_WET_TARGET = "hapax-voice-wet-playback"
+DEFAULT_BROADCAST_TARGET = "hapax-broadcast-normalized"
+DEFAULT_MK5_INPUT_TARGET = "alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0"
+
+
+@dataclass(frozen=True)
+class CaptureSpec:
+    name: str
+    command: list[str]
+    channels: int
+    interesting_channels: tuple[int, ...]
+
+
+@dataclass
+class CaptureProc:
+    spec: CaptureSpec
+    proc: subprocess.Popen[bytes]
+    chunks: list[bytes]
+    thread: threading.Thread
+
+
+def _dbfs(value: float) -> float:
+    return 20.0 * math.log10(max(value / 32768.0, 1e-12))
+
+
+def generate_tone_bytes(
+    *,
+    rate: int,
+    tone_hz: float,
+    tone_duration_s: float,
+    lead_s: float,
+    trail_s: float,
+    amplitude: float,
+) -> bytes:
+    """Return stereo s16le PCM with silence around a ramped sine marker."""
+    lead = np.zeros(int(round(rate * lead_s)), dtype=np.int16)
+    trail = np.zeros(int(round(rate * trail_s)), dtype=np.int16)
+    n_samples = int(round(rate * tone_duration_s))
+    t = np.arange(n_samples, dtype=np.float64) / float(rate)
+    ramp_n = max(1, int(round(rate * 0.02)))
+    env = np.ones(n_samples, dtype=np.float64)
+    ramp = np.linspace(0.0, 1.0, ramp_n, endpoint=True)
+    env[:ramp_n] = ramp
+    env[-ramp_n:] = ramp[::-1]
+    tone = (amplitude * env * np.sin(2.0 * np.pi * tone_hz * t) * 32767.0).astype(np.int16)
+    mono = np.concatenate([lead, tone, trail])
+    stereo = np.column_stack([mono, mono]).astype(np.int16)
+    return stereo.tobytes()
+
+
+def channel_stats(
+    raw: bytes,
+    *,
+    channels: int,
+    interesting_channels: tuple[int, ...],
+    rate: int,
+    tone_hz: float,
+    snr_threshold_db: float,
+) -> dict[str, Any]:
+    samples = np.frombuffer(raw, dtype=np.int16)
+    frames = samples.size // channels if channels else 0
+    if frames <= 0:
+        return {"bytes": len(raw), "frames": 0, "duration_s": 0.0, "channels": {}}
+
+    arr = samples[: frames * channels].reshape(frames, channels)
+    output: dict[str, Any] = {
+        "bytes": len(raw),
+        "frames": int(frames),
+        "duration_s": round(frames / rate, 4),
+        "channels": {},
+        "top_marker_channels": [],
+    }
+
+    channel_summaries: dict[int, dict[str, Any]] = {}
+    for idx in range(arr.shape[1]):
+        ch = arr[:, idx].astype(np.float64)
+        rms = math.sqrt(float(np.mean(ch * ch))) if ch.size else 0.0
+        peak = float(np.max(np.abs(ch))) if ch.size else 0.0
+        detection = detect_marker_in_capture(
+            ch.astype(np.int16),
+            freq_hz=tone_hz,
+            sample_rate=rate,
+            snr_threshold_db=snr_threshold_db,
+        )
+        summary = {
+            "rms_dbfs": round(_dbfs(rms), 2),
+            "peak_dbfs": round(_dbfs(peak), 2),
+            "nonzero_frames": int(np.count_nonzero(ch)),
+            "marker_detected": detection.detected,
+            "marker_snr_db": (
+                round(detection.snr_db, 2)
+                if math.isfinite(detection.snr_db)
+                else str(detection.snr_db)
+            ),
+            "marker_peak_hz": round(detection.peak_freq_hz, 2),
+            "marker_failure": detection.failure_reason,
+        }
+        channel_summaries[idx] = summary
+
+    def _sort_key(item: tuple[int, dict[str, Any]]) -> tuple[int, float, float]:
+        _, summary = item
+        snr = summary["marker_snr_db"]
+        if not isinstance(snr, (int, float)):
+            snr = float("-inf")
+        return (
+            1 if summary["marker_detected"] else 0,
+            float(snr),
+            float(summary["peak_dbfs"]),
+        )
+
+    top_channels = sorted(channel_summaries.items(), key=_sort_key, reverse=True)[:5]
+    output["top_marker_channels"] = [
+        {
+            "channel": idx,
+            "marker_detected": summary["marker_detected"],
+            "marker_snr_db": summary["marker_snr_db"],
+            "rms_dbfs": summary["rms_dbfs"],
+            "peak_dbfs": summary["peak_dbfs"],
+        }
+        for idx, summary in top_channels
+    ]
+
+    for idx in interesting_channels:
+        output["channels"][str(idx)] = channel_summaries.get(
+            idx,
+            {
+                "rms_dbfs": -240.0,
+                "peak_dbfs": -240.0,
+                "nonzero_frames": 0,
+                "marker_detected": False,
+                "marker_snr_db": "-inf",
+                "marker_peak_hz": 0.0,
+                "marker_failure": "missing-channel",
+            },
+        )
+    return output
+
+
+def _max_channel_metric(capture: dict[str, Any], metric: str) -> float:
+    values: list[float] = []
+    for channel in capture.get("channels", {}).values():
+        value = channel.get(metric)
+        if isinstance(value, int | float):
+            values.append(float(value))
+    return max(values) if values else float("-inf")
+
+
+def _any_marker_detected(capture: dict[str, Any]) -> bool:
+    return any(
+        bool(channel.get("marker_detected"))
+        for channel in capture.get("channels", {}).values()
+        if isinstance(channel, dict)
+    )
+
+
+def evaluate_probe(
+    *,
+    structural_route_present: bool,
+    captures: dict[str, dict[str, Any]],
+    wet_min_rms_dbfs: float,
+    wet_min_peak_dbfs: float,
+) -> tuple[bool, list[str]]:
+    """Return wet-signal decision and fail-closed reason tags."""
+    reasons: list[str] = []
+    dry = captures.get("dry_loudnorm_playback", {})
+    wet = captures.get("wet_voice_playback", {})
+
+    if not structural_route_present:
+        reasons.append("structural_route_missing")
+    if not _any_marker_detected(dry):
+        reasons.append("dry_marker_missing")
+    if not _any_marker_detected(wet):
+        reasons.append("wet_marker_missing")
+
+    wet_rms = _max_channel_metric(wet, "rms_dbfs")
+    wet_peak = _max_channel_metric(wet, "peak_dbfs")
+    if wet_rms < wet_min_rms_dbfs:
+        reasons.append("wet_rms_below_threshold")
+    if wet_peak < wet_min_peak_dbfs:
+        reasons.append("wet_peak_below_threshold")
+
+    return not reasons, reasons
+
+
+def _reader(proc: subprocess.Popen[bytes], chunks: list[bytes]) -> None:
+    assert proc.stdout is not None
+    while True:
+        data = proc.stdout.read(65536)
+        if not data:
+            break
+        chunks.append(data)
+
+
+def start_capture(spec: CaptureSpec) -> CaptureProc:
+    proc = subprocess.Popen(spec.command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    chunks: list[bytes] = []
+    thread = threading.Thread(target=_reader, args=(proc, chunks), daemon=True)
+    thread.start()
+    return CaptureProc(spec=spec, proc=proc, chunks=chunks, thread=thread)
+
+
+def stop_capture(cap: CaptureProc) -> tuple[bytes, str, int | None]:
+    try:
+        cap.proc.terminate()
+        cap.proc.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        cap.proc.kill()
+        try:
+            cap.proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            pass
+    cap.thread.join(timeout=1.0)
+    stderr = ""
+    if cap.proc.stderr is not None:
+        try:
+            stderr = cap.proc.stderr.read().decode("utf-8", errors="replace")[-500:]
+        except OSError:
+            stderr = ""
+    return b"".join(cap.chunks), stderr, cap.proc.returncode
+
+
+def build_capture_specs(args: argparse.Namespace) -> list[CaptureSpec]:
+    rate = str(args.rate)
+    return [
+        CaptureSpec(
+            name="dry_loudnorm_playback",
+            command=[
+                "pw-cat",
+                "--record",
+                "--target",
+                args.dry_target,
+                "--format",
+                "s16",
+                "--rate",
+                rate,
+                "--channels",
+                "2",
+                "--raw",
+                "-",
+            ],
+            channels=2,
+            interesting_channels=(0, 1),
+        ),
+        CaptureSpec(
+            name="mk5_input_aux2_aux3_raw",
+            command=[
+                "pw-cat",
+                "--record",
+                "--target",
+                args.mk5_input_target,
+                "--format",
+                "s16",
+                "--rate",
+                rate,
+                "--channels",
+                "20",
+                "--raw",
+                "-",
+            ],
+            channels=20,
+            interesting_channels=(2, 3),
+        ),
+        CaptureSpec(
+            name="wet_voice_playback",
+            command=[
+                "pw-cat",
+                "--record",
+                "--target",
+                args.wet_target,
+                "--format",
+                "s16",
+                "--rate",
+                rate,
+                "--channels",
+                "2",
+                "--raw",
+                "-",
+            ],
+            channels=2,
+            interesting_channels=(0, 1),
+        ),
+        CaptureSpec(
+            name="broadcast_normalized",
+            command=[
+                "parecord",
+                f"--device={args.broadcast_target}",
+                "--raw",
+                "--format=s16le",
+                "--rate",
+                rate,
+                "--channels",
+                "2",
+                "--latency-msec=1200",
+            ],
+            channels=2,
+            interesting_channels=(0, 1),
+        ),
+    ]
+
+
+def run_probe(args: argparse.Namespace) -> dict[str, Any]:
+    missing = [cmd for cmd in ("pw-cat", "parecord") if shutil.which(cmd) is None]
+    if missing:
+        return {"ok": False, "error": f"missing command(s): {missing}"}
+
+    structural_route_present = is_s4_analog_insert_route_present()
+    caps = [start_capture(spec) for spec in build_capture_specs(args)]
+    playback_returncode: int | None = None
+    playback_stderr = ""
+    try:
+        time.sleep(args.pre_roll_s)
+        play_cmd = [
+            "pw-cat",
+            "--playback",
+            "--target",
+            args.play_target,
+            "--format",
+            "s16",
+            "--rate",
+            str(args.rate),
+            "--channels",
+            "2",
+            "--raw",
+            "-",
+        ]
+        play = subprocess.Popen(
+            play_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        _, play_err = play.communicate(
+            generate_tone_bytes(
+                rate=args.rate,
+                tone_hz=args.tone_hz,
+                tone_duration_s=args.tone_duration_s,
+                lead_s=args.lead_s,
+                trail_s=args.trail_s,
+                amplitude=args.amplitude,
+            ),
+            timeout=args.playback_timeout_s,
+        )
+        playback_returncode = play.returncode
+        playback_stderr = play_err.decode("utf-8", errors="replace")[-500:]
+        time.sleep(args.post_roll_s)
+    finally:
+        captures: dict[str, dict[str, Any]] = {}
+        for cap in caps:
+            raw, stderr, returncode = stop_capture(cap)
+            entry = channel_stats(
+                raw,
+                channels=cap.spec.channels,
+                interesting_channels=cap.spec.interesting_channels,
+                rate=args.rate,
+                tone_hz=args.tone_hz,
+                snr_threshold_db=args.snr_threshold_db,
+            )
+            entry["returncode"] = returncode
+            entry["stderr_tail"] = stderr
+            captures[cap.spec.name] = entry
+
+    wet_signal, reasons = evaluate_probe(
+        structural_route_present=structural_route_present,
+        captures=captures,
+        wet_min_rms_dbfs=args.wet_min_rms_dbfs,
+        wet_min_peak_dbfs=args.wet_min_peak_dbfs,
+    )
+    result = {
+        "ok": playback_returncode == 0,
+        "s4_wet_return_signal": wet_signal,
+        "reasons": reasons,
+        "structural_route_present": structural_route_present,
+        "criteria": {
+            "snr_threshold_db": args.snr_threshold_db,
+            "wet_min_rms_dbfs": args.wet_min_rms_dbfs,
+            "wet_min_peak_dbfs": args.wet_min_peak_dbfs,
+        },
+        "probe": {
+            "rate": args.rate,
+            "tone_hz": args.tone_hz,
+            "tone_duration_s": args.tone_duration_s,
+            "amplitude_peak_fraction": args.amplitude,
+            "play_target": args.play_target,
+        },
+        "playback": {
+            "returncode": playback_returncode,
+            "stderr_tail": playback_stderr,
+        },
+        "captures": captures,
+    }
+    if args.update_witness:
+        update_fx_device_witness(
+            s4_analog_insert_route=structural_route_present,
+            s4_wet_return_signal=wet_signal,
+        )
+        result["witness_updated"] = True
+    else:
+        result["witness_updated"] = False
+    return result
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--update-witness", action="store_true")
+    parser.add_argument("--rate", type=int, default=DEFAULT_RATE)
+    parser.add_argument("--tone-hz", type=float, default=DEFAULT_TONE_HZ)
+    parser.add_argument("--tone-duration-s", type=float, default=DEFAULT_TONE_DURATION_S)
+    parser.add_argument("--lead-s", type=float, default=DEFAULT_LEAD_S)
+    parser.add_argument("--trail-s", type=float, default=DEFAULT_TRAIL_S)
+    parser.add_argument("--amplitude", type=float, default=DEFAULT_AMPLITUDE)
+    parser.add_argument("--snr-threshold-db", type=float, default=DEFAULT_SNR_THRESHOLD_DB)
+    parser.add_argument("--wet-min-rms-dbfs", type=float, default=DEFAULT_WET_MIN_RMS_DBFS)
+    parser.add_argument("--wet-min-peak-dbfs", type=float, default=DEFAULT_WET_MIN_PEAK_DBFS)
+    parser.add_argument("--pre-roll-s", type=float, default=0.35)
+    parser.add_argument("--post-roll-s", type=float, default=0.75)
+    parser.add_argument("--playback-timeout-s", type=float, default=5.0)
+    parser.add_argument("--play-target", default=DEFAULT_PLAY_TARGET)
+    parser.add_argument("--dry-target", default=DEFAULT_DRY_TARGET)
+    parser.add_argument("--wet-target", default=DEFAULT_WET_TARGET)
+    parser.add_argument("--broadcast-target", default=DEFAULT_BROADCAST_TARGET)
+    parser.add_argument("--mk5-input-target", default=DEFAULT_MK5_INPUT_TARGET)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    result = run_probe(args)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("ok") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

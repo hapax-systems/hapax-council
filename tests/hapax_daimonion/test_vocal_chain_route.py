@@ -15,6 +15,8 @@ def _ready_witness(**overrides: object) -> FxDeviceWitness:
         "evil_pet_sd_pack": True,
         "evil_pet_firmware_verified": True,
         "s4_midi": True,
+        "s4_analog_insert_route": True,
+        "s4_wet_return_signal": True,
         "s4_audio": True,
         "l12_route": True,
         "evidence_refs": ("fx-device-witness:test",),

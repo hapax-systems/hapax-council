@@ -1,0 +1,38 @@
+schema_version: 1
+device_id: faderfox-mx12
+identity:
+  manufacturer: Faderfox
+  model: Faderfox MX12
+  category: midi_control_surface
+  form_factor: desktop
+# Manual control surface over the broadcast mix. REDUNDANT to automation
+# (ducker / loudnorm / semantic recruitment) — faders apply a per-channel
+# MANUAL TRIM (PipeWire node volume) that MULTIPLIES the automation gain.
+# The bridge daemon is agents/faderfox_bridge.py (hapax-faderfox-bridge.service).
+#
+# CC MAP VERIFICATION: Faderfox CC assignments are device-config-specific. The
+# values below match the live MX12 profile observed on 2026-06-05: faders emit
+# CC95 on their column MIDI channel (channel 1 = fader 1, channel 2 = fader 2,
+# etc.). This is a row-style learned/custom profile, not the MX12 factory setup.
+# VERIFY/adjust future profile changes by running:
+#   uv run python -m agents.faderfox_bridge --learn
+# then move each fader/button and read the raw "MIDI ..." log lines. The daemon
+# also logs unmapped CCs at INFO during normal operation; edit this file to match.
+#
+# control = volume (fader 0..127 -> node volume 0..scale) or mute (button).
+# channel is 1-indexed MIDI channel. target is the PipeWire node.name.
+
+faders:
+  - { label: master,        channel: 1, cc: 95, target: "hapax-livestream-tap",        scale: 1.0 }
+  - { label: music,         channel: 2, cc: 95, target: "hapax-music-loudnorm",        scale: 1.0 }
+  - { label: hapax-voice,   channel: 3, cc: 95, target: "hapax-voice-wet-playback",    scale: 1.0 }
+  - { label: operator-mic,  channel: 4, cc: 95, target: "hapax-mic-rode-playback",     scale: 1.0 }
+  - { label: youtube,       channel: 5, cc: 95, target: "hapax-yt-loudnorm",           scale: 1.0 }
+  - { label: voice-to-s4,   channel: 6, cc: 95, target: "hapax-loudnorm",              scale: 1.0 }
+  # faders 7-12 unassigned (spare). Add { channel, cc, target, scale } to use.
+
+buttons:
+  # Mute toggles (button CC >=64 = press). Verify CCs via --learn.
+  - { label: mute-music,        channel: 1, cc: 23, target: "hapax-music-loudnorm" }
+  - { label: mute-youtube,      channel: 1, cc: 25, target: "hapax-yt-loudnorm" }
+  - { label: mute-operator-mic, channel: 1, cc: 24, target: "hapax-mic-rode-playback" }

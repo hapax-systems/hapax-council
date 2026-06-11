@@ -14,7 +14,7 @@ invariant in two complementary forms:
      the live invariant check.
 
   2. **Hardware variant** (``@pytest.mark.hardware``): captures 5s
-     of ``hapax-obs-broadcast-remap.monitor`` via ``pw-cat --record``,
+     of ``hapax-obs-broadcast-remap`` via ``pw-cat --record``,
      pipes through ``ffmpeg -filter ebur128``, asserts the integrated
      LUFS lands in the EGRESS tolerance band when a known test tone
      is injected at the music-loudnorm input. Skips with reason
@@ -199,7 +199,7 @@ def test_live_broadcast_egress_lufs_in_band(tmp_path: Path) -> None:
             "pw-cat",
             "--record",
             "--target",
-            "hapax-obs-broadcast-remap.monitor",
+            "hapax-obs-broadcast-remap",
             str(capture),
             "--format=s16",
             "--rate=44100",

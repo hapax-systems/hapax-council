@@ -352,7 +352,7 @@
           "target_ref": "audio.mk5_private_monitor",
           "route_id": "route:private.mk5_phones_monitor",
           "substrate_ref": "audio.mk5_private_monitor",
-          "concrete_interface": "mk5 Phones AUX10/AUX11 private-monitor target and fail-closed bridge state",
+          "concrete_interface": "MOTU UltraLite mk5 Phones AUX10/AUX11 private-monitor target and fail-closed bridge state",
           "raw_high_level_target_assumption": false,
           "implementation_truth_source_refs": ["config:audio-topology.yaml", "private-monitor-presence-contract"]
         },

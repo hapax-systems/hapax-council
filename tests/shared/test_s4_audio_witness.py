@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from shared.s4_audio_witness import (
+    is_s4_analog_insert_route_present,
     is_s4_audio_present,
     probe_and_publish,
     update_fx_device_witness,
@@ -42,11 +43,20 @@ def test_is_s4_audio_present_when_pactl_fails() -> None:
 def test_update_fx_device_witness_creates_file(tmp_path: Path) -> None:
     witness_path = tmp_path / "fx-device-witness.json"
     with patch("shared.s4_audio_witness.FX_DEVICE_WITNESS_PATH", witness_path):
-        update_fx_device_witness(s4_audio=True, s4_midi=True)
+        update_fx_device_witness(
+            s4_audio=True,
+            s4_midi=True,
+            s4_analog_insert_route=True,
+            s4_wet_return_signal=True,
+        )
         data = json.loads(witness_path.read_text())
         assert data["s4_audio"] is True
         assert data["s4_midi"] is True
+        assert data["s4_analog_insert_route"] is True
+        assert data["s4_wet_return_signal"] is True
         assert "s4_audio:usb_enumerated" in data["evidence_refs"]
+        assert "s4_analog_insert_route:mk5_links_present" in data["evidence_refs"]
+        assert "s4_wet_return_signal:runtime_probe" in data["evidence_refs"]
 
 
 def test_update_fx_device_witness_merges_existing(tmp_path: Path) -> None:
@@ -59,6 +69,8 @@ def test_update_fx_device_witness_merges_existing(tmp_path: Path) -> None:
                 "evil_pet_firmware_verified": True,
                 "s4_audio": False,
                 "s4_midi": False,
+                "s4_analog_insert_route": False,
+                "s4_wet_return_signal": False,
                 "l12_route": True,
                 "observed_at": "2026-05-16T00:00:00+00:00",
                 "max_age_s": 300.0,
@@ -74,15 +86,52 @@ def test_update_fx_device_witness_merges_existing(tmp_path: Path) -> None:
         assert data["l12_route"] is True
 
 
+def test_is_s4_analog_insert_route_present_when_mk5_links_exist() -> None:
+    fake_output = """
+hapax-loudnorm-playback:output_FL
+  |-> alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX2
+hapax-loudnorm-playback:output_FR
+  |-> alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX3
+hapax-voice-wet-capture:input_AUX2
+  |<- alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0:capture_AUX2
+hapax-voice-wet-capture:input_AUX3
+  |<- alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0:capture_AUX3
+hapax-voice-wet-playback:output_FL
+  |-> hapax-livestream-tap:playback_FL
+hapax-voice-wet-playback:output_FR
+  |-> hapax-livestream-tap:playback_FR
+"""
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = fake_output
+        assert is_s4_analog_insert_route_present() is True
+
+
+def test_is_s4_analog_insert_route_present_rejects_missing_wet_return() -> None:
+    fake_output = """
+hapax-loudnorm-playback:output_FL
+  |-> alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX2
+hapax-loudnorm-playback:output_FR
+  |-> alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX3
+"""
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = fake_output
+        assert is_s4_analog_insert_route_present() is False
+
+
 def test_probe_and_publish_integrates(tmp_path: Path) -> None:
     witness_path = tmp_path / "fx-device-witness.json"
     with (
         patch("shared.s4_audio_witness.FX_DEVICE_WITNESS_PATH", witness_path),
-        patch("shared.s4_audio_witness.is_s4_audio_present", return_value=True),
+        patch("shared.s4_audio_witness.is_s4_audio_present", return_value=False),
+        patch("shared.s4_audio_witness.is_s4_analog_insert_route_present", return_value=True),
         patch("shared.s4_midi.find_s4_midi_output", return_value=None),
     ):
         result = probe_and_publish()
         assert result is True
         data = json.loads(witness_path.read_text())
-        assert data["s4_audio"] is True
+        assert data["s4_audio"] is False
+        assert data["s4_analog_insert_route"] is True
+        assert data["s4_wet_return_signal"] is False
         assert data["s4_midi"] is False

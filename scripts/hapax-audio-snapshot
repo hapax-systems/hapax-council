@@ -49,7 +49,7 @@ BASELINE_STAGES=(
   "hapax-livestream-tap.monitor"
   "hapax-broadcast-master"
   "hapax-broadcast-normalized"
-  "hapax-obs-broadcast-remap.monitor"
+  "hapax-obs-broadcast-remap"
 )
 
 while [ $# -gt 0 ]; do

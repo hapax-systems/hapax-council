@@ -1,7 +1,7 @@
-"""Cross-correlate hapax-private-monitor.monitor vs hapax-obs-broadcast-remap.monitor.
+"""Cross-correlate hapax-private.monitor vs hapax-obs-broadcast-remap.
 
 Auditor D probe (cc-task audio-audit-D-broadcast-bus-echo-prometheus-probe).
-Records 1s simultaneous samples from both PipeWire monitor sources via
+Records 1s simultaneous samples from both PipeWire sources via
 pw-cat, computes the normalized peak cross-correlation, and emits two
 Prometheus textfile metrics + an optional ntfy alert when the
 correlation exceeds the leak threshold.
@@ -20,8 +20,8 @@ Or one-shot for diagnosis:
     uv run scripts/private-broadcast-echo-probe.py --duration 2 --threshold 0.05
 
 Env / flags:
-    --private-target  PipeWire source (default: hapax-private-monitor.monitor)
-    --broadcast-target PipeWire source (default: hapax-obs-broadcast-remap.monitor)
+    --private-target  PipeWire source (default: hapax-private.monitor)
+    --broadcast-target PipeWire source (default: hapax-obs-broadcast-remap)
     --duration         seconds to record (default: 1.0)
     --threshold        |corr| above which we alert (default: 0.05)
     --textfile-dir     where to write the .prom files (default: /var/lib/node_exporter/textfile_collector)
@@ -48,8 +48,8 @@ import time
 import wave
 from pathlib import Path
 
-DEFAULT_PRIVATE = "hapax-private-monitor.monitor"
-DEFAULT_BROADCAST = "hapax-obs-broadcast-remap.monitor"
+DEFAULT_PRIVATE = "hapax-private.monitor"
+DEFAULT_BROADCAST = "hapax-obs-broadcast-remap"
 DEFAULT_DURATION_S = 1.0
 DEFAULT_THRESHOLD = 0.05
 DEFAULT_TEXTFILE_DIR = "/var/lib/node_exporter/textfile_collector"

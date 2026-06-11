@@ -86,6 +86,12 @@ def test_darkplaces_launchers_use_native_xbox_joystick_input() -> None:
         assert "+cl_forwardspeed 360" in body
 
 
+def test_darkplaces_visible_renderer_launchers_disable_audio_egress() -> None:
+    for launcher in ("darkplaces-v4l2-xvfb.sh", "darkplaces-v4l2-xorg.sh"):
+        body = (SCRIPTS_DIR / launcher).read_text(encoding="utf-8")
+        assert '"$DARKPLACES_BIN" \\\n    -nosound \\\n    -game screwm \\' in body
+
+
 def test_darkplaces_launchers_ensure_persistent_live_texture_binary() -> None:
     ensure = (SCRIPTS_DIR / "ensure-darkplaces-live-texture-build.sh").read_text(encoding="utf-8")
 
