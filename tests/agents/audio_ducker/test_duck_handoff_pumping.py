@@ -314,3 +314,15 @@ class TestRapidAlternationPumpingReceipt:
         bed returns to unity — the duck never sticks."""
         trace = _run_alternation_script(RAPID_ALTERNATION, tail_ms=TAIL_MS)
         assert trace[-1].gain_db == pytest.approx(0.0, abs=0.1)
+
+
+def test_post_ramp_blocker_resets_handoff_hold():
+    """Review finding (2026-06-11): write-error blockers must drop the hold
+    instantly — never extend a duck past fail-open recovery."""
+    from agents.audio_ducker.handoff import HandoffHold
+
+    h = HandoffHold()
+    h.apply(-8.0, 0.0)
+    h.reset()
+    # post-reset, unity composes immediately (no 400ms carry window)
+    assert h.apply(0.0, 1.0) == 0.0

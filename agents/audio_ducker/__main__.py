@@ -951,6 +951,11 @@ def main() -> int:
                     blockers.append(f"tts_readback_error:{error}")
 
             if blockers:
+                # Review finding (4072): a blocker must force unity INSTANTLY —
+                # including dropping any handoff hold, or a PipeWire write error
+                # followed by rapid source silence extends the duck up to 400ms
+                # past fail-open recovery (contradicting reset()'s contract).
+                handoff.reset()
                 fail_open_ducks(
                     music_duck,
                     tts_duck,
