@@ -267,6 +267,40 @@ class TestApply:
         assert reviewers2.invocations == []
 
 
+class TestAllMode:
+    def test_review_all_scans_open_prs(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        _write_task(vault)
+        gh = FakeGh()
+        reviewers = RecordingReviewers()
+        results = dispatch.review_all_open_prs(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+        )
+        assert [r["status"] for r in results] == ["dispatched"]
+        assert len(reviewers.invocations) == 3
+
+    def test_review_all_reports_unlinked_prs_as_no_task(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)  # no task note written
+        results = dispatch.review_all_open_prs(
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+        )
+        assert [r["status"] for r in results] == ["no_task"]
+
+
 class TestReceiptAndWake:
     def test_quorum_accept_writes_acceptance_receipt_for_review_floor(self, tmp_path: Path) -> None:
         result, _, _, note = _review(
