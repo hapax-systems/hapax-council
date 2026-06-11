@@ -1,0 +1,19 @@
+# Empirical S-4 gain ladder — discovered closed-loop 2026-06-10 (audio-as-read-back).
+# Diverges from BOTH the official CC chart and the prior repo map; this is measured truth.
+# Levels-via-MIDI principle: software re-asserts this ladder after EVERY scene recall
+# (recalls wipe runtime CC state; the S-4 cannot save via MIDI).
+discovered_at: 2026-06-10
+method: marker(1397Hz)@playback_AUX2/3 -> live tap meter; +3dB-keep threshold
+scene_context: slot 1 (program 0, ZERO-BASED — program N recalls slot N+1)
+transport: RK006 OUT_2 (DIN star) + A/B shim; S-4 USB-MIDI gadget is decorative (no input path)
+result_dbfs_at_tap: -23.4
+ladder:
+  - {channel: 16, cc: 48, value: 127}   # +11.3 dB
+  - {channel: 16, cc: 49, value: 127}   # +3.3 dB
+  - {channel: 16, cc: 58, value: 127}   # +13.1 dB (compressor stage per official map)
+  - {channel: 2,  cc: 46, value: 127}   # +15.7 dB (track-channel material/player)
+  - {channel: 2,  cc: 47, value: 127}   # +7.9 dB
+notes:
+  - ch16 CC46/CC61 produced no response in this patch (contrary to official chart)
+  - CC CONTROL confirmed ON; PC recall confirmed (0-based)
+  - wet-return witness flipped TRUE 2026-06-10 (s4_wet_return_signal)
