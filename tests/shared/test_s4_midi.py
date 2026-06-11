@@ -9,8 +9,8 @@ from shared.s4_midi import (
     S4_MIDI_CHANNEL,
     emit_cc,
     emit_cc_burst,
-    emit_note_on,
     emit_cc_commands,
+    emit_note_on,
     emit_program_change,
     find_s4_midi_output,
     is_s4_reachable,
@@ -237,6 +237,8 @@ def test_emit_note_on_rejects_out_of_range_values() -> None:
         assert emit_note_on(port, note=1, velocity=128) is False
         assert emit_note_on(port, note=1, channel=16) is False
     port.send.assert_not_called()
+
+
 def test_emit_cc_commands_respects_per_command_channels() -> None:
     port = MagicMock()
     with (
