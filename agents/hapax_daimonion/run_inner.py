@@ -293,14 +293,17 @@ async def run_inner(daemon: VoiceDaemon) -> None:
 
     await daemon.hotkey.start()
 
-    # Preload STT + TTS models
+    # Preload STT locally. TTS preload either loads the model in local mode
+    # or pings hapax-tts-local.service in server mode; daimonion production
+    # runs in server mode so restarts do not reload TTS model weights.
     if not daemon._resident_stt.is_loaded:
         log.info("Preloading STT model at startup...")
         daemon._resident_stt.load()
     daemon.tts.preload()
 
-    # TTS is now warm — expose it over UDS so the compositor can delegate
-    # synthesis without loading torch. ALPHA-FINDING-1 root cause fix.
+    # Expose the same TTSManager API over the legacy daimonion UDS so the
+    # compositor can delegate synthesis without loading torch. In production
+    # this delegates through the server-backed manager above.
     await daemon.tts_server.start()
 
     # CPAL runner — sole conversation coordinator

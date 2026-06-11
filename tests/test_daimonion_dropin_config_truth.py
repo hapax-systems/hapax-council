@@ -68,6 +68,7 @@ def test_env_assignments_found() -> None:
     names = {name for _, name, _ in _env_assignments()}
     # Sanity floor — the surface this pin guards actually parsed.
     assert "HAPAX_TTS_BACKEND" in names
+    assert "HAPAX_TTS_TRANSPORT" in names
     assert "HAPAX_AUDIO_INPUT_TARGET" in names
 
 

@@ -17,6 +17,7 @@ Disposition of each:
 | Live file | Disposition |
 |---|---|
 | `tts-backend.conf` | **Versioned** here. `HAPAX_TTS_BACKEND` was read by NOTHING (the selector only existed on quarantined PR #3727) — the selector is now real code in `agents/hapax_daimonion/tts.py`. The old comment's "Kokoro GPU primary, 40ms" claim was false (CPU, RTF 0.10–0.135x); the versioned comment states the truth. |
+| `tts-server.conf` | **Versioned** here. `HAPAX_TTS_TRANSPORT=server` makes daimonion a client of `hapax-tts-local.service`; the model-owning server is pinned to the podium 5060 Ti and owns the single prioritized synthesis queue. |
 | `rode-input.conf` | **Deleted.** Pointed `HAPAX_AUDIO_INPUT_TARGET` at the Rode Wireless PRO RX, which is not on the USB bus — a live trap that only worked because `zz-stale-rode-runtime-mitigation.conf` sorted later and overrode it. |
 | `zz-stale-rode-runtime-mitigation.conf` | **Versioned** as `audio-input.conf` (ReSpeaker XVF3800, the sole live STT mic). |
 | `tts-target.conf` | **Deleted.** `HAPAX_TTS_TARGET` is legacy: `conversation_pipeline.py` reads it only to log "Ignoring legacy HAPAX_TTS_TARGET"; the fail-closed destination gate (`cpal/destination_channel.py`) owns routing per-utterance and does not consume it. |
