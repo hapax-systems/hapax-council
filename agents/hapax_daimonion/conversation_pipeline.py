@@ -977,10 +977,15 @@ class ConversationPipeline:
         stt_ms: int | None = None,
         stt_source: str = "full_utterance",
     ) -> None:
-        """Shared post-STT utterance processing."""
+        """Shared post-STT utterance processing.
+
+        STT is COMPLETE when this runs (review finding 2026-06-11): streaming
+        finals arrive pre-transcribed, and the full-utterance caller sets
+        TRANSCRIBING itself around the actual STT call. Go straight to THINKING.
+        """
         from agents._telemetry import hapax_bool_score, hapax_event, hapax_score
 
-        self.state = ConvState.TRANSCRIBING
+        self.state = ConvState.THINKING
         transcript = _normalize_transcript(transcript)
         if not transcript:
             self.state = ConvState.LISTENING

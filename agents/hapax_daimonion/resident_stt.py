@@ -637,7 +637,26 @@ class ResidentSTT:
                     config=self._streaming_config,
                 )
         except Exception:
-            log.exception("Failed to load STT model %s - STT unavailable", self._model_name)
+            # Review finding 2026-06-11: a NeMo/Nemotron load failure (model
+            # not pre-staged, nemo missing) must NOT leave the daemon deaf.
+            # Fall back to the known-good Whisper model with a clear WARNING.
+            log.exception("Failed to load STT model %s", self._model_name)
+            if not _uses_whisper_backend(self._model_name):
+                fallback_model = "distil-large-v3"
+                log.warning(
+                    "STT falling back to %s (streaming unavailable until %s is staged)",
+                    fallback_model,
+                    self._model_name,
+                )
+                try:
+                    fb = _WhisperBackend(fallback_model, self._device, self._compute_type)
+                    fb.load()
+                    self._backend = fb
+                    self._stream_session = None
+                    return
+                except Exception:
+                    log.exception("Whisper fallback %s also failed", fallback_model)
+            log.error("STT unavailable - no backend loaded")
             self._backend = None
             self._stream_session = None
 

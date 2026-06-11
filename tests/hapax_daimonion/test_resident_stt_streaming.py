@@ -131,3 +131,32 @@ async def test_resident_stt_queues_streaming_final_for_cpal() -> None:
 def test_accept_stream_frame_is_noop_without_streaming_backend() -> None:
     stt = ResidentSTT()
     assert asyncio.run(stt.accept_stream_frame(_frame(), vad_probability=0.9)) == []
+
+
+def test_nemo_load_failure_falls_back_to_whisper(monkeypatch):
+    """Review finding 2026-06-11: Nemotron load failure must not leave the
+    daemon deaf — Whisper fallback with a clear WARNING."""
+    from agents.hapax_daimonion import resident_stt as rs
+
+    class BoomNeMo:
+        def __init__(self, *a, **k):
+            raise RuntimeError("nemo not staged")
+
+    loaded = {}
+
+    class FakeWhisper:
+        supports_streaming = False
+
+        def __init__(self, model, device, compute_type):
+            loaded["model"] = model
+
+        def load(self):
+            loaded["loaded"] = True
+
+    monkeypatch.setattr(rs, "_NeMoStreamingBackend", BoomNeMo)
+    monkeypatch.setattr(rs, "_WhisperBackend", FakeWhisper)
+    stt = rs.ResidentSTT(model="nvidia/nemotron-speech-streaming-en-0.6b")
+    stt.load()
+    assert loaded.get("loaded"), "whisper fallback did not load"
+    assert loaded["model"] == "distil-large-v3"
+    assert stt._backend is not None
