@@ -167,6 +167,8 @@ class ConversationPipeline:
         self.stt = stt
         self.tts = tts_manager
         self.system_prompt = system_prompt
+        self._stable_system_context = system_prompt
+        self._volatile_context = ""
         self._system_context = system_prompt
         self.tools = tools
         self.tool_handlers = tool_handlers or {}
@@ -382,15 +384,18 @@ class ConversationPipeline:
 
             # Bayesian Phase 4 — surface-specific envelope. Spontaneous-speech
             # uses 0.70 floor (vs voice_persona's 0.80 baked into
-            # ``self._system_context`` via persona.system_prompt). Phase 4
-            # ships call site; Phase 6 wires the actual claims source.
+            # the persona prompt). Phase 4 ships call site; Phase 6 wires the
+            # actual claims source. Keep this out of the first system message
+            # so TabbyAPI can reuse the stable persona/thread prefix.
             spontaneous_envelope = render_envelope([], floor=SURFACE_FLOORS["spontaneous_speech"])
+            turn_local = self._build_turn_local_context(spontaneous_envelope)
             messages = [
-                {
-                    "role": "system",
-                    "content": f"{spontaneous_envelope}\n\n{self._system_context}",
-                },
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": self._stable_context_for_tier("")},
+                self._with_turn_local_preamble(
+                    {"role": "user", "content": prompt},
+                    turn_local,
+                    heading="Impingement Prompt",
+                ),
             ]
 
             from shared.config import LITELLM_KEY, MODELS  # noqa: PLC0415
@@ -549,31 +554,34 @@ class ConversationPipeline:
     )
 
     def _update_system_context(self) -> None:
-        """Refresh system message with STABLE + VOLATILE context bands.
+        """Refresh prompt context while preserving a cache-friendly prefix.
 
-        Structure (top → bottom):
-          STABLE: system prompt + conversation thread (shared context anchor)
-          VOLATILE: policy + environment + phenomenal + salience (changes per turn)
+        The first system message is the stable prefix: persona plus the
+        conversation thread. Turn-local context is retained separately and
+        appended as a preamble on the active user turn when building the LLM
+        request.
 
         The conversation thread is an incremental per-turn summary that gives
         the model stable awareness of what has been established, surviving
         system prompt rebuilds.
         """
         if not self.messages:
+            self._stable_system_context = self.system_prompt
+            self._volatile_context = ""
             self._system_context = self.system_prompt
             return
 
         # ── STABLE band: prompt + conversation thread ──────────────────
-        updated = self.system_prompt
+        stable = self.system_prompt
 
         # Conversation thread: tiered compression (Brennan pacts + Traum grounding state)
         if self._conversation_thread and self._experiment_flags.get("stable_frame", True):
             thread_text = _render_thread(self._conversation_thread)
-            updated += f"\n\n## Conversation Thread (most recent last)\n{thread_text}"
+            stable += f"\n\n## Conversation Thread (most recent last)\n{thread_text}"
 
         # Sentinel fact: injected here so it survives system prompt rebuilds
         if self._experiment_flags.get("sentinel", True) and hasattr(self, "_sentinel_line"):
-            updated += self._sentinel_line
+            stable += self._sentinel_line
 
         # ── VOLATILE band: environment + policy + salience ─────────────
         # In experiment lockdown mode, volatile components are frozen at
@@ -581,28 +589,29 @@ class ConversationPipeline:
         # variance between turns. This isolates the experiment variable
         # (stable_frame) from environmental confounds.
         _lockdown = self._experiment_flags.get("volatile_lockdown", False)
+        volatile_parts: list[str] = []
 
         # Refresh conversational policy (adapts to environment changes)
         if self._policy_fn is not None and not _lockdown:
             try:
                 policy = self._policy_fn()
                 if policy:
-                    updated += policy
+                    volatile_parts.append(policy)
             except Exception:
                 log.debug("policy_fn failed (non-fatal)", exc_info=True)
         elif hasattr(self, "_frozen_policy") and self._frozen_policy:
-            updated += self._frozen_policy
+            volatile_parts.append(self._frozen_policy)
 
         # Append environment TOON block
         if self._env_context_fn is not None and not _lockdown:
             try:
                 env_toon = self._env_context_fn()
                 if env_toon:
-                    updated += "\n\n## Current Environment\n" + env_toon
+                    volatile_parts.append("\n\n## Current Environment\n" + env_toon)
             except Exception:
                 log.debug("env_context_fn failed (non-fatal)", exc_info=True)
         elif hasattr(self, "_frozen_env") and self._frozen_env:
-            updated += "\n\n## Current Environment\n" + self._frozen_env
+            volatile_parts.append("\n\n## Current Environment\n" + self._frozen_env)
 
         # Voice context enrichment: goals, health, nudges, DMN
         for label, fn in [
@@ -615,7 +624,7 @@ class ConversationPipeline:
                 try:
                     section = fn()
                     if section:
-                        updated += "\n\n" + section
+                        volatile_parts.append("\n\n" + section)
                 except Exception:
                     log.debug("%s context fn failed (non-fatal)", label, exc_info=True)
 
@@ -625,7 +634,7 @@ class ConversationPipeline:
             try:
                 section = _imagination_fn()
                 if section:
-                    updated += "\n\n" + section
+                    volatile_parts.append("\n\n" + section)
             except Exception:
                 log.debug("imagination context fn failed (non-fatal)", exc_info=True)
 
@@ -637,7 +646,7 @@ class ConversationPipeline:
 
                 phenom = render_phenomenal(tier="LOCAL" if _stimmung_only else "CAPABLE")
                 if phenom:
-                    updated += "\n\n" + phenom
+                    volatile_parts.append("\n\n" + phenom)
             except Exception:
                 log.debug("phenomenal context render failed (non-fatal)", exc_info=True)
 
@@ -649,7 +658,7 @@ class ConversationPipeline:
             try:
                 salience_ctx = self._build_salience_context()
                 if salience_ctx:
-                    updated += "\n\n## Conversational Salience\n" + salience_ctx
+                    volatile_parts.append("\n\n## Conversational Salience\n" + salience_ctx)
             except Exception:
                 log.debug("salience context build failed (non-fatal)", exc_info=True)
 
@@ -658,7 +667,7 @@ class ConversationPipeline:
         if _ledger is not None:
             directive = _ledger.grounding_directive()
             if directive:
-                updated += "\n\n" + directive
+                volatile_parts.append("\n\n" + directive)
 
         # Effort level: dynamic word limit from activation × GQI (Batch 2)
         if _ledger is not None and self._experiment_flags.get("effort_modulation", False):
@@ -668,7 +677,9 @@ class ConversationPipeline:
                 if _bd is not None:
                     _activation = _bd.final_activation
             _effort = _ledger.effort_calibration(_activation)
-            updated += f"\n\n## Effort Level\n{_effort.level_name} ({_effort.word_limit} words)"
+            volatile_parts.append(
+                f"\n\n## Effort Level\n{_effort.level_name} ({_effort.word_limit} words)"
+            )
             self.last_word_limit = _effort.word_limit
 
         # Export GQI to shm for stimmung integration (cross-process)
@@ -685,12 +696,91 @@ class ConversationPipeline:
             except Exception:
                 log.debug("GQI shm write failed", exc_info=True)
 
-        self._system_context = updated
-        content_hash = hash(updated)
+        volatile = "".join(volatile_parts)
+        self._stable_system_context = stable
+        self._volatile_context = volatile.strip()
+        self._system_context = stable + volatile
+        content_hash = hash(stable)
         if content_hash == self._last_env_hash:
             return
         self._last_env_hash = content_hash
-        self.messages[0]["content"] = updated
+        self.messages[0]["content"] = stable
+
+    def _stable_context_for_tier(self, tier_name: str) -> str:
+        """Return the cache-friendly stable system prefix for this model tier."""
+        stable_context = getattr(self, "_stable_system_context", None)
+        if stable_context is None:
+            messages = getattr(self, "messages", None)
+            if messages and messages[0].get("role") == "system":
+                stable_context = str(messages[0].get("content", ""))
+            else:
+                stable_context = getattr(
+                    self,
+                    "system_prompt",
+                    getattr(self, "_system_context", ""),
+                )
+
+        if tier_name == "LOCAL":
+            stable_context = self._LOCAL_SYSTEM_PROMPT
+            if getattr(self, "_conversation_thread", None) and getattr(
+                self, "_experiment_flags", {}
+            ).get("stable_frame", True):
+                thread_text = _render_thread(self._conversation_thread)
+                stable_context += f"\n\n## Conversation Thread (most recent last)\n{thread_text}"
+            if getattr(self, "_experiment_flags", {}).get("sentinel", True) and hasattr(
+                self, "_sentinel_line"
+            ):
+                stable_context += self._sentinel_line
+
+        return stable_context
+
+    def _build_turn_local_context(self, *extra_blocks: str | None) -> str:
+        """Return volatile context blocks that must trail the stable prefix."""
+        turn_local = "\n\n".join(
+            part.strip()
+            for part in (getattr(self, "_volatile_context", ""), *extra_blocks)
+            if part and part.strip()
+        )
+        return turn_local
+
+    def _build_llm_messages(self, *, envelope, tier_name: str) -> list[dict]:
+        """Build chat messages with stable prefix, reusable history, then turn-local context."""
+        from shared.grounding_context import GroundingContextVerifier
+
+        stable_context = self._stable_context_for_tier(tier_name)
+        turn_local = self._build_turn_local_context(GroundingContextVerifier.render_xml(envelope))
+
+        history = self.messages[1:] if self.messages else []
+        messages: list[dict] = [{"role": "system", "content": stable_context}]
+
+        if history and history[-1].get("role") == "user":
+            messages.extend(history[:-1])
+            messages.append(self._with_turn_local_preamble(history[-1], turn_local))
+        else:
+            messages.extend(history)
+            if turn_local:
+                messages.append({"role": "system", "content": turn_local})
+
+        return messages
+
+    @staticmethod
+    def _with_turn_local_preamble(
+        message: dict, turn_local: str, *, heading: str = "Operator Utterance"
+    ) -> dict:
+        """Return a user message with volatile runtime context prepended."""
+        if not turn_local:
+            return message
+
+        updated = dict(message)
+        content = updated.get("content", "")
+        preamble = f"{turn_local}\n\n## {heading}"
+        if isinstance(content, str):
+            updated["content"] = f"{preamble}\n{content}"
+        elif isinstance(content, list):
+            updated["content"] = [{"type": "text", "text": preamble}, *content]
+        else:
+            updated["content"] = f"{preamble}\n{content}"
+        return updated
 
     async def process_utterance(self, audio_bytes: bytes) -> None:
         """Process a complete utterance through STT → LLM → TTS.
@@ -1298,23 +1388,7 @@ class ConversationPipeline:
 
             self._current_envelope = envelope
 
-            _messages = self.messages
-            if _messages and _messages[0].get("role") == "system":
-                _sys_content = _messages[0].get("content", "")
-                if _tier_name == "LOCAL":
-                    _sys_content = compose_persona_prompt(
-                        role_id="partner-in-conversation", compressed=True
-                    )
-
-                _xml = GroundingContextVerifier.render_xml(envelope)
-                _messages = [
-                    {
-                        "role": "system",
-                        "content": f"{_sys_content}\n\n{_xml}",
-                    },
-                    *_messages[1:],
-                ]
-            kwargs["messages"] = _messages
+            kwargs["messages"] = self._build_llm_messages(envelope=envelope, tier_name=_tier_name)
 
             kwargs["timeout"] = 15  # seconds — fail fast, don't block conversation
             _t_llm_start = time.monotonic()
