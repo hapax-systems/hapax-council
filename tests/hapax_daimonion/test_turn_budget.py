@@ -274,6 +274,7 @@ class TestSpontaneousLockDiscipline:
         fake_response.choices = [MagicMock(message=MagicMock(content="GPU's idle."))]
         with patch("litellm.acompletion", AsyncMock(return_value=fake_response)):
             text = asyncio.run(p.compose_spontaneous_speech(impingement, destination="private"))
+            text = asyncio.run(p.compose_spontaneous_speech(impingement, destination="private"))
 
         assert text == "GPU's idle."
         p._speak_sentence.assert_not_called()
@@ -292,6 +293,11 @@ class TestSpontaneousLockDiscipline:
         )
         # Receipt emission must not touch the production /dev/shm witness.
         monkeypatch.setattr("agents.hapax_daimonion.turn_budget.record_turn_timing", MagicMock())
+        with patch("litellm.acompletion", AsyncMock(side_effect=TimeoutError())):
+            text = asyncio.run(p.compose_spontaneous_speech(impingement, destination="private"))
+        assert text is None
+        assert any(d["reason"] == "spontaneous_speech_llm_timeout" for d in drops)
+        p._speak_sentence.assert_not_called()
         with patch("litellm.acompletion", AsyncMock(side_effect=TimeoutError())):
             text = asyncio.run(p.compose_spontaneous_speech(impingement, destination="private"))
         assert text is None
