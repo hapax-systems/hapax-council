@@ -12,6 +12,12 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
+from agents.hapax_daimonion.turn_budget import (
+    MAX_CLAUSE_ACCUMULATION_S,
+    PROGRAMME_SILENCE_TIMEOUT_S,
+    SILENCE_TIMEOUT_S,
+)
+
 log = logging.getLogger(__name__)
 
 _GREETING_PREFIX_RE = re.compile(
@@ -132,7 +138,9 @@ def _lcs_word_length(a: list[str], b: list[str]) -> int:
 _CLAUSE_END = re.compile(r"(?<=[.!?;:])\s+|(?<=\n)|(?<=,)\s+|(?<=\u2014)\s*")
 _MIN_CLAUSE_WORDS = 2
 _MIN_FIRST_CLAUSE_WORDS = 3
-_MAX_ACCUMULATION_S = 0.3
+# Timing constants live in turn_budget (the SSOT); aliased here because
+# this module is the historical import surface for the pipeline.
+_MAX_ACCUMULATION_S = MAX_CLAUSE_ACCUMULATION_S
 
 _TIER_MAX_TOKENS: dict[str, int] = {
     "CANNED": 0,
@@ -159,12 +167,8 @@ _PROGRAMME_MAX_TURNS: dict[str, int] = {
     "lecture": 60,
     "tutorial": 40,
 }
-_SILENCE_TIMEOUT_S = 30.0
-_PROGRAMME_SILENCE_TIMEOUT: dict[str, float] = {
-    "interview": 180.0,
-    "lecture": 60.0,
-    "tutorial": 45.0,
-}
+_SILENCE_TIMEOUT_S = SILENCE_TIMEOUT_S
+_PROGRAMME_SILENCE_TIMEOUT: dict[str, float] = PROGRAMME_SILENCE_TIMEOUT_S
 
 _VLS_PATH = "/dev/shm/hapax-compositor/visual-layer-state.json"
 

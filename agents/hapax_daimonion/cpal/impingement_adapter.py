@@ -6,7 +6,7 @@ system alert raises gain and produces high error. A mild imagination
 fragment gently nudges gain and produces low error.
 
 Scope: this adapter owns only gain/error modulation and the
-``should_surface`` gate that triggers ``generate_spontaneous_speech``
+``should_surface`` gate that triggers the spontaneous compose/speak path
 from ``CpalRunner.process_impingement``. Other recruited-affordance
 dispatch (notification delivery, Thompson learning for studio/world
 recruitment, cross-modal ``ExpressionCoordinator`` coordination,

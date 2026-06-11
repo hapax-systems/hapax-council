@@ -9,7 +9,32 @@ Local files: profiles/operator.json, profiles/demo-personas.yaml, hapaxromana pa
 from __future__ import annotations
 
 import importlib
+import sys
 from pathlib import Path
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_turn_timing_witness(tmp_path, monkeypatch):
+    """Keep TurnBudget.emit() receipts out of the production /dev/shm witness.
+
+    Voice pipeline/runner paths exercised in tests emit TIMING receipts via
+    turn_budget.record_turn_timing, which defaults to the live
+    voice-output-witness.json. Redirect the default path to tmp; tests that
+    pass an explicit path (or patch the seam themselves) are unaffected.
+    No-op unless the module is already imported by the test's module.
+    """
+    if sys.modules.get("agents.hapax_daimonion.turn_budget") is None:
+        return
+    from agents.hapax_daimonion import voice_output_witness as _vw
+
+    def _redirected(**kwargs):
+        kwargs.setdefault("path", tmp_path / "voice-output-witness.json")
+        return _vw.record_turn_timing(**kwargs)
+
+    monkeypatch.setattr("agents.hapax_daimonion.turn_budget.record_turn_timing", _redirected)
+
 
 # Packages that require optional extras
 _HARDWARE_PACKAGES = ["pipecat", "pyaudio", "torch", "cv2", "pvporcupine"]

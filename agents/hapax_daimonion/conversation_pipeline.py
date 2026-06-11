@@ -46,6 +46,14 @@ from agents.hapax_daimonion.conversation_helpers import (
     _stimmung_downgrade,  # noqa: F401 — re-exported for external consumers
     _strip_emoji,
 )
+from agents.hapax_daimonion.turn_budget import (
+    CONVERSATION_LLM_REQUEST_TIMEOUT_S,
+    ECHO_DETECT_TTL_S,
+    ECHO_STRIP_TTL_S,
+    INTERACTIVE_TURN_BUDGET_S,
+    SPONTANEOUS_LLM_TIMEOUT_S,
+    TurnBudget,
+)
 from shared.claim_prompt import SURFACE_FLOORS, render_envelope
 from shared.persona_prompt_composer import compose_persona_prompt
 
@@ -61,14 +69,8 @@ _CAPTION_AUDIO_BYTES_PER_SAMPLE = 2
 _VOICE_OUTPUT_SAMPLE_RATE_HZ = 24000
 _VOICE_OUTPUT_BYTES_PER_SAMPLE = 2
 
-# Audit H2 (CASE-VOICE-FOUNDATION-20260610): the spontaneous-speech LLM call
-# runs while the CPAL runner holds the global speech lock. litellm's default
-# timeout is 600s, so one wedged TabbyAPI request could silence every other
-# voice path for ten minutes. Bound it explicitly: worst measured local-fast
-# TTFT under GPU contention is ~19s (foundation audit §3) plus a few seconds
-# of generation for max_tokens=80 — 60s gives ~2x headroom while capping the
-# speech-lock hold.
-_SPONTANEOUS_LLM_TIMEOUT_S = 60.0
+# Timing constants are owned by turn_budget (audit v2 §5e SSOT) — the
+# spontaneous LLM bound's derivation (audit H2) lives there with the rest.
 
 
 def _destination_value_for_route(
@@ -269,7 +271,7 @@ class ConversationPipeline:
             log.exception("Notification delivery failed: %s", title)
             return False
 
-    async def generate_spontaneous_speech(
+    async def compose_spontaneous_speech(
         self,
         impingement: object,
         *,
@@ -277,12 +279,19 @@ class ConversationPipeline:
         destination_target: str | None = None,
         destination_role: str | None = None,
         destination: str | None = None,
-    ) -> None:
-        """Generate and speak a spontaneous utterance from an impingement.
+        budget: TurnBudget | None = None,
+    ) -> str | None:
+        """Compose (LLM only — no audio) a spontaneous utterance.
 
-        Unlike process_utterance (which transcribes operator audio), this
-        bypasses STT and routes directly to LLM with impingement context
-        as the intent. Speech is a tool — recruited by the cascade.
+        Split from the former monolithic ``generate_spontaneous_speech`` so
+        the CPAL runner can run the LLM leg OUTSIDE the global speech lock
+        (audit v2 §5e: the spontaneous path must not wedge the lock). The
+        lock is needed only for what actually makes sound — see
+        :meth:`speak_spontaneous_text`.
+
+        Returns the composed text, or ``None`` on every failure path —
+        each of which records a witness drop (overrun policy: spontaneous
+        paths drop-with-witness, never spoken errors).
 
         ``register_hint`` is the HOMAGE Phase 7 voice-register directive
         (spec §4.8). When supplied it is prepended to the user prompt so
@@ -294,9 +303,11 @@ class ConversationPipeline:
         ``destination_target`` is the resolved pw-cat sink name for this
         single utterance. CPAL passes the output of the fail-closed
         destination decision here so routed utterances never fall through to
-        the audio output's constructor target. ``None`` means this method must
-        resolve private-or-drop before playback.
+        the audio output's constructor target. ``None`` means playback must
+        resolve private-or-drop before audio.
         """
+        if budget is None:
+            budget = TurnBudget(kind="spontaneous", budget_s=SPONTANEOUS_LLM_TIMEOUT_S)
         content = getattr(impingement, "content", {})
         source = getattr(impingement, "source", "")
         strength = getattr(impingement, "strength", 0.5)
@@ -320,7 +331,7 @@ class ConversationPipeline:
                 text=text_for_witness,
                 terminal_state="failed",
             )
-            return
+            return None
         if self.state == ConvState.SPEAKING:
             from agents.hapax_daimonion.voice_output_witness import record_drop
 
@@ -333,7 +344,7 @@ class ConversationPipeline:
                 text=text_for_witness,
                 terminal_state="failed",
             )
-            return
+            return None
 
         # Build source-appropriate prompt
         if source == "imagination":
@@ -409,6 +420,7 @@ class ConversationPipeline:
             # ``local-fast``), not to cloud Gemini. Prior cloud routing was a
             # T1-T7 violation the first-round grounding-act audit identified.
             grounded_model = MODELS["local-fast"]
+            budget.note(route="SPONTANEOUS", model=grounded_model)
             metrics_ctx = (
                 llm_call_span(
                     model=grounded_model,
@@ -417,6 +429,7 @@ class ConversationPipeline:
                 if llm_call_span is not None
                 else nullcontext(None)
             )
+            _t_llm = time.monotonic()
             with metrics_ctx:
                 response = await litellm.acompletion(
                     model=f"litellm_proxy/{grounded_model}",
@@ -425,36 +438,44 @@ class ConversationPipeline:
                     temperature=0.7,
                     api_base=_voice_litellm_base,
                     api_key=LITELLM_KEY or os.environ.get("LITELLM_API_KEY", "not-set"),
-                    timeout=_SPONTANEOUS_LLM_TIMEOUT_S,
+                    timeout=SPONTANEOUS_LLM_TIMEOUT_S,
                 )
+            budget.mark("llm", t0=_t_llm)
 
             text = response.choices[0].message.content.strip()
             if text and "[silence]" not in text.lower():
-                log.info("Spontaneous speech: %s", text[:80])
-                await self._speak_sentence(
-                    text,
-                    destination_target=destination_target,
-                    destination_role=destination_role,
-                    destination=destination,
-                )
-            else:
-                from agents.hapax_daimonion.voice_output_witness import record_drop
-
-                record_drop(
-                    reason="spontaneous_speech_llm_silence",
-                    source=source,
-                    destination=destination,
-                    target=destination_target,
-                    media_role=destination_role,
-                    text=text_for_witness,
-                    terminal_state="failed",
-                )
-                log.debug("Cascade recruited speech but LLM chose silence")
-        except Exception as exc:
+                return text
             from agents.hapax_daimonion.voice_output_witness import record_drop
 
             record_drop(
-                reason="spontaneous_speech_generation_failed",
+                reason="spontaneous_speech_llm_silence",
+                source=source,
+                destination=destination,
+                target=destination_target,
+                media_role=destination_role,
+                text=text_for_witness,
+                terminal_state="failed",
+            )
+            budget.note(outcome="llm_silence")
+            budget.emit()
+            log.debug("Cascade recruited speech but LLM chose silence")
+            return None
+        except Exception as exc:
+            from agents.hapax_daimonion.voice_output_witness import record_drop
+
+            # Overrun policy (audit v2 §5e): spontaneous paths drop-with-
+            # witness — never spoken errors. Name timeouts honestly so the
+            # receipt surfaces podium TTFT truthfully instead of folding
+            # wedges into a generic failure bucket. litellm raises its own
+            # Timeout class (not builtins TimeoutError), hence the name check.
+            _is_timeout = isinstance(exc, TimeoutError) or "Timeout" in type(exc).__name__
+            reason = (
+                "spontaneous_speech_llm_timeout"
+                if _is_timeout
+                else "spontaneous_speech_generation_failed"
+            )
+            record_drop(
+                reason=reason,
                 source=source,
                 destination=destination,
                 target=destination_target,
@@ -463,7 +484,44 @@ class ConversationPipeline:
                 error=f"{type(exc).__name__}: {exc}",
                 terminal_state="failed",
             )
+            budget.note(outcome=reason.removeprefix("spontaneous_speech_"))
+            budget.emit()
             log.debug("Spontaneous speech generation failed (non-fatal)", exc_info=True)
+            return None
+
+    async def speak_spontaneous_text(
+        self,
+        text: str,
+        *,
+        destination_target: str | None = None,
+        destination_role: str | None = None,
+        destination: str | None = None,
+        budget: TurnBudget | None = None,
+    ) -> None:
+        """Synthesize and play composed spontaneous text (the audio-only leg).
+
+        This is the part that needs the CPAL speech lock; composition does
+        not. Passing the ``budget`` from compose yields one receipt covering
+        both legs (llm + ttfa/synth).
+        """
+        log.info("Spontaneous speech: %s", text[:80])
+        _prior_budget = getattr(self, "_turn_budget", None)
+        if budget is not None and _prior_budget is None:
+            # Let _speak_sentence mark ttfa/synth on this budget.
+            self._turn_budget = budget
+        try:
+            await self._speak_sentence(
+                text,
+                destination_target=destination_target,
+                destination_role=destination_role,
+                destination=destination,
+            )
+        finally:
+            if budget is not None:
+                budget.notes.setdefault("outcome", "spoken")
+                budget.emit()
+                if self._turn_budget is budget:
+                    self._turn_budget = None
 
     async def start(self) -> None:
         """Start the conversation pipeline."""
@@ -794,7 +852,15 @@ class ConversationPipeline:
 
         from agents._telemetry import hapax_trace
 
-        _t_start = time.monotonic()
+        # TurnBudget (audit v2 §5e): the end-to-end deadline object threaded
+        # STT→route→LLM→synth→playback. `started` doubles as the turn's t0.
+        budget = TurnBudget(
+            kind="interactive",
+            budget_s=INTERACTIVE_TURN_BUDGET_S,
+            turn=self.turn_count,
+        )
+        self._turn_budget = budget
+        _t_start = budget.started
         _utt_trace_cm = hapax_trace(
             "voice",
             "utterance",
@@ -806,6 +872,22 @@ class ConversationPipeline:
         try:
             await self._process_utterance_inner(audio_bytes, _utt_trace, _t_start)
         finally:
+            # TIMING receipt on ALL code paths. Early rejections (no
+            # transcript, echo, duplicate) receipt to the log only; engaged
+            # turns also persist to the voice-output witness.
+            _engaged = budget.notes.get("outcome") not in (
+                None,
+                "no_transcript",
+                "music_rejected",
+                "echo_rejected",
+                "echo_stripped_empty",
+                "duplicate",
+            )
+            budget.emit(witness=_engaged)
+            # Drop the reference so later out-of-turn _speak_sentence calls
+            # (spontaneous/director paths own their own budgets) can't mark
+            # an already-emitted receipt.
+            self._turn_budget = None
             # Guarantee trace closure on ALL code paths — 7 early returns
             # previously leaked unclosed traces, causing next turn's scores
             # to be lost when Langfuse implicitly closed the orphaned trace.
@@ -820,10 +902,13 @@ class ConversationPipeline:
         """Inner utterance processing — extracted so try/finally guarantees trace closure."""
         from agents._telemetry import hapax_bool_score, hapax_event, hapax_score
 
+        budget = self._turn_budget
+
         # STT
         self.state = ConvState.TRANSCRIBING
         transcript = await self.stt.transcribe(audio_bytes)
         if not transcript:
+            budget.note(outcome="no_transcript")
             self.state = ConvState.LISTENING
             return
         if _utt_trace is not None:
@@ -843,13 +928,13 @@ class ConversationPipeline:
                     and len(transcript.split()) < 4
                 ):
                     log.debug("Rejecting short transcript during music: %r", transcript)
+                    budget.note(outcome="music_rejected")
                     self.state = ConvState.LISTENING
                     return
             except Exception:
                 pass  # fail-open
 
-        _t_stt = time.monotonic()
-        _stt_ms = (_t_stt - _t_start) * 1000
+        _stt_ms = budget.mark("stt")
         log.info("TIMING stt=%.0fms transcript=%r", _stt_ms, transcript[:60])
         hapax_event(
             "voice",
@@ -867,6 +952,7 @@ class ConversationPipeline:
         # Without echo rejection, Hapax talks to itself in a feedback loop.
         if self._is_echo(transcript):
             log.info("Echo rejected: %r", transcript[:60])
+            budget.note(outcome="echo_rejected")
             self.state = ConvState.LISTENING
             return
 
@@ -876,12 +962,14 @@ class ConversationPipeline:
         transcript = self._strip_echo_prefix(transcript)
         if not transcript:
             log.info("Echo stripped to empty")
+            budget.note(outcome="echo_stripped_empty")
             self.state = ConvState.LISTENING
             return
 
         # ── Duplicate detection: reject if same transcript just processed ──
         if hasattr(self, "_last_transcript") and transcript == self._last_transcript:
             log.info("Duplicate rejected: %r", transcript[:60])
+            budget.note(outcome="duplicate")
             self.state = ConvState.LISTENING
             return
         self._last_transcript = transcript
@@ -1010,6 +1098,8 @@ class ConversationPipeline:
             )
 
         self._prev_tier = routing.tier
+        budget.mark("route")
+        budget.note(route=routing.tier.name, model=routing.model or "canned")
         log.info(
             "TIMING route=%s model=%s reason=%s",
             routing.tier.name,
@@ -1032,6 +1122,7 @@ class ConversationPipeline:
 
         # Canned response: skip LLM entirely, play from pre-synth cache
         if routing.tier == ModelTier.CANNED and routing.canned_response:
+            budget.note(outcome="canned")
             self.state = ConvState.SPEAKING
             pcm = (
                 self._bridge_engine._cache.get(routing.canned_response)
@@ -1079,20 +1170,26 @@ class ConversationPipeline:
         llm_task = asyncio.create_task(self._generate_and_speak())
         await self._speak_bridge()
         try:
-            await asyncio.wait_for(llm_task, timeout=90.0)
+            # The TurnBudget deadline replaces the old bare 90s literal:
+            # time already spent in STT/route truthfully counts against
+            # the turn instead of resetting at the LLM leg.
+            await asyncio.wait_for(llm_task, timeout=budget.remaining_s())
+            budget.notes.setdefault("outcome", "spoken")
         except TimeoutError:
-            log.warning("LLM task timed out after 90s")
+            log.warning("LLM task timed out (budget=%.0fs)", budget.budget_s)
+            budget.note(outcome="llm_timeout")
             llm_task.cancel()
             # Speak error WHILE still in speaking mode — prevents echo feedback.
             # Previous bug: set_speaking(False) before error TTS let the buffer
             # capture the error audio as an operator utterance.
-            await self._speak_sentence("I'm having trouble connecting right now.")
+            await self._speak_failure_phrase("I'm having trouble connecting right now.")
             if self.buffer:
                 self.buffer.set_speaking(False)
             self.state = ConvState.LISTENING
         except Exception:
             log.exception("LLM task failed")
-            await self._speak_sentence("Something went wrong.")
+            budget.note(outcome="llm_error")
+            await self._speak_failure_phrase("Something went wrong.")
             if self.buffer:
                 self.buffer.set_speaking(False)
             self.state = ConvState.LISTENING
@@ -1392,7 +1489,9 @@ class ConversationPipeline:
 
             kwargs["messages"] = self._build_llm_messages(envelope=envelope, tier_name=_tier_name)
 
-            kwargs["timeout"] = 15  # seconds — fail fast, don't block conversation
+            # Stream read-timeout: fail fast on a dead route instead of
+            # blocking the conversation (derivation in turn_budget).
+            kwargs["timeout"] = CONVERSATION_LLM_REQUEST_TIMEOUT_S
             _t_llm_start = time.monotonic()
             _conv_model_label = str(kwargs.get("model", "unknown"))
             metrics_ctx = (
@@ -1497,6 +1596,9 @@ class ConversationPipeline:
                         "TIMING llm_ttft=%.0fms",
                         (_t_first_token - _t_llm_start) * 1000,
                     )
+                    _b = getattr(self, "_turn_budget", None)
+                    if _b is not None:
+                        _b.mark("llm_ttft", t0=_t_llm_start)
                 full_text += content
                 accumulated += content
 
@@ -1590,6 +1692,10 @@ class ConversationPipeline:
                     accumulated = ""  # discard unspoken remainder
                     break
 
+            _b = getattr(self, "_turn_budget", None)
+            if _b is not None:
+                _b.mark("llm_total", t0=_t_llm_start)
+
             # Flush remaining text (skip if barge-in or word cutoff)
             if accumulated.strip() and not (self.buffer and self.buffer.barge_in_detected):
                 if _spoken_words < _word_limit:
@@ -1636,7 +1742,10 @@ class ConversationPipeline:
                 await asyncio.gather(*speech_tasks, return_exceptions=True)
                 speech_tasks.clear()
             log.warning("LLM timeout — no response")
-            await self._speak_sentence("I'm having trouble connecting right now.")
+            _b = getattr(self, "_turn_budget", None)
+            if _b is not None:
+                _b.note(outcome="llm_timeout")
+            await self._speak_failure_phrase("I'm having trouble connecting right now.")
         except Exception:
             for task in speech_tasks:
                 task.cancel()
@@ -1644,7 +1753,10 @@ class ConversationPipeline:
                 await asyncio.gather(*speech_tasks, return_exceptions=True)
                 speech_tasks.clear()
             log.exception("LLM generation failed")
-            await self._speak_sentence("Sorry, something went wrong.")
+            _b = getattr(self, "_turn_budget", None)
+            if _b is not None:
+                _b.note(outcome="llm_error")
+            await self._speak_failure_phrase("Sorry, something went wrong.")
         finally:
             # Wait for audio executor to finish playing before dropping
             # the speaking gate — otherwise the buffer picks up TTS tail.
@@ -1965,15 +2077,12 @@ class ConversationPipeline:
         word_count = len(norm_words)
         now = time.monotonic()
 
-        # TTL scales with dynamic cooldown — echo can arrive late after
-        # long responses. 30s covers autonomous narrative: TTS synthesis
-        # (~3s) + playback (~6s) + 3s holdover + room echo propagation
-        # (~5s) + buffer accumulation (~8s). Previously 12s which missed
-        # autonomous narrative echoes arriving 20+ seconds after emission.
-        _ECHO_TTL_S = 30.0
-
+        # ECHO_DETECT_TTL_S (turn_budget): rejection window — distinct from
+        # the shorter prefix-STRIP window used in _strip_echo_prefix. The
+        # two used to share one name (`_ECHO_TTL_S`) with different values;
+        # the audit's named contradiction died in the SSOT consolidation.
         for ts, tts_text in self._recent_tts_texts:
-            if now - ts > _ECHO_TTL_S:
+            if now - ts > ECHO_DETECT_TTL_S:
                 continue
 
             tts_words = tts_text.split()
@@ -2012,10 +2121,12 @@ class ConversationPipeline:
         norm = transcript.lower().strip()
         best_strip = 0  # characters to strip from start
         now = time.monotonic()
-        _ECHO_TTL_S = 8.0
 
+        # ECHO_STRIP_TTL_S (turn_budget): deliberately shorter than the
+        # detection TTL — stripping against 30s of TTS history would eat
+        # legitimate operator phrasing that echoes our wording.
         for ts, tts_text in self._recent_tts_texts:
-            if now - ts > _ECHO_TTL_S:
+            if now - ts > ECHO_STRIP_TTL_S:
                 continue
             tts_words = tts_text.split()
             if len(tts_words) < 3:
@@ -2170,6 +2281,24 @@ class ConversationPipeline:
 
         self._last_user_topic = lower
 
+    async def _speak_failure_phrase(self, text: str) -> None:
+        """Interactive overrun policy (audit v2 §5e): degrade to canned PCM.
+
+        Failure phrases are part of the bridge presynth pool
+        (bridge_engine.FAILURE_PHRASES) — play the cached PCM instead of
+        paying a live synthesis on an already-failed turn. Live synth only
+        as last resort (cache cold / no audio output object).
+        """
+        pcm = self._bridge_engine._cache.get(text) if self._bridge_engine else None
+        if pcm and self._audio_output:
+            await self._play_guarded_pcm(
+                pcm=pcm,
+                text=text,
+                source="conversation_failure_canned",
+            )
+        else:
+            await self._speak_sentence(text)
+
     async def _speak_sentence(
         self,
         text: str,
@@ -2281,6 +2410,12 @@ class ConversationPipeline:
                 raise
             _t_synth = time.monotonic()
             _tts_ms = (_t_synth - _t0) * 1000
+            _b = getattr(self, "_turn_budget", None)
+            if _b is not None:
+                # ttfa = first audio ready, measured from turn start — the
+                # interview-bar metric. setdefault keeps only the first clause.
+                _b.legs.setdefault("ttfa", (_t_synth - _b.started) * 1000.0)
+                _b.add("synth", _tts_ms)
             from agents.hapax_daimonion.voice_output_witness import (
                 record_drop,
                 record_playback_result,

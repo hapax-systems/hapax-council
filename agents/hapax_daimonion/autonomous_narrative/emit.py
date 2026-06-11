@@ -4,7 +4,7 @@ Three sinks, all best-effort:
     * **Impingement** to ``/dev/shm/hapax-dmn/impingements.jsonl`` with
       ``source="autonomous_narrative"``. ``CpalRunner.process_impingement``
       picks it up via the existing daimonion CPAL consumer cursor and
-      routes through ``ConversationPipeline.generate_spontaneous_speech()``
+      routes through the spontaneous compose/speak pipeline (see compose_spontaneous_utterance)
       → existing TTS path.
     * **Chronicle event** to the same JSONL with
       ``source="self_authored_narrative"``. Filtered out of future

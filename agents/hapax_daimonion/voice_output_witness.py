@@ -62,6 +62,7 @@ class VoiceOutputWitness(BaseModel):
     broadcast_egress_activity: dict[str, Any] | None = None
     planned_utterance: dict[str, Any] | None = None
     blocker_drop_reason: str | None = None
+    last_turn_timing: dict[str, Any] | None = None
 
     @property
     def playback_present(self) -> bool:
@@ -364,6 +365,43 @@ def record_drop(
         last_refusal=evidence if refusal else None,
         last_drop=None if refusal else evidence,
         last_narration_impulse=impulse_update,
+    )
+
+
+def record_turn_timing(
+    *,
+    kind: str,
+    legs: dict[str, float],
+    notes: dict[str, str],
+    total_ms: float,
+    budget_ms: float,
+    overrun: bool,
+    turn: int | None = None,
+    path: Path = WITNESS_PATH,
+    now: float | None = None,
+) -> VoiceOutputWitness:
+    """Record a TurnBudget receipt (audit v2 §5e — per-leg TIMING accounting).
+
+    A timing receipt is accounting, not a lifecycle event: it preserves the
+    existing witness ``status`` so the watchdog's drop/playback semantics
+    are untouched.
+    """
+    ts = _now(now)
+    existing_status = _load_existing_payload(path).get("status", "unknown")
+    return _merge_and_publish(
+        path,
+        now=ts,
+        status=existing_status,
+        last_turn_timing={
+            "ts": _iso(ts),
+            "kind": kind,
+            "turn": turn,
+            "legs": {k: round(v, 1) for k, v in legs.items()},
+            "notes": notes,
+            "total_ms": round(total_ms, 1),
+            "budget_ms": round(budget_ms, 1),
+            "overrun": overrun,
+        },
     )
 
 

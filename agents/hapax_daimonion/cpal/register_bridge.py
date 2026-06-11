@@ -126,7 +126,7 @@ def textmode_prompt_prefix() -> str:
     """Style directive prepended to TTS text when register is TEXTMODE.
 
     Kept short because it is prepended verbatim to the prompt the LLM sees
-    (``generate_spontaneous_speech``) or, for direct TTS emission, passed
+    (the spontaneous compose/speak path) or, for direct TTS emission, passed
     into the persona framing. Phrased as an instruction, not a content
     prefix — the TTS layer strips it; the LLM layer consumes it.
     """

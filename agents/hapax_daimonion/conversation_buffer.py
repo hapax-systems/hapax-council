@@ -4,17 +4,17 @@ Third consumer in _audio_loop(). Accumulates raw PCM frames during
 detected speech and delivers complete utterances when silence is
 detected. Runs inline — no extra task, no mic ownership.
 
-Pre-roll: captures 300ms of audio before speech onset so word
-beginnings aren't clipped.
+Pre-roll: keeps PRE_ROLL_DURATION_S (1.5s) of audio from before speech
+onset so word beginnings aren't clipped (derivation in turn_budget).
 
 Application-level AEC (echo_canceller.py) reduces echo but the
 Yeti mic still picks up enough TTS bleed-through at close range
 to trigger VAD. The speaking gate in feed_audio() remains as
-primary defense; AEC is supplementary. Barge-in is enabled at a
-high threshold (0.85) requiring clear operator speech over TTS.
+primary defense; AEC is supplementary.
 
-Post-TTS cooldown removed — AEC handles the residual echo tail
-that previously required 500ms of dead time.
+Post-TTS cooldown is LIVE: after playback the buffer stays deaf for
+dynamic_cooldown_s(speaking_duration) while room echo decays. All
+timing constants are owned by turn_budget (audit v2 §5e SSOT).
 """
 
 from __future__ import annotations
@@ -23,11 +23,15 @@ import logging
 import time
 from collections import deque
 
-log = logging.getLogger(__name__)
+from agents.hapax_daimonion.turn_budget import (
+    FRAME_SAMPLES,
+    POST_TTS_COOLDOWN_S,
+    PRE_ROLL_FRAMES,
+    SAMPLE_RATE,
+    dynamic_cooldown_s,
+)
 
-FRAME_SAMPLES = 480  # 16kHz, 30ms
-SAMPLE_RATE = 16000
-PRE_ROLL_FRAMES = 50  # 1500ms before speech onset — captures full wake word phrase
+log = logging.getLogger(__name__)
 
 SPEECH_START_PROB = 0.15
 SPEECH_START_CONSECUTIVE = 3  # ~90ms
@@ -45,10 +49,8 @@ INTERVIEW_SPEECH_END_SHORT = 50  # ~1500ms — interviewees pause to think
 INTERVIEW_SPEECH_END_LONG = 70  # ~2100ms — deep reflection mid-answer
 INTERVIEW_SPEECH_END_DEFAULT = 60  # ~1800ms — deliberate considered speech
 
-# Post-TTS cooldown: wait after TTS ends before listening again.
-# In dampened studio, room echo decays within 1-2s. Echo rejection
-# catches any residual TTS text that leaks through.
-POST_TTS_COOLDOWN_S = 2.0
+# POST_TTS_COOLDOWN_S / dynamic_cooldown_s are imported from turn_budget:
+# wait after TTS ends before listening again, scaled by speech duration.
 
 
 class ConversationBuffer:
@@ -156,11 +158,11 @@ class ConversationBuffer:
         else:
             # TTS ended — start cooldown for residual echo decay.
             # Cooldown scales with how long Hapax was speaking: longer
-            # responses produce more room echo that persists longer.
+            # responses produce more room echo that persists longer
+            # (derivation owned by turn_budget.dynamic_cooldown_s).
             self._speaking_ended_at = time.monotonic()
             speaking_duration = self._speaking_ended_at - self._speaking_started_at
-            # Base 2s + 0.3s per second of TTS, capped at 5s
-            self._dynamic_cooldown_s = min(5.0, POST_TTS_COOLDOWN_S + speaking_duration * 0.3)
+            self._dynamic_cooldown_s = dynamic_cooldown_s(speaking_duration)
 
     def feed_audio(self, frame: bytes) -> None:
         if not self._active:
