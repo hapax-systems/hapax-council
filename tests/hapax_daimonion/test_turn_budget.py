@@ -302,9 +302,7 @@ class TestSpontaneousLockDiscipline:
         assert any(d["reason"] == "spontaneous_speech_llm_timeout" for d in drops)
         p._speak_sentence.assert_not_called()
         with patch("litellm.acompletion", AsyncMock(side_effect=TimeoutError())):
-            text = asyncio.run(
-                p.compose_spontaneous_speech(impingement, destination="private")
-            )
+            text = asyncio.run(p.compose_spontaneous_speech(impingement, destination="private"))
         assert text is None
         assert any(d["reason"] == "spontaneous_speech_llm_timeout" for d in drops)
         p._speak_sentence.assert_not_called()
@@ -313,8 +311,6 @@ class TestSpontaneousLockDiscipline:
         p = _make_pipeline()
         p.compose_spontaneous_speech = AsyncMock(return_value="hi there")
         p.speak_spontaneous_text = AsyncMock()
-        impingement = MagicMock(
-            content={"narrative": "x"}, source="exploration", strength=0.5
-        )
+        impingement = MagicMock(content={"narrative": "x"}, source="exploration", strength=0.5)
         asyncio.run(p.generate_spontaneous_speech(impingement))
         p.speak_spontaneous_text.assert_awaited_once()
