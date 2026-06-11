@@ -36,6 +36,7 @@
 #   systemd/units/*.service.d/*.conf → cp drop-in + daemon-reload + restart active unit
 #       plus known stale local route-dropin cleanup for units that are being
 #       sourceized out of a temporary worktree override.
+#   systemd/units/*.md              → source/rationale docs only; no direct deploy
 #   systemd/user-preset.d/*.preset → cp user preset
 #   systemd/overrides/**           → source/rationale docs only; no direct deploy
 #   systemd/scripts/*              → installer helper scripts; no direct deploy
@@ -526,6 +527,8 @@ AUDIO_SAFE_RESTART_UNITS=(
     hapax-content-resolver.service
     hapax-audio-router.service
     hapax-audio-ducker.service
+    hapax-lufs-panic-cap.service
+    hapax-usb-router.service
     hapax-daimonion.service
 )
 
@@ -538,6 +541,23 @@ is_audio_safe_restart_unit() {
         fi
     done
     return 1
+}
+
+remove_unversioned_user_dropins_for_unit() {
+    local unit="$1"
+    local dropin_dir="$SYSTEMD_USER_DIR/$unit.d"
+    local dropin base
+    [ -d "$dropin_dir" ] || return 0
+    for dropin in "$dropin_dir"/*.conf; do
+        [ -f "$dropin" ] || continue
+        base="$(basename "$dropin")"
+        if git -C "$REPO" cat-file -e "$SHA:systemd/units/$unit.d/$base" 2>/dev/null; then
+            continue
+        fi
+        echo "  removing unversioned local drop-in '$dropin'"
+        rm -f "$dropin" || true
+    done
+    rmdir "$dropin_dir" 2>/dev/null || true
 }
 
 cleanup_known_stale_user_dropins_for_unit() {
@@ -567,6 +587,7 @@ cleanup_known_stale_user_dropins_for_unit() {
                 fi
             done
             rmdir "$dropin_dir" 2>/dev/null || true
+            remove_unversioned_user_dropins_for_unit "$unit"
             ;;
         hapax-audio-routing-check.service)
             dropin_dir="$SYSTEMD_USER_DIR/$unit.d"
@@ -603,6 +624,10 @@ cleanup_known_stale_user_dropins_for_unit() {
                 fi
             done
             rmdir "$dropin_dir" 2>/dev/null || true
+            ;;
+        hapax-imagination.service|hapax-reverie.service|hapax-darkplaces-v4l2.service|\
+        hapax-segment-prep.service|logos-api.service)
+            remove_unversioned_user_dropins_for_unit "$unit"
             ;;
     esac
 }
@@ -726,6 +751,7 @@ while IFS= read -r f; do
         scripts/*.py|scripts/*.sh)        SCRIPT_PY+=("$f") ;;
         systemd/expected-timers.yaml)     ;; # frozen-baseline doc, not deployable
         systemd/README.md)                ;; # docs
+        systemd/units/*.md)               ;; # docs
         systemd/units/*.d/README.md)      ;; # drop-in dir docs (e.g. collapse ledgers)
         systemd/overrides/*)              ;; # source/rationale docs; deployable copies live under systemd/units
         systemd/*)                        SYSTEMD_UNCLASSIFIED+=("$f") ;;

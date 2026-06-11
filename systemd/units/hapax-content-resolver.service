@@ -10,8 +10,11 @@ OnFailure=notify-failure@%n.service
 [Service]
 Type=simple
 EnvironmentFile=/run/user/1000/hapax-secrets.env
-ExecStart=%h/.local/bin/uv run python -m agents.content_resolver
-WorkingDirectory=%h/projects/hapax-council
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file agents/content_resolver/__main__.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.content_resolver
 MemoryMax=512M
 Restart=on-failure
 RestartSec=10

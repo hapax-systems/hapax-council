@@ -47,6 +47,10 @@ Environment=HAPAX_IMAGINATION_HEIGHT=540
 # the 30 fps floor with full high-variation effect drift during the 2026-05-18
 # compositor incident recovery.
 Environment=HAPAX_IMAGINATION_INTERVAL_MS=26
+# Production visual rendering is pinned to the 5060 Ti. Keep the adapter
+# selector versioned here instead of relying on lexically-sorted local GPU
+# drop-ins.
+Environment=HAPAX_WGPU_ADAPTER_CONTAINS=5060
 
 [Install]
 WantedBy=default.target

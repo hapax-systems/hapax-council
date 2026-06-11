@@ -8,10 +8,12 @@ PartOf=pipewire.service
 
 [Service]
 Type=simple
-WorkingDirectory=%h/projects/hapax-council
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=%h/.local/bin/uv run --directory %h/projects/hapax-council python -m agents.audio_ducker
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file agents/audio_ducker/__main__.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.audio_ducker
 Restart=always
 RestartSec=2s
 StandardOutput=journal

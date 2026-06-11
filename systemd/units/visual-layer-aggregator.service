@@ -6,13 +6,15 @@ Wants=logos-api.service
 
 [Service]
 Type=simple
-WorkingDirectory=/home/hapax/projects/hapax-council
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 EnvironmentFile=/run/user/1000/hapax-secrets.env
-ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.visual_layer_aggregator
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file agents/visual_layer_aggregator/__main__.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.visual_layer_aggregator
 Restart=on-failure
 RestartSec=10
-Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=HOME=/home/hapax
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
 MemoryHigh=2G
 MemoryMax=4G
 SyslogIdentifier=visual-layer-aggregator
