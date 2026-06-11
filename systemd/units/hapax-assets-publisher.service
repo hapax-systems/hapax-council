@@ -5,10 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.hapax_assets_publisher --watch
-WorkingDirectory=%h/projects/hapax-council
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.hapax_assets_publisher --watch
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
-Environment=PYTHONPATH=%h/projects/hapax-council
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 Restart=on-failure
 RestartSec=30s
 

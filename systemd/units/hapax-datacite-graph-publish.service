@@ -5,10 +5,10 @@ Wants=hapax-datacite-mirror.service
 
 [Service]
 Type=oneshot
-ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.publication_bus.self_citation_graph_doi --commit
-WorkingDirectory=%h/projects/hapax-council
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.publication_bus.self_citation_graph_doi --commit
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
-Environment=PYTHONPATH=%h/projects/hapax-council
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 EnvironmentFile=-%h/.cache/hapax/secrets.env
 
 [Install]
