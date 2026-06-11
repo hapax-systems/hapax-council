@@ -187,6 +187,7 @@ class TestConsolidationPins:
                     # timeout may be a kwarg in the call (forward window) or
                     # set on a kwargs dict just above a `**kwargs` call.
                     window = "\n".join(lines[max(0, i - 12) : i + 30])
+                    window = "\n".join(lines[i : i + 30])
                     if "timeout" not in window:
                         offenders.append(f"{py.name}:{i + 1}")
         assert not offenders, f"unbounded LLM calls: {offenders}"
@@ -274,6 +275,9 @@ class TestSpontaneousLockDiscipline:
         fake_response.choices = [MagicMock(message=MagicMock(content="GPU's idle."))]
         with patch("litellm.acompletion", AsyncMock(return_value=fake_response)):
             text = asyncio.run(p.compose_spontaneous_speech(impingement, destination="private"))
+            text = asyncio.run(
+                p.compose_spontaneous_speech(impingement, destination="private")
+            )
 
         assert text == "GPU's idle."
         p._speak_sentence.assert_not_called()
@@ -297,3 +301,20 @@ class TestSpontaneousLockDiscipline:
         assert text is None
         assert any(d["reason"] == "spontaneous_speech_llm_timeout" for d in drops)
         p._speak_sentence.assert_not_called()
+        with patch("litellm.acompletion", AsyncMock(side_effect=TimeoutError())):
+            text = asyncio.run(
+                p.compose_spontaneous_speech(impingement, destination="private")
+            )
+        assert text is None
+        assert any(d["reason"] == "spontaneous_speech_llm_timeout" for d in drops)
+        p._speak_sentence.assert_not_called()
+
+    def test_generate_wrapper_composes_then_speaks(self):
+        p = _make_pipeline()
+        p.compose_spontaneous_speech = AsyncMock(return_value="hi there")
+        p.speak_spontaneous_text = AsyncMock()
+        impingement = MagicMock(
+            content={"narrative": "x"}, source="exploration", strength=0.5
+        )
+        asyncio.run(p.generate_spontaneous_speech(impingement))
+        p.speak_spontaneous_text.assert_awaited_once()
