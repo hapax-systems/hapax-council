@@ -94,6 +94,26 @@ def resolve_node_id(node_name: str) -> int | None:
     return None
 
 
+TICK_S = 0.02  # coalescing tick — fader sweeps apply at ~50Hz max, latest value wins
+
+
+def _handle_button(button: dict, value: int) -> None:
+    if value < 64:
+        return
+    current_mute = get_mute(button["target"])
+    if current_mute is None:
+        log.warning(
+            "button %s -> %s skipped; mute state unavailable",
+            button.get("label"),
+            button["target"],
+        )
+        return
+    new_mute = not current_mute
+    set_mute(button["target"], new_mute)
+    button["_muted"] = new_mute
+    log.info("button %s -> %s mute=%s", button.get("label"), button["target"], new_mute)
+
+
 def _wpctl(args: list[str], node_name: str) -> subprocess.CompletedProcess[str] | None:
     nid = resolve_node_id(node_name)
     if nid is None:
@@ -168,47 +188,37 @@ def run(config_path: str | Path, *, learn: bool = False) -> None:
             continue
         log.info("MX12 connected: %s", getattr(inport, "name", "?"))
         try:
-            for msg in inport:
-                if learn:
-                    log.info("MIDI %s", msg)
+            while True:
+                # Drain-and-coalesce: a fader sweep emits dozens of CCs; applying
+                # each serially (one wpctl subprocess per event) lags seconds
+                # behind the hand. Keep only the LATEST value per fader and apply
+                # once per tick. Buttons are discrete presses — never coalesced.
+                latest_fader: dict[tuple[int, int], int] = {}
+                button_events: list[tuple[tuple[int, int], int]] = []
+                for msg in inport.iter_pending():
+                    if learn:
+                        log.info("MIDI %s", msg)
+                        continue
+                    if msg.type != "control_change":
+                        continue
+                    key = (msg.channel, msg.control)
+                    if key in faders:
+                        latest_fader[key] = msg.value
+                    elif key in buttons:
+                        button_events.append((key, msg.value))
+                if not latest_fader and not button_events:
+                    time.sleep(TICK_S)
                     continue
-                if msg.type != "control_change":
-                    continue
-                key = (msg.channel, msg.control)
-                fader = faders.get(key)
-                if fader is not None:
+                for key, value in latest_fader.items():
+                    fader = faders[key]
                     scale = float(fader.get("scale", 1.0))
-                    vol = (msg.value / 127.0) * scale
+                    vol = (value / 127.0) * scale
                     set_volume(fader["target"], vol)
-                    log.info("fader %s -> %s vol=%.3f", fader.get("label"), fader["target"], vol)
-                    continue
-                button = buttons.get(key)
-                if button is not None:
-                    if msg.value >= 64:
-                        current_mute = get_mute(button["target"])
-                        if current_mute is None:
-                            log.warning(
-                                "button %s -> %s skipped; mute state unavailable",
-                                button.get("label"),
-                                button["target"],
-                            )
-                            continue
-                        new_mute = not current_mute
-                        set_mute(button["target"], new_mute)
-                        button["_muted"] = new_mute
-                        log.info(
-                            "button %s -> %s mute=%s",
-                            button.get("label"),
-                            button["target"],
-                            new_mute,
-                        )
-                    continue
-                log.info(
-                    "unmapped CC ch=%d cc=%d val=%d (add to controls YAML)",
-                    msg.channel + 1,
-                    msg.control,
-                    msg.value,
-                )
+                    log.debug("fader %s -> %s vol=%.3f", fader.get("label"), fader["target"], vol)
+                for key, value in button_events:
+                    msg_value = value
+                    _handle_button(buttons[key], msg_value)
+                time.sleep(TICK_S)
         except Exception:
             log.warning("MX12 read loop error; reconnecting", exc_info=True)
         finally:
