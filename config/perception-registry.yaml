@@ -1,0 +1,219 @@
+# 13-point perception registry — capture-side dual of config/audio-graph.yaml.
+# CASE-VOICE-FOUNDATION-20260610 §5d (points-not-roles, operator-directed).
+# Validated by shared/perception_registry.py; regression-pinned by
+# tests/shared/test_perception_registry.py. Exposure typing mirrors
+# shared.audio_graph.model.ExposureDomain — `quarantine` is fail-closed for
+# broadcast reachability while the point stays perception-recruitable.
+# Node names verified live on hapax-podium 2026-06-11 (`pw-cli ls Node`).
+schema_version: 1
+description: >-
+  Every audio input is a first-class perception sensor with a geometry
+  class; roles are subscriptions to points. Non-points by design: mk5 raw
+  input, S-4 wet return, livestream tap (they sense the system's own
+  egress and are governed by config/audio-graph.yaml). echo_cancel_capture
+  is the yeti point's aec channel, not a point.
+
+points:
+  rode:
+    geometry: person_attached
+    exposure: broadcast
+    description: Operator Rode Wireless Pro via mk5 IN AUX0 — the broadcast voice mic.
+    pipewire_node: hapax-mic-rode-capture
+    voice_source_tag: rode
+    equipment_ref: config/equipment/rode-wireless-pro-dual-wireless-microphone-system.yaml
+    channels:
+      raw:
+        kind: audio_pcm
+      pre_wet:
+        kind: audio_pcm
+        description: Pre-wet sidechain tap for duck handoff (rebuild design §ducking).
+    tags: [operator, dry-safe]
+
+  respeaker:
+    geometry: spatial_array
+    exposure: quarantine
+    description: >-
+      Seeed ReSpeaker XVF3800 4-mic array — the STT front-end (its only
+      role). asr_beam/vad/doa become live once the three DSP bench acts
+      land (Phase 2 run-sheet); until the ch1 mux act, capture resolves to
+      the stereo array node.
+    pipewire_node: alsa_input.usb-Seeed_Studio_reSpeaker_XVF3800_4-Mic_Array
+    channels:
+      raw:
+        kind: audio_pcm
+      asr_beam:
+        kind: asr_beam
+        description: ASR-processed beam (mux ch1 after DSP act 2).
+      vad:
+        kind: vad
+        description: Hardware VAD percept.
+      doa:
+        kind: doa
+        description: Direction-of-arrival bearings.
+    tags: [stt-ear, hardware-aec]
+
+  camera-mic-brio-operator:
+    geometry: av_paired
+    exposure: quarantine
+    description: BRIO 5342C819 mic, lens-co-located with camera-loopback brio-operator.
+    pipewire_node: alsa_input.usb-046d_Logitech_BRIO_5342C819
+    av_pair: brio-operator
+    channels:
+      mic: {kind: audio_pcm}
+    tags: [noise-ref-room]
+
+  camera-mic-brio-room:
+    geometry: av_paired
+    exposure: quarantine
+    description: BRIO 43B0576A mic, lens-co-located with camera-loopback brio-room.
+    pipewire_node: alsa_input.usb-046d_Logitech_BRIO_43B0576A
+    av_pair: brio-room
+    channels:
+      mic: {kind: audio_pcm}
+    tags: [noise-ref-room]
+
+  camera-mic-brio-synths:
+    geometry: av_paired
+    exposure: quarantine
+    description: BRIO 9726C031 mic, lens-co-located with camera-loopback brio-synths.
+    pipewire_node: alsa_input.usb-046d_Logitech_BRIO_9726C031
+    av_pair: brio-synths
+    channels:
+      mic: {kind: audio_pcm}
+    tags: [noise-ref-room]
+
+  camera-mic-c920-desk:
+    geometry: av_paired
+    exposure: quarantine
+    description: C920 2657DFCF mic, lens-co-located with camera-loopback c920-desk.
+    pipewire_node: alsa_input.usb-046d_HD_Pro_Webcam_C920_2657DFCF
+    av_pair: c920-desk
+    channels:
+      mic: {kind: audio_pcm}
+    tags: [noise-ref-room]
+
+  camera-mic-c920-overhead:
+    geometry: av_paired
+    exposure: quarantine
+    description: C920 7B88C71F mic, lens-co-located with camera-loopback c920-overhead.
+    pipewire_node: alsa_input.usb-046d_HD_Pro_Webcam_C920_7B88C71F
+    av_pair: c920-overhead
+    channels:
+      mic: {kind: audio_pcm}
+    tags: [noise-ref-room]
+
+  camera-mic-c920-room:
+    geometry: av_paired
+    exposure: quarantine
+    description: C920 86B6B75F mic, lens-co-located with camera-loopback c920-room.
+    pipewire_node: alsa_input.usb-046d_HD_Pro_Webcam_C920_86B6B75F
+    av_pair: c920-room
+    channels:
+      mic: {kind: audio_pcm}
+    tags: [noise-ref-room]
+
+  cortado:
+    geometry: contact
+    exposure: quarantine
+    description: >-
+      Zeppelin Design Labs Cortado MkIII contact mic (desk vibration).
+      Former L-12 CH2; no live node since the L-12 retirement — tag kept
+      for the voice-source contract.
+    pipewire_node: contact_mic
+    voice_source_tag: contact-mic
+    status: available
+    equipment_ref: config/equipment/zeppelin-design-labs-cortado-mkiii-versatile-rugged-steel-co.yaml
+    channels:
+      raw: {kind: audio_pcm}
+    tags: [desk-activity]
+
+  yeti:
+    geometry: ambient
+    exposure: quarantine
+    description: >-
+      Blue Yeti — ambient/GUEST ear. Highest-exposure consent surface in
+      the registry: the continuous archive persists non-operator audio
+      (axiom interpersonal_transparency w88). Egress AND retention are
+      consent-gated (voice-p2-guest-channel).
+    pipewire_node: alsa_input.usb-Blue_Microphones_Yeti
+    voice_source_tag: yeti
+    equipment_ref: config/equipment/blue-yeti.yaml
+    archive:
+      service: audio-recorder.service
+      consent_required: true
+      description: Continuous ambient archive.
+    channels:
+      raw:
+        kind: audio_pcm
+      aec:
+        kind: audio_pcm
+        pipewire_node: echo_cancel_capture
+        description: >-
+          Software-AEC'd view (module-echo-cancel; engages only when an
+          echo-cancel conf is loaded — HAPAX_AEC_ACTIVE flow).
+    tags: [guest-ear, consent-surface]
+
+  m8:
+    geometry: instrument
+    exposure: broadcast
+    description: Dirtywave M8 — instrument capture into chain.m8 loudnorm; stem archive.
+    pipewire_node: hapax-m8-instrument-capture
+    equipment_ref: config/equipment/m8-tracker-model-02.yaml
+    archive:
+      service: hapax-m8-stem-archive
+      consent_required: false
+      description: Operator instrument stems (no third-party exposure).
+    channels:
+      raw: {kind: audio_pcm}
+    tags: [instrument, voice-return-fenced]
+
+  polyend:
+    geometry: instrument
+    exposure: broadcast
+    description: Polyend instrument capture into chain.polyend loudnorm.
+    pipewire_node: hapax-polyend-instrument-capture
+    channels:
+      raw: {kind: audio_pcm}
+    tags: [instrument]
+
+  watch-relay:
+    geometry: person_attached
+    exposure: quarantine
+    description: >-
+      Watch-relay deferred mic — declared future point (§5d: a future
+      point, not a special case); source-arbitration seam comes free.
+    status: future
+    channels: {}
+    tags: [future]
+
+subscriptions:
+  stt.ear:
+    point: respeaker
+    channels: [asr_beam]
+    fallbacks: [rode, yeti.aec, yeti]
+    description: Streaming STT front-end; fallback ladder preserves the degraded posture.
+  barge_in:
+    point: respeaker
+    channels: [vad, doa]
+    description: One barge-in path on the AEC'd beam (voice-p2-barge-in-one-path).
+  broadcast_voice:
+    point: rode
+    description: Operator broadcast voice (never dropped).
+  guest.ear:
+    point: yeti
+    description: GUEST channel; consent gates egress and archive (voice-p2-guest-channel).
+  duck.sidechain:
+    point: rode
+    tap: pre_wet
+    description: Pre-wet Rode sidechain for duck handoff (voice-p2-duck-handoff).
+  noise.room_reference:
+    point: camera-mic-brio-operator
+    fallbacks:
+      - camera-mic-brio-room
+      - camera-mic-brio-synths
+      - camera-mic-c920-desk
+      - camera-mic-c920-overhead
+      - camera-mic-c920-room
+    description: >-
+      Existing consumer made visible: multi_mic noise reference
+      (DaimonionConfig.noise_ref_room_patterns matches these mics today).

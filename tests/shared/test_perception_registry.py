@@ -8,11 +8,14 @@ from pydantic import ValidationError
 from shared.audio_graph.model import ExposureDomain
 from shared.percepts import GeometryClass
 from shared.perception_registry import (
+    DEFAULT_REGISTRY_PATH,
     ArchiveSpec,
     PerceptChannel,
     PerceptionPoint,
     PerceptionRegistry,
+    PointStatus,
     SubscriptionSpec,
+    load_default_registry,
 )
 
 _MODELS_UNDER_TEST = (
@@ -158,3 +161,88 @@ def test_yaml_roundtrip() -> None:
         subscriptions={"guest.ear": SubscriptionSpec(point="yeti")},
     )
     assert PerceptionRegistry.from_yaml(reg.to_yaml()) == reg
+
+
+# ---------------------------------------------------------------------------
+# Real-file regression pins (tests/test_wgsl_node_affordance_coverage.py idiom)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def live_registry() -> PerceptionRegistry:
+    return PerceptionRegistry.from_yaml(DEFAULT_REGISTRY_PATH)
+
+
+def test_registry_file_loads_and_load_default_agrees(live_registry) -> None:
+    assert load_default_registry() == live_registry
+
+
+def test_thirteen_points(live_registry) -> None:
+    assert len(live_registry.points) == 13
+
+
+def test_all_geometry_classes_represented(live_registry) -> None:
+    present = {p.geometry for p in live_registry.points.values()}
+    assert present == set(GeometryClass)
+
+
+def test_six_av_paired_camera_mics_all_quarantined(live_registry) -> None:
+    cams = {
+        pid: p
+        for pid, p in live_registry.points.items()
+        if p.geometry == GeometryClass.AV_PAIRED
+    }
+    assert len(cams) == 6
+    for pid, cam in cams.items():
+        assert cam.exposure == ExposureDomain.QUARANTINE, pid
+        assert cam.perception_recruitable, pid
+        assert cam.av_pair, pid
+
+
+def test_respeaker_declares_dsp_percept_channels(live_registry) -> None:
+    respeaker = live_registry.points["respeaker"]
+    assert respeaker.geometry == GeometryClass.SPATIAL_ARRAY
+    assert {"asr_beam", "vad", "doa"} <= set(respeaker.channels)
+
+
+def test_spec_subscriptions_present_and_resolvable(live_registry) -> None:
+    """§5d subscription map, verbatim."""
+    subs = live_registry.subscriptions
+    assert subs["stt.ear"].point == "respeaker"
+    assert subs["stt.ear"].channels == ["asr_beam"]
+    assert subs["barge_in"].point == "respeaker"
+    assert set(subs["barge_in"].channels) == {"vad", "doa"}
+    assert subs["broadcast_voice"].point == "rode"
+    assert subs["guest.ear"].point == "yeti"
+    assert subs["duck.sidechain"].point == "rode"
+    assert subs["duck.sidechain"].tap == "pre_wet"
+    for name in subs:
+        assert live_registry.resolve_subscription_targets(name), name
+
+
+def test_stt_ear_priority_is_respeaker_then_fallback_ladder(live_registry) -> None:
+    targets = live_registry.resolve_subscription_targets("stt.ear")
+    assert targets[0].startswith("alsa_input.usb-Seeed_Studio_reSpeaker_XVF3800")
+    assert "echo_cancel_capture" in targets
+    assert any("Blue_Microphones_Yeti" in t for t in targets)
+
+
+def test_yeti_archive_is_consent_gated(live_registry) -> None:
+    archive = live_registry.points["yeti"].archive
+    assert archive is not None
+    assert archive.consent_required is True
+
+
+def test_watch_relay_is_declared_future_point(live_registry) -> None:
+    watch = live_registry.points["watch-relay"]
+    assert watch.status == PointStatus.FUTURE
+    assert watch.pipewire_node is None
+
+
+def test_voice_source_tags_match_legacy_resolver_contract(live_registry) -> None:
+    """Tag vocabulary kept in sync with rode_wireless_adapter._VALID_TAGS."""
+    assert live_registry.voice_source_tag_map() == {
+        "rode": "hapax-mic-rode-capture",
+        "yeti": "echo_cancel_capture",
+        "contact-mic": "contact_mic",
+    }
