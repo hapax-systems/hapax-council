@@ -10,11 +10,13 @@ from shared.s4_midi import (
     emit_cc,
     emit_cc_burst,
     emit_note_on,
+    emit_cc_commands,
     emit_program_change,
     find_s4_midi_output,
     is_s4_reachable,
     list_midi_outputs,
 )
+from shared.s4_scenes import EMPIRICAL_S4_GAIN_LADDER
 
 # ── Port discovery ──────────────────────────────────────────────────
 
@@ -25,7 +27,7 @@ def test_list_midi_outputs_returns_empty_when_mido_unavailable() -> None:
 
 
 def test_list_midi_outputs_calls_mido_get_output_names() -> None:
-    fake_names = ["Torso S-4 MIDI 1", "MIDI Dispatch MIDI 1"]
+    fake_names = ["Retrokits RK-006 MIDI 1", "Torso S-4 MIDI 1"]
     with patch("shared.s4_midi._MIDO_AVAILABLE", True), patch("shared.s4_midi.mido") as mido_mock:
         mido_mock.get_output_names.return_value = fake_names
         assert list_midi_outputs() == fake_names
@@ -37,29 +39,28 @@ def test_find_s4_midi_output_returns_none_when_no_match() -> None:
         assert find_s4_midi_output() is None
 
 
-def test_find_s4_midi_output_prefers_direct_s4_port() -> None:
-    """When both Torso S-4 and Dispatch are present, S-4 port wins."""
+def test_find_s4_midi_output_uses_rk006_control_plane() -> None:
+    """The proven live S-4 input is RK-006 OUT_2, not S-4 USB or Dispatch."""
     with patch("shared.s4_midi._MIDO_AVAILABLE", True), patch("shared.s4_midi.mido") as mido_mock:
         mido_mock.get_output_names.return_value = [
             "MIDI Dispatch MIDI 2",
             "Torso S-4 MIDI 1",
+            "Retrokits RK-006 MIDI 1",
         ]
-        port = MagicMock(name="s4_port")
+        port = MagicMock(name="rk006_port")
         mido_mock.open_output.return_value = port
         assert find_s4_midi_output() is port
-        mido_mock.open_output.assert_called_once_with("Torso S-4 MIDI 1")
+        mido_mock.open_output.assert_called_once_with("Retrokits RK-006 MIDI 1")
 
 
-def test_find_s4_midi_output_falls_back_to_dispatch_usb_port() -> None:
-    """When direct S-4 absent, use the Erica Dispatch USB MIDI interface."""
+def test_find_s4_midi_output_does_not_use_retired_dispatch_port() -> None:
+    """The retired Erica Dispatch lane must not claim S-4 reachability."""
     with patch("shared.s4_midi._MIDO_AVAILABLE", True), patch("shared.s4_midi.mido") as mido_mock:
         mido_mock.get_output_names.return_value = [
             "MIDI Dispatch MIDI 1",
         ]
-        port = MagicMock(name="dispatch_port")
-        mido_mock.open_output.return_value = port
-        assert find_s4_midi_output() is port
-        mido_mock.open_output.assert_called_once_with("MIDI Dispatch MIDI 1")
+        assert find_s4_midi_output() is None
+        mido_mock.open_output.assert_not_called()
 
 
 def test_find_s4_midi_output_ignores_unrelated_dispatch_names() -> None:
@@ -70,8 +71,14 @@ def test_find_s4_midi_output_ignores_unrelated_dispatch_names() -> None:
 
 def test_is_s4_reachable_true_when_s4_port_present() -> None:
     with patch("shared.s4_midi._MIDO_AVAILABLE", True), patch("shared.s4_midi.mido") as mido_mock:
-        mido_mock.get_output_names.return_value = ["Torso Electronics S-4"]
+        mido_mock.get_output_names.return_value = ["Retrokits RK006 MIDI 1"]
         assert is_s4_reachable() is True
+
+
+def test_is_s4_reachable_false_for_decorative_s4_usb_only() -> None:
+    with patch("shared.s4_midi._MIDO_AVAILABLE", True), patch("shared.s4_midi.mido") as mido_mock:
+        mido_mock.get_output_names.return_value = ["Torso Electronics S-4"]
+        assert is_s4_reachable() is False
 
 
 def test_is_s4_reachable_false_when_only_unrelated_ports() -> None:
@@ -230,3 +237,17 @@ def test_emit_note_on_rejects_out_of_range_values() -> None:
         assert emit_note_on(port, note=1, velocity=128) is False
         assert emit_note_on(port, note=1, channel=16) is False
     port.send.assert_not_called()
+def test_emit_cc_commands_respects_per_command_channels() -> None:
+    port = MagicMock()
+    with (
+        patch("shared.s4_midi._MIDO_AVAILABLE", True),
+        patch("shared.s4_midi.Message") as msg_cls,
+        patch("shared.s4_midi.time.sleep"),
+    ):
+        n = emit_cc_commands(port, EMPIRICAL_S4_GAIN_LADDER)
+    assert n == len(EMPIRICAL_S4_GAIN_LADDER)
+    emitted = [
+        (call.kwargs["channel"], call.kwargs["control"], call.kwargs["value"])
+        for call in msg_cls.call_args_list
+    ]
+    assert emitted == [(c.channel, c.cc, c.value) for c in EMPIRICAL_S4_GAIN_LADDER]

@@ -1,35 +1,21 @@
-"""Torso S-4 MIDI interface — scene recall via program change + CC fallback.
+"""Torso S-4 MIDI interface — scene recall via program change + CC commands.
 
-Phase B2 of `docs/superpowers/plans/2026-04-21-evilpet-s4-dynamic-dual-processor-plan.md`.
-
-Two emission paths (per spec §4.2):
-
-1. **Primary** — MIDI program change (single 2-byte message, <= 50 ms latency).
-   Used when the S-4 has a saved patch in the slot matching the scene's
-   `program_number`.
-2. **Fallback** — per-slot CC bursts (5–10 messages with 20 ms inter-message
-   delay so the S-4 firmware processes each CC before the next, <= 200 ms
-   latency). Used when the S-4 patch slot has not yet been populated, or
-   when the operator wants to stage a fresh scene without saving.
+The live S-4 control plane is the RK-006 OUT_2 DIN lane plus the A/B shim.
+The S-4 USB-MIDI gadget and the old Erica MIDI Dispatch lane are not accepted
+as authoritative S-4 inputs after the 2026-06-10 bench.
 
 Hardware-absent posture: when the S-4 is not USB-enumerated,
 `find_s4_midi_output()` returns `None` and the router's downgrade-to-single-
 engine clamp (`policy.apply_safety_clamps`) routes around the missing
 hardware. All public functions tolerate `None` ports — they log and no-op
 rather than raising.
-
-Routing path: this module emits to the S-4's MIDI input which the router
-reaches via the Erica Dispatch MIDI hub. The live Dispatch presents a
-single ALSA USB port (`MIDI Dispatch MIDI 1`) and routes/filter-selects
-the downstream DIN outputs in its hardware configuration. When the direct
-S-4 USB port is absent and the Dispatch is the only S-4 lane present,
-`find_s4_midi_output()` falls back to that Dispatch USB port.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
@@ -64,12 +50,9 @@ S4_MIDI_CHANNEL: Final[int] = 0
 # floor with margin for DAW jitter).
 DEFAULT_CC_DELAY_MS: Final[float] = 20.0
 
-# Port-name match patterns. mido returns Linux ALSA names like
-# "Torso Electronics S-4:S-4 MIDI 1 28:0". Match on the brand / device
-# name first, then fall back to the Erica Dispatch fan-out. The Dispatch
-# has eight physical output ports but one USB MIDI interface on Linux.
-_S4_PORT_PATTERNS: Final[tuple[str, ...]] = ("Torso", "S-4", "S_4", "Elektron")
-_DISPATCH_PORT_PATTERNS: Final[tuple[str, ...]] = ("MIDI Dispatch MIDI 1",)
+# Port-name match patterns for the proven live control plane. mido returns
+# Linux ALSA names with a trailing client number that can drift across reboots.
+_RK006_PORT_PATTERNS: Final[tuple[str, ...]] = ("RK-006", "RK006", "Retrokits")
 
 
 def list_midi_outputs() -> list[str]:
@@ -92,12 +75,7 @@ def find_s4_midi_output() -> BaseOutput | None:
     """Open the best-matching MIDI output for the S-4.
 
     Search order:
-      1. Direct S-4 USB port (matches "Torso", "S-4", "S_4", or
-         "Elektron" — covers Torso Electronics naming + the few firmware
-         revisions that present the device differently).
-      2. Erica Dispatch USB port — fall-back when S-4 is downstream of
-         the hub rather than direct-USB. The Dispatch's hardware config
-         owns the selected physical DIN output and any channel filters.
+      1. RK-006 USB MIDI port (the proven OUT_2 DIN path to S-4).
 
     Returns ``None`` when no candidate matches OR when mido is missing.
     The router's safety-clamp layer translates ``None`` into a
@@ -107,21 +85,13 @@ def find_s4_midi_output() -> BaseOutput | None:
         log.debug("mido not installed; S-4 MIDI lane unavailable")
         return None
     names = list_midi_outputs()
-    for pattern in _S4_PORT_PATTERNS:
+    for pattern in _RK006_PORT_PATTERNS:
         for name in names:
             if pattern.lower() in name.lower():
                 try:
                     return mido.open_output(name)
                 except Exception:
-                    log.warning("S-4 port %r open failed", name, exc_info=True)
-                    return None
-    for pattern in _DISPATCH_PORT_PATTERNS:
-        for name in names:
-            if pattern.lower() in name.lower():
-                try:
-                    return mido.open_output(name)
-                except Exception:
-                    log.warning("Dispatch fallback port %r open failed", name, exc_info=True)
+                    log.warning("RK-006 S-4 control port %r open failed", name, exc_info=True)
                     return None
     return None
 
@@ -137,10 +107,7 @@ def is_s4_reachable() -> bool:
     if not _MIDO_AVAILABLE:
         return False
     names = list_midi_outputs()
-    return any(
-        any(p.lower() in n.lower() for p in _S4_PORT_PATTERNS + _DISPATCH_PORT_PATTERNS)
-        for n in names
-    )
+    return any(any(p.lower() in n.lower() for p in _RK006_PORT_PATTERNS) for n in names)
 
 
 def emit_program_change(
@@ -264,6 +231,32 @@ def emit_cc_burst(
     successes = 0
     for cc, value in ccs.items():
         if emit_cc(output, cc, value, channel=channel, delay_ms=delay_ms):
+            successes += 1
+    return successes
+
+
+def emit_cc_commands(
+    output: BaseOutput | None,
+    commands: Iterable[Any],
+    *,
+    delay_ms: float = DEFAULT_CC_DELAY_MS,
+) -> int:
+    """Emit channel-bearing CC commands.
+
+    ``commands`` is intentionally structural: each item must expose
+    ``channel``, ``cc``, and ``value`` attributes. This keeps
+    ``shared.s4_midi`` independent of the scene registry while allowing the
+    empirical post-recall ladder to target both ch16 and ch2.
+    """
+    successes = 0
+    for command in commands:
+        if emit_cc(
+            output,
+            cc=int(command.cc),
+            value=int(command.value),
+            channel=int(command.channel),
+            delay_ms=delay_ms,
+        ):
             successes += 1
     return successes
 

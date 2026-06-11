@@ -14,6 +14,7 @@ from typing import Any
 
 from agents._affordance import CapabilityRecord, OperationalProperties
 from agents._impingement import Impingement
+from shared.s4_scenes import EMPIRICAL_S4_GAIN_LADDER
 
 log = logging.getLogger(__name__)
 
@@ -98,6 +99,7 @@ class CCMapping:
     cc: int
     # Piecewise linear breakpoints: (level, cc_value)
     breakpoints: list[tuple[float, int]]
+    channel: int | None = None
 
 
 @dataclass(frozen=True)
@@ -142,18 +144,28 @@ def _inverted(cc_high: int, cc_low: int) -> list[tuple[float, int]]:
     return [(0.0, cc_high), (0.5, (cc_high + cc_low) // 2), (1.0, cc_low)]
 
 
-# CC map derived from docs/research/2026-04-19-evil-pet-s4-base-config.md §5.1–§5.2.
-# Research-approved ceilings keep speech intelligible and prevent anthropomorphic
-# coloration (no granular re-synthesis, no LFO wobble, no extreme resonance).
-# One CC per (device, dimension) — no within-device collisions between dimensions,
-# so activating one dimension never writes over another's CC on the same device.
+def _fixed(value: int) -> list[tuple[float, int]]:
+    """Fixed CC curve used for empirical assertions, not expressive modulation."""
+    return [(0.0, value), (1.0, value)]
+
+
+_S4_GAIN_ASSERTION_MAPPINGS: tuple[CCMapping, ...] = tuple(
+    CCMapping("s4", command.cc, _fixed(command.value), channel=command.channel)
+    for command in EMPIRICAL_S4_GAIN_LADDER
+)
+
+
+# S-4 expressive CCs from the manual and prior repo charts were falsified by
+# the 2026-06-10 bench. Until a closed-loop sweep validates expressive axes, the
+# S-4 contribution in each semantic dimension is only the fixed empirical gain
+# ladder. Evil Pet mappings remain as the legacy semantic vocabulary.
 DIMENSIONS: dict[str, Dimension] = {
     "vocal_chain.intensity": Dimension(
         name="vocal_chain.intensity",
         description="Increases vocal energy and density. Speech becomes louder, more present, more forceful. Distinct from emotional valence — pure physical energy.",
         cc_mappings=[
             CCMapping("evil_pet", 39, _ranged(0, 80)),  # saturator amount
-            CCMapping("s4", 95, _ranged(20, 60)),  # deform drive
+            *_S4_GAIN_ASSERTION_MAPPINGS,
         ],
     ),
     "vocal_chain.tension": Dimension(
@@ -162,8 +174,7 @@ DIMENSIONS: dict[str, Dimension] = {
         cc_mappings=[
             CCMapping("evil_pet", 70, _ranged(40, 100)),  # filter frequency
             CCMapping("evil_pet", 71, _ranged(20, 60)),  # filter resonance
-            CCMapping("s4", 79, _ranged(40, 80)),  # ring cutoff
-            CCMapping("s4", 80, _ranged(15, 35)),  # ring resonance (conservative ceiling)
+            *_S4_GAIN_ASSERTION_MAPPINGS,
         ],
     ),
     "vocal_chain.diffusion": Dimension(
@@ -171,7 +182,7 @@ DIMENSIONS: dict[str, Dimension] = {
         description="Scatters vocal output across spatial field. Speech becomes ambient, sourceless, environmental. Words dissolve into texture at high levels.",
         cc_mappings=[
             CCMapping("evil_pet", 91, [(0.0, 20), (0.7, 45), (1.0, 60)]),  # reverb amount (log)
-            CCMapping("s4", 115, _ranged(40, 90)),  # reverb size
+            *_S4_GAIN_ASSERTION_MAPPINGS,
         ],
     ),
     "vocal_chain.degradation": Dimension(
@@ -181,7 +192,7 @@ DIMENSIONS: dict[str, Dimension] = {
             CCMapping(
                 "evil_pet", 84, [(0.0, 0), (0.49, 0), (0.5, 90), (1.0, 110)]
             ),  # saturator type: stepped distortion→bit-crush
-            CCMapping("s4", 96, _ranged(50, 90)),  # deform compress (heavier under degradation)
+            *_S4_GAIN_ASSERTION_MAPPINGS,
         ],
     ),
     "vocal_chain.depth": Dimension(
@@ -189,7 +200,7 @@ DIMENSIONS: dict[str, Dimension] = {
         description="Places voice in reverberant space. Distant, cathedral-like, submerged. Speech recedes from foreground without losing content at low levels.",
         cc_mappings=[
             CCMapping("evil_pet", 93, _ranged(20, 70)),  # reverb tail
-            CCMapping("s4", 114, _ranged(20, 55)),  # reverb amount
+            *_S4_GAIN_ASSERTION_MAPPINGS,
         ],
     ),
     "vocal_chain.pitch_displacement": Dimension(
@@ -197,7 +208,7 @@ DIMENSIONS: dict[str, Dimension] = {
         description="Shifts vocal pitch away from natural register. Higher, lower, or unstable. Uncanny displacement without volume or timbre change.",
         cc_mappings=[
             CCMapping("evil_pet", 44, _centered(64, 30)),  # pitch (centered)
-            CCMapping("s4", 82, _centered(64, 24)),  # ring pitch (centered, conservative span)
+            *_S4_GAIN_ASSERTION_MAPPINGS,
         ],
     ),
     "vocal_chain.temporal_distortion": Dimension(
@@ -205,7 +216,7 @@ DIMENSIONS: dict[str, Dimension] = {
         description="Stretches, freezes, or stutters speech in time. Words elongate, fragment, or loop. Temporal continuity breaks down.",
         cc_mappings=[
             CCMapping("evil_pet", 96, _ranged(20, 80)),  # env-filter mod (signal-honest motion)
-            CCMapping("s4", 116, _ranged(20, 45)),  # delay feedback (clamped — prevents runaway)
+            *_S4_GAIN_ASSERTION_MAPPINGS,
         ],
     ),
     "vocal_chain.spectral_color": Dimension(
@@ -213,7 +224,7 @@ DIMENSIONS: dict[str, Dimension] = {
         description="Shifts vocal brightness and metallicity. Dark, bright, hollow, metallic. Changes tonal character without changing pitch or volume.",
         cc_mappings=[
             CCMapping("evil_pet", 92, _centered(60, 20)),  # reverb tone (40..80)
-            CCMapping("s4", 118, _inverted(80, 40)),  # reverb damp (inverted: brighter = less damp)
+            *_S4_GAIN_ASSERTION_MAPPINGS,
         ],
     ),
     "vocal_chain.coherence": Dimension(
@@ -223,7 +234,7 @@ DIMENSIONS: dict[str, Dimension] = {
             CCMapping(
                 "evil_pet", 40, _ranged(40, 70)
             ),  # master wet/dry mix (dryness floor keeps words clear)
-            CCMapping("s4", 103, _ranged(40, 70)),  # deform wet
+            *_S4_GAIN_ASSERTION_MAPPINGS,
         ],
     ),
 }
@@ -611,6 +622,8 @@ class VocalChainCapability:
         level = self._levels[dimension_name]
         for mapping in dim.cc_mappings:
             value = cc_value_from_level(level, mapping.breakpoints)
-            channel = self._evil_pet_ch if mapping.device == "evil_pet" else self._s4_ch
+            channel = mapping.channel
+            if channel is None:
+                channel = self._evil_pet_ch if mapping.device == "evil_pet" else self._s4_ch
             self._midi.send_cc(channel=channel, cc=mapping.cc, value=value)
             _metrics.inc_cc(mapping.device, dimension_name)

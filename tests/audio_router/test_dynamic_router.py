@@ -34,6 +34,7 @@ from agents.audio_router.state import (
     ProgrammeState,
     RoutingIntent,
 )
+from shared.s4_scenes import EMPIRICAL_S4_GAIN_LADDER
 
 # ── Stimmung file reader ─────────────────────────────────────────────
 
@@ -245,12 +246,17 @@ def test_emit_intent_change_emits_s4_program_when_scene_changes() -> None:
         s4_vocal_scene="VOCAL-COMPANION",
     )
     s4_port = MagicMock()
-    program_lookup = MagicMock(return_value=1)
+    program_lookup = MagicMock(return_value=0)
+    post_recall_lookup = MagicMock(return_value=EMPIRICAL_S4_GAIN_LADDER)
     with (
         patch("agents.audio_router.dynamic_router.recall_preset", return_value=3),
         patch(
             "agents.audio_router.dynamic_router.s4_midi.emit_program_change", return_value=True
         ) as pc_mock,
+        patch(
+            "agents.audio_router.dynamic_router.s4_midi.emit_cc_commands",
+            return_value=len(EMPIRICAL_S4_GAIN_LADDER),
+        ) as cc_mock,
     ):
         emit_intent_change(
             intent,
@@ -258,9 +264,12 @@ def test_emit_intent_change_emits_s4_program_when_scene_changes() -> None:
             evilpet_midi=MagicMock(),
             s4_midi_port=s4_port,
             s4_program_for_scene_fn=program_lookup,
+            s4_post_recall_ccs_fn=post_recall_lookup,
         )
     program_lookup.assert_called_once_with("VOCAL-COMPANION")
-    pc_mock.assert_called_once_with(s4_port, program=1)
+    post_recall_lookup.assert_called_once_with("VOCAL-COMPANION")
+    pc_mock.assert_called_once_with(s4_port, program=0)
+    cc_mock.assert_called_once_with(s4_port, EMPIRICAL_S4_GAIN_LADDER)
 
 
 # ── DynamicRouter.tick integration ──────────────────────────────────
