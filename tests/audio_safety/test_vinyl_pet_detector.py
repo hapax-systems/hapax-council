@@ -289,3 +289,45 @@ def test_publish_state_writes_breach_runtime_health(tmp_path: Path) -> None:
     assert payload["status"] == "breach"
     assert payload["breach_active"] is True
     assert payload["vinyl_r_rms"] == 0.31
+
+
+# ── mk5-era retarget (voice-p3-leak-executor-retarget-20260610) ──────────────
+
+
+def test_default_target_resolves_to_live_tap(monkeypatch):
+    """Default config must target the live broadcast tap, never the dead L-12."""
+    monkeypatch.delenv("HAPAX_AUDIO_SAFETY_TARGET", raising=False)
+    monkeypatch.delenv("HAPAX_AUDIO_SAFETY_L12_TARGET", raising=False)
+    cfg = DetectorConfig.from_env()
+    assert "L-12" not in cfg.target and "ZOOM" not in cfg.target
+    assert cfg.target  # non-empty resolution (SSOT or fallback)
+    assert cfg.channels == 2
+    assert cfg.rate == 48000
+
+
+def test_legacy_env_alias_still_honored(monkeypatch):
+    monkeypatch.setenv("HAPAX_AUDIO_SAFETY_L12_TARGET", "legacy-node")
+    monkeypatch.delenv("HAPAX_AUDIO_SAFETY_TARGET", raising=False)
+    assert DetectorConfig.from_env().target == "legacy-node"
+    monkeypatch.setenv("HAPAX_AUDIO_SAFETY_TARGET", "new-node")
+    assert DetectorConfig.from_env().target == "new-node"  # primary wins
+
+
+def test_extinct_aux_channels_read_silence_on_stereo_tap():
+    """Evil-Pet/vinyl channels (5/8/9) do not exist on the 2ch tap → 0.0, never fire."""
+    import numpy as np
+
+    frame = (np.ones(2 * 480, dtype=np.int16) * 16000).tobytes()  # loud stereo frame
+    assert channel_rms(frame, 2, 5) == 0.0
+    assert channel_rms(frame, 2, 8) == 0.0
+    assert channel_rms(frame, 2, 0) > 0.3  # the bus itself is hot
+
+
+def test_publish_state_carries_bus_rms(tmp_path):
+    cfg = DetectorConfig(state_file=tmp_path / "state.json", target="x")
+    publish_state(config=cfg, status="clear", breach_active=False, now=1.0, bus_rms=0.1234)
+    import json as _json
+
+    data = _json.loads((tmp_path / "state.json").read_text())
+    assert data["bus_rms"] == 0.1234
+    assert data["target"] == "x"
