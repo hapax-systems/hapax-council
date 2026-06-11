@@ -16,7 +16,7 @@ Hapax is a single-operator autonomous system: 200+ total agents, including 180+ 
 
 This is not a framework. This is not a demo. This is the production system one neurodivergent operator uses to externalize executive function, and the research artifact that proves what happens when you take agent governance seriously.
 
-> [hapax.omg.lol](https://hapax.omg.lol) &#183; [YouTube @LegomenaLive](https://youtube.com/@LegomenaLive) &#183; [START_HERE.md](START_HERE.md) &#183; [Manifesto](https://hapax.weblog.lol/hapax-manifesto-v0) &#183; [Refusal Brief](https://hapax.weblog.lol/refusal-brief)
+> [hapax.omg.lol](https://hapax.omg.lol) &#183; [YouTube @LegomenaLive](https://youtube.com/@LegomenaLive) &#183; [START_HERE.md](START_HERE.md) &#183; [Refusal Brief](https://hapax.weblog.lol/2026/04/refusal-brief-an-automation-tractability-disclosure)
 
 ---
 
@@ -103,7 +103,7 @@ The governance core is extracted as [`agentgov`](packages/agentgov/) — a stand
 
 ### Refusal as data
 
-When the system declines to publish, claim, or act, that refusal is not discarded. It is preserved as a first-class artifact in the publication bus. The [Refusal Brief](https://hapax.weblog.lol/refusal-brief) explains why this matters.
+When the system declines to publish, claim, or act, that refusal is not discarded. It is preserved as a first-class artifact in the publication bus. The [Refusal Brief](https://hapax.weblog.lol/2026/04/refusal-brief-an-automation-tractability-disclosure) explains why this matters.
 
 ### Semantic recruitment
 
@@ -117,7 +117,7 @@ One `AffordancePipeline` gates everything across 6 domains (perception, expressi
 | Empirical claims | Research compendium under [`research/`](research/). Cycle 1 SCED pilot complete (37 sessions, BF=3.66, inconclusive). Cycle 2 in progress. |
 | Governance | 5 constitutional axioms enforced via [hapax-constitution](https://github.com/ryanklee/hapax-constitution) and [`axioms/`](axioms/). |
 | License | PolyForm Strict 1.0.0. See [`NOTICE.md`](NOTICE.md), [`CITATION.cff`](CITATION.cff), and [`license-reconciliation-status`](docs/governance/license-reconciliation-status.md). |
-| Authorship | Indeterminate by design: co-produced by Hapax (the system), Claude Code, and the operator. See [Hapax Manifesto v0](https://hapax.weblog.lol/hapax-manifesto-v0). |
+| Authorship | Indeterminate by design: co-produced by Hapax (the system), Claude Code, and the operator. The prior Manifesto short URL is held as noncanonical until re-published; see [`docs/legibility/public-canonical-url-smoke-2026-06-11.md`](docs/legibility/public-canonical-url-smoke-2026-06-11.md). |
 | Support / sponsorship | Public support page: [hapax.weblog.lol/support](https://hapax.weblog.lol/support). The org GitHub Sponsors surface is pending; launch copy routes through the verified no-perk support page and does not claim perks, access, requests, priority, deliverables, or control. |
 
 ## Ecosystem
@@ -158,8 +158,8 @@ systemctl --user daemon-reload && systemctl --user enable --now hapax.target
 - [`NOTICE.md`](NOTICE.md) — canonical project posture and license.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — refusal of contributions (`single_user` axiom).
 - [`docs/governance/`](docs/governance/) — governance status and refusal records.
-- [Refusal Brief](https://hapax.weblog.lol/refusal-brief) — public refusal-as-data artifact.
-- [Hapax Manifesto v0](https://hapax.weblog.lol/hapax-manifesto-v0) — authorship-indeterminacy stance.
+- [Refusal Brief](https://hapax.weblog.lol/2026/04/refusal-brief-an-automation-tractability-disclosure) — public refusal-as-data artifact.
+- [`public-canonical-url-smoke-2026-06-11.md`](docs/legibility/public-canonical-url-smoke-2026-06-11.md) — current public URL identity receipt; Manifesto short URL is not citable yet.
 
 ## Citation
 
@@ -167,4 +167,4 @@ Cite via [`CITATION.cff`](CITATION.cff). Zenodo DOI: [10.5281/zenodo.20113515](h
 
 ---
 
-*Not a product. Not a service. Not seeking contributors. [Why not?](https://hapax.weblog.lol/refusal-brief)*
+*Not a product. Not a service. Not seeking contributors. [Why not?](https://hapax.weblog.lol/2026/04/refusal-brief-an-automation-tractability-disclosure)*

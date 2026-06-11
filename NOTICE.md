@@ -13,9 +13,9 @@ Authorship is indeterminate by design. This codebase is co-produced by Hapax (th
 
 ## Linked artifacts
 
-- Manifesto: https://hapax.weblog.lol/hapax-manifesto-v0
-- Refusal Brief: https://hapax.weblog.lol/refusal-brief
-- Cohort Disparity Disclosure: https://hapax.weblog.lol/cohort-disparity-disclosure
+- Manifesto: held pending a fresh public publish; do not cite the old short path
+- Refusal Brief: https://hapax.weblog.lol/2026/04/refusal-brief-an-automation-tractability-disclosure
+- Cohort Disparity Disclosure: https://hapax.weblog.lol/2026/04/cohort-disparity-disclosure-soundcloud-first-hours-distribution
 - Constitution: https://github.com/ryanklee/hapax-constitution
 
 ## Inter-repo position

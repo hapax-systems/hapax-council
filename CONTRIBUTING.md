@@ -9,7 +9,7 @@ Useful public entry points:
 - [`START_HERE.md`](START_HERE.md) for reviewer orientation.
 - [`NOTICE.md`](NOTICE.md) for project posture and license.
 - [`CITATION.cff`](CITATION.cff) for citation metadata.
-- [Refusal Brief](https://hapax.weblog.lol/refusal-brief) for the refusal-as-data stance.
+- [Refusal Brief](https://hapax.weblog.lol/2026/04/refusal-brief-an-automation-tractability-disclosure) for the refusal-as-data stance.
 
 ## CI Gates and Module Verification
 

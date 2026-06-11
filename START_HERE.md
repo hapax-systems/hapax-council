@@ -141,9 +141,10 @@ failures and corrections can be observed.
 - Repository: <https://github.com/hapax-systems/hapax-council>
 - Governance specification: <https://github.com/ryanklee/hapax-constitution>
 - Public weblog: <https://hapax.weblog.lol/>
-- Hapax Manifesto v0: <https://hapax.weblog.lol/hapax-manifesto-v0>
-- Refusal Brief: <https://hapax.weblog.lol/refusal-brief>
-- Velocity evidence baseline: <https://hapax.weblog.lol/velocity-report-2026-04-25>
+- Hapax Manifesto v0: held pending a fresh public publish; do not cite the old short path.
+- Refusal Brief: <https://hapax.weblog.lol/2026/04/refusal-brief-an-automation-tractability-disclosure>
+- Velocity evidence baseline: <https://hapax.weblog.lol/2026/04/hapax-velocity-report-2026-04-25>
+- Public URL smoke receipt: [docs/legibility/public-canonical-url-smoke-2026-06-11.md](docs/legibility/public-canonical-url-smoke-2026-06-11.md)
 
 ## Search Terms
 
