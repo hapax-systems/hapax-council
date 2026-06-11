@@ -4,8 +4,9 @@ Every drop-in in this directory is versioned, and every `HAPAX_*` env knob it
 sets must have a reader in the source tree —
 `tests/test_daimonion_dropin_config_truth.py` enforces this. The live
 directory `~/.config/systemd/user/hapax-daimonion.service.d/` must contain
-only symlinks into this directory; loose files there are shadow config and
-get collapsed or deleted.
+only deployments of files versioned here (`hapax-post-merge-deploy` copies
+changed drop-ins and restarts the unit); anything else there is shadow
+config and gets collapsed or deleted.
 
 ## Shadow-surface collapse ledger (2026-06-11, CASE-VOICE-FOUNDATION-20260610)
 
@@ -23,7 +24,7 @@ Disposition of each:
 | `override.conf` | **Deleted.** Its stated purpose ("until PR #731 merges") is fulfilled: the main unit carries the identical OTel BSP caps and 12G/10G memory values. |
 | `zz-capacity.conf` | **Versioned** as `capacity.conf` (12G-soft/16G-hard/4G-swap — the live values that superseded `override.conf`). |
 | `aec.conf` | **Versioned** here unchanged (`HAPAX_AEC_ACTIVE` is read by `audio_input.py`). |
-| `cpu-affinity.conf` | Was a byte-identical loose copy of the versioned file — replaced with a symlink. |
+| `cpu-affinity.conf` | Already a byte-identical loose copy of the versioned file — owned by the deploy machinery from here on. |
 
 Non-`HAPAX_*` env vars in drop-ins (PyTorch/OTel/OMP/...) are consumed by
 libraries, not hapax code; the conformance test allowlists those prefixes.
