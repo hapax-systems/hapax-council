@@ -674,8 +674,11 @@ def test_hapax_script_deploy_restarts_active_units_that_reference_local_bin(
 
     assert result.returncode == 0, result.stderr
     installed = home / ".local" / "bin" / "hapax-audio-reconciler"
-    assert installed.is_symlink()
-    assert installed.resolve() == repo / script_path
+    # Copy-from-SHA semantics (deploy-scripts-worktree-root-20260611): the
+    # installed script is the release content, not a live symlink into a tree.
+    assert installed.is_file() and not installed.is_symlink()
+    assert installed.read_text() == (repo / script_path).read_text()
+    assert installed.stat().st_mode & 0o111, "installed script must be executable"
     calls = systemctl_calls.read_text(encoding="utf-8")
     assert "--user restart hapax-audio-reconciler.service" in calls
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
@@ -949,11 +952,13 @@ def test_real_deploy_installs_symlinks_under_isolated_home(tmp_path: Path) -> No
 
     assert result.returncode == 0, result.stderr
     leaked = home / ".local" / "bin" / "hapax-demo"
-    assert leaked.is_symlink(), "demo script should install under the isolated home"
-    assert os.readlink(leaked) == str(repo / "scripts" / "hapax-demo")
-    # The deploy-end self-check must stay quiet: the just-installed symlink
-    # points at $REPO/scripts (canonical for the deploying tree), so it must NOT
-    # be mistaken for drift — else every real deploy would ntfy a false alarm.
+    assert leaked.is_file(), "demo script should install under the isolated home"
+    # Copy-from-SHA semantics: a regular file with the release's content, not a
+    # symlink into a mutable tree (deploy-scripts-worktree-root-20260611).
+    assert not leaked.is_symlink()
+    assert leaked.read_text() == (repo / "scripts" / "hapax-demo").read_text()
+    # The deploy-end self-check must stay quiet: installed copies are not
+    # symlinks, so the drift auditor (symlink-only) has nothing to flag.
     assert "drift" not in result.stderr.lower(), result.stderr
 
 
