@@ -17,8 +17,11 @@ OnFailure=notify-failure@%n.service
 Type=simple
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 # Use .venv/bin/python directly instead of `uv run` because NeMo toolkit
-# requires lightning==2.4.0 (nv-one-logger crash with >=2.5), and `uv run`
+# requires lightning<=2.4.0 (nemo>=2.7's own upstream cap; the historical
+# nv-one-logger >=2.5 crash rationale is superseded), and `uv run`
 # re-syncs to pyproject.toml which installs lightning 2.6.x.
+# Verified 2026-06-10: nemo 2.7.3 + lightning 2.4.0 + torch 2.10.0+cu128
+# imports nemo.collections.asr cleanly (cu128 keystone).
 # NeMo is installed via `uv pip install` outside pyproject.toml resolution
 # due to huggingface-hub version conflict with pydantic-ai.
 # Delay startup to let logos-api initialize first,
