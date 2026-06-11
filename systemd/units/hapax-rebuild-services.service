@@ -13,6 +13,10 @@ TimeoutStartSec=600
 ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-dmn.service --watch "agents/dmn/ agents/imagination.py agents/imagination_resolver.py agents/imagination_context.py agents/reverie/ agents/visual_chain.py agents/effect_graph/ shared/" --sha-key dmn
 
 # hapax-daimonion: restart if voice agent or shared code changed
+# hapax-tts-local owns the TTS models separately. Restart it only for TTS
+# engine/protocol/speech-safety code so ordinary daimonion deploys keep the
+# "daemon restart reloads no TTS models" invariant.
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-tts-local.service --watch "agents/hapax_daimonion/tts.py agents/hapax_daimonion/tts_local_server.py shared/speech_lexicon.py shared/speech_safety.py" --sha-key voice-tts-local
 ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-daimonion.service --watch "agents/hapax_daimonion/ shared/" --sha-key voice
 
 # logos-api: restart if logos backend code changed

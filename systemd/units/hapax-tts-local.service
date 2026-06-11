@@ -1,0 +1,36 @@
+[Unit]
+Description=Hapax TTS Local Engine — 5060 Ti model owner
+After=hapax-secrets.service
+Requires=hapax-secrets.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file agents/hapax_daimonion/tts_local_server.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.hapax_daimonion.tts_local_server
+Restart=always
+RestartSec=5
+EnvironmentFile=/run/user/1000/hapax-secrets.env
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+# Whole-GPU placement: systemd exposes the podium RTX 5060 Ti as cuda:0 to
+# this process. Chatterbox/Kokoro selection remains HAPAX_TTS_BACKEND.
+Environment=CUDA_DEVICE_ORDER=PCI_BUS_ID
+Environment=CUDA_VISIBLE_DEVICES=1
+Environment=HAPAX_CHATTERBOX_DEVICE=cuda:0
+Environment=HAPAX_TTS_TRANSPORT=local
+Environment=HAPAX_TTS_SERVER_SOCKET=/run/user/1000/hapax-tts-local.sock
+Environment=HAPAX_TTS_REQUEST_DEADLINE_S=30
+Environment=HAPAX_TTS_BACKEND=kokoro
+Environment=PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync
+MemoryMax=8G
+MemoryHigh=6G
+Nice=-8
+LimitNOFILE=1048576
+SyslogIdentifier=hapax-tts-local
+
+[Install]
+WantedBy=default.target

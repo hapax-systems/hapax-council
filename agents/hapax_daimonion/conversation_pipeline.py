@@ -51,7 +51,9 @@ from shared.persona_prompt_composer import compose_persona_prompt
 
 log = logging.getLogger(__name__)
 
-_tts_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts")
+# Blocking UDS client calls stay off the event loop; synthesis ordering itself
+# is owned by hapax-tts-local.service's prioritized queue.
+_tts_client_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts-client")
 _audio_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audio-out")
 
 _CAPTION_AUDIO_SAMPLE_RATE_HZ = 16000
@@ -2178,7 +2180,7 @@ class ConversationPipeline:
     ) -> str:
         """Synthesize and play a single sentence/clause.
 
-        TTS runs in _tts_executor, audio write runs in _audio_executor.
+        TTS client I/O runs in _tts_client_executor; audio write runs in _audio_executor.
         Both are single-threaded so clauses play in order, but the async
         loop resumes immediately after synthesis — tokens keep streaming
         from the LLM while audio plays.
@@ -2249,7 +2251,7 @@ class ConversationPipeline:
             loop = asyncio.get_running_loop()
             try:
                 pcm = await loop.run_in_executor(
-                    _tts_executor,
+                    _tts_client_executor,
                     self.tts.synthesize,
                     tts_text,
                     "conversation",
@@ -2265,6 +2267,7 @@ class ConversationPipeline:
                     text=tts_text,
                     error=str(exc),
                     backend=getattr(self.tts, "last_synthesis_backend", None),
+                    server_liveness=getattr(self.tts, "last_server_liveness", None),
                 )
                 record_drop(
                     reason="tts_synthesis_failed",
@@ -2290,6 +2293,7 @@ class ConversationPipeline:
                     text=tts_text,
                     pcm=pcm,
                     backend=getattr(self.tts, "last_synthesis_backend", None),
+                    server_liveness=getattr(self.tts, "last_server_liveness", None),
                 )
             else:
                 record_tts_synthesis(
@@ -2297,6 +2301,7 @@ class ConversationPipeline:
                     text=tts_text,
                     pcm=b"",
                     backend=getattr(self.tts, "last_synthesis_backend", None),
+                    server_liveness=getattr(self.tts, "last_server_liveness", None),
                 )
                 record_drop(
                     reason="tts_empty_pcm",

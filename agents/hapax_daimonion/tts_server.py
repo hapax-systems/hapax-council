@@ -1,8 +1,9 @@
-"""Unix-domain-socket server exposing the in-process TTSManager.
+"""Unix-domain-socket server exposing daimonion's TTSManager API.
 
 Lets out-of-process callers (the studio compositor director loop, primarily)
-delegate synthesis to the daimonion's already-loaded TTS backend (Kokoro or
-Chatterbox) instead of loading torch themselves. Mirrors the existing
+delegate synthesis to daimonion instead of importing torch themselves.
+In production the manager is a client for ``hapax-tts-local.service``; in
+local/test mode it may still own an in-process backend. Mirrors the existing
 ``HotkeyServer`` pattern (asyncio.start_unix_server, 0o600 socket perms,
 idempotent start/stop).
 
@@ -41,7 +42,7 @@ _MAX_REQUEST_BYTES = 64 * 1024
 
 
 class TtsServer:
-    """UDS server that delegates synthesize calls to an owned TTSManager."""
+    """Legacy UDS facade that delegates synthesize calls to a TTSManager."""
 
     def __init__(
         self,

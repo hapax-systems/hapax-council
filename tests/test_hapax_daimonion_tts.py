@@ -16,9 +16,13 @@ import numpy as np
 
 from agents.hapax_daimonion.tts import (
     TTS_BACKEND_ENV,
+    TTS_TRANSPORT_ENV,
     VALID_TTS_BACKENDS,
+    VALID_TTS_TRANSPORTS,
     TTSManager,
+    priority_class_for_use_case,
     resolve_backend_from_env,
+    resolve_transport_from_env,
     select_tier,
 )
 
@@ -67,6 +71,64 @@ def test_backend_env_invalid_warns_and_defaults(caplog) -> None:
 
 def test_valid_backends_pin() -> None:
     assert VALID_TTS_BACKENDS == ("chatterbox", "kokoro")
+
+
+def test_transport_env_unset_defaults_to_local() -> None:
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop(TTS_TRANSPORT_ENV, None)
+        assert resolve_transport_from_env() == "local"
+
+
+def test_transport_env_server_selected() -> None:
+    with patch.dict(os.environ, {TTS_TRANSPORT_ENV: "server"}):
+        assert resolve_transport_from_env() == "server"
+        assert TTSManager().transport == "server"
+
+
+def test_valid_transports_pin() -> None:
+    assert VALID_TTS_TRANSPORTS == ("local", "server")
+
+
+def test_priority_class_maps_interactive_bridge_hosting() -> None:
+    assert priority_class_for_use_case("conversation") == "interactive"
+    assert priority_class_for_use_case("bridge") == "bridge"
+    assert priority_class_for_use_case("proactive") == "hosting"
+
+
+def test_server_transport_preload_does_not_load_models(tmp_path) -> None:
+    mgr = TTSManager(
+        transport="server",
+        server_socket_path=tmp_path / "missing.sock",
+        request_deadline_s=0.001,
+    )
+    with (
+        patch.object(mgr, "_get_kokoro") as mock_kokoro,
+        patch.object(mgr, "_get_chatterbox") as mock_chatterbox,
+    ):
+        mgr.preload()
+    mock_kokoro.assert_not_called()
+    mock_chatterbox.assert_not_called()
+    assert mgr.last_server_liveness is not None
+    assert mgr.last_server_liveness["status"] == "unreachable"
+
+
+def test_server_transport_error_clears_stale_synthesis_backend(tmp_path) -> None:
+    mgr = TTSManager(
+        transport="server",
+        server_socket_path=tmp_path / "missing.sock",
+        request_deadline_s=0.001,
+    )
+    mgr._last_synthesis_backend = "kokoro"
+
+    # Server error clears the stale backend AND (2026-06-11 review fix)
+    # falls back to in-process synthesis rather than silencing the voice.
+    with patch.object(mgr, "_synthesize_kokoro", return_value=b"\x05\x06") as local:
+        result = mgr.synthesize("hello", "conversation")
+
+    assert local.called, "in-process fallback must engage on server error"
+    assert result == b"\x05\x06"
+    assert mgr.last_server_liveness is not None
+    assert mgr.last_server_liveness["status"] == "error"
 
 
 def test_preload_kokoro_backend_never_touches_chatterbox() -> None:
@@ -185,6 +247,22 @@ def test_record_tts_synthesis_includes_backend(tmp_path) -> None:
     assert on_disk["last_tts_synthesis"]["backend"] == "kokoro"
 
 
+def test_record_tts_synthesis_includes_server_liveness(tmp_path) -> None:
+    from agents.hapax_daimonion.voice_output_witness import record_tts_synthesis
+
+    path = tmp_path / "voice-output-witness.json"
+    witness = record_tts_synthesis(
+        status="completed",
+        text="hello there",
+        pcm=b"\x00\x00" * 240,
+        backend="kokoro",
+        server_liveness={"mode": "server", "status": "ok", "queue_wait_ms": 3},
+        path=path,
+    )
+    assert witness.last_tts_synthesis is not None
+    assert witness.last_tts_synthesis["server_liveness"]["status"] == "ok"
+
+
 def test_record_tts_synthesis_backend_defaults_to_none(tmp_path) -> None:
     from agents.hapax_daimonion.voice_output_witness import record_tts_synthesis
 
@@ -192,3 +270,25 @@ def test_record_tts_synthesis_backend_defaults_to_none(tmp_path) -> None:
     witness = record_tts_synthesis(status="empty", text="", pcm=b"", path=path)
     assert witness.last_tts_synthesis is not None
     assert witness.last_tts_synthesis["backend"] is None
+
+
+def test_server_down_falls_back_to_in_process(monkeypatch, tmp_path):
+    """Review finding 2026-06-11: ConnectionRefused/server-down must not
+    silence the voice — synthesize() falls through to the local path."""
+    from agents.hapax_daimonion import tts as tts_mod
+
+    mgr = tts_mod.TTSManager.__new__(tts_mod.TTSManager)
+    mgr._transport = "server"
+    mgr._backend = "kokoro"
+    mgr._last_synthesis_backend = None
+    calls = {}
+    monkeypatch.setattr(mgr, "_synthesize_via_server", lambda *a, **k: b"", raising=False)
+    monkeypatch.setattr(
+        mgr,
+        "_synthesize_kokoro",
+        lambda text, **k: (calls.setdefault("local", True), b"\x01\x02")[1],
+        raising=False,
+    )
+    out = mgr.synthesize("hello world")
+    assert calls.get("local"), "in-process fallback was not invoked"
+    assert out == b"\x01\x02"

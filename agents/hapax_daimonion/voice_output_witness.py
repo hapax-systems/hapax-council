@@ -158,6 +158,7 @@ def record_tts_synthesis(
     pcm: bytes | None = None,
     error: str | None = None,
     backend: str | None = None,
+    server_liveness: dict[str, Any] | None = None,
     impulse_id: str | None = None,
     path: Path = WITNESS_PATH,
     now: float | None = None,
@@ -182,6 +183,7 @@ def record_tts_synthesis(
         "pcm_bytes": len(pcm or b""),
         "pcm_duration_s": pcm_duration_s,
         "error": error,
+        "server_liveness": dict(server_liveness) if server_liveness is not None else None,
     }
     impulse_update = _impulse_update_for_state(
         _load_existing_payload(path).get("last_narration_impulse"),

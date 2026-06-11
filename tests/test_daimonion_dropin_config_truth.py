@@ -68,6 +68,7 @@ def test_env_assignments_found() -> None:
     names = {name for _, name, _ in _env_assignments()}
     # Sanity floor — the surface this pin guards actually parsed.
     assert "HAPAX_TTS_BACKEND" in names
+    assert "HAPAX_TTS_TRANSPORT" in names
     assert "HAPAX_AUDIO_INPUT_TARGET" in names
 
 
@@ -109,3 +110,12 @@ def test_configured_tts_backend_is_valid_and_honored() -> None:
     assert value in VALID_TTS_BACKENDS
     with patch.dict(os.environ, {TTS_BACKEND_ENV: value}):
         assert resolve_backend_from_env() == value
+
+
+def test_server_transport_requires_local_tts_engine() -> None:
+    unit_text = UNIT.read_text(encoding="utf-8")
+    requires_line = next(line for line in unit_text.splitlines() if line.startswith("Requires="))
+    wants_line = next(line for line in unit_text.splitlines() if line.startswith("Wants="))
+
+    assert "hapax-tts-local.service" in requires_line
+    assert "hapax-tts-local.service" not in wants_line
