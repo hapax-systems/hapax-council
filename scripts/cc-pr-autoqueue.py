@@ -549,21 +549,37 @@ def fetch_merge_queue_pr_numbers(
     return queued
 
 
-def _frontmatter(path: Path) -> dict[str, Any] | None:
+def _frontmatter(path: Path) -> tuple[dict[str, Any] | None, str | None]:
     try:
         text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, f"unreadable: {exc.__class__.__name__}"
     if not text.startswith("---"):
-        return None
+        return None, "no frontmatter fence"
     end = text.find("\n---", 3)
     if end == -1:
-        return None
+        return None, "unterminated frontmatter fence"
+    raw = text[3:end].strip()
+    if "\x1b[" in raw:
+        # ANSI escapes silently break YAML and made a task invisible on
+        # 2026-06-10 (admission reported missing_cc_task_link — a lie).
+        return None, "ANSI escape sequences in frontmatter"
     try:
-        parsed = yaml.safe_load(text[3:end].strip()) or {}
-    except yaml.YAMLError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
+        parsed = yaml.safe_load(raw) or {}
+    except yaml.YAMLError as exc:
+        return None, f"YAML error: {str(exc).splitlines()[0][:90]}"
+    if not isinstance(parsed, dict):
+        return None, "frontmatter is not a mapping"
+    return parsed, None
+
+
+TASK_NOTE_PARSE_FAILURES: list[tuple[str, str]] = []
+"""(filename, reason) for every task note the loader could not parse this run.
+
+SDLC legibility contract (operator directive 2026-06-10): a confusion in the
+SDLC is a FAILURE of the SDLC — reason codes must name the true failure.
+A PR whose task note is unparseable must NOT read as merely "unlinked".
+"""
 
 
 def load_task_notes(vault_root: Path = DEFAULT_VAULT_ROOT) -> list[TaskNote]:
@@ -573,7 +589,11 @@ def load_task_notes(vault_root: Path = DEFAULT_VAULT_ROOT) -> list[TaskNote]:
         if not root.is_dir():
             continue
         for path in sorted(root.glob("*.md")):
-            fm = _frontmatter(path)
+            fm, parse_error = _frontmatter(path)
+            if parse_error is not None:
+                TASK_NOTE_PARSE_FAILURES.append((path.name, parse_error))
+                LOG.warning("task note unparseable: %s — %s", path.name, parse_error)
+                continue
             if not fm or fm.get("type") != "cc-task":
                 continue
             task_id = _scalar(fm.get("task_id"))
@@ -825,7 +845,13 @@ def classify_pr(
     matched_tasks = tuple(matches)
     task: TaskNote | None = matches[0] if len(matches) == 1 else None
     if not matches:
-        reasons.append("missing_cc_task_link")
+        if TASK_NOTE_PARSE_FAILURES:
+            broken = ",".join(name for name, _ in TASK_NOTE_PARSE_FAILURES[:4])
+            reasons.append(
+                f"missing_cc_task_link (NOTE: {len(TASK_NOTE_PARSE_FAILURES)} unparseable task note(s): {broken} — fix or run scripts/cc-task-lint)"
+            )
+        else:
+            reasons.append("missing_cc_task_link")
     else:
         for matched_task in matches:
             blockers = _task_blockers(
