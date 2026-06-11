@@ -1,0 +1,24 @@
+[Unit]
+Description=Hapax Faderfox MX12 -> PipeWire manual-trim bridge
+Documentation=https://github.com/ryanklee/hapax-council/blob/main/config/equipment/faderfox-mx12-controls.yaml
+After=hapax-secrets.service pipewire.service wireplumber.service
+Wants=hapax-secrets.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+EnvironmentFile=-%h/.cache/hapax/secrets.env
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.faderfox_bridge
+Restart=always
+RestartSec=3s
+MemoryHigh=256M
+MemoryMax=512M
+
+# Pure software MIDI/PipeWire control; no GPU.
+Environment=CUDA_VISIBLE_DEVICES=
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

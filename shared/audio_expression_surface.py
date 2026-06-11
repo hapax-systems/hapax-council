@@ -175,6 +175,9 @@ class FxDeviceWitness(BaseModel):
     evil_pet_sd_pack: bool = False
     evil_pet_firmware_verified: bool = False
     s4_midi: bool = False
+    s4_analog_insert_route: bool = False
+    s4_wet_return_signal: bool = False
+    # Legacy pre-mk5 fields retained so old witness JSON remains parseable.
     s4_audio: bool = False
     l12_route: bool = False
     evidence_refs: tuple[str, ...] = Field(default_factory=tuple)
@@ -192,7 +195,7 @@ class FxDeviceWitness(BaseModel):
 
     @property
     def s4_ready(self) -> bool:
-        return self.s4_midi and self.s4_audio and self.l12_route
+        return self.s4_midi and self.s4_analog_insert_route and self.s4_wet_return_signal
 
 
 def load_fx_device_witness(
@@ -494,7 +497,7 @@ def _device_freshness_reason(
     if not device_witness.is_fresh(now=now):
         return "fx_device_witness_stale"
     if device_witness.evil_pet_sd_pack is False and device_witness.s4_ready is False:
-        return "evil_pet_sd_pack_missing"
+        return "wet_fx_device_witness_missing"
     return None
 
 

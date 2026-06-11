@@ -1,0 +1,347 @@
+#!/usr/bin/env python3
+"""Classify Faderfox MX12 traffic against the configured manual-trim map.
+
+This is a witness tool, not a bridge: it never applies PipeWire volume changes.
+It reads recent bridge journal lines and/or a bounded live MIDI window, then
+reports whether physical traffic was mapped or whether the MX12 profile appears
+to have drifted away from the repo control map.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+import time
+from collections import defaultdict
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from agents import faderfox_bridge
+
+DEFAULT_SERVICE = "hapax-faderfox-bridge.service"
+
+UNMAPPED_RE = re.compile(r"unmapped CC ch=(?P<channel>\d+) cc=(?P<cc>\d+) val=(?P<value>\d+)")
+FADER_RE = re.compile(
+    r"fader (?P<label>.+?) -> (?P<target>\S+) vol=(?P<volume>[+-]?(?:\d+(?:\.\d*)?|\.\d+))"
+)
+BUTTON_RE = re.compile(r"button (?P<label>.+?) -> (?P<target>\S+) mute=(?P<mute>\w+)")
+MIDI_CONTROL_RE = re.compile(
+    r"control_change\s+channel=(?P<channel>\d+)\s+control=(?P<cc>\d+)\s+value=(?P<value>\d+)"
+)
+
+
+def _load_maps(config: Path) -> tuple[dict[tuple[int, int], dict], dict[tuple[int, int], dict]]:
+    return faderfox_bridge.load_map(config)
+
+
+def _configured_kind(
+    key: tuple[int, int],
+    faders: dict[tuple[int, int], dict],
+    buttons: dict[tuple[int, int], dict],
+) -> str | None:
+    if key in faders:
+        return "fader"
+    if key in buttons:
+        return "button"
+    return None
+
+
+def _configured_label(
+    key: tuple[int, int],
+    faders: dict[tuple[int, int], dict],
+    buttons: dict[tuple[int, int], dict],
+) -> str | None:
+    entry = faders.get(key) or buttons.get(key)
+    if not entry:
+        return None
+    label = entry.get("label")
+    return str(label) if label is not None else None
+
+
+def read_journal(service: str, since: str) -> tuple[list[str], str | None]:
+    proc = subprocess.run(
+        [
+            "journalctl",
+            "--user",
+            "-u",
+            service,
+            "--since",
+            since,
+            "--no-pager",
+            "--output",
+            "cat",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout).strip()
+        return [], err or f"journalctl exited {proc.returncode}"
+    return proc.stdout.splitlines(), None
+
+
+def read_journal_file(path: Path) -> list[str]:
+    return path.read_text(encoding="utf-8").splitlines()
+
+
+def read_live_midi(seconds: float) -> tuple[list[dict[str, int]], str | None]:
+    if seconds <= 0:
+        return [], None
+    if not faderfox_bridge._MIDO_AVAILABLE:
+        return [], "mido unavailable"
+    port = faderfox_bridge.find_input()
+    if port is None:
+        return [], "Faderfox MX12 input not found"
+    deadline = time.monotonic() + seconds
+    events: list[dict[str, int]] = []
+    try:
+        while time.monotonic() < deadline:
+            for msg in port.iter_pending():
+                if msg.type == "control_change":
+                    events.append(
+                        {
+                            "channel": int(msg.channel) + 1,
+                            "cc": int(msg.control),
+                            "value": int(msg.value),
+                        }
+                    )
+            time.sleep(0.02)
+    finally:
+        try:
+            port.close()
+        except Exception:
+            pass
+    return events, None
+
+
+def classify_lines(
+    lines: list[str],
+    *,
+    faders: dict[tuple[int, int], dict],
+    buttons: dict[tuple[int, int], dict],
+) -> dict[str, Any]:
+    mapped_faders: list[dict[str, Any]] = []
+    mapped_buttons: list[dict[str, Any]] = []
+    unmapped: list[dict[str, Any]] = []
+    raw_midi: list[dict[str, Any]] = []
+
+    for line in lines:
+        if match := FADER_RE.search(line):
+            mapped_faders.append(
+                {
+                    "label": match.group("label"),
+                    "target": match.group("target"),
+                    "volume": float(match.group("volume")),
+                }
+            )
+            continue
+        if match := BUTTON_RE.search(line):
+            mapped_buttons.append(
+                {
+                    "label": match.group("label"),
+                    "target": match.group("target"),
+                    "mute": match.group("mute").lower() == "true",
+                }
+            )
+            continue
+        if match := UNMAPPED_RE.search(line):
+            channel = int(match.group("channel"))
+            cc = int(match.group("cc"))
+            value = int(match.group("value"))
+            key = (channel - 1, cc)
+            unmapped.append(
+                {
+                    "channel": channel,
+                    "cc": cc,
+                    "value": value,
+                    "configured_kind": _configured_kind(key, faders, buttons),
+                    "configured_label": _configured_label(key, faders, buttons),
+                }
+            )
+            continue
+        if match := MIDI_CONTROL_RE.search(line):
+            channel = int(match.group("channel")) + 1
+            cc = int(match.group("cc"))
+            value = int(match.group("value"))
+            key = (channel - 1, cc)
+            kind = _configured_kind(key, faders, buttons)
+            entry = {
+                "channel": channel,
+                "cc": cc,
+                "value": value,
+                "configured_kind": kind,
+                "configured_label": _configured_label(key, faders, buttons),
+            }
+            raw_midi.append(entry)
+            if kind == "fader":
+                mapped_faders.append(
+                    {
+                        "label": entry["configured_label"],
+                        "target": faders[key].get("target"),
+                        "volume": value / 127.0 * float(faders[key].get("scale", 1.0)),
+                        "source": "raw_midi",
+                    }
+                )
+            elif kind == "button":
+                mapped_buttons.append(
+                    {
+                        "label": entry["configured_label"],
+                        "target": buttons[key].get("target"),
+                        "mute": value >= 64,
+                        "source": "raw_midi",
+                    }
+                )
+
+    return {
+        "mapped_fader_events": mapped_faders,
+        "mapped_button_events": mapped_buttons,
+        "unmapped_events": unmapped,
+        "raw_midi_events": raw_midi,
+    }
+
+
+def classify_live_events(
+    events: list[dict[str, int]],
+    *,
+    faders: dict[tuple[int, int], dict],
+    buttons: dict[tuple[int, int], dict],
+) -> dict[str, Any]:
+    lines = [
+        f"MIDI control_change channel={event['channel'] - 1} control={event['cc']} value={event['value']}"
+        for event in events
+    ]
+    return classify_lines(lines, faders=faders, buttons=buttons)
+
+
+def summarize_unmapped(
+    events: list[dict[str, Any]],
+    *,
+    min_sweep_events: int,
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[int, int], list[int]] = defaultdict(list)
+    configured: dict[tuple[int, int], tuple[str | None, str | None]] = {}
+    for event in events:
+        key = (int(event["channel"]), int(event["cc"]))
+        grouped[key].append(int(event["value"]))
+        configured[key] = (event.get("configured_kind"), event.get("configured_label"))
+
+    summary: list[dict[str, Any]] = []
+    for (channel, cc), values in sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0])):
+        kind, label = configured[(channel, cc)]
+        distinct_values = len(set(values))
+        summary.append(
+            {
+                "channel": channel,
+                "cc": cc,
+                "count": len(values),
+                "min": min(values),
+                "max": max(values),
+                "distinct_values": distinct_values,
+                "sweep_like": len(values) >= min_sweep_events
+                and distinct_values >= min_sweep_events,
+                "configured_kind": kind,
+                "configured_label": label,
+            }
+        )
+    return summary
+
+
+def build_report(
+    *,
+    config: Path,
+    lines: list[str],
+    live_events: list[dict[str, int]],
+    source: str,
+    journal_error: str | None,
+    live_error: str | None,
+    min_sweep_events: int,
+) -> dict[str, Any]:
+    faders, buttons = _load_maps(config)
+    parsed = classify_lines(lines, faders=faders, buttons=buttons)
+    live = classify_live_events(live_events, faders=faders, buttons=buttons)
+
+    mapped_fader_events = parsed["mapped_fader_events"] + live["mapped_fader_events"]
+    mapped_button_events = parsed["mapped_button_events"] + live["mapped_button_events"]
+    unmapped_events = parsed["unmapped_events"] + live["unmapped_events"]
+    raw_midi_events = parsed["raw_midi_events"] + live["raw_midi_events"]
+    unmapped_summary = summarize_unmapped(unmapped_events, min_sweep_events=min_sweep_events)
+
+    unmapped_sweeps = [item for item in unmapped_summary if item["sweep_like"]]
+    profile_drift = any(item["configured_kind"] is None for item in unmapped_sweeps)
+
+    ok = journal_error is None and live_error is None
+    return {
+        "ok": ok,
+        "source": source,
+        "config": str(config),
+        "configured_faders": len(faders),
+        "configured_buttons": len(buttons),
+        "mapped_fader_events": len(mapped_fader_events),
+        "mapped_button_events": len(mapped_button_events),
+        "unmapped_events": len(unmapped_events),
+        "raw_midi_events": len(raw_midi_events),
+        "mapped_fader_witness": bool(mapped_fader_events),
+        "profile_drift": profile_drift,
+        "unmapped_sweeps": unmapped_sweeps,
+        "top_unmapped_controls": unmapped_summary[:10],
+        "errors": {
+            "journal": journal_error,
+            "live": live_error,
+        },
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=faderfox_bridge.DEFAULT_CONFIG)
+    parser.add_argument("--journal-file", type=Path)
+    parser.add_argument("--journal-since", default="2 hours ago")
+    parser.add_argument("--service", default=DEFAULT_SERVICE)
+    parser.add_argument("--live-seconds", type=float, default=0.0)
+    parser.add_argument("--min-sweep-events", type=int, default=3)
+    parser.add_argument(
+        "--require-mapped-fader",
+        action="store_true",
+        help="exit nonzero when no mapped fader movement is present",
+    )
+    args = parser.parse_args(argv)
+
+    lines: list[str] = []
+    journal_error = None
+    source = "journal"
+    if args.journal_file:
+        lines = read_journal_file(args.journal_file)
+        source = "journal-file"
+    else:
+        lines, journal_error = read_journal(args.service, args.journal_since)
+
+    live_events, live_error = read_live_midi(args.live_seconds)
+    if args.live_seconds > 0:
+        source += "+live"
+
+    report = build_report(
+        config=args.config,
+        lines=lines,
+        live_events=live_events,
+        source=source,
+        journal_error=journal_error,
+        live_error=live_error,
+        min_sweep_events=args.min_sweep_events,
+    )
+    print(json.dumps(report, indent=2, sort_keys=True))
+    if args.require_mapped_fader and not report["mapped_fader_witness"]:
+        return 2
+    return 0 if report["ok"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

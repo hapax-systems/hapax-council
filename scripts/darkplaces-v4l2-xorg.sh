@@ -221,6 +221,7 @@ fi
 "$REPO_DIR/scripts/install-darkplaces-screwm-assets.sh"
 
 DISPLAY="$DISPLAY_NUM" SDL_VIDEODRIVER=x11 "$DARKPLACES_BIN" \
+    -nosound \
     -game screwm \
     -window \
     -width "$WIDTH" \

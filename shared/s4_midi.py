@@ -19,9 +19,11 @@ hardware. All public functions tolerate `None` ports — they log and no-op
 rather than raising.
 
 Routing path: this module emits to the S-4's MIDI input which the router
-reaches via the Erica Dispatch MIDI hub (Erica Dispatch OUT 2 → S-4 MIDI
-IN, per spec §6.1). When the Erica Dispatch is the only MIDI port present,
-`find_s4_midi_output()` falls back to "Dispatch MIDI 2".
+reaches via the Erica Dispatch MIDI hub. The live Dispatch presents a
+single ALSA USB port (`MIDI Dispatch MIDI 1`) and routes/filter-selects
+the downstream DIN outputs in its hardware configuration. When the direct
+S-4 USB port is absent and the Dispatch is the only S-4 lane present,
+`find_s4_midi_output()` falls back to that Dispatch USB port.
 """
 
 from __future__ import annotations
@@ -64,9 +66,10 @@ DEFAULT_CC_DELAY_MS: Final[float] = 20.0
 
 # Port-name match patterns. mido returns Linux ALSA names like
 # "Torso Electronics S-4:S-4 MIDI 1 28:0". Match on the brand / device
-# name first, then fall back to the Erica Dispatch fan-out.
+# name first, then fall back to the Erica Dispatch fan-out. The Dispatch
+# has eight physical output ports but one USB MIDI interface on Linux.
 _S4_PORT_PATTERNS: Final[tuple[str, ...]] = ("Torso", "S-4", "S_4", "Elektron")
-_DISPATCH_PORT_PATTERNS: Final[tuple[str, ...]] = ("MIDI Dispatch MIDI 2", "Dispatch MIDI 2")
+_DISPATCH_PORT_PATTERNS: Final[tuple[str, ...]] = ("MIDI Dispatch MIDI 1",)
 
 
 def list_midi_outputs() -> list[str]:
@@ -92,9 +95,9 @@ def find_s4_midi_output() -> BaseOutput | None:
       1. Direct S-4 USB port (matches "Torso", "S-4", "S_4", or
          "Elektron" — covers Torso Electronics naming + the few firmware
          revisions that present the device differently).
-      2. Erica Dispatch OUT 2 — fall-back when S-4 is downstream of the
-         hub rather than direct-USB. Spec §6.1 designates Dispatch
-         OUT 2 as the canonical S-4 lane.
+      2. Erica Dispatch USB port — fall-back when S-4 is downstream of
+         the hub rather than direct-USB. The Dispatch's hardware config
+         owns the selected physical DIN output and any channel filters.
 
     Returns ``None`` when no candidate matches OR when mido is missing.
     The router's safety-clamp layer translates ``None`` into a

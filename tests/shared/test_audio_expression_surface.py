@@ -54,6 +54,8 @@ def _fresh_witness(**overrides: object) -> FxDeviceWitness:
         "evil_pet_sd_pack": True,
         "evil_pet_firmware_verified": True,
         "s4_midi": True,
+        "s4_analog_insert_route": True,
+        "s4_wet_return_signal": True,
         "s4_audio": True,
         "l12_route": True,
         "evidence_refs": ("device:witness",),
@@ -76,7 +78,7 @@ def _write_private_status(path: Path) -> None:
         "fallback_policy": "no_default_fallback",
         "operator_visible_reason": "mk5 Phones private monitor target is present.",
         "reason_code": "mk5_private_monitor_bound",
-        "route_id": "route:private.mk5_monitor",
+        "route_id": "route:private.mk5_phones_monitor",
         "sanitized": True,
         "state": "ready",
         "surface_id": "audio.mk5_private_monitor",
@@ -93,6 +95,8 @@ def test_public_voice_with_missing_fx_witness_is_held_not_dry() -> None:
             evil_pet_sd_pack=False,
             evil_pet_firmware_verified=False,
             s4_midi=False,
+            s4_analog_insert_route=False,
+            s4_wet_return_signal=False,
             s4_audio=False,
             l12_route=False,
             evidence_refs=(),
@@ -105,7 +109,7 @@ def test_public_voice_with_missing_fx_witness_is_held_not_dry() -> None:
     assert plan.no_dry_invariant is True
     assert plan.fallback is FxFallback.NO_PUBLIC_SPEECH
     assert plan.playback_target is None
-    assert "evil_pet_sd_pack_missing" in plan.operator_visible_reason
+    assert "wet_fx_device_witness_missing" in plan.operator_visible_reason
 
 
 def test_public_voice_with_stale_device_witness_is_held() -> None:
@@ -134,6 +138,8 @@ def test_private_diagnostic_voice_may_use_mk5_private_monitor_without_fx(
             evil_pet_sd_pack=False,
             evil_pet_firmware_verified=False,
             s4_midi=False,
+            s4_analog_insert_route=False,
+            s4_wet_return_signal=False,
             s4_audio=False,
             l12_route=False,
         ),
@@ -217,6 +223,28 @@ def test_unsafe_cc_values_are_clamped_before_plan_execution() -> None:
     assert cc_values[71] <= round(127 * 0.2)
     assert cc_values[39] <= round(127 * 0.25)
     assert cc_values[40] <= round(127 * 0.7)
+
+
+def test_public_plan_holds_when_s4_route_exists_without_wet_return_signal() -> None:
+    plan = resolve_fx_plan(
+        _intent(register=AudioExpressionRegister.RADIO),
+        device_witness=_fresh_witness(
+            evil_pet_midi=False,
+            evil_pet_sd_pack=False,
+            evil_pet_firmware_verified=False,
+            s4_midi=True,
+            s4_analog_insert_route=True,
+            s4_wet_return_signal=False,
+            s4_audio=False,
+            l12_route=False,
+        ),
+        now=NOW,
+    )
+
+    assert plan.state is FxPlanState.HELD
+    assert plan.selected_route is FxSelectedRoute.HELD
+    assert plan.playback_target is None
+    assert "wet_fx_device_witness_missing" in plan.operator_visible_reason
 
 
 def test_outcome_witness_blocks_posterior_without_grounded_audio_probe() -> None:

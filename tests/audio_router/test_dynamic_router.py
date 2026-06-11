@@ -290,7 +290,11 @@ def test_dynamic_router_tick_returns_routing_intent(isolated_router_files: Path)
 
 def test_dynamic_router_tick_no_raise_when_hardware_absent(isolated_router_files: Path) -> None:
     """All probes return falsy; policy clamps to single-engine, no MIDI emitted."""
-    router = DynamicRouter(evilpet_midi=None, s4_midi_port=None)
+    router = DynamicRouter(
+        evilpet_midi=None,
+        s4_midi_port=None,
+        s4_reachable_fn=MagicMock(return_value=False),
+    )
     # Should run cleanly even though everything's absent
     intent = router.tick(now=0.0)
     assert "evilpet_midi_unreachable" in intent.clamp_reasons

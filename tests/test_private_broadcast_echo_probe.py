@@ -130,8 +130,8 @@ class TestArgParser:
         instead since they are the single source of truth the parser
         reads from.
         """
-        assert probe_module.DEFAULT_PRIVATE == "hapax-private-monitor.monitor"
-        assert probe_module.DEFAULT_BROADCAST == "hapax-obs-broadcast-remap.monitor"
+        assert probe_module.DEFAULT_PRIVATE == "hapax-private.monitor"
+        assert probe_module.DEFAULT_BROADCAST == "hapax-obs-broadcast-remap"
         assert probe_module.DEFAULT_DURATION_S == 1.0
         assert probe_module.DEFAULT_THRESHOLD == 0.05
         assert probe_module.METRIC_PREFIX == "hapax_private_broadcast_echo"

@@ -49,23 +49,21 @@ def test_find_s4_midi_output_prefers_direct_s4_port() -> None:
         mido_mock.open_output.assert_called_once_with("Torso S-4 MIDI 1")
 
 
-def test_find_s4_midi_output_falls_back_to_dispatch_lane_2() -> None:
-    """When direct S-4 absent, Erica Dispatch OUT 2 is the canonical lane."""
+def test_find_s4_midi_output_falls_back_to_dispatch_usb_port() -> None:
+    """When direct S-4 absent, use the Erica Dispatch USB MIDI interface."""
     with patch("shared.s4_midi._MIDO_AVAILABLE", True), patch("shared.s4_midi.mido") as mido_mock:
         mido_mock.get_output_names.return_value = [
-            "MIDI Dispatch MIDI 1",  # OUT 1 — Evil Pet
-            "MIDI Dispatch MIDI 2",  # OUT 2 — S-4 fallback
+            "MIDI Dispatch MIDI 1",
         ]
         port = MagicMock(name="dispatch_port")
         mido_mock.open_output.return_value = port
         assert find_s4_midi_output() is port
-        mido_mock.open_output.assert_called_once_with("MIDI Dispatch MIDI 2")
+        mido_mock.open_output.assert_called_once_with("MIDI Dispatch MIDI 1")
 
 
-def test_find_s4_midi_output_does_not_use_dispatch_midi_1() -> None:
-    """Spec §6.1 — Dispatch MIDI 1 is Evil Pet; only MIDI 2 routes to S-4."""
+def test_find_s4_midi_output_ignores_unrelated_dispatch_names() -> None:
     with patch("shared.s4_midi._MIDO_AVAILABLE", True), patch("shared.s4_midi.mido") as mido_mock:
-        mido_mock.get_output_names.return_value = ["MIDI Dispatch MIDI 1"]
+        mido_mock.get_output_names.return_value = ["MIDI Dispatch Control"]
         assert find_s4_midi_output() is None
 
 

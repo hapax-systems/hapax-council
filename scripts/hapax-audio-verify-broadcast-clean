@@ -41,7 +41,7 @@
 #   - hapax-livestream-tap.monitor       (optional: silent if no music)
 #   - hapax-broadcast-master             (Audio/Source — must be clean)
 #   - hapax-broadcast-normalized         (Audio/Source — must be clean)
-#   - hapax-obs-broadcast-remap.monitor  (must be clean)
+#   - hapax-obs-broadcast-remap          (Audio/Source — must be clean)
 #
 # The two broadcast Audio/Source endpoints are deliberately unsuffixed
 # (no `.monitor`) per the 2026-05-03 monitor-port semantics research:
@@ -62,6 +62,7 @@ SILENT_FLOOR_DBFS=-75.0
 CLIP_CEILING_DBFS=-1.0
 NOISE_BAND_LOW=2.5
 NOISE_BAND_HIGH=5.0
+NOISE_ZCR_MIN=0.25
 
 # Broadcast stages: name : expected ("audio" | "silent" | "either")
 # "either" = pass regardless of energy presence; we still classify but
@@ -70,7 +71,7 @@ STAGES=(
   "hapax-livestream-tap.monitor:either"
   "hapax-broadcast-master:audio"
   "hapax-broadcast-normalized:audio"
-  "hapax-obs-broadcast-remap.monitor:audio"
+  "hapax-obs-broadcast-remap:audio"
 )
 
 while [ $# -gt 0 ]; do
@@ -193,10 +194,9 @@ probe_one_stage() {
     return 4
   fi
 
-  # Compute RMS dBFS + crest factor. Crest = peak/rms (a noise/format-
-  # conversion artefact has a tight crest near 3.5–4.5; real broadcast
-  # is 5.5+; compressed/limited content is 8+; clipping is variable
-  # but usually paired with peak == 1.0).
+  # Compute RMS dBFS, crest factor, and zero-crossing rate. The noise
+  # predicate is crest-band PLUS high ZCR; crest alone false-fails dense
+  # programme audio after the master limiter.
   local stats
   stats=$(python3 - "$tmpwav" <<'PY' 2>/dev/null
 import array
@@ -216,7 +216,7 @@ if not samples:
     # Use -120 as the floor for "no samples" (canonical -inf placeholder
     # for JSON-clean numeric output; downstream sees < SILENT_FLOOR_DBFS
     # and classifies as silent).
-    print("-120.00\t0.000\t-120.00")
+    print("-120.00\t0.000\t-120.00\t0.000")
     sys.exit(0)
 
 n = len(samples)
@@ -226,13 +226,23 @@ peak = max(abs(s) for s in samples)
 peak_dbfs = 20.0 * math.log10(peak / 32767.0) if peak > 0 else -120.0
 rms_dbfs = 20.0 * math.log10(rms / 32767.0) if rms > 0 else -120.0
 crest = (peak / rms) if rms > 0 else 0.0
-print(f"{rms_dbfs:.2f}\t{crest:.3f}\t{peak_dbfs:.2f}")
+crossings = 0
+last_sign = 0
+for sample in samples:
+    if sample == 0:
+        continue
+    sign = 1 if sample > 0 else -1
+    if last_sign and sign != last_sign:
+        crossings += 1
+    last_sign = sign
+zcr = crossings / max(1, n - 1)
+print(f"{rms_dbfs:.2f}\t{crest:.3f}\t{peak_dbfs:.2f}\t{zcr:.3f}")
 PY
 )
   rm -f "$tmpwav"
 
-  local rms_dbfs crest peak_dbfs
-  IFS=$'\t' read -r rms_dbfs crest peak_dbfs <<< "$stats"
+  local rms_dbfs crest peak_dbfs zcr
+  IFS=$'\t' read -r rms_dbfs crest peak_dbfs zcr <<< "$stats"
 
   if [ "$rms_dbfs" = "err" ] || [ -z "$rms_dbfs" ]; then
     printf '{"monitor":"%s","expected":"%s","status":"measure-failed","measured_dbfs":null,"crest":null}' \
@@ -248,10 +258,11 @@ PY
               && echo true || echo false)
   is_clipping=$(python3 -c "import sys; sys.exit(0 if float('${rms_dbfs}') > ${CLIP_CEILING_DBFS} else 1)" \
                 && echo true || echo false)
-  is_noise=$(python3 -c "
+is_noise=$(python3 -c "
 import sys
 crest = float('${crest}')
-sys.exit(0 if ${NOISE_BAND_LOW} <= crest <= ${NOISE_BAND_HIGH} else 1)
+zcr = float('${zcr}')
+sys.exit(0 if ${NOISE_BAND_LOW} <= crest <= ${NOISE_BAND_HIGH} and zcr >= ${NOISE_ZCR_MIN} else 1)
 " && echo true || echo false)
 
   if [ "$is_silent" = "true" ]; then
@@ -268,8 +279,8 @@ sys.exit(0 if ${NOISE_BAND_LOW} <= crest <= ${NOISE_BAND_HIGH} else 1)
     status="clean"; rc=0
   fi
 
-  printf '{"monitor":"%s","expected":"%s","status":"%s","measured_dbfs":%s,"crest":%s,"peak_dbfs":%s}' \
-    "$monitor" "$expected" "$status" "$rms_dbfs" "$crest" "$peak_dbfs"
+  printf '{"monitor":"%s","expected":"%s","status":"%s","measured_dbfs":%s,"crest":%s,"peak_dbfs":%s,"zcr":%s}' \
+    "$monitor" "$expected" "$status" "$rms_dbfs" "$crest" "$peak_dbfs" "$zcr"
   return $rc
 }
 

@@ -385,7 +385,7 @@ exit $rc
             '{"monitor":"hapax-livestream-tap.monitor","expected":"either","status":"silent-ok"},'
             '{"monitor":"hapax-broadcast-master","expected":"audio","status":"silent"},'
             '{"monitor":"hapax-broadcast-normalized","expected":"audio","status":"silent"},'
-            '{"monitor":"hapax-obs-broadcast-remap.monitor","expected":"audio","status":"missing"}'
+            '{"monitor":"hapax-obs-broadcast-remap","expected":"audio","status":"missing"}'
             "]}\n"
             "JSON\n"
             "exit 1\n",
@@ -653,6 +653,100 @@ class TestSnapshotHelper:
 
 
 class TestVerifyProbe:
+    @staticmethod
+    def _verify_env_with_wave(tmp_path: Path, kind: str) -> dict[str, str]:
+        source_lines = "\n".join(
+            f"{idx}\t{name}\tPipeWire\tfloat32le 2ch 48000Hz\tRUNNING"
+            for idx, name in enumerate(
+                (
+                    "hapax-livestream-tap.monitor",
+                    "hapax-broadcast-master",
+                    "hapax-broadcast-normalized",
+                    "hapax-obs-broadcast-remap",
+                ),
+                start=1,
+            )
+        )
+        pactl_body = (
+            "if [[ \"${1:-}\" == 'list' && \"${2:-}\" == 'sources' && \"${3:-}\" == 'short' ]]; then\n"
+            "cat <<'EOF'\n"
+            f"{source_lines}\n"
+            "EOF\n"
+            "exit 0\n"
+            "fi\n"
+            "exit 1\n"
+        )
+        parecord_body = (
+            'out="${@: -1}"\n'
+            f"kind={kind!r}\n"
+            'python3 - "$out" "$kind" <<\'PY\'\n'
+            "import math\n"
+            "import random\n"
+            "import struct\n"
+            "import sys\n"
+            "import wave\n"
+            "\n"
+            "out, kind = sys.argv[1], sys.argv[2]\n"
+            "rate = 48000\n"
+            "rng = random.Random(7)\n"
+            "samples = []\n"
+            "for i in range(rate):\n"
+            "    if kind == 'white_noise':\n"
+            "        sample = max(-24000, min(24000, int(rng.gauss(0, 6000))))\n"
+            "    else:\n"
+            "        sample = int(7000 * math.sin(2 * math.pi * 220 * i / rate))\n"
+            "        if i % 5000 == 0:\n"
+            "            sample = 22000\n"
+            "    samples.append(sample)\n"
+            "with wave.open(out, 'wb') as wf:\n"
+            "    wf.setnchannels(1)\n"
+            "    wf.setsampwidth(2)\n"
+            "    wf.setframerate(rate)\n"
+            "    wf.writeframes(b''.join(struct.pack('<h', s) for s in samples))\n"
+            "PY\n"
+        )
+        return {
+            **os.environ,
+            "PATH": _fake_path(
+                tmp_path,
+                fakes={
+                    "pactl": pactl_body,
+                    "parecord": parecord_body,
+                },
+            ),
+        }
+
+    def test_low_zcr_programme_audio_in_crest_band_is_clean(self, tmp_path: Path) -> None:
+        result = subprocess.run(
+            [str(VERIFY), "--service", "x", "--duration", "1", "--format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=self._verify_env_with_wave(tmp_path, "programme"),
+        )
+
+        data = json.loads(result.stdout)
+        assert result.returncode == 0, result.stdout + "\n--\n" + result.stderr
+        assert data["overall_status"] == "clean"
+        assert all(stage["status"] == "clean" for stage in data["stages"])
+        assert any(2.5 <= stage["crest"] <= 5.0 for stage in data["stages"])
+        assert all(stage["zcr"] < 0.25 for stage in data["stages"])
+
+    def test_high_zcr_white_noise_in_crest_band_exits_2(self, tmp_path: Path) -> None:
+        result = subprocess.run(
+            [str(VERIFY), "--service", "x", "--duration", "1", "--format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=self._verify_env_with_wave(tmp_path, "white_noise"),
+        )
+
+        data = json.loads(result.stdout)
+        assert result.returncode == 2, result.stdout + "\n--\n" + result.stderr
+        assert data["overall_status"] == "noise-or-clipping"
+        assert all(stage["status"] == "noise" for stage in data["stages"])
+        assert all(stage["zcr"] >= 0.25 for stage in data["stages"])
+
     def test_missing_parecord_exits_4_and_emits_json(self, tmp_path: Path) -> None:
         # Deliberately empty PATH so parecord is not found.
         env = {
