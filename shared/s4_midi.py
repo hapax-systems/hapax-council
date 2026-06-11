@@ -211,6 +211,40 @@ def emit_cc(
         return False
 
 
+def emit_note_on(
+    output: BaseOutput | None,
+    note: int,
+    velocity: int = 127,
+    *,
+    channel: int = S4_MIDI_CHANNEL,
+    delay_ms: float = DEFAULT_CC_DELAY_MS,
+) -> bool:
+    """Send one MIDI note-on message to the S-4.
+
+    The S-4 uses note toggles on channel 16 for monitor/mute controls. This
+    helper is intentionally generic and validated like ``emit_cc`` so callers
+    can use it for write-only note controls without hand-rolling mido calls.
+    """
+    if output is None or not _MIDO_AVAILABLE:
+        log.debug("S-4 note_on skipped (output absent)")
+        return False
+    if not 0 <= note <= 127 or not 0 <= velocity <= 127:
+        log.warning("S-4 note_on out-of-range: note=%d velocity=%d", note, velocity)
+        return False
+    if not 0 <= channel <= 15:
+        log.warning("S-4 note_on channel out-of-range: %d", channel)
+        return False
+    try:
+        msg = Message("note_on", note=note, velocity=velocity, channel=channel)
+        output.send(msg)
+        if delay_ms > 0:
+            time.sleep(delay_ms / 1000.0)
+        return True
+    except Exception:
+        log.warning("S-4 note_on emit failed (note=%d)", note, exc_info=True)
+        return False
+
+
 def emit_cc_burst(
     output: BaseOutput | None,
     ccs: dict[int, int],
