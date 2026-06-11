@@ -521,45 +521,6 @@ class ConversationPipeline:
                 if self._turn_budget is budget:
                     self._turn_budget = None
 
-    async def generate_spontaneous_speech(
-        self,
-        impingement: object,
-        *,
-        register_hint: str | None = None,
-        destination_target: str | None = None,
-        destination_role: str | None = None,
-        destination: str | None = None,
-    ) -> None:
-        """Compose then speak a spontaneous utterance (compatibility wrapper).
-
-        Callers that hold the speech lock across this call serialize the
-        LLM leg under the lock — prefer calling
-        :meth:`compose_spontaneous_speech` outside the lock and
-        :meth:`speak_spontaneous_text` inside it (the CPAL runner does).
-        """
-        budget = TurnBudget(kind="spontaneous", budget_s=SPONTANEOUS_LLM_TIMEOUT_S)
-        text = await self.compose_spontaneous_speech(
-            impingement,
-            register_hint=register_hint,
-            destination_target=destination_target,
-            destination_role=destination_role,
-            destination=destination,
-            budget=budget,
-        )
-        if not text:
-            return
-        await self.speak_spontaneous_text(
-            text,
-            destination_target=destination_target,
-            destination_role=destination_role,
-            destination=destination
-            or _destination_value_for_route(
-                destination_target=destination_target,
-                destination_role=destination_role,
-            ),
-            budget=budget,
-        )
-
     async def start(self) -> None:
         """Start the conversation pipeline."""
         import random
