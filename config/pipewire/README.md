@@ -27,9 +27,22 @@ Deployable hand-authored PipeWire files in this directory must be named
 `scripts/check-audio-conf-names.py` against top-level
 `config/pipewire/*.conf` files, so load-order knobs and special-purpose
 rules use descriptive Hapax names such as `hapax-quantum.conf`,
-`hapax-contact-mic.conf`, and `hapax-s4-usb-sink.conf`. Generated
-compiler artifacts under `config/pipewire/generated/` are intentionally
-outside this rule; the audio-routing compiler owns those filenames.
+`hapax-contact-mic.conf`, and `hapax-s4-usb-sink.conf`.
+
+`node.name` values must also be unique across every conf that could be copied
+into `~/.config/pipewire/pipewire.conf.d/`. The pre-commit hook
+`audio-conf-unique-node-names` runs the same check. Do not deploy the generated
+directory wholesale. Run:
+
+```bash
+python3 scripts/check-audio-conf-unique-node-names.py
+```
+
+Generated artifacts under `config/pipewire/generated/pipewire/` are deployable
+only when they do not collide with a top-level canonical `hapax-*.conf`. The
+2026-06-10 dedupe archive and operator-window reconciliation runbook live at
+`config/pipewire/archive/2026-06-10-dedupe/` and
+`config/pipewire/deployed-reconciliation-2026-06-10.md`.
 
 ## Install
 
@@ -94,7 +107,10 @@ has said "pull the backing down while the video plays").
 Historical: previously named `hapax-yt-over-24c-duck.conf` (sink
 `hapax-24c-ducked`) — renamed 2026-05 with the PreSonus Studio 24c
 hardware retirement. The bidirectional ducker concept itself is still
-load-bearing; only the dead hardware reference came out of the names.
+load-bearing; only the dead hardware reference came out of the names. The older
+sidechain variant that reused the same `hapax-backing-ducked` node names was
+archived in the 2026-06-10 dedupe set; do not co-load it with this canonical
+controller-driven conf.
 
 Install + verify:
 
@@ -157,10 +173,9 @@ ffprobe -v error -show_format -show_streams /tmp/vinyl-probe.wav
 
 `hapax-s4-loopback.conf` exposes a stereo virtual sink
 (`hapax-s4-content`) that the Elektron Torso S-4 (or any USB-direct
-content source) writes to. The loopback forwards into
-`hapax-livestream-tap` so OBS sees S-4 content alongside L6 main mix
-and vinyl, without serial processing through the Evil Pet (R3 =
-parallel path per spec §4).
+content source) can write to. The playback side is intentionally
+fail-closed (`node.autoconnect=false`, no live target by default); a
+future bounded activation task must choose and prove any downstream route.
 
 Install + verify:
 
@@ -170,9 +185,9 @@ systemctl --user restart pipewire pipewire-pulse wireplumber
 pactl list short sinks | grep hapax-s4-content
 ```
 
-Route S-4 USB output through the loopback by selecting **S-4 Content**
-as the sink target in pavucontrol or via a wireplumber rule pinning
-`alsa_input.usb-Elektron_*` → `hapax-s4-content`.
+Route S-4 USB output to `hapax-s4-content` only under explicit route authority.
+The live voice identity path is the mk5 analog insert documented in
+`hapax-voice-wet.conf`, not the archived TTS/S-4 USB-send fossils.
 
 ## S-4 USB device profile pin (dual-fx-routing Phase 1)
 
