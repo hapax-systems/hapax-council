@@ -21,11 +21,16 @@ def test_default_audio_input_source_includes_yeti():
     )
 
 
-def test_default_priority_list_starts_with_aec():
-    """AEC virtual source is the head of the priority list — daimonion
-    prefers it when present, falls through to raw Yeti otherwise."""
+def test_default_priority_list_starts_with_stt_ear_subscription():
+    """voice-p2-perception-registry: the default priority is the stt.ear
+    subscription resolved over config/perception-registry.yaml — the
+    ReSpeaker STT front-end first, AEC view and raw Yeti on the
+    fallback ladder."""
     cfg = DaimonionConfig()
-    assert cfg.audio_input_source[0] == "echo_cancel_capture"
+    assert cfg.audio_input_source[0].startswith(
+        "alsa_input.usb-Seeed_Studio_reSpeaker_XVF3800"
+    )
+    assert "echo_cancel_capture" in cfg.audio_input_source
 
 
 def test_custom_string_source_wrapped_into_list():

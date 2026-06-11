@@ -202,3 +202,47 @@ class TestSourceOverride:
         monkeypatch.setenv("HAPAX_AEC_ACTIVE", "1")
         s = AudioInputStream(source_name=None)
         assert s._source_name == "echo_cancel_capture"
+
+
+# ── Registry-derived stt.ear priority (voice-p2-perception-registry) ────
+
+
+class TestSttSourcePriority:
+    def test_derived_from_registry_respeaker_first(self) -> None:
+        from agents.hapax_daimonion import audio_input as ai_mod
+
+        priority = ai_mod.stt_source_priority()
+        assert priority[0].startswith("alsa_input.usb-Seeed_Studio_reSpeaker_XVF3800")
+        assert "echo_cancel_capture" in priority
+        assert any("Yeti" in s for s in priority)
+
+    def test_falls_back_to_legacy_constants_without_registry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.hapax_daimonion import audio_input as ai_mod
+
+        monkeypatch.setattr(ai_mod, "load_default_registry", lambda: None)
+        assert ai_mod.stt_source_priority() == ai_mod._LEGACY_SOURCE_PRIORITY
+
+    def test_falls_back_when_subscription_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.hapax_daimonion import audio_input as ai_mod
+        from shared.perception_registry import PerceptionRegistry
+
+        empty = PerceptionRegistry(schema_version=1)
+        monkeypatch.setattr(ai_mod, "load_default_registry", lambda: empty)
+        assert ai_mod.stt_source_priority() == ai_mod._LEGACY_SOURCE_PRIORITY
+
+    def test_module_default_matches_function(self) -> None:
+        from agents.hapax_daimonion import audio_input as ai_mod
+
+        assert ai_mod.DEFAULT_SOURCE_PRIORITY == ai_mod.stt_source_priority()
+
+
+class TestConfigDefaultFromRegistry:
+    def test_config_default_is_registry_priority(self) -> None:
+        from agents.hapax_daimonion import audio_input as ai_mod
+        from agents.hapax_daimonion.config import DaimonionConfig
+
+        assert DaimonionConfig().audio_input_source == ai_mod.stt_source_priority()

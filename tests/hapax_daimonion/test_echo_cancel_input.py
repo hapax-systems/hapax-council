@@ -76,9 +76,15 @@ class TestResolveSource:
         chosen = resolve_source([], pw_cli=lambda: "anything", fallback="bare_fallback")
         assert chosen == "bare_fallback"
 
-    def test_default_priority_lists_aec_first(self) -> None:
-        assert DEFAULT_SOURCE_PRIORITY[0] == _AEC_SOURCE_NAME
-        assert _RAW_YETI_PATTERN in DEFAULT_SOURCE_PRIORITY
+    def test_default_priority_is_registry_derived(self) -> None:
+        """voice-p2-perception-registry: stt.ear resolves over the registry —
+        respeaker first (the ratified STT front-end), AEC view and raw Yeti
+        retained on the fallback ladder."""
+        assert DEFAULT_SOURCE_PRIORITY[0].startswith(
+            "alsa_input.usb-Seeed_Studio_reSpeaker_XVF3800"
+        )
+        assert _AEC_SOURCE_NAME in DEFAULT_SOURCE_PRIORITY
+        assert any("Yeti" in s for s in DEFAULT_SOURCE_PRIORITY)
 
 
 # ── Config ─────────────────────────────────────────────────────────────
@@ -88,7 +94,9 @@ class TestDaimonionConfigAudioSource:
     def test_default_is_priority_list(self) -> None:
         cfg = DaimonionConfig()
         assert isinstance(cfg.audio_input_source, list)
-        assert cfg.audio_input_source[0] == "echo_cancel_capture"
+        assert cfg.audio_input_source[0].startswith(
+            "alsa_input.usb-Seeed_Studio_reSpeaker_XVF3800"
+        )
         assert any("Yeti" in s for s in cfg.audio_input_source)
 
     def test_explicit_list_accepted(self) -> None:
