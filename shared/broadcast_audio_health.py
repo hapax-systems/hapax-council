@@ -1213,12 +1213,18 @@ def _evaluate_voice_output_witness(
     )
     last_failed_playback = data.get("last_failed_playback") if isinstance(data, dict) else {}
     last_drop = data.get("last_drop") if isinstance(data, dict) else {}
+    last_refusal = data.get("last_refusal") if isinstance(data, dict) else {}
     egress = data.get("broadcast_egress_activity") if isinstance(data, dict) else {}
     route_present = bool(isinstance(route, dict) and route.get("route_present"))
     playback_present = bool(isinstance(playback, dict) and playback.get("completed")) or bool(
         isinstance(last_successful_playback, dict) and last_successful_playback.get("completed")
     )
     egress_audible = egress.get("egress_audible") if isinstance(egress, dict) else None
+    # Witness classes: a refusal (status="refusal_recorded") means a gate
+    # said no while the system is healthy — it is never a silent failure.
+    # Silent failure = should have played, didn't. Health blocks only on
+    # the latter; blocking on refusals fed this gate's own closed state
+    # back into itself (refusal → health red → next attempt refused).
     silent_failure = status in {"playback_failed", "drop_recorded", "synthesis_failed"}
     record.update(
         {
@@ -1228,8 +1234,10 @@ def _evaluate_voice_output_witness(
             "playback_present": playback_present,
             "egress_audible": egress_audible,
             "silent_failure": silent_failure,
+            "refusal": status == "refusal_recorded",
             "blocker_drop_reason": data.get("blocker_drop_reason"),
             "last_drop": last_drop if isinstance(last_drop, dict) else {},
+            "last_refusal": last_refusal if isinstance(last_refusal, dict) else {},
             "last_failed_playback": last_failed_playback
             if isinstance(last_failed_playback, dict)
             else {},
@@ -1246,12 +1254,13 @@ def _evaluate_voice_output_witness(
     )
     evidence["voice_output_witness"] = record
     if silent_failure:
-        # Break self-referential circular dependency: if the witness
-        # records drops whose blocker_drop_reason is
-        # "audio_safe_for_broadcast_false", those drops were caused by
-        # THIS gate being closed.  Using them as evidence to keep the
-        # gate closed creates an infinite loop.  Only block on
-        # genuinely independent failure signals.
+        # Legacy mixed-version protection: daemons predating the
+        # refusal witness class (status="refusal_recorded") wrote gate
+        # refusals as drops. If such a drop's blocker_drop_reason is a
+        # gate-caused code, it was caused by THIS gate being closed —
+        # using it as evidence to keep the gate closed creates an
+        # infinite loop. New-format writers record refusals first-class
+        # and never reach this allowlist.
         drop_reason = data.get("blocker_drop_reason") if isinstance(data, dict) else None
         _NON_BLOCKING_DROP_REASONS = (
             "audio_safe_for_broadcast_false",
