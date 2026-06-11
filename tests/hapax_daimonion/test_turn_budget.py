@@ -275,9 +275,7 @@ class TestSpontaneousLockDiscipline:
         fake_response.choices = [MagicMock(message=MagicMock(content="GPU's idle."))]
         with patch("litellm.acompletion", AsyncMock(return_value=fake_response)):
             text = asyncio.run(p.compose_spontaneous_speech(impingement, destination="private"))
-            text = asyncio.run(
-                p.compose_spontaneous_speech(impingement, destination="private")
-            )
+            text = asyncio.run(p.compose_spontaneous_speech(impingement, destination="private"))
 
         assert text == "GPU's idle."
         p._speak_sentence.assert_not_called()
