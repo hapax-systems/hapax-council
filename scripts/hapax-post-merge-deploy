@@ -560,6 +560,18 @@ cleanup_known_stale_user_dropins_for_unit() {
             done
             rmdir "$dropin_dir" 2>/dev/null || true
             ;;
+        hapax-audio-routing-check.service)
+            dropin_dir="$SYSTEMD_USER_DIR/$unit.d"
+            [ -d "$dropin_dir" ] || return 0
+            for dropin in "$dropin_dir"/*.conf; do
+                [ -f "$dropin" ] || continue
+                if [[ "$(basename "$dropin")" == "99-chain13-source-artifacts.conf" ]]; then
+                    echo "  removing redundant local drop-in '$dropin'"
+                    rm -f "$dropin" || true
+                fi
+            done
+            rmdir "$dropin_dir" 2>/dev/null || true
+            ;;
         hapax-obs-audio-bind.service)
             dropin_dir="$SYSTEMD_USER_DIR/$unit.d"
             [ -d "$dropin_dir" ] || return 0

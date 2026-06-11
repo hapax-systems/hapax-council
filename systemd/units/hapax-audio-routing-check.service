@@ -4,6 +4,7 @@ After=pipewire.service
 
 [Service]
 Type=oneshot
+Environment=HAPAX_AUDIO_REPO_ROOT=%h/.cache/hapax/source-activation/worktree
 ExecStart=%h/.local/bin/hapax-audio-routing-check
 StandardOutput=journal
 StandardError=journal
