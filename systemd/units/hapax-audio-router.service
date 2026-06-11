@@ -6,9 +6,10 @@ Wants=hapax-secrets.service
 
 [Service]
 Type=simple
-WorkingDirectory=%h/projects/hapax-council
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 EnvironmentFile=-%h/.cache/hapax/secrets.env
-ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.audio_router.dynamic_router
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file agents/audio_router/dynamic_router.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.audio_router.dynamic_router
 Restart=on-failure
 RestartSec=2s
 # Audio routing is critical-path even when the resident set is normally small:
@@ -19,6 +20,8 @@ MemoryMax=2G
 # Pure software; no GPU. Isolate from CUDA so a stray import cannot
 # acquire VRAM the compositor / TabbyAPI rely on.
 Environment=CUDA_VISIBLE_DEVICES=
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 
 # Stdout / stderr → systemd journal (default).
 StandardOutput=journal

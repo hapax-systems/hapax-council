@@ -12,8 +12,11 @@ Type=simple
 EnvironmentFile=/run/user/1000/hapax-secrets.env
 Environment=OMP_NUM_THREADS=2
 Environment=MKL_NUM_THREADS=2
-ExecStart=%h/.local/bin/uv run python -m agents.imagination_daemon
-WorkingDirectory=%h/projects/hapax-council
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file agents/imagination_daemon/__main__.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.imagination_daemon
 MemoryHigh=2G
 MemoryMax=4G
 Restart=on-failure

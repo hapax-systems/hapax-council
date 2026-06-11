@@ -6,8 +6,12 @@ BindsTo=pipewire.service
 
 [Service]
 Type=oneshot
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 ExecStartPre=/bin/sleep 3
-ExecStart=/usr/bin/python3 %h/projects/hapax-council/scripts/usb-router.py
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/usb-router.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/usb-router.py
 RemainAfterExit=yes
 
 [Install]

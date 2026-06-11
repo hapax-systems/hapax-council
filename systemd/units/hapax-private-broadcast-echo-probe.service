@@ -5,7 +5,11 @@ After=pipewire.service hapax-secrets.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/uv run --project %h/projects/hapax-council %h/projects/hapax-council/scripts/private-broadcast-echo-probe.py
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/private-broadcast-echo-probe.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/private-broadcast-echo-probe.py
 TimeoutStartSec=30
 SuccessExitStatus=0 2
 Nice=10

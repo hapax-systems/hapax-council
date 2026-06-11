@@ -4,10 +4,12 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/hapax/projects/hapax-council
-ExecStart=/home/hapax/.local/bin/uv run python -m agents.stimmung_sync
-Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=HOME=/home/hapax
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file agents/stimmung_sync.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.stimmung_sync
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=stimmung-sync

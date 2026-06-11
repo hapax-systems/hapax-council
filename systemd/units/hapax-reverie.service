@@ -14,6 +14,9 @@ RestartSec=10
 EnvironmentFile=/run/user/1000/hapax-secrets.env
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin
 Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+# Versioned replacement for the former local 3d-mode drop-in. Reverie has
+# live readers for this flag and must not depend on shadow ~/.config state.
+Environment=HAPAX_3D_COMPOSITOR=1
 MemoryHigh=2G
 MemoryMax=4G
 

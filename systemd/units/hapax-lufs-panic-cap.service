@@ -7,10 +7,12 @@ PartOf=studio-compositor.service
 
 [Service]
 Type=simple
-WorkingDirectory=/home/hapax/projects/hapax-council
-Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.studio_compositor.lufs_panic_cap
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file agents/studio_compositor/lufs_panic_cap.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.studio_compositor.lufs_panic_cap
 Restart=always
 RestartSec=5
 # Resource caps: numpy + parec is light; reserve modest memory and a
