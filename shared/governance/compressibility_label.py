@@ -29,7 +29,7 @@ Spec: hapax-research/specs/2026-06-08-hacl-context-compression-design.md
 from __future__ import annotations
 
 import enum
-from collections.abc import Iterable, Sized
+from collections.abc import Iterable
 
 from agentgov.consent_label import ConsentLabel
 from agentgov.labeled import Labeled
@@ -105,6 +105,9 @@ def compressibility_of(
         return _of_label(payload, operator_ids)
     if payload is None:
         return CompressibilityLabel.SAFE
-    if isinstance(payload, Sized) and len(payload) == 0:
+    # Duck-typed emptiness (avoids the runtime-checkable Sized isinstance,
+    # which pyrefly flags as an unsafe protocol overlap on `object` payloads).
+    sized_len = getattr(payload, "__len__", None)
+    if callable(sized_len) and sized_len() == 0:
         return CompressibilityLabel.SAFE
     return CompressibilityLabel.UNKNOWN
