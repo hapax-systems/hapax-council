@@ -409,9 +409,7 @@ class TestVerdictBlockers:
         rt = _load_review_team_module()
         note = tmp_path / "task-x.md"
         note.write_text("---\ntype: cc-task\ntask_id: task-x\n---\n", encoding="utf-8")
-        blockers = rt.review_team_verdict_blockers(
-            self._frontmatter(), note, pr_head_sha="a" * 40
-        )
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
         assert blockers == ("missing_review_dossier",)
 
     def test_malformed_dossier_blocks(self, tmp_path: Path) -> None:
@@ -419,25 +417,19 @@ class TestVerdictBlockers:
         note = tmp_path / "task-x.md"
         note.write_text("---\ntype: cc-task\ntask_id: task-x\n---\n", encoding="utf-8")
         (tmp_path / "task-x.review-dossier.yaml").write_text("[not a mapping]", encoding="utf-8")
-        blockers = rt.review_team_verdict_blockers(
-            self._frontmatter(), note, pr_head_sha="a" * 40
-        )
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
         assert any(b.startswith("review_dossier_malformed:") for b in blockers)
 
     def test_stale_head_sha_blocks(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         note = _write_dossier(tmp_path, "task-x", self._good_dossier(rt))
-        blockers = rt.review_team_verdict_blockers(
-            self._frontmatter(), note, pr_head_sha="b" * 40
-        )
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="b" * 40)
         assert any(b.startswith("review_dossier_stale_head:") for b in blockers)
 
     def test_quorum_accept_dossier_passes(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         note = _write_dossier(tmp_path, "task-x", self._good_dossier(rt))
-        blockers = rt.review_team_verdict_blockers(
-            self._frontmatter(), note, pr_head_sha="a" * 40
-        )
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
         assert blockers == ()
 
     def test_no_quorum_dossier_blocks_with_recomputed_count(self, tmp_path: Path) -> None:
@@ -451,9 +443,7 @@ class TestVerdictBlockers:
             ],
         )
         note = _write_dossier(tmp_path, "task-x", dossier)
-        blockers = rt.review_team_verdict_blockers(
-            self._frontmatter(), note, pr_head_sha="a" * 40
-        )
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
         assert "review_dossier_quorum_not_met:1/2" in blockers
         assert any(b.startswith("review_team_verdict_not_quorum_accept:") for b in blockers)
 
@@ -469,9 +459,7 @@ class TestVerdictBlockers:
         )
         dossier["review_team_verdict"] = "quorum-accept"  # tampered/buggy field
         note = _write_dossier(tmp_path, "task-x", dossier)
-        blockers = rt.review_team_verdict_blockers(
-            self._frontmatter(), note, pr_head_sha="a" * 40
-        )
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
         assert "review_dossier_unresolved_critical:1" in blockers
 
     def test_undersized_team_blocks(self, tmp_path: Path) -> None:
@@ -484,9 +472,7 @@ class TestVerdictBlockers:
             ],
         )
         note = _write_dossier(tmp_path, "task-x", dossier)
-        blockers = rt.review_team_verdict_blockers(
-            self._frontmatter(), note, pr_head_sha="a" * 40
-        )
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
         assert any(b.startswith("review_dossier_team_undersized:") for b in blockers)
 
     def test_killswitch_disables_gate(self, tmp_path: Path, monkeypatch) -> None:
@@ -494,9 +480,7 @@ class TestVerdictBlockers:
         monkeypatch.setenv("HAPAX_REVIEW_TEAM_GATE_OFF", "1")
         note = tmp_path / "task-x.md"
         note.write_text("---\ntype: cc-task\ntask_id: task-x\n---\n", encoding="utf-8")
-        blockers = rt.review_team_verdict_blockers(
-            self._frontmatter(), note, pr_head_sha="a" * 40
-        )
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
         assert blockers == ()
 
 

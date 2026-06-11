@@ -232,6 +232,60 @@ def constitute_team(
     )
 
 
+# --- Task-note + charter lookup ----------------------------------------------
+
+
+def _note_frontmatter(path: Path) -> dict[str, Any] | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not text.startswith("---\n"):
+        return None
+    end = text.find("\n---", 4)
+    if end == -1:
+        return None
+    try:
+        parsed = yaml.safe_load(text[4:end])
+    except yaml.YAMLError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def find_task_note(
+    vault_root: Path,
+    *,
+    pr_number: int | None = None,
+    head_ref: str | None = None,
+) -> tuple[Path, dict[str, Any]] | None:
+    """The cc-task note linked to a PR: by ``pr`` field first, else by branch."""
+
+    branch_match: tuple[Path, dict[str, Any]] | None = None
+    for folder in ("active", "closed"):
+        root = vault_root / folder
+        if not root.is_dir():
+            continue
+        for path in sorted(root.glob("*.md")):
+            fm = _note_frontmatter(path)
+            if not fm or fm.get("type") != "cc-task":
+                continue
+            try:
+                note_pr = int(fm.get("pr")) if fm.get("pr") is not None else None
+            except (TypeError, ValueError):
+                note_pr = None
+            if pr_number is not None and note_pr == pr_number:
+                return path, fm
+            if branch_match is None and head_ref and str(fm.get("branch") or "") == head_ref:
+                branch_match = (path, fm)
+    return branch_match
+
+
+def charter_text(lens: str, lens_dir: Path | None = None) -> str:
+    """Full charter markdown for a lens (raises if the charter is missing)."""
+
+    return ((lens_dir or LENS_DIR) / f"{lens}.md").read_text(encoding="utf-8")
+
+
 # --- Dossier synthesis --------------------------------------------------------
 
 
@@ -370,9 +424,7 @@ def _dossier_validity_blockers(
     if not dossier_sha:
         blockers.append("review_dossier_malformed:missing_head_sha")
     elif pr_head_sha and dossier_sha != pr_head_sha:
-        blockers.append(
-            f"review_dossier_stale_head:dossier={dossier_sha[:8]},pr={pr_head_sha[:8]}"
-        )
+        blockers.append(f"review_dossier_stale_head:dossier={dossier_sha[:8]},pr={pr_head_sha[:8]}")
 
     team_class = str(dossier.get("team_class") or "")
     sizing = (registry.get("sizing") or {}).get(team_class)
