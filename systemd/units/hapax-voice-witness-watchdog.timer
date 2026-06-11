@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the voice witness watchdog every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60s
+AccuracySec=10s
+Unit=hapax-voice-witness-watchdog.service
+
+[Install]
+WantedBy=timers.target
