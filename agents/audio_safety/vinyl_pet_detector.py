@@ -27,21 +27,31 @@ from pathlib import Path
 import numpy as np
 
 from agents._notify import send_notification
+from shared.audio_node_resolver import resolve_audio_node
 from shared.impingement import Impingement, ImpingementType
 
 log = logging.getLogger("audio_safety.vinyl_pet")
 
 # ── Tunable constants (env-overridable) ──────────────────────────────────────
 
-DEFAULT_L12_TARGET = (
-    "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input"
-)
+# mk5-era: monitor the live broadcast sum bus (the leak surface that matters).
+# Resolved from the topology SSOT at config build, fail-open to the live node name.
+# The Evil-Pet/L-12 multitrack era is over; the legacy alias remains only so old
+# env files keep working (HAPAX_AUDIO_SAFETY_L12_TARGET).
+DEFAULT_TOPOLOGY_ID = "livestream-tap"
+DEFAULT_TARGET_FALLBACK = "hapax-livestream-tap"
+
+
+def _default_target() -> str:
+    return resolve_audio_node(DEFAULT_TOPOLOGY_ID, DEFAULT_TARGET_FALLBACK)
+
+
 DEFAULT_RMS_THRESHOLD = 0.02  # both vinyl AND evilpet RMS above this = "active"
 DEFAULT_DWELL_S = 2.0  # both must be active for this duration → fire
 DEFAULT_COOLDOWN_S = 60.0  # min seconds between alerts
 DEFAULT_FRAME_MS = 100  # capture frame size
-DEFAULT_CHANNELS = 14
-DEFAULT_RATE = 44100
+DEFAULT_CHANNELS = 2
+DEFAULT_RATE = 48000
 DEFAULT_AUX_EVILPET = 5  # AUX5 = CH6 Evil Pet return
 DEFAULT_AUX_VINYL_L = 8  # AUX8 = CH9 Handytraxx L
 DEFAULT_AUX_VINYL_R = 9  # AUX9 = CH10 Handytraxx R
@@ -94,7 +104,7 @@ def should_fire(window: deque[bool], dwell_frames: int) -> bool:
 
 @dataclass
 class DetectorConfig:
-    target: str = DEFAULT_L12_TARGET
+    target: str = ""  # empty -> resolved via _default_target() in from_env/__post_init__
     channels: int = DEFAULT_CHANNELS
     rate: int = DEFAULT_RATE
     frame_ms: int = DEFAULT_FRAME_MS
@@ -107,10 +117,18 @@ class DetectorConfig:
     impingements_file: Path = DEFAULT_IMPINGEMENTS_FILE
     state_file: Path = DEFAULT_STATE_FILE
 
+    def __post_init__(self) -> None:
+        if not self.target:
+            self.target = _default_target()
+
     @classmethod
     def from_env(cls) -> DetectorConfig:
         return cls(
-            target=os.environ.get("HAPAX_AUDIO_SAFETY_L12_TARGET", DEFAULT_L12_TARGET),
+            target=(
+                os.environ.get("HAPAX_AUDIO_SAFETY_TARGET")
+                or os.environ.get("HAPAX_AUDIO_SAFETY_L12_TARGET")  # legacy alias
+                or _default_target()
+            ),
             channels=int(os.environ.get("HAPAX_AUDIO_SAFETY_CHANNELS", DEFAULT_CHANNELS)),
             rate=int(os.environ.get("HAPAX_AUDIO_SAFETY_RATE", DEFAULT_RATE)),
             frame_ms=int(os.environ.get("HAPAX_AUDIO_SAFETY_FRAME_MS", DEFAULT_FRAME_MS)),
@@ -229,6 +247,7 @@ def publish_state(
     vinyl_l_rms: float | None = None,
     vinyl_r_rms: float | None = None,
     evilpet_rms: float | None = None,
+    bus_rms: float | None = None,
 ) -> None:
     """Publish the detector state consumed by broadcast audio health."""
     payload = {
@@ -241,6 +260,7 @@ def publish_state(
         "vinyl_l_rms": round(vinyl_l_rms, 4) if vinyl_l_rms is not None else None,
         "vinyl_r_rms": round(vinyl_r_rms, 4) if vinyl_r_rms is not None else None,
         "evilpet_rms": round(evilpet_rms, 4) if evilpet_rms is not None else None,
+        "bus_rms": round(bus_rms, 4) if bus_rms is not None else None,
     }
     try:
         config.state_file.parent.mkdir(parents=True, exist_ok=True)
@@ -255,13 +275,17 @@ def publish_state(
 
 
 def spawn_pw_cat(config: DetectorConfig) -> subprocess.Popen[bytes]:
-    """Launch pw-cat reading the L-12 multitrack source.
+    """Launch pw-cat capturing the configured target (mk5 era: the broadcast tap monitor).
 
     Caller owns the process; must terminate on shutdown.
     """
     cmd = [
         "pw-cat",
         "--record",
+        # Capture the SINK's monitor (the tap is a sink; without this property
+        # pw-cat opens a normal capture stream and hears silence).
+        "-P",
+        "stream.capture.sink=true",
         "--target",
         config.target,
         "--rate",
@@ -345,6 +369,10 @@ def run(config: DetectorConfig | None = None) -> int:
                 continue
             now = time.time()
             fired, vl, vr, ep = process_frame(frame=chunk, config=cfg, state=state, now=now)
+            bus = max(
+                channel_rms(chunk, cfg.channels, 0),
+                channel_rms(chunk, cfg.channels, 1),
+            )
             if fired:
                 publish_state(
                     config=cfg,
@@ -354,6 +382,7 @@ def run(config: DetectorConfig | None = None) -> int:
                     vinyl_l_rms=vl,
                     vinyl_r_rms=vr,
                     evilpet_rms=ep,
+                    bus_rms=bus,
                 )
                 fire_alert(config=cfg, vinyl_l_rms=vl, vinyl_r_rms=vr, evilpet_rms=ep)
             else:
