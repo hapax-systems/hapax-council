@@ -1194,6 +1194,7 @@ class ConversationPipeline:
 
     async def _generate_and_speak(self) -> None:
         """Stream LLM response, accumulate sentences, synthesize and play."""
+        speech_tasks: list[asyncio.Task[str]] = []
         try:
             import os
 
@@ -1335,6 +1336,37 @@ class ConversationPipeline:
             _first_clause_spoken = False
             spoken_full_text = ""
             _spoken_words = 0  # Track words sent to TTS for cutoff
+
+            async def _await_oldest_speech() -> None:
+                nonlocal spoken_full_text
+
+                task = speech_tasks.pop(0)
+                try:
+                    actual = await task
+                except Exception:
+                    log.debug("queued TTS clause failed", exc_info=True)
+                    actual = ""
+                if actual:
+                    spoken_full_text += actual + " "
+
+            async def _drain_speech_tasks() -> None:
+                while speech_tasks:
+                    await _await_oldest_speech()
+
+            async def _queue_speech_clause(text: str) -> None:
+                nonlocal _first_clause_spoken
+
+                clause = text.strip()
+                if not clause:
+                    return
+                # Bound look-ahead to current + next clause. This lets LLM
+                # streaming continue while TTS synthesis runs without building
+                # an unbounded speculative synth backlog.
+                while len(speech_tasks) >= 2:
+                    await _await_oldest_speech()
+                speech_tasks.append(asyncio.create_task(self._speak_sentence(clause)))
+                _first_clause_spoken = True
+
             # Word limit: effort-driven (Batch 2) > lockdown fixed > density-driven
             if self._grounding_ledger is not None and self._experiment_flags.get(
                 "effort_modulation", False
@@ -1413,9 +1445,7 @@ class ConversationPipeline:
                             cut = cut.split(tag)[0]
                     cut = cut.strip()
                     if cut and not _first_clause_spoken:
-                        actual = await self._speak_sentence(cut)
-                        if actual:
-                            spoken_full_text += actual + " "
+                        await _queue_speech_clause(cut)
                     log.info("Halted: LLM hallucinated tool XML in text output")
                     full_text = cut
                     accumulated = ""
@@ -1433,24 +1463,16 @@ class ConversationPipeline:
                     if len(parts) > 1:
                         to_speak = parts[0].strip()
                         if to_speak and _words >= _MIN_FIRST_CLAUSE_WORDS:
-                            actual = await self._speak_sentence(to_speak)
-                            if actual:
-                                spoken_full_text += actual + " "
-                            _first_clause_spoken = True
+                            await _queue_speech_clause(to_speak)
                             # Speak any complete middle clauses too (don't drop them)
                             for mid in parts[1:-1]:
                                 mid = mid.strip()
                                 if mid and len(mid.split()) >= _MIN_CLAUSE_WORDS:
-                                    actual = await self._speak_sentence(mid)
-                                    if actual:
-                                        spoken_full_text += actual + " "
+                                    await _queue_speech_clause(mid)
                             accumulated = parts[-1]
                             accumulation_start = time.monotonic()
                     elif _elapsed > _MAX_ACCUMULATION_S and _words >= _MIN_FIRST_CLAUSE_WORDS:
-                        actual = await self._speak_sentence(accumulated.strip())
-                        if actual:
-                            spoken_full_text += actual + " "
-                        _first_clause_spoken = True
+                        await _queue_speech_clause(accumulated.strip())
                         accumulated = ""
                         accumulation_start = time.monotonic()
                 else:
@@ -1461,9 +1483,7 @@ class ConversationPipeline:
                         for sentence in parts[:-1]:
                             sentence = sentence.strip()
                             if sentence and len(sentence.split()) >= _MIN_CLAUSE_WORDS:
-                                actual = await self._speak_sentence(sentence)
-                                if actual:
-                                    spoken_full_text += actual + " "
+                                await _queue_speech_clause(sentence)
                                 _spoke = True
                                 if self.buffer and self.buffer.barge_in_detected:
                                     log.info("Barge-in: cutting response short")
@@ -1473,9 +1493,7 @@ class ConversationPipeline:
                             accumulation_start = time.monotonic()
                     elif _elapsed > _MAX_ACCUMULATION_S:
                         if accumulated.strip() and _words >= _MIN_CLAUSE_WORDS:
-                            actual = await self._speak_sentence(accumulated.strip())
-                            if actual:
-                                spoken_full_text += actual + " "
+                            await _queue_speech_clause(accumulated.strip())
                             accumulated = ""
                             accumulation_start = time.monotonic()
 
@@ -1499,9 +1517,9 @@ class ConversationPipeline:
             # Flush remaining text (skip if barge-in or word cutoff)
             if accumulated.strip() and not (self.buffer and self.buffer.barge_in_detected):
                 if _spoken_words < _word_limit:
-                    actual = await self._speak_sentence(accumulated.strip())
-                    if actual:
-                        spoken_full_text += actual + " "
+                    await _queue_speech_clause(accumulated.strip())
+
+            await _drain_speech_tasks()
 
             # Expose word counts for visual overlay monitoring
             self.last_spoken_words = _spoken_words
@@ -1536,9 +1554,19 @@ class ConversationPipeline:
                 await self._handle_tool_calls(tool_calls_data, full_text)
 
         except TimeoutError:
+            for task in speech_tasks:
+                task.cancel()
+            if speech_tasks:
+                await asyncio.gather(*speech_tasks, return_exceptions=True)
+                speech_tasks.clear()
             log.warning("LLM timeout — no response")
             await self._speak_sentence("I'm having trouble connecting right now.")
         except Exception:
+            for task in speech_tasks:
+                task.cancel()
+            if speech_tasks:
+                await asyncio.gather(*speech_tasks, return_exceptions=True)
+                speech_tasks.clear()
             log.exception("LLM generation failed")
             await self._speak_sentence("Sorry, something went wrong.")
         finally:
