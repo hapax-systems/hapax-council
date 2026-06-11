@@ -9,6 +9,7 @@ present.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,11 +17,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from agents.hapax_daimonion import turn_timing_log
 from shared.conative_impingement import (
     ImpulseTerminalState,
     action_tendency_impulse_from_impingement,
     impulse_id_from_impingement,
 )
+
+log = logging.getLogger(__name__)
 
 WITNESS_PATH = Path("/dev/shm/hapax-daimonion/voice-output-witness.json")
 
@@ -384,24 +388,34 @@ def record_turn_timing(
 
     A timing receipt is accounting, not a lifecycle event: it preserves the
     existing witness ``status`` so the watchdog's drop/playback semantics
-    are untouched.
+    are untouched. Each receipt is also appended to the turn-timings ring
+    next to the witness (audit v2 gate (i): p50/p90 over a 20-turn window —
+    see :mod:`agents.hapax_daimonion.turn_timing_log`); a ring failure
+    degrades the distribution, never the witness write.
     """
     ts = _now(now)
     existing_status = _load_existing_payload(path).get("status", "unknown")
+    entry = {
+        "ts": _iso(ts),
+        "kind": kind,
+        "turn": turn,
+        "legs": {k: round(v, 1) for k, v in legs.items()},
+        "notes": notes,
+        "total_ms": round(total_ms, 1),
+        "budget_ms": round(budget_ms, 1),
+        "overrun": overrun,
+    }
+    try:
+        turn_timing_log.append_turn_timing(
+            entry, path=path.with_name(turn_timing_log.TURN_TIMINGS_PATH.name)
+        )
+    except Exception:  # noqa: BLE001 — accounting must never break the witness
+        log.debug("turn timing ring append failed", exc_info=True)
     return _merge_and_publish(
         path,
         now=ts,
         status=existing_status,
-        last_turn_timing={
-            "ts": _iso(ts),
-            "kind": kind,
-            "turn": turn,
-            "legs": {k: round(v, 1) for k, v in legs.items()},
-            "notes": notes,
-            "total_ms": round(total_ms, 1),
-            "budget_ms": round(budget_ms, 1),
-            "overrun": overrun,
-        },
+        last_turn_timing=entry,
     )
 
 
