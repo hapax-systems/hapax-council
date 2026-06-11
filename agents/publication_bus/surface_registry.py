@@ -22,9 +22,22 @@ appropriate Refusal Brief docs/refusal-briefs/ entry when
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Final
+from typing import Final, Literal
+
+from pydantic import BaseModel, Field
+
+from shared.evidence_ledger import (
+    AudienceId,
+    ClaimEvidenceStatus,
+    ClaimRecord,
+    LegibilityEvidenceRecord,
+    default_audience_profiles,
+    validate_claim_for_audiences,
+)
 
 
 class AutomationStatus(Enum):
@@ -51,6 +64,74 @@ class SurfaceSpec:
     activation_path: str | None = None
     refusal_link: str | None = None
     scope_note: str | None = None
+
+
+SurfaceContractType = Literal[
+    "public_page",
+    "repo_readme",
+    "adoption_packet",
+    "dashboard",
+    "architecture_map",
+    "runbook",
+    "internal_snapshot",
+    "enterprise_pilot_packet",
+    "determination_exchange_packet",
+    "audience_essay",
+    "sales_packet",
+    "support_scope",
+    "security_legal_packet",
+    "cc_task",
+    "dispatch_packet",
+    "operator_dashboard",
+]
+SurfaceContractSourceMode = Literal[
+    "generated_from_claim_ledger",
+    "manually_reviewed",
+    "legacy_untrusted",
+]
+SurfaceContractFailureBehavior = Literal[
+    "remove_or_mark_unverified",
+    "fail_closed",
+    "hold_for_review",
+]
+
+
+class SurfaceContract(BaseModel):
+    """Legibility contract for rendering claims to a canonical surface."""
+
+    surface_id: str
+    surface_type: SurfaceContractType
+    owner: str = "operator"
+    audience_refs: list[AudienceId] = Field(default_factory=list)
+    allowed_claim_refs: list[str] = Field(default_factory=list)
+    source_mode: SurfaceContractSourceMode = "generated_from_claim_ledger"
+    refresh_policy: str = ""
+    verification: list[str] = Field(default_factory=list)
+    failure_behavior: SurfaceContractFailureBehavior = "remove_or_mark_unverified"
+    publication_surface_ref: str = ""
+    reviewed_evidence_refs: list[str] = Field(default_factory=list)
+
+
+class SurfaceClaimManifest(BaseModel):
+    """Claim/evidence manifest emitted by generated or reviewed surfaces."""
+
+    surface_id: str
+    source_mode: SurfaceContractSourceMode
+    audience_ids: list[str] = Field(default_factory=list)
+    claim_ids: list[str] = Field(default_factory=list)
+    evidence_ids: dict[str, list[str]] = Field(default_factory=dict)
+    evidence_status: dict[str, ClaimEvidenceStatus] = Field(default_factory=dict)
+    reviewed_evidence_refs: list[str] = Field(default_factory=list)
+
+
+class SurfaceContractLintResult(BaseModel):
+    """Fail-closed verdict for a canonical surface contract."""
+
+    surface_id: str
+    allowed: bool
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    manifest: SurfaceClaimManifest
 
 
 # Canonical registry. Sorted by automation status, then alphabetically
@@ -577,12 +658,152 @@ def dispatch_registry() -> dict[str, str]:
     }
 
 
+_COUNT_RE = re.compile(r"\b\d+(?:[,.]\d+)?\b")
+
+
+def _claim_text_contains_count(claim: ClaimRecord) -> bool:
+    text = " ".join([claim.text, claim.allowed_wording, " ".join(claim.forbidden_wording)])
+    return bool(_COUNT_RE.search(text))
+
+
+def _surface_spec_status(spec: object) -> str:
+    status = getattr(spec, "automation_status", None)
+    if isinstance(status, Enum):
+        return status.value
+    if isinstance(status, str):
+        return status
+    return ""
+
+
+def _surface_claim_for_contract(claim: ClaimRecord, contract: SurfaceContract) -> ClaimRecord:
+    allowed_surfaces = list(
+        dict.fromkeys(
+            [
+                *claim.allowed_surfaces,
+                contract.surface_id,
+                contract.surface_type,
+                contract.publication_surface_ref,
+            ]
+        )
+    )
+    return claim.model_copy(
+        update={
+            "audience_scope": list(contract.audience_refs),
+            "allowed_surfaces": [surface for surface in allowed_surfaces if surface],
+        }
+    )
+
+
+def lint_surface_contract(
+    contract: SurfaceContract,
+    claims: Sequence[ClaimRecord],
+    evidence_records: Sequence[LegibilityEvidenceRecord],
+    *,
+    surface_registry: Mapping[str, object] | None = None,
+    now: float | None = None,
+) -> SurfaceContractLintResult:
+    """Validate that a surface can render its allowed claim set.
+
+    This bridges the publication-bus ``SURFACE_REGISTRY`` with the
+    legibility claim/audience validator. It fails closed for unsupported claim
+    IDs, stale current-state count claims, public-unsafe claim evidence,
+    refused publication surfaces, and legacy-untrusted surfaces.
+    """
+
+    blockers: list[str] = []
+    warnings: list[str] = []
+    profiles = default_audience_profiles()
+    registry = SURFACE_REGISTRY if surface_registry is None else surface_registry
+    claims_by_id = {claim.claim_id: claim for claim in claims}
+    evidence_by_id = {record.evidence_id: record for record in evidence_records}
+    manifest = SurfaceClaimManifest(
+        surface_id=contract.surface_id,
+        source_mode=contract.source_mode,
+        audience_ids=list(contract.audience_refs),
+        claim_ids=[],
+        reviewed_evidence_refs=list(contract.reviewed_evidence_refs),
+    )
+
+    for audience_id in contract.audience_refs:
+        if audience_id not in profiles:
+            blockers.append(f"unknown_audience:{audience_id}")
+
+    if contract.source_mode == "legacy_untrusted":
+        blockers.append("legacy_untrusted_surface")
+
+    if contract.source_mode == "manually_reviewed" and not contract.reviewed_evidence_refs:
+        blockers.append("manual_review_missing_evidence")
+
+    for evidence_ref in contract.reviewed_evidence_refs:
+        record = evidence_by_id.get(evidence_ref)
+        if record is None:
+            blockers.append(f"manual_review_missing_evidence:{evidence_ref}")
+            continue
+        if record.status != "ok":
+            blockers.append(f"manual_review_failed_evidence:{evidence_ref}")
+        if not record.is_fresh(now):
+            blockers.append(f"manual_review_stale_evidence:{evidence_ref}")
+
+    if contract.publication_surface_ref:
+        publication_spec = registry.get(contract.publication_surface_ref)
+        if publication_spec is None:
+            blockers.append(f"unknown_publication_surface:{contract.publication_surface_ref}")
+        elif _surface_spec_status(publication_spec) == AutomationStatus.REFUSED.value:
+            blockers.append(f"refused_publication_surface:{contract.publication_surface_ref}")
+
+    for claim_ref in contract.allowed_claim_refs:
+        claim = claims_by_id.get(claim_ref)
+        if claim is None:
+            blockers.append(f"unsupported_claim_id:{claim_ref}")
+            continue
+
+        surface_claim = _surface_claim_for_contract(claim, contract)
+        validation = validate_claim_for_audiences(
+            surface_claim,
+            evidence_records,
+            audience_profiles=profiles,
+            now=now,
+        )
+        manifest.claim_ids.append(claim.claim_id)
+        manifest.evidence_ids[claim.claim_id] = validation.evidence_ids
+        manifest.evidence_status[claim.claim_id] = validation.evidence_status
+
+        if (
+            claim.claim_kind == "current_state"
+            and _claim_text_contains_count(claim)
+            and validation.evidence_status != "fresh"
+        ):
+            blockers.append(f"current_state_count_without_fresh_evidence:{claim.claim_id}")
+
+        blockers.extend(
+            f"claim_blocked:{claim.claim_id}:{blocker}" for blocker in validation.blockers
+        )
+        warnings.extend(
+            f"claim_warning:{claim.claim_id}:{warning}" for warning in validation.warnings
+        )
+
+    return SurfaceContractLintResult(
+        surface_id=contract.surface_id,
+        allowed=not blockers,
+        blockers=list(dict.fromkeys(blockers)),
+        warnings=list(dict.fromkeys(warnings)),
+        manifest=manifest,
+    )
+
+
 __all__ = [
     "SURFACE_REGISTRY",
     "AutomationStatus",
+    "SurfaceClaimManifest",
+    "SurfaceContract",
+    "SurfaceContractFailureBehavior",
+    "SurfaceContractLintResult",
+    "SurfaceContractSourceMode",
+    "SurfaceContractType",
     "SurfaceSpec",
     "auto_surfaces",
     "dispatch_registry",
     "is_engageable",
+    "lint_surface_contract",
     "refused_surfaces",
 ]
