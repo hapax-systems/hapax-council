@@ -18,8 +18,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +84,41 @@ def _same_session(candidate: str | None, fallback: str | None) -> bool:
     return candidate is None or fallback is None or candidate == fallback
 
 
+_RESET_PHRASE_RE = re.compile(
+    r"resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)]+)\)", re.IGNORECASE
+)
+
+
+def parse_reset_phrase(text: str, *, now: datetime | None = None) -> str | None:
+    """Parse the human session-limit phrase into an ISO ``resets_at``.
+
+    The 2026-06-11 outage class: lanes/workflow agents died to
+    ``You've hit your session limit · resets 5am (America/Chicago)`` and the
+    fleet idled for hours past the stated reset. The limit message literally
+    tells us when to resume (operator) — so parse it: next occurrence of that
+    wall-clock time in the named zone.
+    """
+    m = _RESET_PHRASE_RE.search(text)
+    if not m:
+        return None
+    hour = int(m.group(1)) % 12
+    if m.group(3).lower() == "pm":
+        hour += 12
+    minute = int(m.group(2) or 0)
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(m.group(4).strip().replace(" ", "_"))
+    except Exception:
+        return None
+    now = now or datetime.now(UTC)
+    local_now = now.astimezone(tz)
+    candidate = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= local_now:
+        candidate += timedelta(days=1)
+    return candidate.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
 def _parse_line(raw: str) -> QuotaWallSignal | None:
     record = _json_record(raw)
     if record is None:
@@ -112,6 +148,19 @@ def _parse_record(record: dict[str, Any]) -> QuotaWallSignal | None:
                 rate_limit_type=None,
                 is_overage=False,
             )
+
+    # Session-limit terminal result (the 2026-06-11 form): claude exits with a
+    # result record carrying api_error_status=429 and the human reset phrase.
+    result_text = str(record.get("result", ""))
+    if msg_type == "result" and (
+        record.get("api_error_status") == 429 or "session limit" in result_text.lower()
+    ):
+        return QuotaWallSignal(
+            kind="session_limit",
+            resets_at=parse_reset_phrase(result_text),
+            rate_limit_type="session",
+            is_overage=False,
+        )
 
     if record.get("error") == "rate_limit":
         return QuotaWallSignal(
