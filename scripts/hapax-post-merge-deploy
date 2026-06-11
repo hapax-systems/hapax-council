@@ -126,6 +126,7 @@ WP_CONF_DIR="$HOME/.config/wireplumber/wireplumber.conf.d"
 # config/wireplumber/98-hapax-link-deny.conf references it as `hapax/link-deny.lua`.
 WP_SCRIPTS_DIR="$HOME/.local/share/wireplumber/scripts/hapax"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+SYSTEMD_RUNTIME_USER_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/systemd/user"
 SYSTEMD_USER_PRESET_DIR="$HOME/.config/systemd/user-preset"
 LOCAL_BIN="$HOME/.local/bin"
 TRACE_PATH="${HAPAX_POST_MERGE_TRACE_PATH:-$HOME/.cache/hapax/post-merge-traces/post-merge-traces.jsonl}"
@@ -533,10 +534,46 @@ is_audio_safe_restart_unit() {
 
 cleanup_known_stale_user_dropins_for_unit() {
     local unit="$1"
+    local dropin_dir dropin
     case "$unit" in
+        hapax-audio-safety.service)
+            dropin_dir="$SYSTEMD_RUNTIME_USER_DIR/$unit.d"
+            [ -d "$dropin_dir" ] || return 0
+            for dropin in "$dropin_dir"/*.conf; do
+                [ -f "$dropin" ] || continue
+                if [[ "$(basename "$dropin")" == "deploy-4051.conf" ]]; then
+                    echo "  removing runtime-only deploy drop-in '$dropin'"
+                    rm -f "$dropin" || true
+                fi
+            done
+            rmdir "$dropin_dir" 2>/dev/null || true
+            ;;
+        hapax-daimonion.service)
+            dropin_dir="$SYSTEMD_RUNTIME_USER_DIR/$unit.d"
+            [ -d "$dropin_dir" ] || return 0
+            for dropin in "$dropin_dir"/*.conf; do
+                [ -f "$dropin" ] || continue
+                if [[ "$(basename "$dropin")" == "deploy-4052.conf" ]]; then
+                    echo "  removing runtime-only deploy drop-in '$dropin'"
+                    rm -f "$dropin" || true
+                fi
+            done
+            rmdir "$dropin_dir" 2>/dev/null || true
+            ;;
+        hapax-audio-routing-check.service)
+            dropin_dir="$SYSTEMD_USER_DIR/$unit.d"
+            [ -d "$dropin_dir" ] || return 0
+            for dropin in "$dropin_dir"/*.conf; do
+                [ -f "$dropin" ] || continue
+                if [[ "$(basename "$dropin")" == "99-chain13-source-artifacts.conf" ]]; then
+                    echo "  removing redundant local drop-in '$dropin'"
+                    rm -f "$dropin" || true
+                fi
+            done
+            rmdir "$dropin_dir" 2>/dev/null || true
+            ;;
         hapax-obs-audio-bind.service)
-            local dropin_dir="$SYSTEMD_USER_DIR/$unit.d"
-            local dropin
+            dropin_dir="$SYSTEMD_USER_DIR/$unit.d"
             [ -d "$dropin_dir" ] || return 0
             for dropin in "$dropin_dir"/*.conf; do
                 [ -f "$dropin" ] || continue
@@ -548,8 +585,7 @@ cleanup_known_stale_user_dropins_for_unit() {
             rmdir "$dropin_dir" 2>/dev/null || true
             ;;
         hapax-screwm-audio-reactivity.service)
-            local dropin_dir="$SYSTEMD_USER_DIR/$unit.d"
-            local dropin
+            dropin_dir="$SYSTEMD_USER_DIR/$unit.d"
             [ -d "$dropin_dir" ] || return 0
             for dropin in "$dropin_dir"/*.conf; do
                 [ -f "$dropin" ] || continue
@@ -875,6 +911,9 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
         base="$(basename "$f")"
         dest="$SYSTEMD_USER_DIR/$base"
         if git cat-file -e "$SHA:$f" 2>/dev/null; then
+            if [ -L "$dest" ]; then
+                rm -f "$dest"
+            fi
             git show "$SHA:$f" > "$dest"
             echo "  '$f' -> '$dest'"
             cleanup_known_stale_user_dropins_for_unit "$base"
