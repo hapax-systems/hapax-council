@@ -1,7 +1,9 @@
 [Unit]
 Description=Hapax PipeWire conf recovery watchdog
-Documentation=file:///home/hapax/projects/hapax-council/scripts/hapax-pipewire-conf-recovery
 OnFailure=notify-failure@%n.service
+
+StartLimitBurst=3
+StartLimitIntervalSec=300
 
 [Service]
 Type=oneshot
