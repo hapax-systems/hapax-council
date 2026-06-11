@@ -79,15 +79,15 @@ class TestTrackBeats:
         )
 
         mock_info = MagicMock()
-        mock_info.num_frames = 44100
-        mock_info.sample_rate = 44100
+        mock_info.frames = 44100
+        mock_info.samplerate = 44100
 
-        mock_torchaudio = MagicMock()
-        mock_torchaudio.info.return_value = mock_info
+        mock_sf = MagicMock()
+        mock_sf.info.return_value = mock_info
 
         with (
             patch("shared.beat_tracker._get_model", return_value=mock_model),
-            patch.dict("sys.modules", {"torchaudio": mock_torchaudio}),
+            patch.dict("sys.modules", {"soundfile": mock_sf}),
         ):
             from shared.beat_tracker import track_beats
 
@@ -102,11 +102,11 @@ class TestTrackBeats:
         mock_model = MagicMock()
         mock_model.side_effect = RuntimeError("GPU error")
 
-        mock_torchaudio = MagicMock()
+        mock_sf = MagicMock()
 
         with (
             patch("shared.beat_tracker._get_model", return_value=mock_model),
-            patch.dict("sys.modules", {"torchaudio": mock_torchaudio}),
+            patch.dict("sys.modules", {"soundfile": mock_sf}),
         ):
             from shared.beat_tracker import track_beats
 

@@ -125,7 +125,7 @@ def track_beats(audio_path: str) -> BeatGrid:
     Raises:
         RuntimeError: If beat tracking fails.
     """
-    import torchaudio
+    import soundfile as sf
 
     model = _get_model()
 
@@ -134,9 +134,10 @@ def track_beats(audio_path: str) -> BeatGrid:
     except Exception as exc:
         raise RuntimeError(f"Beat tracking failed: {exc}") from exc
 
-    # Load duration
-    info = torchaudio.info(audio_path)
-    duration = info.num_frames / info.sample_rate
+    # Load duration (torchaudio.info was removed in torchaudio >=2.9;
+    # soundfile reads the header directly)
+    info = sf.info(audio_path)
+    duration = info.frames / info.samplerate
 
     bpm = estimate_bpm(beats)
 
