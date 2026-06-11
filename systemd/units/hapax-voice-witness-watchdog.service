@@ -1,0 +1,19 @@
+[Unit]
+Description=Voice witness watchdog — ntfy on drop-streak / witness staleness
+# Consumer of /dev/shm/hapax-daimonion/voice-output-witness.json
+# (CASE-VOICE-FOUNDATION-20260610, audit SS6.2). READ-ONLY on the voice
+# path: reads the witness, keeps streak state in ~/.cache/hapax/, alerts
+# via shared.notify. Exit code is always 0 — a firing alert is the job,
+# not a unit failure.
+# Install: cp to ~/.config/systemd/user/, daemon-reload, then
+#   systemctl --user enable --now hapax-voice-witness-watchdog.timer
+
+[Service]
+Type=oneshot
+ExecStart=/home/hapax/.local/bin/uv run --directory /home/hapax/.cache/hapax/source-activation/worktree python -m agents.voice_witness_watchdog
+EnvironmentFile=-%h/.config/hapax/voice-witness-watchdog.env
+Environment=PATH=/home/hapax/.local/bin:/home/hapax/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=voice-witness-watchdog
