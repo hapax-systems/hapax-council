@@ -62,9 +62,9 @@ Five axioms, weighted and mechanically enforced:
 
 ## Navigation
 
-- [Manifesto](https://hapax.weblog.lol/hapax-manifesto-v0) - system stance and vocabulary
-- [Refusal Brief](https://hapax.weblog.lol/refusal-brief) - refusal-as-data artifact
-- [Velocity evidence baseline](https://hapax.weblog.lol/velocity-report-2026-04-25) - published method artifact
+- Manifesto - held pending a fresh public publish; do not cite the old short path
+- [Refusal Brief](https://hapax.weblog.lol/2026/04/refusal-brief-an-automation-tractability-disclosure) - refusal-as-data artifact
+- [Velocity evidence baseline](https://hapax.weblog.lol/2026/04/hapax-velocity-report-2026-04-25) - published method artifact
 - [Source graph](https://github.com/ryanklee) - public repositories and profiles
 
 ---

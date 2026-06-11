@@ -32,8 +32,8 @@ Not public as of 2026-05-11: `hapax-mcp`, `hapax-watch`, and `hapax-phone` are p
 - [Start here](https://github.com/hapax-systems/hapax-council/blob/main/START_HERE.md): short dossier for reviewers and researchers.
 - [Primary runtime](https://github.com/hapax-systems/hapax-council): the Hapax operating environment.
 - [Governance spec](https://github.com/ryanklee/hapax-constitution): axioms, implications, canons.
-- [Refusal brief](https://hapax.weblog.lol/refusal-brief): refusal-as-data public artifact.
-- [Manifesto](https://hapax.weblog.lol/hapax-manifesto-v0): authorship and artifact posture.
+- [Refusal brief](https://hapax.weblog.lol/2026/04/refusal-brief-an-automation-tractability-disclosure): refusal-as-data public artifact.
+- Manifesto: public short path held pending fresh publication; do not cite the old short URL.
 
 ## Research framing
 
