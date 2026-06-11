@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import threading
 import time
+from typing import TYPE_CHECKING
 
 import numpy as np
-import pytest
 
-from agents.hapax_daimonion import resident_stt
 from agents.hapax_daimonion.resident_stt import ResidentSTT
+
+if TYPE_CHECKING:
+    import pytest
 
 _PCM_HALF_SECOND = (np.zeros(8000, dtype=np.int16) + 1000).tobytes()
 
@@ -37,9 +39,7 @@ class _FakeModel:
         self._delay_s = delay_s
 
     def transcribe(self, audio, **kwargs):
-        self.calls.append(
-            {"kwargs": kwargs, "thread": threading.current_thread().name}
-        )
+        self.calls.append({"kwargs": kwargs, "thread": threading.current_thread().name})
         if self._delay_s:
             time.sleep(self._delay_s)
         return iter([_FakeSegment("hello world")]), _FakeInfo()

@@ -6,10 +6,12 @@ import json
 import math
 import struct
 from pathlib import Path
-
-import pytest
+from typing import TYPE_CHECKING
 
 from agents.hapax_daimonion import voice_pitch_baseline
+
+if TYPE_CHECKING:
+    import pytest
 from agents.hapax_daimonion.voice_pitch_baseline import (
     STALE_S,
     operator_voice_pitch_is_elevated,

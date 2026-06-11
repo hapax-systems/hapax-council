@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import sys
 import types
-
-import pytest
+from typing import TYPE_CHECKING
 
 from agents.hapax_daimonion import tts
+
+if TYPE_CHECKING:
+    import pytest
 
 
 class TestResolveTtsTorchThreads:
@@ -25,23 +27,17 @@ class TestResolveTtsTorchThreads:
         monkeypatch.setenv(tts.TTS_TORCH_THREADS_ENV, "6")
         assert tts.resolve_tts_torch_threads() == 6
 
-    def test_invalid_value_falls_back_to_default(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_invalid_value_falls_back_to_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(tts.TTS_TORCH_THREADS_ENV, "many")
         assert tts.resolve_tts_torch_threads() == tts._DEFAULT_TTS_TORCH_THREADS
 
-    def test_non_positive_falls_back_to_default(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_non_positive_falls_back_to_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(tts.TTS_TORCH_THREADS_ENV, "0")
         assert tts.resolve_tts_torch_threads() == tts._DEFAULT_TTS_TORCH_THREADS
 
 
 class TestPreloadAppliesThreadCap:
-    def test_preload_raises_torch_intraop_threads(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_preload_raises_torch_intraop_threads(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[int] = []
         fake_torch = types.SimpleNamespace(set_num_threads=calls.append)
         monkeypatch.setitem(sys.modules, "torch", fake_torch)

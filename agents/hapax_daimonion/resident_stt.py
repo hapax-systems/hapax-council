@@ -158,9 +158,7 @@ class ResidentSTT:
                 if not speculative:
                     # Fire-and-forget on the prosody executor — Praat
                     # analysis must not extend the transcription hot path.
-                    _prosody_executor.submit(
-                        self._extract_prosody, audio, sample_rate, None
-                    )
+                    _prosody_executor.submit(self._extract_prosody, audio, sample_rate, None)
 
             return text
 
