@@ -140,6 +140,10 @@ class WorkspaceMonitor:
         # Grounding contract + per-issue-key cooldown state
         self.issue_cooldown_s = issue_cooldown_s
         self._issue_last_alert: dict[str, float] = {}
+        # Serializes routing so overlapping analyses (capture_fresh resets the
+        # capture cooldown) cannot interleave cooldown checks across the
+        # verification await and double-alert one issue key.
+        self._route_lock = asyncio.Lock()
         self._invariant_findings_path = _INVARIANT_FINDINGS_PATH
         self._lufs_witness_path = _LUFS_WITNESS_PATH
 
@@ -506,48 +510,49 @@ class WorkspaceMonitor:
         if self._notification_queue is None:
             return
 
-        now = time.monotonic()
-        if (now - self._last_proactive_time) < self.proactive_cooldown_s:
-            return
+        async with self._route_lock:
+            now = time.monotonic()
+            if (now - self._last_proactive_time) < self.proactive_cooldown_s:
+                return
 
-        for issue in analysis.issues:
-            if issue.severity != "error" or issue.confidence < self.proactive_min_confidence:
-                continue
+            for issue in analysis.issues:
+                if issue.severity != "error" or issue.confidence < self.proactive_min_confidence:
+                    continue
 
-            key = self._issue_key(issue.description)
-            last_alert = self._issue_last_alert.get(key)
-            if last_alert is not None and (now - last_alert) < self.issue_cooldown_s:
-                log.debug(
-                    "Proactive alert suppressed (key cooldown, key=%s): %s",
-                    key,
+                key = self._issue_key(issue.description)
+                last_alert = self._issue_last_alert.get(key)
+                if last_alert is not None and (now - last_alert) < self.issue_cooldown_s:
+                    log.debug(
+                        "Proactive alert suppressed (key cooldown, key=%s): %s",
+                        key,
+                        issue.description,
+                    )
+                    continue
+
+                surface = self._classify_system_surface(issue.description)
+                if surface is not None and not await asyncio.to_thread(
+                    self._verify_surface_claim, *surface
+                ):
+                    self._log_unconfirmed_perception(surface[0], issue)
+                    continue
+
+                self._notification_queue.enqueue(
+                    VoiceNotification(
+                        title="Workspace Alert",
+                        message=issue.description,
+                        priority="normal",
+                        source="workspace",
+                    )
+                )
+                self._issue_last_alert[key] = now
+                self._prune_issue_keys(now)
+                self._last_proactive_time = now
+                log.info(
+                    "Proactive workspace alert: %s (confidence=%.2f)",
                     issue.description,
+                    issue.confidence,
                 )
-                continue
-
-            surface = self._classify_system_surface(issue.description)
-            if surface is not None and not await asyncio.to_thread(
-                self._verify_surface_claim, *surface
-            ):
-                self._log_unconfirmed_perception(surface[0], issue)
-                continue
-
-            self._notification_queue.enqueue(
-                VoiceNotification(
-                    title="Workspace Alert",
-                    message=issue.description,
-                    priority="normal",
-                    source="workspace",
-                )
-            )
-            self._issue_last_alert[key] = now
-            self._prune_issue_keys(now)
-            self._last_proactive_time = now
-            log.info(
-                "Proactive workspace alert: %s (confidence=%.2f)",
-                issue.description,
-                issue.confidence,
-            )
-            return  # One alert per analysis cycle
+                return  # One alert per analysis cycle
 
     @staticmethod
     def _classify_system_surface(description: str) -> tuple[str, str | None] | None:

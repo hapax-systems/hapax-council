@@ -336,6 +336,26 @@ async def test_surface_verification_does_not_block_event_loop(tmp_path):
     assert progressed >= 5, f"event loop starved during verification (ticks={progressed})"
 
 
+async def test_overlapping_routings_cannot_double_alert_same_key(tmp_path):
+    """The per-key cooldown must hold across concurrent routings: overlapping
+    analyses (capture_fresh resets the capture cooldown mid staleness-loop
+    flight) must not each pass the gate during a slow verification probe."""
+    monitor, queue = _make_monitor(tmp_path)
+    analysis = _make_analysis([_error("hapax-music-player.service failed on screen")])
+
+    def slow_probe(unit: str) -> bool:
+        time.sleep(0.1)
+        return True
+
+    with patch.object(WorkspaceMonitor, "_verify_service_failed", side_effect=slow_probe):
+        await asyncio.gather(
+            monitor._route_proactive_issues(analysis),
+            monitor._route_proactive_issues(analysis),
+        )
+
+    queue.enqueue.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # Unconfirmed perception is witnessed, not silent
 # ---------------------------------------------------------------------------
