@@ -34,6 +34,7 @@ WitnessStatus = Literal[
     "playback_completed",
     "playback_failed",
     "drop_recorded",
+    "refusal_recorded",
     "missing",
     "malformed",
     "stale",
@@ -56,6 +57,7 @@ class VoiceOutputWitness(BaseModel):
     last_successful_playback: dict[str, Any] | None = None
     last_failed_playback: dict[str, Any] | None = None
     last_drop: dict[str, Any] | None = None
+    last_refusal: dict[str, Any] | None = None
     downstream_route_status: dict[str, Any] | None = None
     broadcast_egress_activity: dict[str, Any] | None = None
     planned_utterance: dict[str, Any] | None = None
@@ -315,7 +317,19 @@ def record_drop(
     path: Path = WITNESS_PATH,
     now: float | None = None,
 ) -> VoiceOutputWitness:
+    """Witness an utterance that did not play, split by witness class.
+
+    ``terminal_state="inhibited"`` is the call-site vocabulary for a gate
+    refusal (destination/consent/safety gate said no while the system is
+    healthy): it records ``status="refusal_recorded"`` with evidence in
+    ``last_refusal``. Every other terminal state is a genuine silent
+    failure (should have played, didn't) and records
+    ``status="drop_recorded"`` with evidence in ``last_drop``. Health
+    blocks only on the latter — refusals feeding back into
+    ``audio_safe_for_broadcast`` is the loop this split kills.
+    """
     ts = _now(now)
+    refusal = terminal_state == "inhibited"
     route = None
     if destination is not None or target is not None or media_role is not None:
         route = _route_status(
@@ -328,23 +342,25 @@ def record_drop(
         terminal_reason=reason,
         now=ts,
     )
+    evidence = {
+        "ts": _iso(ts),
+        "status": "refused" if refusal else "dropped",
+        "completed": False,
+        "source": source,
+        "reason": reason,
+        "target": target,
+        "media_role": media_role,
+        "error": error,
+    }
     return _merge_and_publish(
         path,
         now=ts,
-        status="drop_recorded",
+        status="refusal_recorded" if refusal else "drop_recorded",
         downstream_route_status=route,
         planned_utterance=_planned_utterance(text) if text is not None else None,
         blocker_drop_reason=reason,
-        last_drop={
-            "ts": _iso(ts),
-            "status": "dropped",
-            "completed": False,
-            "source": source,
-            "reason": reason,
-            "target": target,
-            "media_role": media_role,
-            "error": error,
-        },
+        last_refusal=evidence if refusal else None,
+        last_drop=None if refusal else evidence,
         last_narration_impulse=impulse_update,
     )
 

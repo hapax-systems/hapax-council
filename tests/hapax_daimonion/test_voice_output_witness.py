@@ -255,6 +255,86 @@ def test_inhibited_impulse_terminal_state_is_witnessed(tmp_path: Path) -> None:
     assert witness.last_narration_impulse["terminal_reason"] == "route_unsafe_for_public_voice"
 
 
+def test_inhibited_drop_records_refusal_class(tmp_path: Path) -> None:
+    """A gate refusal (terminal_state=inhibited) is a refusal, not a drop.
+
+    Refusals mean the gate said no while the system is healthy; they must
+    not be witnessed as silent failures (voice-w1-refusal-not-failure).
+    """
+    path = tmp_path / "voice-output-witness.json"
+
+    witness = record_drop(
+        reason="broadcast_intent_missing",
+        source="autonomous_narrative",
+        destination="livestream",
+        target=None,
+        media_role="Broadcast",
+        text="Refused utterance.",
+        terminal_state="inhibited",
+        path=path,
+        now=NOW,
+    )
+
+    assert witness.status == "refusal_recorded"
+    assert witness.last_refusal is not None
+    assert witness.last_refusal["status"] == "refused"
+    assert witness.last_refusal["completed"] is False
+    assert witness.last_refusal["reason"] == "broadcast_intent_missing"
+    assert witness.last_refusal["source"] == "autonomous_narrative"
+    assert witness.last_drop is None
+    assert witness.blocker_drop_reason == "broadcast_intent_missing"
+
+
+def test_refusal_does_not_overwrite_prior_failure_drop(tmp_path: Path) -> None:
+    path = tmp_path / "voice-output-witness.json"
+    record_drop(
+        reason="pipeline_unavailable",
+        source="stimmung",
+        terminal_state="failed",
+        path=path,
+        now=NOW,
+    )
+
+    witness = record_drop(
+        reason="audio_safe_for_broadcast_false",
+        source="autonomous_narrative",
+        terminal_state="inhibited",
+        path=path,
+        now=NOW + 1,
+    )
+
+    assert witness.status == "refusal_recorded"
+    assert witness.last_drop is not None
+    assert witness.last_drop["reason"] == "pipeline_unavailable"
+    assert witness.last_refusal is not None
+    assert witness.last_refusal["reason"] == "audio_safe_for_broadcast_false"
+
+
+def test_failure_drop_after_refusal_keeps_refusal_evidence(tmp_path: Path) -> None:
+    path = tmp_path / "voice-output-witness.json"
+    record_drop(
+        reason="broadcast_intent_missing",
+        source="autonomous_narrative",
+        terminal_state="inhibited",
+        path=path,
+        now=NOW,
+    )
+
+    witness = record_drop(
+        reason="tts_empty_pcm",
+        source="conversation_pipeline",
+        terminal_state="failed",
+        path=path,
+        now=NOW + 1,
+    )
+
+    assert witness.status == "drop_recorded"
+    assert witness.last_drop is not None
+    assert witness.last_drop["reason"] == "tts_empty_pcm"
+    assert witness.last_refusal is not None
+    assert witness.last_refusal["reason"] == "broadcast_intent_missing"
+
+
 def test_stale_witness_fails_closed(tmp_path: Path) -> None:
     path = tmp_path / "voice-output-witness.json"
     record_drop(

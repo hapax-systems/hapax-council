@@ -375,6 +375,86 @@ def test_voice_output_silent_failure_blocks(tmp_path: Path) -> None:
     assert witness["last_drop"]["reason"] == "pipeline_unavailable"
 
 
+def test_voice_output_gate_refusal_is_not_silent_failure(tmp_path: Path) -> None:
+    """A refusal-class witness must not redden health (kills the feedback loop).
+
+    The reason here is deliberately NOT in the legacy self-referential
+    allowlist: classification comes from the witness class, not from
+    pattern-matching reason strings.
+    """
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    _write_json(
+        paths.voice_output_witness,
+        {
+            "version": 1,
+            "updated_at": "2027-01-15T08:00:00Z",
+            "freshness_s": 0.0,
+            "status": "refusal_recorded",
+            "blocker_drop_reason": "programme_authorization_stale",
+            "downstream_route_status": {
+                "destination": "livestream",
+                "target": "hapax-livestream",
+                "media_role": "Broadcast",
+                "route_present": True,
+            },
+            "last_refusal": {
+                "status": "refused",
+                "completed": False,
+                "source": "autonomous_narrative",
+                "reason": "programme_authorization_stale",
+            },
+        },
+    )
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is True
+    assert "voice_output_silent_failure" not in _codes(health)
+    witness = health.evidence["voice_output_witness"]
+    assert witness["silent_failure"] is False
+    assert witness["refusal"] is True
+    assert witness["last_refusal"]["reason"] == "programme_authorization_stale"
+
+
+def test_legacy_self_referential_drop_reason_does_not_block(tmp_path: Path) -> None:
+    """Mixed-version protection: old-format drops written by a pre-refusal
+    daemon with gate-caused reasons must stay non-blocking."""
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    _write_json(
+        paths.voice_output_witness,
+        {
+            "version": 1,
+            "updated_at": "2027-01-15T08:00:00Z",
+            "freshness_s": 0.0,
+            "status": "drop_recorded",
+            "blocker_drop_reason": "audio_safe_for_broadcast_false",
+            "last_drop": {
+                "status": "dropped",
+                "completed": False,
+                "reason": "audio_safe_for_broadcast_false",
+            },
+        },
+    )
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is True
+    assert "voice_output_silent_failure" not in _codes(health)
+    assert health.evidence["voice_output_witness"]["self_referential_drop"] is True
+
+
 def test_voice_output_preserves_playback_evidence_after_drop_record(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     _write_clear_runtime_states(paths)
