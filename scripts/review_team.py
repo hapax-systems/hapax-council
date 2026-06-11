@@ -230,3 +230,225 @@ def constitute_team(
         seats=tuple(seats),
         notes=tuple(notes),
     )
+
+
+# --- Dossier synthesis --------------------------------------------------------
+
+
+def _unresolved_criticals(reviews: Sequence[Mapping[str, Any]]) -> list[tuple[str, dict]]:
+    out: list[tuple[str, dict]] = []
+    for review in reviews:
+        for finding in review.get("findings") or []:
+            if not isinstance(finding, Mapping):
+                continue
+            if str(finding.get("severity", "")).lower() == "critical" and not finding.get(
+                "resolved"
+            ):
+                out.append((str(review.get("id")), dict(finding)))
+    return out
+
+
+def _accepting(reviews: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    return [r for r in reviews if str(r.get("verdict", "")).lower() in ACCEPT_VERDICTS]
+
+
+def _required_team_size(sizing: Mapping[str, Any]) -> int:
+    return int(sizing.get("team_size") or sizing.get("team_size_min") or 1)
+
+
+def synthesize_dossier(
+    *,
+    task_id: str,
+    pr_number: int,
+    head_sha: str,
+    team_class: str,
+    registry: Mapping[str, Any],
+    reviews: Sequence[Mapping[str, Any]],
+    lenses: Sequence[str],
+    constituted_at: str,
+    constitution_notes: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Reconcile blind reviews into a dossier (the synthesizer, spec §3/§5).
+
+    Verdict ladder: any unresolved named critical -> ``blocked`` (criticals are
+    resolved, not outvoted); else accepts >= quorum (t1 additionally needs >=1
+    accept from EVERY roster family) -> ``quorum-accept``; else ``no-quorum``.
+    Cross-family verdict splits and blocks without a named critical are
+    escalated to the top of the dossier — family disagreement is signal.
+    """
+
+    sizing = registry["sizing"][team_class]
+    roster = [entry["family"] for entry in registry["families"]]
+    accepts = _accepting(reviews)
+    accept_families = {str(r.get("family")) for r in accepts}
+    block_reviews = [r for r in reviews if str(r.get("verdict", "")).lower() == "block"]
+    criticals = _unresolved_criticals(reviews)
+
+    escalations: list[dict[str, Any]] = []
+    for reviewer_id, finding in criticals:
+        escalations.append(
+            {
+                "kind": "unresolved-critical",
+                "reviewer": reviewer_id,
+                "title": finding.get("title"),
+                "file": finding.get("file"),
+                "line": finding.get("line"),
+                "lens": finding.get("lens"),
+            }
+        )
+    if accepts and block_reviews:
+        blocking_families = {str(r.get("family")) for r in block_reviews}
+        if blocking_families - accept_families or accept_families - blocking_families:
+            for review in block_reviews:
+                escalations.append(
+                    {
+                        "kind": "cross-family-split",
+                        "reviewer": str(review.get("id")),
+                        "family": str(review.get("family")),
+                        "detail": "family verdicts split — disagreement is signal, reconcile first",
+                    }
+                )
+    for review in block_reviews:
+        named = [
+            f
+            for f in review.get("findings") or []
+            if isinstance(f, Mapping) and str(f.get("severity", "")).lower() == "critical"
+        ]
+        if not named:
+            escalations.append(
+                {
+                    "kind": "block-without-named-critical",
+                    "reviewer": str(review.get("id")),
+                    "family": str(review.get("family")),
+                    "detail": "BLOCK verdict without a named critical finding does not block on its own",
+                }
+            )
+
+    if criticals and sizing.get("block_on_named_critical", True):
+        verdict = "blocked"
+    else:
+        quorum_met = len(accepts) >= int(sizing["quorum_accept"])
+        if quorum_met and sizing.get("require_all_families"):
+            quorum_met = set(roster) <= accept_families
+        verdict = QUORUM_ACCEPT if quorum_met else "no-quorum"
+
+    return {
+        "dossier_schema": 1,
+        "task_id": task_id,
+        "pr": pr_number,
+        "head_sha": head_sha,
+        "team_class": team_class,
+        "quorum_required": int(sizing["quorum_accept"]),
+        "constituted_at": constituted_at,
+        "constitution_notes": list(constitution_notes),
+        "lenses": list(lenses),
+        "reviewers": [dict(r) for r in reviews],
+        "escalations": escalations,
+        "accept_count": len(accepts),
+        "review_team_verdict": verdict,
+    }
+
+
+# --- Admission gate (consumed by scripts/cc-pr-autoqueue.py) ------------------
+
+
+def review_dossier_path(note_path: Path, task_id: str) -> Path:
+    """Canonical dossier location: ``<task_id>.review-dossier.yaml`` beside the note."""
+
+    return note_path.parent / f"{task_id}{REVIEW_DOSSIER_SUFFIX}"
+
+
+def _dossier_validity_blockers(
+    dossier: Mapping[str, Any],
+    *,
+    pr_head_sha: str | None,
+    registry: Mapping[str, Any],
+) -> tuple[str, ...]:
+    blockers: list[str] = []
+
+    dossier_sha = str(dossier.get("head_sha") or "")
+    if not dossier_sha:
+        blockers.append("review_dossier_malformed:missing_head_sha")
+    elif pr_head_sha and dossier_sha != pr_head_sha:
+        blockers.append(
+            f"review_dossier_stale_head:dossier={dossier_sha[:8]},pr={pr_head_sha[:8]}"
+        )
+
+    team_class = str(dossier.get("team_class") or "")
+    sizing = (registry.get("sizing") or {}).get(team_class)
+    if not isinstance(sizing, Mapping):
+        blockers.append(f"review_dossier_malformed:unknown_team_class:{team_class or 'missing'}")
+        return tuple(blockers)
+
+    reviews = dossier.get("reviewers")
+    if not isinstance(reviews, list) or not all(isinstance(r, Mapping) for r in reviews):
+        blockers.append("review_dossier_malformed:reviewers_not_a_list")
+        return tuple(blockers)
+
+    required_size = _required_team_size(sizing)
+    if len(reviews) < required_size:
+        blockers.append(f"review_dossier_team_undersized:{len(reviews)}/{required_size}")
+
+    criticals = _unresolved_criticals(reviews)
+    if criticals and sizing.get("block_on_named_critical", True):
+        blockers.append(f"review_dossier_unresolved_critical:{len(criticals)}")
+
+    accepts = _accepting(reviews)
+    required_quorum = int(sizing["quorum_accept"])
+    recorded_quorum = dossier.get("quorum_required")
+    if recorded_quorum is not None and int(recorded_quorum) != required_quorum:
+        blockers.append(f"review_dossier_quorum_mismatch:{recorded_quorum}!={required_quorum}")
+    if len(accepts) < required_quorum:
+        blockers.append(f"review_dossier_quorum_not_met:{len(accepts)}/{required_quorum}")
+    if sizing.get("require_all_families"):
+        roster = {entry["family"] for entry in registry["families"]}
+        missing_families = roster - {str(r.get("family")) for r in accepts}
+        if missing_families:
+            blockers.append(
+                "review_dossier_family_diversity:missing_accept_from="
+                + ",".join(sorted(missing_families))
+            )
+
+    verdict = str(dossier.get("review_team_verdict") or "missing").lower()
+    if verdict != QUORUM_ACCEPT:
+        blockers.append(f"review_team_verdict_not_quorum_accept:{verdict}")
+    return tuple(blockers)
+
+
+def review_team_verdict_blockers(
+    frontmatter: Mapping[str, Any],
+    note_path: Path,
+    *,
+    pr_head_sha: str | None = None,
+    registry: Mapping[str, Any] | None = None,
+) -> tuple[str, ...]:
+    """Admission blockers from the review-team quorum gate (no quorum, no merge).
+
+    Fail-closed: a missing/malformed/stale dossier blocks; the verdict field is
+    never trusted alone — quorum, criticals, team size, and family diversity
+    are recomputed from the recorded reviews. ``HAPAX_REVIEW_TEAM_GATE_OFF=1``
+    is the documented emergency bypass.
+    """
+
+    if gate_disabled():
+        return ()
+    task_id = str(frontmatter.get("task_id") or "").strip()
+    if not task_id:
+        return ("missing_review_dossier",)
+    dossier_file = review_dossier_path(note_path, task_id)
+    if not dossier_file.is_file():
+        return ("missing_review_dossier",)
+    try:
+        loaded = yaml.safe_load(dossier_file.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        return (f"review_dossier_malformed:{type(exc).__name__}",)
+    if not isinstance(loaded, Mapping):
+        return (f"review_dossier_malformed:not_a_mapping:{type(loaded).__name__}",)
+    if loaded.get("dossier_schema") != 1:
+        return (f"review_dossier_malformed:dossier_schema:{loaded.get('dossier_schema')}",)
+    if registry is None:
+        try:
+            registry = load_lens_registry()
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            return (f"review_lens_registry_unreadable:{type(exc).__name__}",)
+    return _dossier_validity_blockers(loaded, pr_head_sha=pr_head_sha, registry=registry)

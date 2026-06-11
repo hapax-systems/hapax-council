@@ -235,6 +235,271 @@ class TestConstitution:
         assert rt.writer_family_for_lane("mystery-lane", reg) == "claude"
 
 
+def _review(
+    reviewer_id: str,
+    family: str,
+    verdict: str = "accept",
+    findings: list[dict] | None = None,
+) -> dict:
+    return {
+        "id": reviewer_id,
+        "family": family,
+        "verdict": verdict,
+        "findings": findings or [],
+        "checklist": {},
+    }
+
+
+def _critical(title: str = "named critical", resolved: bool = False) -> dict:
+    return {
+        "severity": "critical",
+        "lens": "correctness",
+        "file": "shared/foo.py",
+        "line": 10,
+        "title": title,
+        "detail": "detail",
+        "resolved": resolved,
+    }
+
+
+def _synth(rt, reviews: list[dict], *, team_class: str = "t2_standard") -> dict:
+    reg = rt.load_lens_registry()
+    return rt.synthesize_dossier(
+        task_id="task-x",
+        pr_number=99,
+        head_sha="a" * 40,
+        team_class=team_class,
+        registry=reg,
+        reviews=reviews,
+        lenses=("tests-cover-the-diff",),
+        constituted_at="2026-06-11T20:00:00+00:00",
+    )
+
+
+class TestSynthesizeDossier:
+    def test_two_of_three_accepts_is_quorum_accept(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept-with-findings"),
+                _review("claude-1", "claude", "block", [_critical(resolved=True)]),
+            ],
+        )
+        assert dossier["review_team_verdict"] == "quorum-accept"
+        assert dossier["accept_count"] == 2
+        assert dossier["dossier_schema"] == 1
+
+    def test_unresolved_critical_blocks_despite_quorum(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "block", [_critical()]),
+            ],
+        )
+        assert dossier["review_team_verdict"] == "blocked"
+        assert any(e["kind"] == "unresolved-critical" for e in dossier["escalations"])
+
+    def test_cross_family_split_escalates_to_top(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "block", [_critical()]),
+            ],
+        )
+        assert any(e["kind"] == "cross-family-split" for e in dossier["escalations"])
+
+    def test_one_accept_is_no_quorum(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "invalid-output"),
+                _review("claude-1", "claude", "invalid-output"),
+            ],
+        )
+        assert dossier["review_team_verdict"] == "no-quorum"
+
+    def test_invalid_output_never_counts_as_accept(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "invalid-output"),
+                _review("gemini-1", "gemini", "invalid-output"),
+                _review("claude-1", "claude", "invalid-output"),
+            ],
+        )
+        assert dossier["accept_count"] == 0
+        assert dossier["review_team_verdict"] == "no-quorum"
+
+    def test_t1_needs_an_accept_from_every_family(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("codex-2", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "block"),
+            ],
+            team_class="t1_critical",
+        )
+        assert dossier["review_team_verdict"] == "no-quorum"
+
+    def test_t1_quorum_with_all_families_accepting(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),
+                _review("codex-2", "codex", "accept-with-findings"),
+            ],
+            team_class="t1_critical",
+        )
+        assert dossier["review_team_verdict"] == "quorum-accept"
+
+    def test_block_without_named_critical_is_escalated_not_blocking(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "block"),  # no critical finding named
+            ],
+        )
+        assert dossier["review_team_verdict"] == "quorum-accept"
+        assert any(e["kind"] == "block-without-named-critical" for e in dossier["escalations"])
+
+
+def _write_dossier(tmp_path: Path, task_id: str, dossier: dict) -> Path:
+    note = tmp_path / f"{task_id}.md"
+    note.write_text(f"---\ntype: cc-task\ntask_id: {task_id}\n---\n", encoding="utf-8")
+    dossier_path = tmp_path / f"{task_id}.review-dossier.yaml"
+    dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
+    return note
+
+
+class TestVerdictBlockers:
+    def _frontmatter(self, task_id: str = "task-x") -> dict:
+        return {"task_id": task_id}
+
+    def _good_dossier(self, rt) -> dict:
+        return _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),
+            ],
+        )
+
+    def test_missing_dossier_blocks(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        note = tmp_path / "task-x.md"
+        note.write_text("---\ntype: cc-task\ntask_id: task-x\n---\n", encoding="utf-8")
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(), note, pr_head_sha="a" * 40
+        )
+        assert blockers == ("missing_review_dossier",)
+
+    def test_malformed_dossier_blocks(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        note = tmp_path / "task-x.md"
+        note.write_text("---\ntype: cc-task\ntask_id: task-x\n---\n", encoding="utf-8")
+        (tmp_path / "task-x.review-dossier.yaml").write_text("[not a mapping]", encoding="utf-8")
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(), note, pr_head_sha="a" * 40
+        )
+        assert any(b.startswith("review_dossier_malformed:") for b in blockers)
+
+    def test_stale_head_sha_blocks(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._good_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(), note, pr_head_sha="b" * 40
+        )
+        assert any(b.startswith("review_dossier_stale_head:") for b in blockers)
+
+    def test_quorum_accept_dossier_passes(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._good_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(), note, pr_head_sha="a" * 40
+        )
+        assert blockers == ()
+
+    def test_no_quorum_dossier_blocks_with_recomputed_count(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "invalid-output"),
+                _review("claude-1", "claude", "invalid-output"),
+            ],
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(), note, pr_head_sha="a" * 40
+        )
+        assert "review_dossier_quorum_not_met:1/2" in blockers
+        assert any(b.startswith("review_team_verdict_not_quorum_accept:") for b in blockers)
+
+    def test_unresolved_critical_blocks_even_if_verdict_field_lies(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "block", [_critical()]),
+            ],
+        )
+        dossier["review_team_verdict"] = "quorum-accept"  # tampered/buggy field
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(), note, pr_head_sha="a" * 40
+        )
+        assert "review_dossier_unresolved_critical:1" in blockers
+
+    def test_undersized_team_blocks(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+            ],
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(), note, pr_head_sha="a" * 40
+        )
+        assert any(b.startswith("review_dossier_team_undersized:") for b in blockers)
+
+    def test_killswitch_disables_gate(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setenv("HAPAX_REVIEW_TEAM_GATE_OFF", "1")
+        note = tmp_path / "task-x.md"
+        note.write_text("---\ntype: cc-task\ntask_id: task-x\n---\n", encoding="utf-8")
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(), note, pr_head_sha="a" * 40
+        )
+        assert blockers == ()
+
+
 class TestLensCharters:
     def test_charters_have_frontmatter_and_checklist_items(self) -> None:
         reg = _registry()
