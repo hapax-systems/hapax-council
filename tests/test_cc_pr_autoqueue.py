@@ -58,12 +58,16 @@ def _write_review_dossier(
 ) -> Path:
     if reviewers is None:
         reviewers = [
-            {"id": f"{family}-1", "family": family, "verdict": "accept", "findings": [], "checklist": {}}
+            {
+                "id": f"{family}-1",
+                "family": family,
+                "verdict": "accept",
+                "findings": [],
+                "checklist": {},
+            }
             for family in ("codex", "gemini", "claude")
         ]
-    accepts = sum(
-        1 for r in reviewers if r["verdict"] in ("accept", "accept-with-findings")
-    )
+    accepts = sum(1 for r in reviewers if r["verdict"] in ("accept", "accept-with-findings"))
     dossier = {
         "dossier_schema": 1,
         "task_id": task_id,
@@ -136,9 +140,27 @@ class TestReviewTeamGate:
             head_sha="sha-42",
             verdict="no-quorum",
             reviewers=[
-                {"id": "codex-1", "family": "codex", "verdict": "accept", "findings": [], "checklist": {}},
-                {"id": "gemini-1", "family": "gemini", "verdict": "invalid-output", "findings": [], "checklist": {}},
-                {"id": "claude-1", "family": "claude", "verdict": "invalid-output", "findings": [], "checklist": {}},
+                {
+                    "id": "codex-1",
+                    "family": "codex",
+                    "verdict": "accept",
+                    "findings": [],
+                    "checklist": {},
+                },
+                {
+                    "id": "gemini-1",
+                    "family": "gemini",
+                    "verdict": "invalid-output",
+                    "findings": [],
+                    "checklist": {},
+                },
+                {
+                    "id": "claude-1",
+                    "family": "claude",
+                    "verdict": "invalid-output",
+                    "findings": [],
+                    "checklist": {},
+                },
             ],
         )
         decision = self._classify(vault, _pr(42))
