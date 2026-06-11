@@ -1,0 +1,14 @@
+[Unit]
+Description=Operator monitor: private bus (TTS) -> mk5 OUT10/AUX9 (right ear)
+# Formalizes the 2026-06-10 split-ear patch (was an orphan pw-loopback).
+# Volume-controllable leg: Faderfox fader 8 targets output.hapax-monitor-private.
+After=pipewire.service
+Wants=pipewire.service
+
+[Service]
+ExecStart=/usr/bin/pw-loopback -n hapax-monitor-private --capture-props=node.target=hapax-private stream.capture.sink=true audio.channels=2 --playback-props="node.target=alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0 audio.channels=1 audio.position=[AUX9]"
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

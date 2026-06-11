@@ -29,7 +29,12 @@ faders:
   - { label: operator-mic,  channel: 4, cc: 95, target: "hapax-mic-rode-playback",     scale: 1.0 }
   - { label: youtube,       channel: 5, cc: 95, target: "hapax-yt-loudnorm",           scale: 1.0 }
   - { label: voice-to-s4,   channel: 6, cc: 95, target: "hapax-loudnorm",              scale: 1.0 }
-  # faders 7-12 unassigned (spare). Add { channel, cc, target, scale } to use.
+  - { label: monitor-stream,  channel: 7, cc: 95, target: "output.hapax-monitor-stream",  scale: 1.0 }
+  - { label: monitor-private, channel: 8, cc: 95, target: "output.hapax-monitor-private", scale: 1.0 }
+  # faders 9-12 unassigned (spare). Add { channel, cc, target, scale } to use.
+  # 7/8 are the OPERATOR EAR trims (left=stream program, right=private TTS) —
+  # they ride the hapax-monitor-{stream,private} loopback units, NOT broadcast nodes:
+  # moving them changes what the operator hears, never what the stream carries.
 
 buttons:
   # Mute toggles (button CC >=64 = press). Verify CCs via --learn.
