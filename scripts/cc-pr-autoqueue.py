@@ -40,6 +40,11 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import review_team  # noqa: E402
 
 from shared.merge_queue_lineage import (  # noqa: E402
     DEFAULT_LEDGER_PATH,
@@ -636,6 +641,7 @@ def _task_blockers(
     require_route_metadata: bool,
     open_pr_number: int | None = None,
     allow_release_auto_arm: bool = False,
+    pr_head_sha: str | None = None,
 ) -> list[str]:
     blockers: list[str] = []
     if not task.authority_case:
@@ -649,6 +655,17 @@ def _task_blockers(
     # only with a signed acceptance receipt beside the note. Applies to active
     # and closed task links alike; non-review-floor tasks return no blockers.
     blockers.extend(acceptance_receipt_blockers(task.frontmatter, task.path))
+
+    # Review-team quorum gate (CASE-ROUTING-OPERATIONALIZATION-20260609): every
+    # PR admits only with a quorum-accept review dossier beside the task note,
+    # keyed to the PR's current head sha. No quorum, no merge. Dossiers are
+    # produced by scripts/cc-pr-review-dispatch.py; emergency bypass is
+    # HAPAX_REVIEW_TEAM_GATE_OFF=1 (gate only, not the whole autoqueue).
+    blockers.extend(
+        review_team.review_team_verdict_blockers(
+            task.frontmatter, task.path, pr_head_sha=pr_head_sha
+        )
+    )
 
     if task.folder == "closed":
         if task.status not in CLOSED_READY_STATUSES:
@@ -859,6 +876,7 @@ def classify_pr(
                 require_route_metadata=require_route_metadata,
                 open_pr_number=pr.number,
                 allow_release_auto_arm=len(matches) == 1,
+                pr_head_sha=pr.head_sha,
             )
             if len(matches) == 1:
                 reasons.extend(blockers)
