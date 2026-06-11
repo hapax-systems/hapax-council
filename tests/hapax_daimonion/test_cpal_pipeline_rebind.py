@@ -189,6 +189,8 @@ class TestSpontaneousSpeechRebind:
             patch("agents.hapax_daimonion.cpal.runner.record_destination_decision"),
             patch("agents.hapax_daimonion.cpal.runner.record_drop") as record_drop,
             patch("agents.hapax_daimonion.cpal.runner.asyncio.sleep", new=AsyncMock()),
+            # Receipt emission must not touch the production /dev/shm witness.
+            patch("agents.hapax_daimonion.turn_budget.record_turn_timing"),
         ):
             await runner.process_impingement(_exploration_impingement())
 

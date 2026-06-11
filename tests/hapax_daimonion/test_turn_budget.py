@@ -290,6 +290,10 @@ class TestSpontaneousLockDiscipline:
             "agents.hapax_daimonion.voice_output_witness.record_drop",
             lambda **kw: drops.append(kw),
         )
+        # Receipt emission must not touch the production /dev/shm witness.
+        monkeypatch.setattr(
+            "agents.hapax_daimonion.turn_budget.record_turn_timing", MagicMock()
+        )
         with patch("litellm.acompletion", AsyncMock(side_effect=TimeoutError())):
             text = asyncio.run(p.compose_spontaneous_speech(impingement, destination="private"))
         assert text is None
