@@ -5,17 +5,26 @@ ISAP: SLICE-005-EVIDENCE-TRACE (CASE-SDLC-REFORM-001)
 
 from __future__ import annotations
 
+import subprocess
 import time
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from shared.evidence_ledger import (
     EvidenceEntry,
     EvidenceLedger,
+    LegibilityEvidenceRecord,
+    LegibilityEvidenceRegistry,
     ReceiptEnvelope,
     TierComplianceResult,
     TraceGraph,
     TraceLink,
     check_tier_compliance,
+    collect_command_evidence,
+    collect_local_api_evidence,
+    collect_package_registry_evidence,
+    collect_public_url_evidence,
+    collect_systemd_inventory_evidence,
 )
 
 
@@ -204,3 +213,170 @@ class TestTierCompliance:
         data = result.model_dump(mode="json")
         rt = TierComplianceResult.model_validate(data)
         assert rt.case_id == "CASE-RT"
+
+
+class TestLegibilityEvidenceRecord:
+    def test_freshness_uses_ttl(self) -> None:
+        record = LegibilityEvidenceRecord(
+            evidence_id="EV-1",
+            kind="command",
+            collected_at_epoch=100.0,
+            value_summary="ok",
+            freshness_ttl_s=10.0,
+        )
+        assert record.is_fresh(109.0)
+        assert not record.is_fresh(111.0)
+
+    def test_mirrors_to_tier_evidence_entry(self) -> None:
+        record = LegibilityEvidenceRecord(
+            evidence_id="EV-1",
+            kind="public_url",
+            source_url="https://example.test",
+            value_summary="status=200",
+            privacy_class="public",
+            public_safe=True,
+        )
+        entry = record.to_evidence_entry(case_id="CASE-LEGIBILITY", traces_to=["REQ-1"])
+        assert entry.case_id == "CASE-LEGIBILITY"
+        assert entry.kind == "runtime_observation"
+        assert entry.path_or_url == "https://example.test"
+        assert entry.traces_to == ["REQ-1"]
+
+
+class TestLegibilityEvidenceRegistry:
+    def test_append_read_and_mirror(self, tmp_path: Path) -> None:
+        registry = LegibilityEvidenceRegistry(tmp_path)
+        record = LegibilityEvidenceRecord(
+            evidence_id="EV-1",
+            kind="command",
+            value_summary="exit=0 stdout=ok",
+        )
+        registry.append(record, mirror_case_id="CASE-LEGIBILITY")
+
+        records = registry.all_records()
+        assert [r.evidence_id for r in records] == ["EV-1"]
+        mirrored = EvidenceLedger(tmp_path).entries_for_case("CASE-LEGIBILITY")
+        assert [entry.evidence_id for entry in mirrored] == ["EV-1"]
+
+    def test_fresh_and_stale_records(self, tmp_path: Path) -> None:
+        registry = LegibilityEvidenceRegistry(tmp_path)
+        registry.append(
+            LegibilityEvidenceRecord(
+                evidence_id="EV-F",
+                kind="command",
+                value_summary="fresh",
+                collected_at_epoch=100.0,
+                freshness_ttl_s=20.0,
+            )
+        )
+        registry.append(
+            LegibilityEvidenceRecord(
+                evidence_id="EV-S",
+                kind="command",
+                value_summary="stale",
+                collected_at_epoch=50.0,
+                freshness_ttl_s=20.0,
+            )
+        )
+        assert [record.evidence_id for record in registry.fresh_records(110.0)] == ["EV-F"]
+        assert [record.evidence_id for record in registry.stale_records(110.0)] == ["EV-S"]
+
+
+class TestLegibilityCollectors:
+    def test_command_success_redacts_secret_like_stdout(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["echo"],
+            returncode=0,
+            stdout="token=abc123\n",
+            stderr="",
+        )
+        with patch("shared.evidence_ledger.subprocess.run", return_value=completed):
+            record = collect_command_evidence(["echo", "token=abc123"])
+
+        assert record.kind == "command"
+        assert record.status == "ok"
+        assert "token=[REDACTED]" in record.value_summary
+        assert record.redaction_notes == "secret-like text redacted"
+
+    def test_command_failure_is_structured_failure_evidence(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["false"],
+            returncode=2,
+            stdout="",
+            stderr="bad",
+        )
+        with patch("shared.evidence_ledger.subprocess.run", return_value=completed):
+            record = collect_command_evidence(["false"])
+
+        assert record.kind == "collection_failure"
+        assert record.status == "failed"
+        assert record.error == "bad"
+        assert record.failure_behavior == "fail_closed"
+
+    def test_public_url_extracts_title(self) -> None:
+        response = Mock()
+        response.status = 200
+        response.headers = {"content-type": "text/html"}
+        response.read.return_value = b"<html><title>Example Page</title></html>"
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        opener = Mock(return_value=response)
+
+        record = collect_public_url_evidence("https://example.test", opener=opener)
+
+        assert record.kind == "public_url"
+        assert record.privacy_class == "public"
+        assert record.public_safe is True
+        assert "title=Example Page" in record.value_summary
+
+    def test_package_registry_extracts_version(self) -> None:
+        response = Mock()
+        response.status = 200
+        response.headers = {"content-type": "application/json"}
+        response.read.return_value = b'{"info": {"version": "1.2.3"}}'
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        opener = Mock(return_value=response)
+
+        record = collect_package_registry_evidence("demo-package", opener=opener)
+
+        assert record.kind == "package_registry"
+        assert record.privacy_class == "public_registry"
+        assert "version=1.2.3" in record.value_summary
+
+    def test_local_api_is_not_public_safe(self) -> None:
+        response = Mock()
+        response.status = 200
+        response.headers = {"content-type": "application/json"}
+        response.read.return_value = b'{"healthy": true}'
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        opener = Mock(return_value=response)
+
+        record = collect_local_api_evidence("http://127.0.0.1:8051/api/health", opener=opener)
+
+        assert record.kind == "local_api"
+        assert record.privacy_class == "local_private"
+        assert record.public_safe is False
+        assert 'body={"healthy": true}' in record.value_summary
+
+    def test_systemd_inventory_counts_services_and_timers(self) -> None:
+        service_files = subprocess.CompletedProcess(
+            args=["systemctl"], returncode=0, stdout="a.service enabled\nc.service disabled\n"
+        )
+        timer_files = subprocess.CompletedProcess(
+            args=["systemctl"], returncode=0, stdout="b.timer enabled\n"
+        )
+        active_timers = subprocess.CompletedProcess(
+            args=["systemctl"], returncode=0, stdout="next left last passed b.timer b.service\n"
+        )
+        with patch(
+            "shared.evidence_ledger.subprocess.run",
+            side_effect=[service_files, timer_files, active_timers],
+        ):
+            record = collect_systemd_inventory_evidence()
+
+        assert record.kind == "systemd_inventory"
+        assert record.value_summary == (
+            "user=True service_unit_file_count=2 timer_unit_file_count=1 active_timer_count=1"
+        )

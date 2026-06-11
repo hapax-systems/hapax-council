@@ -4043,3 +4043,22 @@ from shared.compression.registry import SurfaceSpec  # noqa: F401, E402
 
 SurfaceSpec.lossy_allowed
 SurfaceSpec.lossless_allowed
+
+# Legibility evidence registry v0: operator-facing CLI entrypoint
+# scripts/hapax-evidence imports and dispatches these by subcommand. The vulture
+# diff gate scans the library before following that no-extension script path.
+from shared.evidence_ledger import (  # noqa: F401, E402
+    LegibilityEvidenceRegistry,
+    collect_command_evidence,
+    collect_local_api_evidence,
+    collect_package_registry_evidence,
+    collect_systemd_inventory_evidence,
+)
+
+LegibilityEvidenceRegistry
+LegibilityEvidenceRegistry.fresh_records
+LegibilityEvidenceRegistry.stale_records
+collect_command_evidence
+collect_local_api_evidence
+collect_package_registry_evidence
+collect_systemd_inventory_evidence
