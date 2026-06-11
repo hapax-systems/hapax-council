@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""cc-task-lint — validate every cc-task note parses and carries its contract.
+
+SDLC legibility triad (operator directive 2026-06-10):
+  programmatic — this lint;
+  formal       — docs/runbooks/sdlc-task-note-contract.md;
+  legible      — cc-pr-autoqueue names unparseable notes in its reasons.
+
+Checks per note: frontmatter parses (no ANSI escapes, valid YAML, fenced),
+type==cc-task notes carry task_id/status/authority_case/parent_spec, and
+status values are from the known vocabulary. Exit 1 on any failure.
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+import yaml
+
+VAULT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
+REQUIRED = ("task_id", "status", "authority_case", "parent_spec")
+KNOWN_STATUS = {
+    "offered",
+    "claimed",
+    "in_progress",
+    "pr_open",
+    "blocked",
+    "review",
+    "done",
+    "completed",
+    "complete",
+    "closed",
+    "fulfilled",
+    "withdrawn",
+    "superseded",
+}
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def lint(path: Path, *, contract: bool) -> tuple[list[str], list[str]]:
+    """Returns (hard_failures, contract_warnings)."""
+    problems: list[str] = []
+    warnings: list[str] = []
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if not text.startswith("---"):
+        return (["no frontmatter fence"], [])
+    end = text.find("\n---", 3)
+    if end == -1:
+        return (["unterminated frontmatter fence"], [])
+    raw = text[3:end]
+    if ANSI.search(raw):
+        problems.append("ANSI escape sequences in frontmatter (breaks YAML silently)")
+    try:
+        fm = yaml.safe_load(ANSI.sub("", raw)) or {}
+    except yaml.YAMLError as exc:
+        problems.append(f"YAML error: {str(exc).splitlines()[0][:100]}")
+        return (problems, warnings)
+    if not isinstance(fm, dict):
+        return (problems + ["frontmatter is not a mapping"], warnings)
+    if fm.get("type") != "cc-task" or not contract:
+        return (problems, warnings)  # non-task and historical (closed/) notes only need to parse
+    for field in REQUIRED:
+        if not fm.get(field):
+            warnings.append(f"missing required field: {field}")
+    status = str(fm.get("status", "")).lower()
+    if status and status not in KNOWN_STATUS:
+        warnings.append(f"unknown status: {status!r}")
+    return (problems, warnings)
+
+
+def main() -> int:
+    strict = "--strict" in sys.argv
+    failures = 0
+    warned = 0
+    for folder in ("active", "closed"):
+        root = VAULT / folder
+        if not root.is_dir():
+            continue
+        for path in sorted(root.glob("*.md")):
+            problems, warnings = lint(path, contract=(folder == "active"))
+            if problems:
+                failures += 1
+                print(f"FAIL {folder}/{path.name}")
+                for prob in problems:
+                    print(f"     - {prob}")
+            if warnings:
+                warned += 1
+                if strict:
+                    failures += 1
+                tag = "FAIL" if strict else "WARN"
+                print(f"{tag} {folder}/{path.name}")
+                for w in warnings:
+                    print(f"     - {w}")
+    if failures:
+        print(
+            f"\n{failures} task note(s) failed lint — unparseable notes are INVISIBLE to the SDLC."
+        )
+        return 1
+    if warned:
+        print(f"\nparse: clean. {warned} active note(s) have contract gaps (--strict to enforce).")
+        return 0
+    print("all task notes lint clean")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
