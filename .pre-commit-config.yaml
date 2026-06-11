@@ -55,6 +55,12 @@ repos:
         language: system
         files: ^(config/pipewire/[^/]+\.conf|scripts/check-audio-conf-names\.py)$
         pass_filenames: false
+      - id: audio-conf-unique-node-names
+        name: Audio conf unique node.name gate
+        entry: uv run python scripts/check-audio-conf-unique-node-names.py
+        language: system
+        files: ^(config/pipewire/.*\.conf|scripts/check-audio-conf-unique-node-names\.py)$
+        pass_filenames: false
       - id: gate-manifest-check
         name: Cross-runtime gate-manifest wiring check (incl. live claude settings)
         # --require-claude-settings checks the live ~/.claude/settings.json (the

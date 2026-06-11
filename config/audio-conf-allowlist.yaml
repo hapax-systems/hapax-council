@@ -58,8 +58,6 @@ orphans:
   - hapax-s4-loopback.conf
   - hapax-s4-usb-sink.conf
   - hapax-voice-s4-emulation.conf  # S-4 voice emulation monitor path, not yaml-modeled broadcast graph.
-  - hapax-voice-s4-hardware.conf  # S-4 hardware voice send (VPR D4), operator-monitor path.
-  - hapax-tts-to-s4.conf  # TTS-to-S-4 loopback send from main; voice-paths.yaml, not audio-topology.yaml.
 
   # MOTU UltraLite mk5 + S-4 insert + Faderfox migration (task:
   # audio-mk5-s4-faderfox-migration-20260602) — input/return stream-routing
@@ -80,7 +78,6 @@ orphans:
   - hapax-voice-fx-loudnorm.conf  # renamed 2026-05-03 (audit-E slice 3)
   # YouTube + backing-mix sidechain ducker — dynamic gate, not yaml-modeled
   - hapax-backing-ducked.conf  # YouTube bed ducked under voice/backing events
-  - hapax-backing-ducked-sidechain.conf  # sidechain feed for the ducker
   - hapax-voice-over-ytube-duck.conf  # VAD-gated voice-over-YT ramp
 
   # Pre-existing software-ducker remnants — superseded by MPC Live III

@@ -1,12 +1,12 @@
-"""Config-lint regression pin for the backing-mix sidechain reverse ducker — YT bundle Phase 3 (#145).
+"""Archive regression pin for the backing-mix sidechain reverse ducker.
 
 Spec: docs/superpowers/specs/2026-04-18-youtube-broadcast-bundle-design.md §3.
 Plan: docs/superpowers/plans/2026-04-20-youtube-broadcast-bundle-plan.md Phase 3.
 
-The conf file installs into ``~/.config/pipewire/pipewire.conf.d/`` and
-declares the ``hapax-backing-ducked`` virtual sink. These tests pin the
-file structure so an accidental edit (e.g. dropping the sink name,
-changing the ducker direction) trips immediately.
+The old conf declared the same ``hapax-backing-ducked`` node names as the
+canonical controller-driven conf. It is archived by
+voice-p0-pipewire-conf-dedupe-20260610 so it cannot be deployed accidentally,
+but the file remains pinned as provenance.
 
 Historical: previously named ``ytube-over-24c-duck.conf`` and exposed
 ``hapax-24c-ducked`` — renamed 2026-05 with the PreSonus Studio 24c
@@ -21,16 +21,27 @@ from __future__ import annotations
 
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+TOP_LEVEL_PATH = REPO_ROOT / "config" / "pipewire" / "hapax-backing-ducked-sidechain.conf"
 CONF_PATH = (
-    Path(__file__).resolve().parents[2]
+    REPO_ROOT
     / "config"
     / "pipewire"
+    / "archive"
+    / "2026-06-10-dedupe"
+    / "generated-node-collisions"
     / "hapax-backing-ducked-sidechain.conf"
 )
 
 
+def test_conf_is_not_top_level_deployable() -> None:
+    assert not TOP_LEVEL_PATH.exists(), (
+        f"archived fossil must not be deployable at {TOP_LEVEL_PATH}"
+    )
+
+
 def test_conf_file_exists() -> None:
-    assert CONF_PATH.exists(), f"backing-ducked sidechain conf missing at {CONF_PATH}"
+    assert CONF_PATH.exists(), f"backing-ducked sidechain archive missing at {CONF_PATH}"
 
 
 def test_conf_declares_backing_ducked_sink() -> None:
