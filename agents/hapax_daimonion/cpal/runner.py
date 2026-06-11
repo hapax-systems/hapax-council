@@ -17,6 +17,7 @@ import asyncio
 import enum
 import json
 import logging
+import sys
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -318,6 +319,10 @@ class CpalRunner:
         # serialization, not an expert rule — it doesn't decide whether
         # to speak, only prevents physical audio overlap.
         self._speech_lock = asyncio.Lock()
+        # Serializes pipeline recreation in _ensure_pipeline so concurrent
+        # utterance + spontaneous recruitment cannot double-start the
+        # conversation pipeline (CASE-VOICE-FOUNDATION-20260610).
+        self._pipeline_rebind_lock = asyncio.Lock()
         # Queue #225: flipped to True by process_impingement(); reset each tick.
         # Drives the "impingement" label on hapax_cpal_ticks_by_type_total.
         self._impingement_since_last_tick: bool = False
@@ -349,9 +354,74 @@ class CpalRunner:
         """
         return self._register_bridge.current_register()
 
-    def set_pipeline(self, pipeline: object) -> None:
-        """Set the conversation pipeline for T3 delegation. Called after pipeline creation."""
+    def set_pipeline(self, pipeline: object | None, *, cause: str | None = None) -> None:
+        """Set or clear the conversation pipeline for T3 delegation.
+
+        Every bound/unbound transition is logged at WARNING with its cause.
+        The 2026-06-10 total voice outage (13:06->17:55 local) was a
+        silence-timeout unwire (stop_pipeline -> set_pipeline(None)) that
+        produced zero log lines while every spontaneous impingement dropped
+        at pipeline_unavailable — DEBUG-only, invisible in journalctl.
+        Callers that predate the ``cause`` kwarg (pipeline_lifecycle,
+        session_events, pipeline_start) get their module.function derived
+        from the call stack so the transition is still attributable.
+        """
+        if cause is None:
+            frame = sys._getframe(1)
+            cause = f"{frame.f_globals.get('__name__', '?')}.{frame.f_code.co_name}"
+        old_state = "bound" if self._pipeline is not None else "unbound"
+        new_state = "bound" if pipeline is not None else "unbound"
+        if pipeline is not self._pipeline:
+            log.warning(
+                "CPAL pipeline reference %s -> %s (cause=%s)",
+                old_state,
+                new_state,
+                cause,
+            )
         self._pipeline = pipeline
+
+    async def _ensure_pipeline(self, cause: str) -> object | None:
+        """Return a running conversation pipeline, recreating it if necessary.
+
+        Root-cause fix for the 2026-06-10 pipeline_unavailable outage:
+        ``stop_pipeline()`` nulls this runner's reference on every
+        silence-timeout session close, and the only rebind paths
+        (engagement classifier, hotkey, daemon restart) may not fire for
+        hours. Impingement-native voice requires the pipeline to be
+        recruitable at any moment, so the runner recreates it through
+        ``daemon._start_pipeline()`` — the canonical creator, which rebinds
+        this runner (plus audio output and grounding ledger) via
+        ``start_conversation_pipeline``. A bound-but-stopped pipeline is
+        restarted in place (the pre-existing recovery posture). Returns
+        ``None`` when recovery is impossible (no daemon) or recreation
+        fails; callers keep their fail-closed drop semantics.
+        """
+        async with self._pipeline_rebind_lock:
+            pipeline = self._pipeline
+            if pipeline is not None:
+                if getattr(pipeline, "_running", True):
+                    return pipeline
+                # Bound but stopped: restart in place. The utterance/
+                # impingement IS the recruitment that revives the pipeline.
+                await pipeline.start()
+                return pipeline
+            daemon = self._daemon
+            if daemon is None or not hasattr(daemon, "_start_pipeline"):
+                return None
+            log.warning(
+                "CPAL: pipeline unbound (%s) — recreating via daemon._start_pipeline",
+                cause,
+            )
+            try:
+                await daemon._start_pipeline()
+            except Exception:
+                log.warning(
+                    "CPAL: pipeline recreation failed (%s) — voice impulse will drop",
+                    cause,
+                    exc_info=True,
+                )
+                return None
+            return self._pipeline
 
     def set_grounding_ledger(self, ledger: object) -> None:
         """Update grounding ledger (may be created after runner init)."""
@@ -748,18 +818,22 @@ class CpalRunner:
                         or system_speech_observed
                     )
 
-            # T3: Full formulation via pipeline
-            if self._pipeline is not None:
-                # Impingement-native: if the pipeline was stopped (e.g., by
-                # silence timeout closing the session), restart it. The
-                # utterance IS the impingement that recruits the pipeline.
-                if not self._pipeline._running:
-                    await self._pipeline.start()
+            # T3: Full formulation via pipeline. Impingement-native: a
+            # silence-timeout session close UNWIRES the pipeline
+            # (stop_pipeline sets the reference to None), so recreate or
+            # restart it before delegating — the utterance IS the
+            # impingement that recruits the pipeline. The previous
+            # restart-only recovery here could never fire for the very
+            # case it named, because the unwire nulls the reference;
+            # the first utterance after every timeout was eaten
+            # (witnessed 2026-06-10 09:25 / 18:16 / 18:25).
+            pipeline = await self._ensure_pipeline("utterance_t3")
+            if pipeline is not None:
                 # Acquire speech lock: prevents autonomous narration and
                 # exploration surfacing from producing audio during a
                 # multi-sentence conversational response.
                 async with self._speech_lock:
-                    await self._pipeline.process_utterance(utterance)
+                    await pipeline.process_utterance(utterance)
                     system_speech_observed = True
 
                 # Record grounding outcome based on pipeline result (C: C1)
@@ -1329,10 +1403,13 @@ class CpalRunner:
                 intensity=min(1.0, effect.error_boost + 0.5),
             )
 
-            # T3 via pipeline spontaneous speech (if available)
-            if self._pipeline is not None and hasattr(
-                self._pipeline, "generate_spontaneous_speech"
-            ):
+            # T3 via pipeline spontaneous speech. Recreate the pipeline if a
+            # session close unwired it: the 2026-06-10 13:06->17:55 outage
+            # was every spontaneous impulse dropping here as
+            # pipeline_unavailable because nothing rebinds the reference
+            # between sessions (engagement only fires on operator speech).
+            pipeline = await self._ensure_pipeline("spontaneous_speech")
+            if pipeline is not None and hasattr(pipeline, "generate_spontaneous_speech"):
                 # HOMAGE Phase 7: pass the active register's framing
                 # directive to the pipeline so the LLM tunes tonality
                 # before synthesis. Only TEXTMODE carries a non-trivial
@@ -1374,7 +1451,7 @@ class CpalRunner:
                     # and the buffer captures inter-sentence audio as "operator."
                     self._buffer.set_speaking(True)
                     try:
-                        await self._pipeline.generate_spontaneous_speech(
+                        await pipeline.generate_spontaneous_speech(
                             impingement,
                             register_hint=register_hint,
                             destination_target=destination_target,
@@ -1391,20 +1468,20 @@ class CpalRunner:
                             exc_info=True,
                         )
                         try:
-                            await self._pipeline.generate_spontaneous_speech(
+                            await pipeline.generate_spontaneous_speech(
                                 impingement,
                                 register_hint=register_hint,
                                 destination_target=destination_target,
                             )
                         except TypeError:
                             try:
-                                await self._pipeline.generate_spontaneous_speech(
+                                await pipeline.generate_spontaneous_speech(
                                     impingement,
                                     register_hint=register_hint,
                                 )
                             except TypeError:
                                 try:
-                                    await self._pipeline.generate_spontaneous_speech(impingement)
+                                    await pipeline.generate_spontaneous_speech(impingement)
                                 except Exception:
                                     log.debug("Spontaneous speech failed", exc_info=True)
                             except Exception:
@@ -1428,6 +1505,15 @@ class CpalRunner:
                             )
                         )
             else:
+                # WARNING, not DEBUG: the 2026-06-10 outage produced ZERO
+                # log lines in 4.5 hours because this drop was invisible
+                # outside the SHM witness (observability polarity defect).
+                log.warning(
+                    "CPAL: spontaneous speech dropped: pipeline unavailable "
+                    "(source=%s, recovery %s)",
+                    source,
+                    "failed" if self._daemon is not None else "impossible: no daemon",
+                )
                 record_drop(
                     reason="pipeline_unavailable",
                     source=source,
