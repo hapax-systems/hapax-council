@@ -105,8 +105,21 @@ class TestSelectiveLockdown:
 
         pipeline._update_system_context()
         content = pipeline.messages[0]["content"]
-        assert "Grounding Directive" in content
-        assert "Rephrase" in content or "rephrase" in content.lower()
+        assert "Grounding Directive" not in content
+
+        from shared.grounding_context import GroundingContextVerifier
+
+        pipeline.messages.append({"role": "user", "content": "test"})
+        envelope = GroundingContextVerifier.build_envelope(
+            turn_id="1",
+            temporal_bands={"impression": {"freshness": "fresh"}},
+            phenomenal_lines=[],
+            available_tools=[],
+        )
+        turn_messages = pipeline._build_llm_messages(envelope=envelope, tier_name="FAST")
+        turn_local_content = turn_messages[-1]["content"]
+        assert "Grounding Directive" in turn_local_content
+        assert "Rephrase" in turn_local_content or "rephrase" in turn_local_content.lower()
 
     def test_salience_prompt_stripped_but_router_computes(self):
         from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline

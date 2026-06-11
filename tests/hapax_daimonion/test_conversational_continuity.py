@@ -226,3 +226,85 @@ class TestExperimentFlags:
         pipeline._update_system_context()
         content = pipeline.messages[0]["content"]
         assert "Conversation So Far" not in content
+
+
+class TestStablePrefixPromptLayout:
+    def _make_pipeline(self):
+        from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline
+
+        pipeline = ConversationPipeline.__new__(ConversationPipeline)
+        pipeline.system_prompt = "You are Hapax."
+        pipeline.messages = [
+            {"role": "system", "content": "You are Hapax."},
+            {"role": "user", "content": "What changed?"},
+        ]
+        pipeline._conversation_thread = []
+        pipeline._experiment_flags = {
+            "sentinel": False,
+            "volatile_lockdown": True,
+            "salience_context": False,
+        }
+        pipeline._env_context_fn = None
+        pipeline._policy_fn = None
+        pipeline._goals_fn = None
+        pipeline._health_fn = None
+        pipeline._nudges_fn = None
+        pipeline._dmn_fn = None
+        pipeline._last_env_hash = 0
+        pipeline._salience_router = None
+        pipeline._salience_diagnostics = None
+        pipeline._context_distillation = ""
+        pipeline._guest_mode = False
+        pipeline._face_count = 0
+        pipeline._consent_reader = None
+        pipeline._grounding_ledger = None
+        pipeline._frozen_env = "Desk mode: focused."
+        return pipeline
+
+    def test_volatile_context_is_not_in_stable_system_prefix(self):
+        from agents.hapax_daimonion.conversation_pipeline import ThreadEntry
+
+        pipeline = self._make_pipeline()
+        pipeline._conversation_thread = [
+            ThreadEntry(turn=1, user_text="prefix cache", response_summary="restructure")
+        ]
+
+        pipeline._update_system_context()
+
+        stable_content = pipeline.messages[0]["content"]
+        assert "You are Hapax." in stable_content
+        assert "prefix cache" in stable_content
+        assert "Current Environment" not in stable_content
+        assert "Desk mode: focused." in pipeline._volatile_context
+
+    def test_llm_request_places_volatile_preamble_on_active_user_turn(self):
+        from shared.grounding_context import GroundingContextVerifier
+
+        pipeline = self._make_pipeline()
+        pipeline._update_system_context()
+        envelope = GroundingContextVerifier.build_envelope(
+            turn_id="1",
+            temporal_bands={"impression": {"freshness": "fresh"}},
+            phenomenal_lines=["Stimmung: steady"],
+            available_tools=[],
+        )
+
+        messages = pipeline._build_llm_messages(envelope=envelope, tier_name="FAST")
+
+        assert [m["role"] for m in messages] == ["system", "user"]
+        assert messages[0]["content"] == "You are Hapax."
+        assert "Current Environment" in messages[1]["content"]
+        assert "Desk mode: focused." in messages[1]["content"]
+        assert "<grounding_context>" in messages[1]["content"]
+        assert "## Operator Utterance\nWhat changed?" in messages[1]["content"]
+
+    def test_volatile_changes_do_not_rewrite_stable_prefix(self):
+        pipeline = self._make_pipeline()
+        pipeline._update_system_context()
+        stable_before = pipeline.messages[0]["content"]
+
+        pipeline._frozen_env = "Desk mode: interrupted."
+        pipeline._update_system_context()
+
+        assert pipeline.messages[0]["content"] == stable_before
+        assert "interrupted" in pipeline._volatile_context
