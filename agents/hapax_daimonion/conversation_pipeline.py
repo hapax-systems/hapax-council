@@ -59,6 +59,15 @@ _CAPTION_AUDIO_BYTES_PER_SAMPLE = 2
 _VOICE_OUTPUT_SAMPLE_RATE_HZ = 24000
 _VOICE_OUTPUT_BYTES_PER_SAMPLE = 2
 
+# Audit H2 (CASE-VOICE-FOUNDATION-20260610): the spontaneous-speech LLM call
+# runs while the CPAL runner holds the global speech lock. litellm's default
+# timeout is 600s, so one wedged TabbyAPI request could silence every other
+# voice path for ten minutes. Bound it explicitly: worst measured local-fast
+# TTFT under GPU contention is ~19s (foundation audit §3) plus a few seconds
+# of generation for max_tokens=80 — 60s gives ~2x headroom while capping the
+# speech-lock hold.
+_SPONTANEOUS_LLM_TIMEOUT_S = 60.0
+
 
 def _destination_value_for_route(
     *, destination_target: str | None, destination_role: str | None
@@ -409,6 +418,7 @@ class ConversationPipeline:
                     temperature=0.7,
                     api_base=_voice_litellm_base,
                     api_key=LITELLM_KEY or os.environ.get("LITELLM_API_KEY", "not-set"),
+                    timeout=_SPONTANEOUS_LLM_TIMEOUT_S,
                 )
 
             text = response.choices[0].message.content.strip()
