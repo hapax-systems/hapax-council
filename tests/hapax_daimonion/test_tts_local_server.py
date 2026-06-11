@@ -123,7 +123,12 @@ async def test_three_daemon_client_restarts_reuse_one_engine_server(socket_path:
 @pytest.mark.asyncio
 async def test_deadline_error_returns_empty_pcm(socket_path: Path) -> None:
     stub = _StubTtsManager(delay_s=0.05)
-    server = TtsLocalServer(socket_path=socket_path, tts_manager=stub)
+    fatal_exit_codes: list[int] = []
+    server = TtsLocalServer(
+        socket_path=socket_path,
+        tts_manager=stub,
+        fatal_exit=fatal_exit_codes.append,
+    )
     await server.start()
     try:
         client = TTSManager(
@@ -140,3 +145,4 @@ async def test_deadline_error_returns_empty_pcm(socket_path: Path) -> None:
     assert client.last_server_liveness is not None
     assert client.last_server_liveness["status"] == "error"
     assert "deadline" in client.last_server_liveness["error"]
+    assert fatal_exit_codes == [124]

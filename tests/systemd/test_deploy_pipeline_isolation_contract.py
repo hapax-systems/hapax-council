@@ -74,6 +74,23 @@ def test_visual_uniform_writers_are_rebuilt_from_main() -> None:
         assert watch in text
 
 
+def test_tts_local_rebuild_precedes_daimonion_with_narrow_watch() -> None:
+    """TTS code deploys restart the model owner; ordinary voice deploys do not."""
+    entries = _active_execstarts()
+    tts_entries = [line for line in entries if "--service hapax-tts-local.service" in line]
+    daimonion_entries = [line for line in entries if "--service hapax-daimonion.service" in line]
+
+    assert len(tts_entries) == 1
+    assert len(daimonion_entries) == 1
+    assert entries.index(tts_entries[0]) < entries.index(daimonion_entries[0])
+    assert f"--repo {DEDICATED_REPO}" in tts_entries[0]
+    assert (
+        '--watch "agents/hapax_daimonion/tts.py '
+        "agents/hapax_daimonion/tts_local_server.py "
+        'shared/speech_lexicon.py shared/speech_safety.py"'
+    ) in tts_entries[0]
+
+
 def test_audio_touching_rebuild_entries_are_present_but_operator_gated() -> None:
     """The two audit-identified audio services are documented but not auto-enabled."""
     text = REBUILD_UNIT.read_text(encoding="utf-8")

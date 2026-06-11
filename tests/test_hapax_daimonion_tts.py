@@ -112,6 +112,22 @@ def test_server_transport_preload_does_not_load_models(tmp_path) -> None:
     assert mgr.last_server_liveness["status"] == "unreachable"
 
 
+def test_server_transport_error_clears_stale_synthesis_backend(tmp_path) -> None:
+    mgr = TTSManager(
+        transport="server",
+        server_socket_path=tmp_path / "missing.sock",
+        request_deadline_s=0.001,
+    )
+    mgr._last_synthesis_backend = "kokoro"
+
+    result = mgr.synthesize("hello", "conversation")
+
+    assert result == b""
+    assert mgr.last_synthesis_backend is None
+    assert mgr.last_server_liveness is not None
+    assert mgr.last_server_liveness["status"] == "error"
+
+
 def test_preload_kokoro_backend_never_touches_chatterbox() -> None:
     with patch.dict(os.environ, {TTS_BACKEND_ENV: "kokoro"}):
         mgr = TTSManager()

@@ -578,6 +578,7 @@ class TTSManager:
         error: str,
         priority: str,
     ) -> None:
+        self._last_synthesis_backend = None
         self._last_server_liveness = {
             "mode": "server",
             "status": status,

@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import partial
@@ -42,6 +43,7 @@ log = logging.getLogger(__name__)
 _MAX_REQUEST_BYTES = 64 * 1024
 _STREAM_CHUNK_BYTES = 64 * 1024
 _REQUEST_READ_TIMEOUT_S = 5.0
+_DEADLINE_EXIT_CODE = 124
 _PRIORITY_VALUE = {
     "interactive": 0,
     "bridge": 1,
@@ -71,6 +73,7 @@ class TtsLocalServer:
         default_deadline_s: float = 30.0,
         sample_rate: int = TTS_SAMPLE_RATE,
         channels: int = 1,
+        fatal_exit: Callable[[int], object] = os._exit,
     ) -> None:
         self.socket_path = socket_path
         self._tts = tts_manager
@@ -82,6 +85,7 @@ class TtsLocalServer:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts-engine")
         self._worker_task: asyncio.Task[None] | None = None
         self._sequence = 0
+        self._fatal_exit = fatal_exit
 
     async def start(self) -> None:
         if self.socket_path.exists():
@@ -237,6 +241,11 @@ class TtsLocalServer:
                 error_type="DeadlineExceeded",
             )
             item.done.set_result(None)
+            log.critical(
+                "TTS engine synthesis deadline exceeded; exiting so systemd restarts "
+                "the model owner instead of leaving the single worker wedged"
+            )
+            self._fatal_exit(_DEADLINE_EXIT_CODE)
             return
         except Exception as exc:
             log.exception("TTS engine synthesis failed for %r", text[:80])
