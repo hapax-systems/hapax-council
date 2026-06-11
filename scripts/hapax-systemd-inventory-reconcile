@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+"""Read-only reconciliation of repo-tracked and runtime user systemd units."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from collections.abc import Callable, Sequence
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+TRACKED_GLOBS = ("*.service", "*.timer")
+TRACKED_SCOPE = "systemd/units"
+RUNTIME_UNIT_TYPES = ("service", "timer")
+
+
+@dataclass(frozen=True)
+class TrackedUnit:
+    name: str
+    kind: str
+    path: str
+
+
+@dataclass(frozen=True)
+class RuntimeUnit:
+    name: str
+    kind: str
+    unit_file_state: str
+    active_state: str | None = None
+    sub_state: str | None = None
+    load_state: str | None = None
+    description: str | None = None
+
+
+@dataclass(frozen=True)
+class ReconciledUnit:
+    name: str
+    kind: str
+    tracked: bool
+    runtime: bool
+    source_path: str | None = None
+    unit_file_state: str | None = None
+    active_state: str | None = None
+    sub_state: str | None = None
+    load_state: str | None = None
+    description: str | None = None
+
+    @property
+    def status(self) -> str:
+        if self.tracked and self.runtime:
+            return "matched"
+        if self.tracked:
+            return "tracked_only"
+        return "runtime_only"
+
+
+@dataclass(frozen=True)
+class RuntimeCollection:
+    units: dict[str, RuntimeUnit]
+    available: bool
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class InventoryReport:
+    generated_at: str
+    repo_root: str
+    tracked_scope: str
+    tracked_command: str
+    runtime_commands: tuple[str, ...]
+    tracked_count: int
+    runtime_count: int
+    matched_count: int
+    tracked_only_count: int
+    runtime_only_count: int
+    tracked_by_kind: dict[str, int]
+    runtime_by_kind: dict[str, int]
+    runtime_available: bool
+    runtime_error: str | None
+    differences: dict[str, list[dict[str, Any]]]
+    units: list[dict[str, Any]]
+
+
+Runner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
+
+
+def _kind_for_name(name: str) -> str | None:
+    for suffix in TRACKED_GLOBS:
+        extension = suffix.removeprefix("*")
+        if name.endswith(extension):
+            return extension.removeprefix(".")
+    return None
+
+
+def _default_runner(cmd: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, check=False, capture_output=True, text=True)
+
+
+def _shell_join(cmd: Sequence[str]) -> str:
+    return " ".join(cmd)
+
+
+def collect_tracked_units(
+    repo_root: Path, runner: Runner = _default_runner
+) -> dict[str, TrackedUnit]:
+    """Collect tracked service/timer files from the install-visible source directory."""
+
+    cmd = ("git", "-C", str(repo_root), "ls-files", TRACKED_SCOPE)
+    proc = runner(cmd)
+    if proc.returncode != 0:
+        raise RuntimeError(f"git ls-files failed: {proc.stderr.strip() or proc.returncode}")
+
+    tracked: dict[str, TrackedUnit] = {}
+    for raw in proc.stdout.splitlines():
+        rel = raw.strip()
+        if not rel or not rel.startswith(f"{TRACKED_SCOPE}/"):
+            continue
+        name = Path(rel).name
+        kind = _kind_for_name(name)
+        if kind is None:
+            continue
+        tracked[name] = TrackedUnit(name=name, kind=kind, path=rel)
+    return dict(sorted(tracked.items()))
+
+
+def _parse_unit_file_rows(text: str) -> dict[str, RuntimeUnit]:
+    units: dict[str, RuntimeUnit] = {}
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        parts = stripped.split()
+        if len(parts) < 2:
+            continue
+        name, state = parts[0], parts[1]
+        kind = _kind_for_name(name)
+        if kind is None:
+            continue
+        units[name] = RuntimeUnit(name=name, kind=kind, unit_file_state=state)
+    return units
+
+
+def _merge_unit_state(rows: dict[str, RuntimeUnit], text: str) -> dict[str, RuntimeUnit]:
+    merged = dict(rows)
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        parts = stripped.split(maxsplit=4)
+        if len(parts) < 4:
+            continue
+        name, load, active, sub = parts[:4]
+        kind = _kind_for_name(name)
+        if kind is None:
+            continue
+        existing = merged.get(name)
+        description = parts[4] if len(parts) > 4 else None
+        merged[name] = RuntimeUnit(
+            name=name,
+            kind=kind,
+            unit_file_state=existing.unit_file_state if existing else "unknown",
+            active_state=active,
+            sub_state=sub,
+            load_state=load,
+            description=description,
+        )
+    return dict(sorted(merged.items()))
+
+
+def collect_runtime_units(runner: Runner = _default_runner) -> RuntimeCollection:
+    """Collect runtime user systemd service/timer state without mutating units."""
+
+    type_arg = ",".join(RUNTIME_UNIT_TYPES)
+    unit_file_cmd = (
+        "systemctl",
+        "--user",
+        "list-unit-files",
+        f"--type={type_arg}",
+        "--no-legend",
+        "--no-pager",
+    )
+    units_cmd = (
+        "systemctl",
+        "--user",
+        "list-units",
+        "--all",
+        f"--type={type_arg}",
+        "--no-legend",
+        "--no-pager",
+    )
+    unit_file_proc = runner(unit_file_cmd)
+    if unit_file_proc.returncode != 0:
+        return RuntimeCollection(
+            units={},
+            available=False,
+            error=unit_file_proc.stderr.strip() or f"{_shell_join(unit_file_cmd)} exited nonzero",
+        )
+    runtime = _parse_unit_file_rows(unit_file_proc.stdout)
+    units_proc = runner(units_cmd)
+    if units_proc.returncode != 0:
+        return RuntimeCollection(
+            units=runtime,
+            available=False,
+            error=units_proc.stderr.strip() or f"{_shell_join(units_cmd)} exited nonzero",
+        )
+    return RuntimeCollection(units=_merge_unit_state(runtime, units_proc.stdout), available=True)
+
+
+def _count_by_kind(units: dict[str, TrackedUnit] | dict[str, RuntimeUnit]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for unit in units.values():
+        counts[unit.kind] = counts.get(unit.kind, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def build_report(
+    repo_root: Path = REPO_ROOT,
+    *,
+    tracked_runner: Runner = _default_runner,
+    runtime_runner: Runner = _default_runner,
+) -> InventoryReport:
+    tracked = collect_tracked_units(repo_root, runner=tracked_runner)
+    runtime_collection = collect_runtime_units(runner=runtime_runner)
+    runtime = runtime_collection.units
+
+    rows: list[ReconciledUnit] = []
+    for name in sorted(set(tracked) | set(runtime)):
+        source = tracked.get(name)
+        live = runtime.get(name)
+        kind = source.kind if source else live.kind if live else "unknown"
+        rows.append(
+            ReconciledUnit(
+                name=name,
+                kind=kind,
+                tracked=source is not None,
+                runtime=live is not None,
+                source_path=source.path if source else None,
+                unit_file_state=live.unit_file_state if live else None,
+                active_state=live.active_state if live else None,
+                sub_state=live.sub_state if live else None,
+                load_state=live.load_state if live else None,
+                description=live.description if live else None,
+            )
+        )
+
+    differences = {
+        "tracked_only": [asdict(row) for row in rows if row.status == "tracked_only"],
+        "runtime_only": [asdict(row) for row in rows if row.status == "runtime_only"],
+    }
+    units = [{**asdict(row), "status": row.status} for row in rows]
+
+    return InventoryReport(
+        generated_at=datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        repo_root=str(repo_root),
+        tracked_scope=TRACKED_SCOPE,
+        tracked_command=_shell_join(("git", "-C", str(repo_root), "ls-files", TRACKED_SCOPE)),
+        runtime_commands=(
+            "systemctl --user list-unit-files --type=service,timer --no-legend --no-pager",
+            "systemctl --user list-units --all --type=service,timer --no-legend --no-pager",
+        ),
+        tracked_count=len(tracked),
+        runtime_count=len(runtime),
+        matched_count=sum(1 for row in rows if row.status == "matched"),
+        tracked_only_count=len(differences["tracked_only"]),
+        runtime_only_count=len(differences["runtime_only"]),
+        tracked_by_kind=_count_by_kind(tracked),
+        runtime_by_kind=_count_by_kind(runtime),
+        runtime_available=runtime_collection.available,
+        runtime_error=runtime_collection.error,
+        differences=differences,
+        units=units,
+    )
+
+
+def print_summary(report: InventoryReport) -> None:
+    print("=== systemd inventory reconciliation ===")
+    print(f"Generated:      {report.generated_at}")
+    print(f"Tracked scope:  {report.tracked_scope}")
+    print(f"Tracked units:  {report.tracked_count} {report.tracked_by_kind}")
+    print(f"Runtime units:  {report.runtime_count} {report.runtime_by_kind}")
+    print(f"Matched:        {report.matched_count}")
+    print(f"Tracked only:   {report.tracked_only_count}")
+    print(f"Runtime only:   {report.runtime_only_count}")
+    if not report.runtime_available:
+        print(f"Runtime state:  unavailable ({report.runtime_error})")
+    print()
+    print("Commands:")
+    print(f"  tracked: {report.tracked_command}")
+    for command in report.runtime_commands:
+        print(f"  runtime: {command}")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Reconcile git-tracked and runtime user systemd service/timer inventory."
+    )
+    parser.add_argument("--json", action="store_true", help="Emit JSON report")
+    parser.add_argument("--summary", action="store_true", help="Emit human summary")
+    parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
+    args = parser.parse_args(argv)
+
+    report = build_report(args.repo_root)
+    if args.summary and not args.json:
+        print_summary(report)
+    else:
+        json.dump(asdict(report), sys.stdout, indent=2)
+        print()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

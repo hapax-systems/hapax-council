@@ -2,7 +2,22 @@
 
 All production services run as systemd user units under `user@1000.service` with lingering enabled. No process supervisors (process-compose, supervisord) in the boot chain.
 
-**Topology:** <!-- topology-inventory:services -->229<!-- /topology-inventory:services --> services, <!-- topology-inventory:timers -->116<!-- /topology-inventory:timers --> timers, 4 paths, 3 targets. Verify with `uv run python scripts/hapax_topology_inventory.py --check`.
+**Topology:** <!-- topology-inventory:services -->283<!-- /topology-inventory:services --> services, <!-- topology-inventory:timers -->137<!-- /topology-inventory:timers --> timers, 4 paths, 3 targets. Verify with `uv run python scripts/hapax_topology_inventory.py --check`.
+
+`scripts/hapax_topology_inventory.py` is source-only: it verifies the
+git-tracked `systemd/units/` topology and does not prove what the live user
+manager has loaded or enabled. For runtime reconciliation, use:
+
+```bash
+uv run python scripts/hapax-systemd-inventory-reconcile --summary
+uv run python scripts/hapax-systemd-inventory-reconcile --json
+```
+
+The reconciler is read-only. It compares `git ls-files systemd/units` with
+`systemctl --user list-unit-files --type=service,timer` and
+`systemctl --user list-units --all --type=service,timer`, then reports matched,
+tracked-only, and runtime-only units with the exact commands and timestamp.
+Do not use source topology counts as claims about active runtime state.
 
 ## Directory Structure
 
