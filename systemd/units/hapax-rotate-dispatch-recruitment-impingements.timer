@@ -1,0 +1,11 @@
+[Unit]
+Description=hapax — frequent cap check for dispatch/recruitment/impingement JSONL ledgers
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+RandomizedDelaySec=60
+Unit=hapax-rotate-dispatch-recruitment-impingements.service
+
+[Install]
+WantedBy=timers.target

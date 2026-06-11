@@ -247,6 +247,29 @@ class TestCursorPersistence:
         assert len(result) == 1
         assert result[0].source == "after-reset"
 
+    def test_rename_rotation_resets_cursor_and_reads_future_lines(self, tmp_path: Path) -> None:
+        path = tmp_path / "imp.jsonl"
+        cursor_path = tmp_path / "cursor.txt"
+        _write_jsonl(path, [_make_imp("a"), _make_imp("b"), _make_imp("c")])
+
+        consumer = ImpingementConsumer(path, cursor_path=cursor_path)
+        assert consumer.cursor == 3
+
+        rotated = tmp_path / "imp.rotated.jsonl"
+        path.replace(rotated)
+        path.write_text("", encoding="utf-8")
+        _write_jsonl(path, [_make_imp("post-rotation")])
+
+        assert consumer.read_new() == []
+        assert consumer.cursor == 1
+        assert cursor_path.read_text() == "1"
+
+        _write_jsonl(path, [_make_imp("after-reset")])
+        result = consumer.read_new()
+
+        assert len(result) == 1
+        assert result[0].source == "after-reset"
+
     def test_cursor_parent_directory_created_on_demand(self, tmp_path: Path) -> None:
         path = tmp_path / "imp.jsonl"
         cursor_path = tmp_path / "nested" / "deeper" / "cursor.txt"
