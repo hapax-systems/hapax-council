@@ -45,6 +45,9 @@ from shared.audio_topology import TopologyDescriptor
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PIPEWIRE_DIR = REPO_ROOT / "config" / "pipewire"
 GENERATED_PIPEWIRE_DIR = PIPEWIRE_DIR / "generated" / "pipewire"
+ARCHIVED_GENERATED_COLLISIONS_DIR = (
+    PIPEWIRE_DIR / "archive" / "2026-06-10-dedupe" / "generated-node-collisions"
+)
 WIREPLUMBER_DIR = REPO_ROOT / "config" / "wireplumber"
 CANONICAL_TOPOLOGY = REPO_ROOT / "config" / "audio-topology.yaml"
 HAPAX_LINK_MAP = REPO_ROOT / "config" / "hapax" / "audio-link-map.conf"
@@ -68,6 +71,13 @@ PRIVATE_MONITOR_PLAYBACK_NODES = ("hapax-private-playback",)
 
 def _read_conf(path: Path) -> str:
     return path.read_text()
+
+
+def _read_generated_or_archived_collision(filename: str) -> str:
+    generated_path = GENERATED_PIPEWIRE_DIR / filename
+    if generated_path.exists():
+        return _read_conf(generated_path)
+    return _read_conf(ARCHIVED_GENERATED_COLLISIONS_DIR / filename)
 
 
 def _strip_comments(text: str) -> str:
@@ -172,7 +182,7 @@ def test_youtube_send_sums_to_livestream_tap_and_remains_eligibility_gated() -> 
 
 
 def test_generated_tts_artifacts_do_not_reintroduce_direct_broadcast_bridge() -> None:
-    generated_tts_duck = _strip_comments(_read_conf(GENERATED_PIPEWIRE_DIR / "tts-duck.conf"))
+    generated_tts_duck = _strip_comments(_read_generated_or_archived_collision("tts-duck.conf"))
     generated_tts_bridge = _strip_comments(
         _read_conf(GENERATED_PIPEWIRE_DIR / "tts-broadcast-playback.conf")
     )
@@ -267,7 +277,7 @@ def test_m8_loudnorm_has_no_live_target_while_under_specified() -> None:
 
 
 def test_generated_m8_loudnorm_is_fail_closed_not_live() -> None:
-    code = _strip_comments(_read_conf(GENERATED_PIPEWIRE_DIR / "m8-loudnorm.conf"))
+    code = _strip_comments(_read_generated_or_archived_collision("m8-loudnorm.conf"))
     assert "audio.position = [ AUX10 AUX11 ]" in code
     assert "node.autoconnect = false" in code
     assert f'target.object = "{MPC_OUTPUT_NODE}"' not in code
