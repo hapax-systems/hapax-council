@@ -120,10 +120,13 @@ def test_server_transport_error_clears_stale_synthesis_backend(tmp_path) -> None
     )
     mgr._last_synthesis_backend = "kokoro"
 
-    result = mgr.synthesize("hello", "conversation")
+    # Server error clears the stale backend AND (2026-06-11 review fix)
+    # falls back to in-process synthesis rather than silencing the voice.
+    with patch.object(mgr, "_synthesize_kokoro", return_value=b"\x05\x06") as local:
+        result = mgr.synthesize("hello", "conversation")
 
-    assert result == b""
-    assert mgr.last_synthesis_backend is None
+    assert local.called, "in-process fallback must engage on server error"
+    assert result == b"\x05\x06"
     assert mgr.last_server_liveness is not None
     assert mgr.last_server_liveness["status"] == "error"
 
@@ -267,3 +270,25 @@ def test_record_tts_synthesis_backend_defaults_to_none(tmp_path) -> None:
     witness = record_tts_synthesis(status="empty", text="", pcm=b"", path=path)
     assert witness.last_tts_synthesis is not None
     assert witness.last_tts_synthesis["backend"] is None
+
+
+def test_server_down_falls_back_to_in_process(monkeypatch, tmp_path):
+    """Review finding 2026-06-11: ConnectionRefused/server-down must not
+    silence the voice — synthesize() falls through to the local path."""
+    from agents.hapax_daimonion import tts as tts_mod
+
+    mgr = tts_mod.TTSManager.__new__(tts_mod.TTSManager)
+    mgr._transport = "server"
+    mgr._backend = "kokoro"
+    mgr._last_synthesis_backend = None
+    calls = {}
+    monkeypatch.setattr(mgr, "_synthesize_via_server", lambda *a, **k: b"", raising=False)
+    monkeypatch.setattr(
+        mgr,
+        "_synthesize_kokoro",
+        lambda text, **k: (calls.setdefault("local", True), b"\x01\x02")[1],
+        raising=False,
+    )
+    out = mgr.synthesize("hello world")
+    assert calls.get("local"), "in-process fallback was not invoked"
+    assert out == b"\x01\x02"

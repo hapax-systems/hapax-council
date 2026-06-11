@@ -354,13 +354,22 @@ class TTSManager:
         lexicon = _speech_lexicon_apply(redaction.text)
 
         if self._transport == "server":
-            return self._synthesize_via_server(
+            pcm = self._synthesize_via_server(
                 lexicon.text,
                 use_case=use_case,
                 speed=speed,
                 interview_mode=interview_mode,
                 role=role,
                 arc_position=arc_position,
+            )
+            if pcm:
+                return pcm
+            # Server down/empty must NOT silence the voice (review finding,
+            # 2026-06-11): fall back to in-process synthesis. The local path
+            # below carries its own Chatterbox->Kokoro fallback chain.
+            log.warning(
+                "TTS server returned no PCM — falling back to in-process synthesis [%s]",
+                use_case,
             )
 
         if self._backend == "chatterbox":
