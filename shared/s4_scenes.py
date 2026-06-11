@@ -1,17 +1,13 @@
-"""Torso S-4 scene library (Phase B4 of evilpet-s4-dynamic-dual-processor-plan).
+"""Torso S-4 scene library.
 
-10 scenes, each a 5-slot configuration (Material / Granular / Filter /
-Color / Space) with per-slot CC overrides. Paired with Evil Pet presets
-via ``shared.evil_pet_presets.DEFAULT_PAIRINGS``.
+Scenes are recalled by MIDI Program Change. The S-4's live PC behavior is
+zero-based: program N recalls slot N+1. The device is write-only, so every
+successful recall must be followed by the empirical post-recall gain ladder
+from ``config/equipment/s4-gain-ladder-20260610.yaml``.
 
-Scene recall mechanism: MIDI program change (primary, <= 50 ms) OR
-per-slot CC bursts (fallback, <= 200 ms). Sent via
-``shared.s4_midi.emit_program_change`` / ``emit_cc`` when the S-4 is
-USB-connected.
-
-The scene CC values here are delta's initial draft per spec §4.2.
-Operator ratifies aesthetic tuning in PR review; the spec explicitly
-treats CC values as operator-aesthetic-authority.
+The prior per-scene CC dictionaries were derived from falsified charts. They
+remain empty until a bench sweep validates expressive CCs against the live
+analog insert.
 """
 
 from __future__ import annotations
@@ -28,16 +24,41 @@ SpaceDev = str  # one of: "Vast", "None"
 
 
 @dataclass(frozen=True)
+class S4CcCommand:
+    """One S-4 CC command.
+
+    ``channel`` is the zero-indexed mido channel. For example, hardware MIDI
+    channel 16 is ``channel=15``.
+    """
+
+    channel: int
+    cc: int
+    value: int
+    note: str = ""
+
+
+# Empirical S-4 gain ladder discovered closed-loop on 2026-06-10.
+# Source of truth: config/equipment/s4-gain-ladder-20260610.yaml.
+EMPIRICAL_S4_GAIN_LADDER: Final[tuple[S4CcCommand, ...]] = (
+    S4CcCommand(channel=15, cc=48, value=127, note="ch16 CC48 empirical +11.3 dB"),
+    S4CcCommand(channel=15, cc=49, value=127, note="ch16 CC49 empirical +3.3 dB"),
+    S4CcCommand(channel=15, cc=58, value=127, note="ch16 CC58 empirical +13.1 dB"),
+    S4CcCommand(channel=1, cc=46, value=127, note="ch2 CC46 empirical +15.7 dB"),
+    S4CcCommand(channel=1, cc=47, value=127, note="ch2 CC47 empirical +7.9 dB"),
+)
+
+
+@dataclass(frozen=True)
 class S4Scene:
     """A named S-4 track configuration.
 
-    ``program_number`` corresponds to the S-4 patch slot index the
-    scene is persisted into (operator writes this via the S-4 front
-    panel after ratifying CC values). Used for ``emit_program_change``.
+    ``program_number`` is the zero-based MIDI Program Change value, not the
+    front-panel slot number. Program 0 recalls slot 1.
 
-    ``ccs`` carries per-device CC overrides (CC number to value).
-    Complete reference of S-4 CCs is in the Torso S-4 manual §CC map;
-    values here follow the research doc §5 enhancement-family specs.
+    ``ccs`` is intentionally empty until new expressive S-4 controls are
+    measured. ``post_recall_ccs`` carries the empirical gain ladder that must
+    be reasserted after every scene recall because S-4 recalls wipe runtime
+    CC state and the device has no MIDI save/readback path.
     """
 
     name: str
@@ -49,6 +70,7 @@ class S4Scene:
     color: ColorDev
     space: SpaceDev
     ccs: dict[int, int] = field(default_factory=dict)
+    post_recall_ccs: tuple[S4CcCommand, ...] = EMPIRICAL_S4_GAIN_LADDER
 
 
 SCENES: Final[dict[str, S4Scene]] = {
@@ -59,25 +81,12 @@ SCENES: Final[dict[str, S4Scene]] = {
             "resonant around 2 kHz, light Deform drive, bright Vast "
             "reverb. Pairs with hapax-broadcast-ghost for UC1."
         ),
-        program_number=1,
+        program_number=0,
         material="Bypass",
         granular="None",
         filter="Ring",
         color="Deform",
         space="Vast",
-        ccs={
-            # Filter (Ring): freq 2 kHz, Q 0.4, wet 35%
-            79: 90,
-            80: 50,
-            81: 45,
-            # Color (Deform): drive 20, compression 40
-            95: 25,
-            96: 50,
-            # Space (Vast): size 30, tone bright, wet 40%
-            112: 38,
-            113: 85,
-            114: 50,
-        },
     ),
     "VOCAL-MOSAIC": S4Scene(
         name="VOCAL-MOSAIC",
@@ -87,27 +96,12 @@ SCENES: Final[dict[str, S4Scene]] = {
             "0.7; darker Vast. Pairs with hapax-underwater or "
             "hapax-granular-wash for UC3 cross-character swap."
         ),
-        program_number=2,
+        program_number=1,
         material="Bypass",
         granular="Mosaic",
         filter="Ring",
         color="Deform",
         space="Vast",
-        ccs={
-            # Granular (Mosaic): density 70, position drift 30, length 150 ms
-            47: 90,
-            48: 38,
-            49: 65,
-            # Filter (Ring): Q 0.7, wet 50%
-            80: 90,
-            81: 65,
-            # Color (Deform): drive 15
-            95: 20,
-            # Space (Vast): tail 60%, dark tone
-            114: 75,
-            115: 40,
-            116: 50,
-        },
     ),
     "MUSIC-BED": S4Scene(
         name="MUSIC-BED",
@@ -116,24 +110,12 @@ SCENES: Final[dict[str, S4Scene]] = {
             "Peak filter gently brightens, Deform adds warmth, Vast "
             "provides neutral room. Pairs with hapax-bed-music."
         ),
-        program_number=3,
+        program_number=2,
         material="Bypass",
         granular="None",
         filter="Peak",
         color="Deform",
         space="Vast",
-        ccs={
-            # Filter (Peak): freq 1 kHz, Q 0.3, wet 20%
-            79: 80,
-            80: 40,
-            81: 25,
-            # Color (Deform): drive 10
-            95: 12,
-            # Space (Vast): wet 30%, neutral tone
-            112: 40,
-            113: 64,
-            114: 38,
-        },
     ),
     "MUSIC-DRONE": S4Scene(
         name="MUSIC-DRONE",
@@ -142,26 +124,12 @@ SCENES: Final[dict[str, S4Scene]] = {
             "Mosaic at 40% density with longer grains; Peak filter; "
             "long dark Vast. Pairs with hapax-drone-loop."
         ),
-        program_number=4,
+        program_number=3,
         material="Bypass",
         granular="Mosaic",
         filter="Peak",
         color="Deform",
         space="Vast",
-        ccs={
-            # Granular (Mosaic): density 40, length 200 ms, rate drift
-            47: 50,
-            49: 100,
-            50: 30,
-            # Filter (Peak): wet 35%
-            81: 45,
-            # Color (Deform): drive 20
-            95: 25,
-            # Space (Vast): tail 70%, dark tone
-            114: 90,
-            115: 30,
-            116: 50,
-        },
     ),
     "MEMORY-COMPANION": S4Scene(
         name="MEMORY-COMPANION",
@@ -170,25 +138,12 @@ SCENES: Final[dict[str, S4Scene]] = {
             "1.2 kHz, vintage tape Deform, medium-tail dark Vast. "
             "UC9 impingement-driven tier-3 transitions."
         ),
-        program_number=5,
+        program_number=4,
         material="Bypass",
         granular="None",
         filter="Peak",
         color="Deform",
         space="Vast",
-        ccs={
-            # Filter (Peak): freq 1.2 kHz, Q 2.0, wet 30%
-            79: 82,
-            80: 100,
-            81: 38,
-            # Color (Deform): vintage tape saturation
-            95: 35,
-            96: 55,
-            97: 70,
-            # Space (Vast): medium tail, dark tone
-            114: 55,
-            115: 35,
-        },
     ),
     "UNDERWATER-COMPANION": S4Scene(
         name="UNDERWATER-COMPANION",
@@ -197,23 +152,12 @@ SCENES: Final[dict[str, S4Scene]] = {
             "soft Deform, long muffled Vast. Voice sounds submerged "
             "but intelligibility preserved per §9 governance."
         ),
-        program_number=6,
+        program_number=5,
         material="Bypass",
         granular="None",
         filter="Ring",
         color="Deform",
         space="Vast",
-        ccs={
-            # Filter (Ring, LPF mode): freq 800 Hz, Q 0.5, wet 70%
-            79: 40,
-            80: 60,
-            81: 90,
-            # Color (Deform): soft drive
-            95: 15,
-            # Space (Vast): long tail, muffled tone
-            114: 80,
-            115: 25,
-        },
     ),
     "SONIC-RITUAL": S4Scene(
         name="SONIC-RITUAL",
@@ -223,28 +167,12 @@ SCENES: Final[dict[str, S4Scene]] = {
             "Mosaic 90% density, resonant Ring 60%, heavy bit-crush, "
             "huge 60% tail Vast. Monetization risk; WARD-gated."
         ),
-        program_number=7,
+        program_number=6,
         material="Bypass",
         granular="Mosaic",
         filter="Ring",
         color="Deform",
         space="Vast",
-        ccs={
-            # Granular (Mosaic): density 90, rate drift, length vary
-            47: 115,
-            49: 120,
-            50: 60,
-            # Filter (Ring): resonance 60%, wet 70%
-            80: 75,
-            81: 90,
-            # Color (Deform): heavy bit-crush (governance-gated)
-            95: 90,
-            96: 100,
-            97: 110,
-            # Space (Vast): huge room, 60% tail
-            112: 120,
-            114: 75,
-        },
     ),
     "BEAT-1": S4Scene(
         name="BEAT-1",
@@ -254,20 +182,12 @@ SCENES: Final[dict[str, S4Scene]] = {
             "light Deform drive. Pairs with UC5 live performance "
             "(Evil Pet on vinyl, TTS clean)."
         ),
-        program_number=8,
+        program_number=7,
         material="Tape",
         granular="None",
         filter="Peak",
         color="Deform",
         space="None",
-        ccs={
-            # Material (Tape): sampler params — operator programs on device
-            # Filter (Peak, HPF): freq 150 Hz, wet 100%
-            79: 18,
-            81: 127,
-            # Color (Deform): light drive
-            95: 10,
-        },
     ),
     "RECORD-DRY": S4Scene(
         name="RECORD-DRY",
@@ -277,16 +197,12 @@ SCENES: Final[dict[str, S4Scene]] = {
             "hapax-research/stems while Evil Pet applies broadcast "
             "character. No FX on the recording."
         ),
-        program_number=9,
+        program_number=8,
         material="Tape",
         granular="None",
         filter="None",
         color="None",
         space="None",
-        ccs={
-            # Material (Tape): record-enabled; other slots off
-            73: 127,
-        },
     ),
     "VOICE-SELF-MOD": S4Scene(
         name="VOICE-SELF-MOD",
@@ -305,42 +221,6 @@ SCENES: Final[dict[str, S4Scene]] = {
         filter="Ring",
         color="Deform",
         space="Vast",
-        ccs={
-            # Granular (Mosaic): density 35%, position stable, grain 80ms
-            62: 45,
-            63: 20,
-            64: 40,
-            65: 64,
-            66: 0,
-            67: 45,
-            68: 64,
-            69: 64,
-            # Filter (Ring): freq 1.5 kHz, Q 0.6, wet 40%
-            78: 75,
-            79: 75,
-            80: 75,
-            81: 50,
-            82: 64,
-            83: 64,
-            84: 64,
-            85: 64,
-            # Color (Deform): drive 30%, compression 25%
-            94: 38,
-            95: 32,
-            96: 38,
-            97: 64,
-            98: 64,
-            99: 64,
-            100: 64,
-            101: 64,
-            # Space (Vast): small room, bright tone, wet 25%
-            112: 30,
-            113: 80,
-            114: 32,
-            115: 50,
-            116: 64,
-            117: 64,
-        },
     ),
     "BYPASS": S4Scene(
         name="BYPASS",
@@ -381,3 +261,8 @@ def get_scene(name: str) -> S4Scene:
 def get_program_number(name: str) -> int:
     """Return the program number for a scene name."""
     return get_scene(name).program_number
+
+
+def get_post_recall_ccs(name: str) -> tuple[S4CcCommand, ...]:
+    """Return the CC commands to reassert after a successful scene recall."""
+    return get_scene(name).post_recall_ccs

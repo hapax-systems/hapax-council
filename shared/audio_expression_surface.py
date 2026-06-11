@@ -586,16 +586,15 @@ def _s4_params_for_scene(
     scene: S4Scene,
     clamps: FxRiskClamps,
 ) -> tuple[FxCcCommand, ...]:
-    limit = max(0, min(4, clamps.stepped_cc_crossings))
     out: list[FxCcCommand] = []
-    for cc, value in tuple(sorted(scene.ccs.items()))[:limit]:
+    for command in scene.post_recall_ccs:
         out.append(
             FxCcCommand(
                 device="s4",
-                channel=0,
-                cc=cc,
-                value=_clamp_cc(value, clamps.feedback if cc in {80, 81} else clamps.reverb_tail),
-                note=f"S-4 {scene.name} parameter clamped by expression-surface budget",
+                channel=command.channel,
+                cc=command.cc,
+                value=command.value,
+                note=f"S-4 {scene.name} empirical post-recall gain: {command.note}",
             )
         )
     return tuple(out)
@@ -620,6 +619,15 @@ def _hash_scene(scene: S4Scene) -> str:
         "color": scene.color,
         "space": scene.space,
         "ccs": scene.ccs,
+        "post_recall_ccs": tuple(
+            {
+                "channel": command.channel,
+                "cc": command.cc,
+                "value": command.value,
+                "note": command.note,
+            }
+            for command in scene.post_recall_ccs
+        ),
     }
     return _hash_payload(payload)
 

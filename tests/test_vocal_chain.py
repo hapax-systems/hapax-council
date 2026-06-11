@@ -14,6 +14,7 @@ from agents.hapax_daimonion.vocal_chain import (
     cc_value_from_level,
 )
 from shared.impingement import Impingement, ImpingementType
+from shared.s4_scenes import EMPIRICAL_S4_GAIN_LADDER
 
 
 def _make_impingement(
@@ -55,17 +56,38 @@ class TestDimensions:
         """Each (device, cc) pair must be owned by at most one dimension.
 
         Without this, activating one dimension overwrites another's CC on the
-        same device — the two dims silently compete. Research §5 picks a
-        conflict-free map by design; pin it here so regressions scream loud.
+        same device — the two dims silently compete. The empirical S-4 gain
+        ladder is the exception: it is a fixed assertion re-sent by every
+        dimension until expressive S-4 controls are bench-validated.
         """
+        empirical_s4 = {(cmd.channel, cmd.cc) for cmd in EMPIRICAL_S4_GAIN_LADDER}
         ownership: dict[tuple[str, int], str] = {}
         for dim in DIMENSIONS.values():
             for m in dim.cc_mappings:
+                if m.device == "s4" and (m.channel, m.cc) in empirical_s4:
+                    continue
                 key = (m.device, m.cc)
                 assert key not in ownership or ownership[key] == dim.name, (
                     f"CC collision: {dim.name} and {ownership[key]} both write {m.device} CC{m.cc}"
                 )
                 ownership[key] = dim.name
+
+    def test_s4_mappings_are_empirical_gain_ladder_only(self) -> None:
+        expected = tuple((cmd.channel, cmd.cc, cmd.value) for cmd in EMPIRICAL_S4_GAIN_LADDER)
+        for dim in DIMENSIONS.values():
+            actual = tuple(
+                (
+                    mapping.channel,
+                    mapping.cc,
+                    cc_value_from_level(0.0, mapping.breakpoints),
+                )
+                for mapping in dim.cc_mappings
+                if mapping.device == "s4"
+            )
+            assert actual == expected
+            for mapping in dim.cc_mappings:
+                if mapping.device == "s4":
+                    assert cc_value_from_level(1.0, mapping.breakpoints) == 127
 
     def test_density_never_wired(self) -> None:
         """Governance: granular re-synthesis (CC 11, grains volume on Evil Pet)

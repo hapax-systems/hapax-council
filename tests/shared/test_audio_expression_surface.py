@@ -19,6 +19,7 @@ from shared.audio_expression_surface import (
     FxTimingPolicy,
     resolve_fx_plan,
 )
+from shared.s4_scenes import EMPIRICAL_S4_GAIN_LADDER
 
 NOW = datetime(2026, 4, 30, 1, 55, tzinfo=UTC)
 
@@ -183,6 +184,9 @@ def test_successful_public_dual_fx_plan_uses_router_target_and_wet_devices() -> 
     assert plan.s4_scene == "MEMORY-COMPANION"
     assert plan.s4_scene_hash is not None
     assert plan.s4_params
+    assert tuple((c.channel, c.cc, c.value) for c in plan.s4_params) == tuple(
+        (c.channel, c.cc, c.value) for c in EMPIRICAL_S4_GAIN_LADDER
+    )
     assert plan.route_plan.accepted is True
     assert plan.playback_target == "hapax-voice-fx-capture"
     assert "wet_fx_route_present" in plan.expected_observables

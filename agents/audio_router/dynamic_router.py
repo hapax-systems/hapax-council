@@ -231,6 +231,7 @@ def emit_intent_change(
     evilpet_midi: Any | None,
     s4_midi_port: Any | None,
     s4_program_for_scene_fn: Any | None = None,
+    s4_post_recall_ccs_fn: Any | None = None,
 ) -> bool:
     """Emit the new intent's MIDI to both processors when it differs.
 
@@ -269,6 +270,18 @@ def emit_intent_change(
                 if program is not None:
                     ok = s4_midi.emit_program_change(s4_midi_port, program=program)
                     if ok:
+                        post_recall_ccs = ()
+                        if s4_post_recall_ccs_fn is not None:
+                            post_recall_ccs = tuple(s4_post_recall_ccs_fn(intent.s4_vocal_scene))
+                        if post_recall_ccs:
+                            cc_count = s4_midi.emit_cc_commands(s4_midi_port, post_recall_ccs)
+                            if cc_count != len(post_recall_ccs):
+                                log.warning(
+                                    "s-4 post-recall ladder partial: %s (%d/%d CCs)",
+                                    intent.s4_vocal_scene,
+                                    cc_count,
+                                    len(post_recall_ccs),
+                                )
                         log.info(
                             "s-4 vocal scene recalled: %s (program %d)",
                             intent.s4_vocal_scene,
@@ -338,6 +351,7 @@ class DynamicRouter:
         evilpet_midi: Any | None = None,
         s4_midi_port: Any | None = None,
         s4_program_for_scene_fn: Any | None = None,
+        s4_post_recall_ccs_fn: Any | None = None,
         s4_reachable_fn: Any = s4_midi.is_s4_reachable,
         s4_reachable_probe_interval_s: float = 30.0,
         tick_period_s: float = TICK_PERIOD_S,
@@ -345,6 +359,7 @@ class DynamicRouter:
         self._evilpet_midi = evilpet_midi
         self._s4_midi_port = s4_midi_port
         self._s4_program_for_scene_fn = s4_program_for_scene_fn
+        self._s4_post_recall_ccs_fn = s4_post_recall_ccs_fn
         self._s4_reachable_fn = s4_reachable_fn
         self._s4_reachable_probe_interval_s = max(0.0, s4_reachable_probe_interval_s)
         self._last_s4_reachable_probe_monotonic: float | None = None
@@ -450,6 +465,7 @@ class DynamicRouter:
             evilpet_midi=self._evilpet_midi,
             s4_midi_port=self._s4_midi_port,
             s4_program_for_scene_fn=self._s4_program_for_scene_fn,
+            s4_post_recall_ccs_fn=self._s4_post_recall_ccs_fn,
         )
         self._last_intent = intent
 
@@ -497,6 +513,17 @@ def _s4_program_lookup(scene_name: str) -> int | None:
         return None
 
 
+def _s4_post_recall_ccs(scene_name: str) -> tuple[Any, ...]:
+    """Resolve scene name to the CC ladder reasserted after S-4 recall."""
+    try:
+        from shared.s4_scenes import get_post_recall_ccs
+
+        return get_post_recall_ccs(scene_name)
+    except Exception:
+        log.debug("s4 post-recall CC lookup failed for %s", scene_name, exc_info=True)
+        return ()
+
+
 def main() -> int:
     """Entry point for `python -m agents.audio_router.dynamic_router`."""
     logging.basicConfig(
@@ -521,6 +548,7 @@ def main() -> int:
         evilpet_midi=evilpet,
         s4_midi_port=s4_port,
         s4_program_for_scene_fn=_s4_program_lookup,
+        s4_post_recall_ccs_fn=_s4_post_recall_ccs,
     )
     try:
         router.run()
