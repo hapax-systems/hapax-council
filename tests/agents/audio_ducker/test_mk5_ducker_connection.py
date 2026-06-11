@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import time
 
+import pytest
+
 from agents.audio_ducker.__main__ import (
     MUSIC_DUCK_NODE,
     MUSIC_DUCK_OPERATOR,
@@ -54,14 +56,17 @@ class TestSegmentHoldOpenArbitration:
         assert music == MUSIC_DUCK_TTS  # -8 dB, same content class as TTS
         assert tts == UNITY  # a segment does not duck the TTS/voice path
 
-    def test_segment_plus_operator_takes_deepest_duck(self) -> None:
+    def test_segment_plus_operator_composes_in_db(self) -> None:
         music, _ = compute_targets(True, False, segment_active=True)
-        # operator (-12) is deeper than the segment hold (-8): deepest wins.
-        assert music == min(MUSIC_DUCK_OPERATOR, MUSIC_DUCK_TTS) == MUSIC_DUCK_OPERATOR
+        # operator (-12) + segment-as-TTS-class (-8) compose in dB → -20
+        # (voice-p2-duck-handoff dB-domain compose; was deepest-wins min()).
+        assert music == pytest.approx(MUSIC_DUCK_OPERATOR * MUSIC_DUCK_TTS)
 
     def test_segment_plus_tts_does_not_double_duck(self) -> None:
         music, _ = compute_targets(False, True, segment_active=True)
-        # both map to the TTS depth — deepest-wins clamps at -8, never -16.
+        # The chain RMS envelope and the segment subscription are two
+        # WITNESSES of the same TTS-class content, never two stacking
+        # sources — the composed duck stays at -8, never -16.
         assert music == MUSIC_DUCK_TTS
 
     def test_segment_gated_by_fortress_coupling(self) -> None:
