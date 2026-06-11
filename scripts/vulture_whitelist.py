@@ -4062,3 +4062,10 @@ collect_command_evidence
 collect_local_api_evidence
 collect_package_registry_evidence
 collect_systemd_inventory_evidence
+
+# Claim/audience validator v0: operator-facing CLI entrypoint
+# scripts/hapax-claim-audience imports and dispatches this by subcommand. The
+# vulture diff gate does not follow that no-extension script path.
+from shared.evidence_ledger import validate_claim_for_audiences  # noqa: F401, E402
+
+validate_claim_for_audiences
