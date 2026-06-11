@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Validate legibility claims against evidence and audience profiles."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.evidence_ledger import (  # noqa: E402
+    ClaimRecord,
+    LegibilityEvidenceRecord,
+    validate_claim_for_audiences,
+)
+
+
+def _json_arg(value: str) -> object:
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _validate(args: argparse.Namespace) -> int:
+    claim = ClaimRecord.model_validate(args.claim_json)
+    evidence = [
+        LegibilityEvidenceRecord.model_validate(evidence_json)
+        for evidence_json in args.evidence_json
+    ]
+    result = validate_claim_for_audiences(claim, evidence, now=args.now)
+    print(result.model_dump_json())
+    return 0 if result.allowed else 2
+
+
+def _smoke(_: argparse.Namespace) -> int:
+    evidence = LegibilityEvidenceRecord(
+        evidence_id="EV-SMOKE-FRESH",
+        kind="command",
+        collected_at_epoch=100.0,
+        freshness_ttl_s=60.0,
+        privacy_class="local_private",
+        public_safe=False,
+        value_summary="synthetic internal state evidence",
+    )
+    internal = ClaimRecord(
+        claim_id="CL-SMOKE-INTERNAL",
+        text="Synthetic internal current-state claim.",
+        claim_kind="current_state",
+        audience_scope=["operator"],
+        evidence_refs=["EV-SMOKE-FRESH"],
+        status="approved_internal",
+    )
+    public = ClaimRecord(
+        claim_id="CL-SMOKE-PUBLIC-REFUSED",
+        text="Synthetic public claim backed by local private evidence.",
+        claim_kind="capability",
+        audience_scope=["public_adopter"],
+        evidence_refs=["EV-SMOKE-FRESH"],
+        allowed_surfaces=["public_homepage"],
+        status="approved_public",
+    )
+    internal_result = validate_claim_for_audiences(internal, [evidence], now=110.0)
+    public_result = validate_claim_for_audiences(public, [evidence], now=110.0)
+    print(
+        json.dumps(
+            [
+                internal_result.model_dump(mode="json"),
+                public_result.model_dump(mode="json"),
+            ],
+            indent=2,
+        )
+    )
+    return 0 if internal_result.allowed and not public_result.allowed else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="hapax-claim-audience")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    validate_p = sub.add_parser("validate", help="Validate one claim JSON payload")
+    validate_p.add_argument("--claim-json", required=True, type=_json_arg)
+    validate_p.add_argument("--evidence-json", action="append", type=_json_arg, default=[])
+    validate_p.add_argument("--now", type=float, default=None)
+
+    sub.add_parser("smoke", help="Run synthetic internal-allowed/public-refused smoke")
+
+    args = parser.parse_args(argv)
+    if args.command == "validate":
+        return _validate(args)
+    if args.command == "smoke":
+        return _smoke(args)
+    parser.error(f"unknown command {args.command}")
+    return 64
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

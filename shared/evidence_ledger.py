@@ -63,6 +63,33 @@ LegibilityPrivacyClass = Literal[
 LegibilityConfidence = Literal["high", "medium", "low"]
 LegibilityFailureBehavior = Literal["fail_closed", "record_failure"]
 LegibilityEvidenceStatus = Literal["ok", "failed"]
+AudienceId = Literal[
+    "operator",
+    "worker_lane",
+    "enterprise_testbed",
+    "public_adopter",
+    "paid_buyer",
+    "security_legal_reviewer",
+    "intellectual_audience",
+]
+ClaimKind = Literal[
+    "current_state",
+    "capability",
+    "architecture",
+    "license",
+    "adoption",
+    "risk",
+    "roadmap",
+    "boundary",
+]
+ClaimStatus = Literal[
+    "proposed",
+    "approved_internal",
+    "approved_public",
+    "rejected",
+    "expired",
+]
+ClaimEvidenceStatus = Literal["fresh", "stale", "missing", "contradictory"]
 
 
 class EvidenceEntry(BaseModel):
@@ -414,6 +441,363 @@ class LegibilityEvidenceRegistry:
 
     def stale_records(self, now: float | None = None) -> list[LegibilityEvidenceRecord]:
         return [record for record in self.all_records() if not record.is_fresh(now)]
+
+
+class ClaimRecord(BaseModel):
+    """A bounded claim that can be rendered only for compatible audiences."""
+
+    claim_id: str
+    text: str
+    claim_kind: ClaimKind
+    audience_scope: list[AudienceId] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    freshness_policy: str = ""
+    allowed_surfaces: list[str] = Field(default_factory=list)
+    prohibited_surfaces: list[str] = Field(default_factory=list)
+    allowed_wording: str = ""
+    forbidden_wording: list[str] = Field(default_factory=list)
+    risk_flags: list[str] = Field(default_factory=list)
+    owner: str = "operator"
+    status: ClaimStatus = "proposed"
+
+
+class AudienceProfile(BaseModel):
+    """Audience-specific claim posture and inference boundary."""
+
+    audience_id: AudienceId
+    name: str
+    current_knowledge: str = ""
+    primary_questions: list[str] = Field(default_factory=list)
+    needed_decisions: list[str] = Field(default_factory=list)
+    allowed_claim_classes: list[ClaimKind] = Field(default_factory=list)
+    forbidden_inferences: list[str] = Field(default_factory=list)
+    required_evidence_bundle: list[str] = Field(default_factory=list)
+    primary_surfaces: list[str] = Field(default_factory=list)
+    public_surface: bool = False
+    enterprise_context: bool = False
+    allow_private_evidence: bool = False
+    allow_public_claims: bool = False
+
+
+class ClaimValidationResult(BaseModel):
+    """Fail-closed verdict for rendering a claim to its requested audiences."""
+
+    claim_id: str
+    allowed: bool
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    evidence_status: ClaimEvidenceStatus
+    evidence_ids: list[str] = Field(default_factory=list)
+    audience_ids: list[str] = Field(default_factory=list)
+
+
+def default_audience_profiles() -> dict[AudienceId, AudienceProfile]:
+    """Return the initial legibility audience registry."""
+
+    return {
+        "operator": AudienceProfile(
+            audience_id="operator",
+            name="Operator truth/control surface",
+            current_knowledge="Full local context and authority over Hapax boundaries.",
+            primary_questions=["What is true now?", "What changed?", "What is safe to publish?"],
+            needed_decisions=["continue", "repair", "publish_or_hold"],
+            allowed_claim_classes=[
+                "current_state",
+                "capability",
+                "architecture",
+                "license",
+                "adoption",
+                "risk",
+                "roadmap",
+                "boundary",
+            ],
+            required_evidence_bundle=["fresh evidence for current-state claims"],
+            primary_surfaces=["internal_snapshot", "operator_dashboard"],
+            allow_private_evidence=True,
+        ),
+        "worker_lane": AudienceProfile(
+            audience_id="worker_lane",
+            name="Governed worker lane",
+            current_knowledge="Receives task-scoped context and must not infer outside evidence.",
+            primary_questions=["What can I change?", "What evidence is authoritative?"],
+            needed_decisions=["implement", "block", "request_review"],
+            allowed_claim_classes=[
+                "current_state",
+                "capability",
+                "architecture",
+                "risk",
+                "roadmap",
+            ],
+            forbidden_inferences=["operator intent beyond task", "private state transferability"],
+            required_evidence_bundle=["task authority", "fresh local evidence"],
+            primary_surfaces=["cc_task", "dispatch_packet"],
+            allow_private_evidence=True,
+        ),
+        "enterprise_testbed": AudienceProfile(
+            audience_id="enterprise_testbed",
+            name="Trusted workplace testbed",
+            current_knowledge=(
+                "Knows the operator and workplace need; does not know private Hapax internals."
+            ),
+            primary_questions=[
+                "What can safely be piloted?",
+                "What must not cross the boundary?",
+                "What support does the operator provide?",
+            ],
+            needed_decisions=["pilot_or_not", "scope_boundary", "support_model"],
+            allowed_claim_classes=[
+                "adoption",
+                "license",
+                "boundary",
+                "roadmap",
+                "risk",
+                "capability",
+            ],
+            forbidden_inferences=[
+                "employer endorsement",
+                "production readiness without pilot evidence",
+                "transferability of private Hapax runtime state",
+            ],
+            required_evidence_bundle=[
+                "license/provenance",
+                "security posture",
+                "redaction boundary",
+                "support expectation",
+            ],
+            primary_surfaces=["enterprise_pilot_packet", "determination_exchange_packet"],
+            enterprise_context=True,
+            allow_public_claims=False,
+        ),
+        "public_adopter": AudienceProfile(
+            audience_id="public_adopter",
+            name="Free/open adopter",
+            current_knowledge="Has no private Hapax runtime context.",
+            primary_questions=["What can I use?", "What license applies?", "What is unsupported?"],
+            needed_decisions=["adopt", "fork", "ignore"],
+            allowed_claim_classes=["capability", "architecture", "license", "risk", "roadmap"],
+            forbidden_inferences=["private runtime equivalence", "operator support entitlement"],
+            required_evidence_bundle=["public-safe evidence", "license/provenance"],
+            primary_surfaces=["repo_readme", "public_homepage"],
+            public_surface=True,
+            allow_public_claims=True,
+        ),
+        "paid_buyer": AudienceProfile(
+            audience_id="paid_buyer",
+            name="Paid buyer or support customer",
+            current_knowledge="Needs commercial support boundaries without private runtime leakage.",
+            primary_questions=[
+                "What is included?",
+                "What evidence supports it?",
+                "What are the risks?",
+            ],
+            needed_decisions=["buy", "defer", "request_support_scope"],
+            allowed_claim_classes=["capability", "license", "risk", "roadmap", "boundary"],
+            forbidden_inferences=["guaranteed outcome", "private runtime equivalence"],
+            required_evidence_bundle=[
+                "public-safe evidence",
+                "support boundary",
+                "risk disclosure",
+            ],
+            primary_surfaces=["sales_packet", "support_scope"],
+            public_surface=True,
+            allow_public_claims=True,
+        ),
+        "security_legal_reviewer": AudienceProfile(
+            audience_id="security_legal_reviewer",
+            name="Security and legal reviewer",
+            current_knowledge="Reviews provenance, privacy, boundary, and supply-chain posture.",
+            primary_questions=[
+                "What data crosses?",
+                "What license applies?",
+                "What can be audited?",
+            ],
+            needed_decisions=["approve", "reject", "request_controls"],
+            allowed_claim_classes=["architecture", "license", "risk", "boundary"],
+            forbidden_inferences=["unreviewed compliance", "undisclosed data transfer"],
+            required_evidence_bundle=[
+                "license/provenance",
+                "privacy boundary",
+                "supply-chain posture",
+            ],
+            primary_surfaces=["security_legal_packet"],
+            allow_public_claims=True,
+        ),
+        "intellectual_audience": AudienceProfile(
+            audience_id="intellectual_audience",
+            name="Intellectual and theory audience",
+            current_knowledge="Interested in ideas and research posture, not private operations.",
+            primary_questions=["What is the idea?", "What is evidenced?", "What is speculative?"],
+            needed_decisions=["read", "cite", "discuss"],
+            allowed_claim_classes=["architecture", "risk", "roadmap", "capability"],
+            forbidden_inferences=["private state disclosure", "anthropomorphic overclaim"],
+            required_evidence_bundle=["public-safe evidence", "scope caveats"],
+            primary_surfaces=["audience_essay", "public_homepage"],
+            public_surface=True,
+            allow_public_claims=True,
+        ),
+    }
+
+
+_PUBLIC_EVIDENCE_PRIVACY_CLASSES = {"public", "public_registry"}
+_PUBLIC_SURFACE_TOKENS = ("public", "sales", "repo_readme", "homepage", "audience")
+_ENTERPRISE_SURFACE_TOKENS = ("enterprise", "testbed", "alliant", "pilot", "determination")
+_ENTERPRISE_FORBIDDEN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "employer_endorsement",
+        re.compile(
+            r"\b(alliant|employer|workplace)\b.{0,80}\b"
+            r"(endorses|approved|approves|adopted|certified|sponsors|official)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "production_readiness_without_pilot_evidence",
+        re.compile(r"\b(production[- ]ready|ready for production|prod[- ]ready)\b", re.IGNORECASE),
+    ),
+    (
+        "private_runtime_transferability",
+        re.compile(
+            r"\b(private hapax runtime|raw private logs|operator-private|"
+            r"local runtime state|secrets?|employer confidential|customer data)\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+
+def _claim_targets_public_surface(
+    claim: ClaimRecord,
+    audiences: Sequence[AudienceProfile],
+) -> bool:
+    if claim.status == "approved_public":
+        return True
+    if any(profile.public_surface for profile in audiences):
+        return True
+    surfaces = [*claim.allowed_surfaces, *claim.prohibited_surfaces]
+    return any(token in surface.lower() for surface in surfaces for token in _PUBLIC_SURFACE_TOKENS)
+
+
+def _claim_targets_enterprise_context(
+    claim: ClaimRecord,
+    audiences: Sequence[AudienceProfile],
+) -> bool:
+    if any(profile.enterprise_context for profile in audiences):
+        return True
+    surfaces = [*claim.allowed_surfaces, *claim.prohibited_surfaces]
+    return any(
+        token in surface.lower() for surface in surfaces for token in _ENTERPRISE_SURFACE_TOKENS
+    )
+
+
+def _claim_text_for_scan(claim: ClaimRecord) -> str:
+    return " ".join(
+        part
+        for part in [
+            claim.text,
+            claim.allowed_wording,
+            " ".join(claim.forbidden_wording),
+            " ".join(claim.risk_flags),
+        ]
+        if part
+    )
+
+
+def _evidence_status(
+    *,
+    evidence_ref_count: int,
+    missing_refs: Sequence[str],
+    stale_records: Sequence[LegibilityEvidenceRecord],
+    failed_records: Sequence[LegibilityEvidenceRecord],
+) -> ClaimEvidenceStatus:
+    if evidence_ref_count == 0 or missing_refs:
+        return "missing"
+    if failed_records:
+        return "contradictory"
+    if stale_records:
+        return "stale"
+    return "fresh"
+
+
+def validate_claim_for_audiences(
+    claim: ClaimRecord,
+    evidence_records: Sequence[LegibilityEvidenceRecord],
+    *,
+    audience_profiles: dict[AudienceId, AudienceProfile] | None = None,
+    now: float | None = None,
+) -> ClaimValidationResult:
+    """Validate that a claim may be rendered to its requested audiences.
+
+    The validator is intentionally conservative: unknown audiences, missing
+    current-state evidence, stale current-state evidence, failed evidence,
+    public claims backed by non-public-safe evidence, and enterprise/testbed
+    overclaims all block.
+    """
+
+    profiles = audience_profiles or default_audience_profiles()
+    blockers: list[str] = []
+    warnings: list[str] = []
+    audiences: list[AudienceProfile] = []
+    for audience_id in claim.audience_scope:
+        profile = profiles.get(audience_id)
+        if profile is None:
+            blockers.append(f"unknown_audience:{audience_id}")
+            continue
+        audiences.append(profile)
+        if claim.claim_kind not in profile.allowed_claim_classes:
+            blockers.append(f"claim_kind_not_allowed:{audience_id}:{claim.claim_kind}")
+
+    records_by_id = {record.evidence_id: record for record in evidence_records}
+    missing_refs = [ref for ref in claim.evidence_refs if ref not in records_by_id]
+    records = [records_by_id[ref] for ref in claim.evidence_refs if ref in records_by_id]
+    stale_records = [record for record in records if not record.is_fresh(now)]
+    failed_records = [record for record in records if record.status != "ok"]
+
+    if not claim.evidence_refs:
+        blockers.append("missing_evidence")
+    blockers.extend(f"missing_evidence:{ref}" for ref in missing_refs)
+
+    if claim.claim_kind == "current_state":
+        blockers.extend(
+            f"stale_current_state_evidence:{record.evidence_id}" for record in stale_records
+        )
+    elif stale_records:
+        warnings.extend(f"stale_evidence:{record.evidence_id}" for record in stale_records)
+
+    blockers.extend(f"failed_evidence:{record.evidence_id}" for record in failed_records)
+
+    public_target = _claim_targets_public_surface(claim, audiences)
+    if public_target and claim.status != "approved_public":
+        blockers.append("public_claim_not_approved")
+    if public_target:
+        for record in records:
+            if (
+                not record.public_safe
+                or record.privacy_class not in _PUBLIC_EVIDENCE_PRIVACY_CLASSES
+            ):
+                blockers.append(f"public_claim_without_public_safe_evidence:{record.evidence_id}")
+
+    if _claim_targets_enterprise_context(claim, audiences):
+        scan_text = _claim_text_for_scan(claim)
+        for inference_name, pattern in _ENTERPRISE_FORBIDDEN_PATTERNS:
+            if pattern.search(scan_text):
+                blockers.append(f"enterprise_forbidden_inference:{inference_name}")
+
+    blockers = list(dict.fromkeys(blockers))
+    warnings = list(dict.fromkeys(warnings))
+    return ClaimValidationResult(
+        claim_id=claim.claim_id,
+        allowed=not blockers,
+        blockers=blockers,
+        warnings=warnings,
+        evidence_status=_evidence_status(
+            evidence_ref_count=len(claim.evidence_refs),
+            missing_refs=missing_refs,
+            stale_records=stale_records,
+            failed_records=failed_records,
+        ),
+        evidence_ids=[record.evidence_id for record in records],
+        audience_ids=[profile.audience_id for profile in audiences],
+    )
 
 
 def _record(
