@@ -4069,3 +4069,16 @@ collect_systemd_inventory_evidence
 from shared.evidence_ledger import validate_claim_for_audiences  # noqa: F401, E402
 
 validate_claim_for_audiences
+
+# Determination exchange packet validator v0: packet helpers are imported by
+# governed packet tooling and synthetic fixture tests; vulture does not follow
+# those dynamic/exported entrypoints from the library diff.
+from shared.evidence_ledger import (  # noqa: F401, E402
+    determination_exchange_packet_to_external_evidence,
+    synthetic_inbound_observation_packet,
+    synthetic_outbound_determination_packet,
+)
+
+determination_exchange_packet_to_external_evidence
+synthetic_inbound_observation_packet
+synthetic_outbound_determination_packet

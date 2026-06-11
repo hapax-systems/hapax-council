@@ -13,14 +13,14 @@ import re
 import shlex
 import subprocess
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 if TYPE_CHECKING:
     from shared.coord_event_log import CoordEventLog
@@ -50,6 +50,7 @@ LegibilityEvidenceKind = Literal[
     "local_api",
     "systemd_inventory",
     "operator_decision",
+    "external_determination",
     "collection_failure",
 ]
 LegibilityPrivacyClass = Literal[
@@ -90,6 +91,21 @@ ClaimStatus = Literal[
     "expired",
 ]
 ClaimEvidenceStatus = Literal["fresh", "stale", "missing", "contradictory"]
+DeterminationExchangePacketType = Literal["determination", "observation"]
+DeterminationExchangeSystem = Literal["hapax", "alliant_sandbox", "external_enterprise"]
+DeterminationExchangeAuthorityLevel = Literal[
+    "informational",
+    "planning_authority",
+    "implementation_authority",
+]
+DeterminationExchangeImportMode = Literal["none", "external_evidence", "implementation_authority"]
+DeterminationExchangeReviewVerdict = Literal[
+    "approved",
+    "rejected",
+    "needs_counsel",
+    "expired",
+    "needs_alliant_review",
+]
 
 
 class EvidenceEntry(BaseModel):
@@ -489,6 +505,265 @@ class ClaimValidationResult(BaseModel):
     evidence_status: ClaimEvidenceStatus
     evidence_ids: list[str] = Field(default_factory=list)
     audience_ids: list[str] = Field(default_factory=list)
+
+
+class DeterminationExchangePacket(BaseModel):
+    """Sanitized, manual cross-system determination/observation packet."""
+
+    packet_id: str
+    packet_type: DeterminationExchangePacketType
+    schema_version: int = 1
+    from_system: DeterminationExchangeSystem
+    to_system: DeterminationExchangeSystem
+    created_at: str = Field(default_factory=_now_iso)
+    reviewer: str
+    reviewed_at: str
+    review_verdict: DeterminationExchangeReviewVerdict
+    purpose: str
+    authority_case: str
+    authority_level: DeterminationExchangeAuthorityLevel = "informational"
+    privacy_class: Literal["redacted_cross_boundary"] = "redacted_cross_boundary"
+    import_as: DeterminationExchangeImportMode = "none"
+    claim_refs: list[str] = Field(default_factory=list)
+    evidence_summaries: list[str] = Field(default_factory=list)
+    request_refs: list[str] = Field(default_factory=list)
+    task_refs: list[str] = Field(default_factory=list)
+    allowed_actions: list[str] = Field(default_factory=list)
+    prohibited_actions: list[str] = Field(default_factory=list)
+    contains_raw_source: bool = False
+    contains_raw_logs: bool = False
+    contains_secrets: bool = False
+    contains_employer_confidential_data: bool = False
+    contains_private_runtime_state: bool = False
+    contains_personal_data: bool = False
+    public_safe: bool = False
+    synthetic_example: bool = False
+    shares_api: bool = False
+    shares_database: bool = False
+    shares_token: bool = False
+    unattended_sync: bool = False
+    live_bridge: bool = False
+    summary: str
+
+
+class DeterminationExchangeValidationResult(BaseModel):
+    """Fail-closed verdict for a determination exchange packet."""
+
+    packet_id: str = ""
+    allowed: bool
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    packet_type: str = ""
+    import_as: str = ""
+
+
+_DETERMINATION_REDACTION_FLAGS = {
+    "contains_raw_source": "raw_source_present",
+    "contains_raw_logs": "raw_logs_present",
+    "contains_secrets": "secrets_present",
+    "contains_employer_confidential_data": "employer_confidential_data_present",
+    "contains_private_runtime_state": "private_runtime_state_present",
+    "contains_personal_data": "personal_data_present",
+}
+_DETERMINATION_BRIDGE_FLAGS = {
+    "shares_api": "live_bridge_shared_api",
+    "shares_database": "live_bridge_shared_database",
+    "shares_token": "live_bridge_shared_token",
+    "unattended_sync": "live_bridge_unattended_sync",
+    "live_bridge": "live_bridge_enabled",
+}
+
+
+def _schema_error_blockers(exc: ValidationError) -> list[str]:
+    blockers: list[str] = []
+    for error in exc.errors():
+        loc = ".".join(str(part) for part in error.get("loc", ())) or "packet"
+        blockers.append(f"schema_error:{loc}:{error.get('msg', 'invalid')}")
+    return blockers
+
+
+def _packet_text_for_sensitive_scan(packet: DeterminationExchangePacket) -> str:
+    return " ".join(
+        [
+            packet.purpose,
+            packet.summary,
+            " ".join(packet.evidence_summaries),
+            " ".join(packet.allowed_actions),
+            " ".join(packet.prohibited_actions),
+        ]
+    )
+
+
+_DETERMINATION_SENSITIVE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("private_sentinel", re.compile(r"PRIVATE_SENTINEL_DO_NOT_PUBLISH_", re.IGNORECASE)),
+    ("secret_assignment", _SECRET_ASSIGNMENT_RE),
+    ("private_key", re.compile(r"BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY", re.IGNORECASE)),
+    (
+        "employer_ticket_or_customer_detail",
+        re.compile(
+            r"\b(ticket|incident|customer|employee)\b.{0,60}\b[A-Z]{2,}-\d+\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+
+def validate_determination_exchange_packet(
+    packet: DeterminationExchangePacket | Mapping[str, object],
+) -> DeterminationExchangeValidationResult:
+    """Validate a manual cross-boundary packet without creating a bridge.
+
+    Packets are informational by default. Alliant-origin packets may enter
+    Hapax only as ``external_evidence``; raw source/logs/secrets/private runtime
+    state, employer confidential material, and live integration flags all
+    fail closed.
+    """
+
+    raw_packet_id = ""
+    if isinstance(packet, Mapping):
+        raw_packet_id = str(packet.get("packet_id", ""))
+    try:
+        model = (
+            packet
+            if isinstance(packet, DeterminationExchangePacket)
+            else DeterminationExchangePacket.model_validate(packet)
+        )
+    except ValidationError as exc:
+        return DeterminationExchangeValidationResult(
+            packet_id=raw_packet_id,
+            allowed=False,
+            blockers=_schema_error_blockers(exc),
+        )
+
+    blockers: list[str] = []
+    warnings: list[str] = []
+    if model.schema_version != 1:
+        blockers.append(f"unsupported_schema_version:{model.schema_version}")
+    if not model.reviewer.strip():
+        blockers.append("missing_reviewer")
+    if not model.reviewed_at.strip():
+        blockers.append("missing_reviewed_at")
+    if model.review_verdict != "approved":
+        blockers.append(f"review_verdict_not_approved:{model.review_verdict}")
+    if not model.allowed_actions:
+        blockers.append("missing_allowed_actions")
+    if not model.prohibited_actions:
+        blockers.append("missing_prohibited_actions")
+    if model.privacy_class != "redacted_cross_boundary":
+        blockers.append(f"invalid_privacy_class:{model.privacy_class}")
+    for field_name, blocker in _DETERMINATION_REDACTION_FLAGS.items():
+        if bool(getattr(model, field_name)):
+            blockers.append(blocker)
+    for field_name, blocker in _DETERMINATION_BRIDGE_FLAGS.items():
+        if bool(getattr(model, field_name)):
+            blockers.append(blocker)
+    for blocker, pattern in _DETERMINATION_SENSITIVE_PATTERNS:
+        if pattern.search(_packet_text_for_sensitive_scan(model)):
+            blockers.append(f"sensitive_text:{blocker}")
+
+    if model.synthetic_example and not model.public_safe:
+        blockers.append("synthetic_example_not_public_safe")
+    if model.from_system == "alliant_sandbox" and model.to_system == "hapax":
+        if model.import_as != "external_evidence":
+            blockers.append("alliant_origin_must_import_as_external_evidence")
+        if model.authority_level != "informational":
+            blockers.append("alliant_origin_must_be_informational")
+        if "import_as_external_evidence" not in model.allowed_actions:
+            blockers.append("alliant_origin_missing_external_evidence_action")
+    if model.authority_level == "implementation_authority" and model.from_system != "hapax":
+        blockers.append("external_system_cannot_grant_implementation_authority")
+
+    blockers = list(dict.fromkeys(blockers))
+    warnings = list(dict.fromkeys(warnings))
+    return DeterminationExchangeValidationResult(
+        packet_id=model.packet_id,
+        allowed=not blockers,
+        blockers=blockers,
+        warnings=warnings,
+        packet_type=model.packet_type,
+        import_as=model.import_as,
+    )
+
+
+def determination_exchange_packet_to_external_evidence(
+    packet: DeterminationExchangePacket,
+    *,
+    freshness_ttl_s: float = 86400.0,
+) -> LegibilityEvidenceRecord:
+    """Convert an approved Alliant-origin packet into external evidence only."""
+
+    result = validate_determination_exchange_packet(packet)
+    if not result.allowed:
+        raise ValueError("; ".join(result.blockers))
+    if packet.from_system != "alliant_sandbox" or packet.to_system != "hapax":
+        raise ValueError("only Alliant-origin inbound packets convert to external evidence")
+    if packet.import_as != "external_evidence":
+        raise ValueError("packet import mode is not external_evidence")
+    return _record(
+        kind="external_determination",
+        value_summary=f"{packet.packet_id}: {packet.summary}",
+        privacy_class="redacted_cross_boundary",
+        public_safe=packet.public_safe,
+        freshness_ttl_s=freshness_ttl_s,
+        collector="hapax-determination-exchange",
+        failure_behavior="fail_closed",
+    ).model_copy(update={"derived_from": [packet.packet_id]})
+
+
+def synthetic_outbound_determination_packet() -> DeterminationExchangePacket:
+    """Return a public-safe Hapax-to-enterprise example packet."""
+
+    return DeterminationExchangePacket(
+        packet_id="DXP-SYNTH-OUTBOUND-1",
+        packet_type="determination",
+        from_system="hapax",
+        to_system="alliant_sandbox",
+        reviewer="operator",
+        reviewed_at="2026-06-11T00:00:00Z",
+        review_verdict="approved",
+        purpose="Synthetic pilot-scope determination exchange example.",
+        authority_case="CASE-HAPAX-LEGIBILITY-IMPLEMENTATION-20260611",
+        authority_level="informational",
+        import_as="none",
+        evidence_summaries=["Synthetic public-safe summary; no raw artifacts."],
+        allowed_actions=["review", "map_to_local_sdlc"],
+        prohibited_actions=[
+            "publish_without_operator_review",
+            "treat_as_employer_approval",
+            "ingest_raw_private_artifacts",
+        ],
+        public_safe=True,
+        synthetic_example=True,
+        summary="Synthetic determination: review a portable governance idea without importing private runtime state.",
+    )
+
+
+def synthetic_inbound_observation_packet() -> DeterminationExchangePacket:
+    """Return a public-safe enterprise-to-Hapax sanitized observation example."""
+
+    return DeterminationExchangePacket(
+        packet_id="DXP-SYNTH-INBOUND-1",
+        packet_type="observation",
+        from_system="alliant_sandbox",
+        to_system="hapax",
+        reviewer="operator",
+        reviewed_at="2026-06-11T00:00:00Z",
+        review_verdict="approved",
+        purpose="Synthetic sanitized observation import example.",
+        authority_case="CASE-HAPAX-LEGIBILITY-IMPLEMENTATION-20260611",
+        authority_level="informational",
+        import_as="external_evidence",
+        evidence_summaries=["Synthetic observation: teams need concise evidence packets."],
+        allowed_actions=["import_as_external_evidence", "inform_generic_public_tooling"],
+        prohibited_actions=[
+            "reconstruct_enterprise_workflow",
+            "claim_employer_approval",
+            "publish_as_current_state",
+        ],
+        public_safe=True,
+        synthetic_example=True,
+        summary="Synthetic observation: generic adoption workflows benefit from explicit evidence packets.",
+    )
 
 
 def default_audience_profiles() -> dict[AudienceId, AudienceProfile]:
