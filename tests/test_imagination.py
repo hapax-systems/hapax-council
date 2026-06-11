@@ -176,14 +176,28 @@ class TestPublishFragment:
 
 class TestMaybeEscalate:
     def test_escalate_high_salience_usually(self) -> None:
+        import math
+        import unittest.mock
+
         frag = _make_fragment(salience=0.9)
-        escalations = sum(1 for _ in range(100) if maybe_escalate(frag) is not None)
-        assert escalations > 85
+        probability = 1.0 / (1.0 + math.exp(-8.0 * (frag.salience - 0.55)))
+        with unittest.mock.patch("agents.imagination.random") as mock_rng:
+            mock_rng.random.return_value = probability - 0.001
+            assert maybe_escalate(frag) is not None
+            mock_rng.random.return_value = probability + 0.001
+            assert maybe_escalate(frag) is None
 
     def test_escalate_low_salience_rarely(self) -> None:
+        import math
+        import unittest.mock
+
         frag = _make_fragment(salience=0.2)
-        escalations = sum(1 for _ in range(100) if maybe_escalate(frag) is not None)
-        assert escalations < 15
+        probability = 1.0 / (1.0 + math.exp(-8.0 * (frag.salience - 0.55)))
+        with unittest.mock.patch("agents.imagination.random") as mock_rng:
+            mock_rng.random.return_value = probability - 0.001
+            assert maybe_escalate(frag) is not None
+            mock_rng.random.return_value = probability + 0.001
+            assert maybe_escalate(frag) is None
 
     def test_escalate_continuation_boosts_probability(self) -> None:
         """Continuation multiplies probability by 1.3 — verify with fixed RNG."""

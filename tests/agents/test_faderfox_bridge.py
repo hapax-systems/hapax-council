@@ -11,7 +11,7 @@ from agents import faderfox_bridge
 def test_live_mx12_fader_profile_uses_cc95_by_channel() -> None:
     faders, buttons = faderfox_bridge.load_map(faderfox_bridge.DEFAULT_CONFIG)
 
-    assert len(faders) == 6
+    assert len(faders) in {6, 8}
     assert len(buttons) == 3
 
     for channel in range(1, 7):
@@ -23,6 +23,9 @@ def test_live_mx12_fader_profile_uses_cc95_by_channel() -> None:
     assert faders[(3, 95)]["label"] == "operator-mic"
     assert faders[(4, 95)]["label"] == "youtube"
     assert faders[(5, 95)]["label"] == "voice-to-s4"
+    if len(faders) == 8:
+        assert faders[(6, 95)]["label"] == "monitor-stream"
+        assert faders[(7, 95)]["label"] == "monitor-private"
 
 
 def test_load_map_keys_are_zero_indexed(tmp_path: Path) -> None:

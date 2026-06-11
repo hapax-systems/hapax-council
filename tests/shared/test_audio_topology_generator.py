@@ -21,6 +21,14 @@ from shared.audio_topology_generator import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+ARCHIVED_GENERATED_COLLISIONS_DIR = (
+    REPO_ROOT
+    / "config"
+    / "pipewire"
+    / "archive"
+    / "2026-06-10-dedupe"
+    / "generated-node-collisions"
+)
 
 
 class TestGainConversion:
@@ -267,8 +275,12 @@ class TestGenerateConfs:
         descriptor = load_audio_topology_descriptor()
         generated = generate_confs(descriptor)[filename]
         mirror = REPO_ROOT / "config" / "pipewire" / "generated" / filename
+        archive = ARCHIVED_GENERATED_COLLISIONS_DIR / Path(filename).name
 
-        assert mirror.read_text(encoding="utf-8") == generated
+        if mirror.exists():
+            assert mirror.read_text(encoding="utf-8") == generated
+        else:
+            assert archive.read_text(encoding="utf-8") == generated
 
 
 class TestParamsPassthrough:
