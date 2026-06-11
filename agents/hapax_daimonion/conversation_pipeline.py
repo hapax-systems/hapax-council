@@ -269,7 +269,7 @@ class ConversationPipeline:
             log.exception("Notification delivery failed: %s", title)
             return False
 
-    async def generate_spontaneous_speech(
+    async def compose_spontaneous_speech(
         self,
         impingement: object,
         *,
@@ -277,12 +277,19 @@ class ConversationPipeline:
         destination_target: str | None = None,
         destination_role: str | None = None,
         destination: str | None = None,
-    ) -> None:
-        """Generate and speak a spontaneous utterance from an impingement.
+        budget: TurnBudget | None = None,
+    ) -> str | None:
+        """Compose (LLM only — no audio) a spontaneous utterance.
 
-        Unlike process_utterance (which transcribes operator audio), this
-        bypasses STT and routes directly to LLM with impingement context
-        as the intent. Speech is a tool — recruited by the cascade.
+        Split from the former monolithic ``generate_spontaneous_speech`` so
+        the CPAL runner can run the LLM leg OUTSIDE the global speech lock
+        (audit v2 §5e: the spontaneous path must not wedge the lock). The
+        lock is needed only for what actually makes sound — see
+        :meth:`speak_spontaneous_text`.
+
+        Returns the composed text, or ``None`` on every failure path —
+        each of which records a witness drop (overrun policy: spontaneous
+        paths drop-with-witness, never spoken errors).
 
         ``register_hint`` is the HOMAGE Phase 7 voice-register directive
         (spec §4.8). When supplied it is prepended to the user prompt so
@@ -294,9 +301,11 @@ class ConversationPipeline:
         ``destination_target`` is the resolved pw-cat sink name for this
         single utterance. CPAL passes the output of the fail-closed
         destination decision here so routed utterances never fall through to
-        the audio output's constructor target. ``None`` means this method must
-        resolve private-or-drop before playback.
+        the audio output's constructor target. ``None`` means playback must
+        resolve private-or-drop before audio.
         """
+        if budget is None:
+            budget = TurnBudget(kind="spontaneous", budget_s=SPONTANEOUS_LLM_TIMEOUT_S)
         content = getattr(impingement, "content", {})
         source = getattr(impingement, "source", "")
         strength = getattr(impingement, "strength", 0.5)
@@ -320,7 +329,7 @@ class ConversationPipeline:
                 text=text_for_witness,
                 terminal_state="failed",
             )
-            return
+            return None
         if self.state == ConvState.SPEAKING:
             from agents.hapax_daimonion.voice_output_witness import record_drop
 
@@ -333,7 +342,7 @@ class ConversationPipeline:
                 text=text_for_witness,
                 terminal_state="failed",
             )
-            return
+            return None
 
         # Build source-appropriate prompt
         if source == "imagination":
@@ -409,6 +418,7 @@ class ConversationPipeline:
             # ``local-fast``), not to cloud Gemini. Prior cloud routing was a
             # T1-T7 violation the first-round grounding-act audit identified.
             grounded_model = MODELS["local-fast"]
+            budget.note(route="SPONTANEOUS", model=grounded_model)
             metrics_ctx = (
                 llm_call_span(
                     model=grounded_model,
@@ -417,6 +427,7 @@ class ConversationPipeline:
                 if llm_call_span is not None
                 else nullcontext(None)
             )
+            _t_llm = time.monotonic()
             with metrics_ctx:
                 response = await litellm.acompletion(
                     model=f"litellm_proxy/{grounded_model}",
@@ -427,34 +438,42 @@ class ConversationPipeline:
                     api_key=LITELLM_KEY or os.environ.get("LITELLM_API_KEY", "not-set"),
                     timeout=SPONTANEOUS_LLM_TIMEOUT_S,
                 )
+            budget.mark("llm", t0=_t_llm)
 
             text = response.choices[0].message.content.strip()
             if text and "[silence]" not in text.lower():
-                log.info("Spontaneous speech: %s", text[:80])
-                await self._speak_sentence(
-                    text,
-                    destination_target=destination_target,
-                    destination_role=destination_role,
-                    destination=destination,
-                )
-            else:
-                from agents.hapax_daimonion.voice_output_witness import record_drop
-
-                record_drop(
-                    reason="spontaneous_speech_llm_silence",
-                    source=source,
-                    destination=destination,
-                    target=destination_target,
-                    media_role=destination_role,
-                    text=text_for_witness,
-                    terminal_state="failed",
-                )
-                log.debug("Cascade recruited speech but LLM chose silence")
-        except Exception as exc:
+                return text
             from agents.hapax_daimonion.voice_output_witness import record_drop
 
             record_drop(
-                reason="spontaneous_speech_generation_failed",
+                reason="spontaneous_speech_llm_silence",
+                source=source,
+                destination=destination,
+                target=destination_target,
+                media_role=destination_role,
+                text=text_for_witness,
+                terminal_state="failed",
+            )
+            budget.note(outcome="llm_silence")
+            budget.emit()
+            log.debug("Cascade recruited speech but LLM chose silence")
+            return None
+        except Exception as exc:
+            from agents.hapax_daimonion.voice_output_witness import record_drop
+
+            # Overrun policy (audit v2 §5e): spontaneous paths drop-with-
+            # witness — never spoken errors. Name timeouts honestly so the
+            # receipt surfaces podium TTFT truthfully instead of folding
+            # wedges into a generic failure bucket. litellm raises its own
+            # Timeout class (not builtins TimeoutError), hence the name check.
+            _is_timeout = isinstance(exc, TimeoutError) or "Timeout" in type(exc).__name__
+            reason = (
+                "spontaneous_speech_llm_timeout"
+                if _is_timeout
+                else "spontaneous_speech_generation_failed"
+            )
+            record_drop(
+                reason=reason,
                 source=source,
                 destination=destination,
                 target=destination_target,
@@ -463,7 +482,82 @@ class ConversationPipeline:
                 error=f"{type(exc).__name__}: {exc}",
                 terminal_state="failed",
             )
+            budget.note(outcome=reason.removeprefix("spontaneous_speech_"))
+            budget.emit()
             log.debug("Spontaneous speech generation failed (non-fatal)", exc_info=True)
+            return None
+
+    async def speak_spontaneous_text(
+        self,
+        text: str,
+        *,
+        destination_target: str | None = None,
+        destination_role: str | None = None,
+        destination: str | None = None,
+        budget: TurnBudget | None = None,
+    ) -> None:
+        """Synthesize and play composed spontaneous text (the audio-only leg).
+
+        This is the part that needs the CPAL speech lock; composition does
+        not. Passing the ``budget`` from compose yields one receipt covering
+        both legs (llm + ttfa/synth).
+        """
+        log.info("Spontaneous speech: %s", text[:80])
+        _prior_budget = getattr(self, "_turn_budget", None)
+        if budget is not None and _prior_budget is None:
+            # Let _speak_sentence mark ttfa/synth on this budget.
+            self._turn_budget = budget
+        try:
+            await self._speak_sentence(
+                text,
+                destination_target=destination_target,
+                destination_role=destination_role,
+                destination=destination,
+            )
+        finally:
+            if budget is not None:
+                budget.notes.setdefault("outcome", "spoken")
+                budget.emit()
+                if self._turn_budget is budget:
+                    self._turn_budget = None
+
+    async def generate_spontaneous_speech(
+        self,
+        impingement: object,
+        *,
+        register_hint: str | None = None,
+        destination_target: str | None = None,
+        destination_role: str | None = None,
+        destination: str | None = None,
+    ) -> None:
+        """Compose then speak a spontaneous utterance (compatibility wrapper).
+
+        Callers that hold the speech lock across this call serialize the
+        LLM leg under the lock — prefer calling
+        :meth:`compose_spontaneous_speech` outside the lock and
+        :meth:`speak_spontaneous_text` inside it (the CPAL runner does).
+        """
+        budget = TurnBudget(kind="spontaneous", budget_s=SPONTANEOUS_LLM_TIMEOUT_S)
+        text = await self.compose_spontaneous_speech(
+            impingement,
+            register_hint=register_hint,
+            destination_target=destination_target,
+            destination_role=destination_role,
+            destination=destination,
+            budget=budget,
+        )
+        if not text:
+            return
+        await self.speak_spontaneous_text(
+            text,
+            destination_target=destination_target,
+            destination_role=destination_role,
+            destination=destination or _destination_value_for_route(
+                destination_target=destination_target,
+                destination_role=destination_role,
+            ),
+            budget=budget,
+        )
 
     async def start(self) -> None:
         """Start the conversation pipeline."""

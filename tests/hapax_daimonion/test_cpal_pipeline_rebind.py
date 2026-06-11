@@ -114,9 +114,87 @@ class TestSpontaneousSpeechRebind:
             await runner.process_impingement(_exploration_impingement())
 
         daemon._start_pipeline.assert_awaited_once()
-        fresh.generate_spontaneous_speech.assert_awaited_once()
+        # voice-p1-turnbudget: the runner now composes OUTSIDE the speech
+        # lock and speaks inside it (two calls, not one monolith).
+        fresh.compose_spontaneous_speech.assert_awaited_once()
+        fresh.speak_spontaneous_text.assert_awaited_once()
         for call in record_drop.call_args_list:
             assert call.kwargs.get("reason") != "pipeline_unavailable"
+
+    @pytest.mark.asyncio
+    async def test_compose_runs_outside_speech_lock_speak_inside(self):
+        """voice-p1-turnbudget acceptance: the spontaneous LLM leg cannot
+        wedge the speech lock — composition runs unlocked, only the audio
+        leg (speak) holds it."""
+        fresh = AsyncMock()
+        fresh._running = True
+        runner_ref: list = [None]
+        daemon = _rebinding_daemon(runner_ref, fresh)
+        runner = _make_runner(daemon=daemon)
+        runner_ref[0] = runner
+        runner.set_pipeline(None)
+        runner._impingement_adapter.adapt = MagicMock(return_value=_surfacing_effect())
+
+        lock_during_compose: list[bool] = []
+        lock_during_speak: list[bool] = []
+
+        async def _compose(*args, **kwargs):
+            lock_during_compose.append(runner._speech_lock.locked())
+            return "composed text"
+
+        async def _speak(*args, **kwargs):
+            lock_during_speak.append(runner._speech_lock.locked())
+
+        fresh.compose_spontaneous_speech = AsyncMock(side_effect=_compose)
+        fresh.speak_spontaneous_text = AsyncMock(side_effect=_speak)
+
+        with (
+            patch(
+                "agents.hapax_daimonion.cpal.runner.resolve_playback_decision",
+                return_value=_PRIVATE_DECISION,
+            ),
+            patch("agents.hapax_daimonion.cpal.runner.record_destination_decision"),
+            patch("agents.hapax_daimonion.cpal.runner.record_drop"),
+            patch("agents.hapax_daimonion.cpal.runner.asyncio.sleep", new=AsyncMock()),
+        ):
+            await runner.process_impingement(_exploration_impingement())
+
+        assert lock_during_compose == [False]
+        assert lock_during_speak == [True]
+
+    @pytest.mark.asyncio
+    async def test_floor_claimed_during_compose_drops_with_witness(self):
+        """If a conversational turn claims the floor while the LLM composes,
+        the spontaneous utterance drops with a witness — never speaks."""
+        fresh = AsyncMock()
+        fresh._running = True
+        runner_ref: list = [None]
+        daemon = _rebinding_daemon(runner_ref, fresh)
+        runner = _make_runner(daemon=daemon)
+        runner_ref[0] = runner
+        runner.set_pipeline(None)
+        runner._impingement_adapter.adapt = MagicMock(return_value=_surfacing_effect())
+
+        async def _compose(*args, **kwargs):
+            runner._processing_utterance = True  # operator spoke mid-compose
+            return "composed text"
+
+        fresh.compose_spontaneous_speech = AsyncMock(side_effect=_compose)
+
+        with (
+            patch(
+                "agents.hapax_daimonion.cpal.runner.resolve_playback_decision",
+                return_value=_PRIVATE_DECISION,
+            ),
+            patch("agents.hapax_daimonion.cpal.runner.record_destination_decision"),
+            patch("agents.hapax_daimonion.cpal.runner.record_drop") as record_drop,
+            patch("agents.hapax_daimonion.cpal.runner.asyncio.sleep", new=AsyncMock()),
+        ):
+            await runner.process_impingement(_exploration_impingement())
+
+        fresh.speak_spontaneous_text.assert_not_awaited()
+        reasons = [c.kwargs.get("reason") for c in record_drop.call_args_list]
+        assert "conversation_active_post_compose" in reasons
 
     @pytest.mark.asyncio
     async def test_spontaneous_speech_drops_when_rebind_fails(self, caplog):

@@ -45,6 +45,8 @@ from agents.hapax_daimonion.turn_budget import (
     INTERVIEW_QUESTION_SILENCE_S,
     POST_TTS_COOLDOWN_S,
     SPEECH_GATE_HOLDOVER_S,
+    SPONTANEOUS_LLM_TIMEOUT_S,
+    TurnBudget,
 )
 from agents.hapax_daimonion.voice_output_witness import (
     record_destination_decision,
@@ -1417,7 +1419,7 @@ class CpalRunner:
             # pipeline_unavailable because nothing rebinds the reference
             # between sessions (engagement only fires on operator speech).
             pipeline = await self._ensure_pipeline("spontaneous_speech")
-            if pipeline is not None and hasattr(pipeline, "generate_spontaneous_speech"):
+            if pipeline is not None and hasattr(pipeline, "compose_spontaneous_speech"):
                 # HOMAGE Phase 7: pass the active register's framing
                 # directive to the pipeline so the LLM tunes tonality
                 # before synthesis. Only TEXTMODE carries a non-trivial
@@ -1452,50 +1454,64 @@ class CpalRunner:
                         terminal_state="failed",
                     )
                     return
+                # Compose OUTSIDE the speech lock (audit v2 §5e): the LLM
+                # leg used to run while holding the lock, wedging every
+                # other voice path for up to the full LLM timeout. Only
+                # what makes sound holds the lock now. During composition
+                # the buffer stays live — if the operator starts speaking,
+                # the post-compose re-check below yields to the
+                # conversation (drop-with-witness, never spoken errors).
+                budget = TurnBudget(
+                    kind="spontaneous", budget_s=SPONTANEOUS_LLM_TIMEOUT_S
+                )
+                text: str | None = None
+                try:
+                    text = await pipeline.compose_spontaneous_speech(
+                        impingement,
+                        register_hint=register_hint,
+                        destination_target=destination_target,
+                        destination_role=destination_role,
+                        destination=destination.value,
+                        budget=budget,
+                    )
+                except Exception:
+                    log.debug("Spontaneous speech compose failed", exc_info=True)
+                if not text:
+                    return  # compose recorded its own witness drop + receipt
+                # Re-check: a conversational turn may have claimed the
+                # floor while the LLM was composing.
+                if self._speech_lock.locked() or self._processing_utterance:
+                    log.debug(
+                        "CPAL: exploration surfacing dropped post-compose: floor claimed"
+                    )
+                    record_drop(
+                        reason="speech_lock_held_post_compose"
+                        if self._speech_lock.locked()
+                        else "conversation_active_post_compose",
+                        source=source,
+                        destination=destination.value,
+                        target=destination_target,
+                        media_role=destination_role,
+                        text=text,
+                        terminal_state="failed",
+                    )
+                    budget.note(outcome="floor_claimed_post_compose")
+                    budget.emit()
+                    return
                 async with self._speech_lock:
-                    # Set speaking gate for the ENTIRE duration — LLM +
-                    # TTS + playback + holdover. The pipeline's _speak_sentence
+                    # Set speaking gate for the AUDIO duration — TTS +
+                    # playback + holdover. The pipeline's _speak_sentence
                     # only gates per-sentence; between sentences the gate drops
                     # and the buffer captures inter-sentence audio as "operator."
                     self._buffer.set_speaking(True)
                     try:
-                        await pipeline.generate_spontaneous_speech(
-                            impingement,
-                            register_hint=register_hint,
+                        await pipeline.speak_spontaneous_text(
+                            text,
                             destination_target=destination_target,
                             destination_role=destination_role,
                             destination=destination.value,
+                            budget=budget,
                         )
-                    except TypeError:
-                        # Older pipelines without one of the new kwargs — fall
-                        # back through progressively so the impingement is
-                        # never dropped when the signature shifts.
-                        log.debug(
-                            "generate_spontaneous_speech rejected kwarg; "
-                            "retrying with narrower signature",
-                            exc_info=True,
-                        )
-                        try:
-                            await pipeline.generate_spontaneous_speech(
-                                impingement,
-                                register_hint=register_hint,
-                                destination_target=destination_target,
-                            )
-                        except TypeError:
-                            try:
-                                await pipeline.generate_spontaneous_speech(
-                                    impingement,
-                                    register_hint=register_hint,
-                                )
-                            except TypeError:
-                                try:
-                                    await pipeline.generate_spontaneous_speech(impingement)
-                                except Exception:
-                                    log.debug("Spontaneous speech failed", exc_info=True)
-                            except Exception:
-                                log.debug("Spontaneous speech failed", exc_info=True)
-                        except Exception:
-                            log.debug("Spontaneous speech failed", exc_info=True)
                     except Exception:
                         log.debug("Spontaneous speech failed", exc_info=True)
                     finally:
