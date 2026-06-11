@@ -13,6 +13,7 @@ import logging
 import math
 import struct
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from statistics import median
 
@@ -29,13 +30,22 @@ MAX_PITCH_HZ = 400.0
 MIN_ELEVATION_DELTA_HZ = 25.0
 MAX_STORED_SAMPLES = 3600
 
+
+@dataclass
+class _PitchState:
+    """Cached publisher state for one target path."""
+
+    last_ts: float | None
+    samples: list[dict[str, float]]
+
+
 # In-process state cache keyed by target path. The publisher runs once per
 # 32ms VAD chunk on the audio loop; re-reading and re-parsing the SHM JSON
 # (up to MAX_STORED_SAMPLES samples) on every chunk starved the loop below
 # real-time and overran the audio frame queue. The daimonion is the sole
 # writer of this file, so a warm cache mirrors it exactly; the file is read
 # once per path (restart continuity) and written only on publish.
-_state_cache: dict[Path, dict[str, object]] = {}
+_state_cache: dict[Path, _PitchState] = {}
 
 
 def _reset_state_cache() -> None:
@@ -68,14 +78,13 @@ def publish_operator_voice_pitch_sample(
     cache = _state_cache.get(target)
     if cache is None:
         state = _read_state(target)
-        cache = {
-            "last_ts": _float_or_none(state.get("timestamp")) if state is not None else None,
-            "samples": _samples_from_state(state, now=now),
-        }
+        cache = _PitchState(
+            last_ts=_float_or_none(state.get("timestamp")) if state is not None else None,
+            samples=_samples_from_state(state, now=now),
+        )
         _state_cache[target] = cache
 
-    last_ts = cache["last_ts"]
-    if isinstance(last_ts, float) and now - last_ts < min_interval_s:
+    if cache.last_ts is not None and now - cache.last_ts < min_interval_s:
         return False
 
     rms = _compute_rms(pcm_data, channels=channels)
@@ -87,13 +96,11 @@ def publish_operator_voice_pitch_sample(
         return False
 
     cutoff = now - WINDOW_S
-    cached_samples = cache["samples"]
-    assert isinstance(cached_samples, list)
-    samples = [s for s in cached_samples if s["timestamp"] >= cutoff]
+    samples = [s for s in cache.samples if s["timestamp"] >= cutoff]
     samples.append({"timestamp": now, "pitch_hz": pitch_hz})
     samples = samples[-MAX_STORED_SAMPLES:]
-    cache["samples"] = samples
-    cache["last_ts"] = now
+    cache.samples = samples
+    cache.last_ts = now
     stats = _stats([float(s["pitch_hz"]) for s in samples])
     threshold = _threshold(stats)
 
