@@ -422,7 +422,7 @@ def test_pr_open_assigned_to_same_role_resumes_without_status_change(
     assert "status: pr_open" in text
     assert "assigned_to: cx-test" in text
     assert "claimed_at: null" in text
-    assert "resumed ready-state task (cc-claim)" in text
+    assert "resumed ready-state task (cc-claim" in text  # tolerate session=<sid> suffix
     assert (home / ".cache" / "hapax" / "cc-active-task-cx-test").read_text(
         encoding="utf-8"
     ).strip() == "review-fix"
@@ -449,7 +449,7 @@ def test_ready_state_resume_uses_existing_session_log_heading_case(
     assert result.returncode == 0, result.stderr
     text = note.read_text(encoding="utf-8")
     assert "## Session Log\n- " in text
-    assert "resumed ready-state task (cc-claim)" in text
+    assert "resumed ready-state task (cc-claim" in text  # tolerate session=<sid> suffix
     assert "## Session log" not in text
 
 
@@ -472,7 +472,7 @@ def test_merge_queue_assigned_to_same_role_resumes_without_status_change(
     assert "status: merge_queue" in text
     assert "assigned_to: cx-test" in text
     assert "claimed_at: null" in text
-    assert "resumed ready-state task (cc-claim)" in text
+    assert "resumed ready-state task (cc-claim" in text  # tolerate session=<sid> suffix
     assert (home / ".cache" / "hapax" / "cc-active-task-cx-test").read_text(
         encoding="utf-8"
     ).strip() == "queue-followup"

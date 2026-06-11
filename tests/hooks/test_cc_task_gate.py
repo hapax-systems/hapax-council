@@ -1050,15 +1050,21 @@ def _run_cc_claim(
 class TestCcClaimSessionKeyed:
     """cc-claim writes a session-keyed lease + the legacy file (FM-2), TTL reaps."""
 
+    # cc-claim now refuses low-entropy / pid-shaped claim keys
+    # (shared/session_identity.py), so writer-side fixtures use a realistic id.
+    _SID = "11111111-2222-4333-8444-5555aaaa6666"
+
     def test_writes_session_keyed_and_legacy(self, tmp_path: Path) -> None:
         _write_claimable_task(tmp_path, "task-sk")
-        r = _run_cc_claim(tmp_path, "task-sk", role="delta", extra_env={"HAPAX_SESSION_ID": "sidX"})
+        r = _run_cc_claim(
+            tmp_path, "task-sk", role="delta", extra_env={"HAPAX_SESSION_ID": self._SID}
+        )
         assert r.returncode == 0, r.stderr
         cache = tmp_path / ".cache" / "hapax"
         # Legacy file kept for the ~11 out-of-scope consumers (cc-close, session-context, …).
         assert (cache / "cc-active-task-delta").read_text().strip() == "task-sk"
         # Session-keyed lease the gate prefers.
-        assert (cache / "cc-active-task-delta-sidX").read_text().strip() == "task-sk"
+        assert (cache / f"cc-active-task-delta-{self._SID}").read_text().strip() == "task-sk"
 
     def test_legacy_only_without_session_id(self, tmp_path: Path) -> None:
         _write_claimable_task(tmp_path, "task-ns")
@@ -1071,10 +1077,10 @@ class TestCcClaimSessionKeyed:
     def test_roleless_session_can_claim(self, tmp_path: Path) -> None:
         # No role env but a session id → claims under the governed roleless identity.
         _write_claimable_task(tmp_path, "task-rl")
-        r = _run_cc_claim(tmp_path, "task-rl", role=None, extra_env={"HAPAX_SESSION_ID": "sidZ"})
+        r = _run_cc_claim(tmp_path, "task-rl", role=None, extra_env={"HAPAX_SESSION_ID": self._SID})
         assert r.returncode == 0, r.stderr
         cache = tmp_path / ".cache" / "hapax"
-        assert (cache / "cc-active-task-roleless-sidZ").read_text().strip() == "task-rl"
+        assert (cache / f"cc-active-task-roleless-{self._SID}").read_text().strip() == "task-rl"
 
     def test_expired_lease_is_reaped_and_does_not_block(self, tmp_path: Path) -> None:
         _write_claimable_task(tmp_path, "task-new")
