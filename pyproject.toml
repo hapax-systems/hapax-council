@@ -34,7 +34,7 @@ dependencies = [
     "kokoro>=0.9",
     "chatterbox-tts",
     # torchvision must move in lockstep with torch (0.25.x <-> torch 2.10.x).
-    # The torch>=2.9 override in [tool.uv] erases torchvision's own exact
+    # The torch>=2.10,<2.11 override in [tool.uv] erases torchvision's own exact
     # torch pin during resolution, so this floor is what keeps the pair
     # ABI-matched. Bump together with the torch override.
     "torchvision>=0.25",
@@ -120,7 +120,7 @@ audio = [
     # shared/beat_tracker.py, shared/clap.py, scripts/train_wake_word.py).
     # torchcodec releases pair exactly with torch minors (0.10 <-> torch
     # 2.10 — see the README compatibility table; mismatches fail at import
-    # with `undefined symbol: torch_from_blob`). The torch>=2.9 override in
+    # with `undefined symbol: torch_from_blob`). The torch>=2.10,<2.11 override in
     # [tool.uv] erases any torch coupling during resolution, so this pin is
     # what keeps the pair matched. Bump together with the torch override.
     # Runtime needs FFmpeg 4-8 shared libs on the host (appendix: n8.1.1).
@@ -241,12 +241,12 @@ override-dependencies = [
     # CASE-VOICE-FOUNDATION-20260610 keystone: chatterbox-tts pins
     # torch==2.6.0/torchaudio==2.6.0 for python<3.14, but the cu124-built
     # 2.6.0 PyPI wheels ship no sm_120 kernels — Chatterbox can never load
-    # on the 5060 Ti (RTX 50-series) without torch>=2.9. PyPI torch>=2.9
+    # on the 5060 Ti (RTX 50-series) without torch>=2.10,<2.11. PyPI torch>=2.10,<2.11
     # wheels are built against CUDA 12.8 (sm_120 included). Upstream master
     # still carries the ==2.6.0 pin, so this override is load-bearing until
     # resemble-ai/chatterbox relaxes it for python<3.14.
-    "torch>=2.9",
-    "torchaudio>=2.9",
+    "torch>=2.10,<2.11",
+    "torchaudio>=2.10,<2.11",
     # chatterbox-tts 0.1.7 pins diffusers==0.29.0, which is below the
     # patched floor for GHSA-98h9-4798-4q5v / CVE-2026-44513.
     "diffusers>=0.38.0",

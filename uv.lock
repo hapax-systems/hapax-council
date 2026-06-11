@@ -30,8 +30,8 @@ overrides = [
     { name = "numpy", specifier = ">=2.0.0" },
     { name = "pillow", specifier = ">=12.2.0" },
     { name = "safetensors", specifier = ">=0.8.0rc0" },
-    { name = "torch", specifier = ">=2.9" },
-    { name = "torchaudio", specifier = ">=2.9" },
+    { name = "torch", specifier = ">=2.10,<2.11" },
+    { name = "torchaudio", specifier = ">=2.10,<2.11" },
 ]
 
 [[package]]

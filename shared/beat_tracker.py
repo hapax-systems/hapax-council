@@ -136,7 +136,10 @@ def track_beats(audio_path: str) -> BeatGrid:
 
     # Load duration (torchaudio.info was removed in torchaudio >=2.9;
     # soundfile reads the header directly)
-    info = sf.info(audio_path)
+    try:
+        info = sf.info(audio_path)
+    except (OSError, RuntimeError) as exc:  # soundfile errors subclass OSError
+        raise RuntimeError(f"Failed to read audio metadata: {exc}") from exc
     duration = info.frames / info.samplerate
 
     bpm = estimate_bpm(beats)
