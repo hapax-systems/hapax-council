@@ -1,0 +1,525 @@
+#!/usr/bin/env python3
+"""Recover PipeWire from syntax-invalid user confs after a start-limit failure."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import shlex
+import shutil
+import subprocess
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+PIPEWIRE_UNIT = "pipewire.service"
+RECOVERY_UNITS = (
+    "pipewire.service",
+    "pipewire-pulse.service",
+    "wireplumber.service",
+    "hapax-daimonion.service",
+)
+PIPEWIRE_STACK_UNITS = (
+    "pipewire.service",
+    "pipewire-pulse.service",
+    "wireplumber.service",
+)
+
+
+@dataclass(frozen=True)
+class CommandOutcome:
+    argv: list[str]
+    returncode: int
+    stdout: str
+    stderr: str
+
+    def compact(self) -> dict[str, Any]:
+        return {
+            "argv": self.argv,
+            "returncode": self.returncode,
+            "stdout": self.stdout[-2000:],
+            "stderr": self.stderr[-2000:],
+        }
+
+
+@dataclass(frozen=True)
+class ConfLintResult:
+    path: str
+    ok: bool
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+@dataclass(frozen=True)
+class QuarantineResult:
+    source_path: str
+    quarantined_path: str
+    error_path: str
+    moved: bool
+    error: str = ""
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def iso_z(ts: datetime) -> str:
+    return ts.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def default_runtime_dir() -> Path:
+    return Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+
+
+def run_command(argv: list[str], *, timeout_s: float = 20.0) -> CommandOutcome:
+    try:
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+        return CommandOutcome(argv, result.returncode, result.stdout, result.stderr)
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        timeout_line = f"command timed out after {timeout_s:g}s: {shlex.join(argv)}"
+        return CommandOutcome(argv, 124, stdout, "\n".join(p for p in (timeout_line, stderr) if p))
+    except OSError as exc:
+        return CommandOutcome(argv, 127, "", str(exc))
+
+
+def systemctl(systemctl_bin: str, args: list[str], *, timeout_s: float = 20.0) -> CommandOutcome:
+    return run_command([systemctl_bin, "--user", *args], timeout_s=timeout_s)
+
+
+def parse_systemctl_show(text: str) -> dict[str, str]:
+    state: dict[str, str] = {}
+    for line in text.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        state[key] = value
+    return state
+
+
+def pipewire_recovery_needed(state: dict[str, str], *, force: bool) -> bool:
+    if force:
+        return True
+    active_state = state.get("ActiveState", "")
+    sub_state = state.get("SubState", "")
+    result = state.get("Result", "")
+    joined = " ".join((active_state, sub_state, result)).lower()
+    if "start-limit-hit" in joined:
+        return True
+    if active_state == "failed":
+        return True
+    return active_state != "active" and result in {
+        "exit-code",
+        "signal",
+        "core-dump",
+        "timeout",
+        "watchdog",
+        "resources",
+    }
+
+
+def lint_conf(spa_json_dump: str, path: Path) -> ConfLintResult:
+    outcome = run_command([spa_json_dump, str(path)], timeout_s=10.0)
+    return ConfLintResult(
+        path=str(path),
+        ok=outcome.returncode == 0,
+        returncode=outcome.returncode,
+        stdout=outcome.stdout,
+        stderr=outcome.stderr,
+    )
+
+
+def lint_conf_dir(conf_dir: Path, spa_json_dump: str) -> list[ConfLintResult]:
+    if not conf_dir.is_dir():
+        return []
+    results: list[ConfLintResult] = []
+    for path in sorted(conf_dir.glob("*.conf")):
+        if not path.is_file():
+            continue
+        results.append(lint_conf(spa_json_dump, path))
+    return results
+
+
+def command_available(command: str) -> bool:
+    if "/" in command:
+        path = Path(command)
+        return path.is_file() and os.access(path, os.X_OK)
+    return shutil.which(command) is not None
+
+
+def unique_quarantine_path(target_dir: Path, basename: str, source_path: Path) -> Path:
+    target = target_dir / basename
+    if not target.exists():
+        return target
+    digest = hashlib.sha256(str(source_path).encode("utf-8")).hexdigest()[:12]
+    suffix = "".join(source_path.suffixes) or ".conf"
+    stem = basename[: -len(suffix)] if basename.endswith(suffix) else basename
+    return target_dir / f"{stem}.{digest}{suffix}"
+
+
+def quarantine_invalid_confs(
+    invalids: list[ConfLintResult],
+    *,
+    quarantine_root: Path,
+    timestamp: datetime,
+    dry_run: bool,
+) -> list[QuarantineResult]:
+    stamp = timestamp.strftime("%Y%m%dT%H%M%SZ")
+    target_dir = quarantine_root / stamp
+    if not dry_run:
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+    quarantined: list[QuarantineResult] = []
+    for invalid in invalids:
+        source = Path(invalid.path)
+        target = unique_quarantine_path(target_dir, source.name, source)
+        error_path = target.with_name(f"{target.name}.spa-json-error.txt")
+        if dry_run:
+            quarantined.append(
+                QuarantineResult(str(source), str(target), str(error_path), moved=False)
+            )
+            continue
+        try:
+            shutil.move(str(source), str(target))
+            error_body = "\n".join(
+                [
+                    f"timestamp={iso_z(timestamp)}",
+                    f"source={source}",
+                    f"quarantined={target}",
+                    f"returncode={invalid.returncode}",
+                    "",
+                    "[stdout]",
+                    invalid.stdout,
+                    "",
+                    "[stderr]",
+                    invalid.stderr,
+                    "",
+                ]
+            )
+            error_path.write_text(error_body, encoding="utf-8")
+            quarantined.append(
+                QuarantineResult(str(source), str(target), str(error_path), moved=True)
+            )
+        except OSError as exc:
+            quarantined.append(
+                QuarantineResult(
+                    str(source),
+                    str(target),
+                    str(error_path),
+                    moved=False,
+                    error=str(exc),
+                )
+            )
+    return quarantined
+
+
+def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def send_alert(
+    *,
+    title: str,
+    body: str,
+    ntfy_base: str,
+    ntfy_topic: str,
+    priority: str,
+    disabled: bool,
+) -> None:
+    if disabled:
+        return
+    if shutil.which("curl") is not None and ntfy_base and ntfy_topic:
+        run_command(
+            [
+                "curl",
+                "-s",
+                "-o",
+                "/dev/null",
+                "-H",
+                f"Title: {title}",
+                "-H",
+                f"Priority: {priority}",
+                "-H",
+                "Tags: warning,sound,audio-incident",
+                "-d",
+                body,
+                f"{ntfy_base.rstrip('/')}/{ntfy_topic}",
+            ],
+            timeout_s=5.0,
+        )
+    if shutil.which("notify-send") is not None:
+        run_command(
+            [
+                "notify-send",
+                "--urgency=critical" if priority == "urgent" else "--urgency=normal",
+                "--app-name=Hapax Audio Recovery",
+                title,
+                body,
+            ],
+            timeout_s=5.0,
+        )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Recover PipeWire from a syntax-invalid live pipewire.conf.d file after "
+            "pipewire.service fails or hits start-limit."
+        )
+    )
+    parser.add_argument(
+        "--conf-dir",
+        type=Path,
+        default=Path(
+            os.environ.get(
+                "HAPAX_PIPEWIRE_CONF_DIR",
+                str(Path.home() / ".config/pipewire/pipewire.conf.d"),
+            )
+        ),
+    )
+    parser.add_argument(
+        "--quarantine-root",
+        type=Path,
+        default=Path(
+            os.environ.get(
+                "HAPAX_PIPEWIRE_CONF_QUARANTINE_ROOT",
+                str(Path.home() / ".config/pipewire/quarantine/start-limit-recovery"),
+            )
+        ),
+    )
+    parser.add_argument(
+        "--witness-path",
+        type=Path,
+        default=Path(
+            os.environ.get(
+                "HAPAX_PIPEWIRE_CONF_RECOVERY_WITNESS",
+                "/dev/shm/hapax-pipewire-conf-recovery/status.json",
+            )
+        ),
+    )
+    parser.add_argument(
+        "--lock-path",
+        type=Path,
+        default=Path(
+            os.environ.get(
+                "HAPAX_PIPEWIRE_CONF_RECOVERY_LOCK",
+                str(default_runtime_dir() / "hapax-pipewire-conf-recovery.lock"),
+            )
+        ),
+    )
+    parser.add_argument(
+        "--systemctl",
+        default=os.environ.get("HAPAX_PIPEWIRE_RECOVERY_SYSTEMCTL", "systemctl"),
+    )
+    parser.add_argument(
+        "--spa-json-dump",
+        default=os.environ.get("HAPAX_PIPEWIRE_RECOVERY_SPA_JSON_DUMP", "spa-json-dump"),
+    )
+    parser.add_argument(
+        "--ntfy-base", default=os.environ.get("NTFY_BASE_URL", "http://localhost:8090")
+    )
+    parser.add_argument(
+        "--ntfy-topic",
+        default=os.environ.get("HAPAX_PIPEWIRE_CONF_RECOVERY_NTFY_TOPIC", "hapax-audio-recovery"),
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="Run recovery even if PipeWire is active."
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Do not move files or restart services."
+    )
+    parser.add_argument("--no-alert", action="store_true", help="Suppress ntfy/notify-send alerts.")
+    parser.add_argument("--json", action="store_true", help="Print the final witness JSON.")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    now = utc_now()
+    commands: list[dict[str, Any]] = []
+    status = "unknown"
+    exit_code = 0
+
+    args.lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with args.lock_path.open("w", encoding="utf-8") as lock_fh:
+        try:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            status = "already_running"
+            witness = {
+                "schema_version": 1,
+                "timestamp": iso_z(now),
+                "status": status,
+                "dry_run": args.dry_run,
+            }
+            write_json_atomic(args.witness_path, witness)
+            if args.json:
+                print(json.dumps(witness, indent=2, sort_keys=True))
+            return 0
+
+        state_outcome = systemctl(
+            args.systemctl,
+            [
+                "show",
+                PIPEWIRE_UNIT,
+                "-p",
+                "LoadState",
+                "-p",
+                "UnitFileState",
+                "-p",
+                "ActiveState",
+                "-p",
+                "SubState",
+                "-p",
+                "Result",
+                "-p",
+                "NRestarts",
+            ],
+            timeout_s=10.0,
+        )
+        commands.append(state_outcome.compact())
+        pipewire_state = parse_systemctl_show(state_outcome.stdout)
+
+        invalids: list[ConfLintResult] = []
+        quarantine_results: list[QuarantineResult] = []
+        restart_outcomes: list[CommandOutcome] = []
+        errors: list[str] = []
+
+        if state_outcome.returncode != 0 and not args.force:
+            status = "systemctl_show_failed"
+            errors.append(state_outcome.stderr or state_outcome.stdout or "systemctl show failed")
+            exit_code = 3
+        elif not pipewire_recovery_needed(pipewire_state, force=args.force):
+            status = "idle_pipewire_not_failed"
+        elif not args.conf_dir.is_dir():
+            status = "conf_dir_missing"
+            errors.append(f"conf dir missing: {args.conf_dir}")
+            exit_code = 2
+        elif not command_available(args.spa_json_dump):
+            status = "spa_json_dump_missing"
+            errors.append(f"spa-json-dump not executable: {args.spa_json_dump}")
+            exit_code = 3
+        else:
+            lint_results = lint_conf_dir(args.conf_dir, args.spa_json_dump)
+            invalids = [result for result in lint_results if not result.ok]
+            if not invalids:
+                status = "triggered_no_invalid_confs"
+                errors.append(
+                    "PipeWire is failed/start-limit-hit, but every live *.conf parsed cleanly."
+                )
+                exit_code = 2
+            else:
+                quarantine_results = quarantine_invalid_confs(
+                    invalids,
+                    quarantine_root=args.quarantine_root,
+                    timestamp=now,
+                    dry_run=args.dry_run,
+                )
+                move_failures = [item for item in quarantine_results if item.error]
+                if move_failures:
+                    status = "quarantine_failed"
+                    errors.extend(item.error for item in move_failures)
+                    exit_code = 2
+                elif args.dry_run:
+                    status = "dry_run_would_recover"
+                else:
+                    restart_outcomes.append(
+                        systemctl(args.systemctl, ["reset-failed", *RECOVERY_UNITS], timeout_s=20.0)
+                    )
+                    for unit in PIPEWIRE_STACK_UNITS:
+                        restart_outcomes.append(
+                            systemctl(args.systemctl, ["restart", unit], timeout_s=30.0)
+                        )
+                    restart_outcomes.append(
+                        systemctl(
+                            args.systemctl,
+                            ["restart", "hapax-daimonion.service"],
+                            timeout_s=30.0,
+                        )
+                    )
+                    commands.extend(outcome.compact() for outcome in restart_outcomes)
+                    failed_restarts = [
+                        outcome for outcome in restart_outcomes if outcome.returncode != 0
+                    ]
+                    if failed_restarts:
+                        status = "restarted_with_failures"
+                        errors.extend(
+                            outcome.stderr or outcome.stdout or shlex.join(outcome.argv)
+                            for outcome in failed_restarts
+                        )
+                        exit_code = 2
+                    else:
+                        status = "recovered"
+
+        quarantined_names = [
+            Path(item.quarantined_path).name
+            for item in quarantine_results
+            if item.moved or args.dry_run
+        ]
+        witness = {
+            "schema_version": 1,
+            "timestamp": iso_z(now),
+            "status": status,
+            "dry_run": args.dry_run,
+            "forced": args.force,
+            "conf_dir": str(args.conf_dir),
+            "quarantine_root": str(args.quarantine_root),
+            "pipewire_state": pipewire_state,
+            "invalid_confs": [asdict(item) for item in invalids],
+            "quarantined_confs": [asdict(item) for item in quarantine_results],
+            "quarantined_filenames": quarantined_names,
+            "commands": commands,
+            "errors": errors,
+        }
+        write_json_atomic(args.witness_path, witness)
+
+        if status in {"recovered", "restarted_with_failures", "triggered_no_invalid_confs"}:
+            title = {
+                "recovered": "PipeWire conf recovery quarantined invalid conf",
+                "restarted_with_failures": "PipeWire conf recovery needs operator follow-up",
+                "triggered_no_invalid_confs": "PipeWire failed but conf lint found no culprit",
+            }[status]
+            files = ", ".join(quarantined_names) if quarantined_names else "(none)"
+            body = "\n".join(
+                [
+                    f"status={status}",
+                    f"pipewire_result={pipewire_state.get('Result', '')}",
+                    f"pipewire_active_state={pipewire_state.get('ActiveState', '')}",
+                    f"quarantined={files}",
+                    f"witness={args.witness_path}",
+                ]
+            )
+            send_alert(
+                title=title,
+                body=body,
+                ntfy_base=args.ntfy_base,
+                ntfy_topic=args.ntfy_topic,
+                priority="urgent" if exit_code else "high",
+                disabled=args.no_alert or args.dry_run,
+            )
+
+        print(f"hapax-pipewire-conf-recovery: status={status} invalid={len(invalids)}")
+        if quarantined_names:
+            print("hapax-pipewire-conf-recovery: quarantined=" + ",".join(quarantined_names))
+        if args.json:
+            print(json.dumps(witness, indent=2, sort_keys=True))
+        return exit_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
