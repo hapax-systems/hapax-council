@@ -314,6 +314,7 @@ class CpalRunner:
         self._processing_utterance = False
         self._last_stimmung_check = 0.0
         self._queued_utterance: bytes | None = None
+        self._queued_stream_final: object | None = None
         self._last_speech_end: float = 0.0  # monotonic timestamp of last system speech end
         # Shared speech event ring: minimum viable aperture unification.
         # All speech paths (response, narration, exploration) append here
@@ -649,11 +650,31 @@ class CpalRunner:
         # Discard utterances during own speech (echo from speakers)
         if self._production.is_producing or self._buffer.is_speaking:
             _ = self._perception.get_utterance()  # drain without processing
+            _ = self._pop_stream_final()  # same echo posture as buffered audio
             self._queued_utterance = None
+            self._queued_stream_final = None
         else:
+            stream_final = self._queued_stream_final or self._pop_stream_final()
+            self._queued_stream_final = None
             utterance = self._queued_utterance or self._perception.get_utterance()
             self._queued_utterance = None
-            if utterance is not None and self._processing_utterance:
+            if stream_final is not None:
+                if utterance is not None:
+                    log.debug("CPAL: draining buffered utterance superseded by streaming STT final")
+                if self._processing_utterance:
+                    log.info(
+                        "CPAL: streaming final arrived during processing — queued for next tick"
+                    )
+                    self._queued_stream_final = stream_final
+                else:
+                    asyncio.create_task(
+                        self._process_utterance(
+                            getattr(stream_final, "audio_bytes", b""),
+                            transcript=getattr(stream_final, "text", ""),
+                            stt_ms=getattr(stream_final, "audio_ms", None),
+                        )
+                    )
+            elif utterance is not None and self._processing_utterance:
                 log.info("CPAL: utterance arrived during processing — queued for next tick")
                 self._queued_utterance = utterance
             elif utterance is not None:
@@ -755,6 +776,16 @@ class CpalRunner:
             return 0.8 if self._buffer.speech_active else 0.0
         return 0.0
 
+    def _pop_stream_final(self) -> object | None:
+        pop_final = getattr(self._stt, "pop_stream_final", None)
+        if pop_final is None:
+            return None
+        try:
+            return pop_final()
+        except Exception:
+            log.debug("CPAL: streaming STT final poll failed", exc_info=True)
+            return None
+
     def _apply_gain_drivers(self, signals, dt: float) -> None:
         """Apply all gain drivers and dampers beyond basic speech detection."""
         gc = self._evaluator.gain_controller
@@ -784,7 +815,13 @@ class CpalRunner:
         if self._accumulated_silence_s > 30.0:
             gc.apply(GainUpdate(delta=-0.01, source="prolonged_silence"))
 
-    async def _process_utterance(self, utterance: bytes) -> None:
+    async def _process_utterance(
+        self,
+        utterance: bytes,
+        *,
+        transcript: str | None = None,
+        stt_ms: int | None = None,
+    ) -> None:
         """Process an operator utterance through the full pipeline (T3).
 
         Delegates to ConversationPipeline.process_utterance() which handles
@@ -840,7 +877,14 @@ class CpalRunner:
                 # exploration surfacing from producing audio during a
                 # multi-sentence conversational response.
                 async with self._speech_lock:
-                    await pipeline.process_utterance(utterance)
+                    if transcript is not None and hasattr(pipeline, "process_transcript"):
+                        await pipeline.process_transcript(
+                            transcript,
+                            audio_bytes=utterance,
+                            stt_ms=stt_ms,
+                        )
+                    else:
+                        await pipeline.process_utterance(utterance)
                     system_speech_observed = True
 
                 # Record grounding outcome based on pipeline result (C: C1)

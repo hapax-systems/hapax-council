@@ -66,12 +66,14 @@ async def audio_loop(daemon: VoiceDaemon) -> None:
         # permission-gated event.
         daemon._conversation_buffer.feed_audio(frame)
 
+        latest_vad_prob = getattr(daemon.presence, "_latest_vad_confidence", 0.0)
         while len(_vad_buf) >= _VAD_CHUNK:
             chunk = bytes(_vad_buf[:_VAD_CHUNK])
             del _vad_buf[:_VAD_CHUNK]
             try:
                 daemon.presence.process_audio_frame(chunk)
                 vad_prob = daemon.presence._latest_vad_confidence
+                latest_vad_prob = vad_prob
                 daemon._conversation_buffer.update_vad(vad_prob)
                 if vad_prob >= 0.3:
                     speaker = getattr(daemon.session, "speaker", "operator")
@@ -101,6 +103,15 @@ async def audio_loop(daemon: VoiceDaemon) -> None:
                         daemon._engagement.on_speech_detected(behaviors)
             except Exception as exc:
                 log.warning("Presence consumer error: %s", exc)
+
+        try:
+            await daemon._resident_stt.accept_stream_frame(
+                frame,
+                vad_probability=latest_vad_prob,
+                is_speaking=daemon._conversation_buffer.is_speaking,
+            )
+        except Exception:
+            log.debug("Streaming STT frame feed failed", exc_info=True)
 
 
 async def actuation_loop(daemon: VoiceDaemon) -> None:

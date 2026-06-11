@@ -198,10 +198,7 @@ class VoiceDaemon:
 
         self._conversation_buffer = ConversationBuffer()
         self._resident_stt = ResidentSTT(
-            model=self.cfg.local_stt_model
-            if "whisper" in self.cfg.local_stt_model.lower()
-            or "distil" in self.cfg.local_stt_model.lower()
-            else "distil-large-v3",
+            model=self.cfg.local_stt_model,
             device="cuda",
         )
         self._conversation_pipeline = None

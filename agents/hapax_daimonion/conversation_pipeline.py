@@ -896,6 +896,50 @@ class ConversationPipeline:
             except Exception:
                 pass
 
+    async def process_transcript(
+        self,
+        transcript: str,
+        *,
+        audio_bytes: bytes = b"",
+        stt_ms: int | None = None,
+    ) -> None:
+        """Process a transcript that was finalized by streaming STT."""
+        if not self._running:
+            return
+        transcript = transcript.strip()
+        if not transcript:
+            return
+
+        from agents._telemetry import hapax_trace
+
+        _t_start = time.monotonic()
+        _utt_trace_cm = hapax_trace(
+            "voice",
+            "utterance",
+            session_id=getattr(self, "_session_id", None),
+            metadata={
+                "turn": self.turn_count,
+                "audio_bytes": len(audio_bytes),
+                "stt_source": "streaming",
+            },
+        )
+        _utt_trace = _utt_trace_cm.__enter__()
+
+        try:
+            await self._process_transcript_inner(
+                transcript,
+                audio_bytes,
+                _utt_trace,
+                _t_start,
+                stt_ms=stt_ms,
+                stt_source="streaming",
+            )
+        finally:
+            try:
+                _utt_trace_cm.__exit__(None, None, None)
+            except Exception:
+                pass
+
     async def _process_utterance_inner(
         self, audio_bytes: bytes, _utt_trace, _t_start: float
     ) -> None:
@@ -911,6 +955,28 @@ class ConversationPipeline:
             budget.note(outcome="no_transcript")
             self.state = ConvState.LISTENING
             return
+        await self._process_transcript_inner(
+            transcript,
+            audio_bytes,
+            _utt_trace,
+            _t_start,
+            stt_source="full_utterance",
+        )
+
+    async def _process_transcript_inner(
+        self,
+        transcript: str,
+        audio_bytes: bytes,
+        _utt_trace,
+        _t_start: float,
+        *,
+        stt_ms: int | None = None,
+        stt_source: str = "full_utterance",
+    ) -> None:
+        """Shared post-STT utterance processing."""
+        from agents._telemetry import hapax_bool_score, hapax_event, hapax_score
+
+        self.state = ConvState.TRANSCRIBING
         if _utt_trace is not None:
             try:
                 _utt_trace.update(input=transcript)
@@ -934,7 +1000,9 @@ class ConversationPipeline:
             except Exception:
                 pass  # fail-open
 
-        _stt_ms = budget.mark("stt")
+        # Streaming finals arrive pre-transcribed with their own stt_ms;
+        # the full-utterance path marks the budget here.
+        _stt_ms = stt_ms if stt_ms is not None else budget.mark("stt")
         log.info("TIMING stt=%.0fms transcript=%r", _stt_ms, transcript[:60])
         hapax_event(
             "voice",
@@ -942,6 +1010,7 @@ class ConversationPipeline:
             metadata={
                 "stt_ms": round(_stt_ms),
                 "transcript_len": len(transcript),
+                "stt_source": stt_source,
             },
         )
 

@@ -73,11 +73,11 @@ def _build_stt(model: str) -> WhisperSTTService:
     Returns:
         Configured WhisperSTTService.
     """
-    # If a NeMo parakeet model is requested, fall back to whisper large-v3
+    # If a NeMo streaming model is requested, fall back to whisper large-v3
     # since Pipecat's WhisperSTTService only supports faster-whisper models.
-    if model.startswith("nvidia/parakeet"):
+    if model.startswith("nvidia/parakeet") or model.startswith("nvidia/nemotron"):
         log.info(
-            "Parakeet model %s not supported in Pipecat pipeline, "
+            "NeMo model %s not supported in Pipecat pipeline, "
             "falling back to faster-whisper large-v3",
             model,
         )
