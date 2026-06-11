@@ -948,7 +948,6 @@ class ConversationPipeline:
         self, audio_bytes: bytes, _utt_trace, _t_start: float
     ) -> None:
         """Inner utterance processing — extracted so try/finally guarantees trace closure."""
-        from agents._telemetry import hapax_bool_score, hapax_event, hapax_score
 
         budget = self._turn_budget
 
@@ -985,6 +984,7 @@ class ConversationPipeline:
         """
         from agents._telemetry import hapax_bool_score, hapax_event, hapax_score
 
+        budget = self._turn_budget
         self.state = ConvState.THINKING
         transcript = _normalize_transcript(transcript)
         if not transcript:
