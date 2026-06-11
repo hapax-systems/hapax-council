@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import re
@@ -1113,14 +1114,20 @@ def _await_sdlc_admission(args: argparse.Namespace) -> None:
     via wait_until_admitted)."""
     if env_flag("HAPAX_SDLC_PRESSURE_GATE_OFF") or os.environ.get("PYTEST_CURRENT_TEST"):
         return
-    if admission_state().state != "closed":
+    # Admit on the pressure of the host the work will RUN on — a dispatch bound
+    # for appendix must never starve on podium PSI (2026-06-10: 4h silent queue).
+    target = effective_dispatch_host(args.platform, args.mode)
+    gate = functools.partial(admission_state, target_host=target)
+    decision = gate()
+    if decision.state != "closed":
         return
     print(
-        f"sdlc-pressure CLOSED: queuing dispatch of {args.task} (resumes on clear)",
+        f"sdlc-pressure CLOSED for target={target}: queuing dispatch of {args.task} "
+        f"(resumes on clear) — {'; '.join(decision.reasons)}",
         file=sys.stderr,
     )
     final = wait_until_admitted(
-        admission_state,
+        gate,
         sleep=time.sleep,
         on_delay=lambda decision: _write_delayed_receipt(args, decision),
         poll_interval=float(os.environ.get("HAPAX_SDLC_PRESSURE_POLL_S", "10")),

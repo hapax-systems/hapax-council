@@ -58,6 +58,8 @@ class PressureReading:
     load_per_core: float
     working_mode: str
     team_level: str | None = None
+    production_sli: str = "unknown"  # healthy | unhealthy | unknown | n/a (remote)
+    target_host: str | None = None  # None/local hostname = this box
 
 
 @dataclass(frozen=True)
@@ -162,6 +164,79 @@ def read_team_level(repo_root: Path | None = None, timeout_s: float = 4.0) -> st
         return None
 
 
+PRODUCTION_SLI_PATH = Path("/dev/shm/hapax-broadcast/audio-safe-for-broadcast.json")
+PRODUCTION_SLI_MAX_AGE_S = 180.0
+
+
+def read_production_sli(path: Path = PRODUCTION_SLI_PATH, now: float | None = None) -> str:
+    """The thing the gate actually protects: live broadcast health, not raw PSI.
+
+    2026-06-10 lesson: podium runs at PSI ~60 in NORMAL production (compositor,
+    synth, inference saturating cores by design) while audio stays xrun-free.
+    Raw PSI panicked the gate and starved appendix lanes for ~4h. If the
+    production SLI is demonstrably healthy and fresh, proxy pressure must not
+    block development. Returns healthy / unhealthy / unknown.
+    """
+    now = time.time() if now is None else now
+    try:
+        data = json.loads(path.read_text())
+        block = data.get("audio_safe_for_broadcast", data)
+        safe = bool(block.get("safe"))
+        checked = block.get("checked_at")
+        if isinstance(checked, str):
+            from datetime import datetime
+
+            age = now - datetime.fromisoformat(checked.replace("Z", "+00:00")).timestamp()
+        else:
+            age = now - float(checked or 0)
+        if age > PRODUCTION_SLI_MAX_AGE_S:
+            return "unknown"
+        return "healthy" if safe else "unhealthy"
+    except (OSError, ValueError, KeyError, TypeError):
+        return "unknown"
+
+
+def local_hostname() -> str:
+    try:
+        return os.uname().nodename.split(".")[0]
+    except OSError:
+        return ""
+
+
+def read_remote_pressure(host: str, timeout_s: float = 4.0) -> tuple[PsiReading, float] | None:
+    """Pressure of the REMOTE dispatch target (one cheap ssh; fail-open on error).
+
+    A dispatch bound for appendix must be admitted on APPENDIX's pressure —
+    gating it on podium PSI starves idle remote cores (2026-06-10 incident).
+    Returns (psi, load_per_core) or None when unreachable (caller fails OPEN:
+    the dispatch itself surfaces a clear error if the host is truly down).
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "ssh",
+                "-o",
+                "ConnectTimeout=3",
+                "-o",
+                "BatchMode=yes",
+                host,
+                "cat /proc/pressure/cpu; cat /proc/loadavg; nproc",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+        if proc.returncode != 0:
+            return None
+        lines = proc.stdout.strip().splitlines()
+        psi = parse_psi_some("\n".join(lines))
+        load1 = float(lines[-2].split()[0])
+        cores = max(int(lines[-1]), 1)
+        return psi, load1 / cores
+    except (subprocess.SubprocessError, OSError, ValueError, IndexError):
+        return None
+
+
 # ── Pure decision ────────────────────────────────────────────────────────────
 
 
@@ -198,16 +273,25 @@ def decide(reading: PressureReading, prev: GateState | None, now: float) -> Gate
     prev_state = prev.state if prev is not None else "open"
     prev_since = prev.since if prev is not None else now
 
-    demand_enter = max(
+    # Production-health veto on proxy panic: when the protected SLI (broadcast
+    # audio) is demonstrably healthy+fresh, PSI/load demands soften one step —
+    # production saturating its own box is not a reason to starve development.
+    # NEVER softened in fortress (operator intent overrides telemetry), and
+    # team-load severity is never softened (it measures the humans, not the box).
+    soften = (
+        1 if (reading.production_sli == "healthy" and reading.working_mode != "fortress") else 0
+    )
+
+    proxy_enter = max(
         _signal_severity(reading.psi_some_avg10, band["psi"], by_enter=True),
         _signal_severity(reading.load_per_core, band["load"], by_enter=True),
-        _team_severity(reading.team_level),
     )
-    demand_hold = max(
+    proxy_hold = max(
         _signal_severity(reading.psi_some_avg10, band["psi"], by_enter=False),
         _signal_severity(reading.load_per_core, band["load"], by_enter=False),
-        _team_severity(reading.team_level),
     )
+    demand_enter = max(proxy_enter - soften, _team_severity(reading.team_level))
+    demand_hold = max(proxy_hold - soften, _team_severity(reading.team_level))
     prev_sev = _SEVERITY[prev_state]
 
     if demand_enter > prev_sev:  # escalate — immediate, ignore dwell
@@ -258,8 +342,15 @@ def _store_state(state_path: Path, state: GateState) -> None:
 def _reasons(reading: PressureReading, state: str) -> list[str]:
     band = thresholds(reading.working_mode)
     out: list[str] = []
-    out.append(f"psi.cpu.some.avg10={reading.psi_some_avg10:.0f}% (mode={reading.working_mode})")
+    host = reading.target_host or "local"
+    out.append(
+        f"host={host} psi.cpu.some.avg10={reading.psi_some_avg10:.0f}% (mode={reading.working_mode})"
+    )
     out.append(f"load/core={reading.load_per_core:.2f}")
+    if reading.production_sli == "healthy":
+        out.append("production-SLI healthy — proxy pressure softened one step")
+    elif reading.production_sli == "unhealthy":
+        out.append("production-SLI UNHEALTHY — raw thresholds in force")
     if reading.team_level:
         out.append(f"team-load={reading.team_level}")
     if state == "open":
@@ -277,26 +368,64 @@ def admission_state(
     reading: PressureReading | None = None,
     state_path: Path | None = None,
     fold_team_load: bool = False,
+    target_host: str | None = None,
 ) -> AdmissionDecision:
-    """Read pressure, apply hysteresis+dwell against persisted state, return a decision."""
+    """Read pressure, apply hysteresis+dwell against persisted state, return a decision.
+
+    ``target_host``: the host the dispatched work will RUN on. Remote targets are
+    admitted on the REMOTE host's pressure (fail-open if unreachable) with their
+    own persisted state file — local PSI never starves remote cores.
+    """
     if os.environ.get("HAPAX_SDLC_PRESSURE_GATE_OFF", "").strip().lower() in ("1", "true", "yes"):
         return AdmissionDecision(
             state="open", reasons=["gate disabled via HAPAX_SDLC_PRESSURE_GATE_OFF"]
         )
 
     now = time.time() if now is None else now
-    path = state_path if state_path is not None else default_state_path()
+    local = local_hostname()
+    is_remote = bool(target_host) and target_host.split(".")[0] not in ("", local, "localhost")
+    if state_path is not None:
+        path = state_path
+    elif is_remote:
+        base = default_state_path()
+        path = base.with_name(f"state-{target_host.split('.')[0]}.json")
+    else:
+        path = default_state_path()
 
     if reading is None:
-        psi = read_psi()
+        mode = read_working_mode()
         team = read_team_level() if fold_team_load else None
-        reading = PressureReading(
-            psi_some_avg10=psi.some_avg10,
-            psi_some_avg60=psi.some_avg60,
-            load_per_core=read_load_per_core(),
-            working_mode=read_working_mode(),
-            team_level=team,
-        )
+        if is_remote:
+            remote = read_remote_pressure(target_host)
+            if remote is None:
+                return AdmissionDecision(
+                    state="open",
+                    reasons=[
+                        f"target={target_host}: remote pressure unreachable — FAIL-OPEN "
+                        "(dispatch will surface its own error if the host is down)"
+                    ],
+                )
+            psi, load_per_core = remote
+            reading = PressureReading(
+                psi_some_avg10=psi.some_avg10,
+                psi_some_avg60=psi.some_avg60,
+                load_per_core=load_per_core,
+                working_mode=mode,
+                team_level=team,
+                production_sli="n/a",
+                target_host=target_host,
+            )
+        else:
+            psi = read_psi()
+            reading = PressureReading(
+                psi_some_avg10=psi.some_avg10,
+                psi_some_avg60=psi.some_avg60,
+                load_per_core=read_load_per_core(),
+                working_mode=mode,
+                team_level=team,
+                production_sli=read_production_sli(now=now),
+                target_host=None,
+            )
 
     prev = _load_state(path)
     new = decide(reading, prev, now)
@@ -449,7 +578,12 @@ def wait_until_admitted(
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     want_state = "--state" in argv
-    decision = admission_state(fold_team_load="--team" in argv)
+    target = None
+    if "--target-host" in argv:
+        idx = argv.index("--target-host")
+        if idx + 1 < len(argv):
+            target = argv[idx + 1]
+    decision = admission_state(fold_team_load="--team" in argv, target_host=target)
     if want_state:
         print(decision.state)
     else:
