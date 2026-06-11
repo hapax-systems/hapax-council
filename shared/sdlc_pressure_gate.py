@@ -362,6 +362,43 @@ def _reasons(reading: PressureReading, state: str) -> list[str]:
     return out
 
 
+QUOTA_RECEIPTS_DIR = Path.home() / ".cache/hapax/relay/receipts"
+
+
+def session_limit_until(
+    receipts_dir: Path | None = None, now: float | None = None
+) -> tuple[float, str] | None:
+    """Fleet-wide session-limit beacon: the latest FUTURE resets_at across all
+    lane quota-wall receipts. The limit message tells us when to resume
+    (operator directive 2026-06-11) — dispatching before then just re-hits
+    the wall. Returns (reset_epoch, source_receipt_name) or None.
+    """
+    now = time.time() if now is None else now
+    receipts_dir = QUOTA_RECEIPTS_DIR if receipts_dir is None else receipts_dir
+    best: tuple[float, str] | None = None
+    try:
+        receipts = sorted(receipts_dir.glob("*-quota-wall.yaml"))
+    except OSError:
+        return None
+    for r in receipts:
+        try:
+            text = r.read_text()
+        except OSError:
+            continue
+        m = re.search(r"resets_at:\s*['\"]?([0-9T:+.Zz-]+)", text)
+        if not m:
+            continue
+        try:
+            from datetime import datetime
+
+            epoch = datetime.fromisoformat(m.group(1).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            continue
+        if epoch > now and (best is None or epoch > best[0]):
+            best = (epoch, r.name)
+    return best
+
+
 def admission_state(
     now: float | None = None,
     *,
@@ -382,6 +419,19 @@ def admission_state(
         )
 
     now = time.time() if now is None else now
+
+    limit = session_limit_until(now=now) if reading is None else None
+    if limit is not None:
+        reset_epoch, source = limit
+        return AdmissionDecision(
+            state="closed",
+            reasons=[
+                f"session-limit: lane receipts report resets_at in "
+                f"{int(reset_epoch - now)}s ({source}) — dispatch resumes after reset"
+            ],
+            dwell_remaining_s=reset_epoch - now,
+        )
+
     local = local_hostname()
     is_remote = bool(target_host) and target_host.split(".")[0] not in ("", local, "localhost")
     if state_path is not None:
