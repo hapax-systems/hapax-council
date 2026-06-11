@@ -105,8 +105,9 @@ async def start_conversation_pipeline(daemon: VoiceDaemon) -> None:
 
         def _presynth() -> None:
             try:
-                # False means the startup background thread is mid-run and
-                # owns the work — it sets the flag when it completes.
+                # False: either the startup background thread is mid-run
+                # (it sets the flag when it completes) or the TTS manager
+                # has no synthesize — retried on the next pipeline start.
                 if daemon._bridge_engine.presynthesize_all(daemon.tts):
                     daemon._bridges_presynthesized = True
             except Exception:

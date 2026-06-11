@@ -9,16 +9,27 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import TYPE_CHECKING
 
 import numpy as np
+import pytest
 
 from agents.hapax_daimonion.resident_stt import ResidentSTT
 
-if TYPE_CHECKING:
-    import pytest
-
 _PCM_HALF_SECOND = (np.zeros(8000, dtype=np.int16) + 1000).tobytes()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_prosody(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never run real prosody from these tests.
+
+    A non-speculative transcribe fire-and-forgets `_extract_prosody`,
+    which writes to the live /dev/shm prosody file — on a host with a
+    running daemon that would inject synthetic-audio features into real
+    turns. The submit captures the patched attribute, so even jobs that
+    execute after the test stay inert. Tests that observe prosody
+    re-patch over this no-op.
+    """
+    monkeypatch.setattr(ResidentSTT, "_extract_prosody", staticmethod(lambda *a: None))
 
 
 class _FakeSegment:

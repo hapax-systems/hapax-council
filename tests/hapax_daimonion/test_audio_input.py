@@ -230,6 +230,21 @@ class TestOverrunTelemetry:
         s._enqueue_frame(b"d")  # dropped (streak 2)
         assert s.total_dropped_frames == 2
 
+    def test_stop_closes_open_streak(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A streak open at stop() must be logged + reset there, not
+        carried into the next stream where its duration would span the
+        dead period."""
+        s = AudioInputStream(source_name="test-source", queue_maxsize=1)
+        s._enqueue_frame(b"a")
+        s._enqueue_frame(b"b")  # dropped — streak open
+        with caplog.at_level("WARNING", logger="agents.hapax_daimonion.audio_input"):
+            s.stop()
+        closed = [r.getMessage() for r in caplog.records if "stream stopped" in r.getMessage()]
+        assert len(closed) == 1
+        assert "dropped 1 frames" in closed[0]
+        assert s._drop_count == 0
+        assert s.total_dropped_frames == 1  # cumulative survives stop
+
 
 # ── Source name override ─────────────────────────────────────────────
 

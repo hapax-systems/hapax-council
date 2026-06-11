@@ -19,10 +19,13 @@ log = logging.getLogger(__name__)
 
 # Dedicated executors, one per lane (separate from default to avoid
 # starvation). Final and speculative transcription get their own
-# single-thread executors so a long speculative decode can never queue
+# single-thread executors so a speculative decode backlog can never queue
 # ahead of the utterance-final transcription (the audit's 35.5s pipeline
-# outlier was exactly that queueing). Prosody (Praat) runs on its own
-# executor so it never extends the transcription hot path.
+# outlier was exactly that queueing). Residual wait: WhisperModel defaults
+# to num_workers=1, so a final decode may still wait for ONE in-flight
+# speculative decode inside CTranslate2 — bounded sub-second at beam 2,
+# unlike the old unbounded executor backlog (which included inline Praat).
+# Prosody runs on its own executor so it never extends the hot path.
 _stt_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt-final")
 _speculative_stt_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt-spec")
 _prosody_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="prosody")

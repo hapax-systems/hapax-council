@@ -215,6 +215,9 @@ class AudioInputStream:
 
     def stop(self) -> None:
         self._active = False
+        # Close any open drop streak here — carrying it into the next
+        # stream would inflate its duration with the dead period.
+        self._close_drop_streak("stream stopped")
         if self._reader_task is not None:
             self._reader_task.cancel()
             self._reader_task = None
@@ -294,17 +297,23 @@ class AudioInputStream:
             self._drop_count += 1
             self._total_dropped += 1
             return
-        if self._drop_count:
-            streak_s = time.monotonic() - self._drop_streak_started
-            log.warning(
-                "Audio frame queue recovered — dropped %d frames (%.1fs of audio) "
-                "over %.1fs (total dropped: %d)",
-                self._drop_count,
-                self._drop_count * self._frame_ms / 1000.0,
-                streak_s,
-                self._total_dropped,
-            )
-            self._drop_count = 0
+        self._close_drop_streak("recovered")
+
+    def _close_drop_streak(self, reason: str) -> None:
+        """Log and reset an open drop streak (recovery or stream stop)."""
+        if not self._drop_count:
+            return
+        streak_s = time.monotonic() - self._drop_streak_started
+        log.warning(
+            "Audio frame queue %s — dropped %d frames (%.1fs of audio) "
+            "over %.1fs (total dropped: %d)",
+            reason,
+            self._drop_count,
+            self._drop_count * self._frame_ms / 1000.0,
+            streak_s,
+            self._total_dropped,
+        )
+        self._drop_count = 0
 
     async def get_frame(self, timeout: float = 1.0) -> bytes | None:
         """Await the next audio frame from the queue."""
