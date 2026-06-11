@@ -224,9 +224,7 @@ class TestSttSourcePriority:
         monkeypatch.setattr(ai_mod, "load_default_registry", lambda: None)
         assert ai_mod.stt_source_priority() == ai_mod._LEGACY_SOURCE_PRIORITY
 
-    def test_falls_back_when_subscription_missing(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_falls_back_when_subscription_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from agents.hapax_daimonion import audio_input as ai_mod
         from shared.perception_registry import PerceptionRegistry
 
@@ -237,7 +235,7 @@ class TestSttSourcePriority:
     def test_module_default_matches_function(self) -> None:
         from agents.hapax_daimonion import audio_input as ai_mod
 
-        assert ai_mod.DEFAULT_SOURCE_PRIORITY == ai_mod.stt_source_priority()
+        assert ai_mod.stt_source_priority() == ai_mod.DEFAULT_SOURCE_PRIORITY
 
 
 class TestConfigDefaultFromRegistry:

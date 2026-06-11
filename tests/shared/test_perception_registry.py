@@ -6,7 +6,6 @@ import pytest
 from pydantic import ValidationError
 
 from shared.audio_graph.model import ExposureDomain
-from shared.percepts import GeometryClass
 from shared.perception_registry import (
     DEFAULT_REGISTRY_PATH,
     ArchiveSpec,
@@ -17,6 +16,7 @@ from shared.perception_registry import (
     SubscriptionSpec,
     load_default_registry,
 )
+from shared.percepts import GeometryClass
 
 _MODELS_UNDER_TEST = (
     ArchiveSpec,
@@ -188,9 +188,7 @@ def test_all_geometry_classes_represented(live_registry) -> None:
 
 def test_six_av_paired_camera_mics_all_quarantined(live_registry) -> None:
     cams = {
-        pid: p
-        for pid, p in live_registry.points.items()
-        if p.geometry == GeometryClass.AV_PAIRED
+        pid: p for pid, p in live_registry.points.items() if p.geometry == GeometryClass.AV_PAIRED
     }
     assert len(cams) == 6
     for pid, cam in cams.items():

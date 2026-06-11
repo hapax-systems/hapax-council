@@ -94,9 +94,7 @@ class TestDaimonionConfigAudioSource:
     def test_default_is_priority_list(self) -> None:
         cfg = DaimonionConfig()
         assert isinstance(cfg.audio_input_source, list)
-        assert cfg.audio_input_source[0].startswith(
-            "alsa_input.usb-Seeed_Studio_reSpeaker_XVF3800"
-        )
+        assert cfg.audio_input_source[0].startswith("alsa_input.usb-Seeed_Studio_reSpeaker_XVF3800")
         assert any("Yeti" in s for s in cfg.audio_input_source)
 
     def test_explicit_list_accepted(self) -> None:
