@@ -10,7 +10,7 @@ Description=Voice witness watchdog — ntfy on drop-streak / witness staleness
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/.local/bin/uv run --directory /home/hapax/projects/hapax-council python -m agents.voice_witness_watchdog
+ExecStart=/home/hapax/.local/bin/uv run --directory /home/hapax/.cache/hapax/source-activation/worktree python -m agents.voice_witness_watchdog
 EnvironmentFile=-%h/.config/hapax/voice-witness-watchdog.env
 Environment=PATH=/home/hapax/.local/bin:/home/hapax/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
