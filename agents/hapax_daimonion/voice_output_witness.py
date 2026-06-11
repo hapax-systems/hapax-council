@@ -155,10 +155,17 @@ def record_tts_synthesis(
     text: str,
     pcm: bytes | None = None,
     error: str | None = None,
+    backend: str | None = None,
     impulse_id: str | None = None,
     path: Path = WITNESS_PATH,
     now: float | None = None,
 ) -> VoiceOutputWitness:
+    """Record a synthesis attempt.
+
+    ``backend`` is the engine that actually synthesized (or was attempting
+    to synthesize) the PCM — pass ``TTSManager.last_synthesis_backend`` so
+    the witness states which engine spoke, not which was configured.
+    """
     ts = _now(now)
     pcm_duration_s = None
     if pcm is not None:
@@ -167,6 +174,7 @@ def record_tts_synthesis(
         "ts": _iso(ts),
         "impulse_id": impulse_id,
         "status": status,
+        "backend": backend,
         "planned_utterance_chars": len(text),
         "planned_utterance_words": len(text.split()),
         "pcm_bytes": len(pcm or b""),

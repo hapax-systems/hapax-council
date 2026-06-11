@@ -676,6 +676,7 @@ while IFS= read -r f; do
         scripts/*.py|scripts/*.sh)        SCRIPT_PY+=("$f") ;;
         systemd/expected-timers.yaml)     ;; # frozen-baseline doc, not deployable
         systemd/README.md)                ;; # docs
+        systemd/units/*.d/README.md)      ;; # drop-in dir docs (e.g. collapse ledgers)
         systemd/overrides/*)              ;; # source/rationale docs; deployable copies live under systemd/units
         systemd/*)                        SYSTEMD_UNCLASSIFIED+=("$f") ;;
     esac

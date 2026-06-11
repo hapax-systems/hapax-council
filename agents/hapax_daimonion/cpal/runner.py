@@ -1216,6 +1216,7 @@ class CpalRunner:
                                 status="empty",
                                 text=narrative,
                                 pcm=b"",
+                                backend=getattr(tts, "last_synthesis_backend", None),
                                 impulse_id=impulse_id,
                             )
                             record_drop(
@@ -1232,6 +1233,7 @@ class CpalRunner:
                                 status="completed",
                                 text=narrative,
                                 pcm=pcm,
+                                backend=getattr(tts, "last_synthesis_backend", None),
                                 impulse_id=impulse_id,
                             )
                             # Speaking gate: suppress VAD during playback
@@ -1325,6 +1327,7 @@ class CpalRunner:
                         status="failed",
                         text=narrative,
                         error=str(exc),
+                        backend=getattr(tts, "last_synthesis_backend", None),
                         impulse_id=impulse_id,
                     )
                     record_drop(

@@ -22,8 +22,10 @@ feedback_no_expert_system_rules.
 
 Design: docs/research/2026-04-27-endogenous-drive-role-semantic-surfacing.md
 
-Default ON per directive feedback_features_on_by_default 2026-04-25T20:55Z;
-opt-out via ``HAPAX_AUTONOMOUS_NARRATIVE_ENABLED=0`` (checked in compose.py).
+Default ON per directive feedback_features_on_by_default 2026-04-25T20:55Z.
+There is no env opt-out — the old ``HAPAX_AUTONOMOUS_NARRATIVE_ENABLED``
+knob was never read by any code; drive pressure and refractory inhibition
+are the only modulators.
 
 Spec: ``ytb-SS1`` cc-task.
 """

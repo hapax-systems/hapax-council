@@ -38,9 +38,8 @@ Environment=MKL_NUM_THREADS=2
 Environment=OPENBLAS_NUM_THREADS=2
 Environment=ONNXRUNTIME_INTRA_OP_NUM_THREADS=2
 Environment=HAPAX_PROGRAMME_AUTO_PLAN=1
-# Audio input override — empty uses DEFAULT_SOURCE_PRIORITY (Rode > AEC > Yeti).
-# Set to a pw-cli node name to force a specific input device.
-Environment=HAPAX_AUDIO_INPUT_TARGET=
+# Audio input source is pinned in the audio-input.conf drop-in (.d/ dir).
+# Unset falls back to DEFAULT_SOURCE_PRIORITY in audio_input.py.
 # Cap OpenTelemetry BatchSpanProcessor so Langfuse outages can't fill the
 # Python heap with pending spans. Defaults are 2048 queue and 30s export
 # timeout, which means daimonion holds ~MB of KV-pair-dense span objects
@@ -55,7 +54,8 @@ Environment=OTEL_BSP_SCHEDULE_DELAY=1000
 # lazy-load ramp. 8 GB was tight enough that a single pressure tick or
 # Langfuse-outage span burst could knock us into cgroup OOM. MemoryHigh
 # gives the kernel a soft ceiling to reclaim against before MemoryMax
-# turns into a kill.
+# turns into a kill. capacity.conf in the .d/ dir raises these ceilings
+# to 12G-soft/16G-hard (+4G swap) — measured live values.
 MemoryMax=12G
 MemoryHigh=10G
 OOMScoreAdjust=-500

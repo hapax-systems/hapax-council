@@ -2158,7 +2158,12 @@ class ConversationPipeline:
                     record_tts_synthesis,
                 )
 
-                record_tts_synthesis(status="failed", text=tts_text, error=str(exc))
+                record_tts_synthesis(
+                    status="failed",
+                    text=tts_text,
+                    error=str(exc),
+                    backend=getattr(self.tts, "last_synthesis_backend", None),
+                )
                 record_drop(
                     reason="tts_synthesis_failed",
                     source="conversation_pipeline",
@@ -2178,9 +2183,19 @@ class ConversationPipeline:
             )
 
             if pcm:
-                record_tts_synthesis(status="completed", text=tts_text, pcm=pcm)
+                record_tts_synthesis(
+                    status="completed",
+                    text=tts_text,
+                    pcm=pcm,
+                    backend=getattr(self.tts, "last_synthesis_backend", None),
+                )
             else:
-                record_tts_synthesis(status="empty", text=tts_text, pcm=b"")
+                record_tts_synthesis(
+                    status="empty",
+                    text=tts_text,
+                    pcm=b"",
+                    backend=getattr(self.tts, "last_synthesis_backend", None),
+                )
                 record_drop(
                     reason="tts_empty_pcm",
                     source="conversation_pipeline",

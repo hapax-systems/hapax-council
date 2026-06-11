@@ -7,7 +7,8 @@ well. Latency is the primary cost: a 100ms local response beats a
 
 Tiers (ascending latency + intelligence):
   CANNED  — no LLM at all, pre-synthesized response (~0ms)
-  LOCAL   — Command-R 35B EXL3 via TabbyAPI on RTX 3090 (~300ms TTFT)
+  LOCAL   — the ``local-fast`` LiteLLM route; what it serves is
+            single-sourced in ``shared.config.LOCAL_FAST_SUBSTRATE``
   FAST    — gemini-flash via LiteLLM (~500-1400ms TTFT, tools)
   STRONG  — claude-sonnet via LiteLLM (~800-2000ms TTFT)
   CAPABLE — claude-opus via LiteLLM (~1500-3000ms TTFT)
@@ -44,7 +45,7 @@ class ModelTier(IntEnum):
     """Model tiers ordered by latency (low→high) and capability (low→high)."""
 
     CANNED = 0
-    LOCAL = 1  # gemma3:4b — greetings, simple multi-turn
+    LOCAL = 1  # local-fast route (shared.config.LOCAL_FAST_SUBSTRATE)
     FAST = 2  # gemini-flash — tools, general conversation
     STRONG = 3  # claude-sonnet — ramping complexity
     CAPABLE = 4  # claude-opus — full intelligence

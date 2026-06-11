@@ -44,6 +44,7 @@ from agents.studio_compositor.yt_shared_links import (
 from agents.studio_compositor.yt_shared_links import (
     save_cursor as _save_links_cursor,
 )
+from shared.config import LOCAL_FAST_SUBSTRATE
 
 log = logging.getLogger("youtube_description_syncer")
 
@@ -59,9 +60,9 @@ RESEARCH_MARKER_PATH = Path("/dev/shm/hapax-compositor/research-marker.json")
 # Objectives vault (same path director + overlay consume)
 OBJECTIVES_DIR = Path.home() / "Documents" / "Personal" / "30-areas" / "hapax-objectives"
 
-# Substrate model identifier for the description. Reads the live config at
-# sync time so a substrate swap reflects on the next sync tick.
-DEFAULT_SUBSTRATE_MODEL = "Qwen3.5-9B (local-fast via TabbyAPI :5000)"
+# Substrate model label for the description — single-sourced from
+# shared.config so a substrate swap is corrected in one place.
+DEFAULT_SUBSTRATE_MODEL = LOCAL_FAST_SUBSTRATE
 
 
 def _read_research_marker() -> dict[str, Any]:
