@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -121,6 +124,139 @@ done
     assert "Hapax stale unmerged worktrees" in alert
     assert "hapax-council--unmerged" in alert
     assert "not merged into main" in alert
+
+
+def _make_release_worktree(tmp_path: Path, repo: Path, sha_name: str) -> Path:
+    """Add a detached release worktree under a source-activation releases dir."""
+    release_dir = tmp_path / "cache" / "source-activation" / "releases" / sha_name
+    release_dir.parent.mkdir(parents=True, exist_ok=True)
+    _git(repo, "worktree", "add", "--detach", str(release_dir), "main")
+    return release_dir
+
+
+def _write_unrelated_current_json(tmp_path: Path) -> Path:
+    """current.json retaining SHAs unrelated to the test release."""
+    current = tmp_path / "current.json"
+    current.write_text(
+        '{"active_source_path": "/x/releases/aaaaaaaa", '
+        '"active_source_head": "bbbbbbbb", '
+        '"candidate_source_path": "/x/releases/cccccccc"}\n',
+        encoding="utf-8",
+    )
+    return current
+
+
+def _run_gc(repo: Path, now: int, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "bash",
+            str(SCRIPT),
+            "--repo",
+            str(repo),
+            "--base-ref",
+            "main",
+            "--no-fetch",
+            "--now",
+            str(now),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+
+
+@contextmanager
+def _live_process(argv: list[str], cwd: Path) -> Iterator[subprocess.Popen[bytes]]:
+    proc = subprocess.Popen(argv, cwd=cwd)
+    try:
+        yield proc
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
+def test_refuses_release_dir_with_live_pid_cwd(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    now = int(time.time())
+    release = _make_release_worktree(tmp_path, repo, "deadbeef1234")
+    _age_path(release, now=now, seconds_old=49 * 3600)
+
+    env = os.environ.copy()
+    env["HAPAX_SOURCE_ACTIVATION_CURRENT"] = str(_write_unrelated_current_json(tmp_path))
+
+    with _live_process(["sleep", "300"], cwd=release):
+        result = _run_gc(repo, now, env)
+
+    assert result.returncode == 0, result.stderr
+    assert release.exists()
+    assert "refuse live release" in result.stdout
+    assert "(cwd)" in result.stdout
+    assert "live_refused=1" in result.stdout
+
+
+def test_refuses_release_dir_with_live_pid_exe(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    now = int(time.time())
+    release = _make_release_worktree(tmp_path, repo, "deadbeef5678")
+
+    sleep_bin = shutil.which("sleep")
+    assert sleep_bin is not None
+    release_sleep = release / "hapax-test-sleep"
+    shutil.copy(sleep_bin, release_sleep)
+    release_sleep.chmod(0o755)
+    _age_path(release, now=now, seconds_old=49 * 3600)
+
+    env = os.environ.copy()
+    env["HAPAX_SOURCE_ACTIVATION_CURRENT"] = str(_write_unrelated_current_json(tmp_path))
+
+    # cwd outside the release: only /proc/<pid>/exe references it.
+    with _live_process([str(release_sleep), "300"], cwd=tmp_path):
+        result = _run_gc(repo, now, env)
+
+    assert result.returncode == 0, result.stderr
+    assert release.exists()
+    assert "refuse live release" in result.stdout
+    assert "(exe)" in result.stdout
+    assert "live_refused=1" in result.stdout
+
+
+def test_removes_stale_release_dir_without_live_pids(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    now = int(time.time())
+    release = _make_release_worktree(tmp_path, repo, "deadbeef9abc")
+    _age_path(release, now=now, seconds_old=49 * 3600)
+
+    env = os.environ.copy()
+    env["HAPAX_SOURCE_ACTIVATION_CURRENT"] = str(_write_unrelated_current_json(tmp_path))
+
+    result = _run_gc(repo, now, env)
+
+    assert result.returncode == 0, result.stderr
+    assert not release.exists()
+    assert "removed release" in result.stdout
+    assert "live_refused=0" in result.stdout
+
+
+def test_refuses_merged_branch_worktree_with_live_pid_cwd(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    now = int(time.time())
+
+    merged = tmp_path / "hapax-council--merged-live"
+    _git(repo, "branch", "merged-live", "main")
+    _git(repo, "worktree", "add", str(merged), "merged-live")
+    _age_path(merged, now=now, seconds_old=49 * 3600)
+
+    env = os.environ.copy()
+
+    with _live_process(["sleep", "300"], cwd=merged):
+        result = _run_gc(repo, now, env)
+
+    assert result.returncode == 0, result.stderr
+    assert merged.exists()
+    assert "refuse live worktree" in result.stdout
+    assert "live_refused=1" in result.stdout
 
 
 def test_worktree_gc_systemd_timer_is_installable_and_six_hourly() -> None:

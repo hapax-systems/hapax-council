@@ -192,7 +192,44 @@ old_merged_clean=0
 removed=0
 old_unmerged=0
 skipped=0
+live_refused=0
 alert_lines=()
+
+# Live-PID guard. The release-GC ghost (audit 2026-06-11, F1/F1R): a release
+# dir was deleted while logos-api still executed from it, leaving the process
+# serving 500s from a gutted tree for ~2.5 days. Never remove a worktree that
+# any live process maps via /proc/<pid>/cwd or /proc/<pid>/exe. Same-user
+# processes only (readlink on other users' proc entries fails silently), which
+# covers the systemd --user estate that binds these dirs.
+#
+# Prints space-separated "pid(kind)" descriptors for live processes whose
+# cwd/exe resolve to (or under) the given real path. Empty output = no refs.
+# Scans /proc per removal candidate so the answer is fresh at decision time.
+live_refs_for_path() {
+    local dir="$1"
+    local proc_root="${HAPAX_WORKTREE_GC_PROC_ROOT:-/proc}"
+    python3 - "$proc_root" "$dir" <<'PY' || true
+import os
+import sys
+
+root, want = sys.argv[1], sys.argv[2]
+try:
+    pids = sorted((p for p in os.listdir(root) if p.isdigit()), key=int)
+except OSError:
+    pids = []
+refs = []
+for pid in pids:
+    for kind in ("cwd", "exe"):
+        try:
+            target = os.readlink(os.path.join(root, pid, kind))
+        except OSError:
+            continue
+        target = target.removesuffix(" (deleted)")
+        if target == want or target.startswith(want + "/"):
+            refs.append(f"{pid}({kind})")
+print(" ".join(refs), end="")
+PY
+}
 
 # Release-worktree retention. source-activate adds one detached worktree per
 # activation under .../source-activation/releases/<sha> and only ever runs
@@ -277,6 +314,15 @@ process_worktree() {
                     skipped=$((skipped + 1))
                     return 0
                 fi
+                local live_refs
+                live_refs="$(live_refs_for_path "$real_path")"
+                if [[ -n "$live_refs" ]]; then
+                    live_refused=$((live_refused + 1))
+                    printf 'hapax-worktree-gc: refuse live release %s (live: %s)\n' \
+                        "$path" "$live_refs"
+                    alert_lines+=("- $path ($branch_label), age $(format_age "$age"), release GC REFUSED: live process references ($live_refs) — restart the binder onto the current release before GC")
+                    return 0
+                fi
                 if ((dry_run)); then
                     printf 'hapax-worktree-gc: dry-run would remove release %s\n' "$path"
                 else
@@ -317,6 +363,16 @@ process_worktree() {
             printf 'hapax-worktree-gc: skip locked removable worktree: %s (%s)\n' \
                 "$path" "$locked"
             skipped=$((skipped + 1))
+            return 0
+        fi
+
+        local live_refs
+        live_refs="$(live_refs_for_path "$real_path")"
+        if [[ -n "$live_refs" ]]; then
+            live_refused=$((live_refused + 1))
+            printf 'hapax-worktree-gc: refuse live worktree %s (live: %s)\n' \
+                "$path" "$live_refs"
+            alert_lines+=("- $path ($branch_label), age $(format_age "$age"), worktree GC REFUSED: live process references ($live_refs)")
             return 0
         fi
 
@@ -393,5 +449,5 @@ if ((${#alert_lines[@]} > 0)); then
     send_ntfy_alert "$alert_body"
 fi
 
-printf 'hapax-worktree-gc: scanned=%d removable=%d removed=%d stale_unmerged=%d skipped=%d\n' \
-    "$scanned" "$old_merged_clean" "$removed" "$old_unmerged" "$skipped"
+printf 'hapax-worktree-gc: scanned=%d removable=%d removed=%d live_refused=%d stale_unmerged=%d skipped=%d\n' \
+    "$scanned" "$old_merged_clean" "$removed" "$live_refused" "$old_unmerged" "$skipped"
