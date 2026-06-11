@@ -21,6 +21,7 @@ class _FakeStreamingBackend:
         self.partials = list(partials)
         self.reset_count = 0
         self.final_audio = b""
+        self.chunks: list[bytes] = []
 
     def load(self) -> None:
         return
@@ -30,6 +31,7 @@ class _FakeStreamingBackend:
 
     def stream_step(self, audio_bytes: bytes, sample_rate: int) -> str:
         assert sample_rate == 16000
+        self.chunks.append(audio_bytes)
         self.final_audio += audio_bytes
         if not self.partials:
             return ""
@@ -82,7 +84,30 @@ def test_streaming_session_emits_partials_and_endpointed_final() -> None:
     assert finals[0].text == "hello there"
     assert finals[0].reason == "silence_endpoint"
     assert finals[0].audio_bytes
-    assert backend.reset_count >= 2
+    # One reset starts the utterance stream; one reset clears it after endpointing.
+    assert backend.reset_count == 2
+
+
+def test_streaming_session_does_not_replay_stale_pre_roll_between_utterances() -> None:
+    cfg = StreamingSTTConfig(
+        frame_ms=30,
+        chunk_ms=30,
+        pre_roll_ms=90,
+        endpoint_silence_ms=30,
+        min_utterance_ms=30,
+        speech_start_frames=1,
+    )
+    backend = _FakeStreamingBackend(["first", "first done", "", "second"])
+    session = StreamingSTTSession(backend, config=cfg)
+
+    session.accept_audio(_frame(1), vad_probability=0.9)
+    session.accept_audio(_frame(2), vad_probability=0.01)
+
+    backend.chunks.clear()
+    session.accept_audio(_frame(7), vad_probability=0.01)
+    session.accept_audio(_frame(9), vad_probability=0.9)
+
+    assert [chunk[0] for chunk in backend.chunks] == [7, 9]
 
 
 @pytest.mark.asyncio

@@ -455,9 +455,11 @@ class StreamingSTTSession:
             else:
                 self._consecutive_speech = 0
             if self._consecutive_speech >= cfg.speech_start_frames:
+                pre_roll = list(self._pre_roll)
                 self._start_utterance()
-                for pre_frame in self._pre_roll:
+                for pre_frame in pre_roll:
                     events.extend(self._append_active_frame(pre_frame, sample_rate, is_speaking))
+                self._pre_roll.clear()
             return events
 
         events.extend(self._append_active_frame(frame, sample_rate, is_speaking))
@@ -488,6 +490,7 @@ class StreamingSTTSession:
 
     def reset(self) -> None:
         self._backend.reset_stream()
+        self._pre_roll.clear()
         self._chunk_buffer.clear()
         self._utterance.clear()
         self._speech_active = False
@@ -595,7 +598,7 @@ class ResidentSTT:
         self._backend: _STTBackend | None = None
         self._streaming_config = streaming_config or StreamingSTTConfig()
         self._stream_session: StreamingSTTSession | None = None
-        self._stream_events: deque[StreamingSTTEvent] = deque(maxlen=64)
+        self._stream_finals: deque[StreamingSTTEvent] = deque(maxlen=16)
 
     @property
     def is_loaded(self) -> bool:
@@ -682,8 +685,8 @@ class ResidentSTT:
     ) -> list[StreamingSTTEvent]:
         """Feed one PCM frame to the streaming ASR session.
 
-        Returns newly emitted partial/final events and stores them for CPAL to
-        poll through ``pop_stream_final``.
+        Returns newly emitted partial/final events and stores finals for CPAL
+        to poll through ``pop_stream_final``.
         """
         if self._stream_session is None:
             return []
@@ -700,21 +703,15 @@ class ResidentSTT:
             ),
         )
         for event in events:
-            self._stream_events.append(event)
+            if event.is_final:
+                self._stream_finals.append(event)
             self._publish_stream_event(event)
         return events
 
     def pop_stream_final(self) -> StreamingSTTEvent | None:
-        retained: deque[StreamingSTTEvent] = deque(maxlen=64)
-        final: StreamingSTTEvent | None = None
-        while self._stream_events:
-            event = self._stream_events.popleft()
-            if event.is_final and final is None:
-                final = event
-            else:
-                retained.append(event)
-        self._stream_events = retained
-        return final
+        if not self._stream_finals:
+            return None
+        return self._stream_finals.popleft()
 
     def _publish_stream_event(self, event: StreamingSTTEvent) -> None:
         try:

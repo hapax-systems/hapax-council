@@ -73,6 +73,10 @@ _VOICE_OUTPUT_BYTES_PER_SAMPLE = 2
 # spontaneous LLM bound's derivation (audit H2) lives there with the rest.
 
 
+def _normalize_transcript(transcript: str | None) -> str:
+    return (transcript or "").strip()
+
+
 def _destination_value_for_route(
     *, destination_target: str | None, destination_role: str | None
 ) -> str:
@@ -906,7 +910,7 @@ class ConversationPipeline:
         """Process a transcript that was finalized by streaming STT."""
         if not self._running:
             return
-        transcript = transcript.strip()
+        transcript = _normalize_transcript(transcript)
         if not transcript:
             return
 
@@ -950,7 +954,7 @@ class ConversationPipeline:
 
         # STT
         self.state = ConvState.TRANSCRIBING
-        transcript = await self.stt.transcribe(audio_bytes)
+        transcript = _normalize_transcript(await self.stt.transcribe(audio_bytes))
         if not transcript:
             budget.note(outcome="no_transcript")
             self.state = ConvState.LISTENING
@@ -977,6 +981,10 @@ class ConversationPipeline:
         from agents._telemetry import hapax_bool_score, hapax_event, hapax_score
 
         self.state = ConvState.TRANSCRIBING
+        transcript = _normalize_transcript(transcript)
+        if not transcript:
+            self.state = ConvState.LISTENING
+            return
         if _utt_trace is not None:
             try:
                 _utt_trace.update(input=transcript)

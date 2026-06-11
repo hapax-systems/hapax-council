@@ -35,6 +35,7 @@ class TestCpalRunnerLifecycle:
 
         stt = MagicMock()
         stt.transcribe = AsyncMock(return_value="")
+        stt.pop_stream_final = MagicMock(return_value=None)
 
         router = MagicMock()
         router.route.return_value = MagicMock(tier="CAPABLE")
@@ -384,10 +385,39 @@ class TestCpalRunnerLifecycle:
         await created[0]
         pipeline.process_transcript.assert_awaited_once_with(
             "what changed in the voice stack",
-            audio_bytes=b"\x01\x00" * 480,
+            audio_bytes=b"legacy-buffered-utterance",
             stt_ms=240,
         )
         pipeline.process_utterance.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_streaming_stt_final_fallback_uses_buffered_utterance_audio(self):
+        runner = self._make_runner()
+        runner._signal_cache.select = MagicMock(return_value=None)
+        final = StreamingSTTEvent(
+            text="what changed in the voice stack",
+            is_final=True,
+            reason="silence_endpoint",
+            audio_ms=240,
+            step=3,
+            audio_bytes=b"\x01\x00" * 480,
+        )
+        runner._stt.pop_stream_final = MagicMock(return_value=final)
+        runner._buffer.get_utterance.return_value = b"legacy-buffered-utterance"
+        pipeline = SimpleNamespace(_running=True, process_utterance=AsyncMock())
+        runner._pipeline = pipeline
+        created = []
+
+        def _capture_task(coro):
+            created.append(coro)
+            return MagicMock()
+
+        with patch("asyncio.create_task", side_effect=_capture_task):
+            await runner._tick(0.1)
+
+        assert len(created) == 1
+        await created[0]
+        pipeline.process_utterance.assert_awaited_once_with(b"legacy-buffered-utterance")
 
     @pytest.mark.asyncio
     async def test_session_timeout_goodbye_uses_destination_gate(self):

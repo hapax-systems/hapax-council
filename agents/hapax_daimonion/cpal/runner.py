@@ -314,7 +314,7 @@ class CpalRunner:
         self._processing_utterance = False
         self._last_stimmung_check = 0.0
         self._queued_utterance: bytes | None = None
-        self._queued_stream_final: object | None = None
+        self._queued_stream_final: tuple[object, bytes, int | None] | None = None
         self._last_speech_end: float = 0.0  # monotonic timestamp of last system speech end
         # Shared speech event ring: minimum viable aperture unification.
         # All speech paths (response, narration, exploration) append here
@@ -654,24 +654,37 @@ class CpalRunner:
             self._queued_utterance = None
             self._queued_stream_final = None
         else:
-            stream_final = self._queued_stream_final or self._pop_stream_final()
+            queued_stream_final = self._queued_stream_final
             self._queued_stream_final = None
+            if queued_stream_final is not None:
+                stream_final, stream_audio, stream_stt_ms = queued_stream_final
+            else:
+                stream_final = self._pop_stream_final()
+                stream_audio = b""
+                stream_stt_ms = None
             utterance = self._queued_utterance or self._perception.get_utterance()
             self._queued_utterance = None
             if stream_final is not None:
+                stream_audio = (
+                    stream_audio
+                    or self._audio_bytes_from(utterance)
+                    or self._audio_bytes_from(stream_final)
+                )
+                if stream_stt_ms is None:
+                    stream_stt_ms = self._int_attr(stream_final, "audio_ms")
                 if utterance is not None:
                     log.debug("CPAL: draining buffered utterance superseded by streaming STT final")
                 if self._processing_utterance:
                     log.info(
                         "CPAL: streaming final arrived during processing — queued for next tick"
                     )
-                    self._queued_stream_final = stream_final
+                    self._queued_stream_final = (stream_final, stream_audio, stream_stt_ms)
                 else:
                     asyncio.create_task(
                         self._process_utterance(
-                            getattr(stream_final, "audio_bytes", b""),
+                            stream_audio,
                             transcript=getattr(stream_final, "text", ""),
-                            stt_ms=getattr(stream_final, "audio_ms", None),
+                            stt_ms=stream_stt_ms,
                         )
                     )
             elif utterance is not None and self._processing_utterance:
@@ -775,6 +788,32 @@ class CpalRunner:
         if hasattr(self._buffer, "speech_active"):
             return 0.8 if self._buffer.speech_active else 0.0
         return 0.0
+
+    @staticmethod
+    def _audio_bytes_from(value: object | None) -> bytes:
+        if value is None:
+            return b""
+        if isinstance(value, bytes):
+            return value
+        if isinstance(value, (bytearray, memoryview)):
+            return bytes(value)
+        for attr in ("audio_bytes", "audio", "pcm", "data"):
+            audio = getattr(value, attr, None)
+            if isinstance(audio, bytes):
+                return audio
+            if isinstance(audio, (bytearray, memoryview)):
+                return bytes(audio)
+        return b""
+
+    @staticmethod
+    def _int_attr(value: object | None, attr: str) -> int | None:
+        raw = getattr(value, attr, None)
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
 
     def _pop_stream_final(self) -> object | None:
         pop_final = getattr(self._stt, "pop_stream_final", None)
