@@ -14,16 +14,23 @@ ARCHITECTURE
 
 Two trigger sources, two duckers:
 
-    Trigger A: operator voice (Rode mic on L-12 USB AUX4)
+    Trigger A: operator voice — PRE-WET mk5 Rode sidechain
+        (`hapax-mic-rode-capture`, mk5 capture_AUX0: the dry mic,
+        never the S-4 wet return — rebuild design §ducking)
         ducks music -12 dB
         ducks TTS    -8 dB
 
-    Trigger B: TTS chain envelope (`hapax-loudnorm.monitor`)
+    Trigger B: TTS chain envelope (`hapax-loudnorm-capture.monitor`)
         ducks music -8 dB
         does NOT duck TTS (TTS doesn't duck itself)
 
-When both triggers fire on the music ducker, the daemon takes the
-DEEPEST duck (minimum gain).
+Concurrent triggers COMPOSE IN dB DOMAIN (voice-p2-duck-handoff: the
+shared/audio_duck_compose call-site swap): genuinely concurrent (hot)
+triggers sum their attenuations, clamped at MAX_TOTAL_ATTEN_DB; a
+trigger latched only by hold-open (a handoff tail) sustains its own
+depth without stacking. Releases pass through a handoff hold
+(DUCK_HANDOFF_HOLD_MS release hysteresis) so rapid operator↔TTS turn
+alternation never pumps the bed. See `agents/audio_ducker/handoff.py`.
 
 DETECTION
 =========
@@ -33,7 +40,8 @@ Per-source RMS envelope follower with hysteresis:
     - on threshold:  -45 dBFS  (hysteresis high)
     - off threshold: -55 dBFS  (hysteresis low)
     - 200 ms hold-open after last on-threshold sample
-    - 50 ms attack ramp on duck engage
+    - 400 ms handoff hold before any release may begin
+    - 10 ms attack ramp on duck engage
     - 400 ms release ramp on duck disengage
 
 The thresholds are LOW because the trigger sources tap the L-12 USB
@@ -78,6 +86,12 @@ from typing import Any
 
 import numpy as np
 
+from agents.audio_ducker.handoff import (
+    HandoffHold,
+    compose_duck_target_db,
+    music_duck_triggers,
+)
+from shared.audio_duck_compose import amplitude_from_db
 from shared.audio_loudness import (
     DUCK_ATTACK_MS,
     DUCK_DEPTH_OPERATOR_VOICE_DB,
@@ -341,6 +355,18 @@ class EnvelopeState:
                 self.is_active = False
         # In between TRIGGER_OFF and TRIGGER_ON: latch existing state
 
+    @property
+    def is_hot(self) -> bool:
+        """Instantaneously at/above the release threshold.
+
+        Distinguishes a genuinely sounding source from one merely latched
+        by hysteresis/hold-open (a handoff tail or syllable gap).
+        Hysteresis (`is_active`) decides WHETHER a source ducks; hotness
+        decides whether concurrent sources STACK in the dB-domain
+        composition (see `agents/audio_ducker/handoff.py`).
+        """
+        return self.last_error is None and self.last_rms_dbfs >= TRIGGER_OFF_DBFS
+
     def mark_error(self, error: str, now_ms: float) -> None:
         self.last_error = error
         self.last_error_ms = now_ms
@@ -506,14 +532,21 @@ def compute_targets(
 ) -> tuple[float, float]:
     """Return (music_target_gain, tts_target_gain) given trigger states.
 
-    Music: take the DEEPEST duck (min gain) when multiple triggers fire. Three
+    Music: concurrent triggers COMPOSE IN dB DOMAIN (sum of attenuations,
+    clamped MAX_TOTAL_ATTEN_DB — the voice-p2-duck-handoff call-site swap
+    of shared/audio_duck_compose; previously min() of linear gains). Three
     triggers engage the music bed:
-      - operator voice (Rode) → -12 dB (priority);
+      - operator voice (pre-wet Rode) → -12 dB (priority);
       - TTS present on the broadcast chain → -8 dB;
       - a live hosting SEGMENT (active-segment.json subscription) → -8 dB, held
         for the whole spoken span. A segment is the same content class as TTS, so
         it reuses the TTS depth — NO new dB and NO per-role table (no-presets).
     TTS: only Rode triggers the TTS duck (TTS doesn't duck itself).
+
+    This boolean view treats every active trigger as hot (genuine
+    concurrency). The daemon main loop passes the finer hot/latched
+    envelope split to ``music_duck_triggers`` directly, so handoff tails
+    sustain rather than stack — see `agents/audio_ducker/handoff.py`.
 
     ``allow_tts_into_broadcast`` is the working-mode coupling: when fortress mode
     disables ``duck_role_assistant_into_broadcast``, the TTS trigger no longer
@@ -522,20 +555,15 @@ def compute_targets(
     Operator-voice ducking is unaffected — the operator IS the broadcast voice and
     always takes priority.
     """
-    effective_tts = tts_active and allow_tts_into_broadcast
-    # A hosting segment holds the bed at the TTS depth for the whole span; gate it
-    # by the same fortress coupling so it cannot duck broadcast when TTS-into-
-    # broadcast is disabled.
-    tts_class_engaged = (effective_tts or segment_active) and allow_tts_into_broadcast
-    if rode_active and tts_class_engaged:
-        music = min(MUSIC_DUCK_OPERATOR, MUSIC_DUCK_TTS)
-    elif rode_active:
-        music = MUSIC_DUCK_OPERATOR
-    elif tts_class_engaged:
-        music = MUSIC_DUCK_TTS
-    else:
-        music = UNITY
-
+    triggers = music_duck_triggers(
+        rode_active,
+        rode_active,
+        tts_active,
+        tts_active,
+        segment_active=segment_active,
+        allow_tts_into_broadcast=allow_tts_into_broadcast,
+    )
+    music = amplitude_from_db(compose_duck_target_db(triggers))
     tts = TTS_DUCK_OPERATOR if rode_active else UNITY
     return music, tts
 
@@ -752,6 +780,7 @@ def publish_state(
     *,
     trigger_cause: str,
     blockers: list[str],
+    handoff: HandoffHold | None = None,
     now_s: float | None = None,
     now_ms: float | None = None,
     path: Path = STATE_PATH,
@@ -792,6 +821,17 @@ def publish_state(
         "music_duck_db": lin_to_db(effective_music_gain),
         "tts_duck_gain": effective_tts_gain,
         "tts_duck_db": lin_to_db(effective_tts_gain),
+        # Handoff anti-pump state (voice-p2-duck-handoff): bench/monitor
+        # visibility into whether a release is currently being held.
+        "duck_handoff": (
+            None
+            if handoff is None
+            else {
+                "holding": handoff.is_holding,
+                "held_db": handoff.held_db,
+                "hold_ms": handoff.hold_ms,
+            }
+        ),
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -815,6 +855,7 @@ def main() -> int:
     tts_state = EnvelopeState(name="tts")
     music_duck = DuckState(node=MUSIC_DUCK_NODE)
     tts_duck = DuckState(node=TTS_DUCK_NODE)
+    handoff = HandoffHold()
 
     stop = threading.Event()
 
@@ -867,15 +908,23 @@ def main() -> int:
 
             blockers = source_blockers(rode_state, tts_state, now_ms)
             if blockers:
+                # Fail-open drops the handoff hold too: a blocker forces
+                # unity NOW, never after a hold window.
+                handoff.reset()
                 music_target, tts_target = UNITY, UNITY
             else:
                 segment_active = read_segment_active(now_s=now_s)
-                music_target, tts_target = compute_targets(
+                triggers = music_duck_triggers(
                     rode_state.is_active,
+                    rode_state.is_hot,
                     tts_state.is_active,
+                    tts_state.is_hot,
                     segment_active=segment_active,
                     allow_tts_into_broadcast=allow_tts_broadcast,
                 )
+                composed_db = compose_duck_target_db(triggers)
+                music_target = amplitude_from_db(handoff.apply(composed_db, now_ms))
+                tts_target = TTS_DUCK_OPERATOR if rode_state.is_active else UNITY
             music_duck.target_gain = music_target
             tts_duck.target_gain = tts_target
 
@@ -902,6 +951,11 @@ def main() -> int:
                     blockers.append(f"tts_readback_error:{error}")
 
             if blockers:
+                # Review finding (4072): a blocker must force unity INSTANTLY —
+                # including dropping any handoff hold, or a PipeWire write error
+                # followed by rapid source silence extends the duck up to 400ms
+                # past fail-open recovery (contradicting reset()'s contract).
+                handoff.reset()
                 fail_open_ducks(
                     music_duck,
                     tts_duck,
@@ -921,6 +975,7 @@ def main() -> int:
                 tts_duck,
                 trigger_cause=trigger_cause,
                 blockers=blockers,
+                handoff=handoff,
                 now_s=now_s,
                 now_ms=now_ms,
             )

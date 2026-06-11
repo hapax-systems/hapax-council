@@ -55,15 +55,32 @@ PRE_NORM_LRA_MAX_LU: float = 7.0
 
 # ── Sidechain ducking depths (Phase 4) ────────────────────────────────
 #
-# Two and only two ducking triggers exist in the unified system:
-#   - operator_voice : sidechain on `mixer_master` (L-12 AUX12)
-#   - tts            : sidechain on `hapax-pn-tts.monitor`
-# Each ducks the music + non-voice sources at the depth below.
+# Two and only two ducking triggers exist in the unified system
+# (mk5/S-4 baseline; rebuild design §ducking):
+#   - operator_voice : PRE-WET mk5 Rode sidechain (`hapax-mic-rode-capture`,
+#                      capture_AUX0 — the dry mic, never the S-4 wet return)
+#   - tts            : broadcast TTS chain monitor (`hapax-loudnorm-capture`)
+# Each ducks the music + non-voice sources at the depth below. Concurrent
+# triggers compose in dB domain (shared/audio_duck_compose.py), never as
+# min()/max() of linear gains.
 DUCK_DEPTH_OPERATOR_VOICE_DB: float = -12.0
 DUCK_DEPTH_TTS_DB: float = -8.0
 DUCK_ATTACK_MS: float = 10.0
 DUCK_RELEASE_MS: float = 400.0
 DUCK_LOOKAHEAD_MS: float = 5.0
+
+# Duck-handoff release hysteresis (voice-p2-duck-handoff, interview bar
+# "no pumping under rapid turn alternation"). When the composed duck
+# target rises toward unity, the deeper value HOLDS for this window
+# before the release ramp may begin; deepening is always immediate.
+# Derivation: rapid conversational turn gaps run ~200-500 ms. The VAD
+# hold-open (200 ms, agents/audio_ducker) bridges intra-source syllable
+# gaps; this window stacks on top of it, so the bed only starts
+# releasing ~600 ms after true end-of-speech — beyond any rapid-
+# alternation gap — and full recovery lands ~1 s out (+DUCK_RELEASE_MS).
+# Matching DUCK_RELEASE_MS keeps one perceptual time constant for "the
+# conversation is over".
+DUCK_HANDOFF_HOLD_MS: float = 400.0
 
 # ── Master safety-net limiter (Phase 1) ───────────────────────────────
 #

@@ -80,11 +80,13 @@ class TestComputeTargets4x4:
         assert music == MUSIC_DUCK_OPERATOR
         assert tts == TTS_DUCK_OPERATOR
 
-    def test_both_active_takes_deepest_music_duck(self) -> None:
-        """When both Rode + TTS active, music takes min(operator,tts)
-        gain (deepest duck). TTS still only ducks under Rode."""
+    def test_both_active_composes_music_duck_in_db(self) -> None:
+        """When both Rode + TTS active, music composes the attenuations
+        in dB domain — sum of depths, i.e. the product of linear gains
+        (voice-p2-duck-handoff; was deepest-wins min()). TTS still only
+        ducks under Rode."""
         music, tts = compute_targets(rode_active=True, tts_active=True)
-        assert music == min(MUSIC_DUCK_OPERATOR, MUSIC_DUCK_TTS)
+        assert music == pytest.approx(MUSIC_DUCK_OPERATOR * MUSIC_DUCK_TTS)
         assert tts == TTS_DUCK_OPERATOR
 
 
