@@ -117,6 +117,14 @@ elif [ "${1:-}" = "--check-symlink-drift" ]; then
 else
     SHA="${1:?commit SHA required}"
 fi
+# Default to the source-activation worktree (the documented production root —
+# always at the deployed release) over the interactive primary tree, which can
+# be weeks stale (2026-06-11: stale-primary symlinks shipped a pre-#4039
+# checker that false-failed hourly for 6h).
+_ACTIVATION_WORKTREE="$HOME/.cache/hapax/source-activation/worktree"
+if [ -z "${REPO:-}" ] && [ -z "${GITHUB_WORKSPACE:-}" ] && [ -d "$_ACTIVATION_WORKTREE/scripts" ]; then
+    REPO="$_ACTIVATION_WORKTREE"
+fi
 REPO="${REPO:-${GITHUB_WORKSPACE:-$HOME/projects/hapax-council}}"
 PW_CONF_DIR="$HOME/.config/pipewire/pipewire.conf.d"
 HAPAX_CONF_DIR="$HOME/.config/hapax"
@@ -970,11 +978,13 @@ if [ "${#SCRIPTS[@]}" -gt 0 ]; then
     for f in "${SCRIPTS[@]}"; do
         base="$(basename "$f")"
         dest="$LOCAL_BIN/$base"
-        if [ -f "$REPO/$f" ]; then
-            chmod +x "$REPO/$f" 2>/dev/null || true
-            if [ ! -L "$dest" ] || [ "$(readlink "$dest")" != "$REPO/$f" ]; then
-                ln -sfv "$REPO/$f" "$dest"
-            fi
+        if git -C "$REPO" cat-file -e "$SHA:$f" 2>/dev/null; then
+            # Copy-from-SHA (the WATCHDOGS pattern): the installed script is the
+            # deployed release's content, never a live view of a mutable tree.
+            if [ -L "$dest" ]; then rm -f "$dest"; fi
+            git -C "$REPO" show "$SHA:$f" > "$dest"
+            chmod +x "$dest" 2>/dev/null || true
+            echo "  '$f' -> '$dest' (copy @ ${SHA:0:9})"
         else
             rm -fv "$dest" || true
         fi
