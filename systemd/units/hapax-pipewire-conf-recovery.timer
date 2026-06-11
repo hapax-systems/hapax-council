@@ -1,0 +1,13 @@
+# Hapax-Auto-Enable: true
+[Unit]
+Description=Run Hapax PipeWire conf recovery watchdog every 30s
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Unit=hapax-pipewire-conf-recovery.service
+Persistent=false
+
+[Install]
+WantedBy=timers.target

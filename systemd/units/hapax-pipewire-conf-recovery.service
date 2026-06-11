@@ -1,0 +1,22 @@
+[Unit]
+Description=Hapax PipeWire conf recovery watchdog
+OnFailure=notify-failure@%n.service
+
+StartLimitBurst=3
+StartLimitIntervalSec=300
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=%h/.local/bin/hapax-pipewire-conf-recovery
+TimeoutStartSec=90s
+MemoryMax=128M
+CPUQuota=10%
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-pipewire-conf-recovery
+
+[Install]
+WantedBy=default.target
