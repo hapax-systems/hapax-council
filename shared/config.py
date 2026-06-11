@@ -104,6 +104,14 @@ HAPAX_VSCODE_DIR: Path = HAPAX_COUNCIL_DIR / "vscode"
 
 # ── Model aliases (LiteLLM route names) ─────────────────────────────────────
 
+# Single source for the in-repo belief about what the `local-fast` route
+# serves. The route itself is defined in the live LiteLLM container config
+# (~/llm-stack/litellm-config.yaml); code must not restate model/GPU/latency
+# claims about local-fast — import this label instead. The 2026-06-10 voice
+# foundation audit found three contradictory hardcoded beliefs (RTX 3090
+# ~300ms / gemma3:4b / Qwen3.5-9B); all were wrong.
+LOCAL_FAST_SUBSTRATE: str = "Command-R 35B EXL3 5.0bpw (local-fast via TabbyAPI :5000)"
+
 MODELS: dict[str, str] = {
     "fast": "gemini-flash",
     "balanced": "claude-sonnet",

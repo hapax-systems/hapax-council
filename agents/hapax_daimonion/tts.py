@@ -1,16 +1,28 @@
-"""Tiered TTS abstraction — Chatterbox Turbo primary, Kokoro fallback.
+"""Tiered TTS abstraction — backend selected via ``HAPAX_TTS_BACKEND``.
+
+Backend selection is versioned code: ``HAPAX_TTS_BACKEND`` (``chatterbox`` |
+``kokoro``, read at :class:`TTSManager` construction) picks the primary
+engine; the systemd drop-in that sets it lives at
+``systemd/units/hapax-daimonion.service.d/tts-backend.conf``. Invalid or
+unset values resolve to ``chatterbox``, which itself falls back to Kokoro
+when the model cannot load or a synthesis call fails. The engine that
+actually produced the most recent PCM is exposed as
+:attr:`TTSManager.last_synthesis_backend` for the voice-output witness.
 
 Every TTS call passes through :func:`shared.speech_safety.censor` before
 synthesis — this is the canonical fail-closed slur gate. The voice is
 raw material for S-4 self-modulation; voice identity lives in the S-4's
 transformation, not in the TTS model's output.
 
-Chatterbox Turbo (350M, GPU): primary backend. Voice cloned from
+Chatterbox (classic ``ChatterboxTTS``, 350M, GPU): voice cloned from
 non-human reference audio (processed Kokoro output with shifted formants).
 Paralinguistic tags ([whisper], [breath], [gasp]) used as timbral
-variation points for S-4 granular processing, not as emotions.
+variation points for S-4 granular processing, not as emotions. The Turbo
+class swap rides the torch>=2.9+cu128 keystone (Phase 1 of
+CASE-VOICE-FOUNDATION-20260610); until then sm_120 cards have no kernels
+and Chatterbox fails to load.
 
-Kokoro 82M (CPU): fallback if Chatterbox fails to load.
+Kokoro 82M (CPU): selectable primary or automatic fallback.
 """
 
 from __future__ import annotations
@@ -34,6 +46,11 @@ _TIER_MAP: dict[str, str] = {
 }
 
 TTS_SAMPLE_RATE = 24000
+
+TTS_BACKEND_ENV = "HAPAX_TTS_BACKEND"
+VALID_TTS_BACKENDS: tuple[str, ...] = ("chatterbox", "kokoro")
+_DEFAULT_TTS_BACKEND = "chatterbox"
+
 _VOICE_SAMPLE_PATH = Path(__file__).resolve().parent.parent.parent / "profiles" / "voice-sample.wav"
 _CHATTERBOX_DEVICE = os.environ.get("HAPAX_CHATTERBOX_DEVICE", "cuda:0")
 _CHATTERBOX_EXAGGERATION = 0.50
@@ -50,6 +67,27 @@ _ARC_EXAGGERATION_GAIN = 0.15
 
 def select_tier(use_case: str) -> str:
     return _TIER_MAP.get(use_case, "chatterbox")
+
+
+def resolve_backend_from_env() -> str:
+    """Resolve the primary TTS backend from ``HAPAX_TTS_BACKEND``.
+
+    Unset/empty resolves to the default; an invalid value warns with the
+    valid choices and resolves to the default rather than dying silently.
+    """
+    raw = os.environ.get(TTS_BACKEND_ENV, "").strip().lower()
+    if not raw:
+        return _DEFAULT_TTS_BACKEND
+    if raw in VALID_TTS_BACKENDS:
+        return raw
+    log.warning(
+        "%s=%r is not a valid TTS backend (valid: %s) — using %r",
+        TTS_BACKEND_ENV,
+        raw,
+        ", ".join(VALID_TTS_BACKENDS),
+        _DEFAULT_TTS_BACKEND,
+    )
+    return _DEFAULT_TTS_BACKEND
 
 
 def _arc_prosody(
@@ -73,19 +111,40 @@ def _arc_prosody(
 
 
 class TTSManager:
-    """Manages TTS synthesis — Chatterbox Turbo primary, Kokoro fallback."""
+    """Manages TTS synthesis — primary backend from ``HAPAX_TTS_BACKEND``."""
 
     def __init__(self, voice_id: str = "af_heart") -> None:
         self._voice_id = voice_id
         self._chatterbox_model = None
         self._kokoro_pipeline = None
-        self._backend = "chatterbox"
+        self._backend = resolve_backend_from_env()
+        self._last_synthesis_backend: str | None = None
+
+    @property
+    def backend(self) -> str:
+        """Configured primary backend (may demote to kokoro at preload)."""
+        return self._backend
+
+    @property
+    def last_synthesis_backend(self) -> str | None:
+        """Engine that produced the most recent PCM — fallback-aware.
+
+        ``None`` until the first synthesis completes. This is the witness
+        truth: with the chatterbox backend a per-call failure falls back to
+        Kokoro, so the configured backend alone cannot say which engine
+        actually spoke.
+        """
+        return self._last_synthesis_backend
 
     def preload(self) -> None:
+        if self._backend == "kokoro":
+            self._get_kokoro()
+            log.info("Kokoro TTS ready (voice=%s, selected primary)", self._voice_id)
+            return
         try:
             self._get_chatterbox()
             self._backend = "chatterbox"
-            log.info("Chatterbox Turbo TTS ready (device=%s)", _CHATTERBOX_DEVICE)
+            log.info("Chatterbox TTS ready (device=%s)", _CHATTERBOX_DEVICE)
         except Exception:
             log.warning("Chatterbox failed to load, falling back to Kokoro", exc_info=True)
             self._get_kokoro()
@@ -163,6 +222,7 @@ class TTSManager:
             exaggeration=exag,
             cfg_weight=cfg,
         )
+        self._last_synthesis_backend = "chatterbox"
         audio = wav.squeeze().cpu().numpy().astype(np.float32)
         pcm = (audio * 32768).clip(-32768, 32767).astype(np.int16)
         if pcm.size == 0:
@@ -172,6 +232,7 @@ class TTSManager:
 
     def _synthesize_kokoro(self, text: str, *, speed: float = 1.0) -> bytes:
         pipeline = self._get_kokoro()
+        self._last_synthesis_backend = "kokoro"
         chunks: list[bytes] = []
         for _graphemes, _phonemes, audio in pipeline(text, voice=self._voice_id, speed=speed):
             if audio is not None:
