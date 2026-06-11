@@ -44,7 +44,7 @@ def test_monitor_staleness():
     assert monitor.is_analysis_stale is True
 
 
-def test_monitor_proactive_routing():
+async def test_monitor_proactive_routing():
     queue = MagicMock()
     monitor = WorkspaceMonitor(enabled=False, proactive_min_confidence=0.8)
     monitor._notification_queue = queue
@@ -53,11 +53,11 @@ def test_monitor_proactive_routing():
             Issue(severity="error", description="Docker down", confidence=0.95),
         ]
     )
-    monitor._route_proactive_issues(analysis)
+    await monitor._route_proactive_issues(analysis)
     assert queue.enqueue.call_count == 1
 
 
-def test_monitor_proactive_cooldown():
+async def test_monitor_proactive_cooldown():
     queue = MagicMock()
     monitor = WorkspaceMonitor(
         enabled=False,
@@ -70,8 +70,8 @@ def test_monitor_proactive_cooldown():
             Issue(severity="error", description="fail", confidence=0.9),
         ]
     )
-    monitor._route_proactive_issues(analysis)
-    monitor._route_proactive_issues(analysis)
+    await monitor._route_proactive_issues(analysis)
+    await monitor._route_proactive_issues(analysis)
     assert queue.enqueue.call_count == 1
 
 

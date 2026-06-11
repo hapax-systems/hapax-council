@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import subprocess
 import time
@@ -52,6 +53,8 @@ _INVARIANT_FRESHNESS_S = 900.0
 _LUFS_WITNESS_FRESHNESS_S = 60.0
 #: Only the tail of the findings ledger is scanned (it is append-only).
 _INVARIANT_SCAN_ROWS = 50
+#: Backward-read chunk size for the bounded ledger tail scan.
+_TAIL_CHUNK_BYTES = 8192
 #: Timeout for systemctl is-failed verification probes.
 _SYSTEMCTL_TIMEOUT_S = 2.0
 
@@ -64,6 +67,27 @@ _SERVICE_CLAIM_RE = re.compile(r"\b([A-Za-z0-9_@.\\:-]+\.service)\b")
 #: notifications (>=30 min per the grounding-contract task).
 _ISSUE_KEY_COOLDOWN_S = 1800.0
 _ISSUE_KEY_MAX_ENTRIES = 256
+
+
+def _tail_lines(path: Path, max_lines: int) -> list[str]:
+    """Read the last ``max_lines`` lines of ``path`` via backward chunked reads.
+
+    The findings ledger is append-only and unbounded (multi-MB in production),
+    so per-check I/O must stay proportional to ``max_lines``, not file size.
+    Reads one extra newline past ``max_lines`` so a chunk boundary bisecting a
+    line (or a multi-byte character) only ever corrupts the discarded prefix.
+    """
+    with open(path, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        pos = fh.tell()
+        buf = b""
+        while pos > 0 and buf.count(b"\n") <= max_lines:
+            step = min(_TAIL_CHUNK_BYTES, pos)
+            pos -= step
+            fh.seek(pos)
+            buf = fh.read(step) + buf
+    lines = buf.decode("utf-8", errors="replace").splitlines()
+    return lines[-max_lines:]
 
 
 class WorkspaceMonitor:
@@ -325,7 +349,7 @@ class WorkspaceMonitor:
                 analysis.operator_present,
                 len(analysis.gear_state),
             )
-            self._route_proactive_issues(analysis)
+            await self._route_proactive_issues(analysis)
             self._persist_analysis(analysis)
             self._emit_analysis_event(analysis, latency_ms=latency_ms, images_sent=images_sent)
             # WS4: check for local vs cloud model disagreement
@@ -467,7 +491,7 @@ class WorkspaceMonitor:
         except Exception as exc:
             log.debug("Failed to persist workspace state: %s", exc)
 
-    def _route_proactive_issues(self, analysis: WorkspaceAnalysis) -> None:
+    async def _route_proactive_issues(self, analysis: WorkspaceAnalysis) -> None:
         """Route high-confidence error issues to notification queue.
 
         Grounding contract: an issue that names a system surface (SDLC
@@ -475,6 +499,9 @@ class WorkspaceMonitor:
         actual surface before it may actuate an alarm; unconfirmed claims are
         logged as unconfirmed-perception instead. A per-issue-key cooldown
         dedups persistent on-screen strings so one cannot flood notifications.
+
+        Verification probes block (systemctl up to ~4s, ledger tail read), so
+        they are offloaded to a thread; queue/state mutation stays on the loop.
         """
         if self._notification_queue is None:
             return
@@ -498,7 +525,9 @@ class WorkspaceMonitor:
                 continue
 
             surface = self._classify_system_surface(issue.description)
-            if surface is not None and not self._verify_surface_claim(*surface):
+            if surface is not None and not await asyncio.to_thread(
+                self._verify_surface_claim, *surface
+            ):
                 self._log_unconfirmed_perception(surface[0], issue)
                 continue
 
@@ -556,12 +585,18 @@ class WorkspaceMonitor:
         return False
 
     def _verify_invariant_violation(self, identifier: str | None) -> bool:
-        """Confirm an SDLC-invariant claim against the advisory findings ledger."""
+        """Confirm an SDLC-invariant claim against the advisory findings ledger.
+
+        A claim that names no specific ``INV-N`` cannot be confirmed: matching
+        it against *any* fresh failing row would let vague screen text
+        piggyback on an unrelated violation (fail-closed).
+        """
+        if not identifier:
+            return False
         if not self._invariant_findings_path.exists():
             return False
         cutoff = datetime.now(UTC) - timedelta(seconds=_INVARIANT_FRESHNESS_S)
-        lines = self._invariant_findings_path.read_text(encoding="utf-8").splitlines()
-        for line in lines[-_INVARIANT_SCAN_ROWS:]:
+        for line in _tail_lines(self._invariant_findings_path, _INVARIANT_SCAN_ROWS):
             try:
                 row = json.loads(line)
             except ValueError:
