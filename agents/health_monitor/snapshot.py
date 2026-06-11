@@ -10,11 +10,6 @@ import subprocess
 import tempfile
 from datetime import UTC, datetime
 
-from shared.mesh_health import aggregate_mesh_health
-from shared.sheaf_graph import build_scm_graph
-from shared.sheaf_health import compute_restriction_consistency
-from shared.topology_health import compute_topological_stability
-
 from .constants import AI_AGENTS_DIR, PROFILES_DIR
 from .models import HealthReport, Status
 
@@ -181,18 +176,29 @@ def write_infra_snapshot(report: HealthReport) -> None:
                     }
                 )
 
-    # Add mesh-wide perceptual health
-    mesh = aggregate_mesh_health()
+    # Add optional mesh/topology enrichments without making health JSON depend
+    # on heavyweight graph packages in bare-python environments.
+    try:
+        from shared.mesh_health import aggregate_mesh_health
+
+        mesh = aggregate_mesh_health()
+    except Exception as e:
+        mesh = {"error": "failed", "detail": str(e)}
 
     try:
+        from shared.sheaf_health import compute_restriction_consistency
+
         sheaf_health = compute_restriction_consistency()
-    except Exception:
-        sheaf_health = {"error": "failed"}
+    except Exception as e:
+        sheaf_health = {"error": "failed", "detail": str(e)}
 
     try:
+        from shared.sheaf_graph import build_scm_graph
+        from shared.topology_health import compute_topological_stability
+
         topology = compute_topological_stability(build_scm_graph())
-    except Exception:
-        topology = {"error": "failed"}
+    except Exception as e:
+        topology = {"error": "failed", "detail": str(e)}
 
     snapshot = {
         "timestamp": report.timestamp,

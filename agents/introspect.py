@@ -26,14 +26,14 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from agents.health_monitor import http_get, run_cmd
+from agents.health_monitor.tracing import get_tracer
 
 try:
     from agents import _langfuse_config  # noqa: F401
 except ImportError:
     pass
-from opentelemetry import trace
 
-_tracer = trace.get_tracer(__name__)
+_tracer = get_tracer(__name__)
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 

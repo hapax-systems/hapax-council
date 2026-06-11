@@ -9,16 +9,15 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from opentelemetry import trace
-
 # Ensure all check modules are imported (registers them into CHECK_REGISTRY)
 from . import checks  # noqa: F401
 from . import utils as _u
 from .constants import LITELLM_BASE, OLLAMA_URL, QDRANT_URL, langfuse_endpoint_url
 from .models import CheckResult, HealthReport, Status, build_group_result, worst_status
 from .registry import CHECK_REGISTRY
+from .tracing import get_tracer
 
-_tracer = trace.get_tracer(__name__)
+_tracer = get_tracer(__name__)
 log = logging.getLogger("agents.health_monitor")
 
 
