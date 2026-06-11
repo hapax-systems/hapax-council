@@ -10,14 +10,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
 log = logging.getLogger(__name__)
 
-# Dedicated executor for STT (separate from default to avoid starvation)
-_stt_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt")
+# Dedicated executors, one per lane (separate from default to avoid
+# starvation). Final and speculative transcription get their own
+# single-thread executors so a long speculative decode can never queue
+# ahead of the utterance-final transcription (the audit's 35.5s pipeline
+# outlier was exactly that queueing). Prosody (Praat) runs on its own
+# executor so it never extends the transcription hot path.
+_stt_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt-final")
+_speculative_stt_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt-spec")
+_prosody_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="prosody")
 
 
 class ResidentSTT:
@@ -78,7 +86,9 @@ class ResidentSTT:
             audio_bytes: Raw PCM int16 mono bytes
             sample_rate: Sample rate (default 16000)
             language: Language code (default "en")
-            _speculative: If True, log at DEBUG not INFO (speculative partials)
+            _speculative: If True, log at DEBUG not INFO and run on the
+                speculative executor so partials never queue ahead of
+                final transcription
 
         Returns:
             Transcribed text, or empty string on failure.
@@ -87,8 +97,9 @@ class ResidentSTT:
             return ""
 
         loop = asyncio.get_running_loop()
+        executor = _speculative_stt_executor if _speculative else _stt_executor
         return await loop.run_in_executor(
-            _stt_executor,
+            executor,
             self._transcribe_sync,
             audio_bytes,
             sample_rate,
@@ -107,12 +118,15 @@ class ResidentSTT:
         try:
             audio = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
+            t0 = time.monotonic()
             segments, info = self._model.transcribe(
                 audio,
                 language="en",  # skip language detection (saves ~50ms)
-                beam_size=5,
+                # Hot-path lean decode (audit SS7-P0): beam 2 instead of 5,
+                # no word timestamps — both cut decode latency; word-level
+                # alignment fed only prosody, which now runs off this path.
+                beam_size=2,
                 vad_filter=False,  # we already did VAD
-                word_timestamps=True,
                 # Whisper treats initial_prompt as "preceding transcript" and
                 # conditions on its style/vocabulary. Realistic example sentences
                 # with "Hapax" bias the decoder toward the word — keyword lists
@@ -126,26 +140,27 @@ class ResidentSTT:
                 ),
             )
 
-            all_words: list[dict] = []
-            text_parts: list[str] = []
-            for seg in segments:
-                text_parts.append(seg.text)
-                if seg.words:
-                    for w in seg.words:
-                        all_words.append({"word": w.word, "start": w.start, "end": w.end})
+            # Decode happens lazily during segment iteration — time it.
+            text_parts: list[str] = [seg.text for seg in segments]
+            decode_ms = (time.monotonic() - t0) * 1000.0
 
             text = " ".join(text_parts).strip()
             if text:
                 _level = log.debug if speculative else log.info
                 _level(
-                    'STT: "%s" (%.1fs audio, lang=%s)',
+                    'STT: "%s" (%.1fs audio, %.0fms decode, lang=%s)',
                     text,
                     len(audio) / sample_rate,
+                    decode_ms,
                     info.language,
                 )
 
                 if not speculative:
-                    self._extract_prosody(audio, sample_rate, all_words)
+                    # Fire-and-forget on the prosody executor — Praat
+                    # analysis must not extend the transcription hot path.
+                    _prosody_executor.submit(
+                        self._extract_prosody, audio, sample_rate, None
+                    )
 
             return text
 
@@ -154,8 +169,14 @@ class ResidentSTT:
             return ""
 
     @staticmethod
-    def _extract_prosody(audio: np.ndarray, sample_rate: int, word_timestamps: list[dict]) -> None:
-        """Extract and publish prosodic features (best-effort, never blocks)."""
+    def _extract_prosody(
+        audio: np.ndarray, sample_rate: int, word_timestamps: list[dict] | None
+    ) -> None:
+        """Extract and publish prosodic features (best-effort, never blocks).
+
+        Runs on the dedicated prosody executor. Without word timestamps the
+        speaking-rate feature is unavailable; pitch/energy/HNR survive.
+        """
         try:
             from shared.prosody import extract_prosody, write_prosody
 

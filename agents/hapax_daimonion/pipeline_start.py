@@ -105,8 +105,10 @@ async def start_conversation_pipeline(daemon: VoiceDaemon) -> None:
 
         def _presynth() -> None:
             try:
-                daemon._bridge_engine.presynthesize_all(daemon.tts)
-                daemon._bridges_presynthesized = True
+                # False means the startup background thread is mid-run and
+                # owns the work — it sets the flag when it completes.
+                if daemon._bridge_engine.presynthesize_all(daemon.tts):
+                    daemon._bridges_presynthesized = True
             except Exception:
                 log.warning("Bridge presynthesis failed (bridges will synthesize on demand)")
 

@@ -187,6 +187,50 @@ class TestLifecycle:
         assert asyncio.run(_go()) is True
 
 
+# ── Overrun streak telemetry ─────────────────────────────────────────
+
+
+class TestOverrunTelemetry:
+    """Drop streaks must be quantified: the old single 'queue full'
+    warning gave no count or duration, making soak evidence ambiguous
+    (audit SS3 'mic integrity' row)."""
+
+    def test_streak_start_logs_once(self, caplog: pytest.LogCaptureFixture) -> None:
+        s = AudioInputStream(source_name="test-source", queue_maxsize=2)
+        with caplog.at_level("WARNING", logger="agents.hapax_daimonion.audio_input"):
+            s._enqueue_frame(b"a")
+            s._enqueue_frame(b"b")
+            s._enqueue_frame(b"c")  # dropped — streak start
+            s._enqueue_frame(b"d")  # dropped — same streak, no extra log
+        full_warnings = [r for r in caplog.records if "queue full" in r.getMessage()]
+        assert len(full_warnings) == 1
+
+    def test_recovery_logs_dropped_count_and_audio_seconds(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        s = AudioInputStream(source_name="test-source", frame_ms=30, queue_maxsize=2)
+        s._enqueue_frame(b"a")
+        s._enqueue_frame(b"b")
+        s._enqueue_frame(b"c")  # dropped
+        s._enqueue_frame(b"d")  # dropped
+        s._queue.get_nowait()
+        with caplog.at_level("WARNING", logger="agents.hapax_daimonion.audio_input"):
+            s._enqueue_frame(b"e")  # fits — streak ends
+        recovery = [r.getMessage() for r in caplog.records if "recovered" in r.getMessage()]
+        assert len(recovery) == 1
+        assert "dropped 2 frames" in recovery[0]
+        assert "0.1s of audio" in recovery[0]  # 2 × 30ms rounded
+
+    def test_total_dropped_accumulates_across_streaks(self) -> None:
+        s = AudioInputStream(source_name="test-source", queue_maxsize=1)
+        s._enqueue_frame(b"a")
+        s._enqueue_frame(b"b")  # dropped (streak 1)
+        s._queue.get_nowait()
+        s._enqueue_frame(b"c")  # recovery
+        s._enqueue_frame(b"d")  # dropped (streak 2)
+        assert s.total_dropped_frames == 2
+
+
 # ── Source name override ─────────────────────────────────────────────
 
 

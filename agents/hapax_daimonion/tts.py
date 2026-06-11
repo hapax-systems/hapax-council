@@ -69,6 +69,17 @@ TTS_STREAM_PROTOCOL = "hapax.tts.pcm-stream.v1"
 _DEFAULT_TTS_REQUEST_DEADLINE_S = 30.0
 _TTS_CLIENT_TIMEOUT_OVERHEAD_S = 2.0
 
+# The daimonion unit caps OMP_NUM_THREADS=2 for the whole process, which
+# throttled CPU Kokoro to RTF 0.10-0.135 (audit SS7-P0). The TTS path
+# raises its own torch intraop pool at preload; 4 of the podium 7700X's
+# 16 hardware threads roughly doubles synthesis throughput without
+# starving the compositor/OBS. This is a mitigation, not isolation: any
+# torch CPU work in-process shares the pool. True isolation is the
+# Phase 1 TTS server extraction onto the 5060 Ti (separate process,
+# own thread budget) — when that lands, this knob goes with it.
+TTS_TORCH_THREADS_ENV = "HAPAX_TTS_TORCH_THREADS"
+_DEFAULT_TTS_TORCH_THREADS = 4
+
 _VOICE_SAMPLE_PATH = Path(__file__).resolve().parent.parent.parent / "profiles" / "voice-sample.wav"
 _CHATTERBOX_DEVICE = os.environ.get("HAPAX_CHATTERBOX_DEVICE", "cuda:0")
 _CHATTERBOX_EXAGGERATION = 0.50
@@ -214,6 +225,58 @@ def priority_class_for_use_case(use_case: str) -> str:
     return "hosting"
 
 
+def resolve_tts_torch_threads() -> int:
+    """Resolve the TTS torch intraop thread count from the environment.
+
+    Unset/empty resolves to the default; invalid or non-positive values
+    warn and resolve to the default rather than dying silently.
+    """
+    raw = os.environ.get(TTS_TORCH_THREADS_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_TTS_TORCH_THREADS
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning(
+            "%s=%r is not an integer — using %d",
+            TTS_TORCH_THREADS_ENV,
+            raw,
+            _DEFAULT_TTS_TORCH_THREADS,
+        )
+        return _DEFAULT_TTS_TORCH_THREADS
+    if value < 1:
+        log.warning(
+            "%s=%d must be >= 1 — using %d",
+            TTS_TORCH_THREADS_ENV,
+            value,
+            _DEFAULT_TTS_TORCH_THREADS,
+        )
+        return _DEFAULT_TTS_TORCH_THREADS
+    return value
+
+
+def _apply_tts_thread_cap() -> None:
+    """Raise the torch intraop pool above the unit's process-wide OMP cap.
+
+    Must run before the first parallel torch op (i.e. at preload, before
+    model load) — once the intraop pool spins up, set_num_threads is a
+    no-op on some backends. Best-effort: a failure leaves synthesis at
+    the unit cap, slower but correct.
+    """
+    threads = resolve_tts_torch_threads()
+    try:
+        import torch
+
+        torch.set_num_threads(threads)
+        log.info(
+            "TTS torch intraop threads set to %d (unit OMP cap: %s)",
+            threads,
+            os.environ.get("OMP_NUM_THREADS", "unset"),
+        )
+    except Exception:
+        log.warning("TTS torch thread-cap raise failed (non-fatal)", exc_info=True)
+
+
 def _arc_prosody(
     arc_position: float | None,
     *,
@@ -304,6 +367,7 @@ class TTSManager:
             else:
                 log.warning("TTS server not reachable at %s", self._server_socket_path)
             return
+        _apply_tts_thread_cap()
         if self._backend == "kokoro":
             self._get_kokoro()
             log.info("Kokoro TTS ready (voice=%s, selected primary)", self._voice_id)
