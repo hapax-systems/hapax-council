@@ -693,6 +693,12 @@ fi
 while IFS= read -r f; do
     [ -z "$f" ] && continue
     case "$f" in
+        # ARCHIVED confs are records, not deployables. Bash case-globs match
+        # across slashes, so without this exclusion config/pipewire/archive/**
+        # walks straight into the PW deploy set — the 2026-06-11 09:34 P0:
+        # 25 archived confs resurrected into the live conf dir, one syntax-
+        # invalid, PipeWire + daimonion start-limit dead, broadcast audio out.
+        config/pipewire/archive/*|config/wireplumber/archive/*|config/hapax/archive/*) : ;;
         config/pipewire/*.conf)           PW+=("$f") ;;
         config/hapax/*.conf)              HAPAX_CONF+=("$f") ;;
         config/wireplumber/scripts/hapax/*.lua) WP_LUA+=("$f") ;;
@@ -757,6 +763,15 @@ if [ "${#PW[@]}" -gt 0 ]; then
     for f in "${PW[@]}"; do
         dest="$PW_CONF_DIR/$(basename "$f")"
         if git cat-file -e "$SHA:$f" 2>/dev/null; then
+            # Parse-lint BEFORE the live conf dir sees it: one syntax-invalid
+            # conf start-limit-kills the whole audio stack (2026-06-11 P0).
+            if command -v spa-json-dump >/dev/null 2>&1; then
+                if ! git show "$SHA:$f" | spa-json-dump /dev/stdin >/dev/null 2>&1; then
+                    echo "  REFUSED (spa-json parse error, would kill PipeWire): '$f'" >&2
+                    DEPLOY_ERRORS=$((${DEPLOY_ERRORS:-0} + 1))
+                    continue
+                fi
+            fi
             git show "$SHA:$f" > "$dest"
             echo "  '$f' -> '$dest'"
         else
