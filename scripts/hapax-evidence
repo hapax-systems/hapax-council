@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""Collect legibility evidence receipts into the Hapax evidence ledger."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.evidence_ledger import (  # noqa: E402
+    EvidenceLedger,
+    LegibilityEvidenceRecord,
+    LegibilityEvidenceRegistry,
+    collect_command_evidence,
+    collect_local_api_evidence,
+    collect_package_registry_evidence,
+    collect_public_url_evidence,
+    collect_systemd_inventory_evidence,
+)
+
+
+def _write_record(args: argparse.Namespace, record: LegibilityEvidenceRecord) -> int:
+    ledger_dir = Path(args.ledger_dir).expanduser() if args.ledger_dir else None
+    registry = LegibilityEvidenceRegistry(ledger_dir)
+    registry.append(record, mirror_case_id=args.case, traces_to=args.trace_to or [])
+    print(record.model_dump_json())
+    return 0 if record.status == "ok" else 2
+
+
+def _list_records(args: argparse.Namespace) -> int:
+    ledger_dir = Path(args.ledger_dir).expanduser() if args.ledger_dir else None
+    if args.case:
+        entries = EvidenceLedger(ledger_dir).entries_for_case(args.case)
+        print(json.dumps([entry.model_dump(mode="json") for entry in entries], indent=2))
+        return 0
+    records = LegibilityEvidenceRegistry(ledger_dir).all_records()
+    print(json.dumps([record.model_dump(mode="json") for record in records], indent=2))
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="hapax-evidence")
+    parser.add_argument("--ledger-dir", default="", help="Override evidence ledger directory")
+    parser.add_argument("--case", default="", help="Mirror receipt to an AuthorityCase ledger")
+    parser.add_argument("--trace-to", action="append", default=[], help="Requirement/task trace id")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    command_p = sub.add_parser("command", help="Collect a command receipt")
+    command_p.add_argument("argv", nargs=argparse.REMAINDER)
+
+    public_url_p = sub.add_parser("public-url", help="Collect a public URL receipt")
+    public_url_p.add_argument("url")
+
+    package_p = sub.add_parser("package", help="Collect a PyPI package receipt")
+    package_p.add_argument("package_name")
+
+    local_api_p = sub.add_parser("local-api", help="Collect a local API URL receipt")
+    local_api_p.add_argument("url")
+
+    systemd_p = sub.add_parser("systemd", help="Collect systemd unit-file inventory")
+    systemd_p.add_argument("--system", action="store_true", help="Use system manager")
+
+    sub.add_parser("list", help="List legibility records or mirrored case entries")
+
+    args = parser.parse_args(argv)
+
+    if args.command == "command":
+        argv_parts = args.argv[1:] if args.argv and args.argv[0] == "--" else args.argv
+        if not argv_parts:
+            parser.error("command requires argv after optional -- separator")
+        return _write_record(args, collect_command_evidence(argv_parts))
+    if args.command == "public-url":
+        return _write_record(args, collect_public_url_evidence(args.url))
+    if args.command == "package":
+        return _write_record(args, collect_package_registry_evidence(args.package_name))
+    if args.command == "local-api":
+        return _write_record(args, collect_local_api_evidence(args.url))
+    if args.command == "systemd":
+        return _write_record(args, collect_systemd_inventory_evidence(user=not args.system))
+    if args.command == "list":
+        return _list_records(args)
+    parser.error(f"unknown command {args.command}")
+    return 64
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
