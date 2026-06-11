@@ -1,15 +1,18 @@
 [Unit]
 Description=Vinyl-into-Evil-Pet broadcast safety detector — alerts when sustained vinyl + Evil Pet activity overlap
-Documentation=file:///home/hapax/projects/hapax-council/docs/governance/evil-pet-broadcast-source-policy.md
+Documentation=file://%h/.cache/hapax/source-activation/worktree/docs/governance/evil-pet-broadcast-source-policy.md
 After=hapax-secrets.service pipewire.service
 Wants=pipewire.service
 OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple
-ExecStart=/home/hapax/.local/bin/uv run --directory /home/hapax/projects/hapax-council python -m agents.audio_safety
-Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=HOME=/home/hapax
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file agents/audio_safety/__main__.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.audio_safety
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
