@@ -55,7 +55,7 @@ def test_introspect_imports_without_opentelemetry() -> None:
     importlib.reload(introspect)
 
 
-def test_snapshot_writes_structured_degradation_without_networkx(
+def test_snapshot_writes_structured_degradation_when_topology_import_fails(
     tmp_path: Path, monkeypatch
 ) -> None:
     from agents.health_monitor import snapshot
@@ -73,12 +73,12 @@ def test_snapshot_writes_structured_degradation_without_networkx(
 
     real_import = builtins.__import__
 
-    def blocked_networkx(name, *args, **kwargs):
-        if name == "networkx" or name.startswith("networkx."):
-            raise ModuleNotFoundError("mocked missing networkx")
+    def blocked_topology_import(name, *args, **kwargs):
+        if name == "shared.sheaf_graph" or name.startswith("shared.sheaf_graph."):
+            raise ModuleNotFoundError("mocked missing topology dependency")
         return real_import(name, *args, **kwargs)
 
-    with patch("builtins.__import__", side_effect=blocked_networkx):
+    with patch("builtins.__import__", side_effect=blocked_topology_import):
         snapshot.write_infra_snapshot(report)
 
     data = json.loads((tmp_path / "infra-snapshot.json").read_text())
