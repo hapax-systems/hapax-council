@@ -41,6 +41,11 @@ from agents.hapax_daimonion.cpal.shm_publisher import publish_cpal_state
 from agents.hapax_daimonion.cpal.signal_cache import SignalCache
 from agents.hapax_daimonion.cpal.tier_composer import TierComposer
 from agents.hapax_daimonion.cpal.types import ConversationalRegion, CorrectionTier, GainUpdate
+from agents.hapax_daimonion.turn_budget import (
+    INTERVIEW_QUESTION_SILENCE_S,
+    POST_TTS_COOLDOWN_S,
+    SPEECH_GATE_HOLDOVER_S,
+)
 from agents.hapax_daimonion.voice_output_witness import (
     record_destination_decision,
     record_drop,
@@ -280,10 +285,10 @@ class CpalRunner:
             log.debug("TTS envelope publisher init failed", exc_info=True)
 
         # Interview silence window: after system asks a question, suppress
-        # backchannels and T1/T2 corrections for this many seconds.
+        # backchannels and T1/T2 corrections for this many seconds. NOT the
+        # interview session-close timeout (180s) — turn_budget names both.
         self._interview_silence_until: float = 0.0
-        _INTERVIEW_SILENCE_DEFAULT_S = 15.0
-        self._interview_silence_duration_s = _INTERVIEW_SILENCE_DEFAULT_S
+        self._interview_silence_duration_s = INTERVIEW_QUESTION_SILENCE_S
 
         # D-18 (proof-of-wiring): music policy evaluator. Default is
         # NullMusicDetector → always returns detected=False → no behavior
@@ -799,12 +804,12 @@ class CpalRunner:
             # T1: Acknowledgment (if cache ready, gain high enough, and outside echo window)
             # Cooldown prevents T1 from firing on echo of system's own speech.
             # Without this, T1 plays "mm-hmm" on echo → echo of "mm-hmm" → T1 again → loop.
-            _echo_cooldown_s = 2.0
+            # Same physical phenomenon as the buffer's post-TTS cooldown → same constant.
             _since_last_speech = time.monotonic() - self._last_speech_end
             region = ConversationalRegion.from_gain(self._evaluator.gain_controller.gain)
             if (
                 region.value >= ConversationalRegion.ATTENTIVE.value
-                and _since_last_speech > _echo_cooldown_s
+                and _since_last_speech > POST_TTS_COOLDOWN_S
             ):
                 ack = self._signal_cache.select("acknowledgment")
                 if ack is not None:
@@ -1265,12 +1270,12 @@ class CpalRunner:
                                     ),
                                 )
                             finally:
-                                # Hold the speaking gate for a few seconds
-                                # past playback end to cover residual room
-                                # echo. Without this holdover, the Yeti mic
-                                # captures the echo tail as "operator speech"
-                                # and the pipeline processes it as a response.
-                                await asyncio.sleep(3.0)
+                                # Hold the speaking gate past playback end to
+                                # cover residual room echo. Without this
+                                # holdover, the Yeti mic captures the echo
+                                # tail as "operator speech" and the pipeline
+                                # processes it as a response.
+                                await asyncio.sleep(SPEECH_GATE_HOLDOVER_S)
                                 self._buffer.set_speaking(False)
                             witness = record_playback_result(
                                 text=narrative,
@@ -1496,7 +1501,7 @@ class CpalRunner:
                     finally:
                         # Hold the speaking gate past playback end to cover
                         # room echo tail, same as autonomous narrative path.
-                        await asyncio.sleep(3.0)
+                        await asyncio.sleep(SPEECH_GATE_HOLDOVER_S)
                         self._buffer.set_speaking(False)
                         self._last_speech_end = time.monotonic()
                         self._recent_speech_events.append(

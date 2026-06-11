@@ -10,6 +10,8 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from agents.hapax_daimonion.turn_budget import SILENCE_TIMEOUT_S
+
 log = logging.getLogger(__name__)
 
 # Single source of truth for LiteLLM URL within the voice package.
@@ -45,8 +47,8 @@ def _default_tts_socket_path() -> str:
 class DaimonionConfig(BaseModel):
     """All tunables for the voice daemon."""
 
-    # Session
-    silence_timeout_s: int = 30
+    # Session — default owned by turn_budget (timing SSOT)
+    silence_timeout_s: int = int(SILENCE_TIMEOUT_S)
     wake_phrases: list[str] = ["hapax", "hey hapax"]
     hotkey_socket: str = ""
     tts_socket: str = ""

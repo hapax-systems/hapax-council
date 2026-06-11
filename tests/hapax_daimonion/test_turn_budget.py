@@ -184,7 +184,9 @@ class TestConsolidationPins:
                 if "acompletion(" in line or "litellm.completion(" in line:
                     if line.lstrip().startswith("#"):
                         continue  # mention in a comment, not a call site
-                    window = "\n".join(lines[i : i + 30])
+                    # timeout may be a kwarg in the call (forward window) or
+                    # set on a kwargs dict just above a `**kwargs` call.
+                    window = "\n".join(lines[max(0, i - 12) : i + 30])
                     if "timeout" not in window:
                         offenders.append(f"{py.name}:{i + 1}")
         assert not offenders, f"unbounded LLM calls: {offenders}"

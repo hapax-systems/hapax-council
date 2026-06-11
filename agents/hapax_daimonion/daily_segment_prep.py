@@ -32,6 +32,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from agents.hapax_daimonion.turn_budget import PREP_LLM_TIMEOUT_S
 from shared.hermeneutic_spiral import (
     compute_hermeneutic_delta,
     persist_source_consequences,
@@ -648,8 +649,11 @@ def _build_full_segment_prompt(
 # Resident Command-R calls can be slow when producing long, grounded programme
 # plans and 800-2000 char beat scripts. Keep the client timeout above observed
 # local inference latency so prep preserves call continuity instead of killing a
-# still-productive resident generation.
-_PREP_LLM_TIMEOUT_S = float(os.environ.get("HAPAX_SEGMENT_PREP_LLM_TIMEOUT_S", "1200"))
+# still-productive resident generation. Default owned by turn_budget (SSOT);
+# the env override is the operator's escape hatch.
+_PREP_LLM_TIMEOUT_S = float(
+    os.environ.get("HAPAX_SEGMENT_PREP_LLM_TIMEOUT_S", str(PREP_LLM_TIMEOUT_S))
+)
 
 # Content prep is a single-resident-model path.  Evidence acquisition can
 # happen elsewhere, but plan/draft/refine must run on the same grounded local

@@ -10,10 +10,14 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
+from agents.hapax_daimonion.turn_budget import (
+    BARGE_IN_STT_TIMEOUT_S,
+    FRAME_SAMPLES,
+    SAMPLE_RATE,
+)
+
 log = logging.getLogger(__name__)
 
-FRAME_SAMPLES = 480
-SAMPLE_RATE = 16000
 _FRAME_DURATION_S = FRAME_SAMPLES / SAMPLE_RATE  # 0.03s
 
 # Phatic tokens that signal backchannel, not floor claim.
@@ -44,7 +48,9 @@ PHATIC_TOKENS: frozenset[str] = frozenset(
 )
 
 _FLOOR_CLAIM_DURATION_S = 1.0
-_STT_TIMEOUT_S = 2.0
+# Timing SSOT alias (turn_budget) — classification must resolve well
+# inside one spoken clause or it is useless.
+_STT_TIMEOUT_S = BARGE_IN_STT_TIMEOUT_S
 
 
 @dataclass

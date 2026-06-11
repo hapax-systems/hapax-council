@@ -140,11 +140,21 @@ _CANNED_RESPONSES: list[str] = [
     "Good. You?",
 ]
 
+# Failure phrases — interactive overrun policy (turn_budget, audit v2 §5e):
+# on LLM timeout/error the turn degrades to canned PCM played from this
+# presynth cache, never a live-synthesized apology on the hot path.
+FAILURE_PHRASES: list[str] = [
+    "I'm having trouble connecting right now.",
+    "Something went wrong.",
+    "Sorry, something went wrong.",
+]
+
 ALL_PHRASES: list[str] = []
 for pool in _PHRASE_POOLS.values():
     ALL_PHRASES.extend(pool)
 ALL_PHRASES.extend(_FORMAL_POOL)
 ALL_PHRASES.extend(_CANNED_RESPONSES)
+ALL_PHRASES.extend(FAILURE_PHRASES)
 # Deduplicate preserving order
 _seen: set[str] = set()
 ALL_PHRASES = [p for p in ALL_PHRASES if not (p in _seen or _seen.add(p))]  # type: ignore[func-returns-value]

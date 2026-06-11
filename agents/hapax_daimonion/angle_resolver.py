@@ -18,6 +18,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+from agents.hapax_daimonion.turn_budget import PREP_LLM_TIMEOUT_S
 from shared.source_packet import ResolvedSourceSet, SourcePacket, build_resolved_source_set
 
 log = logging.getLogger(__name__)
@@ -333,6 +334,9 @@ def _select_angle(topic: str, packets: list[SourcePacket]) -> AngleHypothesis | 
             temperature=0.3,
             api_base=os.environ.get("LITELLM_API_BASE", "http://127.0.0.1:4000"),
             api_key=os.environ.get("LITELLM_API_KEY", "not-set"),
+            # Audit v2 §5e "every LLM call bounded": this was the one
+            # daimonion call site with no timeout (litellm default: 600s).
+            timeout=PREP_LLM_TIMEOUT_S,
         )
         text = response.choices[0].message.content or ""
         return _parse_angle_response(topic, text, packets)
