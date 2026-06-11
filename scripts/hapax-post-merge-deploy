@@ -577,6 +577,9 @@ cleanup_known_stale_user_dropins_for_unit() {
             rmdir "$dropin_dir" 2>/dev/null || true
             ;;
         hapax-daimonion.service)
+            # Persistent sweep FIRST: the runtime dir is ephemeral (absent
+            # after any reboot) and must never short-circuit it (#4090-1).
+            remove_unversioned_user_dropins_for_unit "$unit"
             dropin_dir="$SYSTEMD_RUNTIME_USER_DIR/$unit.d"
             [ -d "$dropin_dir" ] || return 0
             for dropin in "$dropin_dir"/*.conf; do
@@ -587,7 +590,6 @@ cleanup_known_stale_user_dropins_for_unit() {
                 fi
             done
             rmdir "$dropin_dir" 2>/dev/null || true
-            remove_unversioned_user_dropins_for_unit "$unit"
             ;;
         hapax-audio-routing-check.service)
             dropin_dir="$SYSTEMD_USER_DIR/$unit.d"
