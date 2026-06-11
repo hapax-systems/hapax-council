@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+import re
+import subprocess
 import time
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from opentelemetry.trace import get_tracer
@@ -15,6 +21,7 @@ from agents.hapax_daimonion.notification_queue import VoiceNotification
 from agents.hapax_daimonion.screen_capturer import ScreenCapturer
 from agents.hapax_daimonion.screen_models import (
     CameraConfig,
+    Issue,
     WorkspaceAnalysis,
 )
 from agents.hapax_daimonion.webcam_capturer import WebcamCapturer
@@ -33,6 +40,55 @@ _RAG_COLLECTION = "documents"
 _RAG_MAX_CHUNKS = 3
 _RAG_SCORE_THRESHOLD = 0.3
 
+# --- Proactive-alert grounding contract (voice-w1-workspace-alert-groundedness)
+# An issue that NAMES a system surface (SDLC invariant, LUFS/loudness, systemd
+# service) must be confirmed against the actual surface before it may actuate
+# an alarm. Perception without verification is logged as unconfirmed-perception
+# and never alerted (fail-closed).
+_INVARIANT_FINDINGS_PATH = Path.home() / ".cache" / "hapax" / "sdlc-invariant-findings.jsonl"
+_LUFS_WITNESS_PATH = Path("/dev/shm/hapax-audio-health/lufs-s.json")
+#: A ledgered invariant violation older than this cannot confirm a fresh claim.
+_INVARIANT_FRESHNESS_S = 900.0
+#: The M2 LUFS-S witness writes every ~5s; older than this means daemon down.
+_LUFS_WITNESS_FRESHNESS_S = 60.0
+#: Only the tail of the findings ledger is scanned (it is append-only).
+_INVARIANT_SCAN_ROWS = 50
+#: Backward-read chunk size for the bounded ledger tail scan.
+_TAIL_CHUNK_BYTES = 8192
+#: Timeout for systemctl is-failed verification probes.
+_SYSTEMCTL_TIMEOUT_S = 2.0
+
+_INVARIANT_CLAIM_RE = re.compile(r"\bINV-?\d+\b|\binvariants?\b", re.IGNORECASE)
+_INVARIANT_ID_RE = re.compile(r"\bINV-?(\d+)\b", re.IGNORECASE)
+_LUFS_CLAIM_RE = re.compile(r"\bLUFS\b|\bloudness\b", re.IGNORECASE)
+_SERVICE_CLAIM_RE = re.compile(r"\b([A-Za-z0-9_@.\\:-]+\.service)\b")
+
+#: Per-issue-key cooldown so one persistent on-screen string cannot flood
+#: notifications (>=30 min per the grounding-contract task).
+_ISSUE_KEY_COOLDOWN_S = 1800.0
+_ISSUE_KEY_MAX_ENTRIES = 256
+
+
+def _tail_lines(path: Path, max_lines: int) -> list[str]:
+    """Read the last ``max_lines`` lines of ``path`` via backward chunked reads.
+
+    The findings ledger is append-only and unbounded (multi-MB in production),
+    so per-check I/O must stay proportional to ``max_lines``, not file size.
+    Reads one extra newline past ``max_lines`` so a chunk boundary bisecting a
+    line (or a multi-byte character) only ever corrupts the discarded prefix.
+    """
+    with open(path, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        pos = fh.tell()
+        buf = b""
+        while pos > 0 and buf.count(b"\n") <= max_lines:
+            step = min(_TAIL_CHUNK_BYTES, pos)
+            pos -= step
+            fh.seek(pos)
+            buf = fh.read(step) + buf
+    lines = buf.decode("utf-8", errors="replace").splitlines()
+    return lines[-max_lines:]
+
 
 class WorkspaceMonitor:
     """Orchestrates workspace awareness: screen + webcams + analysis + routing.
@@ -49,6 +105,7 @@ class WorkspaceMonitor:
         capture_cooldown_s: float = 10.0,
         proactive_min_confidence: float = 0.8,
         proactive_cooldown_s: float = 300.0,
+        issue_cooldown_s: float = _ISSUE_KEY_COOLDOWN_S,
         recapture_idle_s: float = 60.0,
         analyzer_model: str = "gemini-flash",
         cameras: list[CameraConfig] | None = None,
@@ -79,6 +136,16 @@ class WorkspaceMonitor:
         self._last_proactive_time: float = 0.0
         self._notification_queue: NotificationQueue | None = None
         self._presence: PresenceDetector | None = None
+
+        # Grounding contract + per-issue-key cooldown state
+        self.issue_cooldown_s = issue_cooldown_s
+        self._issue_last_alert: dict[str, float] = {}
+        # Serializes routing so overlapping analyses (capture_fresh resets the
+        # capture cooldown) cannot interleave cooldown checks across the
+        # verification await and double-alert one issue key.
+        self._route_lock = asyncio.Lock()
+        self._invariant_findings_path = _INVARIANT_FINDINGS_PATH
+        self._lufs_witness_path = _LUFS_WITNESS_PATH
 
         # WS5: local LLM confidence gate — skip Gemini when local model is confident
         self._local_confidence_threshold = 0.7
@@ -286,7 +353,7 @@ class WorkspaceMonitor:
                 analysis.operator_present,
                 len(analysis.gear_state),
             )
-            self._route_proactive_issues(analysis)
+            await self._route_proactive_issues(analysis)
             self._persist_analysis(analysis)
             self._emit_analysis_event(analysis, latency_ms=latency_ms, images_sent=images_sent)
             # WS4: check for local vs cloud model disagreement
@@ -428,17 +495,47 @@ class WorkspaceMonitor:
         except Exception as exc:
             log.debug("Failed to persist workspace state: %s", exc)
 
-    def _route_proactive_issues(self, analysis: WorkspaceAnalysis) -> None:
-        """Route high-confidence error issues to notification queue."""
+    async def _route_proactive_issues(self, analysis: WorkspaceAnalysis) -> None:
+        """Route high-confidence error issues to notification queue.
+
+        Grounding contract: an issue that names a system surface (SDLC
+        invariant, LUFS/loudness, systemd service) is verified against the
+        actual surface before it may actuate an alarm; unconfirmed claims are
+        logged as unconfirmed-perception instead. A per-issue-key cooldown
+        dedups persistent on-screen strings so one cannot flood notifications.
+
+        Verification probes block (systemctl up to ~4s, ledger tail read), so
+        they are offloaded to a thread; queue/state mutation stays on the loop.
+        """
         if self._notification_queue is None:
             return
 
-        now = time.monotonic()
-        if (now - self._last_proactive_time) < self.proactive_cooldown_s:
-            return
+        async with self._route_lock:
+            now = time.monotonic()
+            if (now - self._last_proactive_time) < self.proactive_cooldown_s:
+                return
 
-        for issue in analysis.issues:
-            if issue.severity == "error" and issue.confidence >= self.proactive_min_confidence:
+            for issue in analysis.issues:
+                if issue.severity != "error" or issue.confidence < self.proactive_min_confidence:
+                    continue
+
+                key = self._issue_key(issue.description)
+                last_alert = self._issue_last_alert.get(key)
+                if last_alert is not None and (now - last_alert) < self.issue_cooldown_s:
+                    log.debug(
+                        "Proactive alert suppressed (key cooldown, key=%s): %s",
+                        key,
+                        issue.description,
+                    )
+                    continue
+
+                surface = self._classify_system_surface(issue.description)
+                if surface is not None and not await asyncio.to_thread(
+                    self._verify_surface_claim, *surface
+                ):
+                    self._log_unconfirmed_perception(surface[0], issue)
+                    continue
+
                 self._notification_queue.enqueue(
                     VoiceNotification(
                         title="Workspace Alert",
@@ -447,6 +544,8 @@ class WorkspaceMonitor:
                         source="workspace",
                     )
                 )
+                self._issue_last_alert[key] = now
+                self._prune_issue_keys(now)
                 self._last_proactive_time = now
                 log.info(
                     "Proactive workspace alert: %s (confidence=%.2f)",
@@ -454,6 +553,133 @@ class WorkspaceMonitor:
                     issue.confidence,
                 )
                 return  # One alert per analysis cycle
+
+    @staticmethod
+    def _classify_system_surface(description: str) -> tuple[str, str | None] | None:
+        """Classify whether an issue description names a verifiable system surface.
+
+        Returns ``(surface, identifier)`` — e.g. ``("invariant", "INV-2")``,
+        ``("lufs", None)``, ``("service", "foo.service")`` — or ``None`` when
+        the issue makes no system-surface claim and needs no grounding.
+        """
+        if _INVARIANT_CLAIM_RE.search(description):
+            m_id = _INVARIANT_ID_RE.search(description)
+            return ("invariant", f"INV-{m_id.group(1)}" if m_id else None)
+        if _LUFS_CLAIM_RE.search(description):
+            return ("lufs", None)
+        m = _SERVICE_CLAIM_RE.search(description)
+        if m:
+            return ("service", m.group(1))
+        return None
+
+    def _verify_surface_claim(self, surface: str, identifier: str | None) -> bool:
+        """Verify a system-surface claim against the actual surface.
+
+        Fail-closed: any verification error means unconfirmed — perception
+        without verification must not actuate alarms.
+        """
+        try:
+            if surface == "invariant":
+                return self._verify_invariant_violation(identifier)
+            if surface == "lufs":
+                return self._verify_lufs_breach()
+            if surface == "service":
+                return self._verify_service_failed(identifier or "")
+        except Exception as exc:
+            log.debug("Surface verification errored (%s): %s", surface, exc)
+        return False
+
+    def _verify_invariant_violation(self, identifier: str | None) -> bool:
+        """Confirm an SDLC-invariant claim against the advisory findings ledger.
+
+        A claim that names no specific ``INV-N`` cannot be confirmed: matching
+        it against *any* fresh failing row would let vague screen text
+        piggyback on an unrelated violation (fail-closed).
+        """
+        if not identifier:
+            return False
+        if not self._invariant_findings_path.exists():
+            return False
+        cutoff = datetime.now(UTC) - timedelta(seconds=_INVARIANT_FRESHNESS_S)
+        for line in _tail_lines(self._invariant_findings_path, _INVARIANT_SCAN_ROWS):
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("holds") is not False:
+                continue
+            if identifier and row.get("invariant") != identifier:
+                continue
+            try:
+                ts = datetime.fromisoformat(str(row.get("ts", "")).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if ts >= cutoff:
+                return True
+        return False
+
+    def _verify_lufs_breach(self) -> bool:
+        """Confirm a LUFS/loudness claim against the M2 LUFS-S witness snapshot."""
+        if not self._lufs_witness_path.exists():
+            return False
+        data = json.loads(self._lufs_witness_path.read_text(encoding="utf-8"))
+        if (time.time() - float(data.get("timestamp", 0.0))) > _LUFS_WITNESS_FRESHNESS_S:
+            return False
+        stages = data.get("stages", {})
+        return any(
+            not stage.get("in_band", True) for stage in stages.values() if isinstance(stage, dict)
+        )
+
+    @staticmethod
+    def _verify_service_failed(unit: str) -> bool:
+        """Confirm a service-failure claim via systemctl (user, then system)."""
+        if not unit:
+            return False
+        for scope in (("--user",), ()):
+            try:
+                proc = subprocess.run(
+                    ["systemctl", *scope, "is-failed", unit],
+                    capture_output=True,
+                    text=True,
+                    timeout=_SYSTEMCTL_TIMEOUT_S,
+                )
+            except Exception:
+                continue
+            if proc.stdout.strip() == "failed":
+                return True
+        return False
+
+    def _issue_key(self, description: str) -> str:
+        """Stable dedup key: surface-aware so paraphrases of one claim collide."""
+        surface = self._classify_system_surface(description)
+        if surface is not None:
+            kind, ident = surface
+            return f"{kind}:{(ident or '').lower()}"
+        norm = re.sub(r"[^a-z0-9]+", " ", description.lower()).strip()
+        return norm[:160]
+
+    def _prune_issue_keys(self, now: float) -> None:
+        """Drop expired cooldown entries so the dedup map stays bounded."""
+        if len(self._issue_last_alert) <= _ISSUE_KEY_MAX_ENTRIES:
+            return
+        cutoff = now - self.issue_cooldown_s
+        self._issue_last_alert = {k: t for k, t in self._issue_last_alert.items() if t > cutoff}
+
+    def _log_unconfirmed_perception(self, surface: str, issue: Issue) -> None:
+        """Witness an ungrounded surface claim without actuating an alarm."""
+        log.info(
+            "Unconfirmed perception (surface=%s, confidence=%.2f) — not alerting: %s",
+            surface,
+            issue.confidence,
+            issue.description,
+        )
+        if self._event_log is not None:
+            self._event_log.emit(
+                "unconfirmed_perception",
+                surface=surface,
+                description=issue.description,
+                confidence=issue.confidence,
+            )
 
     def _gather_camera_frames(self) -> dict[str, str | None]:
         """Capture frames from all available cameras."""
