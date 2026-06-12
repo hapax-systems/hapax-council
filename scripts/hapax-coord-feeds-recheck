@@ -798,12 +798,28 @@ def _exercise_coord_deploy_helper() -> str:
             '  echo "simulated rollback checkout failure" >&2\n'
             "  exit 57\n"
             "fi\n"
+            'if [ "${HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CLEAN:-}" = "1" ] && '
+            '[ "$1" = "-C" ] && [ "$2" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree" ] && '
+            '[ "$3" = "checkout" ] && [ "$4" = "--detach" ] && [ "$5" = "--force" ] && '
+            '[ "$6" = "${HAPAX_COORD_DEPLOY_EXPECT_ROLLBACK_SHA:?}" ]; then\n'
+            '  if "${HAPAX_TEST_REAL_GIT:?}" "$@"; then\n'
+            '    touch "${HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CLEAN_MARKER:?}"\n'
+            "    exit 0\n"
+            "  fi\n"
+            "  exit $?\n"
+            "fi\n"
             'if [ "${HAPAX_COORD_DEPLOY_FAIL_CLEAN_ONCE:-}" = "1" ] && '
             '[ "$1" = "-C" ] && [ "$2" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree" ] && '
             '[ "$3" = "clean" ] && [ ! -e "${HAPAX_COORD_DEPLOY_FAIL_CLEAN_MARKER:?}" ]; then\n'
             '  touch "${HAPAX_COORD_DEPLOY_FAIL_CLEAN_MARKER:?}"\n'
             '  echo "simulated activation clean failure" >&2\n'
             "  exit 59\n"
+            "fi\n"
+            'if [ "${HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CLEAN:-}" = "1" ] && '
+            '[ "$1" = "-C" ] && [ "$2" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree" ] && '
+            '[ "$3" = "clean" ] && [ -e "${HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CLEAN_MARKER:?}" ]; then\n'
+            '  echo "simulated rollback clean failure" >&2\n'
+            "  exit 60\n"
             "fi\n"
             'exec "${HAPAX_TEST_REAL_GIT:?}" "$@"\n'
         )
@@ -994,6 +1010,83 @@ def _exercise_coord_deploy_helper() -> str:
         ]:
             raise RuntimeError(f"clean-failure retry restart log mismatch: {restarts}")
 
+        rollback_clean_sha = _write_deploy_fixture_commit(writer, "rollback-clean")
+        _run_cmd(["git", "-C", str(writer), "push", "origin", "main"])
+        failed_rollback_clean = subprocess.run(
+            [str(COORD_DEPLOY_SCRIPT)],
+            env={
+                **env,
+                "HAPAX_COORD_DEPLOY_FAIL_RESTART_ONCE": "1",
+                "HAPAX_COORD_DEPLOY_FAIL_ONCE_MARKER": str(
+                    root / "target-restart-rollback-clean.failed"
+                ),
+                "HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CLEAN": "1",
+                "HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CLEAN_MARKER": str(
+                    root / "target-restart-rollback-clean.marker"
+                ),
+                "HAPAX_COORD_DEPLOY_EXPECT_ROLLBACK_SHA": clean_fail_sha,
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        if failed_rollback_clean.returncode == 0:
+            raise RuntimeError("deploy helper succeeded even though restart rollback clean failed")
+        if "rollback clean failed" not in failed_rollback_clean.stderr or (
+            "stopped hapax-coord.service to avoid serving unreceipted target"
+            not in failed_rollback_clean.stderr
+        ):
+            raise RuntimeError(
+                "restart rollback-clean failure did not stop service: "
+                f"{failed_rollback_clean.stderr}"
+            )
+        deployed = (worktree / ".deployed-sha").read_text().strip()
+        head = _run_cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"])
+        if deployed != clean_fail_sha or head != clean_fail_sha:
+            raise RuntimeError(
+                f"rollback clean failure state mismatch deployed={deployed[:9]} "
+                f"head={head[:9]} clean_fail={clean_fail_sha[:9]} "
+                f"rollback_clean={rollback_clean_sha[:9]}"
+            )
+        restarts = restart_log.read_text().splitlines()
+        if restarts != [
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user stop hapax-coord.service",
+        ]:
+            raise RuntimeError(f"rollback clean failure log mismatch: {restarts}")
+
+        _run_cmd([str(COORD_DEPLOY_SCRIPT)], env=env)
+        refreshed_remote_ref = _run_cmd(["git", "-C", str(source), "rev-parse", "origin/main"])
+        deployed = (worktree / ".deployed-sha").read_text().strip()
+        head = _run_cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"])
+        if (
+            deployed != rollback_clean_sha
+            or head != rollback_clean_sha
+            or refreshed_remote_ref != rollback_clean_sha
+        ):
+            raise RuntimeError(
+                f"rollback-clean retry mismatch deployed={deployed[:9]} head={head[:9]} "
+                f"origin/main={refreshed_remote_ref[:9]} expected={rollback_clean_sha[:9]}"
+            )
+        restarts = restart_log.read_text().splitlines()
+        if restarts != [
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user stop hapax-coord.service",
+            "--user restart hapax-coord.service",
+        ]:
+            raise RuntimeError(f"rollback-clean retry restart log mismatch: {restarts}")
+
         third_sha = _write_deploy_fixture_commit(writer, "third")
         _run_cmd(["git", "-C", str(writer), "push", "origin", "main"])
         failed_checkout = subprocess.run(
@@ -1005,7 +1098,7 @@ def _exercise_coord_deploy_helper() -> str:
                     root / "target-restart-rollback-checkout.failed"
                 ),
                 "HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CHECKOUT": "1",
-                "HAPAX_COORD_DEPLOY_EXPECT_ROLLBACK_SHA": clean_fail_sha,
+                "HAPAX_COORD_DEPLOY_EXPECT_ROLLBACK_SHA": rollback_clean_sha,
             },
             capture_output=True,
             text=True,
@@ -1024,10 +1117,11 @@ def _exercise_coord_deploy_helper() -> str:
             )
         deployed = (worktree / ".deployed-sha").read_text().strip()
         head = _run_cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"])
-        if deployed != clean_fail_sha or head != third_sha:
+        if deployed != rollback_clean_sha or head != third_sha:
             raise RuntimeError(
                 f"rollback checkout failure state mismatch deployed={deployed[:9]} "
-                f"head={head[:9]} clean_fail={clean_fail_sha[:9]} third={third_sha[:9]}"
+                f"head={head[:9]} rollback_clean={rollback_clean_sha[:9]} "
+                f"third={third_sha[:9]}"
             )
         restarts = restart_log.read_text().splitlines()
         if restarts != [
@@ -1035,6 +1129,9 @@ def _exercise_coord_deploy_helper() -> str:
             "--user restart hapax-coord.service",
             "--user restart hapax-coord.service",
             "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user stop hapax-coord.service",
             "--user restart hapax-coord.service",
             "--user restart hapax-coord.service",
             "--user stop hapax-coord.service",
@@ -1060,17 +1157,22 @@ def _exercise_coord_deploy_helper() -> str:
             "--user restart hapax-coord.service",
             "--user stop hapax-coord.service",
             "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user stop hapax-coord.service",
+            "--user restart hapax-coord.service",
         ]:
             raise RuntimeError(f"third deploy restart log mismatch: {restarts}")
 
     return (
         f"first={first_sha[:9]} second={second_sha[:9]} "
-        f"clean_fail={clean_fail_sha[:9]} third={third_sha[:9]} "
+        f"clean_fail={clean_fail_sha[:9]} rollback_clean={rollback_clean_sha[:9]} "
+        f"third={third_sha[:9]} "
         "wrote .deployed-sha after restart, "
         "refreshed stale origin/main, advanced worktree, skipped idempotent restart, "
         "stopped service when first restart failed before receipt, "
         "rolled back worktree and restarted rollback service on failed restart, "
         "rolled back worktree when target clean failed before restart, "
+        "stopped service when rollback clean failed, "
         "stopped service when rollback checkout failed, retried restart on change"
     )
 
@@ -1617,6 +1719,7 @@ def run_checks(
                     "writes_deployed_sha_after_restart": True,
                     "rolls_back_worktree_on_restart_failure": True,
                     "rolls_back_worktree_on_clean_failure": True,
+                    "proves_rollback_clean_before_service_restart": True,
                     "cleans_activation_worktree": True,
                     "restarts_service": COORD_SERVICE,
                 }
@@ -1639,7 +1742,8 @@ def run_checks(
                         f"runtime helper {COORD_DEPLOY_SCRIPT} sha256={runtime_deploy_sha[:16]} "
                         f"matches tracked {COORD_DEPLOY_RELPATH} and contracts origin/main -> "
                         f"{COORD_ACTIVATION} with post-restart .deployed-sha, clean checkout, "
-                        "clean-failure rollback, and restart-failure rollback",
+                        "clean-failure rollback, proven rollback cleanup, "
+                        "and restart-failure rollback",
                     )
 
     expected_unit_names = set(UNITS)

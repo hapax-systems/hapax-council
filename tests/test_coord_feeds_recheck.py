@@ -1261,6 +1261,108 @@ def test_coord_deploy_helper_stops_service_when_restart_rollback_checkout_fails(
     ]
 
 
+def test_coord_deploy_helper_stops_service_when_restart_rollback_clean_fails(tmp_path):
+    origin = tmp_path / "origin.git"
+    source = tmp_path / "source"
+    writer = tmp_path / "writer"
+    act_root = tmp_path / "coord-activation"
+    fakebin = tmp_path / "bin"
+    restart_log = tmp_path / "systemctl.log"
+    fakebin.mkdir()
+    systemctl = fakebin / "systemctl"
+    systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "${HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG:?}"\n'
+        'if [ "${HAPAX_COORD_DEPLOY_FAIL_RESTART_ONCE:-}" = "1" ] && '
+        '[ ! -e "${HAPAX_COORD_DEPLOY_FAIL_ONCE_MARKER:?}" ]; then\n'
+        '  touch "${HAPAX_COORD_DEPLOY_FAIL_ONCE_MARKER:?}"\n'
+        "  exit 42\n"
+        "fi\n"
+    )
+    systemctl.chmod(0o755)
+    real_git = shutil.which("git")
+    assert real_git
+    git = fakebin / "git"
+    git.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CLEAN:-}" = "1" ] && '
+        '[ "$1" = "-C" ] && [ "$2" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree" ] && '
+        '[ "$3" = "checkout" ] && [ "$4" = "--detach" ] && [ "$5" = "--force" ] && '
+        '[ "$6" = "${HAPAX_COORD_DEPLOY_EXPECT_ROLLBACK_SHA:?}" ]; then\n'
+        '  if "${HAPAX_TEST_REAL_GIT:?}" "$@"; then\n'
+        '    touch "${HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CLEAN_MARKER:?}"\n'
+        "    exit 0\n"
+        "  fi\n"
+        "  exit $?\n"
+        "fi\n"
+        'if [ "${HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CLEAN:-}" = "1" ] && '
+        '[ "$1" = "-C" ] && [ "$2" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree" ] && '
+        '[ "$3" = "clean" ] && [ -e "${HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CLEAN_MARKER:?}" ]; then\n'
+        '  echo "simulated rollback clean failure" >&2\n'
+        "  exit 60\n"
+        "fi\n"
+        'exec "${HAPAX_TEST_REAL_GIT:?}" "$@"\n'
+    )
+    git.chmod(0o755)
+
+    _cmd(["git", "init", "--bare", str(origin)])
+    _cmd(["git", "init", str(source)])
+    _cmd(["git", "-C", str(source), "checkout", "-b", "main"])
+    first_sha = _deploy_fixture_commit(source, "first")
+    _cmd(["git", "-C", str(source), "remote", "add", "origin", str(origin)])
+    _cmd(["git", "-C", str(source), "push", "-u", "origin", "main"])
+
+    env = {
+        **os.environ,
+        "HAPAX_COORD_DEPLOY_REPO": str(source),
+        "HAPAX_COORD_DEPLOY_ACT_ROOT": str(act_root),
+        "HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG": str(restart_log),
+        "HAPAX_TEST_REAL_GIT": real_git,
+        "PATH": f"{fakebin}:{os.environ.get('PATH', '')}",
+    }
+    _cmd([str(_DEPLOY_SCRIPT)], env=env)
+    worktree = act_root / "worktree"
+    assert (worktree / ".deployed-sha").read_text().strip() == first_sha
+
+    _cmd(["git", "clone", "-b", "main", str(origin), str(writer)])
+    second_sha = _deploy_fixture_commit(writer, "second")
+    _cmd(["git", "-C", str(writer), "push", "origin", "main"])
+    assert second_sha != first_sha
+
+    failed = subprocess.run(
+        [str(_DEPLOY_SCRIPT)],
+        env={
+            **env,
+            "HAPAX_COORD_DEPLOY_FAIL_RESTART_ONCE": "1",
+            "HAPAX_COORD_DEPLOY_FAIL_ONCE_MARKER": str(tmp_path / "target-restart.failed"),
+            "HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CLEAN": "1",
+            "HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CLEAN_MARKER": str(
+                tmp_path / "restart-rollback-clean.marker"
+            ),
+            "HAPAX_COORD_DEPLOY_EXPECT_ROLLBACK_SHA": first_sha,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert failed.returncode == 42
+    assert "restart failed" in failed.stderr
+    assert "rollback clean failed" in failed.stderr
+    assert "simulated rollback clean failure" in failed.stderr
+    assert "stopped hapax-coord.service to avoid serving unreceipted target" in failed.stderr
+    assert "restarted hapax-coord.service on rollback sha" not in failed.stderr
+    assert "next:" in failed.stderr
+    assert (worktree / ".deployed-sha").read_text().strip() == first_sha
+    assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == first_sha
+    assert restart_log.read_text().splitlines() == [
+        "--user restart hapax-coord.service",
+        "--user restart hapax-coord.service",
+        "--user stop hapax-coord.service",
+    ]
+
+
 def test_coord_deploy_helper_rejects_malformed_deployed_sha_path_before_restart(tmp_path):
     origin = tmp_path / "origin.git"
     source = tmp_path / "source"
@@ -1523,6 +1625,117 @@ def test_coord_deploy_helper_rolls_back_when_receipt_write_fails_after_restart(t
     ]
 
 
+def test_coord_deploy_helper_stops_service_when_receipt_rollback_clean_fails(tmp_path):
+    origin = tmp_path / "origin.git"
+    source = tmp_path / "source"
+    writer = tmp_path / "writer"
+    act_root = tmp_path / "coord-activation"
+    fakebin = tmp_path / "bin"
+    restart_log = tmp_path / "systemctl.log"
+    fakebin.mkdir()
+    systemctl = fakebin / "systemctl"
+    systemctl.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "${HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG:?}"\n'
+    )
+    systemctl.chmod(0o755)
+    real_mv = shutil.which("mv")
+    assert real_mv
+    mv = fakebin / "mv"
+    mv.write_text(
+        "#!/usr/bin/env bash\n"
+        '[ "${1:-}" != "-T" ] || shift\n'
+        'if [ "${HAPAX_COORD_DEPLOY_FAIL_RECEIPT_MV:-}" = "1" ] && '
+        '[ "$1" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree/.deployed-sha.tmp" ] && '
+        '[ "$2" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree/.deployed-sha" ]; then\n'
+        '  echo "simulated receipt promote failure" >&2\n'
+        "  exit 58\n"
+        "fi\n"
+        'exec "${HAPAX_TEST_REAL_MV:?}" "$@"\n'
+    )
+    mv.chmod(0o755)
+    real_git = shutil.which("git")
+    assert real_git
+    git = fakebin / "git"
+    git.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CLEAN:-}" = "1" ] && '
+        '[ "$1" = "-C" ] && [ "$2" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree" ] && '
+        '[ "$3" = "checkout" ] && [ "$4" = "--detach" ] && [ "$5" = "--force" ] && '
+        '[ "$6" = "${HAPAX_COORD_DEPLOY_EXPECT_ROLLBACK_SHA:?}" ]; then\n'
+        '  if "${HAPAX_TEST_REAL_GIT:?}" "$@"; then\n'
+        '    touch "${HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CLEAN_MARKER:?}"\n'
+        "    exit 0\n"
+        "  fi\n"
+        "  exit $?\n"
+        "fi\n"
+        'if [ "${HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CLEAN:-}" = "1" ] && '
+        '[ "$1" = "-C" ] && [ "$2" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree" ] && '
+        '[ "$3" = "clean" ] && [ -e "${HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CLEAN_MARKER:?}" ]; then\n'
+        '  echo "simulated rollback clean failure" >&2\n'
+        "  exit 60\n"
+        "fi\n"
+        'exec "${HAPAX_TEST_REAL_GIT:?}" "$@"\n'
+    )
+    git.chmod(0o755)
+
+    _cmd(["git", "init", "--bare", str(origin)])
+    _cmd(["git", "init", str(source)])
+    _cmd(["git", "-C", str(source), "checkout", "-b", "main"])
+    first_sha = _deploy_fixture_commit(source, "first")
+    _cmd(["git", "-C", str(source), "remote", "add", "origin", str(origin)])
+    _cmd(["git", "-C", str(source), "push", "-u", "origin", "main"])
+
+    env = {
+        **os.environ,
+        "HAPAX_COORD_DEPLOY_REPO": str(source),
+        "HAPAX_COORD_DEPLOY_ACT_ROOT": str(act_root),
+        "HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG": str(restart_log),
+        "HAPAX_TEST_REAL_GIT": real_git,
+        "HAPAX_TEST_REAL_MV": real_mv,
+        "PATH": f"{fakebin}:{os.environ.get('PATH', '')}",
+    }
+    _cmd([str(_DEPLOY_SCRIPT)], env=env)
+    worktree = act_root / "worktree"
+    assert (worktree / ".deployed-sha").read_text().strip() == first_sha
+
+    _cmd(["git", "clone", "-b", "main", str(origin), str(writer)])
+    second_sha = _deploy_fixture_commit(writer, "second")
+    _cmd(["git", "-C", str(writer), "push", "origin", "main"])
+    assert second_sha != first_sha
+
+    failed = subprocess.run(
+        [str(_DEPLOY_SCRIPT)],
+        env={
+            **env,
+            "HAPAX_COORD_DEPLOY_FAIL_RECEIPT_MV": "1",
+            "HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CLEAN": "1",
+            "HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CLEAN_MARKER": str(
+                tmp_path / "receipt-rollback-clean.marker"
+            ),
+            "HAPAX_COORD_DEPLOY_EXPECT_ROLLBACK_SHA": first_sha,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert failed.returncode == 58
+    assert "receipt write failed after restart" in failed.stderr
+    assert "rollback clean failed" in failed.stderr
+    assert "simulated rollback clean failure" in failed.stderr
+    assert "stopped hapax-coord.service to avoid serving unreceipted target" in failed.stderr
+    assert "restarted hapax-coord.service on rollback sha" not in failed.stderr
+    assert "next:" in failed.stderr
+    assert (worktree / ".deployed-sha").read_text().strip() == first_sha
+    assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == first_sha
+    assert restart_log.read_text().splitlines() == [
+        "--user restart hapax-coord.service",
+        "--user restart hapax-coord.service",
+        "--user stop hapax-coord.service",
+    ]
+
+
 def test_coord_deploy_helper_stops_service_when_receipt_rollback_checkout_fails(tmp_path):
     origin = tmp_path / "origin.git"
     source = tmp_path / "source"
@@ -1740,6 +1953,26 @@ def test_coord_deploy_contract_without_clean_failure_rollback_fails(tmp_path):
     r = res["coord-deploy-script"]
     assert r["state"] == "FAIL"
     assert "rolls_back_worktree_on_clean_failure" in r["detail"]
+
+
+def test_coord_deploy_contract_without_rollback_clean_proof_fails(tmp_path):
+    env = _scaffold(tmp_path)
+    bad_contract = '"proves_rollback_clean_before_service_restart":true'
+    for deploy in (
+        Path(env["HAPAX_RECHECK_REPO"]) / "scripts/hapax-coord-deploy",
+        Path(env["HAPAX_RECHECK_COORD_DEPLOY_SCRIPT"]),
+    ):
+        deploy.write_text(
+            deploy.read_text().replace(
+                bad_contract,
+                '"proves_rollback_clean_before_service_restart":false',
+            )
+        )
+    mod = _load(env)
+    res = _by_check(_run(mod))
+    r = res["coord-deploy-script"]
+    assert r["state"] == "FAIL"
+    assert "proves_rollback_clean_before_service_restart" in r["detail"]
 
 
 def test_coord_deploy_contract_without_clean_activation_fails(tmp_path):
