@@ -31,6 +31,12 @@ repos:
         language: system
         always_run: true
         pass_filenames: false
+      - id: jsonl-writers
+        name: Unrotated-jsonl-writer gate (audit W0.2 class closure)
+        entry: python3 scripts/check-jsonl-writers.py
+        language: system
+        files: ^(agents|logos|shared|scripts)/.*\.py$
+        pass_filenames: false
       - id: unused-functions
         name: Vulture unused-function gate
         entry: uv run python scripts/check-unused-functions.py --staged

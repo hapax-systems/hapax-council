@@ -1,0 +1,16 @@
+[Unit]
+Description=hapax — rotate capped dispatch/recruitment/impingement JSONL ledgers
+Documentation=file:///home/hapax/projects/hapax-council/shared/runtime_jsonl_rotator.py
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+EnvironmentFile=-%h/.config/hapax/env
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m shared.runtime_jsonl_rotator --target all --json
+Nice=19
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+StandardOutput=journal
+StandardError=journal
