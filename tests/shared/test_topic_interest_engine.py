@@ -77,6 +77,8 @@ def test_under_evidenced_novelty_routes_to_research_more_not_content() -> None:
     assert decision.impingement.content["metric"] == "topic_interest"
     assert decision.impingement.content["publication_candidate_allowed"] is False
     assert "evidence_refs_missing" in decision.blocked_reasons
+    rendered = render_impingement_text(decision.impingement)
+    assert "concern: evidence_refs_missing" in rendered
 
 
 def test_evidence_dense_local_state_emits_impingement_and_content_observation() -> None:
@@ -150,7 +152,64 @@ def test_current_event_output_is_dry_run_and_not_truth_warrant() -> None:
     assert decision.content_observation is not None
     assert decision.content_observation.public_mode == "dry_run"
     assert decision.content_observation.current_event_claim is True
+    assert decision.content_observation.source_bias_score is None
     assert "public_mode_downgraded_to_dry_run" in decision.downgrade_reasons
+
+
+def test_trend_used_as_truth_blocks_content_observation() -> None:
+    obs = _observation(
+        observation_id="obs-trend-as-truth",
+        source_kind="external_reference",
+        source_class="trend_sources",
+        public_mode="public_live",
+        current_event_claim=True,
+        trend_current_event=True,
+        trend_used_as_truth=True,
+        signals=_signals(public_value=0.92, claim_risk=0.10),
+    )
+
+    decision = decide_topic_interest(obs, now=NOW)
+
+    assert decision.action == "research_more"
+    assert decision.content_observation is None
+    assert decision.impingement is not None
+    assert decision.impingement.content["publication_candidate_allowed"] is False
+    assert "trend_used_as_truth_forbidden" in decision.blocked_reasons
+
+
+def test_naive_observed_at_is_normalized_before_discovery() -> None:
+    obs = _observation(
+        observation_id="obs-naive-current-event",
+        source_kind="external_reference",
+        source_class="trend_sources",
+        public_mode="public_live",
+        observed_at=datetime(2026, 6, 11, 19, 55),
+        retrieved_at=datetime(2026, 6, 11, 19, 55),
+        current_event_claim=True,
+        trend_current_event=True,
+        signals=_signals(claim_risk=0.18, public_value=0.88),
+    )
+
+    decision = decide_topic_interest(obs, now=NOW)
+
+    assert decision.content_observation is not None
+    assert decision.content_observation.published_at is not None
+    assert decision.content_observation.published_at.tzinfo is UTC
+    discovery = discover_candidates([decision.content_observation], now=NOW)
+    assert discovery[0].observation_id == "tie_obs-naive-current-event"
+
+
+def test_source_bias_score_maps_only_explicit_bias_measurement() -> None:
+    without_bias = decide_topic_interest(_observation(observation_id="obs-no-bias"), now=NOW)
+    with_bias = decide_topic_interest(
+        _observation(observation_id="obs-with-bias", source_bias_score=0.42),
+        now=NOW,
+    )
+
+    assert without_bias.content_observation is not None
+    assert with_bias.content_observation is not None
+    assert without_bias.content_observation.source_bias_score is None
+    assert with_bias.content_observation.source_bias_score == 0.42
 
 
 def test_duplicate_pressure_suppresses_impingement_to_avoid_alert_fatigue() -> None:

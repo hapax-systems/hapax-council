@@ -162,6 +162,7 @@ class TopicInterestObservation(TopicInterestModel):
     trend_current_event: bool = False
     trend_used_as_truth: bool = False
     trend_decay_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    source_bias_score: float | None = Field(default=None, ge=0.0, le=1.0)
     primary_source_count: int = Field(default=0, ge=0)
     official_source_count: int = Field(default=0, ge=0)
     corroborating_source_count: int = Field(default=0, ge=0)
@@ -177,6 +178,9 @@ class TopicInterestObservation(TopicInterestModel):
 
     def retrieved_at_utc(self) -> datetime:
         return _utc(self.retrieved_at or self.observed_at)
+
+    def observed_at_utc(self) -> datetime:
+        return _utc(self.observed_at)
 
 
 class TopicInterestDecision(TopicInterestModel):
@@ -326,6 +330,8 @@ def _content_eligible(
         return False
     if observation.rights_state in UNSAFE_RIGHTS_STATES:
         return False
+    if observation.trend_used_as_truth:
+        return False
     checks = (
         score_vector.relevance >= policy.min_relevance_for_content,
         score_vector.evidence_density >= policy.min_evidence_density_for_content,
@@ -376,7 +382,7 @@ def _content_observation(
             subject=observation.subject,
             subject_cluster=observation.subject_cluster,
             retrieved_at=observation.retrieved_at_utc(),
-            published_at=observation.observed_at,
+            published_at=observation.observed_at_utc(),
             freshness_ttl_s=observation.freshness_ttl_s,
             public_mode=public_mode,  # type: ignore[arg-type]
             rights_state=observation.rights_state,
@@ -392,7 +398,7 @@ def _content_observation(
             sensitive_event=observation.sensitive_event,
             trend_used_as_truth=observation.trend_used_as_truth,
             trend_decay_score=observation.trend_decay_score,
-            source_bias_score=round(score, 6),
+            source_bias_score=observation.source_bias_score,
             primary_source_count=observation.primary_source_count,
             official_source_count=observation.official_source_count,
             corroborating_source_count=observation.corroborating_source_count,
@@ -455,7 +461,7 @@ def _impingement(
             if content_observation is not None
             else "not_public_claim",
             "trajectory": f"{score_vector.trajectory:.3f}",
-            "concerns": _unique(tuple(blocked_reasons + downgrade_reasons)),
+            "concerns": list(_unique(tuple(blocked_reasons + downgrade_reasons))),
         },
         context={
             "public_mode": observation.public_mode,
