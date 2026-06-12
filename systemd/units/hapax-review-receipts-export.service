@@ -1,0 +1,7 @@
+# Hapax-Auto-Enable: true
+[Unit]
+Description=Export review dossiers + acceptance receipts for the trainyard
+
+[Service]
+Type=oneshot
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/hapax-review-receipts-export
