@@ -59,6 +59,7 @@ from agents.publication_bus.bluesky_publisher import BlueskyPostPublisher
 from agents.publication_bus.publisher_kit import PublisherPayload, PublisherResult
 from shared.cross_surface_event_contract import decide_cross_surface_fanout
 from shared.governance.publication_allowlist import check as allowlist_check
+from shared.jsonl_cursor import read_jsonl_cursor, reconcile_jsonl_cursor, write_jsonl_cursor
 from shared.research_vehicle_public_event import ResearchVehiclePublicEvent
 
 log = logging.getLogger(__name__)
@@ -206,35 +207,33 @@ class BlueskyPoster:
     # ── Cursor + tail ─────────────────────────────────────────────────
 
     def _read_cursor(self) -> int:
-        try:
-            return int(self._cursor_path.read_text().strip())
-        except (FileNotFoundError, ValueError):
-            return 0
+        return read_jsonl_cursor(self._cursor_path)
 
-    def _write_cursor(self, byte_offset: int) -> None:
-        try:
-            self._cursor_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._cursor_path.with_suffix(".tmp")
-            tmp.write_text(str(byte_offset))
-            tmp.replace(self._cursor_path)
-        except OSError:
-            log.warning("cursor write failed at %s", self._cursor_path, exc_info=True)
+    def _write_cursor(self, byte_offset: int, *, source_stat=None) -> None:
+        write_jsonl_cursor(
+            self._cursor_path,
+            byte_offset,
+            source_path=self._event_path,
+            source_stat=source_stat or getattr(self, "_cursor_source_stat", None),
+            logger=log,
+        )
 
     def _tail_from(self) -> Iterator[_TailRecord]:
         try:
-            size = self._event_path.stat().st_size
+            source_stat = self._event_path.stat()
         except OSError:
             return
+        self._cursor_source_stat = source_stat
 
         byte_offset = self._read_cursor()
-        if byte_offset > size:
-            log.warning(
-                "public-event file shrank from cursor %d to %d bytes; restarting from 0",
-                byte_offset,
-                size,
-            )
-            byte_offset = 0
-            self._write_cursor(0)
+        byte_offset = reconcile_jsonl_cursor(
+            self._cursor_path,
+            self._event_path,
+            byte_offset,
+            source_stat=source_stat,
+            logger=log,
+            label="public-event",
+        )
 
         try:
             with self._event_path.open("rb") as fh:

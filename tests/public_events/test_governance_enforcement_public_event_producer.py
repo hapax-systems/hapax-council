@@ -208,6 +208,30 @@ def test_producer_resets_cursor_on_file_shrink(tmp_path: Path) -> None:
     assert len(events) == 2
 
 
+def test_producer_resets_cursor_on_inode_rotation_at_same_size(tmp_path: Path) -> None:
+    enforcement = tmp_path / "enforcement.jsonl"
+    public = tmp_path / "public.jsonl"
+    cursor = tmp_path / "cursor.txt"
+    _write_enforcement(enforcement, _enforcement_record(matched="construct_alpha"))
+    producer = GovernanceEnforcementPublicEventProducer(
+        enforcement_path=enforcement,
+        public_event_path=public,
+        cursor_path=cursor,
+    )
+    assert producer.run_once() == 1
+    old_size = enforcement.stat().st_size
+
+    replacement = tmp_path / "replacement.jsonl"
+    _write_enforcement(replacement, _enforcement_record(matched="construct_bravo"))
+    assert replacement.stat().st_size == old_size
+    replacement.replace(enforcement)
+
+    assert producer.run_once() == 1
+    events = _read_public_events(public)
+    assert len(events) == 2
+    assert int(cursor.read_text(encoding="utf-8")) == enforcement.stat().st_size
+
+
 def test_producer_processes_multiple_records(tmp_path: Path) -> None:
     enforcement = tmp_path / "enforcement.jsonl"
     public = tmp_path / "public.jsonl"

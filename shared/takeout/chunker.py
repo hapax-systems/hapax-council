@@ -58,6 +58,7 @@ class StructuredWriter:
 
         if not self._dry_run:
             self._path.parent.mkdir(parents=True, exist_ok=True)
+            # jsonl-rotation: exempt(structured dedupe ledger; __enter__ loads live record IDs)
             self._fh = open(self._path, "a", encoding="utf-8")
 
         return self
@@ -225,6 +226,7 @@ def write_record(
 
         structured_path.parent.mkdir(parents=True, exist_ok=True)
         line = record_to_jsonl(record)
+        # jsonl-rotation: exempt(structured profiler input; profiler_bridge scans full live file)
         with open(structured_path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
         return None

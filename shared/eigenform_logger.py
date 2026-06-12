@@ -36,6 +36,7 @@ def _append_and_trim(
     """Append *entry* to a persistent JSONL ring buffer on disk."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        # jsonl-rotation: exempt(inline ring buffer; max_entries rewrite caps live file)
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
         lines = path.read_text(encoding="utf-8").strip().split("\n")
@@ -81,6 +82,7 @@ def log_state_vector(
         "sensitive_fields_redacted": list(SENSITIVE_NUMERIC_FIELDS),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
+    # jsonl-rotation: exempt(inline ring buffer; MAX_ENTRIES rewrite caps tmpfs file)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
 

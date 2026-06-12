@@ -284,6 +284,7 @@ def write_publication_log_events(
     if dry_run:
         return lines
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    # jsonl-rotation: exempt(publication witness; braid snapshot reads latest live row)
     with log_path.open("a", encoding="utf-8") as handle:
         handle.writelines(lines)
     return lines

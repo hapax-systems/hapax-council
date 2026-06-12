@@ -208,6 +208,7 @@ def log_touch(
         "deposit_doi": deposit_doi,
         "timestamp": when.isoformat(),
     }
+    # jsonl-rotation: exempt(cadence ledger; apply_cadence_rule scans trailing live history)
     with log_path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry) + "\n")
 

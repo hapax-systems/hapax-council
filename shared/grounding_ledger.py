@@ -68,6 +68,7 @@ class GroundingLedger:
 
     def _append(self, entry: GroundingEntry) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # jsonl-rotation: exempt(state-replay ledger; _load reconstructs entries from live file)
         with self.path.open("a", encoding="utf-8") as f:
             f.write(entry.model_dump_json() + "\n")
 

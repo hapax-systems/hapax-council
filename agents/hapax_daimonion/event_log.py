@@ -156,6 +156,7 @@ class EventLog:
                 self._file.close()
             self._base_dir.mkdir(parents=True, exist_ok=True)
             path = self._base_dir / f"events-{today}.jsonl"
+            # jsonl-rotation: exempt(date-partitioned event log; cleanup prunes by retention_days)
             self._file = open(path, "a", encoding="utf-8")
             self._current_date = today
         return self._file

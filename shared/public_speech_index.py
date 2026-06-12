@@ -74,6 +74,7 @@ def compute_utterance_hash(text: str) -> str:
 def append_public_speech_event(record: PublicSpeechEventRecord, path: Path = INDEX_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     line = record.model_dump_json() + "\n"
+    # jsonl-rotation: exempt(public speech witness index; lookup scans live history)
     with open(path, "a", encoding="utf-8") as f:
         f.write(line)
 

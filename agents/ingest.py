@@ -337,6 +337,7 @@ def _dead_letter(path: Path, error: str, attempts: int) -> None:
         "attempts": attempts,
         "failed_at": datetime.now().isoformat(),
     }
+    # jsonl-rotation: exempt(dead-letter state; operators inspect active failure history)
     with open(DEAD_LETTER_PATH, "a") as f:
         f.write(json.dumps(entry) + "\n")
     log.error(
@@ -371,6 +372,7 @@ def queue_retry(path: Path, error: str, attempts: int = 0):
     # Remove any existing entry for this path, then append the new one
     _remove_from_queue(entry.path)
 
+    # jsonl-rotation: exempt(work queue; load_retry_queue drains active pending retries)
     with open(RETRY_QUEUE, "a") as f:
         f.write(
             json.dumps(

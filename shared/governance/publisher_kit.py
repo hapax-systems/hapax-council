@@ -175,7 +175,7 @@ class BasePublisher[Composed](ABC):
             cursor = byte_after
             handled += 1
         if handled:
-            self._write_cursor(cursor)
+            self._write_cursor(cursor, source_stat=getattr(self, "_cursor_source_stat", None))
         return handled
 
     def run_forever(self) -> None:
@@ -208,11 +208,12 @@ class BasePublisher[Composed](ABC):
     def _read_cursor(self) -> int:
         return read_jsonl_cursor(self._cursor_path)
 
-    def _write_cursor(self, byte_offset: int) -> None:
+    def _write_cursor(self, byte_offset: int, *, source_stat=None) -> None:
         write_jsonl_cursor(
             self._cursor_path,
             byte_offset,
             source_path=self._event_path,
+            source_stat=source_stat,
             logger=log,
         )
 
@@ -221,6 +222,7 @@ class BasePublisher[Composed](ABC):
             return
         try:
             source_stat = self._event_path.stat()
+            self._cursor_source_stat = source_stat
             byte_offset = reconcile_jsonl_cursor(
                 self._cursor_path,
                 self._event_path,

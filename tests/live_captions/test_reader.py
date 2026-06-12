@@ -178,3 +178,22 @@ class TestCursorPersistence:
         # Restart: new daemon resumes from saved cursor — no replay.
         reader2 = CaptionReader(captions_path=captions, cursor_path=cursor)
         assert list(reader2.read_pending()) == []
+
+    def test_inode_rotation_reads_same_size_fresh_file(self, tmp_path):
+        captions = tmp_path / "live.jsonl"
+        cursor = tmp_path / "cursor.txt"
+
+        _write_event(captions, ts=1.0, text="init")
+        reader1 = CaptionReader(captions_path=captions, cursor_path=cursor)
+        assert list(reader1.read_pending()) == []
+        _write_event(captions, ts=2.0, text="seen")
+        assert [event.text for event in reader1.read_pending()] == ["seen"]
+        old_size = captions.stat().st_size
+
+        captions.unlink()
+        _write_event(captions, ts=1.0, text="redo")
+        _write_event(captions, ts=2.0, text="next")
+        assert captions.stat().st_size == old_size
+
+        reader2 = CaptionReader(captions_path=captions, cursor_path=cursor)
+        assert [event.text for event in reader2.read_pending()] == ["redo", "next"]

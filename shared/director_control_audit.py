@@ -294,6 +294,7 @@ class DirectorControlMoveAuditLog:
             with self._lock:
                 self._maybe_rotate(self.jsonl_path)
                 self.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+                # jsonl-rotation: exempt(domain rotation; _maybe_rotate caps at max_bytes)
                 with self.jsonl_path.open("a", encoding="utf-8") as f:
                     f.write(line)
 

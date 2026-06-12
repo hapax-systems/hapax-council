@@ -84,6 +84,42 @@ def test_registered_path_covers_name_bound_writer():
     assert problems == []
 
 
+def test_unregistered_name_bound_writer_is_caught():
+    gate = _load_gate()
+    src = (
+        'PREDICTIONS_JSONL = Path.home() / "hapax-state" / "monitors" / "reverie-predictions.jsonl"\n'
+        "def w():\n"
+        '    with PREDICTIONS_JSONL.open("a") as f:\n'
+        '        f.write("x")\n'
+    )
+    problems = gate.check_file(
+        REPO / "agents" / "fake.py",
+        covered={"/dev/shm/hapax-broadcast/events.jsonl"},
+        src_lines=src.splitlines(),
+    )
+    assert len(problems) == 1
+    assert "reverie-predictions.jsonl" in problems[0]
+
+
+def test_unregistered_dynamic_fstring_writer_is_caught():
+    gate = _load_gate()
+    src = (
+        'LOG_DIR = Path("/tmp/logs")\n'
+        "def log_path(now):\n"
+        '    return LOG_DIR / f"reactor-log-{now}.jsonl"\n'
+        "def w(now):\n"
+        '    with open(log_path(now), "a") as f:\n'
+        '        f.write("x")\n'
+    )
+    problems = gate.check_file(
+        REPO / "agents" / "fake.py",
+        covered={"/dev/shm/hapax-broadcast/events.jsonl"},
+        src_lines=src.splitlines(),
+    )
+    assert len(problems) == 1
+    assert "reactor-log-*.jsonl" in problems[0]
+
+
 def test_registered_path_covers_conditional_default_alias():
     gate = _load_gate()
     src = (

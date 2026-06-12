@@ -198,6 +198,7 @@ def log_deposit(
         "error": error,
         "timestamp": (now or datetime.now(UTC)).isoformat(),
     }
+    # jsonl-rotation: exempt(deposit attempt ledger; operator/cadence review scans live history)
     with log_path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record) + "\n")
 

@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from shared.jsonl_cursor import read_jsonl_cursor, reconcile_jsonl_cursor, write_jsonl_cursor
 from shared.livestream_egress_state import (
     FloorState,
     LivestreamEgressState,
@@ -129,29 +130,33 @@ class ByteCursorJsonlTailer:
         self._cursor_path = cursor_path
 
     def read_cursor(self) -> int:
-        try:
-            value = int(self._cursor_path.read_text(encoding="utf-8").strip() or "0")
-        except (FileNotFoundError, ValueError, OSError):
-            return 0
-        return max(0, value)
+        return max(0, read_jsonl_cursor(self._cursor_path))
 
-    def write_cursor(self, byte_offset: int) -> None:
-        self._cursor_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._cursor_path.with_suffix(".tmp")
-        tmp.write_text(str(max(0, byte_offset)), encoding="utf-8")
-        tmp.replace(self._cursor_path)
+    def write_cursor(self, byte_offset: int, *, source_stat=None) -> None:
+        write_jsonl_cursor(
+            self._cursor_path,
+            max(0, byte_offset),
+            source_path=self._path,
+            source_stat=source_stat or getattr(self, "_cursor_source_stat", None),
+            logger=log,
+        )
 
     def iter_new(self) -> Iterator[_TailRecord]:
         try:
-            size = self._path.stat().st_size
+            source_stat = self._path.stat()
         except OSError:
             return
+        self._cursor_source_stat = source_stat
 
         cursor = self.read_cursor()
-        if cursor > size:
-            log.warning("legacy event file shrank from cursor %d to %d bytes", cursor, size)
-            cursor = 0
-            self.write_cursor(0)
+        cursor = reconcile_jsonl_cursor(
+            self._cursor_path,
+            self._path,
+            cursor,
+            source_stat=source_stat,
+            logger=log,
+            label="legacy event",
+        )
 
         try:
             with self._path.open("rb") as fh:

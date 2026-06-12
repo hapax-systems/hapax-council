@@ -244,6 +244,7 @@ def save_score_snapshot(domain_id: str, score: float) -> None:
         "score": score,
         "timestamp": datetime.now(UTC).isoformat()[:19] + "Z",
     }
+    # jsonl-rotation: exempt(weekly momentum history; readers compare domain trend rows)
     with open(HISTORY_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
 

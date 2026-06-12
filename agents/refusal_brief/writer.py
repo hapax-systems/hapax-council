@@ -100,6 +100,7 @@ def append(event: RefusalEvent, *, log_path: Path = DEFAULT_LOG_PATH) -> bool:
     with _lock:
         try:
             log_path.parent.mkdir(parents=True, exist_ok=True)
+            # jsonl-rotation: exempt(domain rotation; refusal-brief rotator archives daily)
             with log_path.open("a", encoding="utf-8") as fh:
                 fh.write(line)
                 fh.flush()

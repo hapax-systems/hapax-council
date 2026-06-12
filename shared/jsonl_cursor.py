@@ -17,7 +17,7 @@ def jsonl_file_identity(source_stat: os.stat_result) -> FileIdentity:
 def read_jsonl_cursor(cursor_path: Path) -> int:
     try:
         return int(cursor_path.read_text().strip())
-    except (FileNotFoundError, ValueError):
+    except (OSError, ValueError):
         return 0
 
 
@@ -25,11 +25,20 @@ def _state_path(cursor_path: Path) -> Path:
     return cursor_path.with_name(f"{cursor_path.name}.state.json")
 
 
-def _read_cursor_identity(cursor_path: Path) -> FileIdentity | None:
+def _read_cursor_identity(
+    cursor_path: Path,
+    *,
+    logger: logging.Logger | None = None,
+) -> FileIdentity | None:
+    state_path = _state_path(cursor_path)
     try:
-        state = json.loads(_state_path(cursor_path).read_text(encoding="utf-8"))
+        state = json.loads(state_path.read_text(encoding="utf-8"))
         return int(state["st_dev"]), int(state["st_ino"])
-    except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+    except FileNotFoundError:
+        return None
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        if logger is not None:
+            logger.warning("cursor state unreadable at %s; falling back to size check", state_path)
         return None
 
 
@@ -73,7 +82,7 @@ def reconcile_jsonl_cursor(
     logger: logging.Logger,
     label: str,
 ) -> int:
-    previous_identity = _read_cursor_identity(cursor_path)
+    previous_identity = _read_cursor_identity(cursor_path, logger=logger)
     current_identity = jsonl_file_identity(source_stat)
     if previous_identity is not None and previous_identity != current_identity:
         logger.warning(

@@ -211,6 +211,7 @@ async def transition_measure(measure_id: str, body: TransitionRequest) -> Transi
     }
 
     try:
+        # jsonl-rotation: exempt(work queue; sprint_tracker consumes and truncates live file)
         with _SHM_COMPLETED.open("a", encoding="utf-8") as f:
             f.write(json.dumps(signal) + "\n")
     except OSError as exc:

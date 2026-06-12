@@ -4998,6 +4998,7 @@ class DirectorLoop:
             pass
 
         try:
+            # jsonl-rotation: exempt(monthly-partitioned reactor log; one JSONL per YYYY-MM)
             with open(_jsonl_log_path(now), "a") as f:
                 f.write(json.dumps(record) + "\n")
         except OSError:

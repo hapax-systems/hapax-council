@@ -201,6 +201,7 @@ def append_publication_witness(
     try:
         target_path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps(event, ensure_ascii=False) + "\n"
+        # jsonl-rotation: exempt(publication witness; braid snapshot reads latest live row)
         with target_path.open("a", encoding="utf-8") as fh:
             fh.write(line)
         return True

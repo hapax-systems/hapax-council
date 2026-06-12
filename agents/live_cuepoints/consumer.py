@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from shared.jsonl_cursor import read_jsonl_cursor, reconcile_jsonl_cursor, write_jsonl_cursor
 from shared.youtube_api_client import YouTubeApiClient
 
 from .api import emit_cuepoint
@@ -98,7 +99,7 @@ class _RateWindow:
 
 
 class _JsonlTailer:
-    """Minimal line-cursor JSONL reader with persistent cursor.
+    """Minimal byte-cursor JSONL reader with persistent cursor.
 
     On first run (cursor file missing), seeks to end-of-file so prior
     rotations don't re-emit. Thereafter, the cursor is persisted atomically
@@ -112,69 +113,72 @@ class _JsonlTailer:
 
     def _load_cursor(self) -> int:
         if not self._cursor_path.exists():
-            # First startup: skip existing lines.
-            existing = self._line_count()
-            self._write_cursor(existing)
+            # First startup: skip existing bytes.
+            existing = self._end_offset()
+            try:
+                source_stat = self._path.stat()
+            except OSError:
+                source_stat = None
+            self._write_cursor(existing, source_stat=source_stat)
             return existing
-        try:
-            return int(self._cursor_path.read_text().strip() or "0")
-        except (ValueError, OSError) as exc:
-            log.warning("cursor parse failed (%s); seeking to end", exc)
-            existing = self._line_count()
-            self._write_cursor(existing)
-            return existing
+        return read_jsonl_cursor(self._cursor_path)
 
-    def _line_count(self) -> int:
+    def _end_offset(self) -> int:
         if not self._path.exists():
             return 0
         try:
-            with self._path.open("r", encoding="utf-8") as fh:
-                return sum(1 for _ in fh)
+            return self._path.stat().st_size
         except OSError:
             return 0
 
-    def _write_cursor(self, value: int) -> None:
-        tmp = self._cursor_path.with_suffix(self._cursor_path.suffix + ".tmp")
-        self._cursor_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(str(value))
-        tmp.replace(self._cursor_path)
+    def _write_cursor(self, value: int, *, source_stat=None) -> None:
+        write_jsonl_cursor(
+            self._cursor_path,
+            value,
+            source_path=self._path,
+            source_stat=source_stat,
+            logger=log,
+        )
 
     def read_new(self) -> list[dict[str, Any]]:
         """Return new records since last call. Tolerates malformed lines."""
         if not self._path.exists():
             return []
         try:
-            with self._path.open("r", encoding="utf-8") as fh:
-                lines = fh.readlines()
+            source_stat = self._path.stat()
+        except OSError:
+            return []
+        self._cursor = reconcile_jsonl_cursor(
+            self._cursor_path,
+            self._path,
+            self._cursor,
+            source_stat=source_stat,
+            logger=log,
+            label="event",
+        )
+        try:
+            with self._path.open("rb") as fh:
+                fh.seek(self._cursor)
+                new = fh.readlines()
+                new_offset = fh.tell()
         except OSError:
             return []
 
-        if len(lines) < self._cursor:
-            log.warning(
-                "event file shrank from %d to %d lines; resetting cursor",
-                self._cursor,
-                len(lines),
-            )
-            self._cursor = len(lines)
-            self._write_cursor(self._cursor)
-            return []
-
-        new = lines[self._cursor :]
         if not new:
             return []
 
-        self._cursor = len(lines)
-        self._write_cursor(self._cursor)
+        self._cursor = new_offset
+        self._write_cursor(self._cursor, source_stat=source_stat)
 
         out: list[dict[str, Any]] = []
         for raw in new:
-            raw = raw.strip()
-            if not raw:
+            text = raw.decode("utf-8", errors="replace").strip()
+            if not text:
                 continue
             try:
-                out.append(json.loads(raw))
+                out.append(json.loads(text))
             except json.JSONDecodeError:
-                log.warning("malformed event line: %r", raw[:200])
+                log.warning("malformed event line: %r", text[:200])
         return out
 
 

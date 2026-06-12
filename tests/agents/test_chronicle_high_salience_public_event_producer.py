@@ -216,3 +216,35 @@ def test_truncation_resets_cursor_and_processes_new_chronicle_file(tmp_path: Pat
     assert len(events) == 2
     assert events[1]["chapter_ref"]["label"] == "Replacement"
     assert int(cursor.read_text(encoding="utf-8")) == chronicle.stat().st_size
+
+
+def test_inode_rotation_resets_cursor_and_processes_same_size_chronicle_file(
+    tmp_path: Path,
+) -> None:
+    chronicle = tmp_path / "chronicle.jsonl"
+    public = tmp_path / "public.jsonl"
+    cursor = tmp_path / "cursor.txt"
+    first = _chronicle_event(
+        provenance_token="chronicle-token-inode-a",
+        chapter_label="Inode A",
+    )
+    first["span_id"] = "a" * 16
+    _write_chronicle(chronicle, first)
+    producer = _producer(chronicle, public, cursor)
+    assert producer.run_once() == 1
+    old_size = chronicle.stat().st_size
+
+    second = _chronicle_event(
+        provenance_token="chronicle-token-inode-b",
+        chapter_label="Inode B",
+    )
+    second["span_id"] = "b" * 16
+    replacement = tmp_path / "replacement.jsonl"
+    _write_chronicle(replacement, second)
+    assert replacement.stat().st_size == old_size
+    replacement.replace(chronicle)
+
+    assert producer.run_once() == 1
+    events = _read_public_events(public)
+    assert [event["chapter_ref"]["label"] for event in events] == ["Inode A", "Inode B"]
+    assert int(cursor.read_text(encoding="utf-8")) == chronicle.stat().st_size

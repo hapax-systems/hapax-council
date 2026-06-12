@@ -35,6 +35,7 @@ async def record_decision(component: str, body: ScoutDecisionRequest):
         "notes": body.notes,
     }
     DECISIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # jsonl-rotation: exempt(operator decision history; get_decisions reads live file)
     with open(DECISIONS_FILE, "a") as f:
         f.write(json.dumps(record) + "\n")
     return record

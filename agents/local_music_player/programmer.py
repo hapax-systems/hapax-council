@@ -305,6 +305,7 @@ class MusicProgrammer:
         path = self.config.history_path
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
+            # jsonl-rotation: exempt(playback policy state; restart loads rolling cooldown history)
             with path.open("a", encoding="utf-8") as f:
                 f.write(event.to_json() + "\n")
         except OSError:

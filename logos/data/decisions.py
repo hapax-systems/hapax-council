@@ -69,6 +69,7 @@ def record_decision(decision: Decision) -> None:
             pass
 
     try:
+        # jsonl-rotation: exempt(inline line cap; _rotate_decisions keeps last 500)
         with open(_DECISIONS_PATH, "a") as f:
             f.write(json.dumps(asdict(decision)) + "\n")
     except OSError as e:

@@ -160,6 +160,7 @@ class _AuditLog:
                 self._file.close()
             self._base_dir.mkdir(parents=True, exist_ok=True)
             path = self._base_dir / f"engine-audit-{today}.jsonl"
+            # jsonl-rotation: exempt(date-partitioned engine audit; one file per day)
             self._file = open(path, "a", encoding="utf-8")  # noqa: SIM115
             self._current_date = today
         return self._file

@@ -371,6 +371,7 @@ def make_refusal_logger(
             "public": False,
         }
         try:
+            # jsonl-rotation: exempt(domain rotation; refusal-brief rotator archives daily)
             with log_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry) + "\n")
         except OSError:

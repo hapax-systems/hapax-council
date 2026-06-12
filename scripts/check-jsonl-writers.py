@@ -43,6 +43,14 @@ def _normalize_path(parts: list[str]) -> str | None:
 def _path_parts(node: ast.AST, bindings: dict[str, list[str]]) -> list[str]:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return [node.value]
+    if isinstance(node, ast.JoinedStr):
+        parts: list[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+            elif isinstance(value, ast.FormattedValue):
+                parts.append("*")
+        return ["".join(parts)] if parts else []
     if isinstance(node, ast.Name):
         return bindings.get(node.id, [])
     if isinstance(node, ast.Attribute):
@@ -57,7 +65,7 @@ def _path_parts(node: ast.AST, bindings: dict[str, list[str]]) -> list[str]:
         return body or orelse
     if isinstance(node, ast.Call):
         func = node.func
-        if isinstance(func, ast.Name) and func.id in bindings and not node.args:
+        if isinstance(func, ast.Name) and func.id in bindings:
             return bindings[func.id]
         if isinstance(func, ast.Name) and func.id == "Path" and node.args:
             return _path_parts(node.args[0], bindings)
@@ -231,7 +239,7 @@ def check_file(path: Path, covered: set[str], src_lines: list[str]) -> list[str]
         ambiguous_registered_basename = mentioned_name in covered_names and (
             path_ref is None or path_ref == mentioned_name
         )
-        if path_ref and Path(path_ref).name in covered_names:
+        if path_ref:
             ref = path_ref
         elif mentioned_name:
             ref = path_ref or mentioned_name

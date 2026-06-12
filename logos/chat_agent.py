@@ -468,6 +468,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
             "source": "conversation:logos",
             "timestamp": datetime.now(UTC).isoformat(),
         }
+        # jsonl-rotation: exempt(pending profiler queue; profiler drains live facts)
         with open(facts_path, "a") as f:
             f.write(json.dumps(entry) + "\n")
 

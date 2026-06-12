@@ -216,6 +216,25 @@ class TestCursor:
         assert int(cursor.read_text(encoding="utf-8")) == bus.stat().st_size
         client.status_post.assert_called_once()
 
+    def test_inode_rotation_resets_cursor_and_processes_same_size_event(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        cursor = tmp_path / "cursor.txt"
+        _write_events(bus, [_public_event(event_id="rvpe:broadcast_boundary:inode-a")])
+        poster, factory = _make_poster(event_path=bus, cursor_path=cursor)
+        assert poster.run_once() == 1
+        old_size = bus.stat().st_size
+
+        client = factory.return_value
+        client.status_post.reset_mock()
+        replacement = tmp_path / "replacement.jsonl"
+        _write_events(replacement, [_public_event(event_id="rvpe:broadcast_boundary:inode-b")])
+        assert replacement.stat().st_size == old_size
+        replacement.replace(bus)
+
+        assert poster.run_once() == 1
+        assert int(cursor.read_text(encoding="utf-8")) == bus.stat().st_size
+        client.status_post.assert_called_once()
+
     def test_processed_event_id_prevents_repost_after_cursor_loss(self, tmp_path):
         bus = tmp_path / "events.jsonl"
         cursor = tmp_path / "cursor.txt"

@@ -79,6 +79,7 @@ def _append(record: dict) -> None:
     """Append one record to the JSONL file."""
     _QUERIES_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
+        # jsonl-rotation: exempt(inline line cap; _rotate keeps newest _MAX_ENTRIES)
         with open(_QUERIES_PATH, "a") as f:
             f.write(json.dumps(record) + "\n")
     except OSError as e:

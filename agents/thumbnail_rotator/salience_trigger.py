@@ -29,6 +29,8 @@ import os
 import time
 from pathlib import Path
 
+from shared.jsonl_cursor import read_jsonl_cursor, reconcile_jsonl_cursor, write_jsonl_cursor
+
 log = logging.getLogger(__name__)
 
 CHRONICLE_EVENTS_PATH = Path(
@@ -135,16 +137,13 @@ class SalienceTrigger:
         if self._cursor_path is None:
             return self._end_of_file()
         if self._cursor_path.exists():
-            try:
-                return int(self._cursor_path.read_text(encoding="utf-8").strip())
-            except (OSError, ValueError):
-                log.warning(
-                    "salience cursor at %s unreadable; seeking to end",
-                    self._cursor_path,
-                    exc_info=True,
-                )
+            return read_jsonl_cursor(self._cursor_path)
         end = self._end_of_file()
-        self._write_cursor(end)
+        try:
+            source_stat = self._events_path.stat()
+        except OSError:
+            source_stat = None
+        self._write_cursor(end, source_stat=source_stat)
         return end
 
     def _end_of_file(self) -> int:
@@ -153,22 +152,32 @@ class SalienceTrigger:
         except OSError:
             return 0
 
-    def _write_cursor(self, byte_offset: int) -> None:
+    def _write_cursor(self, byte_offset: int, *, source_stat=None) -> None:
         if self._cursor_path is None:
             return
-        try:
-            self._cursor_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._cursor_path.with_suffix(".tmp")
-            tmp.write_text(str(byte_offset), encoding="utf-8")
-            tmp.replace(self._cursor_path)
-        except OSError:
-            log.warning("salience cursor write failed at %s", self._cursor_path, exc_info=True)
+        write_jsonl_cursor(
+            self._cursor_path,
+            byte_offset,
+            source_path=self._events_path,
+            source_stat=source_stat,
+            logger=log,
+        )
 
     def _drain_events(self):
         """Yield chronicle events between the cursor and end-of-file."""
         if not self._events_path.exists():
             return
         try:
+            source_stat = self._events_path.stat()
+            if self._cursor_path is not None:
+                self._cursor = reconcile_jsonl_cursor(
+                    self._cursor_path,
+                    self._events_path,
+                    self._cursor,
+                    source_stat=source_stat,
+                    logger=log,
+                    label="chronicle",
+                )
             with self._events_path.open("rb") as fh:
                 fh.seek(self._cursor)
                 for raw in fh:
@@ -184,7 +193,7 @@ class SalienceTrigger:
         except OSError:
             log.warning("chronicle read failed at %s", self._events_path, exc_info=True)
             return
-        self._write_cursor(self._cursor)
+        self._write_cursor(self._cursor, source_stat=source_stat)
 
 
 __all__ = [

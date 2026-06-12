@@ -732,6 +732,7 @@ def write_route_decision_receipt(
     payload = decision.model_dump(mode="json")
     if decision.dimensional_receipt is not None:
         payload.update(decision.dimensional_receipt.model_dump(mode="json"))
+    # jsonl-rotation: exempt(route evidence ledger; RTE/claim audit scans live receipts)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(payload, sort_keys=True) + "\n")
     return path

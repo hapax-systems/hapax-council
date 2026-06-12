@@ -39,6 +39,8 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
+from shared.jsonl_cursor import read_jsonl_cursor, reconcile_jsonl_cursor, write_jsonl_cursor
+
 log = logging.getLogger(__name__)
 
 DEFAULT_CAPTIONS_PATH = Path(
@@ -153,6 +155,19 @@ class CaptionReader:
         if not self._captions_path.exists():
             return
         try:
+            source_stat = self._captions_path.stat()
+        except OSError:
+            return
+        if self._cursor_path is not None:
+            self._cursor = reconcile_jsonl_cursor(
+                self._cursor_path,
+                self._captions_path,
+                self._cursor,
+                source_stat=source_stat,
+                logger=log,
+                label="captions",
+            )
+        try:
             with self._captions_path.open("rb") as fh:
                 fh.seek(self._cursor)
                 for raw in fh:
@@ -172,7 +187,7 @@ class CaptionReader:
         except OSError:
             log.warning("captions read failed at %s", self._captions_path, exc_info=True)
             return
-        self._write_cursor(self._cursor)
+        self._write_cursor(self._cursor, source_stat=source_stat)
 
     # ── Cursor persistence ───────────────────────────────────────────
 
@@ -181,16 +196,13 @@ class CaptionReader:
         if self._cursor_path is None:
             return self._end_of_file()
         if self._cursor_path.exists():
-            try:
-                return int(self._cursor_path.read_text(encoding="utf-8").strip())
-            except (OSError, ValueError):
-                log.warning(
-                    "captions cursor at %s unreadable; seeking to end",
-                    self._cursor_path,
-                    exc_info=True,
-                )
+            return read_jsonl_cursor(self._cursor_path)
         end = self._end_of_file()
-        self._write_cursor(end)
+        try:
+            source_stat = self._captions_path.stat()
+        except OSError:
+            source_stat = None
+        self._write_cursor(end, source_stat=source_stat)
         return end
 
     def _end_of_file(self) -> int:
@@ -199,20 +211,16 @@ class CaptionReader:
         except OSError:
             return 0
 
-    def _write_cursor(self, byte_offset: int) -> None:
+    def _write_cursor(self, byte_offset: int, *, source_stat=None) -> None:
         if self._cursor_path is None:
             return
-        try:
-            self._cursor_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._cursor_path.with_suffix(".tmp")
-            tmp.write_text(str(byte_offset), encoding="utf-8")
-            tmp.replace(self._cursor_path)
-        except OSError:
-            log.warning(
-                "captions cursor write failed at %s",
-                self._cursor_path,
-                exc_info=True,
-            )
+        write_jsonl_cursor(
+            self._cursor_path,
+            byte_offset,
+            source_path=self._captions_path,
+            source_stat=source_stat,
+            logger=log,
+        )
 
 
 def _parse_event(data: object) -> CaptionEvent | None:

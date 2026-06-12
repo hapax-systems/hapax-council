@@ -232,6 +232,7 @@ def read_shm(path: Path = SHM_PATH) -> StreamBiography:
 
 def persist(bio: StreamBiography, path: Path = PERSIST_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    # jsonl-rotation: exempt(latest-state history; load_persisted reads last live row)
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(bio.to_dict()) + "\n")
 

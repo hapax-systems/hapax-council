@@ -135,6 +135,7 @@ class ProgrammeOutcomeLog:
             with self._lock:
                 self._maybe_rotate(path)
                 path.parent.mkdir(parents=True, exist_ok=True)
+                # jsonl-rotation: exempt(domain rotation; _maybe_rotate caps each programme file)
                 with path.open("a", encoding="utf-8") as f:
                     f.write(line)
         except Exception:  # noqa: BLE001 — never break the lifecycle path

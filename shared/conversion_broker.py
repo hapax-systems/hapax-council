@@ -302,6 +302,7 @@ class ConversionBroker:
         if not new_candidates:
             return
         self.candidate_path.parent.mkdir(parents=True, exist_ok=True)
+        # jsonl-rotation: exempt(candidate dedupe ledger; _load_jsonl_ids scans live history)
         with self.candidate_path.open("a", encoding="utf-8") as fh:
             for candidate in new_candidates:
                 fh.write(candidate.to_json_line())

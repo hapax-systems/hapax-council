@@ -105,6 +105,7 @@ EXPECTED_AUDIO_SERVICES: tuple[ServiceManifestEntry, ...] = (
 
 def write_mutation_event(event: MutationEvent, ledger_path: Path = LEDGER_PATH) -> None:
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    # jsonl-rotation: exempt(audio audit state; read_mutation_events replays live ledger)
     with ledger_path.open("a") as f:
         f.write(event.model_dump_json() + "\n")
 

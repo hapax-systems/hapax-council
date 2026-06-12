@@ -171,6 +171,7 @@ def process_operational(message: dict[str, Any]) -> bool:
     }
     try:
         EVENTS_DIR.mkdir(parents=True, exist_ok=True)
+        # jsonl-rotation: exempt(operational mail dedupe; _seen_message scans live file)
         with events_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(event) + "\n")
     except OSError:

@@ -94,7 +94,7 @@ def test_tailer_first_run_seeks_to_end(event_file, cursor_file):
     _write_event(event_file, _rotation("b"))
     tailer = _JsonlTailer(event_file, cursor_file)
     assert tailer.read_new() == [], "first run must skip existing lines"
-    assert cursor_file.read_text().strip() == "2"
+    assert int(cursor_file.read_text().strip()) == event_file.stat().st_size
 
 
 def test_tailer_subsequent_reads_get_new_lines(event_file, cursor_file):
@@ -143,6 +143,22 @@ def test_tailer_shrinkage_resets_cursor(event_file, cursor_file):
     event_file.write_text("")
     assert tailer.read_new() == []
     assert cursor_file.read_text().strip() == "0"
+
+
+def test_tailer_inode_rotation_reads_same_size_fresh_file(event_file, cursor_file):
+    _write_event(event_file, _rotation("a"))
+    tailer = _JsonlTailer(event_file, cursor_file)
+    tailer.read_new()
+    old_size = event_file.stat().st_size
+
+    replacement = event_file.with_name("replacement.jsonl")
+    _write_event(replacement, _rotation("b"))
+    assert replacement.stat().st_size == old_size
+    replacement.replace(event_file)
+
+    events = tailer.read_new()
+    assert [e.get("incoming_broadcast_id") for e in events] == ["b"]
+    assert int(cursor_file.read_text().strip()) == event_file.stat().st_size
 
 
 # --- CuepointConsumer ----------------------------------------------------

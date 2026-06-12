@@ -247,3 +247,43 @@ def test_truncation_resets_cursor_and_processes_new_file_from_start(tmp_path: Pa
     events = _read_public_events(public)
     assert [event["broadcast_id"] for event in events] == ["broadcast-new-444", "b555"]
     assert int(cursor.read_text(encoding="utf-8")) == legacy.stat().st_size
+
+
+def test_inode_rotation_resets_cursor_and_processes_same_size_file(tmp_path: Path) -> None:
+    legacy = tmp_path / "legacy.jsonl"
+    public = tmp_path / "public.jsonl"
+    cursor = tmp_path / "cursor.txt"
+    active = {"id": "broadcast-inode-a"}
+    first = _legacy_event(
+        incoming_broadcast_id="broadcast-inode-a",
+        incoming_broadcast_url="https://www.youtube.com/watch?v=broadcast-inode-a",
+    )
+    _write_legacy(legacy, first)
+    producer = BroadcastBoundaryPublicEventProducer(
+        legacy_event_path=legacy,
+        public_event_path=public,
+        cursor_path=cursor,
+        egress_resolver=lambda: _egress(active_video_id=active["id"]),
+        quota_remaining=lambda _endpoint: 1500,
+        time_fn=lambda: NOW,
+    )
+    assert producer.run_once() == 1
+    old_size = legacy.stat().st_size
+
+    second = _legacy_event(
+        incoming_broadcast_id="broadcast-inode-b",
+        incoming_broadcast_url="https://www.youtube.com/watch?v=broadcast-inode-b",
+    )
+    replacement = tmp_path / "replacement.jsonl"
+    _write_legacy(replacement, second)
+    assert replacement.stat().st_size == old_size
+    replacement.replace(legacy)
+    active["id"] = "broadcast-inode-b"
+
+    assert producer.run_once() == 1
+    events = _read_public_events(public)
+    assert [event["broadcast_id"] for event in events] == [
+        "broadcast-inode-a",
+        "broadcast-inode-b",
+    ]
+    assert int(cursor.read_text(encoding="utf-8")) == legacy.stat().st_size
