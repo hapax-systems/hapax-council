@@ -22,14 +22,19 @@ RELEASES_MARKER = "/source-activation/releases/"
 _DELETED_SUFFIX = " (deleted)"
 
 
+class ProcScanError(RuntimeError):
+    """The proc root could not be scanned — the probe must report UNKNOWN,
+    never healthy (dossier finding 2026-06-12: fail-open probe)."""
+
+
 def _release_refs(proc_root: str) -> tuple[int, list[str]]:
     """Return (live release reference count, ghost reference descriptors)."""
     live = 0
     ghosts: list[str] = []
     try:
         entries = os.listdir(proc_root)
-    except OSError:
-        return 0, []
+    except OSError as exc:
+        raise ProcScanError(f"proc root unreadable: {exc}") from exc
     for pid in entries:
         if not pid.isdigit():
             continue
@@ -51,7 +56,24 @@ def _release_refs(proc_root: str) -> tuple[int, list[str]]:
 @check_group("release")
 async def check_release_ghost(proc_root: str = "/proc") -> list[CheckResult]:
     t = time.monotonic()
-    live, ghosts = _release_refs(proc_root)
+    try:
+        live, ghosts = _release_refs(proc_root)
+    except ProcScanError as exc:
+        # Fail CLOSED: an unscannable proc root is a FAILED probe, never a
+        # green one (dossier finding 2026-06-12).
+        return [
+            CheckResult(
+                name="release.ghost",
+                group="release",
+                status=Status.FAILED,
+                message=f"release-ghost probe could not scan processes: {exc}",
+                remediation=(
+                    "fix /proc readability for the health monitor (mount/perms); "
+                    "do NOT trust release GC until the probe scans again"
+                ),
+                duration_ms=_u._timed(t),
+            )
+        ]
 
     if ghosts:
         return [

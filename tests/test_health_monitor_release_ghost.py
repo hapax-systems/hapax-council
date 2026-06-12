@@ -109,3 +109,12 @@ def test_ignores_deleted_targets_outside_releases(tmp_path: Path) -> None:
 
     assert len(results) == 1
     assert results[0].status == Status.HEALTHY
+
+
+async def test_unreadable_proc_root_reports_failed(tmp_path):
+    """Dossier finding 2026-06-12: an unscannable proc root must report
+    FAILED, never healthy."""
+    results = await check_release_ghost(proc_root=str(tmp_path / "missing-proc"))
+    assert len(results) == 1
+    assert results[0].status is Status.FAILED
+    assert "could not scan" in results[0].message

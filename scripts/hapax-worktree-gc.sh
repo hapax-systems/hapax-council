@@ -331,7 +331,11 @@ process_worktree() {
                     live_refused=$((live_refused + 1))
                     printf 'hapax-worktree-gc: refuse live release %s (live: %s)\n' \
                         "$path" "$live_refs"
-                    alert_lines+=("- $path ($branch_label), age $(format_age "$age"), release GC REFUSED: live process references ($live_refs) — restart the binder onto the current release before GC")
+                    if [[ "$live_refs" == DETECTION-FAILED* ]]; then
+                        alert_lines+=("- $path ($branch_label), age $(format_age "$age"), release GC REFUSED: live-process detection FAILED ($live_refs) — fix python3//proc on this host; the dir is kept unverified, do not force-GC")
+                    else
+                        alert_lines+=("- $path ($branch_label), age $(format_age "$age"), release GC REFUSED: live process references ($live_refs) — restart the binder onto the current release before GC")
+                    fi
                     return 0
                 fi
                 if ((dry_run)); then
