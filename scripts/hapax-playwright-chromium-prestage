@@ -58,6 +58,15 @@ def main() -> int:
     cmd = ["uv", "run", "python", "-m", "playwright", "install", "chromium"]
     try:
         subprocess.run(cmd, cwd=activation, env=env, check=True)
+    except OSError as exc:
+        print(
+            f"FAIL playwright chromium install could not start: {exc}; "
+            f"browser_root={browser_root}; activation={activation}; "
+            "next: ensure the source activation worktree exists, uv is on PATH, "
+            "then rerun scripts/hapax-playwright-chromium-prestage",
+            file=sys.stderr,
+        )
+        return 1
     except subprocess.CalledProcessError as exc:
         print(
             f"FAIL playwright chromium install failed rc={exc.returncode}; "

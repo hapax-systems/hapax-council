@@ -76,6 +76,44 @@ def test_main_reports_next_action_on_playwright_install_failure(tmp_path, monkey
     assert str(activation) in err
 
 
+def test_main_reports_next_action_when_activation_dir_is_missing(tmp_path, monkeypatch, capsys):
+    mod = _load()
+    activation = tmp_path / "missing-activation"
+    browser_root = tmp_path / "browsers"
+    monkeypatch.setenv("HAPAX_RECHECK_ACTIVATION", str(activation))
+    monkeypatch.setenv("HAPAX_RECHECK_PLAYWRIGHT_BROWSERS", str(browser_root))
+
+    assert mod.main() == 1
+
+    err = capsys.readouterr().err
+    assert "FAIL playwright chromium install could not start:" in err
+    assert "next:" in err
+    assert str(browser_root) in err
+    assert str(activation) in err
+
+
+def test_main_reports_next_action_when_uv_executable_is_missing(tmp_path, monkeypatch, capsys):
+    mod = _load()
+    activation = tmp_path / "activation"
+    activation.mkdir()
+    browser_root = tmp_path / "browsers"
+    monkeypatch.setenv("HAPAX_RECHECK_ACTIVATION", str(activation))
+    monkeypatch.setenv("HAPAX_RECHECK_PLAYWRIGHT_BROWSERS", str(browser_root))
+
+    def fake_run(_cmd, **_kwargs):
+        raise FileNotFoundError("uv")
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+    assert mod.main() == 1
+
+    err = capsys.readouterr().err
+    assert "FAIL playwright chromium install could not start:" in err
+    assert "next:" in err
+    assert str(browser_root) in err
+    assert str(activation) in err
+
+
 def test_main_fails_with_next_action_when_install_leaves_no_executable(
     tmp_path, monkeypatch, capsys
 ):
