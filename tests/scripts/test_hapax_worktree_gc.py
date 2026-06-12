@@ -271,3 +271,23 @@ def test_worktree_gc_systemd_timer_is_installable_and_six_hourly() -> None:
     assert "Persistent=true" in timer
     assert "WantedBy=timers.target" in timer
     assert "enable hapax-worktree-gc.timer" in preset
+
+
+def test_detection_failure_preserves_release_dir(tmp_path: Path) -> None:
+    """Review #4094-1/2: when /proc scanning itself FAILS, the guard must
+    fail CLOSED — the stale release dir survives, witnessed as a refusal."""
+    repo = _make_repo(tmp_path)
+    now = int(time.time())
+    release = _make_release_worktree(tmp_path, repo, "deadbeefcafe")
+    _age_path(release, now=now, seconds_old=49 * 3600)
+
+    env = os.environ.copy()
+    env["HAPAX_SOURCE_ACTIVATION_CURRENT"] = str(_write_unrelated_current_json(tmp_path))
+    env["HAPAX_WORKTREE_GC_PROC_ROOT"] = str(tmp_path / "nonexistent-proc")
+
+    result = _run_gc(repo, now, env)
+
+    assert result.returncode == 0, result.stderr
+    assert release.exists(), "detection failure must NEVER free a dir"
+    assert "DETECTION-FAILED" in result.stdout
+    assert "live_refused=1" in result.stdout

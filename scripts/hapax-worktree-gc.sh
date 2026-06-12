@@ -208,7 +208,11 @@ alert_lines=()
 live_refs_for_path() {
     local dir="$1"
     local proc_root="${HAPAX_WORKTREE_GC_PROC_ROOT:-/proc}"
-    python3 - "$proc_root" "$dir" <<'PY' || true
+    # FAIL CLOSED (review #4094-1): if detection itself dies (python3 absent,
+    # OOM, half-deployed venv), the function emits a sentinel so callers
+    # REFUSE the delete. An unverifiable dir is treated as live, never free.
+    local out rc
+    out="$(python3 - "$proc_root" "$dir" <<'PY'
 import os
 import sys
 
@@ -216,7 +220,7 @@ root, want = sys.argv[1], sys.argv[2]
 try:
     pids = sorted((p for p in os.listdir(root) if p.isdigit()), key=int)
 except OSError:
-    pids = []
+    sys.exit(3)  # unreadable proc root = detection failure, fail CLOSED
 refs = []
 for pid in pids:
     for kind in ("cwd", "exe"):
@@ -229,6 +233,13 @@ for pid in pids:
             refs.append(f"{pid}({kind})")
 print(" ".join(refs), end="")
 PY
+)"
+    rc=$?
+    if (( rc != 0 )); then
+        printf 'DETECTION-FAILED:rc=%s' "$rc"
+        return 0
+    fi
+    printf '%s' "$out"
 }
 
 # Release-worktree retention. source-activate adds one detached worktree per
