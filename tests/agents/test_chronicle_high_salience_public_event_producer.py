@@ -151,7 +151,10 @@ def test_producer_writes_public_event_with_independent_cursor(tmp_path: Path) ->
     events = _read_public_events(public)
     assert len(events) == 1
     assert events[0]["event_type"] == "chronicle.high_salience"
-    assert events[0]["source"]["evidence_ref"] == f"{chronicle}#byte=0"
+    evidence_ref = events[0]["source"]["evidence_ref"]
+    assert evidence_ref.startswith(f"{chronicle}#dev=")
+    assert ":ino=" in evidence_ref
+    assert evidence_ref.endswith(":byte=0")
     assert events[0]["surface_policy"]["claim_live"] is True
     assert int(cursor.read_text(encoding="utf-8")) == chronicle.stat().st_size
 

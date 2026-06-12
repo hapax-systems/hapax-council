@@ -125,6 +125,10 @@ def test_producer_writes_public_event_and_advances_cursor(tmp_path: Path) -> Non
     assert len(events) == 1
     assert events[0]["event_type"] == "governance.enforcement"
     assert events[0]["state_kind"] == "governance_state"
+    evidence_ref = events[0]["source"]["evidence_ref"]
+    assert evidence_ref.startswith(f"{enforcement}#dev=")
+    assert ":ino=" in evidence_ref
+    assert evidence_ref.endswith(":byte=0")
     assert int(cursor.read_text(encoding="utf-8")) == enforcement.stat().st_size
 
 

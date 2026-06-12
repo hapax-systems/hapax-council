@@ -37,6 +37,20 @@ def _write_event(path: Path, *, salience: float | None, ts: float = 0.0) -> None
         fh.write(line + "\n")
 
 
+def _write_raw_event(path: Path, payload: dict[str, object]) -> None:
+    """Replace ``path`` with one chronicle event using ``payload``."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(
+        {
+            "ts": 0.0,
+            "source": "test",
+            "event_type": "test",
+            "payload": payload,
+        }
+    )
+    path.write_text(line + "\n", encoding="utf-8")
+
+
 def _make_trigger(
     events_path: Path,
     *,
@@ -228,3 +242,45 @@ class TestCursorPersistence:
         clock.advance(500.0)
         trigger2 = _make_trigger(events, cursor_path=cursor, clock=clock)
         assert trigger2.should_fire() is False
+
+    def test_shrink_resets_cursor_and_reads_replacement_event(self, tmp_path):
+        events = tmp_path / "events.jsonl"
+        cursor = tmp_path / "cursor.txt"
+        clock = _Clock(0.0)
+        trigger = _make_trigger(events, cursor_path=cursor, clock=clock)
+        _write_raw_event(events, {"salience": 0.9, "padding": "x" * 100})
+        trigger.should_fire()
+        old_size = events.stat().st_size
+
+        clock.advance(60.0)
+        _write_raw_event(events, {"salience": 0.9})
+        assert events.stat().st_size < old_size
+        assert trigger.should_fire() is False
+
+        clock.advance(70.0)
+        assert trigger.should_fire() is False
+        clock.advance(60.0)
+        assert trigger.should_fire() is True
+
+    def test_inode_rotation_at_same_size_resets_cursor_and_reads_replacement_event(
+        self, tmp_path
+    ):
+        events = tmp_path / "events.jsonl"
+        cursor = tmp_path / "cursor.txt"
+        clock = _Clock(0.0)
+        trigger = _make_trigger(events, cursor_path=cursor, clock=clock)
+        _write_event(events, salience=0.9)
+        trigger.should_fire()
+        old_size = events.stat().st_size
+
+        clock.advance(60.0)
+        replacement = tmp_path / "replacement.jsonl"
+        _write_event(replacement, salience=0.9)
+        assert replacement.stat().st_size == old_size
+        replacement.replace(events)
+        assert trigger.should_fire() is False
+
+        clock.advance(70.0)
+        assert trigger.should_fire() is False
+        clock.advance(60.0)
+        assert trigger.should_fire() is True

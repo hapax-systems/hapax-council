@@ -23,7 +23,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from shared.jsonl_cursor import read_jsonl_cursor, reconcile_jsonl_cursor, write_jsonl_cursor
+from shared.jsonl_cursor import (
+    jsonl_byte_evidence_ref,
+    read_jsonl_cursor,
+    reconcile_jsonl_cursor,
+    write_jsonl_cursor,
+)
 from shared.research_vehicle_public_event import (
     PublicEventProvenance,
     PublicEventSource,
@@ -83,6 +88,7 @@ _DENIED_SURFACES: tuple[Surface, ...] = (
 class _TailRecord:
     byte_start: int
     byte_after: int
+    source_stat: os.stat_result
     event: dict[str, Any] | None
     error: str | None = None
 
@@ -134,7 +140,12 @@ class ByteCursorJsonlTailer:
                     byte_after = fh.tell()
                     text = raw.decode("utf-8", errors="replace").strip()
                     if not text:
-                        yield _TailRecord(byte_start=byte_start, byte_after=byte_after, event=None)
+                        yield _TailRecord(
+                            byte_start=byte_start,
+                            byte_after=byte_after,
+                            source_stat=source_stat,
+                            event=None,
+                        )
                         continue
                     try:
                         event = json.loads(text)
@@ -142,6 +153,7 @@ class ByteCursorJsonlTailer:
                         yield _TailRecord(
                             byte_start=byte_start,
                             byte_after=byte_after,
+                            source_stat=source_stat,
                             event=None,
                             error=f"json_decode_error:{exc.msg}",
                         )
@@ -150,11 +162,17 @@ class ByteCursorJsonlTailer:
                         yield _TailRecord(
                             byte_start=byte_start,
                             byte_after=byte_after,
+                            source_stat=source_stat,
                             event=None,
                             error="json_not_object",
                         )
                         continue
-                    yield _TailRecord(byte_start=byte_start, byte_after=byte_after, event=event)
+                    yield _TailRecord(
+                        byte_start=byte_start,
+                        byte_after=byte_after,
+                        source_stat=source_stat,
+                        event=event,
+                    )
         except OSError:
             log.warning("enforcement event read failed at %s", self._path, exc_info=True)
 
@@ -193,7 +211,11 @@ class GovernanceEnforcementPublicEventProducer:
 
             event = build_governance_enforcement_event(
                 record.event,
-                evidence_ref=f"{self._enforcement_path}#byte={record.byte_start}",
+                evidence_ref=jsonl_byte_evidence_ref(
+                    self._enforcement_path,
+                    record.byte_start,
+                    record.source_stat,
+                ),
             )
             if self._event_already_written(event.event_id):
                 self._tailer.write_cursor(record.byte_after)

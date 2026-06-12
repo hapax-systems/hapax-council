@@ -14,6 +14,11 @@ def jsonl_file_identity(source_stat: os.stat_result) -> FileIdentity:
     return (int(source_stat.st_dev), int(source_stat.st_ino))
 
 
+def jsonl_byte_evidence_ref(source_path: Path, byte_offset: int, source_stat: os.stat_result) -> str:
+    st_dev, st_ino = jsonl_file_identity(source_stat)
+    return f"{source_path}#dev={st_dev}:ino={st_ino}:byte={byte_offset}"
+
+
 def read_jsonl_cursor(cursor_path: Path) -> int:
     try:
         return int(cursor_path.read_text().strip())
@@ -29,17 +34,17 @@ def _read_cursor_identity(
     cursor_path: Path,
     *,
     logger: logging.Logger | None = None,
-) -> FileIdentity | None:
+) -> tuple[FileIdentity | None, bool]:
     state_path = _state_path(cursor_path)
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
-        return int(state["st_dev"]), int(state["st_ino"])
+        return (int(state["st_dev"]), int(state["st_ino"])), True
     except FileNotFoundError:
-        return None
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None, False
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         if logger is not None:
-            logger.warning("cursor state unreadable at %s; falling back to size check", state_path)
-        return None
+            logger.warning("cursor state unreadable at %s; resetting to avoid stale cursor", state_path)
+        return None, False
 
 
 def write_jsonl_cursor(
@@ -82,8 +87,24 @@ def reconcile_jsonl_cursor(
     logger: logging.Logger,
     label: str,
 ) -> int:
-    previous_identity = _read_cursor_identity(cursor_path, logger=logger)
+    previous_identity, has_previous_identity = _read_cursor_identity(cursor_path, logger=logger)
     current_identity = jsonl_file_identity(source_stat)
+    if not has_previous_identity and byte_offset > 0:
+        logger.warning(
+            "%s cursor reset without identity state: path=%s size=%d cursor=%d",
+            label,
+            source_path,
+            source_stat.st_size,
+            byte_offset,
+        )
+        write_jsonl_cursor(
+            cursor_path,
+            0,
+            source_path=source_path,
+            source_stat=source_stat,
+            logger=logger,
+        )
+        return 0
     if previous_identity is not None and previous_identity != current_identity:
         logger.warning(
             "%s cursor reset after rotation: path=%s size=%d cursor=%d",

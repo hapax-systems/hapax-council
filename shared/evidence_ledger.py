@@ -26,6 +26,8 @@ if TYPE_CHECKING:
     from shared.coord_event_log import CoordEventLog
 
 LEDGER_DIR = Path.home() / ".cache" / "hapax" / "evidence-ledger"
+DEFAULT_LEDGER_MAX_BYTES = 16 * 1024 * 1024
+DEFAULT_LEDGER_KEEP_GENERATIONS = 4
 
 RiskTier = Literal["T0", "T1", "T2", "T3"]
 EvidenceKind = Literal[
@@ -159,6 +161,58 @@ class TraceLink(BaseModel):
     case_id: str = ""
 
 
+def _generation_path(path: Path, generation: int) -> Path:
+    return path.with_name(f"{path.name}.{generation}")
+
+
+def _retained_jsonl_paths(path: Path, keep_generations: int) -> list[Path]:
+    return [
+        *(_generation_path(path, generation) for generation in range(keep_generations, 0, -1)),
+        path,
+    ]
+
+
+def _maybe_rotate_jsonl(path: Path, *, max_bytes: int, keep_generations: int) -> None:
+    if max_bytes <= 0 or keep_generations <= 0:
+        return
+    try:
+        size = path.stat().st_size
+    except FileNotFoundError:
+        return
+    if size < max_bytes:
+        return
+
+    _generation_path(path, keep_generations).unlink(missing_ok=True)
+    for generation in range(keep_generations - 1, 0, -1):
+        source = _generation_path(path, generation)
+        if source.exists():
+            source.replace(_generation_path(path, generation + 1))
+    path.replace(_generation_path(path, 1))
+
+
+def _append_rotated_jsonl(
+    path: Path,
+    line: str,
+    *,
+    max_bytes: int,
+    keep_generations: int,
+) -> None:
+    _maybe_rotate_jsonl(path, max_bytes=max_bytes, keep_generations=keep_generations)
+    # jsonl-rotation: exempt(domain rotation; readers scan retained generations)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(line.rstrip("\n") + "\n")
+
+
+def _read_retained_jsonl_lines(path: Path, *, keep_generations: int) -> list[str]:
+    lines: list[str] = []
+    for retained_path in _retained_jsonl_paths(path, keep_generations):
+        try:
+            lines.extend(retained_path.read_text(encoding="utf-8").splitlines())
+        except FileNotFoundError:
+            continue
+    return lines
+
+
 # T0-T3 minimum evidence requirements per the methodology addendum
 TIER_REQUIREMENTS: dict[RiskTier, set[EvidenceKind]] = {
     "T0": {"test", "ci"},
@@ -184,10 +238,14 @@ class EvidenceLedger:
         ledger_dir: Path | None = None,
         *,
         event_log: CoordEventLog | None = None,
+        max_bytes: int = DEFAULT_LEDGER_MAX_BYTES,
+        keep_generations: int = DEFAULT_LEDGER_KEEP_GENERATIONS,
     ) -> None:
         self._dir = ledger_dir or LEDGER_DIR
         self._dir.mkdir(parents=True, exist_ok=True)
         self._event_log = event_log
+        self._max_bytes = max_bytes
+        self._keep_generations = keep_generations
 
     def _case_file(self, case_id: str) -> Path:
         safe = case_id.replace("/", "_").replace(" ", "_")
@@ -195,9 +253,13 @@ class EvidenceLedger:
 
     def append(self, entry: EvidenceEntry) -> None:
         path = self._case_file(entry.case_id)
-        # jsonl-rotation: exempt(per-case evidence ledger; complete case history stays in one file)
-        with path.open("a") as f:
-            f.write(entry.model_dump_json() + "\n")
+        # jsonl-rotation: exempt(domain rotation; entries_for_case scans retained generations)
+        _append_rotated_jsonl(
+            path,
+            entry.model_dump_json(),
+            max_bytes=self._max_bytes,
+            keep_generations=self._keep_generations,
+        )
         # Best-effort, off-by-default observability mirror into the coord SSOT log.
         # Lazy import avoids a module-level cycle (coord_projection type-checks
         # against EvidenceEntry). No-op unless an event_log is injected or
@@ -211,10 +273,8 @@ class EvidenceLedger:
 
     def entries_for_case(self, case_id: str) -> list[EvidenceEntry]:
         path = self._case_file(case_id)
-        if not path.exists():
-            return []
         entries = []
-        for line in path.read_text().splitlines():
+        for line in _read_retained_jsonl_lines(path, keep_generations=self._keep_generations):
             line = line.strip()
             if not line:
                 continue
@@ -232,16 +292,18 @@ class EvidenceLedger:
 
     def append_receipt(self, receipt: ReceiptEnvelope) -> None:
         path = self._dir / "receipts.jsonl"
-        # jsonl-rotation: exempt(full-history evidence ledger; receipts_for_case scans live file)
-        with path.open("a") as f:
-            f.write(receipt.model_dump_json() + "\n")
+        # jsonl-rotation: exempt(domain rotation; receipts_for_case scans retained generations)
+        _append_rotated_jsonl(
+            path,
+            receipt.model_dump_json(),
+            max_bytes=self._max_bytes,
+            keep_generations=self._keep_generations,
+        )
 
     def receipts_for_case(self, case_id: str) -> list[ReceiptEnvelope]:
         path = self._dir / "receipts.jsonl"
-        if not path.exists():
-            return []
         receipts = []
-        for line in path.read_text().splitlines():
+        for line in _read_retained_jsonl_lines(path, keep_generations=self._keep_generations):
             line = line.strip()
             if not line:
                 continue
@@ -257,21 +319,31 @@ class EvidenceLedger:
 class TraceGraph:
     """Trace graph linking requirements to evidence."""
 
-    def __init__(self, ledger_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        ledger_dir: Path | None = None,
+        *,
+        max_bytes: int = DEFAULT_LEDGER_MAX_BYTES,
+        keep_generations: int = DEFAULT_LEDGER_KEEP_GENERATIONS,
+    ) -> None:
         self._dir = ledger_dir or LEDGER_DIR
         self._path = self._dir / "trace-graph.jsonl"
         self._dir.mkdir(parents=True, exist_ok=True)
+        self._max_bytes = max_bytes
+        self._keep_generations = keep_generations
 
     def add_link(self, link: TraceLink) -> None:
-        # jsonl-rotation: exempt(full-history evidence ledger; all_links scans live file)
-        with self._path.open("a") as f:
-            f.write(link.model_dump_json() + "\n")
+        # jsonl-rotation: exempt(domain rotation; all_links scans retained generations)
+        _append_rotated_jsonl(
+            self._path,
+            link.model_dump_json(),
+            max_bytes=self._max_bytes,
+            keep_generations=self._keep_generations,
+        )
 
     def all_links(self) -> list[TraceLink]:
-        if not self._path.exists():
-            return []
         links = []
-        for line in self._path.read_text().splitlines():
+        for line in _read_retained_jsonl_lines(self._path, keep_generations=self._keep_generations):
             line = line.strip()
             if not line:
                 continue
@@ -422,10 +494,18 @@ class LegibilityEvidenceRecord(BaseModel):
 class LegibilityEvidenceRegistry:
     """Append-only JSONL registry for legibility EvidenceRecord receipts."""
 
-    def __init__(self, ledger_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        ledger_dir: Path | None = None,
+        *,
+        max_bytes: int = DEFAULT_LEDGER_MAX_BYTES,
+        keep_generations: int = DEFAULT_LEDGER_KEEP_GENERATIONS,
+    ) -> None:
         self._dir = ledger_dir or LEDGER_DIR
         self._dir.mkdir(parents=True, exist_ok=True)
         self._path = self._dir / "legibility-records.jsonl"
+        self._max_bytes = max_bytes
+        self._keep_generations = keep_generations
 
     def append(
         self,
@@ -434,19 +514,27 @@ class LegibilityEvidenceRegistry:
         mirror_case_id: str | None = None,
         traces_to: list[str] | None = None,
     ) -> None:
-        # jsonl-rotation: exempt(full-history evidence ledger; all_records scans live file)
-        with self._path.open("a") as f:
-            f.write(record.model_dump_json() + "\n")
+        # jsonl-rotation: exempt(domain rotation; all_records scans retained generations)
+        _append_rotated_jsonl(
+            self._path,
+            record.model_dump_json(),
+            max_bytes=self._max_bytes,
+            keep_generations=self._keep_generations,
+        )
         if mirror_case_id:
-            EvidenceLedger(self._dir).append(
+            EvidenceLedger(
+                self._dir,
+                max_bytes=self._max_bytes,
+                keep_generations=self._keep_generations,
+            ).append(
                 record.to_evidence_entry(case_id=mirror_case_id, traces_to=traces_to)
             )
 
     def all_records(self) -> list[LegibilityEvidenceRecord]:
-        if not self._path.exists():
-            return []
         records: list[LegibilityEvidenceRecord] = []
-        for line in self._path.read_text().splitlines():
+        for line in _read_retained_jsonl_lines(
+            self._path, keep_generations=self._keep_generations
+        ):
             line = line.strip()
             if not line:
                 continue

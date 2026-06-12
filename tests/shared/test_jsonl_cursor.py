@@ -48,7 +48,32 @@ def test_reconcile_resets_when_identity_changes_at_same_size(tmp_path, caplog):
     assert "cursor reset after rotation" in caplog.text
 
 
-def test_reconcile_logs_corrupt_state_and_falls_back_to_size_check(tmp_path, caplog):
+def test_reconcile_resets_legacy_cursor_without_identity_state(tmp_path, caplog):
+    source = tmp_path / "events.jsonl"
+    cursor = tmp_path / "events.cursor"
+    source.write_text("abcdef", encoding="utf-8")
+    source_stat = source.stat()
+    cursor.write_text(str(source_stat.st_size), encoding="utf-8")
+
+    logger = logging.getLogger("tests.jsonl_cursor")
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        resolved = reconcile_jsonl_cursor(
+            cursor,
+            source,
+            source_stat.st_size,
+            source_stat=source_stat,
+            logger=logger,
+            label="event",
+        )
+
+    assert resolved == 0
+    assert cursor.read_text(encoding="utf-8") == "0"
+    state = json.loads(_state_path(cursor).read_text(encoding="utf-8"))
+    assert state["st_ino"] == source_stat.st_ino
+    assert "cursor reset without identity state" in caplog.text
+
+
+def test_reconcile_logs_corrupt_state_and_resets_cursor(tmp_path, caplog):
     source = tmp_path / "events.jsonl"
     cursor = tmp_path / "events.cursor"
     source.write_text("abcdef", encoding="utf-8")
@@ -66,8 +91,10 @@ def test_reconcile_logs_corrupt_state_and_falls_back_to_size_check(tmp_path, cap
             label="event",
         )
 
-    assert resolved == 3
+    assert resolved == 0
+    assert cursor.read_text(encoding="utf-8") == "0"
     assert "cursor state unreadable" in caplog.text
+    assert "cursor reset without identity state" in caplog.text
 
 
 def test_write_cursor_logs_and_swallows_oserror(tmp_path, caplog):

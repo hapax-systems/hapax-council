@@ -14,11 +14,10 @@ of high-salience events: the operator's concept of "chapter stability"
 means we wait until the chronicle has settled into the new visual
 register before lifting the frame.
 
-The trigger reads from ``/dev/shm/hapax-chronicle/events.jsonl`` via
-``shared.impingement_consumer.ImpingementConsumer``. Cursor is
-persisted at ``~/.cache/hapax/thumbnail-rotator-chronicle-cursor.txt``
-so a restart resumes from where the last tick left off rather than
-re-firing on backlog.
+The trigger reads from ``/dev/shm/hapax-chronicle/events.jsonl`` with a
+byte-offset cursor persisted at
+``~/.cache/hapax/thumbnail-rotator-chronicle-cursor.txt`` so a restart
+resumes from where the last tick left off rather than re-firing on backlog.
 """
 
 from __future__ import annotations

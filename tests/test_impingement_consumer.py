@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from shared.impingement import Impingement, ImpingementType
 from shared.impingement_consumer import ImpingementConsumer
+from shared.jsonl_cursor import write_jsonl_cursor
 
 
 def _make_imp(source: str = "dmn.test", strength: float = 0.5) -> Impingement:
@@ -260,7 +261,9 @@ class TestCursorPersistence:
         path.write_text("", encoding="utf-8")
         _write_jsonl(path, [_make_imp("post-rotation")])
 
-        assert consumer.read_new() == []
+        result = consumer.read_new()
+        assert len(result) == 1
+        assert result[0].source == "post-rotation"
         assert consumer.cursor == 1
         assert cursor_path.read_text() == "1"
 
@@ -269,6 +272,40 @@ class TestCursorPersistence:
 
         assert len(result) == 1
         assert result[0].source == "after-reset"
+
+    def test_inode_rotation_at_same_line_count_reads_replacement_file(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "imp.jsonl"
+        cursor_path = tmp_path / "cursor.txt"
+        _write_jsonl(path, [_make_imp("old-a"), _make_imp("old-b")])
+
+        consumer = ImpingementConsumer(path, cursor_path=cursor_path)
+        assert consumer.cursor == 2
+
+        rotated = tmp_path / "imp.rotated.jsonl"
+        path.replace(rotated)
+        _write_jsonl(path, [_make_imp("new-a"), _make_imp("new-b")])
+
+        result = consumer.read_new()
+
+        assert [imp.source for imp in result] == ["new-a", "new-b"]
+        assert consumer.cursor == 2
+
+    def test_legacy_cursor_without_identity_reads_same_line_count_replacement(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "imp.jsonl"
+        cursor_path = tmp_path / "cursor.txt"
+        _write_jsonl(path, [_make_imp("new-a"), _make_imp("new-b")])
+        cursor_path.write_text("2", encoding="utf-8")
+
+        consumer = ImpingementConsumer(path, cursor_path=cursor_path)
+        result = consumer.read_new()
+
+        assert [imp.source for imp in result] == ["new-a", "new-b"]
+        assert consumer.cursor == 2
+        assert cursor_path.with_name("cursor.txt.state.json").exists()
 
     def test_cursor_parent_directory_created_on_demand(self, tmp_path: Path) -> None:
         path = tmp_path / "imp.jsonl"
@@ -285,7 +322,7 @@ class TestCursorPersistence:
         path = tmp_path / "imp.jsonl"
         cursor_path = tmp_path / "cursor.txt"
         _write_jsonl(path, [_make_imp("first"), _make_imp("second")])
-        cursor_path.write_text("1", encoding="utf-8")
+        write_jsonl_cursor(cursor_path, 1, source_path=path)
 
         consumer = ImpingementConsumer(
             path,

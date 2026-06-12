@@ -50,14 +50,17 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
 from shared.impingement import Impingement
+from shared.jsonl_cursor import jsonl_file_identity, write_jsonl_cursor
 
 __all__ = ["ImpingementConsumer"]
 
 log = logging.getLogger(__name__)
+type FileIdentity = tuple[int, int]
 
 
 class ImpingementConsumer:
@@ -138,29 +141,69 @@ class ImpingementConsumer:
         self._write_cursor(end)
         return end
 
-    def _write_cursor(self, value: int) -> None:
+    def _cursor_state_path(self) -> Path:
+        assert self._cursor_path is not None
+        return self._cursor_path.with_name(f"{self._cursor_path.name}.state.json")
+
+    def _read_cursor_identity(self) -> tuple[FileIdentity | None, bool]:
+        if self._cursor_path is None:
+            return None, False
+        state_path = self._cursor_state_path()
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            return (int(state["st_dev"]), int(state["st_ino"])), True
+        except FileNotFoundError:
+            return None, False
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            log.warning(
+                "Impingement cursor state %s unreadable; resetting to avoid stale cursor",
+                state_path,
+            )
+            return None, False
+
+    def _reconcile_source_identity(self, source_stat) -> None:
+        if self._cursor_path is None:
+            return
+        previous_identity, has_previous_identity = self._read_cursor_identity()
+        current_identity = jsonl_file_identity(source_stat)
+        if not has_previous_identity and self._cursor > 0:
+            log.warning(
+                "Impingement cursor %s missing source identity; resetting cursor",
+                self._cursor_path,
+            )
+            self._cursor = 0
+            self._write_cursor(self._cursor, source_stat=source_stat)
+            return
+        if previous_identity is not None and previous_identity != current_identity:
+            log.warning(
+                "Impingement file %s identity changed; resetting cursor from %d to 0",
+                self._path,
+                self._cursor,
+            )
+            self._cursor = 0
+            self._write_cursor(self._cursor, source_stat=source_stat)
+
+    def _write_cursor(self, value: int, *, source_stat=None) -> None:
         """Persist cursor atomically (tmp file + rename). No-op if unset."""
         if self._cursor_path is None:
             return
-        try:
-            self._cursor_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._cursor_path.with_suffix(self._cursor_path.suffix + ".tmp")
-            tmp.write_text(str(value), encoding="utf-8")
-            tmp.replace(self._cursor_path)
-        except OSError:
-            log.warning(
-                "Failed to persist impingement cursor to %s",
-                self._cursor_path,
-                exc_info=True,
-            )
+        write_jsonl_cursor(
+            self._cursor_path,
+            value,
+            source_path=self._path,
+            source_stat=source_stat,
+            logger=log,
+        )
 
     def read_new(self) -> list[Impingement]:
         """Return new impingements since last read. Non-blocking."""
         if not self._path.exists():
             return []
         try:
+            source_stat = self._path.stat()
             text = self._path.read_text(encoding="utf-8")
             lines = text.strip().split("\n") if text.strip() else []
+            self._reconcile_source_identity(source_stat)
 
             if len(lines) < self._cursor:
                 log.warning(
@@ -170,14 +213,14 @@ class ImpingementConsumer:
                     len(lines),
                 )
                 self._cursor = len(lines)
-                self._write_cursor(self._cursor)
+                self._write_cursor(self._cursor, source_stat=source_stat)
                 return []
 
             new_lines = lines[self._cursor :]
             if not new_lines:
                 return []
             self._cursor = len(lines)
-            self._write_cursor(self._cursor)
+            self._write_cursor(self._cursor, source_stat=source_stat)
             result: list[Impingement] = []
             for line in new_lines:
                 line = line.strip()

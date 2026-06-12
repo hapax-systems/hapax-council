@@ -88,6 +88,17 @@ class TestEvidenceLedger:
         assert len(ledger.fresh_entries("CASE-C", now)) == 1
         assert len(ledger.stale_entries("CASE-C", now)) == 1
 
+    def test_entries_for_case_scans_rotated_generations(self, tmp_path: Path) -> None:
+        ledger = EvidenceLedger(tmp_path, max_bytes=1, keep_generations=2)
+        ledger.append(_entry("EVD-OLD", "CASE-ROTATE"))
+        ledger.append(_entry("EVD-NEW", "CASE-ROTATE"))
+
+        assert (tmp_path / "CASE-ROTATE.jsonl.1").exists()
+        assert [entry.evidence_id for entry in ledger.entries_for_case("CASE-ROTATE")] == [
+            "EVD-OLD",
+            "EVD-NEW",
+        ]
+
 
 class TestReceiptEnvelope:
     def test_append_and_read_receipt(self, tmp_path: Path) -> None:
@@ -130,6 +141,35 @@ class TestReceiptEnvelope:
         assert len(ledger.receipts_for_case("CASE-X")) == 1
         assert len(ledger.receipts_for_case("CASE-Y")) == 1
 
+    def test_receipts_for_case_scans_rotated_generations(self, tmp_path: Path) -> None:
+        ledger = EvidenceLedger(tmp_path, max_bytes=1, keep_generations=2)
+        ledger.append_receipt(
+            ReceiptEnvelope(
+                receipt_id="R-OLD",
+                case_id="CASE-R",
+                stage="S7",
+                action="old",
+                outcome="pass",
+                producer="t",
+            )
+        )
+        ledger.append_receipt(
+            ReceiptEnvelope(
+                receipt_id="R-NEW",
+                case_id="CASE-R",
+                stage="S7",
+                action="new",
+                outcome="pass",
+                producer="t",
+            )
+        )
+
+        assert (tmp_path / "receipts.jsonl.1").exists()
+        assert [receipt.receipt_id for receipt in ledger.receipts_for_case("CASE-R")] == [
+            "R-OLD",
+            "R-NEW",
+        ]
+
 
 class TestTraceGraph:
     def test_add_and_query(self, tmp_path: Path) -> None:
@@ -151,6 +191,17 @@ class TestTraceGraph:
         graph = TraceGraph(tmp_path)
         assert graph.all_links() == []
         assert graph.unlinked_requirements(["REQ-001"]) == ["REQ-001"]
+
+    def test_all_links_scans_rotated_generations(self, tmp_path: Path) -> None:
+        graph = TraceGraph(tmp_path, max_bytes=1, keep_generations=2)
+        graph.add_link(TraceLink(source_id="REQ-OLD", target_id="EVD-OLD"))
+        graph.add_link(TraceLink(source_id="REQ-NEW", target_id="EVD-NEW"))
+
+        assert (tmp_path / "trace-graph.jsonl.1").exists()
+        assert [(link.source_id, link.target_id) for link in graph.all_links()] == [
+            ("REQ-OLD", "EVD-OLD"),
+            ("REQ-NEW", "EVD-NEW"),
+        ]
 
 
 class TestTierCompliance:
@@ -280,6 +331,26 @@ class TestLegibilityEvidenceRegistry:
         )
         assert [record.evidence_id for record in registry.fresh_records(110.0)] == ["EV-F"]
         assert [record.evidence_id for record in registry.stale_records(110.0)] == ["EV-S"]
+
+    def test_all_records_scans_rotated_generations(self, tmp_path: Path) -> None:
+        registry = LegibilityEvidenceRegistry(tmp_path, max_bytes=1, keep_generations=2)
+        registry.append(
+            LegibilityEvidenceRecord(
+                evidence_id="EV-OLD",
+                kind="command",
+                value_summary="old",
+            )
+        )
+        registry.append(
+            LegibilityEvidenceRecord(
+                evidence_id="EV-NEW",
+                kind="command",
+                value_summary="new",
+            )
+        )
+
+        assert (tmp_path / "legibility-records.jsonl.1").exists()
+        assert [record.evidence_id for record in registry.all_records()] == ["EV-OLD", "EV-NEW"]
 
 
 class TestLegibilityCollectors:

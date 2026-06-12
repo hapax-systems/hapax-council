@@ -185,6 +185,10 @@ def test_producer_writes_public_event_and_advances_cursor(tmp_path: Path) -> Non
     assert len(events) == 1
     assert events[0]["event_type"] == "broadcast.boundary"
     assert events[0]["broadcast_id"] == "broadcast-new-444"
+    evidence_ref = events[0]["source"]["evidence_ref"]
+    assert evidence_ref.startswith(f"{legacy}#dev=")
+    assert ":ino=" in evidence_ref
+    assert evidence_ref.endswith(":byte=0")
     assert int(cursor.read_text(encoding="utf-8")) == legacy.stat().st_size
 
 
