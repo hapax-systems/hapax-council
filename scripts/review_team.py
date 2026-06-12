@@ -265,18 +265,6 @@ def _note_frontmatter(path: Path) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def find_task_note(
-    vault_root: Path,
-    *,
-    pr_number: int | None = None,
-    head_ref: str | None = None,
-) -> tuple[Path, dict[str, Any]] | None:
-    """The cc-task note linked to a PR: by ``pr`` field first, else by branch."""
-
-    matches = find_task_notes(vault_root, pr_number=pr_number, head_ref=head_ref)
-    return matches[0] if matches else None
-
-
 def find_task_notes(
     vault_root: Path,
     *,

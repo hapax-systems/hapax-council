@@ -95,7 +95,7 @@ Trust boundaries: **security** (input validation at boundary, no secret leakage,
 **Files:** Create `scripts/cc-pr-review-dispatch.py`; Test `tests/test_cc_pr_review_dispatch.py`.
 
 - [ ] **Step 1: Failing tests** (stub `gh` runner + stub reviewer runner): `--pr N` dry-run prints constitution (class, lenses, seats); `--apply` calls reviewer runner once per seat with blind prompts (assert: no prompt contains another reviewer's verdict; charters + diff + output contract present); YAML fence extraction parses verdict; garbage output → `invalid-output`; oversized diffs are truncated into bounded per-file excerpts with a truncation notice.
-- [ ] **Step 2-4: TDD.** `gh pr view --json number,title,body,headRefName,headRefOid,isDraft,files` + `gh pr diff`; task-note lookup via `review_team.find_task_note(vault_root, pr_number, head_ref)`; ThreadPoolExecutor dispatch with per-family timeout; prompt = header + task/PR meta + prior unresolved criticals (same PR) + charter texts + diff + output contract (yaml fence, verdict enum, findings with file:line, checklist per lens item).
+- [ ] **Step 2-4: TDD.** `gh pr view --json number,title,body,headRefName,headRefOid,isDraft,files` + `gh pr diff`; task-note lookup via `review_team.find_task_notes(vault_root, pr_number, head_ref)`; ThreadPoolExecutor dispatch with per-family timeout; prompt = header + task/PR meta + prior unresolved criticals (same PR) + charter texts + diff + output contract (yaml fence, verdict enum, findings with file:line, checklist per lens item).
 - [ ] **Step 5: Commit** `feat(review-team): blind parallel dispatcher`.
 
 ### Task 7: Dispatcher side-effects — dossier, comment, receipt, auto-wake
