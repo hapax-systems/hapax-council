@@ -112,3 +112,11 @@ class TestAlertRules:
         stale = [r for r in _all_rules() if r.get("alert") == "HapaxEchoProbeStale"]
         assert stale, "HapaxEchoProbeStale rule missing"
         assert "collect_ts" in stale[0]["expr"]
+
+    def test_probe_staleness_rule_covers_absent_series(self) -> None:
+        """`time() - metric > 300` is an EMPTY vector when the series never
+        existed (textfile orphaned, collector unconfigured) — the alert
+        would stay silent in exactly the W4-TEXTFILE-ORPHAN failure mode.
+        The absent() arm makes missing-entirely fire too."""
+        stale = [r for r in _all_rules() if r.get("alert") == "HapaxEchoProbeStale"][0]
+        assert "absent(hapax_private_broadcast_echo_collect_ts)" in stale["expr"]

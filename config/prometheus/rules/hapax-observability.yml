@@ -43,17 +43,26 @@ groups:
             Runbook: docs/runbooks/audio-incidents.md#private-leak-l12
 
       - alert: HapaxEchoProbeStale
-        expr: time() - hapax_private_broadcast_echo_collect_ts > 300
+        # Two failure shapes, both must fire (review finding, PR #4106):
+        # stale = previously-seen sample stopped advancing (timer dead,
+        # pw-cat wedged); absent = the series never arrived at all
+        # (textfile orphaned, collector flag missing, scrape dropped).
+        # A bare `time() - metric > 300` returns an empty vector — i.e.
+        # silence — in exactly the absent case.
+        expr: >-
+          (time() - hapax_private_broadcast_echo_collect_ts > 300)
+          or absent(hapax_private_broadcast_echo_collect_ts)
         labels:
           severity: warning
         annotations:
-          summary: "echo probe silent for >5m — the privacy watcher itself died"
+          summary: "echo probe silent or missing for >5m — the privacy watcher itself died"
           description: >-
             The probe stamps hapax_private_broadcast_echo_collect_ts on
-            every 30s tick, leak or not. A 5-minute gap means the watcher
-            died (timer stopped, pw-cat wedged, textfile orphaned) — the
-            audit's universal "who watches the watcher" class. A silent
-            probe is indistinguishable from a clean bus without this rule.
+            every 30s tick, leak or not. A 5-minute gap — or the series
+            being absent entirely — means the watcher died (timer stopped,
+            pw-cat wedged, textfile orphaned/unscraped) — the audit's
+            universal "who watches the watcher" class. A silent probe is
+            indistinguishable from a clean bus without this rule.
 
       - alert: HapaxLufsPanicStorm
         expr: increase(hapax_lufs_panic_cap_triggers_total[15m]) > 5

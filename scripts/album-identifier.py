@@ -1004,8 +1004,30 @@ def _refresh_playing_for_current_album() -> None:
         log.debug("periodic playing-flag refresh failed", exc_info=True)
 
 
+def _album_cover_save_allowed() -> bool:
+    """Gate the per-tick PNG cover save on the no-album latch.
+
+    Returns False while no album is identified — the EXPECTED idle state
+    (nothing on the deck / last identification cleared) — logging INFO
+    exactly once per transition into the state. Returns True and re-arms
+    the latch as soon as an album is current again.
+
+    W4-ALBUM-POLARITY-STORM: this state used to raise inside the PNG-save
+    try and be log.exception'd EVERY poll tick (~129 ERR/h of tracebacks
+    for an expected state). log.exception is reserved for real failures.
+    """
+    global _no_album_logged
+    if _current_album is None:
+        if not _no_album_logged:
+            log.info("No album currently identified — cover save paused until one is")
+            _no_album_logged = True
+        return False
+    _no_album_logged = False
+    return True
+
+
 def main() -> None:
-    global _last_hash, _current_album, _current_track, _album_start_time, _no_album_logged
+    global _last_hash, _current_album, _current_track, _album_start_time
 
     log.info("Album identifier starting — IR source=%s poll=%ds", IR_FRAME_URL, POLL_INTERVAL)
 
@@ -1050,18 +1072,9 @@ def main() -> None:
         # tick and read to the operator as "crop coords changing"). Geometry
         # is also deterministic: fixed 15% center-crop margin, 90° rotate,
         # 512×512 resize — so the same scene ALWAYS produces the same PNG.
-        # Routine no-album state (last identification cleared, nothing on
-        # the deck): skip the cover save QUIETLY. This is the expected
-        # idle state — it used to raise into the blanket except below and
-        # storm the journal with ERROR+tracebacks every poll tick
-        # (W4-ALBUM-POLARITY-STORM, ~129 ERR/h). INFO once per transition;
-        # log.exception below is reserved for REAL save failures.
-        if _current_album is None:
-            if not _no_album_logged:
-                log.info("No album currently identified — cover save paused until one is")
-                _no_album_logged = True
-        else:
-            _no_album_logged = False
+        # Routine no-album state: skip the cover save QUIETLY (INFO once
+        # per transition, inside the helper). See _album_cover_save_allowed.
+        if _album_cover_save_allowed():
             try:
                 from PIL import Image, ImageOps
 
