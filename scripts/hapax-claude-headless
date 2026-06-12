@@ -187,9 +187,17 @@ if [[ -z "$INITIAL_MSG" ]]; then
   echo "hapax-claude-headless: governed initial message required" >&2
   exit 5
 fi
+# Session-keyed claim FIRST (review #4097-1): the legacy role-keyed file is
+# shared by every session of this role — reading it alone defeats the
+# isolation this PR exists to provide. A fresh launcher has a fresh
+# SESSION_UUID, so its session file cannot exist yet; any hit on the legacy
+# file is informational fallback for --task-less relaunches only.
+SESSION_CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$ROLE-$SESSION_UUID"
 CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$ROLE"
 CLAIMED_TASK=""
-if [[ -s "$CLAIM_FILE" ]]; then
+if [[ -s "$SESSION_CLAIM_FILE" ]]; then
+  CLAIMED_TASK="$(head -n1 "$SESSION_CLAIM_FILE" | tr -d '[:space:]')"
+elif [[ -s "$CLAIM_FILE" ]]; then
   CLAIMED_TASK="$(head -n1 "$CLAIM_FILE" | tr -d '[:space:]')"
 fi
 if [[ -z "$CLAUDE_TASK" && -n "$CLAIMED_TASK" ]]; then
