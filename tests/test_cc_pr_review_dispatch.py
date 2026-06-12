@@ -411,3 +411,26 @@ class TestExitPredicate:
         tasks = autoqueue.load_task_notes(vault)
         after = autoqueue.classify_pr(pr, tasks=tasks, queued_prs=set())
         assert after.action == "queue", after.reasons
+
+
+class TestNoQuorumRecovery:
+    """Review #4098-1: no-quorum (dead reviewers) must fire auto-wake — the
+    REVIEW-DEATH-WITHOUT-VERDICT class gets a recovery path, distinct from
+    rejection."""
+
+    def test_no_quorum_from_dead_reviewers_fires_auto_wake(self, tmp_path: Path) -> None:
+        sent: list[list[str]] = []
+        reviewers = RecordingReviewers(replies={"codex": "no yaml here", "gemini": "also not yaml"})
+        result, _, _, note = _review(
+            tmp_path,
+            reviewers=reviewers,
+            send_runner=lambda cmd: sent.append(list(cmd)),
+        )
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        assert dossier["review_team_verdict"] == "no-quorum"
+        assert "dead reviewers" in dossier["no_quorum_cause"]
+        wake_files = list((tmp_path / "wake").glob("*.md"))
+        assert len(wake_files) == 1, "no-quorum must wake the orchestrating lane"
+        assert sent, "auto-wake send was not attempted"

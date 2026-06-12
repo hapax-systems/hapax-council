@@ -570,6 +570,15 @@ def review_pr(
         constituted_at=now_iso,
         constitution_notes=constitution.notes,
     )
+    if dossier["review_team_verdict"] == "no-quorum":
+        dead = [
+            str(r.get("reviewer") or r.get("family"))
+            for r in reviews
+            if str(r.get("verdict")) in ("error", "missing", "timeout", "invalid-output")
+        ]
+        dossier["no_quorum_cause"] = (
+            f"dead reviewers: {', '.join(dead)}" if dead else "verdict split below quorum"
+        )
     dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
     LOG.info("dossier written: %s (verdict %s)", dossier_path, dossier["review_team_verdict"])
 
@@ -587,7 +596,14 @@ def review_pr(
     )
 
     has_block = any(str(r.get("verdict")) == "block" for r in reviews)
-    if dossier["review_team_verdict"] == "blocked" or has_block:
+    # no-quorum is a RECOVERY condition, not a quiet end-state (review
+    # #4098-1: REVIEW-DEATH-WITHOUT-VERDICT was 40% of review dispatches —
+    # dead reviewers must wake the orchestrator, distinctly from rejection).
+    if (
+        dossier["review_team_verdict"] == "no-quorum"
+        or dossier["review_team_verdict"] == "blocked"
+        or has_block
+    ):
         auto_wake(frontmatter, registry, dossier, wake_dir=wake_dir, send_runner=send_runner)
 
     return {
