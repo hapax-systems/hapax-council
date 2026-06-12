@@ -1,1 +1,0 @@
-{"tool_input": {"command": "case \"$1\" in\n  build) cd /nonexistent_xyz; make;;\nesac\necho done"}}

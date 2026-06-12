@@ -1,1 +1,0 @@
-{"tool_input": {"command": "cat <<'EOFSCRIPT' > /tmp/deploy.sh\ncd /opt/app\ngit pull --ff-only\nEOFSCRIPT\necho wrote"}}
