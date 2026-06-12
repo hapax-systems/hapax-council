@@ -39,7 +39,7 @@ Checks, each named in the output, each FAIL carrying a next action:
                          harness; this is the HTTP half)
   * coord-last-good-paint — a browser witnesses #last-good-replay paint with
                          a dark surface and zero sampled white pixels in <2s
-  * coord-yard-status-strip — a browser witnesses fresh (non-replay)
+  * coord-yard-status-strip — a browser witnesses visible fresh (non-replay)
                          #yard-status health chips and the deployed SHA prefix
                          on the live page in <2s
   * coord-rails-consumed — /api/coord/rails reports feed_state=live with
@@ -169,6 +169,8 @@ class BrowserSurfaceWitness:
     last_good_rect_area: int = 0
     fresh_yard_seen: bool = False
     fresh_yard_elapsed: float | None = None
+    fresh_yard_visible_seen: bool = False
+    fresh_yard_rect_area: int = 0
     fresh_yard_chip_count: int = 0
     fresh_yard_text: str = ""
     dashboard_seen: bool = False
@@ -200,14 +202,16 @@ _BROWSER_WITNESS_JS = r"""
     lastGoodVisibleSeen: false,
     lastGoodContentSeen: false,
     lastGoodRectArea: 0,
+    freshYardVisibleSeen: false,
+    freshYardRectArea: 0,
     freshYardText: ""
   };
   const white = /rgb\(\s*255\s*,\s*255\s*,\s*255\s*\)/i;
   const transparent = /rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)/i;
-  const replayPaintState = (replay) => {
-    if (!replay || !replay.isConnected) return {visible: false, content: false, area: 0};
-    const style = getComputedStyle(replay);
-    const rect = replay.getBoundingClientRect();
+  const elementPaintState = (element) => {
+    if (!element || !element.isConnected) return {visible: false, area: 0};
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
     const opacity = Number.parseFloat(style.opacity || "1");
     const area = Math.round(Math.max(0, rect.width) * Math.max(0, rect.height));
     const inViewport = rect.bottom > 0
@@ -216,14 +220,20 @@ _BROWSER_WITNESS_JS = r"""
       && rect.left < window.innerWidth;
     const visible = style.display !== "none"
       && style.visibility !== "hidden"
+      && style.visibility !== "collapse"
       && (Number.isNaN(opacity) || opacity > 0)
       && rect.width >= 1
       && rect.height >= 1
       && inViewport;
+    return {visible, area};
+  };
+  const replayPaintState = (replay) => {
+    if (!replay || !replay.isConnected) return {visible: false, content: false, area: 0};
+    const painted = elementPaintState(replay);
     const text = ((replay.innerText || replay.textContent || "").replace(/\s+/g, " ").trim());
     const cacheBytes = Number.parseInt(replay.dataset?.cacheBytes || "0", 10);
     const content = text.length > 0 || cacheBytes > 0;
-    return {visible, content, area};
+    return {visible: painted.visible, content, area: painted.area};
   };
   const markLastGood = (state, replay, now) => {
     const painted = replayPaintState(replay);
@@ -294,10 +304,18 @@ _BROWSER_WITNESS_JS = r"""
     const dashboard = document.querySelector("#hapax-coord-dashboard");
     if (dashboard && state.first.dashboard == null) state.first.dashboard = now;
 
-    const yard = Array.from(document.querySelectorAll("#yard-status"))
-      .find((node) => !node.closest("#last-good-replay"));
+    const yardCandidates = Array.from(document.querySelectorAll("#yard-status"))
+      .filter((node) => !node.closest("#last-good-replay"));
+    let visibleYard = null;
+    for (const candidate of yardCandidates) {
+      const painted = elementPaintState(candidate);
+      state.freshYardVisibleSeen = state.freshYardVisibleSeen || painted.visible;
+      state.freshYardRectArea = Math.max(state.freshYardRectArea || 0, painted.area || 0);
+      if (painted.visible && visibleYard == null) visibleYard = candidate;
+    }
+    const yard = visibleYard || yardCandidates[0];
     if (yard) {
-      if (state.first.freshYard == null) state.first.freshYard = now;
+      if (visibleYard && state.first.freshYard == null) state.first.freshYard = now;
       state.freshYardChipCount = yard.querySelectorAll(".ys-chip").length;
       state.freshYardText = ((yard.innerText || yard.textContent || "")
         .replace(/\s+/g, " ")
@@ -1032,6 +1050,8 @@ def _witness_score(
     yard_ok = (
         yard_elapsed is not None
         and yard_elapsed < 2.0
+        and witness.fresh_yard_visible_seen
+        and witness.fresh_yard_rect_area > 0
         and witness.fresh_yard_chip_count > 0
         and yard_sha_ok
     )
@@ -1120,6 +1140,8 @@ def _browser_live_surface(url: str, expected_deployed_sha: str = "") -> BrowserS
                         last_good_rect_area=int(state.get("lastGoodRectArea") or 0),
                         fresh_yard_seen=first.get("freshYard") is not None,
                         fresh_yard_elapsed=_witness_seconds(first.get("freshYard")),
+                        fresh_yard_visible_seen=bool(state.get("freshYardVisibleSeen")),
+                        fresh_yard_rect_area=int(state.get("freshYardRectArea") or 0),
                         fresh_yard_chip_count=int(state.get("freshYardChipCount") or 0),
                         fresh_yard_text=str(state.get("freshYardText") or ""),
                         dashboard_seen=first.get("dashboard") is not None,
@@ -1158,6 +1180,8 @@ def _browser_live_surface(url: str, expected_deployed_sha: str = "") -> BrowserS
         last_good_rect_area=best.last_good_rect_area,
         fresh_yard_seen=best.fresh_yard_seen,
         fresh_yard_elapsed=best.fresh_yard_elapsed,
+        fresh_yard_visible_seen=best.fresh_yard_visible_seen,
+        fresh_yard_rect_area=best.fresh_yard_rect_area,
         fresh_yard_chip_count=best.fresh_yard_chip_count,
         fresh_yard_text=best.fresh_yard_text,
         dashboard_seen=best.dashboard_seen,
@@ -1702,6 +1726,8 @@ def run_checks(
             witness.fresh_yard_seen
             and witness.fresh_yard_elapsed is not None
             and witness.fresh_yard_elapsed < 2.0
+            and witness.fresh_yard_visible_seen
+            and witness.fresh_yard_rect_area > 0
             and witness.fresh_yard_chip_count > 0
             and yard_sha_visible
         )
@@ -1710,6 +1736,8 @@ def run_checks(
             "OK" if yard_ok else "FAIL",
             f"browser fresh_yard_seen={witness.fresh_yard_seen} "
             f"fresh_yard_elapsed={fresh_yard_elapsed} chips={witness.fresh_yard_chip_count} "
+            f"fresh_yard_visible={witness.fresh_yard_visible_seen} "
+            f"fresh_yard_rect_area={witness.fresh_yard_rect_area} "
             f"yard_sha_prefix={yard_sha_prefix or 'missing'} "
             f"yard_sha_visible={yard_sha_visible} "
             f"yard_text={_text_excerpt(witness.fresh_yard_text)!r} "
@@ -1718,7 +1746,7 @@ def run_checks(
             + (
                 ""
                 if yard_ok
-                else "; next: verify panel-yard-status renders health chips and the deployed SHA prefix before 2s"
+                else "; next: verify panel-yard-status is visible in the viewport with health chips and the deployed SHA prefix before 2s"
             ),
         )
 

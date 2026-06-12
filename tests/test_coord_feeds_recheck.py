@@ -210,6 +210,8 @@ def _browser_ok(mod):
         last_good_rect_area=4096,
         fresh_yard_seen=True,
         fresh_yard_elapsed=0.250,
+        fresh_yard_visible_seen=True,
+        fresh_yard_rect_area=4096,
         fresh_yard_chip_count=3,
         fresh_yard_text="YARD abc123def vocab 13 blocked",
         dashboard_seen=True,
@@ -356,6 +358,8 @@ def test_browser_live_surface_exercises_playwright_path(tmp_path, monkeypatch):
                 "lastGoodVisibleSeen": True,
                 "lastGoodContentSeen": True,
                 "lastGoodRectArea": 4096,
+                "freshYardVisibleSeen": True,
+                "freshYardRectArea": 8192,
                 "renderedBlockedSeen": True,
                 "renderedReceiptSeen": True,
                 "renderedReviewSeen": True,
@@ -410,6 +414,8 @@ def test_browser_live_surface_exercises_playwright_path(tmp_path, monkeypatch):
     assert witness.last_good_rect_area == 4096
     assert witness.fresh_yard_seen
     assert witness.fresh_yard_elapsed == 0.75
+    assert witness.fresh_yard_visible_seen
+    assert witness.fresh_yard_rect_area == 8192
     assert witness.fresh_yard_chip_count == 2
     assert witness.fresh_yard_text == "YARD abc123def vocab"
     assert witness.dark_paint_seen
@@ -424,6 +430,7 @@ def test_browser_live_surface_exercises_playwright_path(tmp_path, monkeypatch):
     assert "#yard-status" in calls["init_scripts"][0]
     assert 'querySelectorAll("#yard-status")' in calls["init_scripts"][0]
     assert "freshYardText" in calls["init_scripts"][0]
+    assert "freshYardVisibleSeen" in calls["init_scripts"][0]
     assert "visibleTextWithoutYard" in calls["init_scripts"][0]
     assert "#last-good-replay" in calls["init_scripts"][0]
     assert "addedNodes" in calls["init_scripts"][0]
@@ -975,6 +982,8 @@ def test_verdict_feed_matches_but_missing_rendered_text_fails_visibility(tmp_pat
             last_good_rect_area=4096,
             fresh_yard_seen=True,
             fresh_yard_elapsed=0.250,
+            fresh_yard_visible_seen=True,
+            fresh_yard_rect_area=4096,
             fresh_yard_chip_count=3,
             fresh_yard_text="YARD abc123def vocab 13 blocked",
             dashboard_seen=True,
@@ -1026,6 +1035,8 @@ def test_yard_summary_alone_does_not_satisfy_verdict_visibility(tmp_path):
             last_good_rect_area=4096,
             fresh_yard_seen=True,
             fresh_yard_elapsed=0.250,
+            fresh_yard_visible_seen=True,
+            fresh_yard_rect_area=4096,
             fresh_yard_chip_count=3,
             fresh_yard_text="YARD abc123def vocab 13 blocked 6 receipts",
             dashboard_seen=True,
@@ -1077,6 +1088,8 @@ def test_white_pixel_sample_fails_last_good_paint(tmp_path):
             last_good_rect_area=4096,
             fresh_yard_seen=True,
             fresh_yard_elapsed=0.250,
+            fresh_yard_visible_seen=True,
+            fresh_yard_rect_area=4096,
             fresh_yard_chip_count=3,
             fresh_yard_text="YARD abc123def vocab 13 blocked",
             dashboard_seen=True,
@@ -1124,6 +1137,8 @@ def test_mostly_white_pixel_sample_fails_last_good_paint(tmp_path):
             last_good_rect_area=4096,
             fresh_yard_seen=True,
             fresh_yard_elapsed=0.250,
+            fresh_yard_visible_seen=True,
+            fresh_yard_rect_area=4096,
             fresh_yard_chip_count=3,
             fresh_yard_text="YARD abc123def vocab 13 blocked",
             dashboard_seen=True,
@@ -1398,6 +1413,8 @@ def test_fresh_dashboard_paint_does_not_satisfy_last_good_check_without_replay(t
             last_good_elapsed=None,
             fresh_yard_seen=True,
             fresh_yard_elapsed=0.2,
+            fresh_yard_visible_seen=True,
+            fresh_yard_rect_area=4096,
             fresh_yard_chip_count=2,
             fresh_yard_text="YARD abc123def vocab 13 blocked",
             dashboard_seen=True,
@@ -1458,6 +1475,8 @@ def test_hidden_or_empty_replay_marker_fails_last_good_paint(tmp_path):
                 last_good_rect_area=area,
                 fresh_yard_seen=True,
                 fresh_yard_elapsed=0.2,
+                fresh_yard_visible_seen=True,
+                fresh_yard_rect_area=4096,
                 fresh_yard_chip_count=2,
                 fresh_yard_text="YARD abc123def vocab 13 blocked",
                 dashboard_seen=True,
@@ -1488,6 +1507,8 @@ def test_white_first_paint_fails_last_good_even_with_replay(tmp_path):
             last_good_rect_area=4096,
             fresh_yard_seen=True,
             fresh_yard_elapsed=0.2,
+            fresh_yard_visible_seen=True,
+            fresh_yard_rect_area=4096,
             fresh_yard_chip_count=2,
             fresh_yard_text="YARD abc123def vocab 13 blocked",
             dashboard_seen=True,
@@ -1532,6 +1553,45 @@ def test_stale_replay_yard_does_not_satisfy_fresh_strip(tmp_path):
     assert res["coord-yard-status-strip"]["state"] == "FAIL"
 
 
+def test_hidden_or_offscreen_yard_status_fails_strip(tmp_path):
+    mod = _load(_scaffold(tmp_path))
+
+    for detail, area in (
+        ("test browser witness with hidden yard strip", 0),
+        ("test browser witness with offscreen yard strip", 4096),
+    ):
+
+        def hidden_yard(_url, *, detail=detail, area=area):
+            return mod.BrowserSurfaceWitness(
+                ok=True,
+                detail=detail,
+                elapsed=0.3,
+                last_good_seen=True,
+                last_good_elapsed=0.05,
+                last_good_visible_seen=True,
+                last_good_content_seen=True,
+                last_good_rect_area=4096,
+                fresh_yard_seen=True,
+                fresh_yard_elapsed=0.2,
+                fresh_yard_visible_seen=False,
+                fresh_yard_rect_area=area,
+                fresh_yard_chip_count=2,
+                fresh_yard_text="YARD abc123def vocab 13 blocked",
+                dashboard_seen=True,
+                dark_paint_seen=True,
+                white_paint_seen=False,
+                pixel_sample_count=64,
+                pixel_white_ratio=0.0,
+                pixel_nonwhite_ratio=1.0,
+            )
+
+        res = _by_check(_run(mod, browser_probe=hidden_yard))
+        assert res["coord-last-good-paint"]["state"] == "OK"
+        assert res["coord-yard-status-strip"]["state"] == "FAIL"
+        assert "fresh_yard_visible=False" in res["coord-yard-status-strip"]["detail"]
+        assert f"fresh_yard_rect_area={area}" in res["coord-yard-status-strip"]["detail"]
+
+
 def test_fresh_yard_status_without_deployed_sha_fails_strip(tmp_path):
     env = _scaffold(tmp_path)
     srv = _stub_server(
@@ -1555,6 +1615,8 @@ def test_fresh_yard_status_without_deployed_sha_fails_strip(tmp_path):
             last_good_rect_area=4096,
             fresh_yard_seen=True,
             fresh_yard_elapsed=0.2,
+            fresh_yard_visible_seen=True,
+            fresh_yard_rect_area=4096,
             fresh_yard_chip_count=2,
             fresh_yard_text="YARD vocab 13 blocked",
             dashboard_seen=True,
@@ -1593,6 +1655,8 @@ def test_slow_live_yard_status_fails_strip(tmp_path):
             last_good_rect_area=4096,
             fresh_yard_seen=True,
             fresh_yard_elapsed=2.2,
+            fresh_yard_visible_seen=True,
+            fresh_yard_rect_area=4096,
             fresh_yard_chip_count=2,
             fresh_yard_text="YARD abc123def vocab 13 blocked",
             dashboard_seen=True,
