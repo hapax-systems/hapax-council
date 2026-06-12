@@ -51,7 +51,9 @@ def run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
 
 def git_diff_added_files(args: argparse.Namespace) -> list[Path]:
     """Get the list of newly added files from git diff."""
-    command = ["git", "diff", "--name-only", "--diff-filter=A"]
+    # A=added, R=renamed (a rename IS a new producer name; dossier critical:
+    # modified/renamed entrypoints bypassed the predicate under filter=A)
+    command = ["git", "diff", "--name-only", "--diff-filter=AR"]
     if args.staged:
         command.append("--cached")
     elif args.diff_range:
@@ -68,8 +70,11 @@ def git_diff_added_files(args: argparse.Namespace) -> list[Path]:
         command = ["git", "diff", "--name-only", "--diff-filter=A", "HEAD"]
         result = run_command(command)
         if result.returncode != 0:
-            print(f"Git diff failed: {result.stdout}", file=sys.stderr)
-            return []
+            # FAIL CLOSED (dossier critical 2026-06-12): an unreadable diff
+            # must block the gate, never pass it — empty-list reads as
+            # "nothing to check" and the gate exits green.
+            print(f"Git diff failed: {result.stdout} {result.stderr}", file=sys.stderr)
+            raise SystemExit(2)
 
     added_paths = []
     for line in result.stdout.splitlines():
@@ -191,10 +196,16 @@ def tooling_consumer_refs(target_file_path: Path, repo_root: Path | None = None)
     wf_dir = root / ".github" / "workflows"
     if wf_dir.is_dir():
         candidates.extend(sorted(wf_dir.glob("*.yml")))
+    exec_markers = ("entry:", "run:", "command:", "ExecStart", "python")
     for cfg in candidates:
         try:
-            if rel in cfg.read_text(encoding="utf-8", errors="replace"):
-                hits.append(str(cfg))
+            for line in cfg.read_text(encoding="utf-8", errors="replace").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue  # a comment mention is not a consumer (dossier critical)
+                if rel in stripped and any(m in stripped for m in exec_markers):
+                    hits.append(str(cfg))
+                    break
         except OSError:
             continue
     return hits

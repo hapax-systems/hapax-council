@@ -173,3 +173,46 @@ class TestCanaries:
             gate, "git_diff_added_files", lambda args: [Path("agents/entrypoint.py")]
         )
         assert gate.main([]) == 0
+
+
+class TestDossierCriticals:
+    """2026-06-12 dossier round: fail-closed diff, executing-mention-only
+    tooling consumers, renamed entrypoints covered."""
+
+    def test_git_diff_failure_blocks_the_gate(self, monkeypatch, tmp_path):
+        import subprocess
+
+        import check_new_module_consumers as gate
+
+        monkeypatch.chdir(tmp_path)
+
+        def broken(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="fatal: bad object")
+
+        monkeypatch.setattr(gate, "run_command", broken)
+        import argparse
+
+        args = argparse.Namespace(staged=False, diff_range=None, base_ref=None)
+        try:
+            gate.git_diff_added_files(args)
+            raise AssertionError("diff failure must raise, never pass")
+        except SystemExit as e:
+            assert e.code == 2
+
+    def test_comment_mention_is_not_a_tooling_consumer(self, tmp_path, monkeypatch):
+        import check_new_module_consumers as gate
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".pre-commit-config.yaml").write_text(
+            "# TODO: maybe wire scripts/foo.py someday\n"
+        )
+        assert gate.tooling_consumer_refs(Path("scripts/foo.py")) == []
+
+    def test_entry_line_mention_is_a_tooling_consumer(self, tmp_path, monkeypatch):
+        import check_new_module_consumers as gate
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".pre-commit-config.yaml").write_text(
+            "      - id: foo\n        entry: python3 scripts/foo.py\n"
+        )
+        assert gate.tooling_consumer_refs(Path("scripts/foo.py")) != []
