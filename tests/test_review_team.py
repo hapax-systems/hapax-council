@@ -551,6 +551,24 @@ class TestVerdictBlockers:
         )
         assert "review_dossier_team_class_below_task_floor:t3_docs!=t1_critical" in blockers
 
+    def test_changed_file_scope_recomputed_in_gate(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = self._good_dossier(rt)
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            changed_files=("scripts/review_team.py",),
+        )
+        assert "review_dossier_team_class_scope_mismatch:t2_standard!=t1_critical" in blockers
+        assert any(
+            b.startswith("review_dossier_missing_required_lenses:")
+            and "sdlc-gate-compose" in b
+            and "sdlc-legibility" in b
+            for b in blockers
+        )
+
     def test_unregistered_accept_family_blocks_even_if_family_count_passes(
         self, tmp_path: Path
     ) -> None:

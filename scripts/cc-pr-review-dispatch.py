@@ -177,10 +177,12 @@ def render_reviewer_prompt(
 ) -> str:
     prior_block = ""
     if prior_criticals:
+        prior_yaml = yaml.safe_dump(prior_criticals, sort_keys=False)
         prior_block = (
             "## Prior unresolved criticals (previous review round, earlier head sha)\n"
             "Verify each is resolved in this diff; if not, name it critical again.\n\n"
-            "```yaml\n" + yaml.safe_dump(prior_criticals, sort_keys=False) + "```\n\n"
+            + render_untrusted_block("Prior unresolved criticals", prior_yaml, limit=20_000)
+            + "\n"
         )
     return f"""You are reviewer seat {seat.id} ({seat.family} model family) on a BLIND PR review team for the hapax-council repo. You review alone: do not assume other reviewers exist, do not coordinate, judge only what is in front of you.
 
@@ -393,6 +395,7 @@ def write_acceptance_receipt_if_due(
     *,
     pr_url: str,
     now_iso: str,
+    changed_files: tuple[str, ...] | None = None,
 ) -> Path | None:
     """The dossier IS the acceptance receipt for review-floor tasks (spec §5).
 
@@ -402,8 +405,11 @@ def write_acceptance_receipt_if_due(
 
     if dossier["review_team_verdict"] != review_team.QUORUM_ACCEPT:
         return None
-    blockers = review_team.review_team_verdict_blockers(
-        frontmatter, note_path, pr_head_sha=str(dossier.get("head_sha") or "")
+    blockers = review_team.review_dossier_validity_blockers(
+        frontmatter,
+        note_path,
+        pr_head_sha=str(dossier.get("head_sha") or ""),
+        changed_files=changed_files,
     )
     if blockers:
         LOG.warning("acceptance receipt withheld; review-team gate blocks: %s", ",".join(blockers))
@@ -458,11 +464,13 @@ def auto_wake(
     payload = (
         f"# Review-team findings — {task_id} (PR #{dossier['pr']} @ {sha8})\n\n"
         f"verdict: {dossier['review_team_verdict']}\n\n"
-        "```yaml\n"
-        + yaml.safe_dump(
-            {"escalations": dossier["escalations"], "findings": findings}, sort_keys=False
+        + render_untrusted_block(
+            "Review-team findings payload",
+            yaml.safe_dump(
+                {"escalations": dossier["escalations"], "findings": findings}, sort_keys=False
+            ),
         )
-        + "```\n\n"
+        + "\n"
         + next_action
     )
     wake_dir.mkdir(parents=True, exist_ok=True)
@@ -512,12 +520,19 @@ def replay_dossier_side_effects(
     registry: dict[str, Any],
     wake_dir: Path,
     send_runner: Any,
+    changed_files: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Idempotently replay side effects derived from an already-written dossier."""
 
     pr_url = f"https://github.com/{repo}/pull/{dossier['pr']}"
     receipt_path = write_acceptance_receipt_if_due(
-        frontmatter, note_path, task_id, dossier, pr_url=pr_url, now_iso=now_iso
+        frontmatter,
+        note_path,
+        task_id,
+        dossier,
+        pr_url=pr_url,
+        now_iso=now_iso,
+        changed_files=changed_files,
     )
     wake_path = None
     has_block = any(str(r.get("verdict")) == "block" for r in dossier.get("reviewers") or [])
@@ -594,6 +609,7 @@ def review_pr(
                     registry=registry,
                     wake_dir=wake_dir,
                     send_runner=send_runner,
+                    changed_files=pr_info.files,
                 )
             return {
                 "status": "skipped_fresh",
@@ -689,6 +705,7 @@ def review_pr(
         registry=registry,
         wake_dir=wake_dir,
         send_runner=send_runner,
+        changed_files=pr_info.files,
     )
 
     return {

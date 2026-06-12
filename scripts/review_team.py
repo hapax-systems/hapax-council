@@ -499,6 +499,7 @@ def _dossier_validity_blockers(
     pr_head_sha: str | None,
     registry: Mapping[str, Any],
     frontmatter: Mapping[str, Any] | None = None,
+    changed_files: Sequence[str] | None = None,
 ) -> tuple[str, ...]:
     blockers: list[str] = []
 
@@ -515,9 +516,18 @@ def _dossier_validity_blockers(
     if not isinstance(sizing, Mapping):
         blockers.append(f"review_dossier_malformed:unknown_team_class:{team_class or 'missing'}")
         return tuple(blockers)
-    class_floor = _task_class_floor(frontmatter)
-    if class_floor is not None and team_class != class_floor:
-        blockers.append(f"review_dossier_team_class_below_task_floor:{team_class}!={class_floor}")
+    if changed_files is not None:
+        expected_team_class = team_class_for(frontmatter or {}, changed_files, registry)
+        if team_class != expected_team_class:
+            blockers.append(
+                f"review_dossier_team_class_scope_mismatch:{team_class}!={expected_team_class}"
+            )
+    else:
+        class_floor = _task_class_floor(frontmatter)
+        if class_floor is not None and team_class != class_floor:
+            blockers.append(
+                f"review_dossier_team_class_below_task_floor:{team_class}!={class_floor}"
+            )
 
     reviews = dossier.get("reviewers")
     if not isinstance(reviews, list) or not all(isinstance(r, Mapping) for r in reviews):
@@ -536,7 +546,11 @@ def _dossier_validity_blockers(
     if not isinstance(lenses, list) or not all(isinstance(l, str) for l in lenses):
         blockers.append("review_dossier_malformed:lenses")
         lenses = []
-    required_lenses = set(registry.get("always_on_lenses") or [])
+    required_lenses = set(
+        lenses_for_files(changed_files, registry)
+        if changed_files is not None
+        else registry.get("always_on_lenses") or []
+    )
     missing_required_lenses = required_lenses - set(lenses)
     if missing_required_lenses:
         blockers.append(
@@ -592,23 +606,16 @@ def _dossier_validity_blockers(
     return tuple(blockers)
 
 
-def review_team_verdict_blockers(
+def review_dossier_validity_blockers(
     frontmatter: Mapping[str, Any],
     note_path: Path,
     *,
     pr_head_sha: str | None = None,
+    changed_files: Sequence[str] | None = None,
     registry: Mapping[str, Any] | None = None,
 ) -> tuple[str, ...]:
-    """Admission blockers from the review-team quorum gate (no quorum, no merge).
+    """Validate a recorded review dossier without honoring any gate killswitch."""
 
-    Fail-closed: a missing/malformed/stale dossier blocks; the verdict field is
-    never trusted alone — quorum, criticals, team size, and family diversity
-    are recomputed from the recorded reviews. ``HAPAX_REVIEW_TEAM_GATE_OFF=1``
-    is the documented emergency bypass.
-    """
-
-    if gate_disabled():
-        return ()
     task_id = str(frontmatter.get("task_id") or "").strip()
     if not task_id:
         return ("review_dossier_unkeyable:missing_task_id",)
@@ -629,5 +636,40 @@ def review_team_verdict_blockers(
         except (OSError, ValueError, yaml.YAMLError) as exc:
             return (f"review_lens_registry_unreadable:{type(exc).__name__}",)
     return _dossier_validity_blockers(
-        loaded, pr_head_sha=pr_head_sha, registry=registry, frontmatter=frontmatter
+        loaded,
+        pr_head_sha=pr_head_sha,
+        registry=registry,
+        frontmatter=frontmatter,
+        changed_files=changed_files,
+    )
+
+
+def review_team_verdict_blockers(
+    frontmatter: Mapping[str, Any],
+    note_path: Path,
+    *,
+    pr_head_sha: str | None = None,
+    changed_files: Sequence[str] | None = None,
+    registry: Mapping[str, Any] | None = None,
+) -> tuple[str, ...]:
+    """Admission blockers from the review-team quorum gate (no quorum, no merge).
+
+    Fail-closed: a missing/malformed/stale dossier blocks; the verdict field is
+    never trusted alone — quorum, criticals, team size, mandatory lenses, and
+    family diversity are recomputed from the recorded reviews. When changed
+    files are supplied, the recorded team class and lens set must match the
+    same surface-derived scope used by the dispatcher.
+    ``HAPAX_REVIEW_TEAM_GATE_OFF=1`` is the documented emergency bypass for
+    admission only; durable receipt minting must use
+    :func:`review_dossier_validity_blockers` instead.
+    """
+
+    if gate_disabled():
+        return ()
+    return review_dossier_validity_blockers(
+        frontmatter,
+        note_path,
+        pr_head_sha=pr_head_sha,
+        changed_files=changed_files,
+        registry=registry,
     )

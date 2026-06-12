@@ -138,6 +138,21 @@ class TestReviewTeamGate:
         decision = self._classify(vault, _pr(42))
         assert decision.action == "queue", decision.reasons
 
+    def test_changed_file_scope_mismatch_blocks(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", pr=42)
+        _write_review_dossier(vault, "task-a", head_sha="sha-42")
+        decision = self._classify(vault, _pr(42, files=["scripts/review_team.py"]))
+        assert decision.action == "blocked"
+        assert (
+            "review_dossier_team_class_scope_mismatch:t2_standard!=t1_critical" in decision.reasons
+        )
+        assert any(
+            r.startswith("review_dossier_missing_required_lenses:") and "sdlc-gate-compose" in r
+            for r in decision.reasons
+        )
+
     def test_stale_dossier_blocks_after_push(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -303,6 +318,7 @@ def _pr(
     *,
     branch: str | None = None,
     title: str | None = None,
+    files: list[str] | None = None,
     body: str = "",
     draft: bool = False,
     merge_state: str = "CLEAN",
@@ -318,6 +334,7 @@ def _pr(
         "body": body,
         "headRefName": branch or f"feat/{number}",
         "headRefOid": f"sha-{number}",
+        "files": [{"path": path} for path in files or []],
         "isDraft": draft,
         "mergeStateStatus": merge_state,
         "labels": [{"name": label} for label in labels or []],

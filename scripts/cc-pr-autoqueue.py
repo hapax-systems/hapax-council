@@ -182,6 +182,7 @@ class PullRequest:
     title: str
     head_ref: str
     head_sha: str | None
+    files: tuple[str, ...]
     body: str
     is_draft: bool
     merge_state_status: str
@@ -415,11 +416,17 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
         number = int(item["number"])
     except (KeyError, TypeError, ValueError):
         return None
+    files = tuple(
+        str(entry["path"])
+        for entry in item.get("files") or []
+        if isinstance(entry, dict) and entry.get("path")
+    )
     return PullRequest(
         number=number,
         node_id=_scalar(item.get("id")),
         title=_scalar(item.get("title")) or "",
         head_ref=_scalar(item.get("headRefName")) or "",
+        files=files,
         body=str(item.get("body") or ""),
         is_draft=bool(item.get("isDraft")),
         head_sha=_scalar(item.get("headRefOid")),
@@ -459,6 +466,7 @@ def fetch_open_prs(
                 "body",
                 "headRefName",
                 "headRefOid",
+                "files",
                 "isDraft",
                 "mergeStateStatus",
                 "labels",
@@ -642,6 +650,7 @@ def _task_blockers(
     open_pr_number: int | None = None,
     allow_release_auto_arm: bool = False,
     pr_head_sha: str | None = None,
+    changed_files: tuple[str, ...] | None = None,
 ) -> list[str]:
     blockers: list[str] = []
     if not task.authority_case:
@@ -663,7 +672,10 @@ def _task_blockers(
     # HAPAX_REVIEW_TEAM_GATE_OFF=1 (gate only, not the whole autoqueue).
     blockers.extend(
         review_team.review_team_verdict_blockers(
-            task.frontmatter, task.path, pr_head_sha=pr_head_sha
+            task.frontmatter,
+            task.path,
+            pr_head_sha=pr_head_sha,
+            changed_files=changed_files,
         )
     )
 
@@ -877,6 +889,7 @@ def classify_pr(
                 open_pr_number=pr.number,
                 allow_release_auto_arm=len(matches) == 1,
                 pr_head_sha=pr.head_sha,
+                changed_files=pr.files,
             )
             if len(matches) == 1:
                 reasons.extend(blockers)
@@ -1428,6 +1441,7 @@ def run_reconciler(
     mutation_results: list[dict[str, Any]] = []
     if apply:
         for decision in decisions:
+            admission_status = _admission_status_for(decision)
             status_result = set_autoqueue_admission_status(
                 decision, repo=repo, repo_root=repo_root, runner=runner, now=now
             )
@@ -1438,12 +1452,13 @@ def run_reconciler(
                 "dequeue",
             }:
                 if status_result is not None:
+                    assert admission_status is not None
                     ok, message = status_result
                     mutation_results.append(
                         {
                             **decision.as_dict(),
                             "action": "set_admission_status",
-                            "status_state": _admission_status_for(decision)[0],
+                            "status_state": admission_status[0],
                             "ok": ok,
                             "message": message,
                         }
@@ -1454,13 +1469,14 @@ def run_reconciler(
                 and status_result is not None
                 and not status_result[0]
             ):
+                assert admission_status is not None
                 mutation_results.append(
                     {
                         **decision.as_dict(),
                         "ok": False,
                         "message": "admission status write failed; queue mutation skipped",
                         "admission_status": {
-                            "state": _admission_status_for(decision)[0],
+                            "state": admission_status[0],
                             "ok": status_result[0],
                             "message": status_result[1],
                         },
@@ -1487,9 +1503,10 @@ def run_reconciler(
                 "message": message,
             }
             if status_result is not None:
+                assert admission_status is not None
                 status_ok, status_message = status_result
                 result["admission_status"] = {
-                    "state": _admission_status_for(decision)[0],
+                    "state": admission_status[0],
                     "ok": status_ok,
                     "message": status_message,
                 }
