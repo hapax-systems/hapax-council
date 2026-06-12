@@ -290,7 +290,7 @@ class TestCursorPersistence:
         assert [imp.source for imp in result] == ["new-a", "new-b"]
         assert consumer.cursor == 2
 
-    def test_legacy_cursor_without_identity_reads_same_line_count_replacement(
+    def test_legacy_cursor_without_identity_adopts_same_line_count_source(
         self, tmp_path: Path
     ) -> None:
         path = tmp_path / "imp.jsonl"
@@ -301,7 +301,7 @@ class TestCursorPersistence:
         consumer = ImpingementConsumer(path, cursor_path=cursor_path)
         result = consumer.read_new()
 
-        assert [imp.source for imp in result] == ["new-a", "new-b"]
+        assert result == []
         assert consumer.cursor == 2
         assert cursor_path.with_name("cursor.txt.state.json").exists()
 

@@ -147,34 +147,47 @@ class ImpingementConsumer:
         assert self._cursor_path is not None
         return self._cursor_path.with_name(f"{self._cursor_path.name}.state.json")
 
-    def _read_cursor_identity(self) -> tuple[FileIdentity | None, bool]:
+    def _read_cursor_identity(self) -> tuple[FileIdentity | None, bool, bool]:
         if self._cursor_path is None:
-            return None, False
+            return None, False, True
         state_path = self._cursor_state_path()
         try:
             state = json.loads(state_path.read_text(encoding="utf-8"))
-            return (int(state["st_dev"]), int(state["st_ino"])), True
+            return (int(state["st_dev"]), int(state["st_ino"])), True, True
         except FileNotFoundError:
-            return None, False
+            return None, False, True
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
             log.warning(
                 "Impingement cursor state %s unreadable; resetting to avoid stale cursor",
                 state_path,
             )
-            return None, False
+            return None, True, False
 
-    def _reconcile_source_identity(self, source_stat: os.stat_result) -> None:
+    def _reconcile_source_identity(self, source_stat: os.stat_result, line_count: int) -> None:
         if self._cursor_path is None:
             return
-        previous_identity, has_previous_identity = self._read_cursor_identity()
+        previous_identity, has_previous_identity, cursor_state_valid = self._read_cursor_identity()
         current_identity = jsonl_file_identity(source_stat)
-        if not has_previous_identity and self._cursor > 0:
+        if not cursor_state_valid:
             log.warning(
-                "Impingement cursor %s missing source identity; resetting cursor",
+                "Impingement cursor %s has unreadable source identity; resetting cursor",
                 self._cursor_path,
             )
             self._cursor = 0
             self._write_cursor(self._cursor, source_stat=source_stat)
+            return
+        if not has_previous_identity and self._cursor > 0 and self._cursor <= line_count:
+            log.warning(
+                "Impingement legacy cursor %s adopted with source identity",
+                self._cursor_path,
+            )
+            self._write_cursor(self._cursor, source_stat=source_stat)
+            return
+        if not has_previous_identity and self._cursor > line_count:
+            log.warning(
+                "Impingement cursor %s missing source identity and beyond current line count",
+                self._cursor_path,
+            )
             return
         if previous_identity is not None and previous_identity != current_identity:
             log.warning(
@@ -205,7 +218,7 @@ class ImpingementConsumer:
             source_stat = self._path.stat()
             text = self._path.read_text(encoding="utf-8")
             lines = text.strip().split("\n") if text.strip() else []
-            self._reconcile_source_identity(source_stat)
+            self._reconcile_source_identity(source_stat, len(lines))
 
             if len(lines) < self._cursor:
                 log.warning(

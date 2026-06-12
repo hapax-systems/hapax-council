@@ -24,6 +24,7 @@ from hashlib import sha256
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+from shared.jsonl_rotation import iter_jsonl_lines_with_gzip_archives
 from shared.research_vehicle_public_event import (
     PrivacyClass,
     PublicEventChapterRef,
@@ -61,6 +62,7 @@ STATE_PATH = Path(
 )
 DEFAULT_TICK_S = float(os.environ.get("HAPAX_WEBLOG_PUBLISH_EVENT_TICK_S", "60"))
 TASK_ANCHOR = "weblog-publish-event-producer"
+PUBLIC_EVENT_ARCHIVE_GLOB = "public-events.*.jsonl.gz"
 
 _PUBLIC_SAFE_RIGHTS = {"operator_original", "operator_controlled", "third_party_attributed"}
 _PUBLIC_SAFE_PRIVACY = {"public_safe", "aggregate_only"}
@@ -429,11 +431,11 @@ def _evidence_refs(blockers: tuple[str, ...]) -> list[str]:
 
 def _load_event_ids(path: Path) -> set[str]:
     ids: set[str] = set()
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ids
-    for raw in lines:
+    for raw in iter_jsonl_lines_with_gzip_archives(
+        path,
+        archive_glob=PUBLIC_EVENT_ARCHIVE_GLOB,
+        logger=log,
+    ):
         try:
             item = json.loads(raw)
         except json.JSONDecodeError:

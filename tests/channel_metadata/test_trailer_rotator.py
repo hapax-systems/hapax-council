@@ -95,6 +95,23 @@ class TestCursor:
         rotator.run_once()
         assert client.execute.call_count == 2
 
+    def test_legacy_cursor_without_identity_state_is_adopted(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("YOUTUBE_CHANNEL_ID", "UC-test")
+        bus = tmp_path / "events.jsonl"
+        cursor = tmp_path / "cursor.txt"
+        first = {"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-1"}
+        second = {"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-2"}
+        _write_events(bus, [first])
+        cursor.write_text(str(bus.stat().st_size), encoding="utf-8")
+        _write_events(bus, [first, second])
+
+        rotator, client = _make_rotator(event_path=bus, cursor_path=cursor)
+        rotator.run_once()
+
+        assert client.execute.call_count == 1
+        assert int(cursor.read_text()) == bus.stat().st_size
+        assert cursor.with_name("cursor.txt.state.json").exists()
+
     def test_cursor_reset_after_event_file_shrinks(self, tmp_path, monkeypatch):
         monkeypatch.setenv("YOUTUBE_CHANNEL_ID", "UC-test")
         bus = tmp_path / "events.jsonl"

@@ -60,6 +60,7 @@ import yaml
 from prometheus_client import REGISTRY, CollectorRegistry, Counter
 
 from agents.publication_bus.surface_registry import dispatch_registry
+from shared.jsonl_rotation import iter_jsonl_lines_with_gzip_archives
 from shared.preprint_artifact import (
     INBOX_DIR_NAME,
     ApprovalState,
@@ -86,6 +87,7 @@ log = logging.getLogger(__name__)
 
 DEFAULT_TICK_S = 30.0
 METRICS_PORT_DEFAULT = 9510
+PUBLIC_EVENT_ARCHIVE_GLOB = "public-events.*.jsonl.gz"
 PUBLIC_EVENT_PATH = Path(
     os.environ.get(
         "HAPAX_RESEARCH_VEHICLE_PUBLIC_EVENT_PATH",
@@ -746,11 +748,11 @@ def _artifact_fingerprint(artifact: PreprintArtifact) -> str:
 
 def _load_public_event_ids(path: Path) -> set[str]:
     ids: set[str] = set()
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ids
-    for raw in lines:
+    for raw in iter_jsonl_lines_with_gzip_archives(
+        path,
+        archive_glob=PUBLIC_EVENT_ARCHIVE_GLOB,
+        logger=log,
+    ):
         try:
             item = json.loads(raw)
         except json.JSONDecodeError:
