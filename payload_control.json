@@ -1,0 +1,1 @@
+{"tool_input": {"command": "cd /nonexistent_xyz; make\necho done"}}
