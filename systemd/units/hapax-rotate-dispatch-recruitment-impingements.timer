@@ -1,3 +1,4 @@
+# Hapax-Auto-Enable: true
 [Unit]
 Description=hapax — frequent cap check for dispatch/recruitment/impingement JSONL ledgers
 
