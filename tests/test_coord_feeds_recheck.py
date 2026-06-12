@@ -57,13 +57,23 @@ def _scaffold(tmp_path: Path) -> dict[str, str]:
     coord_activation = tmp_path / "coord-activation" / "worktree"
     coord_activation.mkdir(parents=True)
     (coord_activation / "README.md").write_text("coord activation fixture\n")
+    (coord_activation / ".gitignore").write_text("ignored-runtime.txt\nignored-runtime/\n")
     run_dev = coord_activation / "scripts/run-dev.sh"
     run_dev.parent.mkdir(parents=True)
     run_dev.write_text("#!/usr/bin/env bash\n")
     run_dev.chmod(0o755)
     subprocess.run(["git", "init", str(coord_activation)], check=True, capture_output=True)
     subprocess.run(
-        ["git", "-C", str(coord_activation), "add", "README.md", "scripts/run-dev.sh"], check=True
+        [
+            "git",
+            "-C",
+            str(coord_activation),
+            "add",
+            ".gitignore",
+            "README.md",
+            "scripts/run-dev.sh",
+        ],
+        check=True,
     )
     subprocess.run(
         [
@@ -1025,6 +1035,10 @@ def test_coord_deploy_helper_cleans_dirty_activation_at_deployed_sha(tmp_path):
 
     (worktree / "README.md").write_text("dirty tracked live edit\n")
     (worktree / "runtime-only.js").write_text("dirty untracked live code\n")
+    (worktree / ".gitignore").write_text("ignored-runtime.txt\nignored-runtime/\n")
+    (worktree / "ignored-runtime.txt").write_text("ignored runtime file\n")
+    (worktree / "ignored-runtime").mkdir()
+    (worktree / "ignored-runtime/cache.js").write_text("ignored runtime cache\n")
 
     _cmd([str(_DEPLOY_SCRIPT)], env=env)
 
@@ -1032,9 +1046,130 @@ def test_coord_deploy_helper_cleans_dirty_activation_at_deployed_sha(tmp_path):
     assert (worktree / ".deployed-sha").read_text().strip() == first_sha
     assert (worktree / "README.md").read_text() == "first\n"
     assert not (worktree / "runtime-only.js").exists()
+    assert not (worktree / "ignored-runtime.txt").exists()
+    assert not (worktree / "ignored-runtime").exists()
     assert restart_log.read_text().splitlines() == [
         "--user restart hapax-coord.service",
         "--user restart hapax-coord.service",
+    ]
+
+
+def test_coord_deploy_helper_rolls_back_when_clean_fails_after_checkout(tmp_path):
+    origin = tmp_path / "origin.git"
+    source = tmp_path / "source"
+    writer = tmp_path / "writer"
+    act_root = tmp_path / "coord-activation"
+    fakebin = tmp_path / "bin"
+    restart_log = tmp_path / "systemctl.log"
+    fakebin.mkdir()
+    systemctl = fakebin / "systemctl"
+    systemctl.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "${HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG:?}"\n'
+    )
+    systemctl.chmod(0o755)
+    real_git = shutil.which("git")
+    assert real_git
+    git = fakebin / "git"
+    git.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CHECKOUT:-}" = "1" ] && '
+        '[ "$1" = "-C" ] && [ "$2" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree" ] && '
+        '[ "$3" = "checkout" ] && [ "$4" = "--detach" ] && [ "$5" = "--force" ] && '
+        '[ "$6" = "${HAPAX_COORD_DEPLOY_EXPECT_ROLLBACK_SHA:?}" ]; then\n'
+        '  echo "simulated rollback checkout failure" >&2\n'
+        "  exit 57\n"
+        "fi\n"
+        'if [ "${HAPAX_COORD_DEPLOY_FAIL_CLEAN_ONCE:-}" = "1" ] && '
+        '[ "$1" = "-C" ] && [ "$2" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree" ] && '
+        '[ "$3" = "clean" ] && [ ! -e "${HAPAX_COORD_DEPLOY_FAIL_CLEAN_MARKER:?}" ]; then\n'
+        '  touch "${HAPAX_COORD_DEPLOY_FAIL_CLEAN_MARKER:?}"\n'
+        '  echo "simulated activation clean failure" >&2\n'
+        "  exit 59\n"
+        "fi\n"
+        'exec "${HAPAX_TEST_REAL_GIT:?}" "$@"\n'
+    )
+    git.chmod(0o755)
+
+    _cmd(["git", "init", "--bare", str(origin)])
+    _cmd(["git", "init", str(source)])
+    _cmd(["git", "-C", str(source), "checkout", "-b", "main"])
+    first_sha = _deploy_fixture_commit(source, "first")
+    _cmd(["git", "-C", str(source), "remote", "add", "origin", str(origin)])
+    _cmd(["git", "-C", str(source), "push", "-u", "origin", "main"])
+
+    env = {
+        **os.environ,
+        "HAPAX_COORD_DEPLOY_REPO": str(source),
+        "HAPAX_COORD_DEPLOY_ACT_ROOT": str(act_root),
+        "HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG": str(restart_log),
+        "HAPAX_TEST_REAL_GIT": real_git,
+        "PATH": f"{fakebin}:{os.environ.get('PATH', '')}",
+    }
+    _cmd([str(_DEPLOY_SCRIPT)], env=env)
+    worktree = act_root / "worktree"
+    assert (worktree / ".deployed-sha").read_text().strip() == first_sha
+
+    _cmd(["git", "clone", "-b", "main", str(origin), str(writer)])
+    second_sha = _deploy_fixture_commit(writer, "second")
+    _cmd(["git", "-C", str(writer), "push", "origin", "main"])
+
+    failed_clean = subprocess.run(
+        [str(_DEPLOY_SCRIPT)],
+        env={
+            **env,
+            "HAPAX_COORD_DEPLOY_FAIL_CLEAN_ONCE": "1",
+            "HAPAX_COORD_DEPLOY_FAIL_CLEAN_MARKER": str(tmp_path / "target-clean.failed"),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert failed_clean.returncode == 59
+    assert "clean untracked/ignored activation worktree" in failed_clean.stderr
+    assert "failed after target checkout" in failed_clean.stderr
+    assert "rolled activation worktree back" in failed_clean.stderr
+    assert "simulated activation clean failure" in failed_clean.stderr
+    assert "next:" in failed_clean.stderr
+    assert (worktree / ".deployed-sha").read_text().strip() == first_sha
+    assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == first_sha
+    assert restart_log.read_text().splitlines() == ["--user restart hapax-coord.service"]
+
+    _cmd([str(_DEPLOY_SCRIPT)], env=env)
+    assert (worktree / ".deployed-sha").read_text().strip() == second_sha
+    assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == second_sha
+
+    third_sha = _deploy_fixture_commit(writer, "third")
+    _cmd(["git", "-C", str(writer), "push", "origin", "main"])
+    failed_clean_checkout = subprocess.run(
+        [str(_DEPLOY_SCRIPT)],
+        env={
+            **env,
+            "HAPAX_COORD_DEPLOY_FAIL_CLEAN_ONCE": "1",
+            "HAPAX_COORD_DEPLOY_FAIL_CLEAN_MARKER": str(tmp_path / "target-clean-checkout.failed"),
+            "HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CHECKOUT": "1",
+            "HAPAX_COORD_DEPLOY_EXPECT_ROLLBACK_SHA": second_sha,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert failed_clean_checkout.returncode == 59
+    assert "rollback checkout to" in failed_clean_checkout.stderr
+    assert "simulated rollback checkout failure" in failed_clean_checkout.stderr
+    assert "stopped hapax-coord.service to avoid serving unreceipted target" in (
+        failed_clean_checkout.stderr
+    )
+    assert "next:" in failed_clean_checkout.stderr
+    assert (worktree / ".deployed-sha").read_text().strip() == second_sha
+    assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == third_sha
+    assert restart_log.read_text().splitlines() == [
+        "--user restart hapax-coord.service",
+        "--user restart hapax-coord.service",
+        "--user stop hapax-coord.service",
     ]
 
 
@@ -1588,6 +1723,23 @@ def test_coord_deploy_contract_without_restart_failure_rollback_fails(tmp_path):
     r = res["coord-deploy-script"]
     assert r["state"] == "FAIL"
     assert "rolls_back_worktree_on_restart_failure" in r["detail"]
+
+
+def test_coord_deploy_contract_without_clean_failure_rollback_fails(tmp_path):
+    env = _scaffold(tmp_path)
+    bad_contract = '"rolls_back_worktree_on_clean_failure":true'
+    for deploy in (
+        Path(env["HAPAX_RECHECK_REPO"]) / "scripts/hapax-coord-deploy",
+        Path(env["HAPAX_RECHECK_COORD_DEPLOY_SCRIPT"]),
+    ):
+        deploy.write_text(
+            deploy.read_text().replace(bad_contract, '"rolls_back_worktree_on_clean_failure":false')
+        )
+    mod = _load(env)
+    res = _by_check(_run(mod))
+    r = res["coord-deploy-script"]
+    assert r["state"] == "FAIL"
+    assert "rolls_back_worktree_on_clean_failure" in r["detail"]
 
 
 def test_coord_deploy_contract_without_clean_activation_fails(tmp_path):
@@ -2402,7 +2554,7 @@ def test_dirty_tracked_activation_file_fails_provenance(tmp_path):
         mod = _load(env)
         res = _by_check(_run(mod))
         assert res["coord-provenance"]["state"] == "FAIL"
-        assert "uncommitted/untracked live code" in res["coord-provenance"]["detail"]
+        assert "uncommitted/untracked/ignored live code" in res["coord-provenance"]["detail"]
         assert "M README.md" in res["coord-provenance"]["detail"]
     finally:
         srv.shutdown()
@@ -2425,8 +2577,33 @@ def test_untracked_activation_file_fails_provenance(tmp_path):
         mod = _load(env)
         res = _by_check(_run(mod))
         assert res["coord-provenance"]["state"] == "FAIL"
-        assert "uncommitted/untracked live code" in res["coord-provenance"]["detail"]
+        assert "uncommitted/untracked/ignored live code" in res["coord-provenance"]["detail"]
         assert "?? runtime-only.js" in res["coord-provenance"]["detail"]
+    finally:
+        srv.shutdown()
+
+
+def test_ignored_activation_file_fails_provenance(tmp_path):
+    env = _scaffold(tmp_path)
+    activation = Path(env["HAPAX_RECHECK_COORD_ACTIVATION"])
+    (activation / "ignored-runtime.txt").write_text("ignored runtime file\n")
+    (activation / "ignored-runtime").mkdir()
+    (activation / "ignored-runtime/cache.js").write_text("ignored runtime cache\n")
+    srv = _stub_server(
+        version=_version(env),
+        rails={
+            "feed_state": "live",
+            "stations": ["S0", "S5", "S6", "S7"],
+            "items": [{"id": "t1", "station": "S5"}],
+        },
+    )
+    try:
+        env["HAPAX_RECHECK_COORD_URL"] = f"http://127.0.0.1:{srv.server_address[1]}"
+        mod = _load(env)
+        res = _by_check(_run(mod))
+        assert res["coord-provenance"]["state"] == "FAIL"
+        assert "uncommitted/untracked/ignored live code" in res["coord-provenance"]["detail"]
+        assert "!! ignored-runtime" in res["coord-provenance"]["detail"]
     finally:
         srv.shutdown()
 
