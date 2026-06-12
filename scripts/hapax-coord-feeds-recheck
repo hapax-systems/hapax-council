@@ -678,6 +678,28 @@ def _git_head(path: Path) -> str:
     return proc.stdout.strip()
 
 
+def _git_dirty_entries(path: Path) -> list[str]:
+    proc = subprocess.run(
+        ["git", "-C", str(path), "status", "--porcelain=v1", "--untracked-files=all"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "git status failed")
+    entries: list[str] = []
+    for line in proc.stdout.splitlines():
+        # .deployed-sha is the governed runtime receipt for this activation
+        # worktree; any other tracked or untracked path means live code can
+        # diverge from the witnessed commit.
+        path_text = line[3:] if len(line) > 3 else ""
+        if path_text == ".deployed-sha":
+            continue
+        entries.append(line)
+    return entries
+
+
 def _write_deploy_fixture_commit(repo: Path, marker: str) -> str:
     (repo / "README.md").write_text(f"{marker}\n")
     _run_cmd(["git", "-C", str(repo), "add", "README.md"])
@@ -717,7 +739,9 @@ def _exercise_coord_deploy_helper() -> str:
         systemctl.write_text(
             "#!/usr/bin/env bash\n"
             'printf "%s\\n" "$*" >> "${HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG:?}"\n'
-            'if [ "${HAPAX_COORD_DEPLOY_FAIL_RESTART:-}" = "1" ]; then\n'
+            'if [ "${HAPAX_COORD_DEPLOY_FAIL_RESTART_ONCE:-}" = "1" ] && '
+            '[ ! -e "${HAPAX_COORD_DEPLOY_FAIL_ONCE_MARKER:?}" ]; then\n'
+            '  touch "${HAPAX_COORD_DEPLOY_FAIL_ONCE_MARKER:?}"\n'
             "  exit 42\n"
             "fi\n"
         )
@@ -766,7 +790,11 @@ def _exercise_coord_deploy_helper() -> str:
             )
         failed = subprocess.run(
             [str(COORD_DEPLOY_SCRIPT)],
-            env={**env, "HAPAX_COORD_DEPLOY_FAIL_RESTART": "1"},
+            env={
+                **env,
+                "HAPAX_COORD_DEPLOY_FAIL_RESTART_ONCE": "1",
+                "HAPAX_COORD_DEPLOY_FAIL_ONCE_MARKER": str(root / "target-restart.failed"),
+            },
             capture_output=True,
             text=True,
             check=False,
@@ -783,6 +811,7 @@ def _exercise_coord_deploy_helper() -> str:
             )
         restarts = restart_log.read_text().splitlines()
         if restarts != [
+            "--user restart hapax-coord.service",
             "--user restart hapax-coord.service",
             "--user restart hapax-coord.service",
         ]:
@@ -802,13 +831,15 @@ def _exercise_coord_deploy_helper() -> str:
             "--user restart hapax-coord.service",
             "--user restart hapax-coord.service",
             "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
         ]:
             raise RuntimeError(f"second deploy restart log mismatch: {restarts}")
 
     return (
         f"first={first_sha[:9]} second={second_sha[:9]} wrote .deployed-sha after restart, "
         "refreshed stale origin/main, advanced worktree, skipped idempotent restart, "
-        "rolled back worktree on failed restart, retried restart on change"
+        "rolled back worktree and restarted rollback service on failed restart, "
+        "retried restart on change"
     )
 
 
@@ -1353,6 +1384,7 @@ def run_checks(
                     "writes_deployed_sha": True,
                     "writes_deployed_sha_after_restart": True,
                     "rolls_back_worktree_on_restart_failure": True,
+                    "cleans_activation_worktree": True,
                     "restarts_service": COORD_SERVICE,
                 }
                 mismatches = {
@@ -1373,7 +1405,8 @@ def run_checks(
                         "OK",
                         f"runtime helper {COORD_DEPLOY_SCRIPT} sha256={runtime_deploy_sha[:16]} "
                         f"matches tracked {COORD_DEPLOY_RELPATH} and contracts origin/main -> "
-                        f"{COORD_ACTIVATION} with post-restart .deployed-sha and rollback",
+                        f"{COORD_ACTIVATION} with post-restart .deployed-sha, clean checkout, "
+                        "and rollback",
                     )
 
     expected_unit_names = set(UNITS)
@@ -1629,6 +1662,12 @@ def run_checks(
     if deployed_sha and DEPLOY_SHA_FILE.exists():
         on_disk = DEPLOY_SHA_FILE.read_text().strip()
         activation_head = _git_head(COORD_ACTIVATION)
+        try:
+            dirty_entries = _git_dirty_entries(COORD_ACTIVATION)
+            dirty_error = ""
+        except Exception as exc:  # noqa: BLE001
+            dirty_entries = []
+            dirty_error = str(exc)
         if not on_disk:
             add(
                 "coord-provenance",
@@ -1641,6 +1680,20 @@ def run_checks(
                 "FAIL",
                 f"could not read activation git HEAD at {COORD_ACTIVATION}; "
                 f"next: restore the coord activation worktree with {COORD_DEPLOY_RELPATH}",
+            )
+        elif dirty_error:
+            add(
+                "coord-provenance",
+                "FAIL",
+                f"could not read activation git status at {COORD_ACTIVATION}: {dirty_error}; "
+                f"next: restore a clean coord activation worktree with {COORD_DEPLOY_RELPATH}",
+            )
+        elif dirty_entries:
+            add(
+                "coord-provenance",
+                "FAIL",
+                "activation worktree has uncommitted/untracked live code "
+                f"{dirty_entries[:5]}; next: commit/redeploy or clean {COORD_ACTIVATION}",
             )
         elif (
             _sha_prefix_match(deployed_sha, on_disk)

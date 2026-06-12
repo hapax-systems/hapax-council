@@ -57,8 +57,14 @@ def _scaffold(tmp_path: Path) -> dict[str, str]:
     coord_activation = tmp_path / "coord-activation" / "worktree"
     coord_activation.mkdir(parents=True)
     (coord_activation / "README.md").write_text("coord activation fixture\n")
+    run_dev = coord_activation / "scripts/run-dev.sh"
+    run_dev.parent.mkdir(parents=True)
+    run_dev.write_text("#!/usr/bin/env bash\n")
+    run_dev.chmod(0o755)
     subprocess.run(["git", "init", str(coord_activation)], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(coord_activation), "add", "README.md"], check=True)
+    subprocess.run(
+        ["git", "-C", str(coord_activation), "add", "README.md", "scripts/run-dev.sh"], check=True
+    )
     subprocess.run(
         [
             "git",
@@ -118,10 +124,6 @@ def _scaffold(tmp_path: Path) -> dict[str, str]:
             text = f"[Unit]\nDescription={u}\n"
         (units_repo / u).write_text(text)
         (installed / u).write_text(text)
-    run_dev = coord_activation / "scripts/run-dev.sh"
-    run_dev.parent.mkdir(parents=True)
-    run_dev.write_text("#!/usr/bin/env bash\n")
-    run_dev.chmod(0o755)
     deploy_text = _DEPLOY_SCRIPT.read_text()
     for rel in (
         "scripts/hapax-sdlc-vocab-export",
@@ -881,7 +883,9 @@ def test_coord_deploy_helper_fetches_writes_sha_and_is_idempotent(tmp_path):
     systemctl.write_text(
         "#!/usr/bin/env bash\n"
         'printf "%s\\n" "$*" >> "${HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG:?}"\n'
-        'if [ "${HAPAX_COORD_DEPLOY_FAIL_RESTART:-}" = "1" ]; then\n'
+        'if [ "${HAPAX_COORD_DEPLOY_FAIL_RESTART_ONCE:-}" = "1" ] && '
+        '[ ! -e "${HAPAX_COORD_DEPLOY_FAIL_ONCE_MARKER:?}" ]; then\n'
+        '  touch "${HAPAX_COORD_DEPLOY_FAIL_ONCE_MARKER:?}"\n'
         "  exit 42\n"
         "fi\n"
     )
@@ -916,7 +920,11 @@ def test_coord_deploy_helper_fetches_writes_sha_and_is_idempotent(tmp_path):
     assert _cmd(["git", "-C", str(source), "rev-parse", "origin/main"]) == first_sha
     failed = subprocess.run(
         [str(_DEPLOY_SCRIPT)],
-        env={**env, "HAPAX_COORD_DEPLOY_FAIL_RESTART": "1"},
+        env={
+            **env,
+            "HAPAX_COORD_DEPLOY_FAIL_RESTART_ONCE": "1",
+            "HAPAX_COORD_DEPLOY_FAIL_ONCE_MARKER": str(tmp_path / "target-restart.failed"),
+        },
         capture_output=True,
         text=True,
         check=False,
@@ -924,11 +932,13 @@ def test_coord_deploy_helper_fetches_writes_sha_and_is_idempotent(tmp_path):
     )
     assert failed.returncode == 42
     assert "rolled activation worktree back" in failed.stderr
+    assert "restarted hapax-coord.service on rollback sha" in failed.stderr
     assert "next:" in failed.stderr
     assert "journalctl --user -u hapax-coord.service" in failed.stderr
     assert (worktree / ".deployed-sha").read_text().strip() == first_sha
     assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == first_sha
     assert restart_log.read_text().splitlines() == [
+        "--user restart hapax-coord.service",
         "--user restart hapax-coord.service",
         "--user restart hapax-coord.service",
     ]
@@ -939,6 +949,53 @@ def test_coord_deploy_helper_fetches_writes_sha_and_is_idempotent(tmp_path):
     assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == second_sha
     assert restart_log.read_text().splitlines() == [
         "--user restart hapax-coord.service",
+        "--user restart hapax-coord.service",
+        "--user restart hapax-coord.service",
+        "--user restart hapax-coord.service",
+    ]
+
+
+def test_coord_deploy_helper_cleans_dirty_activation_at_deployed_sha(tmp_path):
+    origin = tmp_path / "origin.git"
+    source = tmp_path / "source"
+    act_root = tmp_path / "coord-activation"
+    fakebin = tmp_path / "bin"
+    restart_log = tmp_path / "systemctl.log"
+    fakebin.mkdir()
+    systemctl = fakebin / "systemctl"
+    systemctl.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "${HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG:?}"\n'
+    )
+    systemctl.chmod(0o755)
+
+    _cmd(["git", "init", "--bare", str(origin)])
+    _cmd(["git", "init", str(source)])
+    _cmd(["git", "-C", str(source), "checkout", "-b", "main"])
+    first_sha = _deploy_fixture_commit(source, "first")
+    _cmd(["git", "-C", str(source), "remote", "add", "origin", str(origin)])
+    _cmd(["git", "-C", str(source), "push", "-u", "origin", "main"])
+
+    env = {
+        **os.environ,
+        "HAPAX_COORD_DEPLOY_REPO": str(source),
+        "HAPAX_COORD_DEPLOY_ACT_ROOT": str(act_root),
+        "HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG": str(restart_log),
+        "PATH": f"{fakebin}:{os.environ.get('PATH', '')}",
+    }
+    _cmd([str(_DEPLOY_SCRIPT)], env=env)
+    worktree = act_root / "worktree"
+    assert (worktree / ".deployed-sha").read_text().strip() == first_sha
+
+    (worktree / "README.md").write_text("dirty tracked live edit\n")
+    (worktree / "runtime-only.js").write_text("dirty untracked live code\n")
+
+    _cmd([str(_DEPLOY_SCRIPT)], env=env)
+
+    assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == first_sha
+    assert (worktree / ".deployed-sha").read_text().strip() == first_sha
+    assert (worktree / "README.md").read_text() == "first\n"
+    assert not (worktree / "runtime-only.js").exists()
+    assert restart_log.read_text().splitlines() == [
         "--user restart hapax-coord.service",
         "--user restart hapax-coord.service",
     ]
@@ -1009,6 +1066,20 @@ def test_coord_deploy_helper_rolls_back_when_receipt_write_fails_after_restart(t
         '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "${HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG:?}"\n'
     )
     systemctl.chmod(0o755)
+    real_mv = shutil.which("mv")
+    assert real_mv
+    mv = fakebin / "mv"
+    mv.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${HAPAX_COORD_DEPLOY_FAIL_RECEIPT_MV:-}" = "1" ] && '
+        '[ "$1" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree/.deployed-sha.tmp" ] && '
+        '[ "$2" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree/.deployed-sha" ]; then\n'
+        '  echo "simulated receipt promote failure" >&2\n'
+        "  exit 58\n"
+        "fi\n"
+        'exec "${HAPAX_TEST_REAL_MV:?}" "$@"\n'
+    )
+    mv.chmod(0o755)
 
     _cmd(["git", "init", "--bare", str(origin)])
     _cmd(["git", "init", str(source)])
@@ -1022,6 +1093,7 @@ def test_coord_deploy_helper_rolls_back_when_receipt_write_fails_after_restart(t
         "HAPAX_COORD_DEPLOY_REPO": str(source),
         "HAPAX_COORD_DEPLOY_ACT_ROOT": str(act_root),
         "HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG": str(restart_log),
+        "HAPAX_TEST_REAL_MV": real_mv,
         "PATH": f"{fakebin}:{os.environ.get('PATH', '')}",
     }
     _cmd([str(_DEPLOY_SCRIPT)], env=env)
@@ -1031,11 +1103,10 @@ def test_coord_deploy_helper_rolls_back_when_receipt_write_fails_after_restart(t
     _cmd(["git", "clone", "-b", "main", str(origin), str(writer)])
     second_sha = _deploy_fixture_commit(writer, "second")
     _cmd(["git", "-C", str(writer), "push", "origin", "main"])
-    (worktree / ".deployed-sha.tmp").mkdir()
 
     failed = subprocess.run(
         [str(_DEPLOY_SCRIPT)],
-        env=env,
+        env={**env, "HAPAX_COORD_DEPLOY_FAIL_RECEIPT_MV": "1"},
         capture_output=True,
         text=True,
         check=False,
@@ -1055,7 +1126,6 @@ def test_coord_deploy_helper_rolls_back_when_receipt_write_fails_after_restart(t
         "--user restart hapax-coord.service",
     ]
 
-    (worktree / ".deployed-sha.tmp").rmdir()
     _cmd([str(_DEPLOY_SCRIPT)], env=env)
     assert (worktree / ".deployed-sha").read_text().strip() == second_sha
     assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == second_sha
@@ -1080,6 +1150,20 @@ def test_coord_deploy_helper_stops_service_when_receipt_rollback_checkout_fails(
         '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "${HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG:?}"\n'
     )
     systemctl.chmod(0o755)
+    real_mv = shutil.which("mv")
+    assert real_mv
+    mv = fakebin / "mv"
+    mv.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${HAPAX_COORD_DEPLOY_FAIL_RECEIPT_MV:-}" = "1" ] && '
+        '[ "$1" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree/.deployed-sha.tmp" ] && '
+        '[ "$2" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree/.deployed-sha" ]; then\n'
+        '  echo "simulated receipt promote failure" >&2\n'
+        "  exit 58\n"
+        "fi\n"
+        'exec "${HAPAX_TEST_REAL_MV:?}" "$@"\n'
+    )
+    mv.chmod(0o755)
     real_git = shutil.which("git")
     assert real_git
     git = fakebin / "git"
@@ -1109,6 +1193,7 @@ def test_coord_deploy_helper_stops_service_when_receipt_rollback_checkout_fails(
         "HAPAX_COORD_DEPLOY_ACT_ROOT": str(act_root),
         "HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG": str(restart_log),
         "HAPAX_TEST_REAL_GIT": real_git,
+        "HAPAX_TEST_REAL_MV": real_mv,
         "PATH": f"{fakebin}:{os.environ.get('PATH', '')}",
     }
     _cmd([str(_DEPLOY_SCRIPT)], env=env)
@@ -1119,12 +1204,12 @@ def test_coord_deploy_helper_stops_service_when_receipt_rollback_checkout_fails(
     second_sha = _deploy_fixture_commit(writer, "second")
     _cmd(["git", "-C", str(writer), "push", "origin", "main"])
     assert second_sha != first_sha
-    (worktree / ".deployed-sha.tmp").mkdir()
 
     failed = subprocess.run(
         [str(_DEPLOY_SCRIPT)],
         env={
             **env,
+            "HAPAX_COORD_DEPLOY_FAIL_RECEIPT_MV": "1",
             "HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CHECKOUT": "1",
             "HAPAX_COORD_DEPLOY_EXPECT_ROLLBACK_SHA": first_sha,
         },
@@ -1251,6 +1336,23 @@ def test_coord_deploy_contract_without_restart_failure_rollback_fails(tmp_path):
     r = res["coord-deploy-script"]
     assert r["state"] == "FAIL"
     assert "rolls_back_worktree_on_restart_failure" in r["detail"]
+
+
+def test_coord_deploy_contract_without_clean_activation_fails(tmp_path):
+    env = _scaffold(tmp_path)
+    bad_contract = '"cleans_activation_worktree":true'
+    for deploy in (
+        Path(env["HAPAX_RECHECK_REPO"]) / "scripts/hapax-coord-deploy",
+        Path(env["HAPAX_RECHECK_COORD_DEPLOY_SCRIPT"]),
+    ):
+        deploy.write_text(
+            deploy.read_text().replace(bad_contract, '"cleans_activation_worktree":false')
+        )
+    mod = _load(env)
+    res = _by_check(_run(mod))
+    r = res["coord-deploy-script"]
+    assert r["state"] == "FAIL"
+    assert "cleans_activation_worktree" in r["detail"]
 
 
 def test_differing_installed_unit_fails_with_next_action(tmp_path):
@@ -2011,6 +2113,52 @@ def test_activation_head_mismatch_fails_provenance(tmp_path):
         res = _by_check(_run(mod))
         assert res["coord-provenance"]["state"] == "FAIL"
         assert "activation_head=" in res["coord-provenance"]["detail"]
+    finally:
+        srv.shutdown()
+
+
+def test_dirty_tracked_activation_file_fails_provenance(tmp_path):
+    env = _scaffold(tmp_path)
+    activation = Path(env["HAPAX_RECHECK_COORD_ACTIVATION"])
+    (activation / "README.md").write_text("dirty live edit\n")
+    srv = _stub_server(
+        version=_version(env),
+        rails={
+            "feed_state": "live",
+            "stations": ["S0", "S5", "S6", "S7"],
+            "items": [{"id": "t1", "station": "S5"}],
+        },
+    )
+    try:
+        env["HAPAX_RECHECK_COORD_URL"] = f"http://127.0.0.1:{srv.server_address[1]}"
+        mod = _load(env)
+        res = _by_check(_run(mod))
+        assert res["coord-provenance"]["state"] == "FAIL"
+        assert "uncommitted/untracked live code" in res["coord-provenance"]["detail"]
+        assert "M README.md" in res["coord-provenance"]["detail"]
+    finally:
+        srv.shutdown()
+
+
+def test_untracked_activation_file_fails_provenance(tmp_path):
+    env = _scaffold(tmp_path)
+    activation = Path(env["HAPAX_RECHECK_COORD_ACTIVATION"])
+    (activation / "runtime-only.js").write_text("console.log('dirty runtime file');\n")
+    srv = _stub_server(
+        version=_version(env),
+        rails={
+            "feed_state": "live",
+            "stations": ["S0", "S5", "S6", "S7"],
+            "items": [{"id": "t1", "station": "S5"}],
+        },
+    )
+    try:
+        env["HAPAX_RECHECK_COORD_URL"] = f"http://127.0.0.1:{srv.server_address[1]}"
+        mod = _load(env)
+        res = _by_check(_run(mod))
+        assert res["coord-provenance"]["state"] == "FAIL"
+        assert "uncommitted/untracked live code" in res["coord-provenance"]["detail"]
+        assert "?? runtime-only.js" in res["coord-provenance"]["detail"]
     finally:
         srv.shutdown()
 
