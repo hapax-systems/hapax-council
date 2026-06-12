@@ -20,6 +20,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from shared.jsonl_retention import append_bounded_jsonl_line
+from shared.jsonl_rotation import iter_retained_jsonl_lines
 
 INDEX_PATH = Path("/dev/shm/hapax-daimonion/public-speech-events.jsonl")
 MAX_PUBLIC_SPEECH_EVENTS = 5_000
@@ -81,7 +82,7 @@ def append_public_speech_event(
     max_events: int = MAX_PUBLIC_SPEECH_EVENTS,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    # jsonl-rotation: exempt(inline bounded witness index; recent lookup scans live cap)
+    # jsonl-rotation: exempt(inline bounded witness index; recent lookup scans retained cap)
     append_bounded_jsonl_line(path, record.model_dump_json(), max_lines=max_events)
 
 
@@ -89,10 +90,8 @@ def read_public_speech_events(
     path: Path = INDEX_PATH,
     scope: PublicSpeechScope | None = None,
 ) -> list[PublicSpeechEventRecord]:
-    if not path.exists():
-        return []
     records: list[PublicSpeechEventRecord] = []
-    for line in path.read_text(encoding="utf-8").strip().splitlines():
+    for line in iter_retained_jsonl_lines(path):
         if not line.strip():
             continue
         data = json.loads(line)

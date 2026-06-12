@@ -46,6 +46,17 @@ def test_write_and_read_mutation_events(tmp_path: Path) -> None:
     assert events[1].kind == MutationKind.LINK_REMOVE
 
 
+def test_read_mutation_events_scans_retained_generations(tmp_path: Path) -> None:
+    ledger = tmp_path / "mutations.jsonl"
+    rotated = tmp_path / "mutations.jsonl.1"
+    rotated.write_text(_make_event(kind=MutationKind.LINK_CREATE).model_dump_json() + "\n")
+    write_mutation_event(_make_event(kind=MutationKind.LINK_REMOVE), ledger)
+
+    events = read_mutation_events(ledger)
+
+    assert [event.kind for event in events] == [MutationKind.LINK_CREATE, MutationKind.LINK_REMOVE]
+
+
 def test_read_empty_ledger(tmp_path: Path) -> None:
     events = read_mutation_events(tmp_path / "nonexistent.jsonl")
     assert events == []

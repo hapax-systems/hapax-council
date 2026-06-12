@@ -16,6 +16,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from shared.jsonl_retention import rewrite_bounded_jsonl_lines
+from shared.jsonl_rotation import iter_retained_jsonl_lines
 
 log = logging.getLogger(__name__)
 
@@ -62,9 +63,7 @@ class GroundingLedger:
         self._load()
 
     def _load(self) -> None:
-        if not self.path.exists():
-            return
-        for line in self.path.read_text(encoding="utf-8").splitlines():
+        for line in iter_retained_jsonl_lines(self.path):
             line = line.strip()
             if not line:
                 continue
@@ -77,7 +76,7 @@ class GroundingLedger:
 
     def _persist(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        # jsonl-rotation: exempt(inline compacted state ledger; one live row per claim)
+        # jsonl-rotation: exempt(inline compacted state ledger; one retained row per claim)
         rewrite_bounded_jsonl_lines(
             self.path,
             (item.model_dump_json() for item in self._entries.values()),

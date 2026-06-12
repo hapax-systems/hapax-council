@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,6 +18,7 @@ from shared.livestream_egress_state import (
     LivestreamEgressEvidence,
     LivestreamEgressState,
 )
+from shared.research_vehicle_public_event_chronicle import chronicle_public_event_id
 
 NOW = datetime(2026, 4, 30, 11, 15, tzinfo=UTC).timestamp()
 GENERATED_AT = "2026-04-30T11:15:00Z"
@@ -127,6 +129,13 @@ def _read_public_events(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
+def _write_public_event_archive(public: Path, event_id: str) -> None:
+    archive = public.parent / "archive" / "public-events.2026-06-12.jsonl.gz"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(archive, "wt", encoding="utf-8") as fh:
+        fh.write(json.dumps({"event_id": event_id}) + "\n")
+
+
 def _producer(
     chronicle: Path, public: Path, cursor: Path
 ) -> ChronicleHighSaliencePublicEventProducer:
@@ -196,6 +205,23 @@ def test_producer_skips_duplicate_event_ids_without_mutating_legacy_stream(
     assert producer.run_once() == 0
     assert len(_read_public_events(public)) == 1
     assert json.loads(chronicle.read_text(encoding="utf-8").splitlines()[0]) == event
+
+
+def test_producer_skips_duplicate_event_ids_from_public_event_archive(tmp_path: Path) -> None:
+    chronicle = tmp_path / "chronicle.jsonl"
+    public = tmp_path / "public.jsonl"
+    cursor = tmp_path / "cursor.txt"
+    event = _chronicle_event()
+    _write_chronicle(chronicle, event)
+    _write_public_event_archive(
+        public,
+        chronicle_public_event_id(event, mapped_event_type="chronicle.high_salience"),
+    )
+    producer = _producer(chronicle, public, cursor)
+
+    assert producer.run_once() == 0
+    assert not public.exists()
+    assert int(cursor.read_text(encoding="utf-8")) == chronicle.stat().st_size
 
 
 def test_truncation_resets_cursor_and_processes_new_chronicle_file(tmp_path: Path) -> None:

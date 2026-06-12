@@ -170,6 +170,23 @@ class TestProcessOperational:
         lines = (events_dir / "operational-events.jsonl").read_text().splitlines()
         assert len(lines) == 1
 
+    def test_idempotent_on_message_id_from_retained_generation(self, tmp_path: Path, monkeypatch):
+        events_dir = tmp_path / "operational"
+        events_dir.mkdir()
+        events_file = events_dir / "operational-events.jsonl"
+        events_file.with_name(f"{events_file.name}.1").write_text(
+            json.dumps({"message_id": "ev-dupe-rotated"}) + "\n",
+            encoding="utf-8",
+        )
+        events_file.write_text("", encoding="utf-8")
+        monkeypatch.setattr(
+            "agents.mail_monitor.processors.operational.EVENTS_DIR",
+            events_dir,
+        )
+
+        assert process_operational(_msg(message_id="ev-dupe-rotated")) is True
+        assert events_file.read_text(encoding="utf-8") == ""
+
     def test_returns_false_for_unrelated_sender(self, tmp_path: Path, monkeypatch):
         events_dir = tmp_path / "operational"
         monkeypatch.setattr(

@@ -204,6 +204,28 @@ class TestApplyCadenceRule:
         assert b in result
         assert a not in result
 
+    def test_cadence_rule_counts_retained_generations(self, tmp_path: Path) -> None:
+        log_path = tmp_path / "touches.jsonl"
+        now = datetime.now(UTC)
+        log_path.with_name(f"{log_path.name}.1").write_text(
+            "\n".join(
+                json.dumps(
+                    {
+                        "orcid": "0000-0001-6927-020X",
+                        "timestamp": now.isoformat(),
+                    }
+                )
+                for _ in range(3)
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        log_path.write_text("", encoding="utf-8")
+
+        candidate = _entry("a", "0000-0001-6927-020X", audience_vectors=["critical-ai"])
+
+        assert apply_cadence_rule([candidate], log_path=log_path, max_touches_per_year=3) == []
+
     def test_old_touches_dont_count(self, tmp_path: Path) -> None:
         log_path = tmp_path / "touches.jsonl"
         old = datetime.now(UTC) - timedelta(days=400)

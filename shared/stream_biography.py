@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from shared.jsonl_retention import append_bounded_jsonl_line
+from shared.jsonl_rotation import iter_retained_jsonl_lines
 
 log = logging.getLogger(__name__)
 
@@ -245,10 +246,8 @@ def persist(
 
 
 def load_persisted(path: Path = PERSIST_PATH) -> StreamBiography | None:
-    if not path.exists():
-        return None
     try:
-        lines = path.read_text(encoding="utf-8").strip().splitlines()
+        lines = [line.strip() for line in iter_retained_jsonl_lines(path) if line.strip()]
         if not lines:
             return None
         return StreamBiography.from_dict(json.loads(lines[-1]))

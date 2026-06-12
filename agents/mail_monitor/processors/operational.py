@@ -31,6 +31,8 @@ from typing import Any
 
 from prometheus_client import Counter
 
+from shared.jsonl_rotation import append_rotated_jsonl_line, iter_retained_jsonl_lines
+
 log = logging.getLogger(__name__)
 
 
@@ -139,14 +141,10 @@ def _source_label(kind: str) -> str:
 
 def _seen_message(events_path: Path, message_id: str) -> bool:
     """Idempotency: return True iff the JSONL log already has this messageId."""
-    if not events_path.exists() or not message_id:
+    if not message_id:
         return False
     target = json.dumps(message_id)  # quoted, escaped
-    with events_path.open("r", encoding="utf-8") as fh:
-        for line in fh:
-            if target in line:
-                return True
-    return False
+    return any(target in line for line in iter_retained_jsonl_lines(events_path))
 
 
 def process_operational(message: dict[str, Any]) -> bool:
@@ -170,10 +168,7 @@ def process_operational(message: dict[str, Any]) -> bool:
         "payload": payload,
     }
     try:
-        EVENTS_DIR.mkdir(parents=True, exist_ok=True)
-        # jsonl-rotation: exempt(operational mail dedupe; _seen_message scans live file)
-        with events_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(event) + "\n")
+        append_rotated_jsonl_line(events_path, json.dumps(event))
     except OSError:
         log.exception("operational: failed to append event for %s", message_id)
         return False

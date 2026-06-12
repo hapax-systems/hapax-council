@@ -77,6 +77,36 @@ class TestStructuredToFacts:
         domains = {entry.rsplit(" ", 1)[0] for entry in website_fact["value"].split(", ")}
         assert any(domain == "github.com" for domain in domains)
 
+    def test_reads_retained_generations(self, tmp_path):
+        jsonl = tmp_path / "structured.jsonl"
+        rotated = tmp_path / "structured.jsonl.1"
+        self._write_jsonl(
+            rotated,
+            [
+                {
+                    "service": "chrome",
+                    "title": "Archived GitHub",
+                    "structured_fields": {"url": "https://github.com", "visit_count": 7},
+                }
+            ],
+        )
+        self._write_jsonl(
+            jsonl,
+            [
+                {
+                    "service": "chrome",
+                    "title": "Active Example",
+                    "structured_fields": {"url": "https://example.com", "visit_count": 3},
+                }
+            ],
+        )
+
+        facts = structured_to_facts(jsonl)
+
+        website_fact = next(f for f in facts if f["key"] == "frequent_websites")
+        assert "github.com" in website_fact["value"]
+        assert "example.com" in website_fact["value"]
+
     def test_search_facts(self, tmp_path):
         jsonl = tmp_path / "structured.jsonl"
         self._write_jsonl(

@@ -48,7 +48,7 @@ def test_reconcile_resets_when_identity_changes_at_same_size(tmp_path, caplog):
     assert "cursor reset after rotation" in caplog.text
 
 
-def test_reconcile_resets_legacy_cursor_without_identity_state(tmp_path, caplog):
+def test_reconcile_adopts_legacy_cursor_without_identity_state(tmp_path, caplog):
     source = tmp_path / "events.jsonl"
     cursor = tmp_path / "events.cursor"
     source.write_text("abcdef", encoding="utf-8")
@@ -66,11 +66,33 @@ def test_reconcile_resets_legacy_cursor_without_identity_state(tmp_path, caplog)
             label="event",
         )
 
-    assert resolved == 0
-    assert cursor.read_text(encoding="utf-8") == "0"
+    assert resolved == source_stat.st_size
+    assert cursor.read_text(encoding="utf-8") == str(source_stat.st_size)
     state = json.loads(_state_path(cursor).read_text(encoding="utf-8"))
     assert state["st_ino"] == source_stat.st_ino
-    assert "cursor reset without identity state" in caplog.text
+    assert "cursor adopted legacy identity" in caplog.text
+
+
+def test_reconcile_resets_legacy_cursor_after_shrink_without_identity_state(tmp_path, caplog):
+    source = tmp_path / "events.jsonl"
+    cursor = tmp_path / "events.cursor"
+    source.write_text("abc", encoding="utf-8")
+    cursor.write_text("6", encoding="utf-8")
+
+    logger = logging.getLogger("tests.jsonl_cursor")
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        resolved = reconcile_jsonl_cursor(
+            cursor,
+            source,
+            6,
+            source_stat=source.stat(),
+            logger=logger,
+            label="event",
+        )
+
+    assert resolved == 0
+    assert cursor.read_text(encoding="utf-8") == "0"
+    assert "cursor reset after legacy shrink without identity state" in caplog.text
 
 
 def test_reconcile_logs_corrupt_state_and_resets_cursor(tmp_path, caplog):
@@ -94,7 +116,7 @@ def test_reconcile_logs_corrupt_state_and_resets_cursor(tmp_path, caplog):
     assert resolved == 0
     assert cursor.read_text(encoding="utf-8") == "0"
     assert "cursor state unreadable" in caplog.text
-    assert "cursor reset without identity state" in caplog.text
+    assert "cursor reset after unreadable identity state" in caplog.text
 
 
 def test_write_cursor_logs_and_swallows_oserror(tmp_path, caplog):

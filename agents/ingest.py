@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from agents._frontmatter import parse_frontmatter
+from shared.jsonl_rotation import append_rotated_jsonl_line
 
 # Self-contained config (no shared.config import — this module runs in an
 # isolated venv without pydantic-ai due to docling/huggingface-hub conflict).
@@ -337,9 +338,7 @@ def _dead_letter(path: Path, error: str, attempts: int) -> None:
         "attempts": attempts,
         "failed_at": datetime.now().isoformat(),
     }
-    # jsonl-rotation: exempt(dead-letter state; operators inspect active failure history)
-    with open(DEAD_LETTER_PATH, "a") as f:
-        f.write(json.dumps(entry) + "\n")
+    append_rotated_jsonl_line(DEAD_LETTER_PATH, json.dumps(entry))
     log.error(
         f"  ✗ Permanent failure after {attempts} retries: {path.name} — {error}"
         f" (recorded in dead-letter queue)"

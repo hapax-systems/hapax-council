@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,13 @@ def _write_enforcement(path: Path, record: dict[str, Any]) -> None:
 
 def _read_public_events(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def _write_public_event_archive(public: Path, event_id: str) -> None:
+    archive = public.parent / "archive" / "public-events.2026-06-12.jsonl.gz"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(archive, "wt", encoding="utf-8") as fh:
+        fh.write(json.dumps({"event_id": event_id}) + "\n")
 
 
 def test_enforcement_event_maps_axiom_block() -> None:
@@ -167,6 +175,24 @@ def test_producer_skips_duplicate_event_ids(tmp_path: Path) -> None:
     cursor.unlink()
     assert producer.run_once() == 0
     assert len(_read_public_events(public)) == 1
+
+
+def test_producer_skips_duplicate_event_ids_from_public_event_archive(tmp_path: Path) -> None:
+    enforcement = tmp_path / "enforcement.jsonl"
+    public = tmp_path / "public.jsonl"
+    cursor = tmp_path / "cursor.txt"
+    record = _enforcement_record()
+    _write_enforcement(enforcement, record)
+    _write_public_event_archive(public, governance_enforcement_event_id(record))
+    producer = GovernanceEnforcementPublicEventProducer(
+        enforcement_path=enforcement,
+        public_event_path=public,
+        cursor_path=cursor,
+    )
+
+    assert producer.run_once() == 0
+    assert not public.exists()
+    assert int(cursor.read_text(encoding="utf-8")) == enforcement.stat().st_size
 
 
 def test_producer_handles_missing_enforcement_file(tmp_path: Path) -> None:

@@ -17,6 +17,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from shared.dispatcher_policy import quota_spend_ledger_live_path_from_env
+from shared.jsonl_rotation import iter_retained_jsonl_lines
 from shared.platform_capability_registry import (
     PLATFORM_CAPABILITY_REGISTRY,
     PlatformCapabilityRegistryError,
@@ -208,10 +209,7 @@ def route_decision_items_from_jsonl(
 ) -> tuple[dict[str, object], ...]:
     """Read recent route-decision receipt rows for observe-only dashboards."""
 
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ()
+    lines = list(iter_retained_jsonl_lines(path))
 
     checked_at = _coerce_now(now) if now is not None else None
     rows: list[dict[str, object]] = []

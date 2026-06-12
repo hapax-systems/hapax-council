@@ -77,3 +77,17 @@ def test_stream_biography_persist_keeps_bounded_latest_snapshots(tmp_path) -> No
     loaded = load_persisted(path)
     assert loaded is not None
     assert loaded.latest_narrative_stage() == "stage-2"
+
+
+def test_stream_biography_loads_latest_retained_generation(tmp_path) -> None:
+    path = tmp_path / "stream-biography.jsonl"
+    path.with_name(f"{path.name}.1").write_text(
+        json.dumps(StreamBiography(total_segments_completed=1).to_dict()) + "\n",
+        encoding="utf-8",
+    )
+    persist(StreamBiography(total_segments_completed=2), path=path)
+
+    loaded = load_persisted(path)
+
+    assert loaded is not None
+    assert loaded.total_segments_completed == 2

@@ -47,6 +47,7 @@ from agents.publication_bus.related_identifier import (
     RelatedIdentifier,
     RelationType,
 )
+from shared.jsonl_rotation import append_rotated_jsonl_line, iter_retained_jsonl_lines
 
 log = logging.getLogger(__name__)
 
@@ -201,16 +202,13 @@ def log_touch(
     NOT enforced here — re-deposits create new touch events
     (cadence rule still applies).
     """
-    log_path.parent.mkdir(parents=True, exist_ok=True)
     when = now or datetime.now(UTC)
     entry = {
         "orcid": orcid,
         "deposit_doi": deposit_doi,
         "timestamp": when.isoformat(),
     }
-    # jsonl-rotation: exempt(cadence ledger; apply_cadence_rule scans trailing live history)
-    with log_path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(entry) + "\n")
+    append_rotated_jsonl_line(log_path, json.dumps(entry))
 
 
 def build_touch_related_identifiers(
@@ -237,11 +235,9 @@ def build_touch_related_identifiers(
 
 
 def _count_touches_last_365d(log_path: Path) -> dict[str, int]:
-    if not log_path.exists():
-        return {}
     cutoff = datetime.now(UTC) - timedelta(days=365)
     counts: dict[str, int] = {}
-    for line in log_path.read_text().splitlines():
+    for line in iter_retained_jsonl_lines(log_path):
         line = line.strip()
         if not line:
             continue

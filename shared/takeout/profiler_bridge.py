@@ -15,6 +15,8 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
+from shared.jsonl_rotation import iter_retained_jsonl_lines
+
 log = logging.getLogger("takeout.profiler_bridge")
 
 # Import ProfileFact at function level to avoid circular imports
@@ -51,24 +53,20 @@ def structured_to_facts(
     per-service accumulators (Counters/lists of bounded size) instead of
     accumulating full record lists. Memory is O(unique_values) not O(records).
     """
-    if not jsonl_path.exists():
-        return []
-
     # Incremental accumulators per service
     acc = _ServiceAccumulators()
     record_count = 0
 
-    with open(jsonl_path, encoding="utf-8", errors="replace") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            acc.ingest(record)
-            record_count += 1
+    for line in iter_retained_jsonl_lines(jsonl_path):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        acc.ingest(record)
+        record_count += 1
 
     if not record_count:
         return []

@@ -21,6 +21,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from shared.jsonl_retention import append_bounded_jsonl_line
+from shared.jsonl_rotation import iter_retained_jsonl_lines
 
 log = logging.getLogger(__name__)
 
@@ -113,15 +114,13 @@ def write_mutation_event(
     max_events: int = MAX_MUTATION_EVENTS,
 ) -> None:
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    # jsonl-rotation: exempt(inline bounded audit state; read_mutation_events replays cap)
+    # jsonl-rotation: exempt(inline bounded audit state; read_mutation_events replays retained cap)
     append_bounded_jsonl_line(ledger_path, event.model_dump_json(), max_lines=max_events)
 
 
 def read_mutation_events(ledger_path: Path = LEDGER_PATH) -> list[MutationEvent]:
-    if not ledger_path.exists():
-        return []
     events: list[MutationEvent] = []
-    for line in ledger_path.read_text().splitlines():
+    for line in iter_retained_jsonl_lines(ledger_path):
         line = line.strip()
         if not line:
             continue

@@ -29,6 +29,7 @@ from shared.jsonl_cursor import (
     reconcile_jsonl_cursor,
     write_jsonl_cursor,
 )
+from shared.jsonl_rotation import iter_jsonl_lines_with_gzip_archives
 from shared.research_vehicle_public_event import (
     PublicEventProvenance,
     PublicEventSource,
@@ -61,6 +62,7 @@ DEFAULT_TICK_S = float(os.environ.get("HAPAX_GOVERNANCE_ENFORCEMENT_TICK_S", "30
 TASK_ANCHOR = "governance-enforcement-public-event-producer"
 PRODUCER_NAME = "agents.governance_enforcement_public_event_producer"
 SOURCE_EVENT_TYPE = "axiom_blocked"
+PUBLIC_EVENT_ARCHIVE_GLOB = "public-events.*.jsonl.gz"
 
 _ALLOWED_SURFACES: tuple[Surface, ...] = ("health", "archive")
 _DENIED_SURFACES: tuple[Surface, ...] = (
@@ -329,11 +331,11 @@ def governance_enforcement_event_id(enforcement_record: dict[str, Any]) -> str:
 
 def _load_event_ids(path: Path) -> set[str]:
     ids: set[str] = set()
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ids
-    for raw in lines:
+    for raw in iter_jsonl_lines_with_gzip_archives(
+        path,
+        archive_glob=PUBLIC_EVENT_ARCHIVE_GLOB,
+        logger=log,
+    ):
         try:
             item = json.loads(raw)
         except json.JSONDecodeError:

@@ -101,7 +101,7 @@ def publish_fragment(
 
     # Append to stream.jsonl (JSONL — not labeled, consent at boundary gates)
     payload_json = fragment.model_dump_json()
-    # jsonl-rotation: exempt(inline ring buffer; STREAM_MAX_LINES rewrite caps live file)
+    # jsonl-rotation: exempt(inline ring buffer; STREAM_MAX_LINES rewrite caps retained rows)
     with stream_path.open("a") as f:
         f.write(payload_json + "\n")
 

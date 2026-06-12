@@ -735,7 +735,7 @@ def write_route_decision_receipt(
     payload = decision.model_dump(mode="json")
     if decision.dimensional_receipt is not None:
         payload.update(decision.dimensional_receipt.model_dump(mode="json"))
-    # jsonl-rotation: exempt(inline bounded route evidence; audits scan live cap)
+    # jsonl-rotation: exempt(inline bounded route evidence; audits scan retained cap)
     append_bounded_jsonl_line(
         path,
         json.dumps(payload, sort_keys=True),

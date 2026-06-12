@@ -6,8 +6,10 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import Literal
 
 type FileIdentity = tuple[int, int]
+type CursorIdentityStatus = Literal["present", "missing", "unreadable"]
 
 
 def jsonl_file_identity(source_stat: os.stat_result) -> FileIdentity:
@@ -36,20 +38,20 @@ def _read_cursor_identity(
     cursor_path: Path,
     *,
     logger: logging.Logger | None = None,
-) -> tuple[FileIdentity | None, bool]:
+) -> tuple[FileIdentity | None, CursorIdentityStatus]:
     state_path = _state_path(cursor_path)
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
-        return (int(state["st_dev"]), int(state["st_ino"])), True
+        return (int(state["st_dev"]), int(state["st_ino"])), "present"
     except FileNotFoundError:
-        return None, False
+        return None, "missing"
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         if logger is not None:
             logger.warning(
                 "cursor state unreadable at %s; resetting to avoid stale cursor",
                 state_path,
             )
-        return None, False
+        return None, "unreadable"
 
 
 def write_jsonl_cursor(
@@ -92,11 +94,11 @@ def reconcile_jsonl_cursor(
     logger: logging.Logger,
     label: str,
 ) -> int:
-    previous_identity, has_previous_identity = _read_cursor_identity(cursor_path, logger=logger)
+    previous_identity, identity_status = _read_cursor_identity(cursor_path, logger=logger)
     current_identity = jsonl_file_identity(source_stat)
-    if not has_previous_identity and byte_offset > 0:
+    if identity_status == "unreadable" and byte_offset > 0:
         logger.warning(
-            "%s cursor reset without identity state: path=%s size=%d cursor=%d",
+            "%s cursor reset after unreadable identity state: path=%s size=%d cursor=%d",
             label,
             source_path,
             source_stat.st_size,
@@ -110,6 +112,39 @@ def reconcile_jsonl_cursor(
             logger=logger,
         )
         return 0
+    if identity_status == "missing" and byte_offset > 0:
+        if byte_offset > source_stat.st_size:
+            logger.warning(
+                "%s cursor reset after legacy shrink without identity state: "
+                "path=%s size=%d cursor=%d",
+                label,
+                source_path,
+                source_stat.st_size,
+                byte_offset,
+            )
+            write_jsonl_cursor(
+                cursor_path,
+                0,
+                source_path=source_path,
+                source_stat=source_stat,
+                logger=logger,
+            )
+            return 0
+        write_jsonl_cursor(
+            cursor_path,
+            byte_offset,
+            source_path=source_path,
+            source_stat=source_stat,
+            logger=logger,
+        )
+        logger.warning(
+            "%s cursor adopted legacy identity: path=%s size=%d cursor=%d",
+            label,
+            source_path,
+            source_stat.st_size,
+            byte_offset,
+        )
+        return byte_offset
     if previous_identity is not None and previous_identity != current_identity:
         logger.warning(
             "%s cursor reset after rotation: path=%s size=%d cursor=%d",

@@ -101,3 +101,16 @@ class TestLogDeposit:
             log_path=log_path,
         )
         assert log_path.exists()
+
+    def test_rotates_when_log_exceeds_domain_cap(self, tmp_path: Path) -> None:
+        log_path = tmp_path / "crossref-deposits.jsonl"
+        log_path.write_text("x" * 17_000_000, encoding="utf-8")
+
+        log_deposit(
+            doi="10.5281/zenodo.333",
+            outcome=DepositOutcome.OK,
+            log_path=log_path,
+        )
+
+        assert log_path.with_name(f"{log_path.name}.1").exists()
+        assert json.loads(log_path.read_text(encoding="utf-8"))["doi"] == "10.5281/zenodo.333"

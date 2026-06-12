@@ -38,6 +38,7 @@ from shared.braid_v2_config import (
     BRAID_V2_W_UNBLOCK,
 )
 from shared.github_publication_log import classify_publication_log_payload
+from shared.jsonl_rotation import iter_retained_jsonl_lines
 
 DEFAULT_TASK_ROOT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
 DEFAULT_HYGIENE_STATE = Path.home() / ".cache/hapax/cc-hygiene-state.json"
@@ -1004,14 +1005,15 @@ def default_systemd_specs() -> list[SystemdSpec]:
 
 def load_jsonish(path: Path) -> tuple[Any | None, str | None]:
     try:
-        text = path.read_text(encoding="utf-8")
+        if path.suffix == ".jsonl":
+            lines = [line for line in iter_retained_jsonl_lines(path) if line.strip()]
+            if not lines:
+                return {}, None
+            text = lines[-1]
+        else:
+            text = path.read_text(encoding="utf-8")
     except OSError as exc:
         return None, f"read_error:{exc.__class__.__name__}"
-    if path.suffix == ".jsonl":
-        lines = [line for line in text.splitlines() if line.strip()]
-        if not lines:
-            return {}, None
-        text = lines[-1]
     if not text.strip():
         return {}, None
     try:

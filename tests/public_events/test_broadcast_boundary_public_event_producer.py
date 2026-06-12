@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -78,6 +79,13 @@ def _write_legacy(path: Path, event: dict[str, Any]) -> None:
 
 def _read_public_events(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def _write_public_event_archive(public: Path, event_id: str) -> None:
+    archive = public.parent / "archive" / "public-events.2026-06-12.jsonl.gz"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(archive, "wt", encoding="utf-8") as fh:
+        fh.write(json.dumps({"event_id": event_id}) + "\n")
 
 
 def test_broadcast_boundary_event_creation_maps_legacy_rotation() -> None:
@@ -212,6 +220,27 @@ def test_producer_preserves_legacy_bus_and_skips_duplicate_event_ids(tmp_path: P
     assert producer.run_once() == 0
     assert len(_read_public_events(public)) == 1
     assert json.loads(legacy.read_text(encoding="utf-8").splitlines()[0]) == rotation
+
+
+def test_producer_skips_duplicate_event_ids_from_public_event_archive(tmp_path: Path) -> None:
+    legacy = tmp_path / "legacy.jsonl"
+    public = tmp_path / "public.jsonl"
+    cursor = tmp_path / "cursor.txt"
+    rotation = _legacy_event()
+    _write_legacy(legacy, rotation)
+    _write_public_event_archive(public, broadcast_boundary_event_id(rotation))
+    producer = BroadcastBoundaryPublicEventProducer(
+        legacy_event_path=legacy,
+        public_event_path=public,
+        cursor_path=cursor,
+        egress_resolver=_egress,
+        quota_remaining=lambda _endpoint: 1500,
+        time_fn=lambda: NOW,
+    )
+
+    assert producer.run_once() == 0
+    assert not public.exists()
+    assert int(cursor.read_text(encoding="utf-8")) == legacy.stat().st_size
 
 
 def test_truncation_resets_cursor_and_processes_new_file_from_start(tmp_path: Path) -> None:

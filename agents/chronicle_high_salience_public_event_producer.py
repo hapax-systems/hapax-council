@@ -27,6 +27,7 @@ from shared.jsonl_cursor import (
     reconcile_jsonl_cursor,
     write_jsonl_cursor,
 )
+from shared.jsonl_rotation import iter_jsonl_lines_with_gzip_archives
 from shared.livestream_egress_state import (
     LivestreamEgressState,
     resolve_livestream_egress_state,
@@ -56,6 +57,7 @@ CURSOR_PATH = Path(
     )
 )
 DEFAULT_TICK_S = float(os.environ.get("HAPAX_CHRONICLE_PUBLIC_EVENT_TICK_S", "30"))
+PUBLIC_EVENT_ARCHIVE_GLOB = "public-events.*.jsonl.gz"
 
 EgressResolver = Callable[[], LivestreamEgressState]
 TimeFn = Callable[[], float]
@@ -239,11 +241,11 @@ class ChronicleHighSaliencePublicEventProducer:
 
 def _load_event_ids(path: Path) -> set[str]:
     ids: set[str] = set()
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ids
-    for raw in lines:
+    for raw in iter_jsonl_lines_with_gzip_archives(
+        path,
+        archive_glob=PUBLIC_EVENT_ARCHIVE_GLOB,
+        logger=log,
+    ):
         try:
             item = json.loads(raw)
         except json.JSONDecodeError:

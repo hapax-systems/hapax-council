@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import IO
 
 from shared.config import RAG_SOURCES_DIR
+from shared.jsonl_rotation import (
+    append_rotated_jsonl_line,
+    iter_retained_jsonl_lines,
+    maybe_rotate_jsonl,
+)
 from shared.takeout.models import NormalizedRecord
 
 log = logging.getLogger("takeout")
@@ -40,25 +45,24 @@ class StructuredWriter:
         self.deduped = 0
 
     def __enter__(self) -> StructuredWriter:
-        if self._path.exists():
-            with open(self._path, encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    stripped = line.strip()
-                    if not stripped:
-                        continue
-                    try:
-                        record = json.loads(stripped)
-                        rid = record.get("record_id", "")
-                        if rid:
-                            self._seen.add(rid)
-                    except json.JSONDecodeError:
-                        continue
-            if self._seen:
-                log.debug("StructuredWriter: loaded %d existing record IDs", len(self._seen))
+        for line in iter_retained_jsonl_lines(self._path):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                record = json.loads(stripped)
+                rid = record.get("record_id", "")
+                if rid:
+                    self._seen.add(rid)
+            except json.JSONDecodeError:
+                continue
+        if self._seen:
+            log.debug("StructuredWriter: loaded %d existing record IDs", len(self._seen))
 
         if not self._dry_run:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            # jsonl-rotation: exempt(structured dedupe ledger; __enter__ loads live record IDs)
+            maybe_rotate_jsonl(self._path)
+            # jsonl-rotation: exempt(domain rotation; __enter__ scans retained record IDs)
             self._fh = open(self._path, "a", encoding="utf-8")
 
         return self
@@ -226,7 +230,6 @@ def write_record(
 
         structured_path.parent.mkdir(parents=True, exist_ok=True)
         line = record_to_jsonl(record)
-        # jsonl-rotation: exempt(structured profiler input; profiler_bridge scans full live file)
-        with open(structured_path, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        # jsonl-rotation: exempt(domain rotation; profiler_bridge scans retained generations)
+        append_rotated_jsonl_line(structured_path, line)
         return None

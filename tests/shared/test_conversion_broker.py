@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -122,6 +123,14 @@ def _candidate(
     return next(candidate for candidate in candidates if candidate.target_type == target_type)
 
 
+def _write_public_event_archive(public_event_path: Path, event_id: str) -> None:
+    archive_dir = public_event_path.parent / "archive"
+    archive_dir.mkdir(parents=True)
+    archive_path = archive_dir / "public-events.20260612T070000Z.jsonl.gz"
+    with gzip.open(archive_path, "wt", encoding="utf-8") as fh:
+        fh.write(json.dumps({"event_id": event_id}) + "\n")
+
+
 def test_public_archive_boundary_generates_rich_candidates_and_public_bus_event(
     tmp_path: Path,
 ) -> None:
@@ -222,6 +231,24 @@ def test_candidate_ledger_keeps_bounded_recent_rows(tmp_path: Path) -> None:
 
     assert len(decision.candidates) > 1
     assert len((tmp_path / "candidates.jsonl").read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_public_event_idempotency_scans_rotation_archives(tmp_path: Path) -> None:
+    run = _artifact_ready_run()
+    boundary = _boundary(run)
+    public_event_path = tmp_path / "events.jsonl"
+    candidate_path = tmp_path / "candidates.jsonl"
+    decision = build_conversion_broker_decision(run, boundary, generated_at=GENERATED_AT)
+    _write_public_event_archive(public_event_path, decision.public_events[0].event_id)
+    broker = ConversionBroker(
+        public_event_path=public_event_path,
+        candidate_path=candidate_path,
+        metrics=ConversionBrokerMetrics(CollectorRegistry()),
+    )
+
+    broker.process_boundary(run, boundary, generated_at=GENERATED_AT)
+
+    assert not public_event_path.exists()
 
 
 def test_readiness_matrix_blocks_each_target_independently(tmp_path: Path) -> None:

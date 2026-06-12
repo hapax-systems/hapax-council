@@ -38,6 +38,8 @@ from typing import Final
 
 from prometheus_client import Counter
 
+from shared.jsonl_rotation import append_rotated_jsonl_line
+
 try:
     import requests
 except ImportError:  # pragma: no cover
@@ -190,7 +192,6 @@ def log_deposit(
     now: datetime | None = None,
 ) -> None:
     """Append one deposit-attempt record to the JSONL log."""
-    log_path.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "doi": doi,
         "outcome": outcome.value,
@@ -198,9 +199,7 @@ def log_deposit(
         "error": error,
         "timestamp": (now or datetime.now(UTC)).isoformat(),
     }
-    # jsonl-rotation: exempt(deposit attempt ledger; operator/cadence review scans live history)
-    with log_path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record) + "\n")
+    append_rotated_jsonl_line(log_path, json.dumps(record))
 
 
 def _parse_submission_id(response_text: str) -> str | None:

@@ -36,7 +36,7 @@ def _append_and_trim(
     """Append *entry* to a persistent JSONL ring buffer on disk."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        # jsonl-rotation: exempt(inline ring buffer; max_entries rewrite caps live file)
+        # jsonl-rotation: exempt(inline ring buffer; max_entries rewrite caps retained rows)
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
         lines = path.read_text(encoding="utf-8").strip().split("\n")

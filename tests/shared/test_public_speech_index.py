@@ -173,6 +173,16 @@ class TestAppendAndRead:
         assert len(records) == 1
         assert records[0].speech_event_id == "se-001"
 
+    def test_read_scans_retained_generations(self, tmp_path: Path) -> None:
+        index = tmp_path / "events.jsonl"
+        rotated = tmp_path / "events.jsonl.1"
+        rotated.write_text(_record(speech_event_id="se-old").model_dump_json() + "\n")
+        append_public_speech_event(_record(speech_event_id="se-new"), path=index)
+
+        records = read_public_speech_events(index)
+
+        assert [record.speech_event_id for record in records] == ["se-old", "se-new"]
+
     def test_read_filtered_by_scope(self, tmp_path: Path) -> None:
         index = tmp_path / "events.jsonl"
         r_public = _record(speech_event_id="se-pub")

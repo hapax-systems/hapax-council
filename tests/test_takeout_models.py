@@ -540,6 +540,18 @@ class TestStructuredWriter:
         lines = jsonl.read_text().strip().split("\n")
         assert len(lines) == 3
 
+    def test_dedup_scans_retained_generations(self, tmp_path):
+        jsonl = tmp_path / "out.jsonl"
+        rotated = tmp_path / "out.jsonl.1"
+        rotated.write_text(record_to_jsonl(_make_record("r1")) + "\n")
+
+        with StructuredWriter(jsonl) as sw:
+            assert not sw.write(_make_record("r1"))
+            assert sw.write(_make_record("r2"))
+
+        assert sw.deduped == 1
+        assert json.loads(jsonl.read_text().strip())["record_id"] == "r2"
+
     def test_dry_run_no_file(self, tmp_path):
         jsonl = tmp_path / "out.jsonl"
         with StructuredWriter(jsonl, dry_run=True) as sw:

@@ -221,3 +221,36 @@ def test_route_decision_jsonl_reader_filters_future_rows(tmp_path: Path) -> None
     rows = route_decision_items_from_jsonl(ledger, now=NOW)
 
     assert [row["task_id"] for row in rows] == ["rollback-test"]
+
+
+def test_route_decision_jsonl_reader_scans_retained_generations(tmp_path: Path) -> None:
+    ledger = tmp_path / "route-decisions.jsonl"
+    rotated = tmp_path / "route-decisions.jsonl.1"
+    rotated.write_text(
+        json.dumps(
+            {
+                "decision_id": "rd-20260509T205900Z-rotated-test-aaaaaaaaaaaa",
+                "created_at": _iso_z(NOW - timedelta(seconds=1)),
+                "task_id": "rotated-test",
+                "route_id": "codex.headless.full",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    ledger.write_text(
+        json.dumps(
+            {
+                "decision_id": "rd-20260509T210000Z-active-test-bbbbbbbbbbbb",
+                "created_at": _iso_z(NOW),
+                "task_id": "active-test",
+                "route_id": "codex.headless.full",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    rows = route_decision_items_from_jsonl(ledger, now=NOW)
+
+    assert [row["task_id"] for row in rows] == ["rotated-test", "active-test"]

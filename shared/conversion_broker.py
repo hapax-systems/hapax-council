@@ -41,6 +41,7 @@ from shared.format_public_event_adapter import (
     adapt_format_boundary_to_public_event,
 )
 from shared.jsonl_retention import append_bounded_jsonl_lines
+from shared.jsonl_rotation import iter_jsonl_lines_with_gzip_archives, iter_retained_jsonl_lines
 from shared.research_vehicle_public_event import (
     PrivacyClass,
     PublicEventProvenance,
@@ -73,6 +74,7 @@ type OutcomeKind = Literal["artifact", "revenue"]
 DEFAULT_PUBLIC_EVENT_PATH = Path("/dev/shm/hapax-public-events/events.jsonl")
 DEFAULT_CANDIDATE_PATH = Path.home() / "hapax-state" / "conversion-broker" / "candidates.jsonl"
 MAX_CANDIDATE_LEDGER_ROWS = 10_000
+PUBLIC_EVENT_ARCHIVE_GLOB = "public-events.*.jsonl.gz"
 
 _PUBLIC_SAFE_RIGHTS: frozenset[RightsState] = frozenset(
     {"operator_original", "cleared", "platform_embed_only"}
@@ -306,7 +308,7 @@ class ConversionBroker:
         if not new_candidates:
             return
         self.candidate_path.parent.mkdir(parents=True, exist_ok=True)
-        # jsonl-rotation: exempt(inline bounded candidate dedupe; scans live cap)
+        # jsonl-rotation: exempt(inline bounded candidate dedupe; scans retained cap)
         append_bounded_jsonl_lines(
             self.candidate_path,
             (candidate.to_json_line() for candidate in new_candidates),
@@ -324,7 +326,7 @@ class ConversionBroker:
 
     def _public_event_already_written(self, event_id: str) -> bool:
         if self._known_public_event_ids is None:
-            self._known_public_event_ids = _load_jsonl_ids(self.public_event_path, "event_id")
+            self._known_public_event_ids = _load_public_event_ids(self.public_event_path)
         return event_id in self._known_public_event_ids
 
 
@@ -836,17 +838,28 @@ def _coerce_boundary(
 
 def _load_jsonl_ids(path: Path, field: str) -> set[str]:
     ids: set[str] = set()
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ids
-    for line in lines:
+    for line in iter_retained_jsonl_lines(path):
         try:
             item = json.loads(line)
         except json.JSONDecodeError:
             continue
         if isinstance(item, dict) and isinstance(item.get(field), str):
             ids.add(item[field])
+    return ids
+
+
+def _load_public_event_ids(path: Path) -> set[str]:
+    ids: set[str] = set()
+    for line in iter_jsonl_lines_with_gzip_archives(
+        path,
+        archive_glob=PUBLIC_EVENT_ARCHIVE_GLOB,
+    ):
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict) and isinstance(item.get("event_id"), str):
+            ids.add(item["event_id"])
     return ids
 
 
