@@ -60,6 +60,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -138,6 +139,8 @@ CAMERA_TEMPLATE_UNIT = "studio-camera-reconfigure@.service"
 CAMERA_TEMPLATE_PATH = f"systemd/units/{CAMERA_TEMPLATE_UNIT}"
 CAMERA_TEMPLATE_PATH_SHA256 = hashlib.sha256(CAMERA_TEMPLATE_PATH.encode()).hexdigest()[:16]
 CAMERA_TEMPLATE_BASENAME_SHA256 = hashlib.sha256(CAMERA_TEMPLATE_UNIT.encode()).hexdigest()[:16]
+CAMERA_DOC_COMMAND = f"systemctl --user cat {CAMERA_TEMPLATE_UNIT}"
+CAMERA_DOC_COMMAND_SHA256 = hashlib.sha256(CAMERA_DOC_COMMAND.encode()).hexdigest()[:16]
 SCRIPTS = (
     "scripts/hapax-sdlc-vocab-export",
     "scripts/hapax-review-receipts-export",
@@ -462,6 +465,34 @@ def _forbidden_camera_composites(paths: list[str]) -> list[str]:
     )
 
 
+def _camera_doc_command_lines() -> list[tuple[str, int, str]]:
+    docs = REPO / "docs"
+    if not docs.exists():
+        return []
+    lines: list[tuple[str, int, str]] = []
+    for path in sorted(docs.rglob("*.md")):
+        try:
+            rel = path.relative_to(REPO).as_posix()
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if "systemctl --user cat studio-camera-reconfigure" in line:
+                lines.append((rel, lineno, " ".join(line.split())))
+    return lines
+
+
+def _bad_camera_doc_command_lines(lines: list[tuple[str, int, str]]) -> list[str]:
+    bad: list[str] = []
+    for rel, lineno, line in lines:
+        has_canonical = CAMERA_DOC_COMMAND in line
+        has_spaced_template = ("studio-camera-reconfigure" + chr(32) + "@") in line
+        has_composite_template = "@systemd/" in line
+        if not has_canonical or has_spaced_template or has_composite_template:
+            bad.append(f"{rel}:{lineno}")
+    return bad
+
+
 def _filesystem_camera_service_paths(units: Path) -> list[str]:
     try:
         paths = [
@@ -746,6 +777,22 @@ def _exercise_coord_deploy_helper() -> str:
             "fi\n"
         )
         systemctl.chmod(0o755)
+        real_git = shutil.which("git")
+        if not real_git:
+            raise RuntimeError("git executable not found for deploy exercise")
+        git = fakebin / "git"
+        git.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [ "${HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CHECKOUT:-}" = "1" ] && '
+            '[ "$1" = "-C" ] && [ "$2" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree" ] && '
+            '[ "$3" = "checkout" ] && [ "$4" = "--detach" ] && [ "$5" = "--force" ] && '
+            '[ "$6" = "${HAPAX_COORD_DEPLOY_EXPECT_ROLLBACK_SHA:?}" ]; then\n'
+            '  echo "simulated rollback checkout failure" >&2\n'
+            "  exit 57\n"
+            "fi\n"
+            'exec "${HAPAX_TEST_REAL_GIT:?}" "$@"\n'
+        )
+        git.chmod(0o755)
 
         _run_cmd(["git", "init", "--bare", str(origin)])
         _run_cmd(["git", "init", str(source)])
@@ -759,6 +806,7 @@ def _exercise_coord_deploy_helper() -> str:
             "HAPAX_COORD_DEPLOY_REPO": str(source),
             "HAPAX_COORD_DEPLOY_ACT_ROOT": str(act_root),
             "HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG": str(restart_log),
+            "HAPAX_TEST_REAL_GIT": real_git,
             "PATH": f"{fakebin}:{os.environ.get('PATH', '')}",
         }
         _run_cmd([str(COORD_DEPLOY_SCRIPT)], env=env)
@@ -835,11 +883,79 @@ def _exercise_coord_deploy_helper() -> str:
         ]:
             raise RuntimeError(f"second deploy restart log mismatch: {restarts}")
 
+        third_sha = _write_deploy_fixture_commit(writer, "third")
+        _run_cmd(["git", "-C", str(writer), "push", "origin", "main"])
+        failed_checkout = subprocess.run(
+            [str(COORD_DEPLOY_SCRIPT)],
+            env={
+                **env,
+                "HAPAX_COORD_DEPLOY_FAIL_RESTART_ONCE": "1",
+                "HAPAX_COORD_DEPLOY_FAIL_ONCE_MARKER": str(
+                    root / "target-restart-rollback-checkout.failed"
+                ),
+                "HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CHECKOUT": "1",
+                "HAPAX_COORD_DEPLOY_EXPECT_ROLLBACK_SHA": second_sha,
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        if failed_checkout.returncode == 0:
+            raise RuntimeError(
+                "deploy helper succeeded even though restart rollback checkout failed"
+            )
+        if "stopped hapax-coord.service to avoid serving unreceipted target" not in (
+            failed_checkout.stderr
+        ):
+            raise RuntimeError(
+                f"restart rollback-checkout failure did not stop service: {failed_checkout.stderr}"
+            )
+        deployed = (worktree / ".deployed-sha").read_text().strip()
+        head = _run_cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"])
+        if deployed != second_sha or head != third_sha:
+            raise RuntimeError(
+                f"rollback checkout failure state mismatch deployed={deployed[:9]} "
+                f"head={head[:9]} second={second_sha[:9]} third={third_sha[:9]}"
+            )
+        restarts = restart_log.read_text().splitlines()
+        if restarts != [
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user stop hapax-coord.service",
+        ]:
+            raise RuntimeError(f"rollback checkout failure log mismatch: {restarts}")
+
+        _run_cmd([str(COORD_DEPLOY_SCRIPT)], env=env)
+        refreshed_remote_ref = _run_cmd(["git", "-C", str(source), "rev-parse", "origin/main"])
+        deployed = (worktree / ".deployed-sha").read_text().strip()
+        head = _run_cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"])
+        if deployed != third_sha or head != third_sha or refreshed_remote_ref != third_sha:
+            raise RuntimeError(
+                f"third deploy mismatch deployed={deployed[:9]} head={head[:9]} "
+                f"origin/main={refreshed_remote_ref[:9]} expected={third_sha[:9]}"
+            )
+        restarts = restart_log.read_text().splitlines()
+        if restarts != [
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user stop hapax-coord.service",
+            "--user restart hapax-coord.service",
+        ]:
+            raise RuntimeError(f"third deploy restart log mismatch: {restarts}")
+
     return (
-        f"first={first_sha[:9]} second={second_sha[:9]} wrote .deployed-sha after restart, "
+        f"first={first_sha[:9]} second={second_sha[:9]} third={third_sha[:9]} "
+        "wrote .deployed-sha after restart, "
         "refreshed stale origin/main, advanced worktree, skipped idempotent restart, "
         "rolled back worktree and restarted rollback service on failed restart, "
-        "retried restart on change"
+        "stopped service when rollback checkout failed, retried restart on change"
     )
 
 
@@ -1530,6 +1646,25 @@ def run_checks(
                 "next: remove corrupted camera paths from the PR diff and rerun",
             )
 
+    camera_doc_lines = _camera_doc_command_lines()
+    bad_camera_doc_lines = _bad_camera_doc_command_lines(camera_doc_lines)
+    if not bad_camera_doc_lines:
+        add(
+            "units-doc-camera-command",
+            "OK",
+            f"camera_doc_command_count={len(camera_doc_lines)} "
+            "bad_camera_doc_command_count=0 "
+            f"canonical_command_sha256={CAMERA_DOC_COMMAND_SHA256}",
+        )
+    else:
+        add(
+            "units-doc-camera-command",
+            "FAIL",
+            f"bad_camera_doc_commands={bad_camera_doc_lines}; "
+            f"expected_command_sha256={CAMERA_DOC_COMMAND_SHA256}; "
+            "next: use the canonical studio-camera-reconfigure template command and rerun",
+        )
+
     for rel in SCRIPTS:
         tracked = REPO / rel
         activated = ACTIVATION / rel
@@ -1660,60 +1795,71 @@ def run_checks(
         add("coord-live", "FAIL", f"version endpoint unreachable: {exc}; {coord_next}")
 
     if deployed_sha and DEPLOY_SHA_FILE.exists():
-        on_disk = DEPLOY_SHA_FILE.read_text().strip()
-        activation_head = _git_head(COORD_ACTIVATION)
         try:
-            dirty_entries = _git_dirty_entries(COORD_ACTIVATION)
-            dirty_error = ""
-        except Exception as exc:  # noqa: BLE001
-            dirty_entries = []
-            dirty_error = str(exc)
-        if not on_disk:
+            if not DEPLOY_SHA_FILE.is_file():
+                raise OSError("receipt path is not a regular file")
+            on_disk = DEPLOY_SHA_FILE.read_text().strip()
+        except OSError as exc:
             add(
                 "coord-provenance",
                 "FAIL",
-                f"{DEPLOY_SHA_FILE} is empty; next: {COORD_DEPLOY_RELPATH} must write the deployed sha",
-            )
-        elif not activation_head:
-            add(
-                "coord-provenance",
-                "FAIL",
-                f"could not read activation git HEAD at {COORD_ACTIVATION}; "
-                f"next: restore the coord activation worktree with {COORD_DEPLOY_RELPATH}",
-            )
-        elif dirty_error:
-            add(
-                "coord-provenance",
-                "FAIL",
-                f"could not read activation git status at {COORD_ACTIVATION}: {dirty_error}; "
-                f"next: restore a clean coord activation worktree with {COORD_DEPLOY_RELPATH}",
-            )
-        elif dirty_entries:
-            add(
-                "coord-provenance",
-                "FAIL",
-                "activation worktree has uncommitted/untracked live code "
-                f"{dirty_entries[:5]}; next: commit/redeploy or clean {COORD_ACTIVATION}",
-            )
-        elif (
-            _sha_prefix_match(deployed_sha, on_disk)
-            and _sha_prefix_match(deployed_sha, activation_head)
-            and _sha_prefix_match(on_disk, activation_head)
-        ):
-            add(
-                "coord-provenance",
-                "OK",
-                f"served sha, {DEPLOY_SHA_FILE.name}, and activation HEAD all match "
-                f"{activation_head[:9]}",
+                f"could not read deployed sha receipt {DEPLOY_SHA_FILE}: {exc}; "
+                f"next: restore the receipt with {COORD_DEPLOY_RELPATH}",
             )
         else:
-            add(
-                "coord-provenance",
-                "FAIL",
-                f"served={deployed_sha[:9]} receipt={on_disk[:9]} "
-                f"activation_head={activation_head[:9]}; "
-                "next: wait for/trigger the coord rebuild timer",
-            )
+            activation_head = _git_head(COORD_ACTIVATION)
+            try:
+                dirty_entries = _git_dirty_entries(COORD_ACTIVATION)
+                dirty_error = ""
+            except Exception as exc:  # noqa: BLE001
+                dirty_entries = []
+                dirty_error = str(exc)
+            if not on_disk:
+                add(
+                    "coord-provenance",
+                    "FAIL",
+                    f"{DEPLOY_SHA_FILE} is empty; next: {COORD_DEPLOY_RELPATH} must write the deployed sha",
+                )
+            elif not activation_head:
+                add(
+                    "coord-provenance",
+                    "FAIL",
+                    f"could not read activation git HEAD at {COORD_ACTIVATION}; "
+                    f"next: restore the coord activation worktree with {COORD_DEPLOY_RELPATH}",
+                )
+            elif dirty_error:
+                add(
+                    "coord-provenance",
+                    "FAIL",
+                    f"could not read activation git status at {COORD_ACTIVATION}: {dirty_error}; "
+                    f"next: restore a clean coord activation worktree with {COORD_DEPLOY_RELPATH}",
+                )
+            elif dirty_entries:
+                add(
+                    "coord-provenance",
+                    "FAIL",
+                    "activation worktree has uncommitted/untracked live code "
+                    f"{dirty_entries[:5]}; next: commit/redeploy or clean {COORD_ACTIVATION}",
+                )
+            elif (
+                _sha_prefix_match(deployed_sha, on_disk)
+                and _sha_prefix_match(deployed_sha, activation_head)
+                and _sha_prefix_match(on_disk, activation_head)
+            ):
+                add(
+                    "coord-provenance",
+                    "OK",
+                    f"served sha, {DEPLOY_SHA_FILE.name}, and activation HEAD all match "
+                    f"{activation_head[:9]}",
+                )
+            else:
+                add(
+                    "coord-provenance",
+                    "FAIL",
+                    f"served={deployed_sha[:9]} receipt={on_disk[:9]} "
+                    f"activation_head={activation_head[:9]}; "
+                    "next: wait for/trigger the coord rebuild timer",
+                )
     elif deployed_sha:
         add(
             "coord-provenance",

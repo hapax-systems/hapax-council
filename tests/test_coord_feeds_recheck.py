@@ -95,6 +95,12 @@ def _scaffold(tmp_path: Path) -> dict[str, str]:
     coord = tmp_path / "coord"
     browser_root = tmp_path / "source-activation" / "playwright-browsers"
     coord.mkdir()
+    camera_doc = repo / "docs/superpowers/specs/camera.md"
+    camera_doc.parent.mkdir(parents=True)
+    camera_doc.write_text(
+        "systemctl --user cat studio-camera-reconfigure@.service | "
+        "rg -F studio-camera-reconfigure.sh\n"
+    )
     unit_names = (
         "hapax-coord.service",
         "hapax-sdlc-vocab-export.service",
@@ -258,6 +264,36 @@ def _browser_ok(mod):
         fresh_yard_rect_area=4096,
         fresh_yard_chip_count=3,
         fresh_yard_text=f"YARD {prefix} vocab 13 blocked",
+        dashboard_seen=True,
+        dark_paint_seen=True,
+        white_paint_seen=False,
+        pixel_sample_count=64,
+        pixel_white_ratio=0.0,
+        pixel_nonwhite_ratio=1.0,
+        rendered_blocked_seen=True,
+        rendered_receipt_seen=True,
+        rendered_review_seen=True,
+        rendered_verdict_detail="13 blocked | 6 receipts",
+        rendered_verdict_text="t1 review blocked",
+    )
+
+
+def _browser_static_ok(mod, *, yard_text: str = "YARD test vocab 13 blocked"):
+    return lambda _url: mod.BrowserSurfaceWitness(
+        ok=True,
+        detail="test browser witness",
+        elapsed=0.35,
+        last_good_seen=True,
+        last_good_elapsed=0.050,
+        last_good_visible_seen=True,
+        last_good_content_seen=True,
+        last_good_rect_area=4096,
+        fresh_yard_seen=True,
+        fresh_yard_elapsed=0.250,
+        fresh_yard_visible_seen=True,
+        fresh_yard_rect_area=4096,
+        fresh_yard_chip_count=3,
+        fresh_yard_text=yard_text,
         dashboard_seen=True,
         dark_paint_seen=True,
         white_paint_seen=False,
@@ -851,6 +887,7 @@ def test_green_world_disk_checks_pass(tmp_path):
     assert res["units-git-index-names:camera-template"]["state"] == "OK"
     assert res["units-pr-diff-path-shapes:systemd"]["state"] == "OK"
     assert res["units-pr-diff-camera-template"]["state"] == "OK"
+    assert res["units-doc-camera-command"]["state"] == "OK"
     assert res["playwright-browser-staged:chromium"]["state"] == "OK"
     assert res["coord-service-root"]["state"] == "OK"
     assert res["coord-deploy-script"]["state"] == "OK"
@@ -1001,6 +1038,152 @@ def test_coord_deploy_helper_cleans_dirty_activation_at_deployed_sha(tmp_path):
     ]
 
 
+def test_coord_deploy_helper_stops_service_when_restart_rollback_checkout_fails(tmp_path):
+    origin = tmp_path / "origin.git"
+    source = tmp_path / "source"
+    writer = tmp_path / "writer"
+    act_root = tmp_path / "coord-activation"
+    fakebin = tmp_path / "bin"
+    restart_log = tmp_path / "systemctl.log"
+    fakebin.mkdir()
+    systemctl = fakebin / "systemctl"
+    systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "${HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG:?}"\n'
+        'if [ "${HAPAX_COORD_DEPLOY_FAIL_RESTART_ONCE:-}" = "1" ] && '
+        '[ ! -e "${HAPAX_COORD_DEPLOY_FAIL_ONCE_MARKER:?}" ]; then\n'
+        '  touch "${HAPAX_COORD_DEPLOY_FAIL_ONCE_MARKER:?}"\n'
+        "  exit 42\n"
+        "fi\n"
+    )
+    systemctl.chmod(0o755)
+    real_git = shutil.which("git")
+    assert real_git
+    git = fakebin / "git"
+    git.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CHECKOUT:-}" = "1" ] && '
+        '[ "$1" = "-C" ] && [ "$2" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree" ] && '
+        '[ "$3" = "checkout" ] && [ "$4" = "--detach" ] && [ "$5" = "--force" ] && '
+        '[ "$6" = "${HAPAX_COORD_DEPLOY_EXPECT_ROLLBACK_SHA:?}" ]; then\n'
+        '  echo "simulated rollback checkout failure" >&2\n'
+        "  exit 57\n"
+        "fi\n"
+        'exec "${HAPAX_TEST_REAL_GIT:?}" "$@"\n'
+    )
+    git.chmod(0o755)
+
+    _cmd(["git", "init", "--bare", str(origin)])
+    _cmd(["git", "init", str(source)])
+    _cmd(["git", "-C", str(source), "checkout", "-b", "main"])
+    first_sha = _deploy_fixture_commit(source, "first")
+    _cmd(["git", "-C", str(source), "remote", "add", "origin", str(origin)])
+    _cmd(["git", "-C", str(source), "push", "-u", "origin", "main"])
+
+    env = {
+        **os.environ,
+        "HAPAX_COORD_DEPLOY_REPO": str(source),
+        "HAPAX_COORD_DEPLOY_ACT_ROOT": str(act_root),
+        "HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG": str(restart_log),
+        "HAPAX_TEST_REAL_GIT": real_git,
+        "PATH": f"{fakebin}:{os.environ.get('PATH', '')}",
+    }
+    _cmd([str(_DEPLOY_SCRIPT)], env=env)
+    worktree = act_root / "worktree"
+    assert (worktree / ".deployed-sha").read_text().strip() == first_sha
+
+    _cmd(["git", "clone", "-b", "main", str(origin), str(writer)])
+    second_sha = _deploy_fixture_commit(writer, "second")
+    _cmd(["git", "-C", str(writer), "push", "origin", "main"])
+    assert second_sha != first_sha
+
+    failed = subprocess.run(
+        [str(_DEPLOY_SCRIPT)],
+        env={
+            **env,
+            "HAPAX_COORD_DEPLOY_FAIL_RESTART_ONCE": "1",
+            "HAPAX_COORD_DEPLOY_FAIL_ONCE_MARKER": str(tmp_path / "target-restart.failed"),
+            "HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CHECKOUT": "1",
+            "HAPAX_COORD_DEPLOY_EXPECT_ROLLBACK_SHA": first_sha,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert failed.returncode == 42
+    assert "restart failed; rollback checkout to" in failed.stderr
+    assert "simulated rollback checkout failure" in failed.stderr
+    assert "stopped hapax-coord.service to avoid serving unreceipted target" in failed.stderr
+    assert "next:" in failed.stderr
+    assert (worktree / ".deployed-sha").read_text().strip() == first_sha
+    assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == second_sha
+    assert restart_log.read_text().splitlines() == [
+        "--user restart hapax-coord.service",
+        "--user restart hapax-coord.service",
+        "--user stop hapax-coord.service",
+    ]
+
+
+def test_coord_deploy_helper_rejects_malformed_deployed_sha_path_before_restart(tmp_path):
+    origin = tmp_path / "origin.git"
+    source = tmp_path / "source"
+    writer = tmp_path / "writer"
+    act_root = tmp_path / "coord-activation"
+    fakebin = tmp_path / "bin"
+    restart_log = tmp_path / "systemctl.log"
+    fakebin.mkdir()
+    systemctl = fakebin / "systemctl"
+    systemctl.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "${HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG:?}"\n'
+    )
+    systemctl.chmod(0o755)
+
+    _cmd(["git", "init", "--bare", str(origin)])
+    _cmd(["git", "init", str(source)])
+    _cmd(["git", "-C", str(source), "checkout", "-b", "main"])
+    first_sha = _deploy_fixture_commit(source, "first")
+    _cmd(["git", "-C", str(source), "remote", "add", "origin", str(origin)])
+    _cmd(["git", "-C", str(source), "push", "-u", "origin", "main"])
+
+    env = {
+        **os.environ,
+        "HAPAX_COORD_DEPLOY_REPO": str(source),
+        "HAPAX_COORD_DEPLOY_ACT_ROOT": str(act_root),
+        "HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG": str(restart_log),
+        "PATH": f"{fakebin}:{os.environ.get('PATH', '')}",
+    }
+    _cmd([str(_DEPLOY_SCRIPT)], env=env)
+    worktree = act_root / "worktree"
+    receipt = worktree / ".deployed-sha"
+    assert receipt.read_text().strip() == first_sha
+
+    receipt.unlink()
+    receipt.mkdir()
+    _cmd(["git", "clone", "-b", "main", str(origin), str(writer)])
+    second_sha = _deploy_fixture_commit(writer, "second")
+    _cmd(["git", "-C", str(writer), "push", "origin", "main"])
+
+    failed = subprocess.run(
+        [str(_DEPLOY_SCRIPT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert failed.returncode != 0
+    assert "deployed sha receipt path invalid" in failed.stderr
+    assert "not a regular file" in failed.stderr
+    assert "next:" in failed.stderr
+    assert receipt.is_dir()
+    assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == first_sha
+    assert second_sha != first_sha
+    assert restart_log.read_text().splitlines() == ["--user restart hapax-coord.service"]
+
+
 def test_coord_deploy_helper_reports_next_for_missing_source_repo(tmp_path):
     failed = subprocess.run(
         [str(_DEPLOY_SCRIPT)],
@@ -1071,6 +1254,7 @@ def test_coord_deploy_helper_rolls_back_when_receipt_write_fails_after_restart(t
     mv = fakebin / "mv"
     mv.write_text(
         "#!/usr/bin/env bash\n"
+        '[ "${1:-}" != "-T" ] || shift\n'
         'if [ "${HAPAX_COORD_DEPLOY_FAIL_RECEIPT_MV:-}" = "1" ] && '
         '[ "$1" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree/.deployed-sha.tmp" ] && '
         '[ "$2" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree/.deployed-sha" ]; then\n'
@@ -1155,6 +1339,7 @@ def test_coord_deploy_helper_stops_service_when_receipt_rollback_checkout_fails(
     mv = fakebin / "mv"
     mv.write_text(
         "#!/usr/bin/env bash\n"
+        '[ "${1:-}" != "-T" ] || shift\n'
         'if [ "${HAPAX_COORD_DEPLOY_FAIL_RECEIPT_MV:-}" = "1" ] && '
         '[ "$1" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree/.deployed-sha.tmp" ] && '
         '[ "$2" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree/.deployed-sha" ]; then\n'
@@ -1455,6 +1640,22 @@ def test_nested_composite_camera_template_filename_fails(tmp_path):
     assert "forbidden_composites" in index["detail"]
     assert "forbidden_systemd_paths" in diff_shape["detail"]
     assert "forbidden_changed_composites" in pr_diff["detail"]
+
+
+def test_corrupted_camera_doc_command_fails(tmp_path):
+    env = _scaffold(tmp_path)
+    doc = Path(env["HAPAX_RECHECK_REPO"]) / "docs/superpowers/specs/camera.md"
+    doc.write_text(
+        "systemctl --user cat studio-camera-reconfigure"
+        + chr(32)
+        + "@.service | rg -F studio-camera-reconfigure.sh\n"
+    )
+    mod = _load(env)
+    res = _by_check(_run(mod))
+    r = res["units-doc-camera-command"]
+    assert r["state"] == "FAIL"
+    assert "bad_camera_doc_commands" in r["detail"]
+    assert "expected_command_sha256" in r["detail"]
 
 
 def test_missing_installed_unit_fails(tmp_path):
@@ -2181,6 +2382,39 @@ def test_empty_deployed_sha_fails_provenance(tmp_path):
         res = _by_check(_run(mod))
         assert res["coord-provenance"]["state"] == "FAIL"
         assert "empty" in res["coord-provenance"]["detail"]
+    finally:
+        srv.shutdown()
+
+
+def test_deployed_sha_directory_fails_provenance_with_next_action(tmp_path):
+    env = _scaffold(tmp_path)
+    version = _version(env)
+    receipt = Path(env["HAPAX_RECHECK_DEPLOY_SHA"])
+    receipt.unlink()
+    receipt.mkdir()
+    srv = _stub_server(
+        version=version,
+        rails={
+            "feed_state": "live",
+            "stations": ["S0", "S5", "S6", "S7"],
+            "items": [{"id": "t1", "station": "S5"}],
+        },
+    )
+    try:
+        env["HAPAX_RECHECK_COORD_URL"] = f"http://127.0.0.1:{srv.server_address[1]}"
+        mod = _load(env)
+        res = _by_check(
+            _run(
+                mod,
+                browser_probe=_browser_static_ok(
+                    mod, yard_text="YARD receipt-dir vocab 13 blocked"
+                ),
+            )
+        )
+        assert res["coord-provenance"]["state"] == "FAIL"
+        assert "could not read deployed sha receipt" in res["coord-provenance"]["detail"]
+        assert "not a regular file" in res["coord-provenance"]["detail"]
+        assert "next:" in res["coord-provenance"]["detail"]
     finally:
         srv.shutdown()
 

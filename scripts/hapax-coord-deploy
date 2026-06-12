@@ -63,6 +63,15 @@ clean_activation_worktree_or_fail() {
         git -C "$WT" clean -fd -- . ":(exclude).deployed-sha"
 }
 
+RECEIPT_NEXT="next: inspect $WT/.deployed-sha permissions and systemctl --user status hapax-coord.service, reconcile activation/deployed sha state, then rerun scripts/hapax-coord-deploy"
+
+validate_receipt_path_or_fail() {
+    if [ -e "$WT/.deployed-sha" ] && [ ! -f "$WT/.deployed-sha" ]; then
+        echo "coord-deploy: deployed sha receipt path invalid: $WT/.deployed-sha is not a regular file; $RECEIPT_NEXT" >&2
+        exit 1
+    fi
+}
+
 run_or_fail "fetch origin/main from $REPO" git -C "$REPO" fetch origin +refs/heads/main:refs/remotes/origin/main --quiet
 TARGET_SHA="$(capture_or_fail "resolve origin/main in $REPO" git -C "$REPO" rev-parse refs/remotes/origin/main)"
 
@@ -70,6 +79,7 @@ run_or_fail "create activation root $ACT_ROOT" mkdir -p "$ACT_ROOT"
 if [ ! -d "$WT/.git" ] && [ ! -f "$WT/.git" ]; then
     run_or_fail "add activation worktree $WT" git -C "$REPO" worktree add --detach "$WT" "$TARGET_SHA"
 fi
+validate_receipt_path_or_fail
 
 CURRENT_SHA="$(git -C "$WT" rev-parse HEAD 2>/dev/null || echo none)"
 DEPLOYED_SHA="$(cat "$WT/.deployed-sha" 2>/dev/null || echo none)"
@@ -86,7 +96,6 @@ elif [ "$CURRENT_SHA" != "none" ] && git -C "$WT" cat-file -e "$CURRENT_SHA^{com
     ROLLBACK_SHA="$CURRENT_SHA"
 fi
 RESTART_NEXT="next: inspect systemctl --user status hapax-coord.service and journalctl --user -u hapax-coord.service -n 100, fix the service failure, then rerun scripts/hapax-coord-deploy"
-RECEIPT_NEXT="next: inspect $WT/.deployed-sha permissions and systemctl --user status hapax-coord.service, reconcile activation/deployed sha state, then rerun scripts/hapax-coord-deploy"
 
 rollback_service_after_receipt_failure() {
     local service_rc
@@ -162,7 +171,7 @@ write_receipt_or_fail() {
         rc=$?
         receipt_fail "$rc" "write .deployed-sha.tmp failed: $out"
     fi
-    if out="$(mv "$WT/.deployed-sha.tmp" "$WT/.deployed-sha" 2>&1)"; then
+    if out="$(mv -T "$WT/.deployed-sha.tmp" "$WT/.deployed-sha" 2>&1)"; then
         :
     else
         rc=$?
@@ -188,7 +197,8 @@ else
             if [ -z "$rollback_detail" ]; then
                 rollback_detail="no output"
             fi
-            echo "coord-deploy: restart failed; rollback checkout to $ROLLBACK_SHA failed (rc=$rollback_rc): $rollback_detail; $RESTART_NEXT" >&2
+            service_detail="$(stop_unreceipted_service_after_receipt_failure)"
+            echo "coord-deploy: restart failed; rollback checkout to $ROLLBACK_SHA failed (rc=$rollback_rc): $rollback_detail; $service_detail; $RESTART_NEXT" >&2
         fi
     elif [ -n "$ROLLBACK_SHA" ]; then
         echo "coord-deploy: restart failed; activation worktree remains at $ROLLBACK_SHA; $RESTART_NEXT" >&2
