@@ -67,6 +67,7 @@ DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "h
 DEFAULT_WAKE_DIR = Path.home() / ".cache" / "hapax" / "review-team" / "wake"
 KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_DISPATCH_OFF"
 MAX_DIFF_CHARS = 200_000
+MAX_TASK_NOTE_CHARS = 60_000
 SEND_SCRIPTS = {
     "claude": "hapax-claude-send",
     "codex": "hapax-codex-send",
@@ -146,6 +147,12 @@ def truncate_diff(diff: str, limit: int = MAX_DIFF_CHARS) -> str:
     )
 
 
+def truncate_context(text: str, limit: int = MAX_TASK_NOTE_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n[context truncated at {limit} chars]\n"
+
+
 def render_reviewer_prompt(
     *,
     seat: review_team.Seat,
@@ -154,6 +161,8 @@ def render_reviewer_prompt(
     team_class: str,
     lenses: tuple[str, ...],
     charters: str,
+    pr_body: str,
+    task_note_text: str,
     diff: str,
     prior_criticals: list[dict[str, Any]],
 ) -> str:
@@ -172,6 +181,18 @@ Linked cc-task: {task_id} (team class {team_class})
 Changed files: {", ".join(pr_info.files) or "(none reported)"}
 
 Apply EVERY lens charter below. Address every checklist item explicitly (pass / finding / NA).
+
+# PR body
+
+```markdown
+{truncate_context(pr_body)}
+```
+
+# Linked cc-task note
+
+```markdown
+{truncate_context(task_note_text)}
+```
 
 # Lens charters ({", ".join(lenses)})
 
@@ -419,6 +440,16 @@ def auto_wake(
         for r in dossier["reviewers"]
         for f in r.get("findings") or []
     ]
+    if dossier["review_team_verdict"] == "no-quorum":
+        next_action = (
+            "No quorum was reached. Re-run the review team after fixing reviewer availability "
+            "or command configuration; do not treat this as author rejection.\n"
+        )
+    else:
+        next_action = (
+            "You own your PR: resolve every named critical (do not outvote them), push, "
+            "and the team re-reviews the new head sha.\n"
+        )
     payload = (
         f"# Review-team findings — {task_id} (PR #{dossier['pr']} @ {sha8})\n\n"
         f"verdict: {dossier['review_team_verdict']}\n\n"
@@ -427,8 +458,7 @@ def auto_wake(
             {"escalations": dossier["escalations"], "findings": findings}, sort_keys=False
         )
         + "```\n\n"
-        "You own your PR: resolve every named critical (do not outvote them), push, "
-        "and the team re-reviews the new head sha.\n"
+        + next_action
     )
     wake_dir.mkdir(parents=True, exist_ok=True)
     wake_path = wake_dir / f"{task_id}-{sha8}.md"
@@ -460,6 +490,36 @@ def auto_wake(
             wake_path,
         )
     return wake_path
+
+
+def replay_dossier_side_effects(
+    frontmatter: dict[str, Any],
+    note_path: Path,
+    task_id: str,
+    dossier: dict[str, Any],
+    *,
+    repo: str,
+    now_iso: str,
+    registry: dict[str, Any],
+    wake_dir: Path,
+    send_runner: Any,
+) -> dict[str, Any]:
+    """Idempotently replay side effects derived from an already-written dossier."""
+
+    pr_url = f"https://github.com/{repo}/pull/{dossier['pr']}"
+    receipt_path = write_acceptance_receipt_if_due(
+        frontmatter, note_path, task_id, dossier, pr_url=pr_url, now_iso=now_iso
+    )
+    wake_path = None
+    has_block = any(str(r.get("verdict")) == "block" for r in dossier.get("reviewers") or [])
+    if dossier["review_team_verdict"] in {"no-quorum", "blocked"} or has_block:
+        wake_path = auto_wake(
+            frontmatter, registry, dossier, wake_dir=wake_dir, send_runner=send_runner
+        )
+    return {
+        "receipt_path": str(receipt_path) if receipt_path else None,
+        "wake_path": str(wake_path) if wake_path else None,
+    }
 
 
 def _default_send_runner(cmd: list[str]) -> None:
@@ -513,11 +573,25 @@ def review_pr(
         except (OSError, yaml.YAMLError):
             existing = None
         if isinstance(existing, dict) and existing.get("head_sha") == pr_info.head_sha:
+            side_effects = {}
+            if apply:
+                side_effects = replay_dossier_side_effects(
+                    frontmatter,
+                    note_path,
+                    task_id,
+                    existing,
+                    repo=repo,
+                    now_iso=now_iso,
+                    registry=registry,
+                    wake_dir=wake_dir,
+                    send_runner=send_runner,
+                )
             return {
                 "status": "skipped_fresh",
                 "pr": pr_number,
                 "dossier_path": str(dossier_path),
                 "review_team_verdict": existing.get("review_team_verdict"),
+                "side_effects": side_effects,
             }
 
     lenses = review_team.lenses_for_files(pr_info.files, registry)
@@ -544,6 +618,7 @@ def review_pr(
 
     prior_criticals = _prior_unresolved_criticals(dossier_path)
     diff = truncate_diff(fetch_pr_diff(pr_number, repo=repo, repo_root=repo_root, runner=gh_runner))
+    task_note_text = note_path.read_text(encoding="utf-8")
     charters = "\n\n".join(review_team.charter_text(lens) for lens in lenses)
     prompts = [
         render_reviewer_prompt(
@@ -553,6 +628,8 @@ def review_pr(
             team_class=team_class,
             lenses=lenses,
             charters=charters,
+            pr_body=pr_info.body,
+            task_note_text=task_note_text,
             diff=diff,
             prior_criticals=prior_criticals,
         )
@@ -572,7 +649,7 @@ def review_pr(
     )
     if dossier["review_team_verdict"] == "no-quorum":
         dead = [
-            str(r.get("reviewer") or r.get("family"))
+            str(r.get("id") or r.get("family"))
             for r in reviews
             if str(r.get("verdict")) in ("error", "missing", "timeout", "invalid-output")
         ]
@@ -582,35 +659,35 @@ def review_pr(
     dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
     LOG.info("dossier written: %s (verdict %s)", dossier_path, dossier["review_team_verdict"])
 
-    post_pr_comment(
-        pr_number,
-        render_dossier_markdown(dossier),
+    try:
+        post_pr_comment(
+            pr_number,
+            render_dossier_markdown(dossier),
+            repo=repo,
+            repo_root=repo_root,
+            runner=gh_runner,
+        )
+    except Exception as exc:  # noqa: BLE001 — persisted dossier side effects must continue
+        LOG.warning("posting review-team dossier comment failed: %s", exc)
+
+    side_effects = replay_dossier_side_effects(
+        frontmatter,
+        note_path,
+        task_id,
+        dossier,
         repo=repo,
-        repo_root=repo_root,
-        runner=gh_runner,
+        now_iso=now_iso,
+        registry=registry,
+        wake_dir=wake_dir,
+        send_runner=send_runner,
     )
-
-    pr_url = f"https://github.com/{repo}/pull/{pr_number}"
-    write_acceptance_receipt_if_due(
-        frontmatter, note_path, task_id, dossier, pr_url=pr_url, now_iso=now_iso
-    )
-
-    has_block = any(str(r.get("verdict")) == "block" for r in reviews)
-    # no-quorum is a RECOVERY condition, not a quiet end-state (review
-    # #4098-1: REVIEW-DEATH-WITHOUT-VERDICT was 40% of review dispatches —
-    # dead reviewers must wake the orchestrator, distinctly from rejection).
-    if (
-        dossier["review_team_verdict"] == "no-quorum"
-        or dossier["review_team_verdict"] == "blocked"
-        or has_block
-    ):
-        auto_wake(frontmatter, registry, dossier, wake_dir=wake_dir, send_runner=send_runner)
 
     return {
         "status": "dispatched",
         "plan": plan,
         "dossier": dossier,
         "dossier_path": str(dossier_path),
+        "side_effects": side_effects,
     }
 
 

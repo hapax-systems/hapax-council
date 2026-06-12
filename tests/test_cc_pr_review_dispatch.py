@@ -53,6 +53,7 @@ def _write_task(
     risk_tier: str = "T2",
     quality_floor: str = "frontier_required",
     assigned_to: str = "zeta",
+    exit_predicate: str = "dispatcher creates a review-team dossier",
 ) -> Path:
     path = vault / "active" / f"{task_id}.md"
     path.write_text(
@@ -69,9 +70,12 @@ quality_floor: {quality_floor}
 authority_case: CASE-TEST
 parent_spec: docs/spec.md
 route_metadata_schema: 1
+exit_predicate: "{exit_predicate}"
 ---
 
 # {task_id}
+
+Acceptance evidence belongs here.
 """,
         encoding="utf-8",
     )
@@ -89,6 +93,16 @@ checklist:
     red-before-green: na
     new-paths-tested: pass
     no-coverage-theater: pass
+  exit-predicate-adequacy:
+    predicate-testable: pass
+    predicate-evidenced: pass
+    diff-matches-predicate: pass
+    witness-durability: pass
+  doc-claims-recheck:
+    recheck-cmds-present: pass
+    claims-match-code: pass
+    stale-docs-updated: pass
+    next-actions-on-error: pass
 ```
 """
 
@@ -115,6 +129,7 @@ class FakeGh:
         self.pr_number = pr_number
         self.files = files if files is not None else ["shared/foo.py", "tests/test_foo.py"]
         self.diff = "diff --git a/shared/foo.py b/shared/foo.py\n+changed\n"
+        self.fail_comment = False
         self.comments: list[str] = []
         self.calls: list[list[str]] = []
 
@@ -124,7 +139,7 @@ class FakeGh:
             payload = {
                 "number": self.pr_number,
                 "title": f"PR {self.pr_number}",
-                "body": "body",
+                "body": "PR body acceptance evidence",
                 "headRefName": f"feat/{self.pr_number}",
                 "headRefOid": "c" * 40,
                 "isDraft": False,
@@ -144,6 +159,8 @@ class FakeGh:
             ]
             return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
         if cmd[:3] == ["gh", "pr", "comment"]:
+            if self.fail_comment:
+                return subprocess.CompletedProcess(cmd, 1, "", "comment failed")
             body_file = cmd[cmd.index("--body-file") + 1]
             self.comments.append(Path(body_file).read_text(encoding="utf-8"))
             return subprocess.CompletedProcess(cmd, 0, "", "")
@@ -219,6 +236,8 @@ class TestApply:
         for _, _, prompt in reviewers.invocations:
             assert "diff --git" in prompt
             assert "tests-cover-the-diff" in prompt
+            assert "PR body acceptance evidence" in prompt
+            assert "Acceptance evidence belongs here." in prompt
             assert "```yaml" in prompt
 
     def test_pr_comment_posted_with_dossier(self, tmp_path: Path) -> None:
@@ -266,6 +285,30 @@ class TestApply:
         assert result2["status"] == "skipped_fresh"
         assert reviewers2.invocations == []
 
+    def test_skipped_fresh_quorum_dossier_replays_missing_receipt(self, tmp_path: Path) -> None:
+        result, _, _, note = _review(
+            tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+        assert result["status"] == "dispatched"
+        receipt_path = note.parent / "task-a.acceptance.yaml"
+        receipt_path.unlink()
+
+        result2 = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=note.parent.parent,
+            apply=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T22:00:00+00:00",
+        )
+        assert result2["status"] == "skipped_fresh"
+        assert receipt_path.is_file()
+        assert result2["side_effects"]["receipt_path"] == str(receipt_path)
+
 
 class TestAllMode:
     def test_review_all_scans_open_prs(self, tmp_path: Path) -> None:
@@ -312,6 +355,17 @@ class TestReceiptAndWake:
         assert receipt["verdict"] == "accepted"
         assert receipt["acceptor"].startswith("review-team:")
         assert "task-a.review-dossier.yaml" in receipt["artifact"]
+
+    def test_comment_failure_does_not_skip_acceptance_receipt(self, tmp_path: Path) -> None:
+        gh = FakeGh()
+        gh.fail_comment = True
+        result, _, _, note = _review(
+            tmp_path,
+            task_kwargs={"quality_floor": "frontier_review_required"},
+            gh=gh,
+        )
+        assert result["status"] == "dispatched"
+        assert (note.parent / "task-a.acceptance.yaml").is_file()
 
     def test_existing_receipt_is_never_overwritten(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
@@ -431,6 +485,7 @@ class TestNoQuorumRecovery:
         )
         assert dossier["review_team_verdict"] == "no-quorum"
         assert "dead reviewers" in dossier["no_quorum_cause"]
+        assert "codex-1" in dossier["no_quorum_cause"]
         wake_files = list((tmp_path / "wake").glob("*.md"))
         assert len(wake_files) == 1, "no-quorum must wake the orchestrating lane"
         assert sent, "auto-wake send was not attempted"

@@ -35,6 +35,15 @@ def _load_module() -> ModuleType:
 
 autoqueue = _load_module()
 
+COMPLETE_TESTS_COVER_CHECKLIST = {
+    "tests-cover-the-diff": {
+        "diff-behavior-coverage": "pass",
+        "red-before-green": "na",
+        "new-paths-tested": "pass",
+        "no-coverage-theater": "pass",
+    }
+}
+
 
 @pytest.fixture(autouse=True)
 def _review_team_gate_off(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -63,7 +72,7 @@ def _write_review_dossier(
                 "family": family,
                 "verdict": "accept",
                 "findings": [],
-                "checklist": {},
+                "checklist": COMPLETE_TESTS_COVER_CHECKLIST,
             }
             for family in ("codex", "gemini", "claude")
         ]
@@ -145,7 +154,7 @@ class TestReviewTeamGate:
                     "family": "codex",
                     "verdict": "accept",
                     "findings": [],
-                    "checklist": {},
+                    "checklist": COMPLETE_TESTS_COVER_CHECKLIST,
                 },
                 {
                     "id": "gemini-1",

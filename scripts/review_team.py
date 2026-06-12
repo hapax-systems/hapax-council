@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,6 +49,8 @@ ACCEPT_VERDICTS = frozenset({"accept", "accept-with-findings"})
 REVIEWER_VERDICTS = frozenset({"accept", "accept-with-findings", "block", "invalid-output"})
 
 GATE_KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_GATE_OFF"
+CHECKLIST_ITEM_RE = re.compile(r"^- \[ \] (?P<slug>[a-z0-9-]+):", re.MULTILINE)
+CHECKLIST_VALUES = frozenset({"pass", "finding", "na"})
 
 
 def gate_disabled() -> bool:
@@ -286,6 +289,12 @@ def charter_text(lens: str, lens_dir: Path | None = None) -> str:
     return ((lens_dir or LENS_DIR) / f"{lens}.md").read_text(encoding="utf-8")
 
 
+def charter_checklist_items(lens: str, lens_dir: Path | None = None) -> tuple[str, ...]:
+    """Checklist item slugs declared by a lens charter."""
+
+    return tuple(CHECKLIST_ITEM_RE.findall(charter_text(lens, lens_dir)))
+
+
 # --- Dossier synthesis --------------------------------------------------------
 
 
@@ -306,8 +315,58 @@ def _accepting(reviews: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     return [r for r in reviews if str(r.get("verdict", "")).lower() in ACCEPT_VERDICTS]
 
 
+def _review_checklist_blockers(
+    review: Mapping[str, Any],
+    lenses: Sequence[str],
+    *,
+    lens_dir: Path | None = None,
+) -> tuple[str, ...]:
+    verdict = str(review.get("verdict", "")).lower()
+    if verdict not in ACCEPT_VERDICTS and verdict != "block":
+        return ()
+
+    checklist = review.get("checklist")
+    reviewer = str(review.get("id") or "unknown")
+    if not isinstance(checklist, Mapping):
+        return (f"review_dossier_checklist_missing:{reviewer}",)
+
+    blockers: list[str] = []
+    for lens in lenses:
+        lens_checklist = checklist.get(lens)
+        if not isinstance(lens_checklist, Mapping):
+            blockers.append(f"review_dossier_checklist_missing:{reviewer}:{lens}")
+            continue
+        try:
+            expected = charter_checklist_items(str(lens), lens_dir=lens_dir)
+        except OSError:
+            blockers.append(f"review_dossier_checklist_lens_unreadable:{lens}")
+            continue
+        for item in expected:
+            value = str(lens_checklist.get(item) or "").strip().lower()
+            if value not in CHECKLIST_VALUES:
+                blockers.append(f"review_dossier_checklist_item_missing:{reviewer}:{lens}:{item}")
+    return tuple(blockers)
+
+
+def _checklist_complete_accepts(
+    reviews: Sequence[Mapping[str, Any]],
+    lenses: Sequence[str],
+) -> list[Mapping[str, Any]]:
+    return [r for r in _accepting(reviews) if not _review_checklist_blockers(r, lenses)]
+
+
 def _required_team_size(sizing: Mapping[str, Any]) -> int:
     return int(sizing.get("team_size") or sizing.get("team_size_min") or 1)
+
+
+def _int_field(value: Any, field: str, blockers: list[str]) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        blockers.append(
+            f"review_dossier_malformed:{field}:{value if value is not None else 'missing'}"
+        )
+        return None
 
 
 def synthesize_dossier(
@@ -333,7 +392,7 @@ def synthesize_dossier(
 
     sizing = registry["sizing"][team_class]
     roster = [entry["family"] for entry in registry["families"]]
-    accepts = _accepting(reviews)
+    accepts = _checklist_complete_accepts(reviews, lenses)
     accept_families = {str(r.get("family")) for r in accepts}
     block_reviews = [r for r in reviews if str(r.get("verdict", "")).lower() == "block"]
     criticals = _unresolved_criticals(reviews)
@@ -377,11 +436,24 @@ def synthesize_dossier(
                     "detail": "BLOCK verdict without a named critical finding does not block on its own",
                 }
             )
+    for review in reviews:
+        for blocker in _review_checklist_blockers(review, lenses):
+            escalations.append(
+                {
+                    "kind": "checklist-incomplete",
+                    "reviewer": str(review.get("id")),
+                    "family": str(review.get("family")),
+                    "detail": blocker,
+                }
+            )
 
     if criticals and sizing.get("block_on_named_critical", True):
         verdict = "blocked"
     else:
         quorum_met = len(accepts) >= int(sizing["quorum_accept"])
+        min_families = int(sizing.get("min_families", 1))
+        if quorum_met and len(accept_families) < min_families:
+            quorum_met = False
         if quorum_met and sizing.get("require_all_families"):
             quorum_met = set(roster) <= accept_families
         verdict = QUORUM_ACCEPT if quorum_met else "no-quorum"
@@ -417,13 +489,16 @@ def _dossier_validity_blockers(
     *,
     pr_head_sha: str | None,
     registry: Mapping[str, Any],
+    frontmatter: Mapping[str, Any] | None = None,
 ) -> tuple[str, ...]:
     blockers: list[str] = []
 
     dossier_sha = str(dossier.get("head_sha") or "")
     if not dossier_sha:
         blockers.append("review_dossier_malformed:missing_head_sha")
-    elif pr_head_sha and dossier_sha != pr_head_sha:
+    elif not pr_head_sha:
+        blockers.append("review_dossier_current_head_unknown")
+    elif dossier_sha != pr_head_sha:
         blockers.append(f"review_dossier_stale_head:dossier={dossier_sha[:8]},pr={pr_head_sha[:8]}")
 
     team_class = str(dossier.get("team_class") or "")
@@ -445,13 +520,33 @@ def _dossier_validity_blockers(
     if criticals and sizing.get("block_on_named_critical", True):
         blockers.append(f"review_dossier_unresolved_critical:{len(criticals)}")
 
-    accepts = _accepting(reviews)
-    required_quorum = int(sizing["quorum_accept"])
+    lenses = dossier.get("lenses") or []
+    if not isinstance(lenses, list) or not all(isinstance(l, str) for l in lenses):
+        blockers.append("review_dossier_malformed:lenses")
+        lenses = []
+    for review in reviews:
+        blockers.extend(_review_checklist_blockers(review, lenses))
+
+    accepts = _checklist_complete_accepts(reviews, lenses)
+    required_quorum = _int_field(sizing.get("quorum_accept"), "sizing.quorum_accept", blockers)
+    if required_quorum is None:
+        return tuple(blockers)
     recorded_quorum = dossier.get("quorum_required")
-    if recorded_quorum is not None and int(recorded_quorum) != required_quorum:
+    parsed_recorded_quorum = (
+        _int_field(recorded_quorum, "quorum_required", blockers)
+        if recorded_quorum is not None
+        else None
+    )
+    if parsed_recorded_quorum is not None and parsed_recorded_quorum != required_quorum:
         blockers.append(f"review_dossier_quorum_mismatch:{recorded_quorum}!={required_quorum}")
     if len(accepts) < required_quorum:
         blockers.append(f"review_dossier_quorum_not_met:{len(accepts)}/{required_quorum}")
+    accept_families = {str(r.get("family")) for r in accepts}
+    min_families = _int_field(sizing.get("min_families", 1), "sizing.min_families", blockers)
+    if min_families is not None and len(accept_families) < min_families:
+        blockers.append(
+            f"review_dossier_family_diversity:accept_families={len(accept_families)}/{min_families}"
+        )
     if sizing.get("require_all_families"):
         roster = {entry["family"] for entry in registry["families"]}
         missing_families = roster - {str(r.get("family")) for r in accepts}
@@ -459,6 +554,13 @@ def _dossier_validity_blockers(
             blockers.append(
                 "review_dossier_family_diversity:missing_accept_from="
                 + ",".join(sorted(missing_families))
+            )
+    if frontmatter is not None and accepts:
+        writer_family = writer_family_for_lane(str(frontmatter.get("assigned_to") or ""), registry)
+        writer_accepts = sum(1 for r in accepts if str(r.get("family")) == writer_family)
+        if writer_accepts > len(accepts) // 2:
+            blockers.append(
+                f"review_dossier_writer_family_majority:{writer_family}:{writer_accepts}/{len(accepts)}"
             )
 
     verdict = str(dossier.get("review_team_verdict") or "missing").lower()
@@ -486,7 +588,7 @@ def review_team_verdict_blockers(
         return ()
     task_id = str(frontmatter.get("task_id") or "").strip()
     if not task_id:
-        return ("missing_review_dossier",)
+        return ("review_dossier_unkeyable:missing_task_id",)
     dossier_file = review_dossier_path(note_path, task_id)
     if not dossier_file.is_file():
         return ("missing_review_dossier",)
@@ -503,4 +605,6 @@ def review_team_verdict_blockers(
             registry = load_lens_registry()
         except (OSError, ValueError, yaml.YAMLError) as exc:
             return (f"review_lens_registry_unreadable:{type(exc).__name__}",)
-    return _dossier_validity_blockers(loaded, pr_head_sha=pr_head_sha, registry=registry)
+    return _dossier_validity_blockers(
+        loaded, pr_head_sha=pr_head_sha, registry=registry, frontmatter=frontmatter
+    )

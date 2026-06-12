@@ -133,6 +133,15 @@ class TestLensSelection:
         assert "sdlc-legibility" in lenses
         assert "sdlc-gate-compose" in lenses
 
+    def test_review_team_substrate_gets_sdlc_lenses(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        lenses = rt.lenses_for_files(
+            ["scripts/review_team.py", "config/review-lenses/registry.yaml"], reg
+        )
+        assert "sdlc-legibility" in lenses
+        assert "sdlc-gate-compose" in lenses
+
     def test_no_duplicate_lenses(self) -> None:
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()
@@ -164,6 +173,17 @@ class TestTeamClassification:
         reg = rt.load_lens_registry()
         cls = rt.team_class_for({"risk_tier": "T2"}, ["systemd/units/x.service"], reg)
         assert cls == "t1_critical"
+
+    def test_review_team_substrate_forces_t1_even_at_t2(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        assert (
+            rt.team_class_for({"risk_tier": "T2"}, ["scripts/review_team.py"], reg) == "t1_critical"
+        )
+        assert (
+            rt.team_class_for({"risk_tier": "T2"}, ["config/review-lenses/registry.yaml"], reg)
+            == "t1_critical"
+        )
 
     def test_t1_surface_beats_docs_only(self) -> None:
         rt = _load_review_team_module()
@@ -240,13 +260,25 @@ def _review(
     family: str,
     verdict: str = "accept",
     findings: list[dict] | None = None,
+    checklist: dict | None = None,
 ) -> dict:
     return {
         "id": reviewer_id,
         "family": family,
         "verdict": verdict,
         "findings": findings or [],
-        "checklist": {},
+        "checklist": (
+            checklist
+            if checklist is not None
+            else {
+                "tests-cover-the-diff": {
+                    "diff-behavior-coverage": "pass",
+                    "red-before-green": "na",
+                    "new-paths-tested": "pass",
+                    "no-coverage-theater": "pass",
+                }
+            }
+        ),
     }
 
 
@@ -290,6 +322,20 @@ class TestSynthesizeDossier:
         assert dossier["review_team_verdict"] == "quorum-accept"
         assert dossier["accept_count"] == 2
         assert dossier["dossier_schema"] == 1
+
+    def test_accept_without_complete_checklist_does_not_count(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept", checklist={}),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "block"),
+            ],
+        )
+        assert dossier["accept_count"] == 1
+        assert dossier["review_team_verdict"] == "no-quorum"
+        assert any(e["kind"] == "checklist-incomplete" for e in dossier["escalations"])
 
     def test_unresolved_critical_blocks_despite_quorum(self) -> None:
         rt = _load_review_team_module()
@@ -352,6 +398,18 @@ class TestSynthesizeDossier:
                 _review("claude-1", "claude", "block"),
             ],
             team_class="t1_critical",
+        )
+        assert dossier["review_team_verdict"] == "no-quorum"
+
+    def test_t2_needs_two_accepting_families(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", "accept"),
+                _review("claude-2", "claude", "accept"),
+                _review("claude-3", "claude", "accept"),
+            ],
         )
         assert dossier["review_team_verdict"] == "no-quorum"
 
@@ -426,6 +484,12 @@ class TestVerdictBlockers:
         blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="b" * 40)
         assert any(b.startswith("review_dossier_stale_head:") for b in blockers)
 
+    def test_unknown_current_head_blocks(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._good_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha=None)
+        assert "review_dossier_current_head_unknown" in blockers
+
     def test_quorum_accept_dossier_passes(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         note = _write_dossier(tmp_path, "task-x", self._good_dossier(rt))
@@ -446,6 +510,47 @@ class TestVerdictBlockers:
         blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
         assert "review_dossier_quorum_not_met:1/2" in blockers
         assert any(b.startswith("review_team_verdict_not_quorum_accept:") for b in blockers)
+
+    def test_malformed_recorded_quorum_blocks_without_crashing(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = self._good_dossier(rt)
+        dossier["quorum_required"] = "two"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
+        assert "review_dossier_malformed:quorum_required:two" in blockers
+
+    def test_t2_single_family_accepts_block_even_if_verdict_lies(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", "accept"),
+                _review("claude-2", "claude", "accept"),
+                _review("claude-3", "claude", "accept"),
+            ],
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-x", "assigned_to": "zeta"}, note, pr_head_sha="a" * 40
+        )
+        assert any(b.startswith("review_dossier_family_diversity:") for b in blockers)
+        assert any(b.startswith("review_dossier_writer_family_majority:") for b in blockers)
+
+    def test_incomplete_accept_checklist_blocks_even_if_verdict_lies(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept", checklist={}),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),
+            ],
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
+        assert any(b.startswith("review_dossier_checklist_missing:codex-1") for b in blockers)
 
     def test_unresolved_critical_blocks_even_if_verdict_field_lies(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
@@ -482,6 +587,13 @@ class TestVerdictBlockers:
         note.write_text("---\ntype: cc-task\ntask_id: task-x\n---\n", encoding="utf-8")
         blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
         assert blockers == ()
+
+    def test_missing_task_id_is_unkeyable_not_missing_dossier(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        note = tmp_path / "anonymous.md"
+        note.write_text("---\ntype: cc-task\n---\n", encoding="utf-8")
+        blockers = rt.review_team_verdict_blockers({}, note, pr_head_sha="a" * 40)
+        assert blockers == ("review_dossier_unkeyable:missing_task_id",)
 
 
 class TestLensCharters:
