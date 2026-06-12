@@ -77,20 +77,45 @@ fi
 RESTART_NEXT="next: inspect systemctl --user status hapax-coord.service and journalctl --user -u hapax-coord.service -n 100, fix the service failure, then rerun scripts/hapax-coord-deploy"
 RECEIPT_NEXT="next: inspect $WT/.deployed-sha permissions and systemctl --user status hapax-coord.service, reconcile activation/deployed sha state, then rerun scripts/hapax-coord-deploy"
 
+rollback_service_after_receipt_failure() {
+    local service_rc
+    if systemctl --user restart hapax-coord.service >/dev/null 2>&1; then
+        printf 'restarted hapax-coord.service on rollback sha %s' "$ROLLBACK_SHA"
+    else
+        service_rc=$?
+        systemctl --user stop hapax-coord.service >/dev/null 2>&1 || true
+        printf 'rollback service restart failed rc=%s; stopped hapax-coord.service to avoid serving unreceipted target' "$service_rc"
+    fi
+}
+
+stop_unreceipted_service_after_receipt_failure() {
+    local service_rc
+    if systemctl --user stop hapax-coord.service >/dev/null 2>&1; then
+        printf 'stopped hapax-coord.service to avoid serving unreceipted target'
+    else
+        service_rc=$?
+        printf 'failed to stop hapax-coord.service rc=%s after receipt failure' "$service_rc"
+    fi
+}
+
 receipt_fail() {
     local rc="$1"
     local detail="$2"
+    local service_detail
     detail="${detail//$'\n'/; }"
     if [ -z "$detail" ]; then
         detail="no output"
     fi
     if [ -n "$ROLLBACK_SHA" ] && [ "$ROLLBACK_SHA" != "$TARGET_SHA" ]; then
         git -C "$WT" checkout --detach --force "$ROLLBACK_SHA" --quiet || true
-        echo "coord-deploy: receipt write failed after restart; rolled activation worktree back to $ROLLBACK_SHA; $detail; $RECEIPT_NEXT" >&2
+        service_detail="$(rollback_service_after_receipt_failure)"
+        echo "coord-deploy: receipt write failed after restart; rolled activation worktree back to $ROLLBACK_SHA; $service_detail; $detail; $RECEIPT_NEXT" >&2
     elif [ -n "$ROLLBACK_SHA" ]; then
-        echo "coord-deploy: receipt write failed after restart; activation worktree remains at $ROLLBACK_SHA; $detail; $RECEIPT_NEXT" >&2
+        service_detail="$(stop_unreceipted_service_after_receipt_failure)"
+        echo "coord-deploy: receipt write failed after restart; activation worktree remains at $ROLLBACK_SHA; $service_detail; $detail; $RECEIPT_NEXT" >&2
     else
-        echo "coord-deploy: receipt write failed after restart; no prior activation worktree sha available; $detail; $RECEIPT_NEXT" >&2
+        service_detail="$(stop_unreceipted_service_after_receipt_failure)"
+        echo "coord-deploy: receipt write failed after restart; no prior activation worktree sha available; $service_detail; $detail; $RECEIPT_NEXT" >&2
     fi
     exit "$rc"
 }

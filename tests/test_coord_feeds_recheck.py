@@ -1044,10 +1044,12 @@ def test_coord_deploy_helper_rolls_back_when_receipt_write_fails_after_restart(t
     assert failed.returncode != 0
     assert "receipt write failed after restart" in failed.stderr
     assert "rolled activation worktree back" in failed.stderr
+    assert "restarted hapax-coord.service on rollback sha" in failed.stderr
     assert "next:" in failed.stderr
     assert (worktree / ".deployed-sha").read_text().strip() == first_sha
     assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == first_sha
     assert restart_log.read_text().splitlines() == [
+        "--user restart hapax-coord.service",
         "--user restart hapax-coord.service",
         "--user restart hapax-coord.service",
     ]
@@ -1056,6 +1058,12 @@ def test_coord_deploy_helper_rolls_back_when_receipt_write_fails_after_restart(t
     _cmd([str(_DEPLOY_SCRIPT)], env=env)
     assert (worktree / ".deployed-sha").read_text().strip() == second_sha
     assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == second_sha
+    assert restart_log.read_text().splitlines() == [
+        "--user restart hapax-coord.service",
+        "--user restart hapax-coord.service",
+        "--user restart hapax-coord.service",
+        "--user restart hapax-coord.service",
+    ]
 
 
 def test_coord_rebuild_timer_checked_when_systemctl_enabled(tmp_path):
