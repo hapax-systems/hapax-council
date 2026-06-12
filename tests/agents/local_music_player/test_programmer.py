@@ -261,6 +261,23 @@ def test_record_play_persists_to_history_jsonl(tmp_path: Path) -> None:
     assert payload["source"] == SOURCE_FOUND_SOUND
 
 
+def test_record_play_keeps_bounded_history_jsonl(tmp_path: Path) -> None:
+    cfg = ProgrammerConfig(history_path=tmp_path / "history.jsonl", history_window=2)
+    prog = MusicProgrammer(cfg)
+
+    for idx in range(3):
+        prog.record_play(
+            path=f"/{idx}.flac",
+            title="t",
+            artist="a",
+            source=SOURCE_FOUND_SOUND,
+            when=float(idx),
+        )
+
+    lines = (tmp_path / "history.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["path"] for line in lines] == ["/1.flac", "/2.flac"]
+
+
 def test_history_loads_on_init(tmp_path: Path) -> None:
     history_path = tmp_path / "history.jsonl"
     history_path.write_text(

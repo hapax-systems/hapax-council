@@ -121,7 +121,12 @@ class _JsonlTailer:
                 source_stat = None
             self._write_cursor(existing, source_stat=source_stat)
             return existing
-        return read_jsonl_cursor(self._cursor_path)
+        return read_jsonl_cursor(
+            self._cursor_path,
+            unreadable_default=self._end_offset(),
+            logger=log,
+            label="event",
+        )
 
     def _end_offset(self) -> int:
         if not self._path.exists():

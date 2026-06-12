@@ -28,6 +28,8 @@ Three bootstrap modes, in increasing order of durability:
    - File shrinkage is detected and resets the cursor to the new
      end-of-file. File identity changes reset the cursor to the start
      of the replacement file.
+   - Legacy cursor files without identity sidecars adopt in-range line
+     offsets and write identity state instead of replaying the file.
    - If ``cursor_path`` is set, it takes precedence — ``start_at_end``
      is ignored, because cursor_path's bootstrap rule is strictly
      stronger (seek-to-end on first run, then persist thereafter).
@@ -134,7 +136,8 @@ class ImpingementConsumer:
                 return saved
             except (OSError, ValueError) as exc:
                 log.warning(
-                    "Impingement cursor file %s unreadable (%s) — falling back to end-of-file",
+                    "Impingement cursor file %s unreadable (%s); falling back to end-of-file; "
+                    "operator action: inspect or replace the cursor file if this repeats",
                     self._cursor_path,
                     exc,
                 )
@@ -158,7 +161,8 @@ class ImpingementConsumer:
             return None, False, True
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
             log.warning(
-                "Impingement cursor state %s unreadable; resetting to avoid stale cursor",
+                "Impingement cursor state %s unreadable; source identity will be rewritten "
+                "from the current file; operator action: inspect the state sidecar if this repeats",
                 state_path,
             )
             return None, True, False
@@ -169,29 +173,49 @@ class ImpingementConsumer:
         previous_identity, has_previous_identity, cursor_state_valid = self._read_cursor_identity()
         current_identity = jsonl_file_identity(source_stat)
         if not cursor_state_valid:
-            log.warning(
-                "Impingement cursor %s has unreadable source identity; resetting cursor",
-                self._cursor_path,
-            )
-            self._cursor = 0
+            if self._cursor > line_count:
+                log.warning(
+                    "Impingement cursor %s unreadable source identity after shrink; "
+                    "resetting cursor from %d to %d; operator action: confirm rotation "
+                    "or inspect the cursor state sidecar if unexpected",
+                    self._cursor_path,
+                    self._cursor,
+                    line_count,
+                )
+                self._cursor = line_count
+            else:
+                log.warning(
+                    "Impingement cursor %s adopted unreadable source identity at line %d; "
+                    "operator action: inspect the cursor state sidecar if this repeats",
+                    self._cursor_path,
+                    self._cursor,
+                )
             self._write_cursor(self._cursor, source_stat=source_stat)
             return
-        if not has_previous_identity and self._cursor > 0 and self._cursor <= line_count:
-            log.warning(
-                "Impingement legacy cursor %s adopted with source identity",
-                self._cursor_path,
-            )
+        if not has_previous_identity and self._cursor > 0:
+            if self._cursor > line_count:
+                log.warning(
+                    "Impingement cursor %s missing source identity after shrink; "
+                    "resetting cursor from %d to %d; operator action: confirm rotation "
+                    "or inspect the cursor file if unexpected",
+                    self._cursor_path,
+                    self._cursor,
+                    line_count,
+                )
+                self._cursor = line_count
+            else:
+                log.warning(
+                    "Impingement cursor %s adopted legacy source identity at line %d; "
+                    "operator action: no manual action needed unless this repeats",
+                    self._cursor_path,
+                    self._cursor,
+                )
             self._write_cursor(self._cursor, source_stat=source_stat)
-            return
-        if not has_previous_identity and self._cursor > line_count:
-            log.warning(
-                "Impingement cursor %s missing source identity and beyond current line count",
-                self._cursor_path,
-            )
             return
         if previous_identity is not None and previous_identity != current_identity:
             log.warning(
-                "Impingement file %s identity changed; resetting cursor from %d to 0",
+                "Impingement file %s identity changed; resetting cursor from %d to 0; "
+                "operator action: confirm rotation or inspect the impingement source if unexpected",
                 self._path,
                 self._cursor,
             )
@@ -222,7 +246,8 @@ class ImpingementConsumer:
 
             if len(lines) < self._cursor:
                 log.warning(
-                    "Impingement file %s shrank from %d to %d lines — resetting cursor",
+                    "Impingement file %s shrank from %d to %d lines; resetting cursor; "
+                    "operator action: confirm rotation or inspect the impingement source if unexpected",
                     self._path,
                     self._cursor,
                     len(lines),

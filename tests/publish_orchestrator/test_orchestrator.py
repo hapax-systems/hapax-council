@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
 from prometheus_client import CollectorRegistry
 
-from agents.publish_orchestrator.orchestrator import Orchestrator
+from agents.publish_orchestrator.orchestrator import Orchestrator, _artifact_fingerprint
 from shared.preprint_artifact import PreprintArtifact
+from shared.publication_artifact_public_event import build_publication_artifact_public_event
 from shared.publication_hardening.gate import (
     PublicationGateChildResult,
     PublicationGateDecision,
@@ -122,6 +125,13 @@ def _make_orchestrator(state_root: Path, *, surface_registry: dict[str, str]) ->
     )
 
 
+def _write_public_event_archive(public: Path, event_id: str) -> None:
+    archive = public.parent / "archive" / "public-events.2026-06-12.jsonl.gz"
+    archive.parent.mkdir(parents=True)
+    with gzip.open(archive, "wt", encoding="utf-8") as fh:
+        fh.write(json.dumps({"event_id": event_id}) + "\n")
+
+
 # ── Empty inbox ─────────────────────────────────────────────────────
 
 
@@ -185,6 +195,37 @@ class TestSingleSurface:
         surface_event = next(event for event in events if event["event_id"].endswith(":fake:ok"))
         assert surface_event["surface_policy"]["dry_run_reason"] == ("surface_policy_denied:fake")
         assert "Body." not in json.dumps(surface_event)
+
+    def test_public_event_archive_prevents_duplicate_inbox_event(self, tmp_path, monkeypatch):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+
+        artifact_path = _drop_artifact(tmp_path, slug="archived", surfaces=["fake"])
+        artifact = PreprintArtifact.model_validate_json(artifact_path.read_text(encoding="utf-8"))
+        decision = build_publication_artifact_public_event(
+            artifact,
+            artifact_fingerprint=_artifact_fingerprint(artifact),
+            state_root=tmp_path,
+            stage="inbox",
+            generated_at=datetime.now(UTC),
+            source_path=artifact_path,
+        )
+        assert decision.public_event is not None
+        public_event_path = tmp_path / "public-events.jsonl"
+        _write_public_event_archive(public_event_path, decision.public_event.event_id)
+        orch = _make_orchestrator(
+            tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+        )
+
+        orch.run_once()
+
+        active_ids = {
+            json.loads(line)["event_id"]
+            for line in public_event_path.read_text(encoding="utf-8").splitlines()
+        }
+        assert decision.public_event.event_id not in active_ids
 
     def test_cross_provider_review_hold_suppresses_surface_dispatch(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()

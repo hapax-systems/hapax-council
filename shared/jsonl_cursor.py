@@ -23,11 +23,55 @@ def jsonl_byte_evidence_ref(
     return f"{source_path}#dev={st_dev}:ino={st_ino}:byte={byte_offset}"
 
 
-def read_jsonl_cursor(cursor_path: Path) -> int:
+def _read_cursor_from_state(cursor_path: Path) -> int | None:
     try:
-        return int(cursor_path.read_text().strip())
-    except (OSError, ValueError):
-        return 0
+        state = json.loads(_state_path(cursor_path).read_text(encoding="utf-8"))
+        cursor = int(state["cursor"])
+    except (FileNotFoundError, OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return cursor if cursor >= 0 else None
+
+
+def read_jsonl_cursor(
+    cursor_path: Path,
+    *,
+    missing_default: int = 0,
+    unreadable_default: int = 0,
+    logger: logging.Logger | None = None,
+    label: str = "jsonl",
+) -> int:
+    try:
+        value = int(cursor_path.read_text(encoding="utf-8").strip())
+        if value < 0:
+            raise ValueError(f"negative cursor: {value}")
+        return value
+    except FileNotFoundError:
+        return missing_default
+    except (OSError, ValueError) as exc:
+        state_cursor = _read_cursor_from_state(cursor_path)
+        if state_cursor is not None:
+            if logger is not None:
+                logger.warning(
+                    "%s cursor file unreadable at %s (%s); recovered byte offset %d "
+                    "from identity state; operator action: inspect or replace the cursor "
+                    "file if this repeats",
+                    label,
+                    cursor_path,
+                    exc,
+                    state_cursor,
+                )
+            return state_cursor
+        if logger is not None:
+            logger.warning(
+                "%s cursor file unreadable at %s (%s); using fallback byte offset %d; "
+                "operator action: inspect or replace the cursor file before restarting "
+                "if replay would be unsafe",
+                label,
+                cursor_path,
+                exc,
+                unreadable_default,
+            )
+        return unreadable_default
 
 
 def _state_path(cursor_path: Path) -> Path:
@@ -48,7 +92,9 @@ def _read_cursor_identity(
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         if logger is not None:
             logger.warning(
-                "cursor state unreadable at %s; resetting to avoid stale cursor",
+                "cursor state unreadable at %s; rewriting source identity from the current "
+                "file when the offset is safe; operator action: inspect the state sidecar "
+                "if this repeats",
                 state_path,
             )
         return None, "unreadable"
@@ -97,26 +143,10 @@ def reconcile_jsonl_cursor(
     previous_identity, identity_status = _read_cursor_identity(cursor_path, logger=logger)
     current_identity = jsonl_file_identity(source_stat)
     if identity_status == "unreadable" and byte_offset > 0:
-        logger.warning(
-            "%s cursor reset after unreadable identity state: path=%s size=%d cursor=%d",
-            label,
-            source_path,
-            source_stat.st_size,
-            byte_offset,
-        )
-        write_jsonl_cursor(
-            cursor_path,
-            0,
-            source_path=source_path,
-            source_stat=source_stat,
-            logger=logger,
-        )
-        return 0
-    if identity_status == "missing" and byte_offset > 0:
         if byte_offset > source_stat.st_size:
             logger.warning(
-                "%s cursor reset after legacy shrink without identity state: "
-                "path=%s size=%d cursor=%d",
+                "%s cursor reset after unreadable identity shrink: path=%s size=%d cursor=%d; "
+                "operator action: confirm rotation or inspect the cursor sidecar if unexpected",
                 label,
                 source_path,
                 source_stat.st_size,
@@ -138,7 +168,43 @@ def reconcile_jsonl_cursor(
             logger=logger,
         )
         logger.warning(
-            "%s cursor adopted legacy identity: path=%s size=%d cursor=%d",
+            "%s cursor adopted unreadable identity state: path=%s size=%d cursor=%d; "
+            "operator action: inspect the cursor sidecar if this repeats",
+            label,
+            source_path,
+            source_stat.st_size,
+            byte_offset,
+        )
+        return byte_offset
+    if identity_status == "missing" and byte_offset > 0:
+        if byte_offset > source_stat.st_size:
+            logger.warning(
+                "%s cursor reset after legacy shrink without identity state: "
+                "path=%s size=%d cursor=%d; operator action: confirm rotation or inspect "
+                "the cursor file if unexpected",
+                label,
+                source_path,
+                source_stat.st_size,
+                byte_offset,
+            )
+            write_jsonl_cursor(
+                cursor_path,
+                0,
+                source_path=source_path,
+                source_stat=source_stat,
+                logger=logger,
+            )
+            return 0
+        write_jsonl_cursor(
+            cursor_path,
+            byte_offset,
+            source_path=source_path,
+            source_stat=source_stat,
+            logger=logger,
+        )
+        logger.warning(
+            "%s cursor adopted legacy identity: path=%s size=%d cursor=%d; "
+            "operator action: no manual action needed unless this repeats",
             label,
             source_path,
             source_stat.st_size,
@@ -147,7 +213,8 @@ def reconcile_jsonl_cursor(
         return byte_offset
     if previous_identity is not None and previous_identity != current_identity:
         logger.warning(
-            "%s cursor reset after rotation: path=%s size=%d cursor=%d",
+            "%s cursor reset after rotation: path=%s size=%d cursor=%d; "
+            "operator action: confirm rotation or inspect the source file if unexpected",
             label,
             source_path,
             source_stat.st_size,
@@ -163,7 +230,8 @@ def reconcile_jsonl_cursor(
         return 0
     if byte_offset > source_stat.st_size:
         logger.warning(
-            "%s cursor reset after shrink: path=%s size=%d cursor=%d",
+            "%s cursor reset after shrink: path=%s size=%d cursor=%d; "
+            "operator action: confirm rotation or inspect the source file if unexpected",
             label,
             source_path,
             source_stat.st_size,

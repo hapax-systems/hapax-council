@@ -105,6 +105,40 @@ def test_same_day_rotations_append_to_one_gzip_archive(tmp_path: Path) -> None:
     assert _read_gzip(target.archive_dir / "sample.2026-06-11.jsonl.gz") == "first\nsecond\n"
 
 
+def test_open_writer_fd_late_append_is_recovered_before_slice_unlink(tmp_path: Path) -> None:
+    target = _target(tmp_path, max_bytes=1)
+    now = datetime(2026, 6, 11, tzinfo=UTC)
+    target.path.parent.mkdir(parents=True)
+    target.path.write_text("first\n", encoding="utf-8")
+
+    fd = os.open(target.path, os.O_WRONLY | os.O_APPEND)
+    try:
+        result = rotate_target(target, now=now)
+        os.write(fd, b"late\n")
+    finally:
+        os.close(fd)
+
+    assert result.status == "rotated"
+    rotating_slices = [
+        path
+        for path in target.path.parent.glob("sample.jsonl.*.rotating*")
+        if not path.name.endswith((".archive-offset", ".archive-offset.tmp"))
+    ]
+    assert len(rotating_slices) == 1
+    assert _read_gzip(target.archive_dir / "sample.2026-06-11.jsonl.gz") == "first\n"
+
+    recovery = rotate_target(target, now=now)
+
+    assert recovery.status == "noop_empty"
+    assert recovery.recovered_slices == 1
+    assert not any(
+        path
+        for path in target.path.parent.glob("sample.jsonl.*.rotating*")
+        if not path.name.endswith((".archive-offset", ".archive-offset.tmp"))
+    )
+    assert _read_gzip(target.archive_dir / "sample.2026-06-11.jsonl.gz") == "first\nlate\n"
+
+
 def test_recovers_stale_rotating_slice_before_noop(tmp_path: Path) -> None:
     target = _target(tmp_path, max_bytes=100)
     target.path.parent.mkdir(parents=True)

@@ -94,6 +94,7 @@ PUBLIC_EVENT_PATH = Path(
         "/dev/shm/hapax-public-events/events.jsonl",
     )
 )
+PUBLIC_EVENT_ARCHIVE_GLOB = "public-events.*.jsonl.gz"
 
 _SUCCESS_RESULTS = frozenset({"ok"})
 """Only these results count as a real publication."""

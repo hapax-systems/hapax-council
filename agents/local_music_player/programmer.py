@@ -41,6 +41,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from shared.jsonl_retention import append_bounded_jsonl_line
 from shared.music.provenance import is_broadcast_safe
 from shared.music_repo import LocalMusicRepo, LocalMusicTrack
 from shared.music_sources import (
@@ -305,9 +306,12 @@ class MusicProgrammer:
         path = self.config.history_path
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            # jsonl-rotation: exempt(playback policy state; restart loads rolling cooldown history)
-            with path.open("a", encoding="utf-8") as f:
-                f.write(event.to_json() + "\n")
+            # jsonl-rotation: exempt(inline bounded playback policy state; restart loads rolling cooldown history)
+            append_bounded_jsonl_line(
+                path,
+                event.to_json(),
+                max_lines=self.config.history_window,
+            )
         except OSError:
             log.warning("Failed to append play history to %s", path, exc_info=True)
 

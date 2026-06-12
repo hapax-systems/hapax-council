@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -147,12 +148,24 @@ class TestFallbackSummary:
 
 
 class TestIdempotency:
+    def _write_public_event_archive(self, path: Path, event_id: str) -> None:
+        archive = path.parent / "archive" / "public-events.2026-06-12.jsonl.gz"
+        archive.parent.mkdir(parents=True)
+        with gzip.open(archive, "wt", encoding="utf-8") as fh:
+            fh.write(json.dumps({"event_id": event_id}) + "\n")
+
     def test_detects_existing_event(self, tmp_path: Path) -> None:
         path = tmp_path / "events.jsonl"
         path.write_text(
             '{"event_id":"rvpe:velocity_digest:2026-05-10","event_type":"velocity.digest"}\n',
             encoding="utf-8",
         )
+        assert _event_already_written("rvpe:velocity_digest:2026-05-10", path) is True
+
+    def test_detects_existing_event_in_archive(self, tmp_path: Path) -> None:
+        path = tmp_path / "events.jsonl"
+        self._write_public_event_archive(path, "rvpe:velocity_digest:2026-05-10")
+
         assert _event_already_written("rvpe:velocity_digest:2026-05-10", path) is True
 
     def test_returns_false_when_missing(self, tmp_path: Path) -> None:

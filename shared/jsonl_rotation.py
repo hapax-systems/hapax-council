@@ -87,6 +87,15 @@ def iter_jsonl_lines_with_gzip_archives(
         except OSError as exc:
             if logger is not None:
                 logger.warning("jsonl archive read failed: %s (%s)", archive_path, exc)
+    for pending_path in sorted(path.parent.glob(f"{path.name}.*.rotating*")):
+        if pending_path.name.endswith((".archive-offset", ".archive-offset.tmp")):
+            continue
+        try:
+            with pending_path.open(encoding="utf-8", errors="replace") as fh:
+                yield from fh
+        except OSError as exc:
+            if logger is not None:
+                logger.warning("jsonl pending rotation read failed: %s (%s)", pending_path, exc)
     try:
         with path.open(encoding="utf-8", errors="replace") as fh:
             yield from fh

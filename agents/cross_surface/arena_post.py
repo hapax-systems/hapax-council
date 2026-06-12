@@ -260,7 +260,16 @@ class ArenaPoster:
     # ── Cursor + tail ─────────────────────────────────────────────────
 
     def _read_cursor(self) -> int:
-        return read_jsonl_cursor(self._cursor_path)
+        try:
+            unreadable_default = self._event_path.stat().st_size
+        except OSError:
+            unreadable_default = 0
+        return read_jsonl_cursor(
+            self._cursor_path,
+            unreadable_default=unreadable_default,
+            logger=log,
+            label="event",
+        )
 
     def _write_cursor(self, byte_offset: int, *, source_stat=None) -> None:
         write_jsonl_cursor(

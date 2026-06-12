@@ -136,7 +136,12 @@ class SalienceTrigger:
         if self._cursor_path is None:
             return self._end_of_file()
         if self._cursor_path.exists():
-            return read_jsonl_cursor(self._cursor_path)
+            return read_jsonl_cursor(
+                self._cursor_path,
+                unreadable_default=self._end_of_file(),
+                logger=log,
+                label="chronicle",
+            )
         end = self._end_of_file()
         try:
             source_stat = self._events_path.stat()

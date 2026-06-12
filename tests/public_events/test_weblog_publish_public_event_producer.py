@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 from pathlib import Path
 
@@ -54,6 +55,13 @@ def _item(
 
 def _read_public_events(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def _write_public_event_archive(public: Path, event_id: str) -> None:
+    archive = public.parent / "archive" / "public-events.2026-06-12.jsonl.gz"
+    archive.parent.mkdir(parents=True)
+    with gzip.open(archive, "wt", encoding="utf-8") as fh:
+        fh.write(json.dumps({"event_id": event_id}) + "\n")
 
 
 def test_parse_weblog_rss_items_extracts_stable_fields() -> None:
@@ -262,5 +270,39 @@ def test_existing_public_event_id_prevents_duplicate_after_state_loss(tmp_path: 
 
     assert producer.run_once() == 0
     assert len(public.read_text(encoding="utf-8").splitlines()) == 1
+    payload = json.loads(state.read_text(encoding="utf-8"))
+    assert payload["seen_item_ids"] == ["post-1"]
+
+
+def test_existing_public_event_archive_prevents_duplicate_after_state_loss(
+    tmp_path: Path,
+) -> None:
+    public = tmp_path / "events.jsonl"
+    state = tmp_path / "state.json"
+    item = WeblogRssItem(
+        item_id="post-1",
+        title="Existing post",
+        link="https://hapax.weblog.lol/existing-post",
+        published_at="2026-05-10T10:15:00Z",
+        description="Public weblog post.",
+    )
+    _write_public_event_archive(public, weblog_publish_event_id(item))
+    producer = WeblogPublishPublicEventProducer(
+        rss_url=FEED_URL,
+        public_event_path=public,
+        state_path=state,
+        fetcher=lambda _url: _rss(
+            _item(
+                guid="post-1",
+                title="Existing post",
+                link="https://hapax.weblog.lol/existing-post",
+            )
+        ),
+        time_fn=lambda: NOW,
+        emit_existing_on_first_run=True,
+    )
+
+    assert producer.run_once() == 0
+    assert not public.exists()
     payload = json.loads(state.read_text(encoding="utf-8"))
     assert payload["seen_item_ids"] == ["post-1"]

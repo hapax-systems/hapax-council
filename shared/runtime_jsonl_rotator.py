@@ -6,7 +6,9 @@ ledgers stay outside this registry with explicit writer-side exemptions.
 
 Rotation uses POSIX rename, then creates a fresh live file at the original path.
 Writers with an already-open fd finish on the renamed slice; later appends reopen
-the original path. The slice is append-gzipped into an archive and removed.
+the original path. The slice is append-gzipped into an archive, but it is only
+removed after same-user writer fds for the slice inode have closed. Late writes
+to retained slices are archived from a saved byte offset on the next rotator run.
 Byte-cursor bus consumers must treat shrink/rotation as a cursor reset; unread
 records already moved into an archived slice are retained for audit, not replayed
 through the live-file bus.
@@ -329,6 +331,55 @@ def _rotating_path(path: Path, now: datetime) -> Path:
     raise OSError(f"could not allocate rotating path for {path}")
 
 
+def _archive_offset_path(slice_path: Path) -> Path:
+    return slice_path.with_name(f"{slice_path.name}.archive-offset")
+
+
+def _read_archive_offset(slice_path: Path, source_size: int) -> int:
+    offset_path = _archive_offset_path(slice_path)
+    try:
+        offset = int(offset_path.read_text(encoding="utf-8").strip())
+    except (FileNotFoundError, OSError, ValueError):
+        return 0
+    if offset < 0 or offset > source_size:
+        return 0
+    return offset
+
+
+def _write_archive_offset(slice_path: Path, offset: int) -> None:
+    offset_path = _archive_offset_path(slice_path)
+    tmp_path = offset_path.with_name(f"{offset_path.name}.tmp")
+    tmp_path.write_text(str(offset), encoding="utf-8")
+    tmp_path.replace(offset_path)
+
+
+def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
+    return int(left.st_dev) == int(right.st_dev) and int(left.st_ino) == int(right.st_ino)
+
+
+def _has_same_user_open_fd(source_stat: os.stat_result) -> bool:
+    proc_root = Path("/proc")
+    if not proc_root.exists():
+        return True
+    current_uid = os.getuid()
+    for proc_dir in proc_root.iterdir():
+        if not proc_dir.name.isdigit():
+            continue
+        try:
+            if proc_dir.stat().st_uid != current_uid:
+                continue
+            fd_entries = list((proc_dir / "fd").iterdir())
+        except OSError:
+            continue
+        for fd_entry in fd_entries:
+            try:
+                if _same_file(os.stat(fd_entry), source_stat):
+                    return True
+            except OSError:
+                continue
+    return False
+
+
 def _lock_path(path: Path) -> Path:
     return path.with_name(path.name + ".rotate.lock")
 
@@ -349,15 +400,32 @@ def _archive_slice(
 ) -> Path:
     archive_path = _archive_path(target, now)
     target.archive_dir.mkdir(parents=True, exist_ok=True)
-    with slice_path.open("rb") as src, gzip.open(archive_path, "ab") as dst:
-        shutil.copyfileobj(src, dst)
-    slice_path.unlink()
-    return archive_path
+    while True:
+        source_stat = slice_path.stat()
+        source_size = source_stat.st_size
+        offset = _read_archive_offset(slice_path, source_size)
+        if offset < source_size:
+            with slice_path.open("rb") as src, gzip.open(archive_path, "ab") as dst:
+                src.seek(offset)
+                shutil.copyfileobj(src, dst)
+                copied_until = src.tell()
+            _write_archive_offset(slice_path, copied_until)
+        if _has_same_user_open_fd(source_stat):
+            return archive_path
+        latest_size = slice_path.stat().st_size
+        latest_offset = _read_archive_offset(slice_path, latest_size)
+        if latest_size > latest_offset:
+            continue
+        slice_path.unlink()
+        _archive_offset_path(slice_path).unlink(missing_ok=True)
+        return archive_path
 
 
 def _recover_rotating_slices(target: RotationTarget, now: datetime) -> int:
     recovered = 0
     for slice_path in sorted(target.path.parent.glob(f"{target.path.name}.*.rotating*")):
+        if slice_path.name.endswith((".archive-offset", ".archive-offset.tmp")):
+            continue
         if not slice_path.is_file():
             continue
         _archive_slice(slice_path, target, now)

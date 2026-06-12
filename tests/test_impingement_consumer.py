@@ -290,13 +290,45 @@ class TestCursorPersistence:
         assert [imp.source for imp in result] == ["new-a", "new-b"]
         assert consumer.cursor == 2
 
-    def test_legacy_cursor_without_identity_adopts_same_line_count_source(
+    def test_legacy_cursor_without_identity_adopts_same_line_count_without_replay(
         self, tmp_path: Path
     ) -> None:
         path = tmp_path / "imp.jsonl"
         cursor_path = tmp_path / "cursor.txt"
         _write_jsonl(path, [_make_imp("new-a"), _make_imp("new-b")])
         cursor_path.write_text("2", encoding="utf-8")
+
+        consumer = ImpingementConsumer(path, cursor_path=cursor_path)
+        result = consumer.read_new()
+
+        assert result == []
+        assert consumer.cursor == 2
+        assert cursor_path.with_name("cursor.txt.state.json").exists()
+
+    def test_legacy_cursor_without_identity_after_shrink_resets_to_end(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "imp.jsonl"
+        cursor_path = tmp_path / "cursor.txt"
+        _write_jsonl(path, [_make_imp("remaining")])
+        cursor_path.write_text("2", encoding="utf-8")
+
+        consumer = ImpingementConsumer(path, cursor_path=cursor_path)
+        result = consumer.read_new()
+
+        assert result == []
+        assert consumer.cursor == 1
+        assert cursor_path.read_text(encoding="utf-8") == "1"
+        assert cursor_path.with_name("cursor.txt.state.json").exists()
+
+    def test_unreadable_cursor_identity_adopts_in_range_cursor_without_replay(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "imp.jsonl"
+        cursor_path = tmp_path / "cursor.txt"
+        _write_jsonl(path, [_make_imp("new-a"), _make_imp("new-b")])
+        cursor_path.write_text("2", encoding="utf-8")
+        cursor_path.with_name("cursor.txt.state.json").write_text("{broken", encoding="utf-8")
 
         consumer = ImpingementConsumer(path, cursor_path=cursor_path)
         result = consumer.read_new()

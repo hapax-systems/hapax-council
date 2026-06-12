@@ -138,7 +138,16 @@ class ByteCursorJsonlTailer:
         self._cursor_path = cursor_path
 
     def read_cursor(self) -> int:
-        return max(0, read_jsonl_cursor(self._cursor_path))
+        source_stat = getattr(self, "_cursor_source_stat", None)
+        return max(
+            0,
+            read_jsonl_cursor(
+                self._cursor_path,
+                unreadable_default=int(source_stat.st_size) if source_stat is not None else 0,
+                logger=log,
+                label="legacy event",
+            ),
+        )
 
     def write_cursor(self, byte_offset: int, *, source_stat=None) -> None:
         write_jsonl_cursor(

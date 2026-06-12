@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from shared.jsonl_rotation import iter_jsonl_lines_with_gzip_archives
 from shared.research_vehicle_public_event import (
     PublicEventProvenance,
     PublicEventSource,
@@ -38,6 +39,7 @@ REPO_DIR = Path(
     os.environ.get("HAPAX_COUNCIL_DIR", str(Path.home() / "projects" / "hapax-council"))
 )
 TASK_ANCHOR = "velocity-digest-producer"
+PUBLIC_EVENT_ARCHIVE_GLOB = "public-events.*.jsonl.gz"
 
 _ALLOWED_SURFACES: list[Surface] = [
     "omg_statuslog",
@@ -243,11 +245,11 @@ def build_velocity_digest_event(
 
 
 def _event_already_written(event_id: str, path: Path) -> bool:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return False
-    for line in text.splitlines():
+    for line in iter_jsonl_lines_with_gzip_archives(
+        path,
+        archive_glob=PUBLIC_EVENT_ARCHIVE_GLOB,
+        logger=log,
+    ):
         try:
             obj = json.loads(line)
         except json.JSONDecodeError:
