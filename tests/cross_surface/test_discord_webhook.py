@@ -94,6 +94,25 @@ class TestCursor:
         assert post_fn.call_count == 1
         assert int(cursor.read_text()) == bus.stat().st_size
 
+    def test_cursor_reset_after_event_file_inode_changes_at_same_size(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        cursor = tmp_path / "cursor.txt"
+        _write_events(bus, [{"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-A"}])
+
+        poster, post_fn = _make_poster(event_path=bus, cursor_path=cursor)
+        poster.run_once()
+        assert post_fn.call_count == 1
+        old_size = bus.stat().st_size
+
+        replacement = tmp_path / "replacement.jsonl"
+        _write_events(replacement, [{"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-B"}])
+        assert replacement.stat().st_size == old_size
+        replacement.replace(bus)
+
+        poster.run_once()
+        assert post_fn.call_count == 2
+        assert int(cursor.read_text()) == bus.stat().st_size
+
 
 # ── Event filtering ──────────────────────────────────────────────────
 

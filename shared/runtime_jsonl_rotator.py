@@ -97,6 +97,27 @@ DEFAULT_TARGETS: dict[str, RotationTarget] = {
         archive_dir=Path("/dev/shm/hapax-broadcast/archive"),
         keep_archives=4,
     ),
+    "monetization-events": RotationTarget(
+        name="monetization-events",
+        path=Path("/dev/shm/hapax-monetization/events.jsonl"),
+        max_bytes=8 * MIB,
+        archive_dir=Path("/dev/shm/hapax-monetization/archive"),
+        keep_archives=4,
+    ),
+    "public-events": RotationTarget(
+        name="public-events",
+        path=Path("/dev/shm/hapax-public-events/events.jsonl"),
+        max_bytes=8 * MIB,
+        archive_dir=Path("/dev/shm/hapax-public-events/archive"),
+        keep_archives=4,
+    ),
+    "chronicle-events": RotationTarget(
+        name="chronicle-events",
+        path=Path("/dev/shm/hapax-chronicle/events.jsonl"),
+        max_bytes=96 * MIB,
+        archive_dir=Path("/dev/shm/hapax-chronicle/archive"),
+        keep_archives=4,
+    ),
     "dmn-fortress-actions": RotationTarget(
         name="dmn-fortress-actions",
         path=Path("/dev/shm/hapax-dmn/fortress-actions.jsonl"),

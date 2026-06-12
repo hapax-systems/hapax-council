@@ -49,8 +49,16 @@ def _path_parts(node: ast.AST, bindings: dict[str, list[str]]) -> list[str]:
         return bindings.get(node.attr, [])
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         return _path_parts(node.left, bindings) + _path_parts(node.right, bindings)
+    if isinstance(node, ast.IfExp):
+        body = _path_parts(node.body, bindings)
+        orelse = _path_parts(node.orelse, bindings)
+        if body and orelse and body != orelse:
+            return []
+        return body or orelse
     if isinstance(node, ast.Call):
         func = node.func
+        if isinstance(func, ast.Name) and func.id in bindings and not node.args:
+            return bindings[func.id]
         if isinstance(func, ast.Name) and func.id == "Path" and node.args:
             return _path_parts(node.args[0], bindings)
         if isinstance(func, ast.Attribute):
@@ -76,6 +84,47 @@ def _path_name_bindings(tree: ast.AST) -> dict[str, list[str]]:
 
     bindings: dict[str, list[str]] = {}
     for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            positional_args = list(node.args.posonlyargs) + list(node.args.args)
+            positional_defaults = [None] * (len(positional_args) - len(node.args.defaults)) + list(
+                node.args.defaults
+            )
+            for arg, default in zip(positional_args, positional_defaults, strict=True):
+                if default is None:
+                    continue
+                parts = _path_parts(default, bindings)
+                if parts:
+                    bindings[arg.arg] = parts
+            for arg, default in zip(node.args.kwonlyargs, node.args.kw_defaults, strict=True):
+                if default is None:
+                    continue
+                parts = _path_parts(default, bindings)
+                if parts:
+                    bindings[arg.arg] = parts
+            local_bindings = dict(bindings)
+            bound_return = False
+            for stmt in node.body:
+                if isinstance(stmt, ast.Assign):
+                    parts = _path_parts(stmt.value, local_bindings)
+                    if not parts:
+                        continue
+                    for target in stmt.targets:
+                        if isinstance(target, ast.Name):
+                            local_bindings[target.id] = parts
+                elif isinstance(stmt, ast.Return) and stmt.value is not None:
+                    parts = _path_parts(stmt.value, local_bindings)
+                    if parts:
+                        bindings[node.name] = parts
+                        bound_return = True
+                    break
+            if not bound_return:
+                for child in ast.walk(node):
+                    if not isinstance(child, ast.Return) or child.value is None:
+                        continue
+                    parts = _path_parts(child.value, local_bindings)
+                    if parts:
+                        bindings[node.name] = parts
+                    break
         targets: list[ast.expr] = []
         value: ast.expr | None = None
         if isinstance(node, ast.Assign):
@@ -179,6 +228,9 @@ def check_file(path: Path, covered: set[str], src_lines: list[str]) -> list[str]
 
         path_ref = _path_expr(target, bindings)
         mentioned_name = _mentioned_jsonl_name(target)
+        ambiguous_registered_basename = mentioned_name in covered_names and (
+            path_ref is None or path_ref == mentioned_name
+        )
         if path_ref and Path(path_ref).name in covered_names:
             ref = path_ref
         elif mentioned_name:
@@ -189,7 +241,7 @@ def check_file(path: Path, covered: set[str], src_lines: list[str]) -> list[str]
         window = src_lines[max(0, node.lineno - 2) : node.lineno]
         if any("jsonl-rotation: exempt" in line for line in window):
             continue
-        if not _covered(ref, covered):
+        if ambiguous_registered_basename or not _covered(ref, covered):
             problems.append(
                 f"{path.relative_to(REPO)}:{node.lineno}: append-mode jsonl writer "
                 f"'{ref}' has no rotation-registry target and no exempt pragma"

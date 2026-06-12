@@ -72,6 +72,7 @@ import requests
 from prometheus_client import REGISTRY, CollectorRegistry, Counter, start_http_server
 
 from shared.governance.publication_allowlist import check as allowlist_check
+from shared.jsonl_cursor import read_jsonl_cursor, reconcile_jsonl_cursor, write_jsonl_cursor
 
 log = logging.getLogger(__name__)
 
@@ -168,34 +169,29 @@ class DiscordWebhookPoster:
     # ── Cursor + tail ─────────────────────────────────────────────────
 
     def _read_cursor(self) -> int:
-        try:
-            return int(self._cursor_path.read_text().strip())
-        except (FileNotFoundError, ValueError):
-            return 0
+        return read_jsonl_cursor(self._cursor_path)
 
     def _write_cursor(self, byte_offset: int) -> None:
-        try:
-            self._cursor_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._cursor_path.with_suffix(".tmp")
-            tmp.write_text(str(byte_offset))
-            tmp.replace(self._cursor_path)
-        except OSError:
-            log.warning("cursor write failed at %s", self._cursor_path, exc_info=True)
+        write_jsonl_cursor(
+            self._cursor_path,
+            byte_offset,
+            source_path=self._event_path,
+            logger=log,
+        )
 
     def _tail_from(self, byte_offset: int) -> Iterator[tuple[dict, int]]:
         if not self._event_path.exists():
             return
         try:
-            size = self._event_path.stat().st_size
-            if byte_offset > size:
-                log.warning(
-                    "event cursor reset after shrink: path=%s size=%d cursor=%d",
-                    self._event_path,
-                    size,
-                    byte_offset,
-                )
-                byte_offset = 0
-                self._write_cursor(byte_offset)
+            source_stat = self._event_path.stat()
+            byte_offset = reconcile_jsonl_cursor(
+                self._cursor_path,
+                self._event_path,
+                byte_offset,
+                source_stat=source_stat,
+                logger=log,
+                label="event",
+            )
             with self._event_path.open("rb") as fh:
                 fh.seek(byte_offset)
                 while True:

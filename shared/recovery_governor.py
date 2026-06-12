@@ -619,6 +619,7 @@ class RecoveryGovernor:
         target_dir = (Path.home() / ".cache" / "hapax" / "recovery") if fallback else self._dir
         try:
             target_dir.mkdir(parents=True, exist_ok=True)
+            # jsonl-rotation: exempt(dual-path writer; both failopen paths are registry targets)
             with (target_dir / "failopen.jsonl").open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(rec) + "\n")
             self._bump_counter(target_dir / "counters.json", "failopen")

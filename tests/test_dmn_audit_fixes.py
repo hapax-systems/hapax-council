@@ -88,6 +88,40 @@ class TestFortressFeedbackWiring:
         assert "sleep_per_capita" in daemon._pulse._fortress_acted_on
         assert daemon._feedback_cursor == actions_file.stat().st_size
 
+    def test_cursor_resets_after_feedback_file_inode_changes_at_same_size(self, tmp_path):
+        """DMNDaemon detects rotation even if the fresh file catches up to the old size."""
+        from agents.dmn.__main__ import DMNDaemon
+
+        daemon = DMNDaemon()
+        actions_file = tmp_path / "fortress-actions.jsonl"
+        old_feedback = Impingement(
+            timestamp=1.0,
+            source="fortress.action_taken",
+            type=ImpingementType.ABSOLUTE_THRESHOLD,
+            strength=0.3,
+            content={"trigger_metric": "drink_per_capita", "action_type": "brew"},
+        )
+        actions_file.write_text(old_feedback.model_dump_json() + "\n")
+        daemon._consume_fortress_feedback(path=actions_file)
+        assert "drink_per_capita" in daemon._pulse._fortress_acted_on
+        old_size = actions_file.stat().st_size
+
+        new_feedback = Impingement(
+            timestamp=1.0,
+            source="fortress.action_taken",
+            type=ImpingementType.ABSOLUTE_THRESHOLD,
+            strength=0.3,
+            content={"trigger_metric": "sleep_per_capita", "action_type": "rest"},
+        )
+        replacement = tmp_path / "replacement.jsonl"
+        replacement.write_text(new_feedback.model_dump_json() + "\n")
+        assert replacement.stat().st_size == old_size
+        replacement.replace(actions_file)
+
+        daemon._consume_fortress_feedback(path=actions_file)
+        assert "sleep_per_capita" in daemon._pulse._fortress_acted_on
+        assert daemon._feedback_cursor == actions_file.stat().st_size
+
     def test_suppression_prevents_threshold_reemission(self):
         """After fortress acts on drink_per_capita, DMN doesn't re-emit it."""
         buf = DMNBuffer()

@@ -84,6 +84,58 @@ def test_registered_path_covers_name_bound_writer():
     assert problems == []
 
 
+def test_registered_path_covers_conditional_default_alias():
+    gate = _load_gate()
+    src = (
+        'DEFAULT_PAYMENT_LOG_PATH = Path(os.environ.get("X", "/dev/shm/hapax-monetization/events.jsonl"))\n'
+        "def append_event(log_path=None):\n"
+        "    target = log_path if log_path is not None else DEFAULT_PAYMENT_LOG_PATH\n"
+        '    with target.open("a") as f:\n'
+        '        f.write("x")\n'
+    )
+    problems = gate.check_file(
+        REPO / "agents" / "fake.py",
+        covered={"/dev/shm/hapax-monetization/events.jsonl"},
+        src_lines=src.splitlines(),
+    )
+    assert problems == []
+
+
+def test_registered_path_covers_constructor_default_attribute():
+    gate = _load_gate()
+    src = (
+        'DEFAULT_PUBLIC_EVENT_PATH = Path("/dev/shm/hapax-public-events/events.jsonl")\n'
+        "class Broker:\n"
+        "    def __init__(self, public_event_path=DEFAULT_PUBLIC_EVENT_PATH):\n"
+        "        self.public_event_path = public_event_path\n"
+        "    def write(self):\n"
+        '        with self.public_event_path.open("a") as f:\n'
+        '            f.write("x")\n'
+    )
+    problems = gate.check_file(
+        REPO / "shared" / "fake.py",
+        covered={"/dev/shm/hapax-public-events/events.jsonl"},
+        src_lines=src.splitlines(),
+    )
+    assert problems == []
+
+
+def test_registered_basename_without_resolved_path_is_ambiguous():
+    gate = _load_gate()
+    src = (
+        "def write(directory):\n"
+        '    with (directory / "events.jsonl").open("a") as f:\n'
+        '        f.write("x")\n'
+    )
+    problems = gate.check_file(
+        REPO / "shared" / "fake.py",
+        covered={"/dev/shm/hapax-broadcast/events.jsonl"},
+        src_lines=src.splitlines(),
+    )
+    assert len(problems) == 1
+    assert "events.jsonl" in problems[0]
+
+
 def test_live_tree_is_clean():
     result = subprocess.run(
         [sys.executable, str(GATE)], capture_output=True, text=True, check=False

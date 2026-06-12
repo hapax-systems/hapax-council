@@ -24,6 +24,7 @@ from agents._impingement import Impingement
 from agents.dmn.buffer import DMNBuffer
 from agents.dmn.pulse import DMNPulse
 from shared.governance.consent_label import ConsentLabel
+from shared.jsonl_cursor import FileIdentity, jsonl_file_identity
 from shared.labeled_trace import serialize_label
 
 log = logging.getLogger("dmn")
@@ -52,6 +53,7 @@ class DMNDaemon:
         self._start_time = time.monotonic()
         self._feedback_cursor: int = 0  # byte offset into fortress-actions.jsonl
         self._last_aperture_s: float = 0.0
+        self._feedback_file_id: FileIdentity | None = None
 
     async def run(self) -> None:
         """Main loop — never stops unless signalled."""
@@ -154,8 +156,18 @@ class DMNDaemon:
         if not path.exists():
             return
         try:
-            size = path.stat().st_size
-            if size < self._feedback_cursor:
+            source_stat = path.stat()
+            current_file_id = jsonl_file_identity(source_stat)
+            size = source_stat.st_size
+            if self._feedback_file_id is not None and self._feedback_file_id != current_file_id:
+                log.warning(
+                    "Fortress feedback cursor reset after rotation: path=%s size=%d cursor=%d",
+                    path,
+                    size,
+                    self._feedback_cursor,
+                )
+                self._feedback_cursor = 0
+            elif size < self._feedback_cursor:
                 log.warning(
                     "Fortress feedback cursor reset after shrink: path=%s size=%d cursor=%d",
                     path,
@@ -163,6 +175,7 @@ class DMNDaemon:
                     self._feedback_cursor,
                 )
                 self._feedback_cursor = 0
+            self._feedback_file_id = current_file_id
             if size == self._feedback_cursor:
                 return
             with path.open("r", encoding="utf-8") as f:
