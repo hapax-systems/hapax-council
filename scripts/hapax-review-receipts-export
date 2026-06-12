@@ -62,7 +62,9 @@ def acceptance_summary(path: Path) -> dict | None:
         "task_id": path.name.split(".acceptance")[0],
         "verdict": d.get("verdict"),
         "acceptor": d.get("acceptor"),
-        "timestamp": d.get("timestamp"),
+        # yaml parses unquoted ISO stamps into datetime, which json.dumps
+        # rejects (dossier critical: canonical receipts crash the exporter)
+        "timestamp": str(d.get("timestamp")) if d.get("timestamp") is not None else None,
     }
 
 
