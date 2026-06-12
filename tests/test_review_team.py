@@ -88,6 +88,9 @@ class TestLensRegistry:
             assert entry["timeout_seconds"] > 0
         gemini = next(entry for entry in roster if entry["family"] == "gemini")
         assert "--skip-trust" in gemini["reviewer_command"]
+        gemini_command = " ".join(str(part) for part in gemini["reviewer_command"])
+        assert "fenced yaml code block" in gemini_command
+        assert "ONLY the dossier YAML" not in gemini_command
 
     def test_surface_rows_cover_spec_table(self) -> None:
         reg = _registry()
@@ -306,7 +309,7 @@ def _critical(title: str = "named critical", resolved: bool = False) -> dict:
     }
 
 
-def _synth(rt, reviews: list[dict], *, team_class: str = "t2_standard") -> dict:
+def _synth(rt, reviews: list[dict], *, team_class: str = "t2_standard", **kwargs) -> dict:
     reg = rt.load_lens_registry()
     return rt.synthesize_dossier(
         task_id="task-x",
@@ -317,10 +320,49 @@ def _synth(rt, reviews: list[dict], *, team_class: str = "t2_standard") -> dict:
         reviews=reviews,
         lenses=ALWAYS_ON_LENSES,
         constituted_at="2026-06-11T20:00:00+00:00",
+        **kwargs,
     )
 
 
 class TestSynthesizeDossier:
+    def test_dossier_persists_scope_metadata(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),
+            ],
+            writer_family="claude",
+            constitution_writer_family="codex",
+            changed_files=("scripts/review_team.py", "config/review-lenses/registry.yaml"),
+        )
+        assert dossier["registry_id"] == "review-lenses"
+        assert dossier["registry_declared_at"]
+        assert dossier["writer_family"] == "claude"
+        assert dossier["constitution_writer_family"] == "codex"
+        assert dossier["changed_file_count"] == 2
+        assert dossier["changed_files"] == [
+            "scripts/review_team.py",
+            "config/review-lenses/registry.yaml",
+        ]
+
+    def test_dossier_preserves_unknown_changed_files(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),
+            ],
+            changed_files=None,
+            changed_file_count=None,
+        )
+        assert dossier["changed_file_count"] is None
+        assert dossier["changed_files"] is None
+
     def test_reviewer_supplied_resolved_critical_blocks(self) -> None:
         rt = _load_review_team_module()
         dossier = _synth(
