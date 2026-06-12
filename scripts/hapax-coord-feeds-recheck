@@ -7,16 +7,29 @@ any timer) can re-witness the predicate:
 
   uv run python scripts/hapax-coord-feeds-recheck [--json]
 
-Checks, each named in the output:
+Checks, each named in the output, each FAIL carrying a next action:
   * units-tracked      — repo systemd/units/* byte-match the installed user
                          units (the tracked-vs-runtime inventory reconcile)
+  * scripts-tracked    — repo producer/recheck scripts byte-match the copies
+                         under the activation root the units ExecStart from
   * units-active       — all three timers enabled + active
   * feed-fresh:*       — every feed younger than 3x its timer cadence
-  * vocab-parity       — observed stages map onto ladder tokens (unknown
-                         passthrough is honest -> WARN, not FAIL)
+  * vocab-parity       — observed stages map onto REAL ladder tokens (a token
+                         outside SDLC_LADDER.stages counts as unknown);
+                         unknown passthrough is honest -> WARN, not FAIL
   * coord-live         — /api/coord/version answers with a deployed sha
+  * coord-provenance   — that sha matches the activation worktree's
+                         .deployed-sha (deploy/rebuild provenance)
+  * coord-boot-shell   — / serves the dark boot shell in <2s (pixel-level
+                         instant-paint claims are witnessed by the playwright
+                         harness; this is the HTTP half)
+  * coord-rails-consumed — /api/coord/rails reports feed_state=live with
+                         stations from the CONSUMED vocabulary
+  * coord-verdicts-visible — rails items carry live review verdicts (the
+                         "live BLOCK verdicts visible" clause)
 
 Exit 0 = predicate holds; exit 1 = named failures (warns alone don't fail).
+Paths/URLs override via HAPAX_RECHECK_* env (the tests use this).
 """
 
 from __future__ import annotations
@@ -24,15 +37,29 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
+import time
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
-COORD = Path.home() / ".cache/hapax/coord"
-USER_UNITS = Path.home() / ".config/systemd/user"
-VERSION_URL = "http://127.0.0.1:8765/api/coord/version"
+REPO = Path(os.environ.get("HAPAX_RECHECK_REPO", Path(__file__).resolve().parent.parent))
+COORD = Path(os.environ.get("HAPAX_RECHECK_COORD_DIR", Path.home() / ".cache/hapax/coord"))
+USER_UNITS = Path(os.environ.get("HAPAX_RECHECK_USER_UNITS", Path.home() / ".config/systemd/user"))
+ACTIVATION = Path(
+    os.environ.get(
+        "HAPAX_RECHECK_ACTIVATION",
+        Path.home() / ".cache/hapax/source-activation/worktree",
+    )
+)
+COORD_URL = os.environ.get("HAPAX_RECHECK_COORD_URL", "http://127.0.0.1:8765")
+DEPLOY_SHA_FILE = Path(
+    os.environ.get(
+        "HAPAX_RECHECK_DEPLOY_SHA",
+        Path.home() / ".cache/hapax/coord-activation/worktree/.deployed-sha",
+    )
+)
 
 UNITS = (
     "hapax-sdlc-vocab-export.service",
@@ -43,12 +70,18 @@ UNITS = (
     "hapax-rails-event-log.timer",
 )
 TIMERS = tuple(u for u in UNITS if u.endswith(".timer"))
+SCRIPTS = (
+    "scripts/hapax-sdlc-vocab-export",
+    "scripts/hapax-review-receipts-export",
+    "scripts/hapax-rails-event-log",
+    "scripts/hapax-coord-feeds-recheck",
+)
 
-#: feed -> (path, budget_seconds = 3x timer cadence, generous)
+#: feed -> (filename, budget_seconds = 3x timer cadence, producer hint)
 FEEDS = {
-    "sdlc-vocab": (COORD / "sdlc-vocab.json", 3 * 600),
-    "review-receipts": (COORD / "review-receipts.json", 3 * 300),
-    "sdlc-events-shadow": (COORD / "sdlc-events.shadow.json", 3 * 300),
+    "sdlc-vocab": ("sdlc-vocab.json", 3 * 600, "scripts/hapax-sdlc-vocab-export"),
+    "review-receipts": ("review-receipts.json", 3 * 300, "scripts/hapax-review-receipts-export"),
+    "sdlc-events-shadow": ("sdlc-events.shadow.json", 3 * 300, "scripts/hapax-rails-event-log"),
 }
 
 
@@ -63,7 +96,14 @@ def _systemctl(*args: str) -> str:
     return proc.stdout.strip()
 
 
-def run_checks() -> list[dict[str, str]]:
+def _http_json(url: str, timeout: float = 5.0) -> tuple[dict, float]:
+    t0 = time.monotonic()
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        body = json.loads(resp.read().decode())
+    return body, time.monotonic() - t0
+
+
+def run_checks(*, skip_systemctl: bool = False) -> list[dict[str, str]]:
     results: list[dict[str, str]] = []
 
     def add(name: str, state: str, detail: str) -> None:
@@ -72,61 +112,184 @@ def run_checks() -> list[dict[str, str]]:
     for unit in UNITS:
         tracked = REPO / "systemd/units" / unit
         installed = USER_UNITS / unit
+        nxt = (
+            f"next: systemctl --user enable --now after installing from systemd/units/{unit} "
+            "(merge auto-installs via Hapax-Auto-Enable)"
+        )
         if not tracked.exists():
-            add(f"units-tracked:{unit}", "FAIL", "unit missing from repo systemd/units/")
+            add(f"units-tracked:{unit}", "FAIL", f"unit missing from repo systemd/units/; {nxt}")
         elif not installed.exists():
-            add(f"units-tracked:{unit}", "FAIL", f"not installed at {installed}")
+            add(f"units-tracked:{unit}", "FAIL", f"not installed at {installed}; {nxt}")
         elif _sha(tracked) != _sha(installed):
-            add(f"units-tracked:{unit}", "FAIL", "installed unit differs from tracked unit")
+            add(f"units-tracked:{unit}", "FAIL", f"installed differs from tracked; {nxt}")
         else:
             add(f"units-tracked:{unit}", "OK", "tracked == installed")
 
-    for timer in TIMERS:
-        enabled = _systemctl("is-enabled", timer) or "unknown"
-        active = _systemctl("is-active", timer) or "unknown"
-        state = "OK" if (enabled == "enabled" and active == "active") else "FAIL"
-        add(f"units-active:{timer}", state, f"enabled={enabled} active={active}")
+    for rel in SCRIPTS:
+        tracked = REPO / rel
+        activated = ACTIVATION / rel
+        nxt = "next: post-merge deploy refreshes the activation root; re-run after merge"
+        if not tracked.exists():
+            add(f"scripts-tracked:{rel}", "FAIL", f"script missing from repo; next: restore {rel}")
+        elif not activated.exists():
+            add(f"scripts-tracked:{rel}", "FAIL", f"not in activation root {ACTIVATION}; {nxt}")
+        elif _sha(tracked) != _sha(activated):
+            add(f"scripts-tracked:{rel}", "FAIL", f"activation copy differs from repo; {nxt}")
+        else:
+            add(f"scripts-tracked:{rel}", "OK", "repo == activation root")
+
+    if not skip_systemctl:
+        for timer in TIMERS:
+            enabled = _systemctl("is-enabled", timer) or "unknown"
+            active = _systemctl("is-active", timer) or "unknown"
+            state = "OK" if (enabled == "enabled" and active == "active") else "FAIL"
+            add(
+                f"units-active:{timer}",
+                state,
+                f"enabled={enabled} active={active}"
+                + ("" if state == "OK" else f"; next: systemctl --user enable --now {timer}"),
+            )
 
     now = datetime.now(UTC).timestamp()
-    for name, (path, budget) in FEEDS.items():
+    for name, (fname, budget, producer) in FEEDS.items():
+        path = COORD / fname
         if not path.exists():
-            add(f"feed-fresh:{name}", "FAIL", f"{path} missing")
+            add(f"feed-fresh:{name}", "FAIL", f"{path} missing; next: uv run python {producer}")
             continue
         age = int(now - path.stat().st_mtime)
         state = "OK" if age <= budget else "FAIL"
-        add(f"feed-fresh:{name}", state, f"age={age}s budget={budget}s")
+        add(
+            f"feed-fresh:{name}",
+            state,
+            f"age={age}s budget={budget}s"
+            + (
+                ""
+                if state == "OK"
+                else f"; next: check the producer timer, or run uv run python {producer}"
+            ),
+        )
 
-    vocab_path = FEEDS["sdlc-vocab"][0]
+    vocab_path = COORD / FEEDS["sdlc-vocab"][0]
     if vocab_path.exists():
         try:
             vocab = json.loads(vocab_path.read_text())
+            ladder = set(vocab.get("ladder_tokens", [])) | set(vocab.get("pseudo_stages", []))
             observed = vocab.get("observed_stages", {})
-            unknown = [k for k, v in observed.items() if v.get("ladder_token") == "unknown"]
+            # a token OUTSIDE the ladder is as unmapped as a literal "unknown"
+            # (round-2 review finding: stage_token can invent tokens)
+            unknown = [
+                k
+                for k, v in observed.items()
+                if v.get("ladder_token") == "unknown" or v.get("ladder_token") not in ladder
+            ]
             mapped = len(observed) - len(unknown)
             if not observed:
-                add("vocab-parity", "FAIL", "no observed stages in feed")
+                add("vocab-parity", "FAIL", "no observed stages in feed; next: run the exporter")
             elif unknown:
                 add(
                     "vocab-parity",
                     "WARN",
-                    f"{mapped}/{len(observed)} stage forms mapped; unknown passthrough: "
+                    f"{mapped}/{len(observed)} stage forms mapped; honest unknown passthrough: "
                     + ",".join(unknown[:5]),
                 )
             else:
                 add("vocab-parity", "OK", f"{mapped}/{len(observed)} stage forms mapped")
         except (json.JSONDecodeError, OSError, AttributeError) as exc:
-            add("vocab-parity", "FAIL", f"vocab feed unreadable: {exc}")
+            add(
+                "vocab-parity",
+                "FAIL",
+                f"vocab feed unreadable: {exc}; next: re-run the exporter, inspect {vocab_path}",
+            )
+
+    coord_next = "next: systemctl --user status hapax-coord; coord-deploy.sh redeploys"
+    deployed_sha = ""
+    try:
+        body, elapsed = _http_json(f"{COORD_URL}/api/coord/version")
+        deployed_sha = str(body.get("deployed_sha") or body.get("deployed-sha") or "").strip()
+        if deployed_sha:
+            add("coord-live", "OK", f"deployed sha {deployed_sha[:9]} in {elapsed:.2f}s")
+        else:
+            add("coord-live", "FAIL", f"version endpoint has no deployed sha; {coord_next}")
+    except Exception as exc:  # noqa: BLE001 — any unreachable shape is the same fact
+        add("coord-live", "FAIL", f"version endpoint unreachable: {exc}; {coord_next}")
+
+    if deployed_sha and DEPLOY_SHA_FILE.exists():
+        on_disk = DEPLOY_SHA_FILE.read_text().strip()
+        if on_disk.startswith(deployed_sha) or deployed_sha.startswith(on_disk[:9]):
+            add("coord-provenance", "OK", f"served sha matches {DEPLOY_SHA_FILE.name}")
+        else:
+            add(
+                "coord-provenance",
+                "FAIL",
+                f"served {deployed_sha[:9]} != on-disk {on_disk[:9]}; "
+                "next: wait for/trigger the coord rebuild timer",
+            )
+    elif deployed_sha:
+        add(
+            "coord-provenance",
+            "FAIL",
+            f"{DEPLOY_SHA_FILE} missing; next: coord-deploy.sh writes it",
+        )
 
     try:
-        with urllib.request.urlopen(VERSION_URL, timeout=5) as resp:
-            body = json.loads(resp.read().decode())
-        sha = str(body.get("deployed_sha") or body.get("deployed-sha") or "").strip()
-        if sha:
-            add("coord-live", "OK", f"deployed sha {sha[:9]}")
+        t0 = time.monotonic()
+        with urllib.request.urlopen(f"{COORD_URL}/", timeout=5) as resp:
+            page = resp.read(4096).decode(errors="replace")
+        elapsed = time.monotonic() - t0
+        dark = "background: hsl" in page
+        fast = elapsed < 2.0
+        if dark and fast:
+            add(
+                "coord-boot-shell",
+                "OK",
+                f"dark boot shell served in {elapsed:.2f}s (<2s; pixel-level instant-paint "
+                "witnessed via the yard-inspect playwright harness)",
+            )
         else:
-            add("coord-live", "FAIL", "version endpoint answered without a deployed sha")
-    except Exception as exc:  # noqa: BLE001 — any unreachable shape is the same fact
-        add("coord-live", "FAIL", f"{VERSION_URL} unreachable: {exc}")
+            add(
+                "coord-boot-shell",
+                "FAIL",
+                f"dark={dark} elapsed={elapsed:.2f}s; {coord_next}",
+            )
+    except Exception as exc:  # noqa: BLE001
+        add("coord-boot-shell", "FAIL", f"/ unreachable: {exc}; {coord_next}")
+
+    try:
+        rails, elapsed = _http_json(f"{COORD_URL}/api/coord/rails")
+        feed_state = rails.get("feed_state")
+        stations = rails.get("stations") or []
+        items = rails.get("items") or []
+        if feed_state == "live" and stations and elapsed < 2.0:
+            add(
+                "coord-rails-consumed",
+                "OK",
+                f"feed_state=live, {len(stations)} stations from the consumed vocab, "
+                f"{len(items)} items in {elapsed:.2f}s",
+            )
+        else:
+            add(
+                "coord-rails-consumed",
+                "FAIL",
+                f"feed_state={feed_state} stations={len(stations)} elapsed={elapsed:.2f}s; "
+                "next: check feed freshness above, then the coord service log",
+            )
+        verdicts = [i for i in items if i.get("review")]
+        blocked = [i for i in verdicts if str(i.get("review")).lower() == "blocked"]
+        if verdicts:
+            add(
+                "coord-verdicts-visible",
+                "OK",
+                f"{len(verdicts)} items carry live review verdicts ({len(blocked)} blocked)",
+            )
+        else:
+            add(
+                "coord-verdicts-visible",
+                "FAIL",
+                "no rails item carries a review verdict; "
+                "next: check review-receipts feed + the coord fold",
+            )
+    except Exception as exc:  # noqa: BLE001
+        add("coord-rails-consumed", "FAIL", f"rails endpoint unreachable: {exc}; {coord_next}")
 
     return results
 
@@ -143,8 +306,10 @@ def main() -> int:
     else:
         for r in results:
             print(f"{r['state']:4} {r['check']}: {r['detail']}")
-        print(f"\n{'PREDICATE HOLDS' if not failures else 'PREDICATE FAILS'} "
-              f"({len(failures)} failing, {len(results)} checks)")
+        print(
+            f"\n{'PREDICATE HOLDS' if not failures else 'PREDICATE FAILS'} "
+            f"({len(failures)} failing, {len(results)} checks)"
+        )
     return 1 if failures else 0
 
 

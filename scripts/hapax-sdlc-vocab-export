@@ -50,6 +50,17 @@ def observed_vocab() -> tuple[dict[str, int], dict[str, int]]:
     return stages, statuses
 
 
+def _ladder_token(raw: str) -> str:
+    """Map an observed stage form onto a REAL ladder token, else 'unknown'.
+    stage_token() normalizes but does not validate membership — for garbage
+    like S13_FOO it invents a token, which would let the parity canary
+    falsely report full parity (review finding, PR #4100 round 2)."""
+    token = stage_token(raw)
+    if token and token in SDLC_LADDER.stages:
+        return token
+    return "unknown"
+
+
 def main() -> int:
     stages, statuses = observed_vocab()
     payload = {
@@ -59,7 +70,7 @@ def main() -> int:
         "ladder_tokens": [s for s in SDLC_LADDER.stages if s not in SDLC_LADDER.blocked],
         "pseudo_stages": sorted(SDLC_LADDER.blocked),
         "observed_stages": {
-            raw: {"count": n, "ladder_token": stage_token(raw) or "unknown"}
+            raw: {"count": n, "ladder_token": _ladder_token(raw)}
             for raw, n in sorted(stages.items())
         },
         "observed_statuses": dict(sorted(statuses.items())),
