@@ -20,11 +20,14 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from shared.jsonl_retention import append_bounded_jsonl_line
+
 log = logging.getLogger(__name__)
 
 CONTROL_PLANE_DIR = Path.home() / "hapax-state" / "audio-control-plane"
 LEDGER_PATH = CONTROL_PLANE_DIR / "mutations.jsonl"
 BASELINE_PATH = CONTROL_PLANE_DIR / "baseline.json"
+MAX_MUTATION_EVENTS = 5_000
 
 
 class MutationKind(StrEnum):
@@ -103,11 +106,15 @@ EXPECTED_AUDIO_SERVICES: tuple[ServiceManifestEntry, ...] = (
 )
 
 
-def write_mutation_event(event: MutationEvent, ledger_path: Path = LEDGER_PATH) -> None:
+def write_mutation_event(
+    event: MutationEvent,
+    ledger_path: Path = LEDGER_PATH,
+    *,
+    max_events: int = MAX_MUTATION_EVENTS,
+) -> None:
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    # jsonl-rotation: exempt(audio audit state; read_mutation_events replays live ledger)
-    with ledger_path.open("a") as f:
-        f.write(event.model_dump_json() + "\n")
+    # jsonl-rotation: exempt(inline bounded audit state; read_mutation_events replays cap)
+    append_bounded_jsonl_line(ledger_path, event.model_dump_json(), max_lines=max_events)
 
 
 def read_mutation_events(ledger_path: Path = LEDGER_PATH) -> list[MutationEvent]:

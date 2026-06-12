@@ -19,7 +19,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from shared.jsonl_retention import append_bounded_jsonl_line
+
 INDEX_PATH = Path("/dev/shm/hapax-daimonion/public-speech-events.jsonl")
+MAX_PUBLIC_SPEECH_EVENTS = 5_000
 
 PublicSpeechScope = Literal["public_broadcast", "private_only", "blocked", "failed"]
 
@@ -71,12 +74,15 @@ def compute_utterance_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def append_public_speech_event(record: PublicSpeechEventRecord, path: Path = INDEX_PATH) -> None:
+def append_public_speech_event(
+    record: PublicSpeechEventRecord,
+    path: Path = INDEX_PATH,
+    *,
+    max_events: int = MAX_PUBLIC_SPEECH_EVENTS,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    line = record.model_dump_json() + "\n"
-    # jsonl-rotation: exempt(public speech witness index; lookup scans live history)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(line)
+    # jsonl-rotation: exempt(inline bounded witness index; recent lookup scans live cap)
+    append_bounded_jsonl_line(path, record.model_dump_json(), max_lines=max_events)
 
 
 def read_public_speech_events(

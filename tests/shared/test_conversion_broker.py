@@ -209,6 +209,21 @@ def test_public_archive_boundary_generates_rich_candidates_and_public_bus_event(
     )
 
 
+def test_candidate_ledger_keeps_bounded_recent_rows(tmp_path: Path) -> None:
+    run = build_fixture_envelope("public_safe_evidence_audit")
+    boundary = _boundary(run)
+    broker = ConversionBroker(
+        public_event_path=tmp_path / "events.jsonl",
+        candidate_path=tmp_path / "candidates.jsonl",
+        max_candidate_rows=1,
+    )
+
+    decision = broker.process_boundary(run, boundary, generated_at=GENERATED_AT)
+
+    assert len(decision.candidates) > 1
+    assert len((tmp_path / "candidates.jsonl").read_text(encoding="utf-8").splitlines()) == 1
+
+
 def test_readiness_matrix_blocks_each_target_independently(tmp_path: Path) -> None:
     registry = CollectorRegistry()
     run = build_fixture_envelope("public_safe_evidence_audit")

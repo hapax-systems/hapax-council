@@ -40,6 +40,7 @@ from shared.format_public_event_adapter import (
     ProgrammeBoundaryEvent,
     adapt_format_boundary_to_public_event,
 )
+from shared.jsonl_retention import append_bounded_jsonl_lines
 from shared.research_vehicle_public_event import (
     PrivacyClass,
     PublicEventProvenance,
@@ -71,6 +72,7 @@ type OutcomeKind = Literal["artifact", "revenue"]
 
 DEFAULT_PUBLIC_EVENT_PATH = Path("/dev/shm/hapax-public-events/events.jsonl")
 DEFAULT_CANDIDATE_PATH = Path.home() / "hapax-state" / "conversion-broker" / "candidates.jsonl"
+MAX_CANDIDATE_LEDGER_ROWS = 10_000
 
 _PUBLIC_SAFE_RIGHTS: frozenset[RightsState] = frozenset(
     {"operator_original", "cleared", "platform_embed_only"}
@@ -260,11 +262,13 @@ class ConversionBroker:
         *,
         public_event_path: Path = DEFAULT_PUBLIC_EVENT_PATH,
         candidate_path: Path = DEFAULT_CANDIDATE_PATH,
+        max_candidate_rows: int = MAX_CANDIDATE_LEDGER_ROWS,
         matrix: ConversionTargetReadinessMatrix | None = None,
         metrics: ConversionBrokerMetrics | None = None,
     ) -> None:
         self.public_event_path = public_event_path
         self.candidate_path = candidate_path
+        self.max_candidate_rows = max_candidate_rows
         self.matrix = matrix or load_conversion_target_readiness_matrix()
         self.metrics = metrics or ConversionBrokerMetrics()
         self._known_public_event_ids: set[str] | None = None
@@ -302,11 +306,14 @@ class ConversionBroker:
         if not new_candidates:
             return
         self.candidate_path.parent.mkdir(parents=True, exist_ok=True)
-        # jsonl-rotation: exempt(candidate dedupe ledger; _load_jsonl_ids scans live history)
-        with self.candidate_path.open("a", encoding="utf-8") as fh:
-            for candidate in new_candidates:
-                fh.write(candidate.to_json_line())
-                self._known_candidate_ids.add(candidate.candidate_id)
+        # jsonl-rotation: exempt(inline bounded candidate dedupe; scans live cap)
+        append_bounded_jsonl_lines(
+            self.candidate_path,
+            (candidate.to_json_line() for candidate in new_candidates),
+            max_lines=self.max_candidate_rows,
+        )
+        for candidate in new_candidates:
+            self._known_candidate_ids.add(candidate.candidate_id)
 
     def _append_public_event(self, event: ResearchVehiclePublicEvent) -> None:
         self.public_event_path.parent.mkdir(parents=True, exist_ok=True)

@@ -114,7 +114,7 @@ def test_read_audit_entries_skips_malformed_lines(tmp_path: Path) -> None:
 
 def test_read_audit_entries_scans_rotator_archives(tmp_path: Path) -> None:
     path = tmp_path / "api-calls.jsonl"
-    archive = tmp_path / "archive" / "mail-monitor-api-calls.20260612T010203Z.jsonl.gz"
+    archive = tmp_path / "archive" / "mail-monitor-api-calls.2026-06-12.jsonl.gz"
     archive.parent.mkdir(parents=True)
     with gzip.open(archive, "wt", encoding="utf-8") as fp:
         fp.write('{"ts":"x","method":"messages.get","messageId":"ARCHIVED"}\n')

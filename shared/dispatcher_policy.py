@@ -20,6 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
+from shared.jsonl_retention import append_bounded_jsonl_line
 from shared.platform_capability_receipts import (
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
@@ -56,6 +57,7 @@ from shared.route_metadata_schema import (
 
 ROUTE_DECISION_SCHEMA_VERSION = 1
 ROUTE_DECISION_LEDGER = "route-decisions.jsonl"
+MAX_ROUTE_DECISION_RECEIPTS = 10_000
 DIMENSIONAL_ROUTE_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_DIRNAME = "route-authority"
@@ -725,6 +727,7 @@ def write_route_decision_receipt(
     decision: RouteDecision,
     *,
     ledger_dir: Path | None = None,
+    max_receipts: int = MAX_ROUTE_DECISION_RECEIPTS,
 ) -> Path:
     target_dir = ledger_dir or Path.home() / ".cache" / "hapax" / "orchestration"
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -732,9 +735,12 @@ def write_route_decision_receipt(
     payload = decision.model_dump(mode="json")
     if decision.dimensional_receipt is not None:
         payload.update(decision.dimensional_receipt.model_dump(mode="json"))
-    # jsonl-rotation: exempt(route evidence ledger; RTE/claim audit scans live receipts)
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(payload, sort_keys=True) + "\n")
+    # jsonl-rotation: exempt(inline bounded route evidence; audits scan live cap)
+    append_bounded_jsonl_line(
+        path,
+        json.dumps(payload, sort_keys=True),
+        max_lines=max_receipts,
+    )
     return path
 
 

@@ -27,8 +27,10 @@ from shared.github_public_surface import (
     RepoFilePresence,
     RepoLiveState,
 )
+from shared.jsonl_retention import append_bounded_jsonl_lines
 
 DEFAULT_PUBLICATION_LOG = Path.home() / "hapax-state/publication/publication-log.jsonl"
+MAX_PUBLICATION_LOG_ROWS = 10_000
 PRODUCER = "shared.github_publication_log"
 TASK_ANCHOR = "github-publication-log-value-braid-adapter"
 CLAIM_CEILING = "publication_witness_rows"
@@ -277,6 +279,7 @@ def write_publication_log_events(
     *,
     log_path: Path = DEFAULT_PUBLICATION_LOG,
     dry_run: bool = False,
+    max_rows: int = MAX_PUBLICATION_LOG_ROWS,
 ) -> tuple[str, ...]:
     """Serialize events and optionally append them to the publication log."""
 
@@ -284,9 +287,8 @@ def write_publication_log_events(
     if dry_run:
         return lines
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    # jsonl-rotation: exempt(publication witness; braid snapshot reads latest live row)
-    with log_path.open("a", encoding="utf-8") as handle:
-        handle.writelines(lines)
+    # jsonl-rotation: exempt(inline bounded publication witness; braid reads latest row)
+    append_bounded_jsonl_lines(log_path, lines, max_lines=max_rows)
     return lines
 
 

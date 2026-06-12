@@ -121,6 +121,21 @@ class TestAppendWitness:
         rows = log_path.read_text().strip().splitlines()
         assert len(rows) == 3
 
+    def test_keeps_bounded_recent_rows(self, tmp_path: Path) -> None:
+        log_path = tmp_path / "log.jsonl"
+        append_publication_witness(
+            surface="x", target="a", result="ok", log_path=log_path, max_rows=2
+        )
+        append_publication_witness(
+            surface="x", target="b", result="ok", log_path=log_path, max_rows=2
+        )
+        append_publication_witness(
+            surface="x", target="c", result="ok", log_path=log_path, max_rows=2
+        )
+
+        rows = [json.loads(line) for line in log_path.read_text().splitlines()]
+        assert [row["target"] for row in rows] == ["b", "c"]
+
     def test_idempotent_same_surface_target(self, tmp_path: Path) -> None:
         log_path = tmp_path / "log.jsonl"
         first = append_publication_witness(surface="x", target="t", result="ok", log_path=log_path)

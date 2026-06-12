@@ -15,9 +15,12 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from shared.jsonl_retention import rewrite_bounded_jsonl_lines
+
 log = logging.getLogger(__name__)
 
 DEFAULT_LEDGER_PATH = Path.home() / ".cache" / "hapax" / "grounding-ledger.jsonl"
+MAX_GROUNDING_LEDGER_ENTRIES = 10_000
 
 
 class GroundingState(StrEnum):
@@ -45,10 +48,16 @@ class GroundingEntry(BaseModel):
 
 
 class GroundingLedger:
-    """Append-only ledger tracking claim grounding state."""
+    """Compacted ledger tracking latest claim grounding state."""
 
-    def __init__(self, path: Path = DEFAULT_LEDGER_PATH) -> None:
+    def __init__(
+        self,
+        path: Path = DEFAULT_LEDGER_PATH,
+        *,
+        max_entries: int = MAX_GROUNDING_LEDGER_ENTRIES,
+    ) -> None:
         self.path = path
+        self.max_entries = max_entries
         self._entries: dict[str, GroundingEntry] = {}
         self._load()
 
@@ -66,11 +75,14 @@ class GroundingLedger:
             except Exception:
                 log.warning("Skipping malformed ledger line")
 
-    def _append(self, entry: GroundingEntry) -> None:
+    def _persist(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        # jsonl-rotation: exempt(state-replay ledger; _load reconstructs entries from live file)
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(entry.model_dump_json() + "\n")
+        # jsonl-rotation: exempt(inline compacted state ledger; one live row per claim)
+        rewrite_bounded_jsonl_lines(
+            self.path,
+            (item.model_dump_json() for item in self._entries.values()),
+            max_lines=self.max_entries,
+        )
 
     def get(self, claim_id: str) -> GroundingEntry | None:
         return self._entries.get(claim_id)
@@ -101,7 +113,7 @@ class GroundingLedger:
             divergences_identified=divergences or [],
         )
         self._entries[claim_id] = entry
-        self._append(entry)
+        self._persist()
         return entry
 
     def progress(self) -> dict[str, int | float]:

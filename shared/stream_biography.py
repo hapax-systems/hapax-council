@@ -16,10 +16,13 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from shared.jsonl_retention import append_bounded_jsonl_line
+
 log = logging.getLogger(__name__)
 
 SHM_PATH = Path("/dev/shm/hapax-compositor/stream-biography.json")
 PERSIST_PATH = Path.home() / "hapax-state" / "stream-biography.jsonl"
+MAX_PERSISTED_SNAPSHOTS = 16
 
 
 @dataclass
@@ -230,11 +233,15 @@ def read_shm(path: Path = SHM_PATH) -> StreamBiography:
         return StreamBiography()
 
 
-def persist(bio: StreamBiography, path: Path = PERSIST_PATH) -> None:
+def persist(
+    bio: StreamBiography,
+    path: Path = PERSIST_PATH,
+    *,
+    max_snapshots: int = MAX_PERSISTED_SNAPSHOTS,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    # jsonl-rotation: exempt(latest-state history; load_persisted reads last live row)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(bio.to_dict()) + "\n")
+    # jsonl-rotation: exempt(inline bounded latest-state history; keeps newest snapshots)
+    append_bounded_jsonl_line(path, json.dumps(bio.to_dict()), max_lines=max_snapshots)
 
 
 def load_persisted(path: Path = PERSIST_PATH) -> StreamBiography | None:

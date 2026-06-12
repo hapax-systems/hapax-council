@@ -63,6 +63,8 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
+from shared.jsonl_retention import append_bounded_jsonl_line
+
 __all__ = [
     "DEFAULT_PUBLICATION_LOG_PATH",
     "PUBLICATION_LOG_PATH_ENV",
@@ -81,6 +83,7 @@ braid runner's expected location."""
 DEFAULT_PUBLICATION_LOG_PATH: Path = (
     Path.home() / "hapax-state" / "publication" / "publication-log.jsonl"
 )
+MAX_PUBLICATION_WITNESS_ROWS = 10_000
 """Canonical witness path declared by
 ``scripts.braided_value_snapshot_runner.WitnessSpec("publication_log", ...)``.
 
@@ -162,6 +165,7 @@ def append_publication_witness(
     result: str,
     log_path: Path | None = None,
     ts: datetime | None = None,
+    max_rows: int = MAX_PUBLICATION_WITNESS_ROWS,
 ) -> bool:
     """Append a publication-bus witness row to the canonical JSONL.
 
@@ -200,10 +204,12 @@ def append_publication_witness(
 
     try:
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(event, ensure_ascii=False) + "\n"
-        # jsonl-rotation: exempt(publication witness; braid snapshot reads latest live row)
-        with target_path.open("a", encoding="utf-8") as fh:
-            fh.write(line)
+        # jsonl-rotation: exempt(inline bounded publication witness; braid reads latest row)
+        append_bounded_jsonl_line(
+            target_path,
+            json.dumps(event, ensure_ascii=False),
+            max_lines=max_rows,
+        )
         return True
     except OSError:
         log.warning(

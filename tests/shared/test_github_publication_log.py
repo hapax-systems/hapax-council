@@ -105,3 +105,14 @@ def test_publication_log_writer_supports_dry_run_and_append(tmp_path: Path) -> N
     assert written_lines == dry_lines
     assert len(log_path.read_text(encoding="utf-8").splitlines()) == 2
     assert json.loads(written_lines[0])["event_type"].startswith("publication.github.")
+
+
+def test_publication_log_writer_keeps_bounded_recent_rows(tmp_path: Path) -> None:
+    events = _events()[:2]
+    log_path = tmp_path / "publication-log.jsonl"
+
+    write_publication_log_events(events, log_path=log_path, max_rows=1)
+
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["event_id"] == events[-1].event_id

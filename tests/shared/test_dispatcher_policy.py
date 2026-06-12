@@ -672,6 +672,19 @@ def test_writes_route_decision_jsonl_receipt(tmp_path: Path) -> None:
     assert decision.decision_id in line
 
 
+def test_route_decision_receipt_ledger_keeps_bounded_recent_rows(tmp_path: Path) -> None:
+    first = evaluate_dispatch_policy(_request(task_id="policy-test-a"), now=NOW)
+    second = evaluate_dispatch_policy(_request(task_id="policy-test-b"), now=NOW)
+
+    path = write_route_decision_receipt(first, ledger_dir=tmp_path, max_receipts=1)
+    write_route_decision_receipt(second, ledger_dir=tmp_path, max_receipts=1)
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert second.decision_id in lines[0]
+    assert first.decision_id not in lines[0]
+
+
 def test_dimensional_policy_holds_lower_scoring_requested_route() -> None:
     primary = _dimensional_request("codex.headless.full", score=3)
     better = _dimensional_request("claude.headless.full", score=5)

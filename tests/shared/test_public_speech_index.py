@@ -192,6 +192,19 @@ class TestAppendAndRead:
         assert parsed["speech_event_id"] == "se-001"
         assert parsed["scope"] == "public_broadcast"
 
+    def test_append_keeps_bounded_recent_rows(self, tmp_path: Path) -> None:
+        index = tmp_path / "events.jsonl"
+        for idx in range(3):
+            append_public_speech_event(
+                _record(speech_event_id=f"se-{idx}"),
+                path=index,
+                max_events=2,
+            )
+
+        records = read_public_speech_events(index)
+
+        assert [record.speech_event_id for record in records] == ["se-1", "se-2"]
+
 
 class TestLookup:
     def test_lookup_existing(self, tmp_path: Path) -> None:

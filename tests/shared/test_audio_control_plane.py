@@ -61,6 +61,17 @@ def test_read_skips_malformed_lines(tmp_path: Path) -> None:
     assert len(events) == 2
 
 
+def test_mutation_event_ledger_keeps_bounded_recent_rows(tmp_path: Path) -> None:
+    ledger = tmp_path / "mutations.jsonl"
+    for idx in range(3):
+        write_mutation_event(_make_event(reason=f"event-{idx}"), ledger, max_events=2)
+
+    events = read_mutation_events(ledger)
+
+    assert [event.reason for event in events] == ["event-1", "event-2"]
+    assert len(ledger.read_text(encoding="utf-8").splitlines()) == 2
+
+
 def test_baseline_save_and_load(tmp_path: Path) -> None:
     path = tmp_path / "baseline.json"
     baseline = Baseline(
