@@ -174,12 +174,18 @@ class TopicInterestObservation(TopicInterestModel):
     parent_impingement_id: str | None = None
 
     def source_age_s(self, now: datetime) -> float:
+        """Return source age in seconds using UTC-normalized retrieval time."""
+
         return max(0.0, (now - self.retrieved_at_utc()).total_seconds())
 
     def retrieved_at_utc(self) -> datetime:
+        """Return retrieval time as an aware UTC datetime."""
+
         return _utc(self.retrieved_at or self.observed_at)
 
     def observed_at_utc(self) -> datetime:
+        """Return observation time as an aware UTC datetime."""
+
         return _utc(self.observed_at)
 
 
@@ -291,6 +297,8 @@ def _select_action(
     policy: TopicInterestPolicy,
     blocked_reasons: list[str],
 ) -> TopicInterestAction:
+    """Pick the highest-authority action allowed by score and blockers."""
+
     if (
         score_vector.duplicate_pressure >= policy.suppress_duplicate_pressure
         or score_vector.staleness >= policy.suppress_staleness
@@ -318,6 +326,8 @@ def _content_eligible(
     score: float,
     policy: TopicInterestPolicy,
 ) -> bool:
+    """Return whether an observation may enter content-candidate discovery."""
+
     if not observation.publication_relevant:
         return False
     if score < policy.content_threshold:
@@ -351,6 +361,8 @@ def _content_observation(
     score: float,
     now: datetime,
 ) -> tuple[ContentSourceObservation, list[str]]:
+    """Build a gated content-source observation for downstream discovery."""
+
     public_mode = observation.public_mode
     downgrades: list[str] = []
     public_risky = (
@@ -422,6 +434,8 @@ def _impingement(
     content_observation: ContentSourceObservation | None,
     now: datetime,
 ) -> Impingement | None:
+    """Build the existing impingement currency for systemic recruitment."""
+
     if action in {"ignore", "watch"}:
         return None
     programme_allowed = observation.programme_relevant and action in {
@@ -479,6 +493,8 @@ def _impingement_type(
     action: TopicInterestAction,
     score_vector: TopicInterestScoreVector,
 ) -> ImpingementType:
+    """Map topic-interest action and novelty pressure onto existing types."""
+
     if action == "research_more" and (
         score_vector.novelty >= 0.60 or score_vector.surprise >= 0.60
     ):
@@ -494,6 +510,8 @@ def _status(
     blocked_reasons: list[str],
     impingement: Impingement | None,
 ) -> TopicInterestStatus:
+    """Map action and blockers to an auditable decision status."""
+
     if action == "ignore":
         return "ignored"
     if action == "watch":
@@ -510,6 +528,8 @@ def _gating_reasons(
     score_vector: TopicInterestScoreVector,
     now: datetime,
 ) -> tuple[list[str], list[str]]:
+    """Collect hard blockers and soft downgrade reasons."""
+
     blocked: list[str] = []
     downgraded: list[str] = []
     if not observation.evidence_refs:
@@ -541,6 +561,8 @@ def _effective_score_vector(
     now: datetime,
     policy: TopicInterestPolicy,
 ) -> TopicInterestScoreVector:
+    """Fold TTL age and duplicate counts into the effective score vector."""
+
     staleness = observation.signals.staleness
     if observation.freshness_ttl_s is not None and observation.freshness_ttl_s > 0:
         staleness = max(
@@ -560,10 +582,14 @@ def _effective_score_vector(
 
 
 def _rounded_score_vector(score_vector: TopicInterestScoreVector) -> dict[str, float]:
+    """Return a stable JSON-friendly score vector."""
+
     return {key: round(float(value), 6) for key, value in score_vector.model_dump().items()}
 
 
 def _finite_source_priors(values: dict[str, float]) -> dict[str, float]:
+    """Drop non-finite priors before writing downstream observations."""
+
     return {
         key: float(value)
         for key, value in values.items()
@@ -572,6 +598,8 @@ def _finite_source_priors(values: dict[str, float]) -> dict[str, float]:
 
 
 def _utc(value: datetime | None) -> datetime:
+    """Normalize optional datetimes to aware UTC values."""
+
     if value is None:
         return datetime.now(UTC)
     if value.tzinfo is None:
@@ -580,10 +608,14 @@ def _utc(value: datetime | None) -> datetime:
 
 
 def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    """Clamp a float into the closed interval used by scores."""
+
     return max(lo, min(hi, value))
 
 
 def _unique(values: tuple[str, ...]) -> tuple[str, ...]:
+    """Deduplicate non-empty strings while preserving order."""
+
     return tuple(dict.fromkeys(value for value in values if value))
 
 
