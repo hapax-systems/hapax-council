@@ -210,19 +210,27 @@ _BROWSER_WITNESS_JS = r"""
   const transparent = /rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)/i;
   const elementPaintState = (element) => {
     if (!element || !element.isConnected) return {visible: false, area: 0};
-    const style = getComputedStyle(element);
     const rect = element.getBoundingClientRect();
-    const opacity = Number.parseFloat(style.opacity || "1");
     const area = Math.round(Math.max(0, rect.width) * Math.max(0, rect.height));
+    let current = element;
+    while (current && current.nodeType === Node.ELEMENT_NODE) {
+      const style = getComputedStyle(current);
+      const opacity = Number.parseFloat(style.opacity || "1");
+      if (
+        style.display === "none"
+        || style.visibility === "hidden"
+        || style.visibility === "collapse"
+        || (!Number.isNaN(opacity) && opacity <= 0)
+      ) {
+        return {visible: false, area};
+      }
+      current = current.parentElement;
+    }
     const inViewport = rect.bottom > 0
       && rect.right > 0
       && rect.top < window.innerHeight
       && rect.left < window.innerWidth;
-    const visible = style.display !== "none"
-      && style.visibility !== "hidden"
-      && style.visibility !== "collapse"
-      && (Number.isNaN(opacity) || opacity > 0)
-      && rect.width >= 1
+    const visible = rect.width >= 1
       && rect.height >= 1
       && inViewport;
     return {visible, area};
@@ -260,8 +268,7 @@ _BROWSER_WITNESS_JS = r"""
         if (!value) return NodeFilter.FILTER_REJECT;
         const element = node.parentElement;
         if (!element || element.closest(excluded)) return NodeFilter.FILTER_REJECT;
-        const style = getComputedStyle(element);
-        if (style.display === "none" || style.visibility === "hidden") {
+        if (!elementPaintState(element).visible) {
           return NodeFilter.FILTER_REJECT;
         }
         return NodeFilter.FILTER_ACCEPT;

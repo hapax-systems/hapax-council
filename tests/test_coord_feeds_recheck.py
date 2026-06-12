@@ -432,6 +432,8 @@ def test_browser_live_surface_exercises_playwright_path(tmp_path, monkeypatch):
     assert "freshYardText" in calls["init_scripts"][0]
     assert "freshYardVisibleSeen" in calls["init_scripts"][0]
     assert "visibleTextWithoutYard" in calls["init_scripts"][0]
+    assert "if (!elementPaintState(element).visible)" in calls["init_scripts"][0]
+    assert "current = current.parentElement" in calls["init_scripts"][0]
     assert "#last-good-replay" in calls["init_scripts"][0]
     assert "addedNodes" in calls["init_scripts"][0]
     assert any("freshYard" in predicate for predicate, _timeout in calls["waits"])
@@ -1061,6 +1063,68 @@ def test_yard_summary_alone_does_not_satisfy_verdict_visibility(tmp_path):
         assert "rendered_receipt=True" in res["coord-verdicts-visible"]["detail"]
         assert "rendered_blocked_ids=[]" in res["coord-verdicts-visible"]["detail"]
         assert "rendered_receipt_ids=[]" in res["coord-verdicts-visible"]["detail"]
+    finally:
+        srv.shutdown()
+
+
+def test_invisible_non_yard_verdict_text_fails_visibility(tmp_path):
+    env = _scaffold(tmp_path)
+    srv = _stub_server(
+        version={"deployed_sha": "abc123def4567890"},
+        rails={
+            "feed_state": "live",
+            "stations": ["S0", "S5", "S6", "S7"],
+            "items": [{"id": "t1", "station": "S5", "review": "blocked"}],
+        },
+    )
+
+    try:
+        env["HAPAX_RECHECK_COORD_URL"] = f"http://127.0.0.1:{srv.server_address[1]}"
+        mod = _load(env)
+        for detail in (
+            "hidden ancestor verdict text filtered by browser witness",
+            "transparent verdict text filtered by browser witness",
+            "zero-area verdict text filtered by browser witness",
+            "offscreen verdict text filtered by browser witness",
+        ):
+
+            def invisible_verdict_text(_url, *, detail=detail):
+                return mod.BrowserSurfaceWitness(
+                    ok=True,
+                    detail=detail,
+                    elapsed=0.35,
+                    last_good_seen=True,
+                    last_good_elapsed=0.050,
+                    last_good_visible_seen=True,
+                    last_good_content_seen=True,
+                    last_good_rect_area=4096,
+                    fresh_yard_seen=True,
+                    fresh_yard_elapsed=0.250,
+                    fresh_yard_visible_seen=True,
+                    fresh_yard_rect_area=4096,
+                    fresh_yard_chip_count=3,
+                    fresh_yard_text="YARD abc123def vocab 13 blocked",
+                    dashboard_seen=True,
+                    dark_paint_seen=True,
+                    white_paint_seen=False,
+                    pixel_sample_count=64,
+                    pixel_white_ratio=0.0,
+                    pixel_nonwhite_ratio=1.0,
+                    rendered_blocked_seen=False,
+                    rendered_receipt_seen=False,
+                    rendered_review_seen=False,
+                    rendered_verdict_text="",
+                    rendered_verdict_detail=detail,
+                )
+
+            res = _by_check(_run(mod, browser_probe=invisible_verdict_text))
+            assert res["coord-last-good-paint"]["state"] == "OK"
+            assert res["coord-yard-status-strip"]["state"] == "OK"
+            assert res["coord-verdicts-visible"]["state"] == "FAIL"
+            assert "rendered_blocked=False" in res["coord-verdicts-visible"]["detail"]
+            assert "rendered_receipt=False" in res["coord-verdicts-visible"]["detail"]
+            assert "rendered_review=False" in res["coord-verdicts-visible"]["detail"]
+            assert "rendered_blocked_ids=[]" in res["coord-verdicts-visible"]["detail"]
     finally:
         srv.shutdown()
 
