@@ -3,6 +3,7 @@ Description=Hapax audio self-perception loop — AVSDLC-002 normalized egress sp
 After=pipewire.service pipewire-pulse.service
 Requires=pipewire-pulse.service
 ConditionPathExists=%h/.cache/hapax/rebuild/worktree/pyproject.toml
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple

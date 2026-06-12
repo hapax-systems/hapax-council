@@ -246,6 +246,12 @@ def _record_album_identifier_spend(data: dict) -> None:
 # --- State ---
 _last_hash: str = ""
 _current_album: dict = {}
+# Latch for the routine no-album state: log INFO once per transition
+# into the state, then stay quiet until an album is identified again.
+# (W4-ALBUM-POLARITY-STORM: this state used to raise inside the PNG-save
+# try and be log.exception'd EVERY poll tick — ~129 ERR/h of tracebacks
+# for an expected idle state.)
+_no_album_logged: bool = False
 _current_track: str = ""
 _album_start_time: float = 0
 _track_id_lock = threading.Lock()
@@ -999,7 +1005,7 @@ def _refresh_playing_for_current_album() -> None:
 
 
 def main() -> None:
-    global _last_hash, _current_album, _current_track, _album_start_time
+    global _last_hash, _current_album, _current_track, _album_start_time, _no_album_logged
 
     log.info("Album identifier starting — IR source=%s poll=%ds", IR_FRAME_URL, POLL_INTERVAL)
 
@@ -1044,70 +1050,79 @@ def main() -> None:
         # tick and read to the operator as "crop coords changing"). Geometry
         # is also deterministic: fixed 15% center-crop margin, 90° rotate,
         # 512×512 resize — so the same scene ALWAYS produces the same PNG.
-        try:
-            if _current_album is None:
-                raise ValueError("No album currently identified")
+        # Routine no-album state (last identification cleared, nothing on
+        # the deck): skip the cover save QUIETLY. This is the expected
+        # idle state — it used to raise into the blanket except below and
+        # storm the journal with ERROR+tracebacks every poll tick
+        # (W4-ALBUM-POLARITY-STORM, ~129 ERR/h). INFO once per transition;
+        # log.exception below is reserved for REAL save failures.
+        if _current_album is None:
+            if not _no_album_logged:
+                log.info("No album currently identified — cover save paused until one is")
+                _no_album_logged = True
+        else:
+            _no_album_logged = False
+            try:
+                from PIL import Image, ImageOps
 
-            from PIL import Image, ImageOps
+                if not isinstance(cropped, (bytes, bytearray)):
+                    log.warning(
+                        "cropped is %s, not bytes — skipping PNG save",
+                        type(cropped).__name__,
+                    )
+                    raise TypeError("cropped must be bytes-like")
 
-            if not isinstance(cropped, (bytes, bytearray)):
-                log.warning(
-                    "cropped is %s, not bytes — skipping PNG save",
-                    type(cropped).__name__,
+                img = Image.open(io.BytesIO(cropped)).convert("L")
+                # Crop to center square with 15% zoom (cut desk edges)
+                w, ih = img.size
+                size = min(w, ih)
+                margin = int(size * 0.15)
+                left = (w - size) // 2 + margin
+                top = (ih - size) // 2 + margin
+                img = img.crop((left, top, left + size - 2 * margin, top + size - 2 * margin))
+                # Rotate 90° CW (album is sideways in the IR camera frame)
+                img = img.rotate(-90, expand=True)
+                # Downscale for overlay (no need for 1080p on a 300px bouncing tile)
+                img = img.resize((512, 512), Image.LANCZOS)
+                # Duotone colorization — deterministic per hash (stable tint per album)
+                tints = [
+                    ((20, 0, 40), (255, 100, 50)),  # purple → orange
+                    ((0, 20, 40), (50, 255, 200)),  # dark teal → mint
+                    ((40, 0, 0), (255, 200, 50)),  # dark red → gold
+                    ((0, 0, 30), (100, 200, 255)),  # navy → sky blue
+                    ((30, 10, 0), (255, 80, 120)),  # brown → hot pink
+                    ((0, 30, 20), (200, 255, 100)),  # forest → lime
+                    ((20, 0, 20), (255, 150, 255)),  # plum → lavender
+                    ((10, 20, 0), (255, 255, 100)),  # olive → yellow
+                ]
+                # _last_hash (or h on first iteration) is a hex STRING — parse the
+                # first byte worth (2 hex chars) as int for deterministic tint
+                # selection. Previously used int.from_bytes on a str which is
+                # the "cannot convert 'str' object to bytes" crash that was
+                # burning ~5 TypeErrors/minute in journald.
+                hash_hex = h if _last_hash == "" else _last_hash
+                tint_idx = int(hash_hex[:2], 16) % len(tints)
+                dark, light = tints[tint_idx]
+                colored = ImageOps.colorize(img, dark, light)
+                # Atomic write — PIL's Image.save writes incrementally, so
+                # the compositor's ImageLoader can hit a half-written PNG and
+                # raise cairo IOError. Write to a sibling tmp file then
+                # os.replace into place; POSIX rename is atomic so readers
+                # see either the old PNG or the new one, never partial bytes.
+                # Source of the "ImageLoader: failed to decode" pattern in
+                # studio-compositor logs (documented in
+                # docs/research/2026-04-13/post-option-a-stability/phase-1-long-duration-stability.md).
+                tmp_path = ALBUM_COVER_FILE.with_suffix(".png.tmp")
+                colored.save(str(tmp_path), format="PNG")
+                os.replace(tmp_path, ALBUM_COVER_FILE)
+                log.info(
+                    "Album cover saved (%dx%d) tint=%d (deterministic per hash)",
+                    colored.size[0],
+                    colored.size[1],
+                    tint_idx,
                 )
-                raise TypeError("cropped must be bytes-like")
-
-            img = Image.open(io.BytesIO(cropped)).convert("L")
-            # Crop to center square with 15% zoom (cut desk edges)
-            w, ih = img.size
-            size = min(w, ih)
-            margin = int(size * 0.15)
-            left = (w - size) // 2 + margin
-            top = (ih - size) // 2 + margin
-            img = img.crop((left, top, left + size - 2 * margin, top + size - 2 * margin))
-            # Rotate 90° CW (album is sideways in the IR camera frame)
-            img = img.rotate(-90, expand=True)
-            # Downscale for overlay (no need for 1080p on a 300px bouncing tile)
-            img = img.resize((512, 512), Image.LANCZOS)
-            # Duotone colorization — deterministic per hash (stable tint per album)
-            tints = [
-                ((20, 0, 40), (255, 100, 50)),  # purple → orange
-                ((0, 20, 40), (50, 255, 200)),  # dark teal → mint
-                ((40, 0, 0), (255, 200, 50)),  # dark red → gold
-                ((0, 0, 30), (100, 200, 255)),  # navy → sky blue
-                ((30, 10, 0), (255, 80, 120)),  # brown → hot pink
-                ((0, 30, 20), (200, 255, 100)),  # forest → lime
-                ((20, 0, 20), (255, 150, 255)),  # plum → lavender
-                ((10, 20, 0), (255, 255, 100)),  # olive → yellow
-            ]
-            # _last_hash (or h on first iteration) is a hex STRING — parse the
-            # first byte worth (2 hex chars) as int for deterministic tint
-            # selection. Previously used int.from_bytes on a str which is
-            # the "cannot convert 'str' object to bytes" crash that was
-            # burning ~5 TypeErrors/minute in journald.
-            hash_hex = h if _last_hash == "" else _last_hash
-            tint_idx = int(hash_hex[:2], 16) % len(tints)
-            dark, light = tints[tint_idx]
-            colored = ImageOps.colorize(img, dark, light)
-            # Atomic write — PIL's Image.save writes incrementally, so
-            # the compositor's ImageLoader can hit a half-written PNG and
-            # raise cairo IOError. Write to a sibling tmp file then
-            # os.replace into place; POSIX rename is atomic so readers
-            # see either the old PNG or the new one, never partial bytes.
-            # Source of the "ImageLoader: failed to decode" pattern in
-            # studio-compositor logs (documented in
-            # docs/research/2026-04-13/post-option-a-stability/phase-1-long-duration-stability.md).
-            tmp_path = ALBUM_COVER_FILE.with_suffix(".png.tmp")
-            colored.save(str(tmp_path), format="PNG")
-            os.replace(tmp_path, ALBUM_COVER_FILE)
-            log.info(
-                "Album cover saved (%dx%d) tint=%d (deterministic per hash)",
-                colored.size[0],
-                colored.size[1],
-                tint_idx,
-            )
-        except Exception:
-            log.exception("Album cover save failed")
+            except Exception:
+                log.exception("Album cover save failed")
 
         # Gate the EXPENSIVE Gemini+ACRCloud identification behind the
         # hash-distance threshold. 32 requires a real scene change

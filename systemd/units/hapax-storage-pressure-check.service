@@ -1,6 +1,7 @@
 [Unit]
 Description=Hapax root Btrfs and filesystem storage pressure check
 Documentation=file:%h/projects/hapax-council/scripts/hapax-storage-pressure-check
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot

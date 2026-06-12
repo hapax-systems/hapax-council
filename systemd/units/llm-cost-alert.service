@@ -2,6 +2,7 @@
 Description=LLM cost anomaly alerter
 Wants=hapax-secrets.service
 After=network-online.target docker.service hapax-secrets.service
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot

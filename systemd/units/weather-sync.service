@@ -1,6 +1,7 @@
 [Unit]
 Description=Weather sync — fetch current conditions for energy/mood correlation
 After=network-online.target
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot

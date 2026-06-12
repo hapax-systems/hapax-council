@@ -2,6 +2,7 @@
 Description=Hapax SBCL+CLOG coordination dashboard (source-only)
 Documentation=/home/hapax/projects/hapax-coord/README.md
 ConditionPathExists=/home/hapax/projects/hapax-coord/scripts/run-dev.sh
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple

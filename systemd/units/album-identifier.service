@@ -1,0 +1,15 @@
+[Unit]
+Description=Album Identifier — IR vision + audio track recognition
+After=logos-api.service studio-compositor.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+ExecStart=%h/projects/hapax-council/.venv/bin/python %h/projects/hapax-council/scripts/album-identifier.py
+WorkingDirectory=%h/projects/hapax-council
+Restart=on-failure
+RestartSec=10
+Environment=PI6_IP=192.168.68.81
+
+[Install]
+WantedBy=default.target

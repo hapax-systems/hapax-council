@@ -3,6 +3,7 @@ Description=Visual Layer Aggregator — polls logos API and perception state for
 After=logos-api.service hapax-daimonion.service hapax-secrets.service
 Requires=hapax-secrets.service
 Wants=logos-api.service
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple

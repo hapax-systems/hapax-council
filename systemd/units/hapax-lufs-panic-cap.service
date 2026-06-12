@@ -4,6 +4,7 @@ Documentation=file:///home/hapax/projects/hapax-council/agents/studio_compositor
 After=pipewire.service wireplumber.service hapax-secrets.service
 BindsTo=pipewire.service wireplumber.service
 PartOf=studio-compositor.service
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple

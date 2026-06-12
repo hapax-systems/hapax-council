@@ -7,6 +7,7 @@ Description=Voice witness watchdog — ntfy on drop-streak / witness staleness
 # not a unit failure.
 # Install: cp to ~/.config/systemd/user/, daemon-reload, then
 #   systemctl --user enable --now hapax-voice-witness-watchdog.timer
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot

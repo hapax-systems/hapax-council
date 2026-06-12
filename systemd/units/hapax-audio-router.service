@@ -3,6 +3,7 @@ Description=Hapax dynamic audio router (Evil Pet + S-4 5 Hz arbiter)
 Documentation=https://github.com/ryanklee/hapax-council/blob/main/docs/superpowers/specs/2026-04-21-evilpet-s4-dynamic-dual-processor-design.md
 After=hapax-secrets.service pipewire.service
 Wants=hapax-secrets.service
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple

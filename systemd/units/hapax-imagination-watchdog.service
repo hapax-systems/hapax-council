@@ -1,6 +1,7 @@
 [Unit]
 Description=Imagination loop composite liveness watchdog with restart backoff
 After=hapax-imagination-loop.service
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot

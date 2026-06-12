@@ -5,6 +5,7 @@ After=pipewire.service pipewire-pulse.service wireplumber.service hapax-secrets.
 BindsTo=pipewire.service
 Wants=hapax-private-broadcast-leak-guard.service
 PartOf=pipewire.service
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple
