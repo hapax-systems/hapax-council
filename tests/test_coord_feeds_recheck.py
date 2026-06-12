@@ -943,6 +943,58 @@ def test_coord_deploy_helper_fetches_writes_sha_and_is_idempotent(tmp_path):
     ]
 
 
+def test_coord_deploy_helper_reports_next_for_missing_source_repo(tmp_path):
+    failed = subprocess.run(
+        [str(_DEPLOY_SCRIPT)],
+        env={
+            **os.environ,
+            "HAPAX_COORD_DEPLOY_REPO": str(tmp_path / "missing-source"),
+            "HAPAX_COORD_DEPLOY_ACT_ROOT": str(tmp_path / "coord-activation"),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert failed.returncode != 0
+    assert "fetch origin/main" in failed.stderr
+    assert "next:" in failed.stderr
+    assert "HAPAX_COORD_DEPLOY_REPO" in failed.stderr
+
+
+def test_coord_deploy_helper_reports_next_for_activation_root_setup_failure(tmp_path):
+    origin = tmp_path / "origin.git"
+    source = tmp_path / "source"
+    bad_act_root = tmp_path / "coord-activation"
+    bad_act_root.write_text("not a directory\n")
+
+    _cmd(["git", "init", "--bare", str(origin)])
+    _cmd(["git", "init", str(source)])
+    _cmd(["git", "-C", str(source), "checkout", "-b", "main"])
+    _deploy_fixture_commit(source, "first")
+    _cmd(["git", "-C", str(source), "remote", "add", "origin", str(origin)])
+    _cmd(["git", "-C", str(source), "push", "-u", "origin", "main"])
+
+    failed = subprocess.run(
+        [str(_DEPLOY_SCRIPT)],
+        env={
+            **os.environ,
+            "HAPAX_COORD_DEPLOY_REPO": str(source),
+            "HAPAX_COORD_DEPLOY_ACT_ROOT": str(bad_act_root),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert failed.returncode != 0
+    assert "create activation root" in failed.stderr
+    assert "next:" in failed.stderr
+    assert "HAPAX_COORD_DEPLOY_ACT_ROOT" in failed.stderr
+
+
 def test_coord_rebuild_timer_checked_when_systemctl_enabled(tmp_path):
     env = _scaffold(tmp_path)
     mod = _load(env)

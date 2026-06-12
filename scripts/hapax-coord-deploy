@@ -6,18 +6,59 @@ set -euo pipefail
 REPO="${HAPAX_COORD_DEPLOY_REPO:-/home/hapax/projects/hapax-coord}"
 ACT_ROOT="${HAPAX_COORD_DEPLOY_ACT_ROOT:-$HOME/.cache/hapax/coord-activation}"
 WT="$ACT_ROOT/worktree"
+SETUP_NEXT="next: verify HAPAX_COORD_DEPLOY_REPO points to a readable hapax-coord git checkout with origin/main, verify HAPAX_COORD_DEPLOY_ACT_ROOT is writable, then rerun scripts/hapax-coord-deploy"
 
 if [ "${1:-}" = "--contract-json" ]; then
     printf '{"schema":1,"source_repo":"%s","activation_worktree":"%s","target_ref":"origin/main","writes_deployed_sha":true,"writes_deployed_sha_after_restart":true,"rolls_back_worktree_on_restart_failure":true,"restarts_service":"hapax-coord.service"}\n' "$REPO" "$WT"
     exit 0
 fi
 
-git -C "$REPO" fetch origin +refs/heads/main:refs/remotes/origin/main --quiet
-TARGET_SHA="$(git -C "$REPO" rev-parse refs/remotes/origin/main)"
+deploy_fail() {
+    local label="$1"
+    local rc="$2"
+    local detail="$3"
+    detail="${detail//$'\n'/; }"
+    if [ -z "$detail" ]; then
+        detail="no output"
+    fi
+    echo "coord-deploy: $label failed (rc=$rc): $detail; $SETUP_NEXT" >&2
+    exit "$rc"
+}
 
-mkdir -p "$ACT_ROOT"
+run_or_fail() {
+    local label="$1"
+    shift
+    local out
+    local rc
+    if out="$("$@" 2>&1)"; then
+        if [ -n "$out" ]; then
+            printf '%s\n' "$out"
+        fi
+    else
+        rc=$?
+        deploy_fail "$label" "$rc" "$out"
+    fi
+}
+
+capture_or_fail() {
+    local label="$1"
+    shift
+    local out
+    local rc
+    if out="$("$@" 2>&1)"; then
+        printf '%s' "$out"
+    else
+        rc=$?
+        deploy_fail "$label" "$rc" "$out"
+    fi
+}
+
+run_or_fail "fetch origin/main from $REPO" git -C "$REPO" fetch origin +refs/heads/main:refs/remotes/origin/main --quiet
+TARGET_SHA="$(capture_or_fail "resolve origin/main in $REPO" git -C "$REPO" rev-parse refs/remotes/origin/main)"
+
+run_or_fail "create activation root $ACT_ROOT" mkdir -p "$ACT_ROOT"
 if [ ! -d "$WT/.git" ] && [ ! -f "$WT/.git" ]; then
-    git -C "$REPO" worktree add --detach "$WT" "$TARGET_SHA"
+    run_or_fail "add activation worktree $WT" git -C "$REPO" worktree add --detach "$WT" "$TARGET_SHA"
 fi
 
 CURRENT_SHA="$(git -C "$WT" rev-parse HEAD 2>/dev/null || echo none)"
@@ -35,7 +76,7 @@ elif [ "$CURRENT_SHA" != "none" ] && git -C "$WT" cat-file -e "$CURRENT_SHA^{com
 fi
 RESTART_NEXT="next: inspect systemctl --user status hapax-coord.service and journalctl --user -u hapax-coord.service -n 100, fix the service failure, then rerun scripts/hapax-coord-deploy"
 
-git -C "$WT" checkout --detach --force "$TARGET_SHA" --quiet
+run_or_fail "checkout activation worktree $WT" git -C "$WT" checkout --detach --force "$TARGET_SHA" --quiet
 echo "coord-deploy: checked out $TARGET_SHA; restarting hapax-coord"
 if systemctl --user restart hapax-coord.service; then
     :
