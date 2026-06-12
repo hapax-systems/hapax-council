@@ -406,6 +406,22 @@ class TestApply:
         assert (note_b.parent / "task-b.review-dossier.yaml").is_file()
         assert len(reviewers.invocations) == 3
 
+        second_reviewers = RecordingReviewers()
+        second = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=second_reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T23:00:00+00:00",
+        )
+        assert second["status"] == "multi_skipped_fresh"
+        assert second_reviewers.invocations == []
+
     def test_skipped_fresh_quorum_dossier_replays_missing_receipt(self, tmp_path: Path) -> None:
         result, _, _, note = _review(
             tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
@@ -595,8 +611,9 @@ class TestReceiptAndWake:
             task_kwargs={"quality_floor": "frontier_review_required"},
             gh=FakeGh(files=["shared/foo.py"], changed_files_count=2),
         )
-        assert result["dossier"]["review_team_verdict"] == "quorum-accept"
-        assert result["side_effects"]["receipt_path"] is None
+        assert result["status"] == "changed_files_truncated"
+        assert result["files_seen"] == 1
+        assert result["changed_files"] == 2
         assert not (note.parent / "task-a.acceptance.yaml").exists()
 
     def test_existing_receipt_is_never_overwritten(self, tmp_path: Path) -> None:

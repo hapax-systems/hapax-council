@@ -673,6 +673,17 @@ def review_pr(
     pr_info = fetch_pr(pr_number, repo=repo, repo_root=repo_root, runner=gh_runner)
     if pr_info.is_draft:
         return {"status": "draft_skipped", "pr": pr_number}
+    if not pr_info.files:
+        return {"status": "changed_files_unknown", "pr": pr_number}
+    if pr_info.changed_file_count is None:
+        return {"status": "changed_files_count_unknown", "pr": pr_number}
+    if len(pr_info.files) < pr_info.changed_file_count:
+        return {
+            "status": "changed_files_truncated",
+            "pr": pr_number,
+            "files_seen": len(pr_info.files),
+            "changed_files": pr_info.changed_file_count,
+        }
 
     matches = review_team.find_task_notes(
         vault_root, pr_number=pr_number, head_ref=pr_info.head_ref
@@ -689,52 +700,71 @@ def review_pr(
         keyed_matches.append((note_path, frontmatter, task_id))
     note_path, frontmatter, task_id = keyed_matches[0]
 
-    dossier_path = review_team.review_dossier_path(note_path, task_id)
-    if len(keyed_matches) == 1 and dossier_path.is_file() and not force:
-        try:
-            existing = yaml.safe_load(dossier_path.read_text(encoding="utf-8"))
-        except (OSError, yaml.YAMLError):
-            existing = None
-        if isinstance(existing, dict) and existing.get("head_sha") == pr_info.head_sha:
-            existing_blockers = review_team.review_dossier_validity_blockers(
-                frontmatter,
-                note_path,
+    if not force:
+        fresh_results: list[dict[str, Any]] = []
+        fresh_blockers: list[str] = []
+        for target_note_path, target_frontmatter, target_task_id in keyed_matches:
+            target_dossier_path = review_team.review_dossier_path(target_note_path, target_task_id)
+            try:
+                existing = yaml.safe_load(target_dossier_path.read_text(encoding="utf-8"))
+            except (OSError, yaml.YAMLError):
+                existing = None
+            if not isinstance(existing, dict) or existing.get("head_sha") != pr_info.head_sha:
+                fresh_blockers.append(f"{target_task_id}:missing_or_stale")
+                break
+            blockers = review_team.review_dossier_validity_blockers(
+                target_frontmatter,
+                target_note_path,
                 pr_head_sha=pr_info.head_sha,
                 pr_number=pr_info.number,
-                changed_files=pr_info.files or (),
+                changed_files=pr_info.files,
                 changed_file_count=pr_info.changed_file_count,
                 registry=registry,
             )
-            if existing_blockers:
-                LOG.info(
-                    "current-head dossier is not admissible; re-reviewing PR #%d: %s",
-                    pr_number,
-                    ",".join(existing_blockers),
+            if blockers:
+                fresh_blockers.append(f"{target_task_id}:{','.join(blockers)}")
+                break
+            side_effects = {}
+            if apply:
+                side_effects = replay_dossier_side_effects(
+                    target_frontmatter,
+                    target_note_path,
+                    target_task_id,
+                    existing,
+                    repo=repo,
+                    now_iso=now_iso,
+                    registry=registry,
+                    wake_dir=wake_dir,
+                    send_runner=send_runner,
+                    pr_number=pr_info.number,
+                    changed_files=pr_info.files,
+                    changed_file_count=pr_info.changed_file_count,
                 )
-            else:
-                side_effects = {}
-                if apply:
-                    side_effects = replay_dossier_side_effects(
-                        frontmatter,
-                        note_path,
-                        task_id,
-                        existing,
-                        repo=repo,
-                        now_iso=now_iso,
-                        registry=registry,
-                        wake_dir=wake_dir,
-                        send_runner=send_runner,
-                        pr_number=pr_info.number,
-                        changed_files=pr_info.files,
-                        changed_file_count=pr_info.changed_file_count,
-                    )
-                return {
-                    "status": "skipped_fresh",
-                    "pr": pr_number,
-                    "dossier_path": str(dossier_path),
+            fresh_results.append(
+                {
+                    "task_id": target_task_id,
+                    "dossier_path": str(target_dossier_path),
                     "review_team_verdict": existing.get("review_team_verdict"),
                     "side_effects": side_effects,
                 }
+            )
+        if len(fresh_results) == len(keyed_matches):
+            if len(fresh_results) == 1:
+                only = fresh_results[0]
+                return {
+                    "status": "skipped_fresh",
+                    "pr": pr_number,
+                    "dossier_path": only["dossier_path"],
+                    "review_team_verdict": only["review_team_verdict"],
+                    "side_effects": only["side_effects"],
+                }
+            return {"status": "multi_skipped_fresh", "pr": pr_number, "results": fresh_results}
+        if fresh_blockers:
+            LOG.info(
+                "current-head dossier set is not admissible; re-reviewing PR #%d: %s",
+                pr_number,
+                " | ".join(fresh_blockers),
+            )
 
     lenses = review_team.lenses_for_files(pr_info.files, registry)
     team_class = review_team.strongest_team_class(

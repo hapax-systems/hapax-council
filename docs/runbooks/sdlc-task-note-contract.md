@@ -34,7 +34,8 @@ reliable legibility (ideally all three).*
   — recheck merge admission; PR-linked tasks without a current quorum dossier
   report `missing_review_dossier`, stale dossiers report
   `review_dossier_stale_head:*`, and unavailable changed-file scope reports
-  `review_dossier_changed_files_unknown` or
+  `review_dossier_changed_files_unknown`,
+  `review_dossier_changed_files_count_unknown`, or
   `review_dossier_changed_files_truncated:<seen>/<total>`.
 - `cc-pr-autoqueue` logs every unparseable note per run and appends the
   filenames to any `missing_cc_task_link` reason.
