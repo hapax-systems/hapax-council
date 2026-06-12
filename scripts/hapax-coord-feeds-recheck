@@ -803,6 +803,16 @@ def _exercise_coord_deploy_helper() -> str:
         git = fakebin / "git"
         git.write_text(
             "#!/usr/bin/env bash\n"
+            'if [ "${HAPAX_COORD_DEPLOY_FAIL_TARGET_CHECKOUT_ONCE:-}" = "1" ] && '
+            '[ "$1" = "-C" ] && [ "$2" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree" ] && '
+            '[ "$3" = "checkout" ] && [ "$4" = "--detach" ] && [ "$5" = "--force" ] && '
+            '[ "$6" = "${HAPAX_COORD_DEPLOY_EXPECT_TARGET_SHA:?}" ] && '
+            '[ ! -e "${HAPAX_COORD_DEPLOY_FAIL_TARGET_CHECKOUT_MARKER:?}" ]; then\n'
+            '  touch "${HAPAX_COORD_DEPLOY_FAIL_TARGET_CHECKOUT_MARKER:?}"\n'
+            '  "${HAPAX_TEST_REAL_GIT:?}" "$@" >/dev/null 2>&1 || true\n'
+            '  echo "simulated target checkout failure" >&2\n'
+            "  exit 61\n"
+            "fi\n"
             'if [ "${HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CHECKOUT:-}" = "1" ] && '
             '[ "$1" = "-C" ] && [ "$2" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree" ] && '
             '[ "$3" = "checkout" ] && [ "$4" = "--detach" ] && [ "$5" = "--force" ] && '
@@ -1022,6 +1032,72 @@ def _exercise_coord_deploy_helper() -> str:
         ]:
             raise RuntimeError(f"clean-failure retry restart log mismatch: {restarts}")
 
+        checkout_fail_sha = _write_deploy_fixture_commit(writer, "checkout-fail")
+        _run_cmd(["git", "-C", str(writer), "push", "origin", "main"])
+        failed_target_checkout = subprocess.run(
+            [str(COORD_DEPLOY_SCRIPT)],
+            env={
+                **env,
+                "HAPAX_COORD_DEPLOY_FAIL_TARGET_CHECKOUT_ONCE": "1",
+                "HAPAX_COORD_DEPLOY_FAIL_TARGET_CHECKOUT_MARKER": str(
+                    root / "target-checkout.failed"
+                ),
+                "HAPAX_COORD_DEPLOY_EXPECT_TARGET_SHA": checkout_fail_sha,
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        if failed_target_checkout.returncode == 0:
+            raise RuntimeError("deploy helper succeeded even though target checkout failed")
+        if "rolled activation worktree back" not in failed_target_checkout.stderr:
+            raise RuntimeError(
+                "target checkout failure did not roll back worktree: "
+                f"{failed_target_checkout.stderr}"
+            )
+        deployed = (worktree / ".deployed-sha").read_text().strip()
+        head = _run_cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"])
+        if deployed != clean_fail_sha or head != clean_fail_sha:
+            raise RuntimeError(
+                f"target checkout failure left ghost release deployed={deployed[:9]} "
+                f"head={head[:9]} clean_fail={clean_fail_sha[:9]} "
+                f"checkout_fail={checkout_fail_sha[:9]}"
+            )
+        restarts = restart_log.read_text().splitlines()
+        if restarts != [
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+        ]:
+            raise RuntimeError(f"checkout-failure deploy restart log mismatch: {restarts}")
+
+        _run_cmd([str(COORD_DEPLOY_SCRIPT)], env=env)
+        refreshed_remote_ref = _run_cmd(["git", "-C", str(source), "rev-parse", "origin/main"])
+        deployed = (worktree / ".deployed-sha").read_text().strip()
+        head = _run_cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"])
+        if (
+            deployed != checkout_fail_sha
+            or head != checkout_fail_sha
+            or refreshed_remote_ref != checkout_fail_sha
+        ):
+            raise RuntimeError(
+                f"checkout-failure retry mismatch deployed={deployed[:9]} head={head[:9]} "
+                f"origin/main={refreshed_remote_ref[:9]} expected={checkout_fail_sha[:9]}"
+            )
+        restarts = restart_log.read_text().splitlines()
+        if restarts != [
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+        ]:
+            raise RuntimeError(f"checkout-failure retry restart log mismatch: {restarts}")
+
         rollback_clean_sha = _write_deploy_fixture_commit(writer, "rollback-clean")
         _run_cmd(["git", "-C", str(writer), "push", "origin", "main"])
         failed_rollback_clean = subprocess.run(
@@ -1036,7 +1112,7 @@ def _exercise_coord_deploy_helper() -> str:
                 "HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CLEAN_MARKER": str(
                     root / "target-restart-rollback-clean.marker"
                 ),
-                "HAPAX_COORD_DEPLOY_EXPECT_ROLLBACK_SHA": clean_fail_sha,
+                "HAPAX_COORD_DEPLOY_EXPECT_ROLLBACK_SHA": checkout_fail_sha,
             },
             capture_output=True,
             text=True,
@@ -1055,14 +1131,15 @@ def _exercise_coord_deploy_helper() -> str:
             )
         deployed = (worktree / ".deployed-sha").read_text().strip()
         head = _run_cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"])
-        if deployed != clean_fail_sha or head != clean_fail_sha:
+        if deployed != checkout_fail_sha or head != checkout_fail_sha:
             raise RuntimeError(
                 f"rollback clean failure state mismatch deployed={deployed[:9]} "
-                f"head={head[:9]} clean_fail={clean_fail_sha[:9]} "
+                f"head={head[:9]} checkout_fail={checkout_fail_sha[:9]} "
                 f"rollback_clean={rollback_clean_sha[:9]}"
             )
         restarts = restart_log.read_text().splitlines()
         if restarts != [
+            "--user restart hapax-coord.service",
             "--user restart hapax-coord.service",
             "--user restart hapax-coord.service",
             "--user restart hapax-coord.service",
@@ -1088,6 +1165,7 @@ def _exercise_coord_deploy_helper() -> str:
             )
         restarts = restart_log.read_text().splitlines()
         if restarts != [
+            "--user restart hapax-coord.service",
             "--user restart hapax-coord.service",
             "--user restart hapax-coord.service",
             "--user restart hapax-coord.service",
@@ -1143,6 +1221,7 @@ def _exercise_coord_deploy_helper() -> str:
             "--user restart hapax-coord.service",
             "--user restart hapax-coord.service",
             "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
             "--user stop hapax-coord.service",
             "--user restart hapax-coord.service",
             "--user restart hapax-coord.service",
@@ -1167,6 +1246,7 @@ def _exercise_coord_deploy_helper() -> str:
             "--user restart hapax-coord.service",
             "--user restart hapax-coord.service",
             "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
             "--user stop hapax-coord.service",
             "--user restart hapax-coord.service",
             "--user restart hapax-coord.service",
@@ -1177,12 +1257,14 @@ def _exercise_coord_deploy_helper() -> str:
 
     return (
         f"first={first_sha[:9]} second={second_sha[:9]} "
-        f"clean_fail={clean_fail_sha[:9]} rollback_clean={rollback_clean_sha[:9]} "
+        f"clean_fail={clean_fail_sha[:9]} checkout_fail={checkout_fail_sha[:9]} "
+        f"rollback_clean={rollback_clean_sha[:9]} "
         f"third={third_sha[:9]} "
         "wrote .deployed-sha after restart, "
         "refreshed stale origin/main, advanced worktree, skipped idempotent restart, "
         "stopped service when first restart failed before receipt, "
         "rolled back worktree and restarted rollback service on failed restart, "
+        "rolled back worktree when target checkout failed before restart, "
         "rolled back worktree when target clean failed before restart, "
         "stopped service when rollback clean failed, "
         "stopped service when rollback checkout failed, retried restart on change"
@@ -1731,6 +1813,7 @@ def run_checks(
                     "writes_deployed_sha_after_restart": True,
                     "rolls_back_worktree_on_restart_failure": True,
                     "rolls_back_worktree_on_clean_failure": True,
+                    "rolls_back_worktree_on_checkout_failure": True,
                     "proves_rollback_clean_before_service_restart": True,
                     "cleans_activation_worktree": True,
                     "restarts_service": COORD_SERVICE,
@@ -1754,7 +1837,7 @@ def run_checks(
                         f"runtime helper {COORD_DEPLOY_SCRIPT} sha256={runtime_deploy_sha[:16]} "
                         f"matches tracked {COORD_DEPLOY_RELPATH} and contracts origin/main -> "
                         f"{COORD_ACTIVATION} with post-restart .deployed-sha, clean checkout, "
-                        "clean-failure rollback, proven rollback cleanup, "
+                        "checkout-failure rollback, clean-failure rollback, proven rollback cleanup, "
                         "and restart-failure rollback",
                     )
 
