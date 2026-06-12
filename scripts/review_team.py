@@ -620,6 +620,33 @@ def _dossier_validity_blockers(
     if not isinstance(sizing, Mapping):
         blockers.append(f"review_dossier_malformed:unknown_team_class:{team_class or 'missing'}")
         return tuple(blockers)
+
+    # DEGRADATION (PR #4110 round-2 finding: the admission gate re-sealed
+    # what the constitution degraded): a dossier whose constitution recorded
+    # an evidenced family outage is validated by the DEGRADED rules — t2
+    # sizing, roster minus the walled families. Integrity here: the notes and
+    # the explicit fields must agree and the walled family must have seated
+    # no reviewers; the post-recovery re-review obligation rides the
+    # degraded-merges ledger, not this gate.
+    _notes = [str(n) for n in (dossier.get("constitution_notes") or [])]
+    _note_out = sorted(
+        n.split(":", 1)[1] for n in _notes if n.startswith("degraded_family_outage:")
+    )
+    _field_out = sorted(str(f) for f in (dossier.get("degraded_family_outage") or []))
+    degraded_outage: list[str] = []
+    if _note_out or _field_out:
+        if (
+            _note_out != _field_out
+            or "degraded_to:t2_standard" not in _notes
+            or not dossier.get("post_recovery_rereview_required")
+        ):
+            blockers.append("review_dossier_degradation_flags_inconsistent")
+            return tuple(blockers)
+        degraded_outage = _note_out
+        sizing = (registry.get("sizing") or {}).get("t2_standard")
+        if not isinstance(sizing, Mapping):
+            blockers.append("review_dossier_malformed:no_t2_sizing_for_degradation")
+            return tuple(blockers)
     if changed_files is not None:
         if not scoped_files:
             blockers.append("review_dossier_changed_files_unknown")
@@ -658,6 +685,11 @@ def _dossier_validity_blockers(
         blockers.append(
             "review_dossier_unknown_reviewer_family:" + ",".join(sorted(unknown_reviewer_families))
         )
+    if degraded_outage:
+        seated_walled = sorted({str(r.get("family")) for r in reviews} & set(degraded_outage))
+        if seated_walled:
+            blockers.append("review_dossier_degraded_family_was_seated:" + ",".join(seated_walled))
+        roster = roster - set(degraded_outage)
     unknown_verdicts = {
         str(r.get("verdict") or "missing").lower()
         for r in reviews

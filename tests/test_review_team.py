@@ -937,3 +937,68 @@ class TestFamilyOutageDegradation:
         )
         assert dossier["review_team_verdict"] == "no-quorum"
         assert dossier["degraded_family_outage"] == []
+
+    # --- the ADMISSION side (PR #4110 round-2 finding: the downstream gate
+    # re-sealed what the constitution degraded) ---
+
+    def _degraded_dossier(self, rt) -> dict:
+        notes = (
+            "degraded_family_outage:claude",
+            "degraded_to:t2_standard",
+            "post_recovery_rereview_required",
+        )
+        return _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("gemini-2", "gemini", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+
+    def test_degraded_t1_dossier_passes_admission_validation(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._degraded_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(), note, pr_head_sha="a" * 40
+        )
+        assert blockers == (), f"degraded dossier must admit, got: {blockers}"
+
+    def test_inconsistent_degradation_flags_block_admission(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = self._degraded_dossier(rt)
+        dossier["post_recovery_rereview_required"] = False  # forged/torn flags
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(), note, pr_head_sha="a" * 40
+        )
+        assert "review_dossier_degradation_flags_inconsistent" in blockers
+
+    def test_degraded_dossier_with_walled_family_seated_blocks(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_outage:claude",
+            "degraded_to:t2_standard",
+            "post_recovery_rereview_required",
+        )
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),  # walled family seated?!
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(), note, pr_head_sha="a" * 40
+        )
+        assert any(b.startswith("review_dossier_degraded_family_was_seated:") for b in blockers)
+
+    @staticmethod
+    def _tfb_frontmatter(task_id: str = "task-x") -> dict:
+        return {"task_id": task_id}
