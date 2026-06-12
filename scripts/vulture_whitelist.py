@@ -4126,3 +4126,8 @@ _platform_session_artifact_projection_rows
 _platform_session_parse_jsonl_events
 _platform_session_resolve_identity
 _platform_session_run_conformance_fixture
+# called by scripts/hapax-rails-event-log (extensionless executable — outside
+# vulture's parse set) and by the rails-map consumers (PR #4100).
+from shared.rails_event_log import fold_once  # noqa: E402
+
+fold_once
