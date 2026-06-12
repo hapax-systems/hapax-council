@@ -10,6 +10,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -1063,6 +1064,88 @@ def test_coord_deploy_helper_rolls_back_when_receipt_write_fails_after_restart(t
         "--user restart hapax-coord.service",
         "--user restart hapax-coord.service",
         "--user restart hapax-coord.service",
+    ]
+
+
+def test_coord_deploy_helper_stops_service_when_receipt_rollback_checkout_fails(tmp_path):
+    origin = tmp_path / "origin.git"
+    source = tmp_path / "source"
+    writer = tmp_path / "writer"
+    act_root = tmp_path / "coord-activation"
+    fakebin = tmp_path / "bin"
+    restart_log = tmp_path / "systemctl.log"
+    fakebin.mkdir()
+    systemctl = fakebin / "systemctl"
+    systemctl.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "${HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG:?}"\n'
+    )
+    systemctl.chmod(0o755)
+    real_git = shutil.which("git")
+    assert real_git
+    git = fakebin / "git"
+    git.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CHECKOUT:-}" = "1" ] && '
+        '[ "$1" = "-C" ] && [ "$2" = "${HAPAX_COORD_DEPLOY_ACT_ROOT:?}/worktree" ] && '
+        '[ "$3" = "checkout" ] && [ "$4" = "--detach" ] && [ "$5" = "--force" ] && '
+        '[ "$6" = "${HAPAX_COORD_DEPLOY_EXPECT_ROLLBACK_SHA:?}" ]; then\n'
+        '  echo "simulated rollback checkout failure" >&2\n'
+        "  exit 57\n"
+        "fi\n"
+        'exec "${HAPAX_TEST_REAL_GIT:?}" "$@"\n'
+    )
+    git.chmod(0o755)
+
+    _cmd(["git", "init", "--bare", str(origin)])
+    _cmd(["git", "init", str(source)])
+    _cmd(["git", "-C", str(source), "checkout", "-b", "main"])
+    first_sha = _deploy_fixture_commit(source, "first")
+    _cmd(["git", "-C", str(source), "remote", "add", "origin", str(origin)])
+    _cmd(["git", "-C", str(source), "push", "-u", "origin", "main"])
+
+    env = {
+        **os.environ,
+        "HAPAX_COORD_DEPLOY_REPO": str(source),
+        "HAPAX_COORD_DEPLOY_ACT_ROOT": str(act_root),
+        "HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG": str(restart_log),
+        "HAPAX_TEST_REAL_GIT": real_git,
+        "PATH": f"{fakebin}:{os.environ.get('PATH', '')}",
+    }
+    _cmd([str(_DEPLOY_SCRIPT)], env=env)
+    worktree = act_root / "worktree"
+    assert (worktree / ".deployed-sha").read_text().strip() == first_sha
+
+    _cmd(["git", "clone", "-b", "main", str(origin), str(writer)])
+    second_sha = _deploy_fixture_commit(writer, "second")
+    _cmd(["git", "-C", str(writer), "push", "origin", "main"])
+    assert second_sha != first_sha
+    (worktree / ".deployed-sha.tmp").mkdir()
+
+    failed = subprocess.run(
+        [str(_DEPLOY_SCRIPT)],
+        env={
+            **env,
+            "HAPAX_COORD_DEPLOY_FAIL_ROLLBACK_CHECKOUT": "1",
+            "HAPAX_COORD_DEPLOY_EXPECT_ROLLBACK_SHA": first_sha,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert failed.returncode != 0
+    assert "receipt write failed after restart" in failed.stderr
+    assert "rollback checkout to" in failed.stderr
+    assert "simulated rollback checkout failure" in failed.stderr
+    assert "stopped hapax-coord.service to avoid serving unreceipted target" in failed.stderr
+    assert "next:" in failed.stderr
+    assert (worktree / ".deployed-sha").read_text().strip() == first_sha
+    assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == second_sha
+    assert restart_log.read_text().splitlines() == [
+        "--user restart hapax-coord.service",
+        "--user restart hapax-coord.service",
+        "--user stop hapax-coord.service",
     ]
 
 

@@ -101,15 +101,26 @@ stop_unreceipted_service_after_receipt_failure() {
 receipt_fail() {
     local rc="$1"
     local detail="$2"
+    local checkout_detail
+    local checkout_rc
     local service_detail
     detail="${detail//$'\n'/; }"
     if [ -z "$detail" ]; then
         detail="no output"
     fi
     if [ -n "$ROLLBACK_SHA" ] && [ "$ROLLBACK_SHA" != "$TARGET_SHA" ]; then
-        git -C "$WT" checkout --detach --force "$ROLLBACK_SHA" --quiet || true
-        service_detail="$(rollback_service_after_receipt_failure)"
-        echo "coord-deploy: receipt write failed after restart; rolled activation worktree back to $ROLLBACK_SHA; $service_detail; $detail; $RECEIPT_NEXT" >&2
+        if checkout_detail="$(git -C "$WT" checkout --detach --force "$ROLLBACK_SHA" --quiet 2>&1)"; then
+            service_detail="$(rollback_service_after_receipt_failure)"
+            echo "coord-deploy: receipt write failed after restart; rolled activation worktree back to $ROLLBACK_SHA; $service_detail; $detail; $RECEIPT_NEXT" >&2
+        else
+            checkout_rc=$?
+            checkout_detail="${checkout_detail//$'\n'/; }"
+            if [ -z "$checkout_detail" ]; then
+                checkout_detail="no output"
+            fi
+            service_detail="$(stop_unreceipted_service_after_receipt_failure)"
+            echo "coord-deploy: receipt write failed after restart; rollback checkout to $ROLLBACK_SHA failed (rc=$checkout_rc): $checkout_detail; $service_detail; $detail; $RECEIPT_NEXT" >&2
+        fi
     elif [ -n "$ROLLBACK_SHA" ]; then
         service_detail="$(stop_unreceipted_service_after_receipt_failure)"
         echo "coord-deploy: receipt write failed after restart; activation worktree remains at $ROLLBACK_SHA; $service_detail; $detail; $RECEIPT_NEXT" >&2

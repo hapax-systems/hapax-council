@@ -114,6 +114,62 @@ def test_unreadable_task_note_fails_closed_without_heartbeat_or_shadow_rewrite(
     assert rel.SHADOW.stat().st_mtime_ns == shadow_mtime_before
 
 
+def test_unreadable_dossier_fails_closed_without_heartbeat_or_shadow_rewrite(tmp_path, monkeypatch):
+    vault = _setup(tmp_path, monkeypatch)
+    dossier = vault / "task-review.review-dossier.yaml"
+    dossier.write_text("task_id: task-review\nreview_team_verdict: blocked\n")
+    assert rel.fold_once() >= 1
+    event_before = rel.EVENT_LOG.read_bytes()
+    shadow_before = rel.SHADOW.read_bytes()
+    event_mtime_before = rel.EVENT_LOG.stat().st_mtime_ns
+    shadow_mtime_before = rel.SHADOW.stat().st_mtime_ns
+    original_read_text = Path.read_text
+
+    def flaky_read_text(self, *args, **kwargs):
+        if self == dossier:
+            raise OSError("permission denied")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+
+    with pytest.raises(rel.SourceVaultUnavailable, match="cc-task review dossier unreadable"):
+        rel.fold_once()
+
+    assert rel.EVENT_LOG.read_bytes() == event_before
+    assert rel.SHADOW.read_bytes() == shadow_before
+    assert rel.EVENT_LOG.stat().st_mtime_ns == event_mtime_before
+    assert rel.SHADOW.stat().st_mtime_ns == shadow_mtime_before
+
+
+def test_unreadable_acceptance_fails_closed_without_heartbeat_or_shadow_rewrite(
+    tmp_path, monkeypatch
+):
+    vault = _setup(tmp_path, monkeypatch)
+    receipt = vault / "task-review.acceptance.yaml"
+    receipt.write_text("verdict: accepted\nacceptor: review-team\n")
+    assert rel.fold_once() >= 1
+    event_before = rel.EVENT_LOG.read_bytes()
+    shadow_before = rel.SHADOW.read_bytes()
+    event_mtime_before = rel.EVENT_LOG.stat().st_mtime_ns
+    shadow_mtime_before = rel.SHADOW.stat().st_mtime_ns
+    original_read_text = Path.read_text
+
+    def flaky_read_text(self, *args, **kwargs):
+        if self == receipt:
+            raise OSError("stale mount")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+
+    with pytest.raises(rel.SourceVaultUnavailable, match="cc-task acceptance receipt unreadable"):
+        rel.fold_once()
+
+    assert rel.EVENT_LOG.read_bytes() == event_before
+    assert rel.SHADOW.read_bytes() == shadow_before
+    assert rel.EVENT_LOG.stat().st_mtime_ns == event_mtime_before
+    assert rel.SHADOW.stat().st_mtime_ns == shadow_mtime_before
+
+
 def test_review_and_receipt_events(tmp_path, monkeypatch):
     vault = _setup(tmp_path, monkeypatch)
     (vault / "task-b.review-dossier.yaml").write_text(

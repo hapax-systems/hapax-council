@@ -53,10 +53,20 @@ def _mapping_rows(value: object) -> list[dict]:
     return [row for row in value if isinstance(row, dict)]
 
 
+def _read_source_text(path: Path, label: str) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise SourceVaultUnavailable(
+            f"active cc-task {label} unreadable at {path}: {exc}; "
+            "next: restore readable access before exporting"
+        ) from exc
+
+
 def dossier_summary(path: Path) -> dict | None:
     try:
-        d = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace"))
-    except Exception as exc:  # noqa: BLE001 — a broken dossier renders honestly
+        d = yaml.safe_load(_read_source_text(path, "review dossier"))
+    except yaml.YAMLError as exc:
         return {
             "task_id": path.name.split(".review-dossier")[0],
             "verdict": "unparseable",
@@ -85,8 +95,8 @@ def dossier_summary(path: Path) -> dict | None:
 
 def acceptance_summary(path: Path) -> dict | None:
     try:
-        d = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace"))
-    except Exception:  # noqa: BLE001
+        d = yaml.safe_load(_read_source_text(path, "acceptance receipt"))
+    except yaml.YAMLError:
         return {"task_id": path.name.split(".acceptance")[0], "verdict": "unparseable"}
     if not isinstance(d, dict):
         return None
@@ -103,11 +113,15 @@ def acceptance_summary(path: Path) -> dict | None:
 def main() -> int:
     try:
         _require_source_vault()
+        dossiers = [
+            s for p in sorted(VAULT.glob("*.review-dossier.yaml")) if (s := dossier_summary(p))
+        ]
+        receipts = [
+            s for p in sorted(VAULT.glob("*.acceptance.yaml")) if (s := acceptance_summary(p))
+        ]
     except SourceVaultUnavailable as exc:
         print(f"review-receipts BLOCKED: {exc}", file=sys.stderr)
         return 2
-    dossiers = [s for p in sorted(VAULT.glob("*.review-dossier.yaml")) if (s := dossier_summary(p))]
-    receipts = [s for p in sorted(VAULT.glob("*.acceptance.yaml")) if (s := acceptance_summary(p))]
     payload = {
         "schema": 1,
         "generated_at": datetime.now(UTC).isoformat(),

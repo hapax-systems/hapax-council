@@ -101,6 +101,52 @@ class TestReceiptsExporter:
         assert "review-receipts BLOCKED" in captured.err
         assert "next:" in captured.err
 
+    def test_unreadable_dossier_fails_closed_without_replacing_feed(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        mod, vault, out = self._run(tmp_path, monkeypatch)
+        dossier = vault / "t6.review-dossier.yaml"
+        dossier.write_text("task_id: t6\nreview_team_verdict: blocked\n")
+        previous = b'{"schema":1,"dossiers":[{"task_id":"old"}],"acceptances":[]}\n'
+        out.write_bytes(previous)
+        original_read_text = Path.read_text
+
+        def flaky_read_text(self, *args, **kwargs):
+            if self == dossier:
+                raise OSError("permission denied")
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", flaky_read_text)
+
+        assert mod.main() == 2
+        captured = capsys.readouterr()
+        assert out.read_bytes() == previous
+        assert "active cc-task review dossier unreadable" in captured.err
+        assert "next:" in captured.err
+
+    def test_unreadable_acceptance_fails_closed_without_replacing_feed(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        mod, vault, out = self._run(tmp_path, monkeypatch)
+        receipt = vault / "t7.acceptance.yaml"
+        receipt.write_text("verdict: accepted\nacceptor: review-team\n")
+        previous = b'{"schema":1,"dossiers":[],"acceptances":[{"task_id":"old"}]}\n'
+        out.write_bytes(previous)
+        original_read_text = Path.read_text
+
+        def flaky_read_text(self, *args, **kwargs):
+            if self == receipt:
+                raise OSError("stale mount")
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", flaky_read_text)
+
+        assert mod.main() == 2
+        captured = capsys.readouterr()
+        assert out.read_bytes() == previous
+        assert "active cc-task acceptance receipt unreadable" in captured.err
+        assert "next:" in captured.err
+
 
 class TestVocabExporter:
     def test_observed_forms_bridge_to_ladder_tokens(self, tmp_path, monkeypatch):

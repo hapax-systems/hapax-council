@@ -136,8 +136,15 @@ def _dossier_facts() -> dict[str, dict[str, Any]]:
     facts: dict[str, dict[str, Any]] = {}
     for p in VAULT.glob("*.review-dossier.yaml"):
         try:
-            d = yaml.safe_load(p.read_text(encoding="utf-8", errors="replace"))
-        except Exception:  # noqa: BLE001 — a broken dossier is its own event
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise SourceVaultUnavailable(
+                f"cc-task review dossier unreadable: {p}: {exc}; "
+                "next: restore readable access before folding"
+            ) from exc
+        try:
+            d = yaml.safe_load(text)
+        except yaml.YAMLError:
             facts[p.name] = {"verdict": "unparseable", "_source": str(p)}
             continue
         if isinstance(d, dict):
@@ -157,8 +164,15 @@ def _acceptance_facts() -> dict[str, dict[str, Any]]:
     facts: dict[str, dict[str, Any]] = {}
     for p in VAULT.glob("*.acceptance.yaml"):
         try:
-            d = yaml.safe_load(p.read_text(encoding="utf-8", errors="replace"))
-        except Exception:  # noqa: BLE001
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise SourceVaultUnavailable(
+                f"cc-task acceptance receipt unreadable: {p}: {exc}; "
+                "next: restore readable access before folding"
+            ) from exc
+        try:
+            d = yaml.safe_load(text)
+        except yaml.YAMLError:
             facts[p.name] = {"verdict": "unparseable", "_source": str(p)}
             continue
         if isinstance(d, dict):
