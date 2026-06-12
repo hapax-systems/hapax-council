@@ -324,6 +324,65 @@ def test_quoted_cd_advice_in_echo_is_text():
     )
 
 
+# --- review round 2: terminator context, function bodies, data-vs-code ---
+
+
+def test_top_level_return_is_not_a_terminator():
+    # bash errors on top-level return and KEEPS GOING — git add runs wrong-dir
+    assert _blocked("cd /missing || return; git add -A")
+
+
+def test_top_level_break_is_not_a_terminator():
+    assert _blocked("cd /missing || break; git add -A")
+
+
+def test_top_level_continue_is_not_a_terminator():
+    assert _blocked("cd /missing || continue; git add -A")
+
+
+def test_in_loop_continue_still_terminates():
+    assert not _blocked('for d in */; do cd "$d" || continue; ./build.sh; done')
+
+
+def test_terminator_word_as_data_blocks():
+    # `echo "exit"` succeeds, recovers status, rm runs in the wrong directory
+    assert _blocked('cd /missing || echo "exit"; rm -rf scratch')
+
+
+def test_terminator_word_as_argument_blocks():
+    assert _blocked("cd /missing || echo exit now; rm -rf scratch")
+
+
+def test_or_exit_still_terminates():
+    assert not _blocked("cd /missing || exit 1; git add -A")
+
+
+def test_function_body_with_unguarded_cd_and_call_blocks():
+    assert _blocked('build() { cd "$WORKTREE"; git add -A; }; build')
+
+
+def test_function_keyword_syntax_blocks():
+    assert _blocked("function f { cd /missing; git add -A; }; f")
+
+
+def test_function_definition_without_call_allows():
+    # shell state does not persist across tool calls: a bare def runs nothing
+    assert not _blocked("f() { cd /missing; git add -A; }")
+
+
+def test_function_body_return_guard_allows():
+    # return IS a terminator inside a function body
+    assert not _blocked("f() { cd /missing || return 1; git add -A; }; f")
+
+
+def test_arithmetic_left_shift_is_not_a_heredoc():
+    assert _blocked("x=$((1<<2))\ncd /missing\ngit add -A")
+
+
+def test_arithmetic_left_shift_alone_allows():
+    assert not _blocked("echo $((1<<2)); git status")
+
+
 # --- wrapper / payload behavior (the documented fail-open choice) ---
 
 
@@ -359,17 +418,34 @@ def test_wrapper_empty_command_exit_0():
     assert _run_wrapper(json.dumps({"tool_input": {}})).returncode == 0
 
 
-def test_analyzer_error_fails_open(monkeypatch=None):
-    # alien grammar must not brick the shell: force an analyzer exception
+def test_analyzer_error_fails_open(monkeypatch, capsys):
+    # the REAL exception path (round-2 review finding: the prior version of
+    # this test only exercised the killswitch): force analyze() to raise and
+    # pin exit 0 + the loud stderr note
+    import io
+
+    def _boom(_cmd):
+        raise RuntimeError("alien grammar")
+
+    monkeypatch.setattr(_mod, "analyze", _boom)
+    monkeypatch.setattr(
+        sys, "stdin", io.StringIO(json.dumps({"tool_input": {"command": "cd /tmp; ls"}}))
+    )
+    monkeypatch.delenv("HAPAX_UNGUARDED_CD_GUARD_OFF", raising=False)
+    assert _mod.main() == 0
+    assert "analyzer error" in capsys.readouterr().err
+
+
+def test_killswitch_allows():
     proc = subprocess.run(
         [sys.executable, str(_ANALYZER)],
-        input=json.dumps({"tool_input": {"command": "cd /tmp; ls"}}),
+        input=json.dumps({"tool_input": {"command": "cd /missing; git add -A"}}),
         capture_output=True,
         text=True,
         timeout=30,
         env={"PATH": "/usr/bin", "HAPAX_UNGUARDED_CD_GUARD_OFF": "1"},
     )
-    assert proc.returncode == 0  # killswitch honored == documented escape
+    assert proc.returncode == 0  # the documented intentional escape
 
 
 if __name__ == "__main__":
