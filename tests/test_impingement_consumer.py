@@ -273,9 +273,7 @@ class TestCursorPersistence:
         assert len(result) == 1
         assert result[0].source == "after-reset"
 
-    def test_inode_rotation_at_same_line_count_reads_replacement_file(
-        self, tmp_path: Path
-    ) -> None:
+    def test_inode_rotation_at_same_line_count_reads_replacement_file(self, tmp_path: Path) -> None:
         path = tmp_path / "imp.jsonl"
         cursor_path = tmp_path / "cursor.txt"
         _write_jsonl(path, [_make_imp("old-a"), _make_imp("old-b")])

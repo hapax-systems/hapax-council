@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import time
 from typing import TYPE_CHECKING
@@ -91,6 +92,30 @@ def test_digest_surfaces_out_of_label_get(tmp_path: Path, monkeypatch: pytest.Mo
     assert _counter("out_of_label_found") - before == 1.0
     log_text = (tmp_path / "refusals.jsonl").read_text()
     assert "mail_out_of_label_read" in log_text
+
+
+def test_digest_scans_rotated_audit_archives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_paths(tmp_path, monkeypatch)
+    archive = tmp_path / "archive" / "mail-monitor-api-calls.20260612T010203Z.jsonl.gz"
+    archive.parent.mkdir(parents=True)
+    with gzip.open(archive, "wt", encoding="utf-8") as fp:
+        fp.write(
+            json.dumps(
+                {
+                    "ts": _now_iso(),
+                    "method": "messages.get",
+                    "messageId": "ARCHIVED-ROGUE",
+                    "label": "INBOX",
+                }
+            )
+            + "\n"
+        )
+    _write_audit(tmp_path / "audit.jsonl", [])
+
+    assert digest.run_digest() == 1
+    assert "mail_out_of_label_read" in (tmp_path / "refusals.jsonl").read_text()
 
 
 def test_digest_respects_lookback_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

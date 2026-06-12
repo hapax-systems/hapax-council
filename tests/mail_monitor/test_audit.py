@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 from typing import TYPE_CHECKING
 from unittest import mock
@@ -109,3 +110,17 @@ def test_read_audit_entries_skips_malformed_lines(tmp_path: Path) -> None:
     assert len(entries) == 2
     assert entries[0]["method"] == "messages.get"
     assert entries[1]["method"] == "messages.modify"
+
+
+def test_read_audit_entries_scans_rotator_archives(tmp_path: Path) -> None:
+    path = tmp_path / "api-calls.jsonl"
+    archive = tmp_path / "archive" / "mail-monitor-api-calls.20260612T010203Z.jsonl.gz"
+    archive.parent.mkdir(parents=True)
+    with gzip.open(archive, "wt", encoding="utf-8") as fp:
+        fp.write('{"ts":"x","method":"messages.get","messageId":"ARCHIVED"}\n')
+    path.write_text('{"ts":"y","method":"users.watch"}\n', encoding="utf-8")
+
+    entries = audit.read_audit_entries(path)
+
+    assert [entry["method"] for entry in entries] == ["messages.get", "users.watch"]
+    assert entries[0]["messageId"] == "ARCHIVED"

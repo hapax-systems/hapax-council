@@ -262,9 +262,7 @@ class TestCursorPersistence:
         clock.advance(60.0)
         assert trigger.should_fire() is True
 
-    def test_inode_rotation_at_same_size_resets_cursor_and_reads_replacement_event(
-        self, tmp_path
-    ):
+    def test_inode_rotation_at_same_size_resets_cursor_and_reads_replacement_event(self, tmp_path):
         events = tmp_path / "events.jsonl"
         cursor = tmp_path / "cursor.txt"
         clock = _Clock(0.0)

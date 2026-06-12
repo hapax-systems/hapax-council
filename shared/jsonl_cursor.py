@@ -14,7 +14,9 @@ def jsonl_file_identity(source_stat: os.stat_result) -> FileIdentity:
     return (int(source_stat.st_dev), int(source_stat.st_ino))
 
 
-def jsonl_byte_evidence_ref(source_path: Path, byte_offset: int, source_stat: os.stat_result) -> str:
+def jsonl_byte_evidence_ref(
+    source_path: Path, byte_offset: int, source_stat: os.stat_result
+) -> str:
     st_dev, st_ino = jsonl_file_identity(source_stat)
     return f"{source_path}#dev={st_dev}:ino={st_ino}:byte={byte_offset}"
 
@@ -43,7 +45,10 @@ def _read_cursor_identity(
         return None, False
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         if logger is not None:
-            logger.warning("cursor state unreadable at %s; resetting to avoid stale cursor", state_path)
+            logger.warning(
+                "cursor state unreadable at %s; resetting to avoid stale cursor",
+                state_path,
+            )
         return None, False
 
 

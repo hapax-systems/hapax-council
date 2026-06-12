@@ -526,15 +526,11 @@ class LegibilityEvidenceRegistry:
                 self._dir,
                 max_bytes=self._max_bytes,
                 keep_generations=self._keep_generations,
-            ).append(
-                record.to_evidence_entry(case_id=mirror_case_id, traces_to=traces_to)
-            )
+            ).append(record.to_evidence_entry(case_id=mirror_case_id, traces_to=traces_to))
 
     def all_records(self) -> list[LegibilityEvidenceRecord]:
         records: list[LegibilityEvidenceRecord] = []
-        for line in _read_retained_jsonl_lines(
-            self._path, keep_generations=self._keep_generations
-        ):
+        for line in _read_retained_jsonl_lines(self._path, keep_generations=self._keep_generations):
             line = line.strip()
             if not line:
                 continue

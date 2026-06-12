@@ -25,8 +25,9 @@ Three bootstrap modes, in increasing order of durability:
    - Each ``read_new()`` advance atomically persists the new cursor to
      the cursor file via tmp + rename.
    - Corrupt cursor files fall back to seek-to-end with a warning.
-   - File shrinkage (rotation or truncation) is detected and resets
-     the cursor to the new end-of-file.
+   - File shrinkage is detected and resets the cursor to the new
+     end-of-file. File identity changes reset the cursor to the start
+     of the replacement file.
    - If ``cursor_path`` is set, it takes precedence — ``start_at_end``
      is ignored, because cursor_path's bootstrap rule is strictly
      stronger (seek-to-end on first run, then persist thereafter).
@@ -52,6 +53,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 from shared.impingement import Impingement
@@ -161,7 +163,7 @@ class ImpingementConsumer:
             )
             return None, False
 
-    def _reconcile_source_identity(self, source_stat) -> None:
+    def _reconcile_source_identity(self, source_stat: os.stat_result) -> None:
         if self._cursor_path is None:
             return
         previous_identity, has_previous_identity = self._read_cursor_identity()
@@ -183,7 +185,7 @@ class ImpingementConsumer:
             self._cursor = 0
             self._write_cursor(self._cursor, source_stat=source_stat)
 
-    def _write_cursor(self, value: int, *, source_stat=None) -> None:
+    def _write_cursor(self, value: int, *, source_stat: os.stat_result | None = None) -> None:
         """Persist cursor atomically (tmp file + rename). No-op if unset."""
         if self._cursor_path is None:
             return

@@ -16,17 +16,20 @@ never enters this log.
 
 from __future__ import annotations
 
+import gzip
 import json
 import logging
 import os
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Literal
 
 log = logging.getLogger(__name__)
 
 AUDIT_LOG_PATH = Path("~/.cache/mail-monitor/api-calls.jsonl").expanduser()
+AUDIT_ARCHIVE_GLOB = "mail-monitor-api-calls.*.jsonl.gz"
 
 ApiMethod = Literal[
     "messages.get",
@@ -87,18 +90,32 @@ def audit_call(
             log.warning("audit log write failed: %s", exc)
 
 
+def _audit_archive_paths(path: Path) -> list[Path]:
+    archive_dir = path.parent / "archive"
+    return sorted(archive_dir.glob(AUDIT_ARCHIVE_GLOB))
+
+
+def _iter_audit_lines(path: Path) -> Iterator[str]:
+    for archive_path in _audit_archive_paths(path):
+        try:
+            with gzip.open(archive_path, "rt", encoding="utf-8") as fp:
+                yield from fp
+        except OSError as exc:
+            log.warning("audit archive read failed: %s (%s)", archive_path, exc)
+    if path.exists():
+        with path.open("r", encoding="utf-8") as fp:
+            yield from fp
+
+
 def read_audit_entries(path: Path = AUDIT_LOG_PATH) -> list[dict[str, Any]]:
-    """Read all audit entries (used by the weekly digest in mail-monitor-012)."""
-    if not path.exists():
-        return []
+    """Read active and rotated audit entries for the weekly digest."""
     entries: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as fp:
-        for line in fp:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError as exc:
-                log.warning("malformed audit line: %s (%s)", line[:80], exc)
+    for line in _iter_audit_lines(path):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            log.warning("malformed audit line: %s (%s)", line[:80], exc)
     return entries
