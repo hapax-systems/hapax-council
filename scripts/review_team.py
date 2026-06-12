@@ -51,12 +51,13 @@ REVIEWER_VERDICTS = frozenset({"accept", "accept-with-findings", "block", "inval
 GATE_KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_GATE_OFF"
 CHECKLIST_ITEM_RE = re.compile(r"^- \[ \] (?P<slug>[a-z0-9-]+):", re.MULTILINE)
 CHECKLIST_VALUES = frozenset({"pass", "finding", "na"})
+TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
 def gate_disabled() -> bool:
     """True when the operator killswitch disables the review-team gate."""
 
-    return os.environ.get(GATE_KILLSWITCH_ENV, "").strip() not in {"", "0"}
+    return os.environ.get(GATE_KILLSWITCH_ENV, "").strip().lower() in TRUTHY_ENV_VALUES
 
 
 def load_lens_registry(path: Path | None = None) -> dict[str, Any]:
@@ -499,7 +500,10 @@ def _dossier_validity_blockers(
     pr_head_sha: str | None,
     registry: Mapping[str, Any],
     frontmatter: Mapping[str, Any] | None = None,
+    expected_task_id: str | None = None,
+    pr_number: int | None = None,
     changed_files: Sequence[str] | None = None,
+    changed_file_count: int | None = None,
 ) -> tuple[str, ...]:
     blockers: list[str] = []
     scoped_files = (
@@ -507,6 +511,17 @@ def _dossier_validity_blockers(
         if changed_files is not None
         else None
     )
+
+    if expected_task_id is not None:
+        dossier_task_id = str(dossier.get("task_id") or "").strip()
+        if dossier_task_id != expected_task_id:
+            blockers.append(
+                f"review_dossier_task_id_mismatch:{dossier_task_id or 'missing'}!={expected_task_id}"
+            )
+    if pr_number is not None:
+        dossier_pr = _int_field(dossier.get("pr"), "pr", blockers)
+        if dossier_pr is not None and dossier_pr != pr_number:
+            blockers.append(f"review_dossier_pr_mismatch:{dossier_pr}!={pr_number}")
 
     dossier_sha = str(dossier.get("head_sha") or "")
     if not dossier_sha:
@@ -524,6 +539,10 @@ def _dossier_validity_blockers(
     if changed_files is not None:
         if not scoped_files:
             blockers.append("review_dossier_changed_files_unknown")
+        elif changed_file_count is not None and len(scoped_files) < changed_file_count:
+            blockers.append(
+                f"review_dossier_changed_files_truncated:{len(scoped_files)}/{changed_file_count}"
+            )
         else:
             expected_team_class = team_class_for(frontmatter or {}, scoped_files, registry)
             if team_class != expected_team_class:
@@ -541,6 +560,21 @@ def _dossier_validity_blockers(
     if not isinstance(reviews, list) or not all(isinstance(r, Mapping) for r in reviews):
         blockers.append("review_dossier_malformed:reviewers_not_a_list")
         return tuple(blockers)
+    roster = {entry["family"] for entry in registry["families"]}
+    unknown_reviewer_families = {str(r.get("family") or "missing") for r in reviews} - roster
+    if unknown_reviewer_families:
+        blockers.append(
+            "review_dossier_unknown_reviewer_family:" + ",".join(sorted(unknown_reviewer_families))
+        )
+    unknown_verdicts = {
+        str(r.get("verdict") or "missing").lower()
+        for r in reviews
+        if str(r.get("verdict") or "missing").lower() not in REVIEWER_VERDICTS
+    }
+    if unknown_verdicts:
+        blockers.append(
+            "review_dossier_unknown_reviewer_verdict:" + ",".join(sorted(unknown_verdicts))
+        )
 
     required_size = _required_team_size(sizing)
     if len(reviews) < required_size:
@@ -568,7 +602,6 @@ def _dossier_validity_blockers(
         blockers.extend(_review_checklist_blockers(review, lenses))
 
     accepts = _checklist_complete_accepts(reviews, lenses)
-    roster = {entry["family"] for entry in registry["families"]}
     unknown_accept_families = {str(r.get("family")) for r in accepts} - roster
     if unknown_accept_families:
         blockers.append(
@@ -619,7 +652,9 @@ def review_dossier_validity_blockers(
     note_path: Path,
     *,
     pr_head_sha: str | None = None,
+    pr_number: int | None = None,
     changed_files: Sequence[str] | None = None,
+    changed_file_count: int | None = None,
     registry: Mapping[str, Any] | None = None,
 ) -> tuple[str, ...]:
     """Validate a recorded review dossier without honoring any gate killswitch."""
@@ -648,7 +683,10 @@ def review_dossier_validity_blockers(
         pr_head_sha=pr_head_sha,
         registry=registry,
         frontmatter=frontmatter,
+        expected_task_id=task_id,
+        pr_number=pr_number,
         changed_files=changed_files,
+        changed_file_count=changed_file_count,
     )
 
 
@@ -657,7 +695,9 @@ def review_team_verdict_blockers(
     note_path: Path,
     *,
     pr_head_sha: str | None = None,
+    pr_number: int | None = None,
     changed_files: Sequence[str] | None = None,
+    changed_file_count: int | None = None,
     registry: Mapping[str, Any] | None = None,
 ) -> tuple[str, ...]:
     """Admission blockers from the review-team quorum gate (no quorum, no merge).
@@ -678,6 +718,8 @@ def review_team_verdict_blockers(
         frontmatter,
         note_path,
         pr_head_sha=pr_head_sha,
+        pr_number=pr_number,
         changed_files=changed_files,
+        changed_file_count=changed_file_count,
         registry=registry,
     )

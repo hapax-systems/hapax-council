@@ -580,6 +580,58 @@ class TestVerdictBlockers:
         )
         assert "review_dossier_changed_files_unknown" in blockers
 
+    def test_truncated_changed_file_scope_blocks(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._good_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            changed_files=("shared/foo.py",),
+            changed_file_count=2,
+        )
+        assert "review_dossier_changed_files_truncated:1/2" in blockers
+
+    def test_dossier_task_id_mismatch_blocks(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = self._good_dossier(rt)
+        dossier["task_id"] = "other-task"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
+        assert "review_dossier_task_id_mismatch:other-task!=task-x" in blockers
+
+    def test_dossier_pr_mismatch_blocks(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._good_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(), note, pr_head_sha="a" * 40, pr_number=100
+        )
+        assert "review_dossier_pr_mismatch:99!=100" in blockers
+
+    def test_unknown_reviewer_family_blocks_even_when_not_accepting(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("mystery-1", "mystery", "invalid-output"),
+            ],
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
+        assert "review_dossier_unknown_reviewer_family:mystery" in blockers
+
+    def test_unknown_reviewer_verdict_blocks(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = self._good_dossier(rt)
+        dossier["reviewers"][2]["verdict"] = "banana"
+        dossier["review_team_verdict"] = "quorum-accept"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
+        assert "review_dossier_unknown_reviewer_verdict:banana" in blockers
+
     def test_unregistered_accept_family_blocks_even_if_family_count_passes(
         self, tmp_path: Path
     ) -> None:
@@ -665,6 +717,14 @@ class TestVerdictBlockers:
         note.write_text("---\ntype: cc-task\ntask_id: task-x\n---\n", encoding="utf-8")
         blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
         assert blockers == ()
+
+    def test_killswitch_false_does_not_disable_gate(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setenv("HAPAX_REVIEW_TEAM_GATE_OFF", "false")
+        note = tmp_path / "task-x.md"
+        note.write_text("---\ntype: cc-task\ntask_id: task-x\n---\n", encoding="utf-8")
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
+        assert blockers == ("missing_review_dossier",)
 
     def test_missing_task_id_is_unkeyable_not_missing_dossier(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()

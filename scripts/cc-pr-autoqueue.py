@@ -183,6 +183,7 @@ class PullRequest:
     head_ref: str
     head_sha: str | None
     files: tuple[str, ...] | None
+    changed_files_count: int | None
     body: str
     is_draft: bool
     merge_state_status: str
@@ -426,12 +427,19 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
         if isinstance(files_payload, list)
         else None
     )
+    try:
+        changed_files_count = (
+            int(item["changedFiles"]) if item.get("changedFiles") is not None else None
+        )
+    except (TypeError, ValueError):
+        changed_files_count = None
     return PullRequest(
         number=number,
         node_id=_scalar(item.get("id")),
         title=_scalar(item.get("title")) or "",
         head_ref=_scalar(item.get("headRefName")) or "",
         files=files,
+        changed_files_count=changed_files_count,
         body=str(item.get("body") or ""),
         is_draft=bool(item.get("isDraft")),
         head_sha=_scalar(item.get("headRefOid")),
@@ -472,6 +480,7 @@ def fetch_open_prs(
                 "headRefName",
                 "headRefOid",
                 "files",
+                "changedFiles",
                 "isDraft",
                 "mergeStateStatus",
                 "labels",
@@ -656,6 +665,7 @@ def _task_blockers(
     allow_release_auto_arm: bool = False,
     pr_head_sha: str | None = None,
     changed_files: tuple[str, ...] | None = None,
+    changed_file_count: int | None = None,
 ) -> list[str]:
     blockers: list[str] = []
     if not task.authority_case:
@@ -680,7 +690,9 @@ def _task_blockers(
             task.frontmatter,
             task.path,
             pr_head_sha=pr_head_sha,
+            pr_number=open_pr_number,
             changed_files=changed_files or (),
+            changed_file_count=changed_file_count,
         )
     )
 
@@ -895,6 +907,7 @@ def classify_pr(
                 allow_release_auto_arm=len(matches) == 1,
                 pr_head_sha=pr.head_sha,
                 changed_files=pr.files,
+                changed_file_count=pr.changed_files_count,
             )
             if len(matches) == 1:
                 reasons.extend(blockers)

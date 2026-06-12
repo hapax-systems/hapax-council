@@ -162,6 +162,18 @@ class TestReviewTeamGate:
         assert decision.action == "blocked"
         assert "review_dossier_changed_files_unknown" in decision.reasons
 
+    def test_truncated_changed_file_scope_blocks(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", pr=42)
+        _write_review_dossier(vault, "task-a", head_sha="sha-42")
+        decision = self._classify(
+            vault,
+            _pr(42, files=["shared/foo.py"], changed_files_count=101),
+        )
+        assert decision.action == "blocked"
+        assert "review_dossier_changed_files_truncated:1/101" in decision.reasons
+
     def test_stale_dossier_blocks_after_push(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -328,6 +340,7 @@ def _pr(
     branch: str | None = None,
     title: str | None = None,
     files: list[str] | None = None,
+    changed_files_count: int | None = None,
     body: str = "",
     draft: bool = False,
     merge_state: str = "CLEAN",
@@ -344,6 +357,7 @@ def _pr(
         "body": body,
         "headRefName": branch or f"feat/{number}",
         "headRefOid": f"sha-{number}",
+        "changedFiles": len(file_list) if changed_files_count is None else changed_files_count,
         "files": [{"path": path} for path in file_list],
         "isDraft": draft,
         "mergeStateStatus": merge_state,
