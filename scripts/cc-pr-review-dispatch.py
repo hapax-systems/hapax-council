@@ -402,6 +402,10 @@ def default_reviewer_runner(seat: review_team.Seat, family_cfg: dict[str, Any], 
             proc.returncode,
             proc.stderr.strip()[:300],
         )
+        # real CLI quota walls arrive on STDERR with a nonzero exit (round-3
+        # review finding): surface stderr so the quota-wall classifier sees
+        # it — stdout alone would be empty and classify as invalid-output
+        return (proc.stdout + "\n" + proc.stderr).strip()
     return proc.stdout
 
 

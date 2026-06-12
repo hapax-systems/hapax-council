@@ -239,7 +239,11 @@ def constitute_team(
     else:
         size = int(sizing["team_size"])
         if out:
+            # t2/t3 keep their own sizing — the walled family simply is not
+            # seated; the markers still ride so synthesis/admission validate
+            # by the shrunken roster and the re-review obligation is recorded
             notes.extend(f"degraded_family_outage:{f}" for f in sorted(out))
+            notes.append("post_recovery_rereview_required")
     min_families = int(sizing.get("min_families", 1))
     if not available:
         raise ValueError("no reviewer families available")
@@ -472,9 +476,14 @@ def synthesize_dossier(
         for n in constitution_notes
         if str(n).startswith("degraded_family_outage:")
     )
-    if degraded_outage and any(str(n) == "degraded_to:t2_standard" for n in constitution_notes):
-        sizing = registry["sizing"]["t2_standard"]
+    if degraded_outage:
+        # roster shrinks for ANY outage-degraded class; the t1->t2 sizing
+        # swap applies only when the constitution actually degraded sizing
+        # (round-3 review finding: t2/t3 outage dossiers must not be judged
+        # by rules their class never had)
         roster = [f for f in roster if f not in degraded_outage]
+        if any(str(n) == "degraded_to:t2_standard" for n in constitution_notes):
+            sizing = registry["sizing"]["t2_standard"]
     accepts = _checklist_complete_accepts(reviews, lenses)
     accept_families = {str(r.get("family")) for r in accepts}
     block_reviews = [r for r in reviews if str(r.get("verdict", "")).lower() == "block"]
@@ -635,18 +644,26 @@ def _dossier_validity_blockers(
     _field_out = sorted(str(f) for f in (dossier.get("degraded_family_outage") or []))
     degraded_outage: list[str] = []
     if _note_out or _field_out:
+        # consistency: notes and fields agree + the re-review flag is set.
+        # The t1->t2 sizing marker is only demanded where the class actually
+        # degraded sizing — t2/t3 outage dossiers keep their own sizing
+        # (round-3 review finding: the first cut of this check sealed every
+        # t2/t3 review conducted during an outage).
+        sizing_degraded = "degraded_to:t2_standard" in _notes
         if (
             _note_out != _field_out
-            or "degraded_to:t2_standard" not in _notes
             or not dossier.get("post_recovery_rereview_required")
+            or (sizing_degraded and team_class != "t1_critical")
+            or (team_class == "t1_critical" and not sizing_degraded)
         ):
             blockers.append("review_dossier_degradation_flags_inconsistent")
             return tuple(blockers)
         degraded_outage = _note_out
-        sizing = (registry.get("sizing") or {}).get("t2_standard")
-        if not isinstance(sizing, Mapping):
-            blockers.append("review_dossier_malformed:no_t2_sizing_for_degradation")
-            return tuple(blockers)
+        if sizing_degraded:
+            sizing = (registry.get("sizing") or {}).get("t2_standard")
+            if not isinstance(sizing, Mapping):
+                blockers.append("review_dossier_malformed:no_t2_sizing_for_degradation")
+                return tuple(blockers)
     if changed_files is not None:
         if not scoped_files:
             blockers.append("review_dossier_changed_files_unknown")

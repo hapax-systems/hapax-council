@@ -1085,3 +1085,20 @@ class TestFamilyOutageDegradation:
         assert len(entries) == 1
         assert entries[0]["pr"] == 42
         assert entries[0]["degraded_family_outage"] == ["claude"]
+
+    def test_wall_on_stderr_classifies(self) -> None:
+        """Round-3 finding: real CLI walls arrive on STDERR with rc!=0 — the
+        runner must surface them to the classifier."""
+
+        family_cfg = {
+            "family": "claude",
+            "reviewer_command": [
+                "bash",
+                "-c",
+                'echo "You\'ve hit your weekly limit · resets 5pm (America/Chicago)" >&2; exit 1',
+            ],
+            "timeout_seconds": 30,
+        }
+        seat = dispatch.review_team.Seat(id="claude-1", family="claude")
+        reply = dispatch.default_reviewer_runner(seat, family_cfg, "prompt")
+        assert dispatch.review_team.is_quota_wall(reply)

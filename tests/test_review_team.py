@@ -999,6 +999,65 @@ class TestFamilyOutageDegradation:
         )
         assert any(b.startswith("review_dossier_degraded_family_was_seated:") for b in blockers)
 
+    # --- round 3: t2/t3 during an outage keep their OWN rules (the first
+    # consistency cut sealed every non-t1 review conducted under an outage) ---
+
+    def test_t2_constitution_under_outage_marks_without_sizing_swap(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        team = rt.constitute_team(
+            "t2_standard", "codex", reg, pr_number=9, outage_families=frozenset({"claude"})
+        )
+        assert "claude" not in {s.family for s in team.seats}
+        assert "degraded_family_outage:claude" in team.notes
+        assert "post_recovery_rereview_required" in team.notes
+        assert "degraded_to:t2_standard" not in team.notes
+        assert team.quorum_required == int(reg["sizing"]["t2_standard"]["quorum_accept"])
+
+    def test_t2_outage_dossier_passes_admission_validation(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        notes = ("degraded_family_outage:claude", "post_recovery_rereview_required")
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("gemini-2", "gemini", "accept"),
+            ],
+            team_class="t2_standard",
+            constitution_notes=notes,
+        )
+        assert dossier["review_team_verdict"] == rt.QUORUM_ACCEPT
+        assert dossier["degraded_family_outage"] == ["claude"]
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(), note, pr_head_sha="a" * 40
+        )
+        assert blockers == (), f"t2 outage dossier must admit by its own rules, got: {blockers}"
+
+    def test_t1_marker_on_a_t2_dossier_is_inconsistent(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_outage:claude",
+            "degraded_to:t2_standard",  # forged: a t2 class never swaps sizing
+            "post_recovery_rereview_required",
+        )
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("gemini-2", "gemini", "accept"),
+            ],
+            team_class="t2_standard",
+            constitution_notes=notes,
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(), note, pr_head_sha="a" * 40
+        )
+        assert "review_dossier_degradation_flags_inconsistent" in blockers
+
     @staticmethod
     def _tfb_frontmatter(task_id: str = "task-x") -> dict:
         return {"task_id": task_id}
