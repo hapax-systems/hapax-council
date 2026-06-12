@@ -546,7 +546,11 @@ def test_coord_deploy_helper_fetches_writes_sha_and_is_idempotent(tmp_path):
     fakebin.mkdir()
     systemctl = fakebin / "systemctl"
     systemctl.write_text(
-        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "${HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG:?}"\n'
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "${HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG:?}"\n'
+        'if [ "${HAPAX_COORD_DEPLOY_FAIL_RESTART:-}" = "1" ]; then\n'
+        "  exit 42\n"
+        "fi\n"
     )
     systemctl.chmod(0o755)
 
@@ -575,10 +579,27 @@ def test_coord_deploy_helper_fetches_writes_sha_and_is_idempotent(tmp_path):
 
     second_sha = _deploy_fixture_commit(source, "second")
     _cmd(["git", "-C", str(source), "push", "origin", "main"])
+    failed = subprocess.run(
+        [str(_DEPLOY_SCRIPT)],
+        env={**env, "HAPAX_COORD_DEPLOY_FAIL_RESTART": "1"},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert failed.returncode == 42
+    assert (worktree / ".deployed-sha").read_text().strip() == first_sha
+    assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == second_sha
+    assert restart_log.read_text().splitlines() == [
+        "--user restart hapax-coord.service",
+        "--user restart hapax-coord.service",
+    ]
+
     _cmd([str(_DEPLOY_SCRIPT)], env=env)
     assert (worktree / ".deployed-sha").read_text().strip() == second_sha
     assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == second_sha
     assert restart_log.read_text().splitlines() == [
+        "--user restart hapax-coord.service",
         "--user restart hapax-coord.service",
         "--user restart hapax-coord.service",
     ]

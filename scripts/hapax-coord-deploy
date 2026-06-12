@@ -8,7 +8,7 @@ ACT_ROOT="${HAPAX_COORD_DEPLOY_ACT_ROOT:-$HOME/.cache/hapax/coord-activation}"
 WT="$ACT_ROOT/worktree"
 
 if [ "${1:-}" = "--contract-json" ]; then
-    printf '{"schema":1,"source_repo":"%s","activation_worktree":"%s","target_ref":"origin/main","writes_deployed_sha":true,"restarts_service":"hapax-coord.service"}\n' "$REPO" "$WT"
+    printf '{"schema":1,"source_repo":"%s","activation_worktree":"%s","target_ref":"origin/main","writes_deployed_sha":true,"writes_deployed_sha_after_restart":true,"restarts_service":"hapax-coord.service"}\n' "$REPO" "$WT"
     exit 0
 fi
 
@@ -28,6 +28,8 @@ if [ "$CURRENT_SHA" = "$TARGET_SHA" ] && [ "$DEPLOYED_SHA" = "$TARGET_SHA" ]; th
 fi
 
 git -C "$WT" checkout --detach --force "$TARGET_SHA" --quiet
-printf '%s\n' "$TARGET_SHA" > "$WT/.deployed-sha"
-echo "coord-deploy: activated $TARGET_SHA; restarting hapax-coord"
+echo "coord-deploy: checked out $TARGET_SHA; restarting hapax-coord"
 systemctl --user restart hapax-coord.service
+printf '%s\n' "$TARGET_SHA" > "$WT/.deployed-sha.tmp"
+mv "$WT/.deployed-sha.tmp" "$WT/.deployed-sha"
+echo "coord-deploy: activated $TARGET_SHA"

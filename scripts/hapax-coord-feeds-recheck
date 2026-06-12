@@ -25,7 +25,8 @@ Checks, each named in the output, each FAIL carrying a next action:
                          from the activation root and exposes its deploy contract
   * coord-deploy-exercise — the tracked deploy helper is exercised against a
                          temporary git origin/worktree with fake systemctl,
-                         proving checkout, .deployed-sha, idempotence, restart
+                         proving checkout, post-restart .deployed-sha,
+                         idempotence, failed-restart retry, restart
   * feed-fresh:*       — every feed younger than 3x its timer cadence
   * vocab-parity       — observed stages map onto REAL ladder tokens (a token
                          outside SDLC_LADDER.stages counts as unknown);
@@ -675,7 +676,11 @@ def _exercise_coord_deploy_helper() -> str:
         fakebin.mkdir()
         systemctl = fakebin / "systemctl"
         systemctl.write_text(
-            '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "${HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG:?}"\n'
+            "#!/usr/bin/env bash\n"
+            'printf "%s\\n" "$*" >> "${HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG:?}"\n'
+            'if [ "${HAPAX_COORD_DEPLOY_FAIL_RESTART:-}" = "1" ]; then\n'
+            "  exit 42\n"
+            "fi\n"
         )
         systemctl.chmod(0o755)
 
@@ -713,6 +718,30 @@ def _exercise_coord_deploy_helper() -> str:
 
         second_sha = _write_deploy_fixture_commit(source, "second")
         _run_cmd(["git", "-C", str(source), "push", "origin", "main"])
+        failed = subprocess.run(
+            [str(COORD_DEPLOY_SCRIPT)],
+            env={**env, "HAPAX_COORD_DEPLOY_FAIL_RESTART": "1"},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        if failed.returncode == 0:
+            raise RuntimeError("deploy helper succeeded even though fake restart failed")
+        deployed = (worktree / ".deployed-sha").read_text().strip()
+        head = _run_cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"])
+        if deployed != first_sha or head != second_sha:
+            raise RuntimeError(
+                f"failed restart promoted receipt incorrectly deployed={deployed[:9]} "
+                f"head={head[:9]} first={first_sha[:9]} second={second_sha[:9]}"
+            )
+        restarts = restart_log.read_text().splitlines()
+        if restarts != [
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+        ]:
+            raise RuntimeError(f"failed deploy restart log mismatch: {restarts}")
+
         _run_cmd([str(COORD_DEPLOY_SCRIPT)], env=env)
         deployed = (worktree / ".deployed-sha").read_text().strip()
         head = _run_cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"])
@@ -725,12 +754,14 @@ def _exercise_coord_deploy_helper() -> str:
         if restarts != [
             "--user restart hapax-coord.service",
             "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
         ]:
             raise RuntimeError(f"second deploy restart log mismatch: {restarts}")
 
     return (
-        f"first={first_sha[:9]} second={second_sha[:9]} wrote .deployed-sha, "
-        "advanced worktree, skipped idempotent restart, restarted on change"
+        f"first={first_sha[:9]} second={second_sha[:9]} wrote .deployed-sha after restart, "
+        "advanced worktree, skipped idempotent restart, kept old receipt on failed restart, "
+        "retried restart on change"
     )
 
 
@@ -1267,6 +1298,7 @@ def run_checks(
                     "activation_worktree": str(COORD_ACTIVATION),
                     "target_ref": "origin/main",
                     "writes_deployed_sha": True,
+                    "writes_deployed_sha_after_restart": True,
                     "restarts_service": COORD_SERVICE,
                 }
                 mismatches = {
