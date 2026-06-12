@@ -5,6 +5,7 @@ All I/O is mocked. No real HTTP requests or subprocess calls.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from shared.notify import (
@@ -54,6 +55,28 @@ class TestSendDesktop:
         cmd = mock_run.call_args[0][0]
         assert "--urgency=critical" in cmd
 
+    @patch("shared.notify._run_subprocess")
+    def test_replace_id_coalesces_desktop_notification(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+
+        _send_desktop("T", "M", priority="urgent", replace_id=12345)
+        cmd = mock_run.call_args[0][0]
+        assert cmd[:8] == [
+            "gdbus",
+            "call",
+            "--session",
+            "--dest",
+            "org.freedesktop.Notifications",
+            "--object-path",
+            "/org/freedesktop/Notifications",
+            "--method",
+        ]
+        assert "org.freedesktop.Notifications.Notify" in cmd
+        assert "12345" in cmd
+        assert "T" in cmd
+        assert "M" in cmd
+        assert '{"urgency": <byte 2>, "desktop-entry": <"org.hapax.system">}' in cmd
+
     @patch("shared.notify._run_subprocess", side_effect=FileNotFoundError)
     def test_no_notify_send(self, mock_run):
         result = _send_desktop("T", "M")
@@ -88,6 +111,48 @@ class TestSendNotification:
     def test_passes_priority(self, mock_desktop, _dedup, _watershed, _logos):
         send_notification("T", "M", priority="urgent", tags=["skull"])
         mock_desktop.assert_called_once_with("T", "M", priority="urgent")
+
+    @patch("shared.notify._dismiss_existing_intake_notifications")
+    @patch("shared.p0_incident_intake.record_notification")
+    @patch("shared.notify._send_desktop", return_value=True)
+    def test_technical_alert_records_p0_intake_and_replace_id(
+        self,
+        mock_desktop,
+        mock_record,
+        mock_dismiss,
+        _dedup,
+        _watershed,
+        _logos,
+    ):
+        mock_record.return_value = SimpleNamespace(
+            technical=True,
+            task_id="p0-incident-stack-failed-abc123",
+            replace_id=456,
+            click_url="obsidian://open?vault=Personal&file=20-projects/example",
+        )
+
+        result = send_notification(
+            "Stack Failed",
+            "1 check failed",
+            priority="high",
+            tags=["rotating_light"],
+        )
+
+        assert result is True
+        mock_record.assert_called_once_with(
+            "Stack Failed",
+            "1 check failed",
+            priority="high",
+            tags=["rotating_light"],
+            technical=None,
+        )
+        mock_desktop.assert_called_once_with(
+            "Stack Failed",
+            "1 check failed\nSDLC intake: p0-incident-stack-failed-abc123",
+            priority="high",
+            replace_id=456,
+        )
+        mock_dismiss.assert_called_once_with("p0-incident-stack-failed-abc123")
 
 
 # ── send_webhook tests ───────────────────────────────────────────────────────

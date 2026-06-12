@@ -168,6 +168,14 @@ _DESKTOP_URGENCY = {
     "urgent": "critical",
 }
 
+_DESKTOP_URGENCY_BYTE = {
+    "min": 0,
+    "low": 0,
+    "default": 1,
+    "high": 2,
+    "urgent": 2,
+}
+
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
@@ -181,6 +189,7 @@ def send_notification(
     topic: str | None = None,
     click_url: str | None = None,
     consent_label: ConsentLabel | None = None,
+    technical: bool | None = None,
 ) -> bool:
     """Send a desktop notification via notify-send (KDE Plasma native D-Bus)."""
     try:
@@ -203,6 +212,20 @@ def send_notification(
         _log.info("Notification suppressed: consent label non-public (%s)", title)
         return True
 
+    replace_id: int | None = None
+    intake_task_id: str | None = None
+    intake = _record_p0_incident_intake(
+        title,
+        message,
+        priority=priority,
+        tags=tags,
+        technical=technical,
+    )
+    if intake is not None and intake.technical and intake.task_id is not None:
+        message = _with_sdlc_intake_marker(message, intake.task_id)
+        intake_task_id = intake.task_id
+        replace_id = intake.replace_id
+
     if _is_duplicate(title, message):
         _log.debug("Suppressed duplicate notification: %s", title)
         return True
@@ -215,7 +238,12 @@ def send_notification(
         return True
 
     try:
-        delivered = _send_desktop(title, message, priority=priority)
+        if intake_task_id is not None:
+            _dismiss_existing_intake_notifications(intake_task_id)
+        if replace_id is None:
+            delivered = _send_desktop(title, message, priority=priority)
+        else:
+            delivered = _send_desktop(title, message, priority=priority, replace_id=replace_id)
     except Exception as exc:
         _log.debug("notify-send failed: %s", exc)
         delivered = False
@@ -326,6 +354,7 @@ def send_enriched_notification(
     tags: list[str] | None = None,
     topic: str | None = None,
     click_url: str | None = None,
+    technical: bool | None = None,
 ) -> bool:
     """Enrich a raw diagnostic message via LLM, then send as desktop notification."""
     enriched = _enrich_message(title, raw_context)
@@ -336,21 +365,125 @@ def send_enriched_notification(
         tags=tags,
         topic=topic,
         click_url=click_url,
+        technical=technical,
     )
 
 
 # ── Private helpers ──────────────────────────────────────────────────────────
 
 
-def _send_desktop(title: str, message: str, *, priority: str = "default") -> bool:
+def _record_p0_incident_intake(
+    title: str,
+    message: str,
+    *,
+    priority: str,
+    tags: list[str] | None,
+    technical: bool | None,
+):
+    try:
+        from shared.p0_incident_intake import record_notification
+
+        return record_notification(
+            title,
+            message,
+            priority=priority,
+            tags=tags,
+            technical=technical,
+        )
+    except Exception:
+        _log.debug("notify: p0 incident intake failed", exc_info=True)
+        return None
+
+
+def _with_sdlc_intake_marker(message: str, task_id: str) -> str:
+    marker = f"SDLC intake: {task_id}"
+    if marker in message:
+        return message
+    return f"{message.rstrip()}\n{marker}" if message.strip() else marker
+
+
+def _dismiss_existing_intake_notifications(task_id: str) -> None:
+    marker = f"SDLC intake: {task_id}"
+    try:
+        result = _run_subprocess(
+            ["makoctl", "list", "-j"],
+            timeout=2,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return
+        notifications = _json.loads(result.stdout or "[]")
+        if not isinstance(notifications, list):
+            return
+        for notification in notifications:
+            if not isinstance(notification, dict):
+                continue
+            body = str(notification.get("body") or "")
+            notification_id = notification.get("id")
+            if marker not in body or notification_id is None:
+                continue
+            _run_subprocess(
+                ["makoctl", "dismiss", "--no-history", "-n", str(notification_id)],
+                timeout=2,
+                capture_output=True,
+            )
+    except Exception:
+        _log.debug("notify: failed to dismiss existing intake notifications", exc_info=True)
+
+
+def _send_desktop(
+    title: str,
+    message: str,
+    *,
+    priority: str = "default",
+    replace_id: int | None = None,
+) -> bool:
     """Send notification via notify-send (KDE Plasma native D-Bus)."""
+    if replace_id is not None:
+        return _send_desktop_gdbus(title, message, priority=priority, replace_id=replace_id)
+
     urgency = _DESKTOP_URGENCY.get(priority, "normal")
     cmd = [
         "notify-send",
         f"--urgency={urgency}",
         "--app-name=LLM Stack",
+    ]
+    cmd.extend([title, message])
+    try:
+        result = _run_subprocess(cmd, timeout=5, capture_output=True)
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+
+
+def _send_desktop_gdbus(
+    title: str,
+    message: str,
+    *,
+    priority: str,
+    replace_id: int,
+) -> bool:
+    """Send coalesced notification with an explicit D-Bus replaces_id."""
+    urgency_byte = _DESKTOP_URGENCY_BYTE.get(priority, 1)
+    cmd = [
+        "gdbus",
+        "call",
+        "--session",
+        "--dest",
+        "org.freedesktop.Notifications",
+        "--object-path",
+        "/org/freedesktop/Notifications",
+        "--method",
+        "org.freedesktop.Notifications.Notify",
+        "LLM Stack",
+        str(replace_id),
+        "dialog-error" if urgency_byte == 2 else "",
         title,
         message,
+        "[]",
+        f'{{"urgency": <byte {urgency_byte}>, "desktop-entry": <"org.hapax.system">}}',
+        "0",
     ]
     try:
         result = _run_subprocess(cmd, timeout=5, capture_output=True)

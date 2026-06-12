@@ -195,6 +195,16 @@ notify() {
       -d "$body" "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 \
       || log "notify: ntfy POST to $NTFY_URL/$NTFY_TOPIC failed"
   fi
+  if [ -x "$REPO_DIR/scripts/hapax-p0-incident-intake" ]; then
+    "$REPO_DIR/scripts/hapax-p0-incident-intake" notification \
+      --title "$title" \
+      --message "$body" \
+      --priority urgent \
+      --tag skull \
+      --technical >/dev/null 2>&1 \
+      && return 0
+    log "notify: p0 incident intake failed"
+  fi
   if command -v notify-send >/dev/null 2>&1; then
     notify-send -u critical "$title" "$body" >/dev/null 2>&1 || true
   fi
