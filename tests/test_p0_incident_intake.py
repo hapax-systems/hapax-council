@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+import textwrap
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from shared.p0_incident_intake import (
     DEFAULT_AUTHORITY_CASE,
@@ -10,6 +15,14 @@ from shared.p0_incident_intake import (
     record_notification,
     replace_id_for_fingerprint,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+INTAKE_SCRIPT = REPO_ROOT / "scripts" / "hapax-p0-incident-intake"
+
+
+def _write_fake_bin(path: Path, body: str) -> None:
+    path.write_text(textwrap.dedent(body).lstrip(), encoding="utf-8")
+    path.chmod(0o755)
 
 
 def test_service_failure_creates_governed_p0_task(tmp_path):
@@ -142,3 +155,106 @@ def test_lane_supervisor_alert_gets_stable_operational_fingerprint():
     assert classification.technical is True
     assert classification.kind == "lane_supervisor_alert"
     assert classification.fingerprint == "lane_supervisor_alert:launcher_lifetime:zeta"
+
+
+def test_service_failed_cli_records_incident_and_sends_bounded_pointer(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    notify_log = tmp_path / "notify.log"
+    _write_fake_bin(
+        fake_bin / "gdbus",
+        """
+        #!/usr/bin/env bash
+        printf '%s\n' "$@" >> "$HAPAX_NOTIFY_CAPTURE"
+        """,
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(tmp_path / "home"),
+            "PATH": f"{fake_bin}:{env['PATH']}",
+            "HAPAX_NOTIFY_CAPTURE": str(notify_log),
+        }
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(INTAKE_SCRIPT),
+            "service-failed",
+            "--task-root",
+            str(tmp_path / "tasks"),
+            "--state-path",
+            str(tmp_path / "state.json"),
+            "--ledger-path",
+            str(tmp_path / "events.jsonl"),
+            "demo.service",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "created p0-incident-systemd-service-failed-demo-service" in result.stdout
+    assert list((tmp_path / "tasks" / "active").glob("p0-incident-*.md"))
+    assert (tmp_path / "state.json").is_file()
+    assert (tmp_path / "events.jsonl").is_file()
+    notify_text = notify_log.read_text(encoding="utf-8")
+    assert "org.freedesktop.Notifications.Notify" in notify_text
+    assert "SDLC intake: p0-incident-systemd-service-failed-demo-service" in notify_text
+    assert "journalctl --user -u demo.service" in notify_text
+
+
+def test_service_failed_cli_falls_back_to_desktop_when_recording_fails(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    notify_log = tmp_path / "notify.log"
+    _write_fake_bin(
+        fake_bin / "notify-send",
+        """
+        #!/usr/bin/env bash
+        printf '%s\n' "$@" >> "$HAPAX_NOTIFY_CAPTURE"
+        """,
+    )
+    task_root_file = tmp_path / "task-root-is-file"
+    task_root_file.write_text("not a directory", encoding="utf-8")
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(tmp_path / "home"),
+            "PATH": f"{fake_bin}:{env['PATH']}",
+            "HAPAX_NOTIFY_CAPTURE": str(notify_log),
+        }
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(INTAKE_SCRIPT),
+            "service-failed",
+            "--task-root",
+            str(task_root_file),
+            "--state-path",
+            str(tmp_path / "state.json"),
+            "--ledger-path",
+            str(tmp_path / "events.jsonl"),
+            "demo.service",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "p0 incident intake failed:" in result.stderr
+    assert "Next action: inspect P0 intake storage" in result.stderr
+    assert "task_root=" in result.stderr
+    notify_text = notify_log.read_text(encoding="utf-8")
+    assert "--urgency=critical" in notify_text
+    assert "P0 intake failed: Service Failed: demo.service" in notify_text
+    assert "SDLC intake failed before task creation" in notify_text

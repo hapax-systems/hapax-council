@@ -203,7 +203,7 @@ notify() {
       --tag skull \
       --technical >/dev/null 2>&1 \
       && return 0
-    log "notify: p0 incident intake failed"
+    log "notify: p0 incident intake failed; next action: inspect ~/.cache/hapax/p0-incident-intake/state.json and events.jsonl, then rerun $REPO_DIR/scripts/hapax-p0-incident-intake notification with this title/body"
   fi
   if command -v notify-send >/dev/null 2>&1; then
     notify-send -u critical "$title" "$body" >/dev/null 2>&1 || true

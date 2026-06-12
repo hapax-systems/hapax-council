@@ -78,16 +78,43 @@ def _notify_gdbus(
 
 
 def _record(args: argparse.Namespace, *, title: str, message: str, technical: bool) -> int:
-    result = record_notification(
-        title,
-        message,
-        priority=args.priority,
-        tags=args.tag,
-        technical=technical,
-        task_root=args.task_root,
-        state_path=args.state_path,
-        ledger_path=args.ledger_path,
-    )
+    try:
+        result = record_notification(
+            title,
+            message,
+            priority=args.priority,
+            tags=args.tag,
+            technical=technical,
+            task_root=args.task_root,
+            state_path=args.state_path,
+            ledger_path=args.ledger_path,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI boundary must fail visibly.
+        print(
+            f"p0 incident intake failed: {type(exc).__name__}: {_clip_for_operator(str(exc))}",
+            file=sys.stderr,
+        )
+        print(_failure_next_action(args), file=sys.stderr)
+        if not args.no_desktop:
+            body = "\n".join(
+                (
+                    "SDLC intake failed before task creation; this is a raw fallback notification.",
+                    message,
+                    f"Error: {type(exc).__name__}: {_clip_for_operator(str(exc), 500)}",
+                    f"State: {args.state_path}",
+                    f"Ledger: {args.ledger_path}",
+                    "Next: repair intake storage and rerun hapax-p0-incident-intake with the same alert payload.",
+                )
+            )
+            sent = _notify_send(
+                f"P0 intake failed: {title}",
+                body,
+                priority=args.priority,
+                replace_id=None,
+            )
+            if not sent:
+                print("fallback desktop notification failed", file=sys.stderr)
+        return 1
     if not result.technical:
         print(f"not technical incident: {result.reason}", file=sys.stderr)
         return 0
@@ -110,6 +137,27 @@ def _record(args: argparse.Namespace, *, title: str, message: str, technical: bo
     )
     _notify_send(title, body, priority=args.priority, replace_id=result.replace_id)
     return 0
+
+
+def _clip_for_operator(text: str, limit: int = 240) -> str:
+    text = " ".join(text.strip().split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "..."
+
+
+def _failure_next_action(args: argparse.Namespace) -> str:
+    paths = (
+        f"task_root={args.task_root}",
+        f"state_path={args.state_path}",
+        f"ledger_path={args.ledger_path}",
+    )
+    return (
+        "Next action: inspect P0 intake storage "
+        + ", ".join(paths)
+        + "; fix writability/corruption, then rerun this hapax-p0-incident-intake "
+        "subcommand with the same alert payload."
+    )
 
 
 def _dismiss_existing_intake_notifications(task_id: str | None) -> None:
