@@ -271,7 +271,7 @@ def extract_review(reply: str) -> dict[str, Any] | None:
         findings: list[dict[str, Any]] = []
         for finding in loaded.get("findings") or []:
             if isinstance(finding, dict):
-                finding.setdefault("resolved", False)
+                finding["resolved"] = False
                 findings.append(finding)
         checklist = loaded.get("checklist")
         return {
@@ -698,7 +698,7 @@ def review_pr(
             LOG.warning("task note %s has no task_id — cannot key a dossier", note_path.name)
             return {"status": "no_task", "pr": pr_number}
         keyed_matches.append((note_path, frontmatter, task_id))
-    note_path, frontmatter, task_id = keyed_matches[0]
+    _, primary_frontmatter, primary_task_id = keyed_matches[0]
 
     if not force:
         fresh_results: list[dict[str, Any]] = []
@@ -722,6 +722,33 @@ def review_pr(
                 registry=registry,
             )
             if blockers:
+                if str(existing.get("review_team_verdict") or "").lower() == "blocked":
+                    side_effects = {}
+                    if apply:
+                        side_effects = replay_dossier_side_effects(
+                            target_frontmatter,
+                            target_note_path,
+                            target_task_id,
+                            existing,
+                            repo=repo,
+                            now_iso=now_iso,
+                            registry=registry,
+                            wake_dir=wake_dir,
+                            send_runner=send_runner,
+                            pr_number=pr_info.number,
+                            changed_files=pr_info.files,
+                            changed_file_count=pr_info.changed_file_count,
+                        )
+                    fresh_results.append(
+                        {
+                            "task_id": target_task_id,
+                            "dossier_path": str(target_dossier_path),
+                            "review_team_verdict": existing.get("review_team_verdict"),
+                            "blocked_reasons": list(blockers),
+                            "side_effects": side_effects,
+                        }
+                    )
+                    continue
                 fresh_blockers.append(f"{target_task_id}:{','.join(blockers)}")
                 break
             side_effects = {}
@@ -749,16 +776,21 @@ def review_pr(
                 }
             )
         if len(fresh_results) == len(keyed_matches):
+            has_blocked = any(item.get("blocked_reasons") for item in fresh_results)
             if len(fresh_results) == 1:
                 only = fresh_results[0]
                 return {
-                    "status": "skipped_fresh",
+                    "status": "skipped_blocked" if has_blocked else "skipped_fresh",
                     "pr": pr_number,
                     "dossier_path": only["dossier_path"],
                     "review_team_verdict": only["review_team_verdict"],
                     "side_effects": only["side_effects"],
                 }
-            return {"status": "multi_skipped_fresh", "pr": pr_number, "results": fresh_results}
+            return {
+                "status": "multi_skipped_blocked" if has_blocked else "multi_skipped_fresh",
+                "pr": pr_number,
+                "results": fresh_results,
+            }
         if fresh_blockers:
             LOG.info(
                 "current-head dossier set is not admissible; re-reviewing PR #%d: %s",
@@ -771,14 +803,16 @@ def review_pr(
         [review_team.team_class_for(fm, pr_info.files, registry) for _, fm, _ in keyed_matches]
     )
     writer_family = review_team.writer_family_for_lane(
-        str(frontmatter.get("assigned_to") or ""), registry
+        str(primary_frontmatter.get("assigned_to") or ""), registry
     )
     constitution = review_team.constitute_team(
         team_class, writer_family, registry, pr_number=pr_number
     )
     plan = {
         "pr": pr_number,
-        "task_id": task_id if len(keyed_matches) == 1 else [item[2] for item in keyed_matches],
+        "task_id": (
+            primary_task_id if len(keyed_matches) == 1 else [item[2] for item in keyed_matches]
+        ),
         "head_sha": pr_info.head_sha,
         "team_class": team_class,
         "quorum_required": constitution.quorum_required,

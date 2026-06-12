@@ -321,7 +321,7 @@ def _synth(rt, reviews: list[dict], *, team_class: str = "t2_standard") -> dict:
 
 
 class TestSynthesizeDossier:
-    def test_two_of_three_accepts_is_quorum_accept(self) -> None:
+    def test_reviewer_supplied_resolved_critical_blocks(self) -> None:
         rt = _load_review_team_module()
         dossier = _synth(
             rt,
@@ -331,7 +331,7 @@ class TestSynthesizeDossier:
                 _review("claude-1", "claude", "block", [_critical(resolved=True)]),
             ],
         )
-        assert dossier["review_team_verdict"] == "quorum-accept"
+        assert dossier["review_team_verdict"] == "blocked"
         assert dossier["accept_count"] == 2
         assert dossier["dossier_schema"] == 1
 
@@ -739,6 +739,21 @@ class TestVerdictBlockers:
             ],
         )
         dossier["review_team_verdict"] = "quorum-accept"  # tampered/buggy field
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
+        assert "review_dossier_unresolved_critical:1" in blockers
+
+    def test_reviewer_supplied_resolved_true_critical_still_blocks(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "block", [_critical(resolved=True)]),
+            ],
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
         note = _write_dossier(tmp_path, "task-x", dossier)
         blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
         assert "review_dossier_unresolved_critical:1" in blockers

@@ -327,9 +327,7 @@ def _unresolved_criticals(reviews: Sequence[Mapping[str, Any]]) -> list[tuple[st
         for finding in review.get("findings") or []:
             if not isinstance(finding, Mapping):
                 continue
-            if str(finding.get("severity", "")).lower() == "critical" and not finding.get(
-                "resolved"
-            ):
+            if str(finding.get("severity", "")).lower() == "critical":
                 out.append((str(review.get("id")), dict(finding)))
     return out
 

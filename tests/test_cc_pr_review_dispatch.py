@@ -326,6 +326,24 @@ class TestApply:
         # 2 valid accepts remain -> still quorum for t2
         assert dossier["review_team_verdict"] == "quorum-accept"
 
+    def test_reviewer_cannot_self_resolve_findings(self) -> None:
+        parsed = dispatch.extract_review(
+            """```yaml
+verdict: block
+findings:
+  - severity: critical
+    lens: sdlc-gate-compose
+    file: scripts/review_team.py
+    line: 1
+    title: critical
+    detail: bad
+    resolved: true
+checklist: {}
+```"""
+        )
+        assert parsed is not None
+        assert parsed["findings"][0]["resolved"] is False
+
     def test_diff_is_truncated(self, tmp_path: Path) -> None:
         gh = FakeGh()
         gh.diff = (
@@ -361,7 +379,7 @@ class TestApply:
         assert result2["status"] == "skipped_fresh"
         assert reviewers2.invocations == []
 
-    def test_same_head_blocked_dossier_re_reviews_without_force(self, tmp_path: Path) -> None:
+    def test_same_head_blocked_dossier_skips_without_force(self, tmp_path: Path) -> None:
         first_reviewers = RecordingReviewers(replies={"claude": BLOCK_REPLY})
         first, _, _, note = _review(tmp_path, reviewers=first_reviewers)
         assert first["dossier"]["review_team_verdict"] == "blocked"
@@ -379,9 +397,9 @@ class TestApply:
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T22:00:00+00:00",
         )
-        assert second["status"] == "dispatched"
-        assert second["dossier"]["review_team_verdict"] == "quorum-accept"
-        assert second_reviewers.invocations
+        assert second["status"] == "skipped_blocked"
+        assert second["review_team_verdict"] == "blocked"
+        assert second_reviewers.invocations == []
 
     def test_multi_task_pr_writes_each_task_dossier(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
