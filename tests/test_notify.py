@@ -61,7 +61,7 @@ class TestSendDesktop:
     def test_replace_id_coalesces_desktop_notification(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0)
 
-        _send_desktop("T", "M", priority="urgent", replace_id=12345)
+        _send_desktop('T "quoted"', "M\nnext", priority="urgent", replace_id=12345)
         cmd = mock_run.call_args[0][0]
         assert cmd[:8] == [
             "gdbus",
@@ -75,8 +75,10 @@ class TestSendDesktop:
         ]
         assert "org.freedesktop.Notifications.Notify" in cmd
         assert "12345" in cmd
-        assert "T" in cmd
-        assert "M" in cmd
+        assert json.loads(cmd[9]) == "LLM Stack"
+        assert json.loads(cmd[11]) == "dialog-error"
+        assert json.loads(cmd[12]) == 'T "quoted"'
+        assert json.loads(cmd[13]) == "M\nnext"
         assert '{"urgency": <byte 2>, "desktop-entry": <"org.hapax.system">}' in cmd
 
     @patch("shared.notify._run_subprocess", side_effect=FileNotFoundError)

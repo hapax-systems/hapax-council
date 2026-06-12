@@ -8,11 +8,14 @@ same task and an incident JSONL ledger.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import re
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -131,6 +134,32 @@ def record_notification(
     if not classification.technical:
         return IntakeResult(technical=False, reason=classification.reason)
 
+    with _state_file_lock(state_path):
+        return _record_notification_locked(
+            title,
+            message,
+            priority=priority,
+            tags=tags,
+            task_root=task_root,
+            state_path=state_path,
+            ledger_path=ledger_path,
+            now=now,
+            classification=classification,
+        )
+
+
+def _record_notification_locked(
+    title: str,
+    message: str,
+    *,
+    priority: str,
+    tags: list[str] | None,
+    task_root: Path,
+    state_path: Path,
+    ledger_path: Path,
+    now: datetime,
+    classification: IncidentClassification,
+) -> IntakeResult:
     state = _load_state(state_path)
     incidents = state.setdefault("incidents", {})
     existing = incidents.get(classification.fingerprint, {})
@@ -279,6 +308,23 @@ def _clip(text: str, limit: int) -> str:
     return text[: limit - 1].rstrip() + "..."
 
 
+@contextmanager
+def _state_file_lock(path: Path) -> Iterator[None]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".lock")
+    lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
+def _tmp_path_for(path: Path) -> Path:
+    return path.with_name(f"{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+
+
 def _load_state(path: Path) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -289,7 +335,7 @@ def _load_state(path: Path) -> dict[str, Any]:
 
 def _store_state(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.{int(time.time() * 1000)}.tmp")
+    tmp = _tmp_path_for(path)
     tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(path)
 
@@ -321,7 +367,7 @@ def _write_new_task(
         ledger_path=ledger_path,
         state_path=state_path,
     )
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = _tmp_path_for(path)
     tmp.write_text(content, encoding="utf-8")
     tmp.replace(path)
 
@@ -340,7 +386,7 @@ def _update_existing_task(path: Path, record: dict[str, Any], *, title: str, now
         text = text.replace("## Session Log\n", f"## Session Log\n{log_line}\n", 1)
     else:
         text = text.rstrip() + f"\n\n## Session Log\n{log_line}\n"
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = _tmp_path_for(path)
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
 

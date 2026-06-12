@@ -481,11 +481,11 @@ def _send_desktop_gdbus(
         "/org/freedesktop/Notifications",
         "--method",
         "org.freedesktop.Notifications.Notify",
-        "LLM Stack",
+        _gvariant_string("LLM Stack"),
         str(replace_id),
-        "dialog-error" if urgency_byte == 2 else "",
-        title,
-        message,
+        _gvariant_string("dialog-error" if urgency_byte == 2 else ""),
+        _gvariant_string(title),
+        _gvariant_string(message),
         "[]",
         f'{{"urgency": <byte {urgency_byte}>, "desktop-entry": <"org.hapax.system">}}',
         "0",
@@ -495,3 +495,8 @@ def _send_desktop_gdbus(
         return result.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return False
+
+
+def _gvariant_string(value: str) -> str:
+    """Return a GVariant text-format string literal for ``gdbus call``."""
+    return _json.dumps(value)

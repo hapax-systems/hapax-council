@@ -128,6 +128,76 @@ def test_same_incident_updates_existing_task(tmp_path):
     assert "p0-incident-intake updated" in task
 
 
+def test_concurrent_alerts_preserve_single_task_and_count(tmp_path):
+    task_root = tmp_path / "tasks"
+    state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+    start_path = tmp_path / "start"
+    worker_count = 8
+    code = textwrap.dedent(
+        """
+        import sys
+        import time
+        from pathlib import Path
+
+        from shared.p0_incident_intake import record_notification
+
+        task_root = Path(sys.argv[1])
+        state_path = Path(sys.argv[2])
+        ledger_path = Path(sys.argv[3])
+        start_path = Path(sys.argv[4])
+        deadline = time.time() + 10
+        while not start_path.exists():
+            if time.time() > deadline:
+                raise SystemExit("start timeout")
+            time.sleep(0.005)
+        result = record_notification(
+            "Service Failed: demo.service",
+            "systemd OnFailure fired.",
+            priority="urgent",
+            tags=["skull"],
+            task_root=task_root,
+            state_path=state_path,
+            ledger_path=ledger_path,
+        )
+        print(result.task_id)
+        """
+    )
+    processes = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                code,
+                str(task_root),
+                str(state_path),
+                str(ledger_path),
+                str(start_path),
+            ],
+            cwd=REPO_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        for _ in range(worker_count)
+    ]
+
+    start_path.write_text("go", encoding="utf-8")
+    outputs = [process.communicate(timeout=20) for process in processes]
+
+    for process, (stdout, stderr) in zip(processes, outputs, strict=True):
+        assert process.returncode == 0, f"stdout={stdout}\nstderr={stderr}"
+
+    task_files = list((task_root / "active").glob("p0-incident-*.md"))
+    assert len(task_files) == 1
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    incident = next(iter(state["incidents"].values()))
+    assert incident["count"] == worker_count
+    assert len(ledger_path.read_text(encoding="utf-8").splitlines()) == worker_count
+    assert f"incident_count: {worker_count}" in task_files[0].read_text(encoding="utf-8")
+
+
 def test_record_notification_requires_durable_ledger_append(tmp_path, monkeypatch):
     task_root = tmp_path / "tasks"
     state_path = tmp_path / "state.json"
@@ -256,7 +326,14 @@ def test_service_failed_cli_records_incident_and_sends_bounded_pointer(tmp_path)
     assert (tmp_path / "state.json").is_file()
     assert (tmp_path / "events.jsonl").is_file()
     notify_text = notify_log.read_text(encoding="utf-8")
+    notify_args = notify_text.splitlines()
     assert "org.freedesktop.Notifications.Notify" in notify_text
+    assert json.loads(notify_args[8]) == "Hapax System"
+    assert json.loads(notify_args[10]) == "dialog-error"
+    assert json.loads(notify_args[11]) == "Service Failed: demo.service"
+    assert json.loads(notify_args[12]).startswith(
+        "SDLC intake: p0-incident-systemd-service-failed-demo-service"
+    )
     assert "SDLC intake: p0-incident-systemd-service-failed-demo-service" in notify_text
     assert "journalctl --user -u demo.service" in notify_text
 

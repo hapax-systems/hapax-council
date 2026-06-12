@@ -62,11 +62,11 @@ def _notify_gdbus(
         "/org/freedesktop/Notifications",
         "--method",
         "org.freedesktop.Notifications.Notify",
-        "Hapax System",
+        _gvariant_string("Hapax System"),
         str(replace_id),
-        "dialog-error" if urgency_byte == 2 else "",
-        title,
-        message,
+        _gvariant_string("dialog-error" if urgency_byte == 2 else ""),
+        _gvariant_string(title),
+        _gvariant_string(message),
         "[]",
         f'{{"urgency": <byte {urgency_byte}>, "desktop-entry": <"org.hapax.system">}}',
         "0",
@@ -75,6 +75,10 @@ def _notify_gdbus(
         return subprocess.run(cmd, timeout=5, capture_output=True).returncode == 0  # noqa: S603
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return False
+
+
+def _gvariant_string(value: str) -> str:
+    return json.dumps(value)
 
 
 def _record(args: argparse.Namespace, *, title: str, message: str, technical: bool) -> int:
