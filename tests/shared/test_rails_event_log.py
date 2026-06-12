@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import shared.rails_event_log as rel
 
@@ -46,6 +47,18 @@ def test_stage_transition_emits_one_event_then_stays_quiet(tmp_path, monkeypatch
     assert stage_evt["lane"] == "zeta"
     assert stage_evt["source_file"].endswith("task-a.md")
     assert stage_evt["event_id"]
+
+
+def test_quiet_fold_refreshes_event_log_heartbeat(tmp_path, monkeypatch):
+    vault = _setup(tmp_path, monkeypatch)
+    note = vault / "task-heartbeat.md"
+    note.write_text("---\nstage: S5_REVIEW_GATE\nstatus: offered\n---\n")
+    assert rel.fold_once() >= 2
+    os.utime(rel.EVENT_LOG, (1, 1))
+
+    assert rel.fold_once() == 0
+
+    assert rel.EVENT_LOG.stat().st_mtime > 1
 
 
 def test_review_and_receipt_events(tmp_path, monkeypatch):

@@ -57,6 +57,7 @@ dependencies = [
     "imagehash>=4.3.2",
     "pytesseract>=0.3.13",
     "scikit-image>=0.26.0",
+    "playwright>=1.49.0",
     "soundcloud-lib>=0.6.1",
     "google-cloud-monitoring>=2.30.0",
     "atproto>=0.0.65",

@@ -9,10 +9,23 @@ any timer) can re-witness the predicate:
 
 Checks, each named in the output, each FAIL carrying a next action:
   * units-tracked      — repo systemd/units/* byte-match the installed user
-                         units (the tracked-vs-runtime inventory reconcile)
-  * scripts-tracked    — repo producer/recheck scripts byte-match the copies
-                         under the activation root the units ExecStart from
-  * units-active       — all three timers enabled + active
+                         units (the tracked-vs-runtime inventory reconcile;
+                         HAPAX_RECHECK_PREMERGE_BRIDGE=1 downgrades only
+                         PR-bridge service ExecStart drift to WARN)
+  * scripts-tracked    — repo producer/recheck scripts, helper scripts, and support modules
+                         byte-match the copies under the activation root the
+                         units ExecStart from
+  * playwright-browser-staged — Chromium for the browser witness is pre-staged
+                         under the governed source-activation area, not fetched
+                         by this recheck and not borrowed from a host-local cache
+  * units-active       — feed and coord rebuild timers enabled + active
+  * coord-service-root — hapax-coord.service serves from the coord activation
+                         worktree, not the mutable source checkout
+  * coord-deploy-script — the rebuild target executes the tracked deploy helper
+                         from the activation root and exposes its deploy contract
+  * coord-deploy-exercise — the tracked deploy helper is exercised against a
+                         temporary git origin/worktree with fake systemctl,
+                         proving checkout, .deployed-sha, idempotence, restart
   * feed-fresh:*       — every feed younger than 3x its timer cadence
   * vocab-parity       — observed stages map onto REAL ladder tokens (a token
                          outside SDLC_LADDER.stages counts as unknown);
@@ -23,10 +36,18 @@ Checks, each named in the output, each FAIL carrying a next action:
   * coord-boot-shell   — / serves the dark boot shell in <2s (pixel-level
                          instant-paint claims are witnessed by the playwright
                          harness; this is the HTTP half)
+  * coord-last-good-paint — a browser witnesses #last-good-replay paint with
+                         a dark surface and zero sampled white pixels in <2s
+  * coord-yard-status-strip — a browser witnesses fresh (non-replay)
+                         #yard-status health chips and the deployed SHA prefix
+                         on the live page in <2s
   * coord-rails-consumed — /api/coord/rails reports feed_state=live with
-                         stations from the CONSUMED vocabulary
-  * coord-verdicts-visible — rails items carry live review verdicts (the
-                         "live BLOCK verdicts visible" clause)
+                         stations from the CONSUMED vocabulary and item
+                         stations matching the published event-log fold
+  * coord-verdicts-visible — rails items match the exported review-receipts
+                         dossier/acceptance feed (the "live BLOCK verdicts
+                         visible" clause) and the browser DOM renders review
+                         and receipt text
 
 Exit 0 = predicate holds; exit 1 = named failures (warns alone don't fail).
 Paths/URLs override via HAPAX_RECHECK_* env (the tests use this).
@@ -38,9 +59,14 @@ import argparse
 import hashlib
 import json
 import os
+import struct
 import subprocess
+import tempfile
 import time
 import urllib.request
+import zlib
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -54,39 +80,504 @@ ACTIVATION = Path(
     )
 )
 COORD_URL = os.environ.get("HAPAX_RECHECK_COORD_URL", "http://127.0.0.1:8765")
+BASE_REF = os.environ.get("HAPAX_RECHECK_BASE_REF", "origin/main")
+PLAYWRIGHT_BROWSER_ROOT = Path(
+    os.environ.get(
+        "HAPAX_RECHECK_PLAYWRIGHT_BROWSERS",
+        Path.home() / ".cache/hapax/source-activation/playwright-browsers",
+    )
+)
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(PLAYWRIGHT_BROWSER_ROOT)
 DEPLOY_SHA_FILE = Path(
     os.environ.get(
         "HAPAX_RECHECK_DEPLOY_SHA",
         Path.home() / ".cache/hapax/coord-activation/worktree/.deployed-sha",
     )
 )
-
+COORD_ACTIVATION = Path(os.environ.get("HAPAX_RECHECK_COORD_ACTIVATION", DEPLOY_SHA_FILE.parent))
+COORD_SOURCE_REPO = Path(
+    os.environ.get("HAPAX_RECHECK_COORD_SOURCE_REPO", Path.home() / "projects/hapax-coord")
+)
+COORD_DEPLOY_RELPATH = "scripts/hapax-coord-deploy"
+COORD_DEPLOY_SCRIPT = Path(
+    os.environ.get("HAPAX_RECHECK_COORD_DEPLOY_SCRIPT", ACTIVATION / COORD_DEPLOY_RELPATH)
+)
+PREMERGE_BRIDGE = os.environ.get("HAPAX_RECHECK_PREMERGE_BRIDGE") == "1"
+COORD_SERVICE = "hapax-coord.service"
 UNITS = (
+    COORD_SERVICE,
     "hapax-sdlc-vocab-export.service",
     "hapax-sdlc-vocab-export.timer",
     "hapax-review-receipts-export.service",
     "hapax-review-receipts-export.timer",
     "hapax-rails-event-log.service",
     "hapax-rails-event-log.timer",
+    "hapax-coord-rebuild.service",
+    "hapax-coord-rebuild.timer",
+    "studio-camera-reconfigure@.service",
 )
 TIMERS = tuple(u for u in UNITS if u.endswith(".timer"))
+BRIDGE_SERVICE_UNITS = (
+    "hapax-sdlc-vocab-export.service",
+    "hapax-review-receipts-export.service",
+    "hapax-rails-event-log.service",
+    "hapax-coord-rebuild.service",
+)
+PAIRED_TIMERS = {
+    **{service: service.removesuffix(".service") + ".timer" for service in BRIDGE_SERVICE_UNITS},
+    "hapax-coord-rebuild.service": "hapax-coord-rebuild.timer",
+}
+BRIDGE_SERVICE_SCRIPTS = {
+    "hapax-sdlc-vocab-export.service": "scripts/hapax-sdlc-vocab-export",
+    "hapax-review-receipts-export.service": "scripts/hapax-review-receipts-export",
+    "hapax-rails-event-log.service": "scripts/hapax-rails-event-log",
+    "hapax-coord-rebuild.service": COORD_DEPLOY_RELPATH,
+}
+CAMERA_TEMPLATE_UNIT = "studio-camera-reconfigure@.service"
+CAMERA_TEMPLATE_PATH = f"systemd/units/{CAMERA_TEMPLATE_UNIT}"
+CAMERA_TEMPLATE_PATH_SHA256 = hashlib.sha256(CAMERA_TEMPLATE_PATH.encode()).hexdigest()[:16]
+CAMERA_TEMPLATE_BASENAME_SHA256 = hashlib.sha256(CAMERA_TEMPLATE_UNIT.encode()).hexdigest()[:16]
 SCRIPTS = (
     "scripts/hapax-sdlc-vocab-export",
     "scripts/hapax-review-receipts-export",
     "scripts/hapax-rails-event-log",
+    "scripts/hapax-playwright-chromium-prestage",
     "scripts/hapax-coord-feeds-recheck",
+    COORD_DEPLOY_RELPATH,
+    "systemd/units/studio-camera-reconfigure.sh",
+    "shared/rails_event_log.py",
 )
 
 #: feed -> (filename, budget_seconds = 3x timer cadence, producer hint)
 FEEDS = {
     "sdlc-vocab": ("sdlc-vocab.json", 3 * 600, "scripts/hapax-sdlc-vocab-export"),
     "review-receipts": ("review-receipts.json", 3 * 300, "scripts/hapax-review-receipts-export"),
-    "sdlc-events-shadow": ("sdlc-events.shadow.json", 3 * 300, "scripts/hapax-rails-event-log"),
+    "sdlc-events": ("sdlc-events.jsonl", 3 * 30, "scripts/hapax-rails-event-log"),
 }
+
+
+@dataclass(frozen=True)
+class BrowserSurfaceWitness:
+    ok: bool
+    detail: str
+    elapsed: float = 0.0
+    last_good_seen: bool = False
+    last_good_elapsed: float | None = None
+    last_good_visible_seen: bool = False
+    last_good_content_seen: bool = False
+    last_good_rect_area: int = 0
+    fresh_yard_seen: bool = False
+    fresh_yard_elapsed: float | None = None
+    fresh_yard_chip_count: int = 0
+    fresh_yard_text: str = ""
+    dashboard_seen: bool = False
+    dark_paint_seen: bool = False
+    white_paint_seen: bool = False
+    pixel_sample_count: int = 0
+    pixel_white_ratio: float | None = None
+    pixel_nonwhite_ratio: float | None = None
+    rendered_blocked_seen: bool = False
+    rendered_receipt_seen: bool = False
+    rendered_review_seen: bool = False
+    rendered_verdict_detail: str = ""
+    rendered_verdict_text: str = ""
+
+
+_BROWSER_WITNESS_JS = r"""
+(() => {
+  window.__hapaxCoordWitness = {
+    samples: [],
+    first: {},
+    freshYardChipCount: 0,
+    darkPaintSeen: false,
+    whitePaintSeen: false,
+    renderedBlockedSeen: false,
+    renderedReceiptSeen: false,
+    renderedReviewSeen: false,
+    renderedVerdictDetail: "",
+    renderedVerdictText: "",
+    lastGoodVisibleSeen: false,
+    lastGoodContentSeen: false,
+    lastGoodRectArea: 0,
+    freshYardText: ""
+  };
+  const white = /rgb\(\s*255\s*,\s*255\s*,\s*255\s*\)/i;
+  const transparent = /rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)/i;
+  const replayPaintState = (replay) => {
+    if (!replay || !replay.isConnected) return {visible: false, content: false, area: 0};
+    const style = getComputedStyle(replay);
+    const rect = replay.getBoundingClientRect();
+    const opacity = Number.parseFloat(style.opacity || "1");
+    const area = Math.round(Math.max(0, rect.width) * Math.max(0, rect.height));
+    const inViewport = rect.bottom > 0
+      && rect.right > 0
+      && rect.top < window.innerHeight
+      && rect.left < window.innerWidth;
+    const visible = style.display !== "none"
+      && style.visibility !== "hidden"
+      && (Number.isNaN(opacity) || opacity > 0)
+      && rect.width >= 1
+      && rect.height >= 1
+      && inViewport;
+    const text = ((replay.innerText || replay.textContent || "").replace(/\s+/g, " ").trim());
+    const cacheBytes = Number.parseInt(replay.dataset?.cacheBytes || "0", 10);
+    const content = text.length > 0 || cacheBytes > 0;
+    return {visible, content, area};
+  };
+  const markLastGood = (state, replay, now) => {
+    const painted = replayPaintState(replay);
+    state.lastGoodVisibleSeen = state.lastGoodVisibleSeen || painted.visible;
+    state.lastGoodContentSeen = state.lastGoodContentSeen || painted.content;
+    state.lastGoodRectArea = Math.max(state.lastGoodRectArea || 0, painted.area || 0);
+    if (painted.visible && painted.content && state.first.lastGood == null) {
+      state.first.lastGood = now;
+    }
+  };
+  const replayFromNode = (node) => {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
+    if (node.id === "last-good-replay") return node;
+    return node.querySelector ? node.querySelector("#last-good-replay") : null;
+  };
+  const visibleTextWithoutYard = () => {
+    if (!document.body) return "";
+    const excluded = "#yard-status,#yard-status-live-probe,#reactive-panel-yard-status,"
+      + "#last-good-replay,script,style,noscript";
+    const parts = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const value = (node.nodeValue || "").replace(/\s+/g, " ").trim();
+        if (!value) return NodeFilter.FILTER_REJECT;
+        const element = node.parentElement;
+        if (!element || element.closest(excluded)) return NodeFilter.FILTER_REJECT;
+        const style = getComputedStyle(element);
+        if (style.display === "none" || style.visibility === "hidden") {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    let node;
+    while ((node = walker.nextNode()) && parts.join(" ").length < 64000) {
+      parts.push(node.nodeValue || "");
+    }
+    return parts.join(" ").replace(/\s+/g, " ").trim();
+  };
+  const noteAddedNodes = (records) => {
+    const state = window.__hapaxCoordWitness;
+    if (!state) return;
+    const now = performance.now();
+    for (const record of records || []) {
+      for (const node of record.addedNodes || []) {
+        const replay = replayFromNode(node);
+        if (replay) markLastGood(state, replay, now);
+      }
+    }
+  };
+  const note = () => {
+    const state = window.__hapaxCoordWitness;
+    if (!state || !document.documentElement) return;
+    const now = performance.now();
+    const htmlBg = getComputedStyle(document.documentElement).backgroundColor || "";
+    const bodyBg = document.body ? getComputedStyle(document.body).backgroundColor || "" : "";
+    const paint = `${htmlBg}|${bodyBg}`;
+    if (state.samples.length < 80) state.samples.push({t: now, paint});
+    if (white.test(htmlBg) || white.test(bodyBg)) state.whitePaintSeen = true;
+    if ((!white.test(htmlBg) && !transparent.test(htmlBg))
+        || (!white.test(bodyBg) && !transparent.test(bodyBg))) {
+      state.darkPaintSeen = true;
+    }
+
+    const replay = document.querySelector("#last-good-replay");
+    if (replay) markLastGood(state, replay, now);
+
+    const dashboard = document.querySelector("#hapax-coord-dashboard");
+    if (dashboard && state.first.dashboard == null) state.first.dashboard = now;
+
+    const yard = Array.from(document.querySelectorAll("#yard-status"))
+      .find((node) => !node.closest("#last-good-replay"));
+    if (yard) {
+      if (state.first.freshYard == null) state.first.freshYard = now;
+      state.freshYardChipCount = yard.querySelectorAll(".ys-chip").length;
+      state.freshYardText = ((yard.innerText || yard.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim())
+        .slice(0, 240);
+    }
+
+    const text = visibleTextWithoutYard();
+    state.renderedVerdictText = text.slice(0, 64000);
+    if (/\bblocked\b/i.test(text) || /\bblock\b/i.test(text)) {
+      state.renderedBlockedSeen = true;
+    }
+    if (/\breceipts?\b/i.test(text) || /\baccepted\b/i.test(text)) {
+      state.renderedReceiptSeen = true;
+    }
+    if (/\breview\b/i.test(text) || /\bblocked\b/i.test(text) || /\bno-quorum\b/i.test(text)) {
+      state.renderedReviewSeen = true;
+    }
+    if (!state.renderedVerdictDetail && (state.renderedBlockedSeen || state.renderedReceiptSeen)) {
+      const normalized = text.replace(/\s+/g, " ").trim();
+      const blocked = normalized.match(/.{0,40}\bblocked\b.{0,40}/i);
+      const receipts = normalized.match(/.{0,40}\breceipts?\b.{0,40}/i);
+      state.renderedVerdictDetail = [blocked && blocked[0], receipts && receipts[0]]
+        .filter(Boolean)
+        .join(" | ")
+        .slice(0, 180);
+    }
+  };
+  let installed = false;
+  const install = () => {
+    if (installed || !document.documentElement) return false;
+    installed = true;
+    note();
+    new MutationObserver((records) => {
+      noteAddedNodes(records);
+      note();
+    }).observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true
+    });
+    setInterval(note, 50);
+    return true;
+  };
+  const installWhenReady = () => {
+    if (!install()) requestAnimationFrame(installWhenReady);
+  };
+  if (document.documentElement) {
+    install();
+  } else {
+    installWhenReady();
+  }
+})();
+"""
 
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _git_tracked_files() -> list[str]:
+    proc = subprocess.run(
+        ["git", "-C", str(REPO), "ls-files", "-z", "systemd/units"],
+        capture_output=True,
+        timeout=15,
+    )
+    if proc.returncode != 0:
+        return [
+            str(path.relative_to(REPO))
+            for path in sorted((REPO / "systemd/units").rglob("*"))
+            if path.is_file()
+        ]
+    return [raw.decode("utf-8", "replace") for raw in proc.stdout.split(b"\0") if raw]
+
+
+def _git_changed_files() -> list[str]:
+    proc = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(REPO),
+            "diff",
+            "--name-only",
+            "-z",
+            f"{BASE_REF}...HEAD",
+            "--",
+            "systemd/units",
+        ],
+        capture_output=True,
+        timeout=15,
+    )
+    if proc.returncode != 0:
+        return _git_tracked_files()
+    return [raw.decode("utf-8", "replace") for raw in proc.stdout.split(b"\0") if raw]
+
+
+def _paths_manifest_sha(paths: list[str]) -> str:
+    return hashlib.sha256("\0".join(sorted(paths)).encode()).hexdigest()[:16]
+
+
+def _systemd_path_shape_counts(paths: list[str]) -> tuple[int, int]:
+    whitespace_count = sum(1 for path in paths if any(ch.isspace() for ch in path))
+    at_systemd_count = sum(1 for path in paths if "@systemd/" in path)
+    return whitespace_count, at_systemd_count
+
+
+def _forbidden_systemd_path_shapes(paths: list[str]) -> list[str]:
+    return sorted(
+        path
+        for path in paths
+        if path.startswith("systemd/units/")
+        and (any(ch.isspace() for ch in path) or "@systemd/" in path)
+    )
+
+
+def _path_under(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _camera_service_paths(paths: list[str]) -> list[str]:
+    return sorted(
+        path
+        for path in paths
+        if path.startswith("systemd/units/studio-camera-reconfigure") and path.endswith(".service")
+    )
+
+
+def _forbidden_camera_composites(paths: list[str]) -> list[str]:
+    return sorted(
+        path
+        for path in _camera_service_paths(paths)
+        if path != f"systemd/units/{CAMERA_TEMPLATE_UNIT}"
+    )
+
+
+def _filesystem_camera_service_paths(units: Path) -> list[str]:
+    try:
+        paths = [
+            f"systemd/units/{path.relative_to(units)}"
+            for path in sorted(units.rglob("*"))
+            if path.is_file()
+            and f"systemd/units/{path.relative_to(units)}".startswith(
+                "systemd/units/studio-camera-reconfigure"
+            )
+            and f"systemd/units/{path.relative_to(units)}".endswith(".service")
+        ]
+    except OSError:
+        return []
+    return _camera_service_paths(paths)
+
+
+def _paeth(left: int, up: int, up_left: int) -> int:
+    p = left + up - up_left
+    pa = abs(p - left)
+    pb = abs(p - up)
+    pc = abs(p - up_left)
+    if pa <= pb and pa <= pc:
+        return left
+    if pb <= pc:
+        return up
+    return up_left
+
+
+def _png_surface_summary(png: bytes) -> tuple[int, float | None, float | None]:
+    if not png.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("not a PNG")
+    offset = 8
+    width = height = bit_depth = color_type = interlace = None
+    idat: list[bytes] = []
+    while offset + 8 <= len(png):
+        length = struct.unpack(">I", png[offset : offset + 4])[0]
+        kind = png[offset + 4 : offset + 8]
+        chunk = png[offset + 8 : offset + 8 + length]
+        offset += 12 + length
+        if kind == b"IHDR":
+            width, height, bit_depth, color_type, _compression, _filter, interlace = struct.unpack(
+                ">IIBBBBB", chunk
+            )
+        elif kind == b"IDAT":
+            idat.append(chunk)
+        elif kind == b"IEND":
+            break
+    if not width or not height or bit_depth != 8 or color_type not in (2, 6) or interlace:
+        raise ValueError("unsupported PNG surface")
+    channels = 4 if color_type == 6 else 3
+    stride = width * channels
+    raw = zlib.decompress(b"".join(idat))
+    rows: list[bytes] = []
+    previous = bytearray(stride)
+    offset = 0
+    for _row in range(height):
+        filter_type = raw[offset]
+        offset += 1
+        scan = bytearray(raw[offset : offset + stride])
+        offset += stride
+        for idx, value in enumerate(scan):
+            left = scan[idx - channels] if idx >= channels else 0
+            up = previous[idx]
+            up_left = previous[idx - channels] if idx >= channels else 0
+            if filter_type == 1:
+                scan[idx] = (value + left) & 0xFF
+            elif filter_type == 2:
+                scan[idx] = (value + up) & 0xFF
+            elif filter_type == 3:
+                scan[idx] = (value + ((left + up) // 2)) & 0xFF
+            elif filter_type == 4:
+                scan[idx] = (value + _paeth(left, up, up_left)) & 0xFF
+            elif filter_type != 0:
+                raise ValueError(f"unsupported PNG filter {filter_type}")
+        rows.append(bytes(scan))
+        previous = scan
+
+    y_points = sorted(
+        {round(i * (height - 1) / max(1, min(height, 8) - 1)) for i in range(min(height, 8))}
+    )
+    x_points = sorted(
+        {round(i * (width - 1) / max(1, min(width, 8) - 1)) for i in range(min(width, 8))}
+    )
+    white = 0
+    nonwhite = 0
+    samples = 0
+    for y in y_points:
+        row = rows[y]
+        for x in x_points:
+            base = x * channels
+            r, g, b = row[base], row[base + 1], row[base + 2]
+            if channels == 4 and row[base + 3] < 16:
+                continue
+            samples += 1
+            if r >= 245 and g >= 245 and b >= 245:
+                white += 1
+            else:
+                nonwhite += 1
+    if samples == 0:
+        return 0, None, None
+    return samples, round(white / samples, 3), round(nonwhite / samples, 3)
+
+
+def _normalize_bridge_service_text(unit: str, text: str) -> str:
+    rel = BRIDGE_SERVICE_SCRIPTS[unit]
+    bridge_script = f"{ACTIVATION}/{rel}"
+    source_script = f"%h/.cache/hapax/source-activation/worktree/{rel}"
+    lines: list[str] = []
+    skipping_bridge_comment_block = False
+    for line in text.splitlines():
+        if line.startswith("# BRIDGE INSTALL "):
+            skipping_bridge_comment_block = True
+            continue
+        if skipping_bridge_comment_block and line.startswith("#"):
+            continue
+        skipping_bridge_comment_block = False
+        lines.append(line.replace(bridge_script, source_script))
+    return "\n".join(lines).strip() + "\n"
+
+
+def _premerge_bridge_service_matches(unit: str, tracked: Path, installed: Path) -> bool:
+    if unit not in BRIDGE_SERVICE_SCRIPTS:
+        return False
+    try:
+        return tracked.read_text() == _normalize_bridge_service_text(unit, installed.read_text())
+    except OSError:
+        return False
+
+
+def _coord_service_required_lines() -> tuple[str, ...]:
+    root = str(COORD_ACTIVATION)
+    return (
+        f"ConditionPathExists={root}/scripts/run-dev.sh",
+        f"Environment=HAPAX_COORD_ROOT={root}",
+        f"WorkingDirectory={root}",
+        f"ExecStart={root}/scripts/run-dev.sh --daemon",
+    )
+
+
+def _missing_lines(text: str, required: tuple[str, ...]) -> list[str]:
+    present = {line.strip() for line in text.splitlines()}
+    return [line for line in required if line not in present]
 
 
 def _systemctl(*args: str) -> str:
@@ -103,7 +594,551 @@ def _http_json(url: str, timeout: float = 5.0) -> tuple[dict, float]:
     return body, time.monotonic() - t0
 
 
-def run_checks(*, skip_systemctl: bool = False) -> list[dict[str, str]]:
+def _http_text(url: str, timeout: float = 5.0, max_bytes: int = 256 * 1024) -> tuple[str, float]:
+    t0 = time.monotonic()
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        body = resp.read(max_bytes).decode(errors="replace")
+    return body, time.monotonic() - t0
+
+
+def _coord_deploy_contract() -> dict:
+    proc = subprocess.run(
+        [str(COORD_DEPLOY_SCRIPT), "--contract-json"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+        env={
+            **os.environ,
+            "HAPAX_COORD_DEPLOY_REPO": str(COORD_SOURCE_REPO),
+            "HAPAX_COORD_DEPLOY_ACT_ROOT": str(COORD_ACTIVATION.parent),
+        },
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or f"contract command exited {proc.returncode}")
+    loaded = json.loads(proc.stdout)
+    if not isinstance(loaded, dict):
+        raise ValueError("coord deploy contract is not a JSON object")
+    return loaded
+
+
+def _run_cmd(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> str:
+    proc = subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"{' '.join(cmd[:4])} failed rc={proc.returncode}: {proc.stderr.strip()[:300]}"
+        )
+    return proc.stdout.strip()
+
+
+def _write_deploy_fixture_commit(repo: Path, marker: str) -> str:
+    (repo / "README.md").write_text(f"{marker}\n")
+    _run_cmd(["git", "-C", str(repo), "add", "README.md"])
+    _run_cmd(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Hapax Recheck",
+            "-c",
+            "user.email=recheck@hapax.local",
+            "commit",
+            "-m",
+            f"fixture {marker}",
+        ],
+        env={
+            **os.environ,
+            "GIT_AUTHOR_DATE": "2026-06-12T00:00:00+0000",
+            "GIT_COMMITTER_DATE": "2026-06-12T00:00:00+0000",
+        },
+    )
+    return _run_cmd(["git", "-C", str(repo), "rev-parse", "HEAD"])
+
+
+def _exercise_coord_deploy_helper() -> str:
+    with tempfile.TemporaryDirectory(prefix="hapax-coord-deploy-recheck-") as tmp:
+        root = Path(tmp)
+        origin = root / "origin.git"
+        source = root / "source"
+        act_root = root / "activation"
+        fakebin = root / "bin"
+        restart_log = root / "systemctl.log"
+        fakebin.mkdir()
+        systemctl = fakebin / "systemctl"
+        systemctl.write_text(
+            '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "${HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG:?}"\n'
+        )
+        systemctl.chmod(0o755)
+
+        _run_cmd(["git", "init", "--bare", str(origin)])
+        _run_cmd(["git", "init", str(source)])
+        _run_cmd(["git", "-C", str(source), "checkout", "-b", "main"])
+        first_sha = _write_deploy_fixture_commit(source, "first")
+        _run_cmd(["git", "-C", str(source), "remote", "add", "origin", str(origin)])
+        _run_cmd(["git", "-C", str(source), "push", "-u", "origin", "main"])
+
+        env = {
+            **os.environ,
+            "HAPAX_COORD_DEPLOY_REPO": str(source),
+            "HAPAX_COORD_DEPLOY_ACT_ROOT": str(act_root),
+            "HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG": str(restart_log),
+            "PATH": f"{fakebin}:{os.environ.get('PATH', '')}",
+        }
+        _run_cmd([str(COORD_DEPLOY_SCRIPT)], env=env)
+        worktree = act_root / "worktree"
+        deployed = (worktree / ".deployed-sha").read_text().strip()
+        head = _run_cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"])
+        if deployed != first_sha or head != first_sha:
+            raise RuntimeError(
+                f"first deploy mismatch deployed={deployed[:9]} head={head[:9]} "
+                f"expected={first_sha[:9]}"
+            )
+        restarts = restart_log.read_text().splitlines()
+        if restarts != ["--user restart hapax-coord.service"]:
+            raise RuntimeError(f"first deploy restart log mismatch: {restarts}")
+
+        _run_cmd([str(COORD_DEPLOY_SCRIPT)], env=env)
+        restarts = restart_log.read_text().splitlines()
+        if restarts != ["--user restart hapax-coord.service"]:
+            raise RuntimeError(f"idempotent deploy restarted unexpectedly: {restarts}")
+
+        second_sha = _write_deploy_fixture_commit(source, "second")
+        _run_cmd(["git", "-C", str(source), "push", "origin", "main"])
+        _run_cmd([str(COORD_DEPLOY_SCRIPT)], env=env)
+        deployed = (worktree / ".deployed-sha").read_text().strip()
+        head = _run_cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"])
+        if deployed != second_sha or head != second_sha:
+            raise RuntimeError(
+                f"second deploy mismatch deployed={deployed[:9]} head={head[:9]} "
+                f"expected={second_sha[:9]}"
+            )
+        restarts = restart_log.read_text().splitlines()
+        if restarts != [
+            "--user restart hapax-coord.service",
+            "--user restart hapax-coord.service",
+        ]:
+            raise RuntimeError(f"second deploy restart log mismatch: {restarts}")
+
+    return (
+        f"first={first_sha[:9]} second={second_sha[:9]} wrote .deployed-sha, "
+        "advanced worktree, skipped idempotent restart, restarted on change"
+    )
+
+
+def _sha_prefix_match(served: str, on_disk: str) -> bool:
+    served = served.strip()
+    on_disk = on_disk.strip()
+    if len(served) < 9 or len(on_disk) < 9:
+        return False
+    return on_disk.startswith(served[:9]) or served.startswith(on_disk[:9])
+
+
+def _visible_sha_prefix(sha: str) -> str:
+    sha = sha.strip()
+    return sha[:9] if len(sha) >= 9 else ""
+
+
+def _text_excerpt(text: str, limit: int = 120) -> str:
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3] + "..."
+
+
+def _unit_next_action(unit: str) -> str:
+    if unit == COORD_SERVICE:
+        return (
+            "next: install systemd/units/hapax-coord.service, run systemctl --user "
+            "daemon-reload, then systemctl --user restart hapax-coord.service"
+        )
+    if timer := PAIRED_TIMERS.get(unit):
+        return (
+            f"next: install systemd/units/{unit}, run systemctl --user daemon-reload, "
+            f"then systemctl --user enable --now {timer} "
+            "(or let post-merge Hapax-Auto-Enable refresh)"
+        )
+    if unit.endswith(".service"):
+        return (
+            f"next: install systemd/units/{unit} and run systemctl --user daemon-reload "
+            "(template/static service; triggered by its owning unit or udev)"
+        )
+    return (
+        f"next: install systemd/units/{unit}, run systemctl --user daemon-reload, "
+        f"then systemctl --user enable --now {unit} "
+        "(merge auto-installs via Hapax-Auto-Enable)"
+    )
+
+
+def _load_exported_vocab(path: Path) -> dict:
+    feed = json.loads(path.read_text())
+    if not isinstance(feed, dict):
+        raise ValueError(f"vocab feed is {type(feed).__name__}, expected object")
+    return feed
+
+
+def _vocab_token_list(raw: object, key: str) -> list[str]:
+    if not isinstance(raw, list):
+        raise ValueError(f"vocab feed {key} is {type(raw).__name__}, expected list")
+    return [str(token).strip() for token in raw if str(token).strip()]
+
+
+def _exported_vocab_contract(path: Path) -> tuple[list[str], set[str], dict[str, str]]:
+    feed = _load_exported_vocab(path)
+    ladder_tokens = _vocab_token_list(feed.get("ladder_tokens"), "ladder_tokens")
+    pseudo_stages = _vocab_token_list(feed.get("pseudo_stages") or [], "pseudo_stages")
+    tokens = set(ladder_tokens) | set(pseudo_stages)
+    if not tokens:
+        raise ValueError("vocab feed has no ladder_tokens/pseudo_stages")
+    observed = feed.get("observed_stages")
+    if not isinstance(observed, dict):
+        raise ValueError(
+            f"vocab feed observed_stages is {type(observed).__name__}, expected object"
+        )
+    observed_stage_tokens: dict[str, str] = {}
+    for raw_stage, meta in observed.items():
+        stage = str(raw_stage).strip()
+        token = ""
+        if isinstance(meta, dict):
+            token = str(meta.get("ladder_token") or "").strip()
+        if stage and token and token != "unknown" and token in tokens:
+            observed_stage_tokens[stage] = token
+    return ladder_tokens, tokens, observed_stage_tokens
+
+
+def _exported_vocab_tokens(path: Path) -> set[str]:
+    _, tokens, _ = _exported_vocab_contract(path)
+    return tokens
+
+
+def _event_log_station_expectations(
+    path: Path, observed_stage_tokens: dict[str, str]
+) -> tuple[dict[str, str], list[str]]:
+    if not path.exists():
+        raise ValueError(f"{path} missing")
+    latest_stage_by_item: dict[str, str] = {}
+    bad_lines: list[int] = []
+    with path.open(encoding="utf-8") as events:
+        for line_no, line in enumerate(events, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                bad_lines.append(line_no)
+                continue
+            if not isinstance(event, dict) or event.get("kind") != "stage":
+                continue
+            item_id = str(event.get("item_id") or "").strip()
+            stage_to = str(event.get("stage_to") or "").strip()
+            if item_id and stage_to:
+                latest_stage_by_item[item_id] = stage_to
+    if bad_lines:
+        raise ValueError(f"{path} has unparseable jsonl lines {bad_lines[:5]}")
+
+    expected: dict[str, str] = {}
+    unmapped: list[str] = []
+    for item_id, stage_to in latest_stage_by_item.items():
+        token = observed_stage_tokens.get(stage_to)
+        if token:
+            expected[item_id] = token
+        else:
+            unmapped.append(f"{item_id}:{stage_to}")
+    if not expected and not unmapped:
+        raise ValueError(f"{path} has no stage events mappable through exported observed_stages")
+    return expected, sorted(unmapped)
+
+
+def _station_token(station: object) -> str:
+    if isinstance(station, str):
+        return station.strip()
+    if isinstance(station, dict):
+        for key in ("token", "stage", "id", "stage_token", "ladder_token"):
+            value = station.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+    return ""
+
+
+def _mapping_rows(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    return [row for row in value if isinstance(row, dict)]
+
+
+def _review_receipt_expectations(path: Path) -> tuple[dict[str, str], dict[str, str]]:
+    feed = json.loads(path.read_text())
+    if not isinstance(feed, dict):
+        raise ValueError(f"review receipt feed is {type(feed).__name__}, expected object")
+    review_expected: dict[str, str] = {}
+    for row in _mapping_rows(feed.get("dossiers")):
+        task_id = str(row.get("task_id") or "").strip()
+        verdict = str(row.get("verdict") or "").strip()
+        if task_id and verdict and verdict != "unparseable":
+            review_expected[task_id] = verdict
+    receipt_expected: dict[str, str] = {}
+    for row in _mapping_rows(feed.get("acceptances")):
+        task_id = str(row.get("task_id") or "").strip()
+        verdict = str(row.get("verdict") or "").strip()
+        if task_id and verdict and verdict != "unparseable":
+            receipt_expected[task_id] = verdict
+    if not review_expected:
+        raise ValueError("review-receipts feed has no parseable dossier verdict rows")
+    return review_expected, receipt_expected
+
+
+def _rendered_expected_verdict_ids(
+    expected: dict[str, str], rendered_text: str, *, radius: int = 240
+) -> list[str]:
+    text = " ".join(rendered_text.lower().split())
+    matched: list[str] = []
+    for task_id, verdict in expected.items():
+        task = task_id.lower()
+        label = verdict.lower()
+        start = 0
+        while True:
+            index = text.find(task, start)
+            if index < 0:
+                break
+            window = text[max(0, index - radius) : index + len(task) + radius]
+            if label in window:
+                matched.append(task_id)
+                break
+            start = index + len(task)
+    return matched
+
+
+def _staged_chromium_executable() -> str | None:
+    base = PLAYWRIGHT_BROWSER_ROOT
+    try:
+        for candidate in sorted(base.iterdir(), reverse=True):
+            if not candidate.name.startswith(("chromium-", "chromium_headless_shell-")):
+                continue
+            for rel in (
+                "chrome-linux64/chrome",
+                "chrome-linux/chrome",
+                "chrome-headless-shell-linux64/chrome-headless-shell",
+            ):
+                executable = candidate / rel
+                if executable.exists() and os.access(executable, os.X_OK):
+                    return str(executable)
+    except OSError:
+        return None
+    return None
+
+
+def _launch_chromium(playwright):
+    try:
+        return playwright.chromium.launch(headless=True, args=["--no-sandbox"])
+    except Exception as exc:  # noqa: BLE001 - fallback is still the same witness path
+        executable = _staged_chromium_executable()
+        if executable:
+            try:
+                return playwright.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox"],
+                    executable_path=executable,
+                )
+            except Exception as fallback_exc:  # noqa: BLE001
+                staged_error = f"; staged executable {executable} also failed: {fallback_exc}"
+        else:
+            staged_error = f"; no staged executable found under {PLAYWRIGHT_BROWSER_ROOT}"
+        raise RuntimeError(
+            f"chromium launch failed: {exc}{staged_error}; "
+            "next: pre-stage Playwright Chromium in the activation environment "
+            "with scripts/hapax-playwright-chromium-prestage and rerun"
+        ) from exc
+
+
+def _witness_seconds(value) -> float | None:
+    if isinstance(value, (int, float)):
+        return round(value / 1000.0, 3)
+    return None
+
+
+def _witness_paint_elapsed(witness: BrowserSurfaceWitness) -> float | None:
+    return witness.last_good_elapsed if witness.last_good_seen else None
+
+
+def _witness_score(
+    witness: BrowserSurfaceWitness, expected_deployed_sha: str = ""
+) -> tuple[int, float, float]:
+    paint_elapsed = _witness_paint_elapsed(witness)
+    yard_elapsed = witness.fresh_yard_elapsed
+    expected_sha_prefix = _visible_sha_prefix(expected_deployed_sha)
+    yard_sha_ok = not expected_sha_prefix or expected_sha_prefix in witness.fresh_yard_text
+    paint_ok = (
+        paint_elapsed is not None
+        and paint_elapsed < 2.0
+        and witness.last_good_seen
+        and witness.last_good_visible_seen
+        and witness.last_good_content_seen
+        and witness.last_good_rect_area > 0
+        and witness.dark_paint_seen
+        and not witness.white_paint_seen
+        and witness.pixel_sample_count > 0
+        and witness.pixel_white_ratio is not None
+        and witness.pixel_white_ratio == 0.0
+    )
+    yard_ok = (
+        yard_elapsed is not None
+        and yard_elapsed < 2.0
+        and witness.fresh_yard_chip_count > 0
+        and yard_sha_ok
+    )
+    return (
+        0 if paint_ok and yard_ok else 1,
+        yard_elapsed if yard_elapsed is not None else float("inf"),
+        paint_elapsed if paint_elapsed is not None else float("inf"),
+    )
+
+
+def _browser_live_surface(url: str, expected_deployed_sha: str = "") -> BrowserSurfaceWitness:
+    started = time.monotonic()
+    expected_sha_prefix = _visible_sha_prefix(expected_deployed_sha)
+    try:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:  # noqa: BLE001
+        return BrowserSurfaceWitness(
+            ok=False,
+            detail=f"playwright unavailable: {exc}; next: install/sync Playwright chromium",
+        )
+
+    try:
+        with sync_playwright() as playwright:
+            browser = _launch_chromium(playwright)
+            try:
+                attempts = max(
+                    1,
+                    int(os.environ.get("HAPAX_RECHECK_BROWSER_ATTEMPTS", "3")),
+                )
+                witnesses: list[BrowserSurfaceWitness] = []
+                for attempt in range(1, attempts + 1):
+                    attempt_started = time.monotonic()
+                    context = browser.new_context(
+                        viewport={"width": 1440, "height": 1000},
+                        device_scale_factor=1,
+                    )
+                    try:
+                        page = context.new_page()
+                        page.add_init_script(_BROWSER_WITNESS_JS)
+                        page.goto(url, wait_until="domcontentloaded", timeout=10_000)
+                        predicates = [
+                            "() => !!window.__hapaxCoordWitness?.first?.lastGood",
+                            "() => !!window.__hapaxCoordWitness?.first?.freshYard",
+                        ]
+                        if expected_sha_prefix:
+                            predicates.append(
+                                "() => (window.__hapaxCoordWitness?.freshYardText || '')"
+                                f".includes({json.dumps(expected_sha_prefix)})"
+                            )
+                        for predicate in predicates:
+                            try:
+                                page.wait_for_function(predicate, timeout=2_000)
+                            except PlaywrightTimeoutError:
+                                pass
+                        try:
+                            page.wait_for_function(
+                                "() => /\\breview\\s*:|\\baccepted\\b|\\bblocked\\b/i"
+                                ".test(window.__hapaxCoordWitness?.renderedVerdictText || '')",
+                                timeout=10_000,
+                            )
+                        except PlaywrightTimeoutError:
+                            pass
+                        page.wait_for_timeout(100)
+                        state = page.evaluate("() => window.__hapaxCoordWitness || {}")
+                        pixel_sample_count, pixel_white_ratio, pixel_nonwhite_ratio = (
+                            _png_surface_summary(page.screenshot(full_page=False, timeout=2_000))
+                        )
+                    finally:
+                        context.close()
+                    first = state.get("first") or {}
+                    css_dark_seen = bool(state.get("darkPaintSeen"))
+                    css_white_seen = bool(state.get("whitePaintSeen"))
+                    pixel_white_seen = pixel_white_ratio is not None and pixel_white_ratio > 0.0
+                    pixel_nonwhite_seen = (
+                        pixel_nonwhite_ratio is not None and pixel_nonwhite_ratio >= 0.10
+                    )
+                    witness = BrowserSurfaceWitness(
+                        ok=True,
+                        detail=f"browser rendered live coord surface (attempt {attempt}/{attempts})",
+                        elapsed=time.monotonic() - attempt_started,
+                        last_good_seen=first.get("lastGood") is not None,
+                        last_good_elapsed=_witness_seconds(first.get("lastGood")),
+                        last_good_visible_seen=bool(state.get("lastGoodVisibleSeen")),
+                        last_good_content_seen=bool(state.get("lastGoodContentSeen")),
+                        last_good_rect_area=int(state.get("lastGoodRectArea") or 0),
+                        fresh_yard_seen=first.get("freshYard") is not None,
+                        fresh_yard_elapsed=_witness_seconds(first.get("freshYard")),
+                        fresh_yard_chip_count=int(state.get("freshYardChipCount") or 0),
+                        fresh_yard_text=str(state.get("freshYardText") or ""),
+                        dashboard_seen=first.get("dashboard") is not None,
+                        dark_paint_seen=css_dark_seen and pixel_nonwhite_seen,
+                        white_paint_seen=css_white_seen or pixel_white_seen,
+                        pixel_sample_count=pixel_sample_count,
+                        pixel_white_ratio=pixel_white_ratio,
+                        pixel_nonwhite_ratio=pixel_nonwhite_ratio,
+                        rendered_blocked_seen=bool(state.get("renderedBlockedSeen")),
+                        rendered_receipt_seen=bool(state.get("renderedReceiptSeen")),
+                        rendered_review_seen=bool(state.get("renderedReviewSeen")),
+                        rendered_verdict_detail=str(state.get("renderedVerdictDetail") or ""),
+                        rendered_verdict_text=str(state.get("renderedVerdictText") or ""),
+                    )
+                    witnesses.append(witness)
+                    if _witness_score(witness, expected_deployed_sha)[0] == 0:
+                        break
+            finally:
+                browser.close()
+    except Exception as exc:  # noqa: BLE001
+        return BrowserSurfaceWitness(
+            ok=False,
+            detail=f"browser witness failed: {exc}; next: check hapax-coord and Playwright",
+            elapsed=time.monotonic() - started,
+        )
+
+    best = min(witnesses, key=lambda witness: _witness_score(witness, expected_deployed_sha))
+    return BrowserSurfaceWitness(
+        ok=True,
+        detail=f"{best.detail}; attempts_run={len(witnesses)}",
+        elapsed=best.elapsed,
+        last_good_seen=best.last_good_seen,
+        last_good_elapsed=best.last_good_elapsed,
+        last_good_visible_seen=best.last_good_visible_seen,
+        last_good_content_seen=best.last_good_content_seen,
+        last_good_rect_area=best.last_good_rect_area,
+        fresh_yard_seen=best.fresh_yard_seen,
+        fresh_yard_elapsed=best.fresh_yard_elapsed,
+        fresh_yard_chip_count=best.fresh_yard_chip_count,
+        fresh_yard_text=best.fresh_yard_text,
+        dashboard_seen=best.dashboard_seen,
+        dark_paint_seen=best.dark_paint_seen,
+        white_paint_seen=best.white_paint_seen,
+        pixel_sample_count=best.pixel_sample_count,
+        pixel_white_ratio=best.pixel_white_ratio,
+        pixel_nonwhite_ratio=best.pixel_nonwhite_ratio,
+        rendered_blocked_seen=best.rendered_blocked_seen,
+        rendered_receipt_seen=best.rendered_receipt_seen,
+        rendered_review_seen=best.rendered_review_seen,
+        rendered_verdict_detail=best.rendered_verdict_detail,
+        rendered_verdict_text=best.rendered_verdict_text,
+    )
+
+
+def run_checks(
+    *,
+    skip_systemctl: bool = False,
+    browser_probe: Callable[[str], BrowserSurfaceWitness] | None = None,
+) -> list[dict[str, str]]:
     results: list[dict[str, str]] = []
 
     def add(name: str, state: str, detail: str) -> None:
@@ -112,18 +1147,269 @@ def run_checks(*, skip_systemctl: bool = False) -> list[dict[str, str]]:
     for unit in UNITS:
         tracked = REPO / "systemd/units" / unit
         installed = USER_UNITS / unit
-        nxt = (
-            f"next: systemctl --user enable --now after installing from systemd/units/{unit} "
-            "(merge auto-installs via Hapax-Auto-Enable)"
-        )
+        nxt = _unit_next_action(unit)
         if not tracked.exists():
             add(f"units-tracked:{unit}", "FAIL", f"unit missing from repo systemd/units/; {nxt}")
         elif not installed.exists():
             add(f"units-tracked:{unit}", "FAIL", f"not installed at {installed}; {nxt}")
         elif _sha(tracked) != _sha(installed):
-            add(f"units-tracked:{unit}", "FAIL", f"installed differs from tracked; {nxt}")
+            if PREMERGE_BRIDGE and unit in BRIDGE_SERVICE_UNITS:
+                if _premerge_bridge_service_matches(unit, tracked, installed):
+                    add(
+                        f"units-tracked:{unit}",
+                        "WARN",
+                        "installed service has only the expected explicit pre-merge bridge "
+                        "ExecStart/comment drift; post-merge default recheck keeps drift as FAIL",
+                    )
+                else:
+                    add(
+                        f"units-tracked:{unit}",
+                        "FAIL",
+                        "installed differs from tracked beyond the expected pre-merge bridge "
+                        f"ExecStart/comment drift; {nxt}",
+                    )
+            else:
+                add(f"units-tracked:{unit}", "FAIL", f"installed differs from tracked; {nxt}")
         else:
             add(f"units-tracked:{unit}", "OK", "tracked == installed")
+
+    coord_service_next = _unit_next_action(COORD_SERVICE)
+    coord_service_tracked = REPO / "systemd/units" / COORD_SERVICE
+    coord_service_installed = USER_UNITS / COORD_SERVICE
+    required_coord_lines = _coord_service_required_lines()
+    try:
+        tracked_text = coord_service_tracked.read_text()
+        installed_text = coord_service_installed.read_text()
+        missing = sorted(
+            {
+                *(f"tracked:{line}" for line in _missing_lines(tracked_text, required_coord_lines)),
+                *(
+                    f"installed:{line}"
+                    for line in _missing_lines(installed_text, required_coord_lines)
+                ),
+            }
+        )
+    except OSError as exc:
+        add(
+            "coord-service-root",
+            "FAIL",
+            f"could not inspect coord service unit: {exc}; {coord_service_next}",
+        )
+    else:
+        activation_script = COORD_ACTIVATION / "scripts/run-dev.sh"
+        if missing:
+            add(
+                "coord-service-root",
+                "FAIL",
+                f"hapax-coord.service is not pinned to coord activation root {COORD_ACTIVATION}; "
+                f"missing={missing}; {coord_service_next}",
+            )
+        elif not activation_script.is_file():
+            add(
+                "coord-service-root",
+                "FAIL",
+                f"{activation_script} missing; next: run {COORD_DEPLOY_RELPATH} "
+                "to refresh the activation worktree",
+            )
+        elif _path_under(COORD_ACTIVATION, COORD_SOURCE_REPO):
+            add(
+                "coord-service-root",
+                "FAIL",
+                f"coord activation {COORD_ACTIVATION} is under mutable source repo {COORD_SOURCE_REPO}; "
+                "next: move activation under ~/.cache/hapax/coord-activation/worktree",
+            )
+        else:
+            add(
+                "coord-service-root",
+                "OK",
+                f"service ExecStart/WorkingDirectory/HAPAX_COORD_ROOT pinned to {COORD_ACTIVATION}",
+            )
+
+    tracked_deploy_script = REPO / COORD_DEPLOY_RELPATH
+    try:
+        tracked_deploy_sha = _sha(tracked_deploy_script)
+        runtime_deploy_sha = _sha(COORD_DEPLOY_SCRIPT)
+    except OSError as exc:
+        add(
+            "coord-deploy-script",
+            "FAIL",
+            f"could not read tracked/runtime coord deploy helper: {exc}; "
+            f"next: restore {COORD_DEPLOY_RELPATH} and refresh the activation root",
+        )
+    else:
+        if tracked_deploy_sha != runtime_deploy_sha:
+            add(
+                "coord-deploy-script",
+                "FAIL",
+                f"runtime deploy helper {COORD_DEPLOY_SCRIPT} differs from tracked "
+                f"{COORD_DEPLOY_RELPATH}; next: refresh the activation root from this PR",
+            )
+        elif not os.access(COORD_DEPLOY_SCRIPT, os.X_OK):
+            add(
+                "coord-deploy-script",
+                "FAIL",
+                f"{COORD_DEPLOY_SCRIPT} is not executable; next: chmod +x {COORD_DEPLOY_RELPATH}",
+            )
+        else:
+            try:
+                contract = _coord_deploy_contract()
+            except Exception as exc:  # noqa: BLE001
+                add(
+                    "coord-deploy-script",
+                    "FAIL",
+                    f"{COORD_DEPLOY_SCRIPT} contract probe failed: {exc}; "
+                    "next: run scripts/hapax-coord-deploy --contract-json",
+                )
+            else:
+                expected_contract = {
+                    "schema": 1,
+                    "source_repo": str(COORD_SOURCE_REPO),
+                    "activation_worktree": str(COORD_ACTIVATION),
+                    "target_ref": "origin/main",
+                    "writes_deployed_sha": True,
+                    "restarts_service": COORD_SERVICE,
+                }
+                mismatches = {
+                    key: {"expected": value, "actual": contract.get(key)}
+                    for key, value in expected_contract.items()
+                    if contract.get(key) != value
+                }
+                if mismatches:
+                    add(
+                        "coord-deploy-script",
+                        "FAIL",
+                        f"{COORD_DEPLOY_SCRIPT} contract mismatch {mismatches}; "
+                        "next: restore the tracked deploy helper contract",
+                    )
+                else:
+                    add(
+                        "coord-deploy-script",
+                        "OK",
+                        f"runtime helper {COORD_DEPLOY_SCRIPT} sha256={runtime_deploy_sha[:16]} "
+                        f"matches tracked {COORD_DEPLOY_RELPATH} and contracts origin/main -> "
+                        f"{COORD_ACTIVATION} with .deployed-sha",
+                    )
+
+    expected_unit_names = set(UNITS)
+    filesystem_camera_units = sorted(
+        {
+            rel
+            for units_dir in (REPO / "systemd/units", USER_UNITS)
+            for rel in _filesystem_camera_service_paths(units_dir)
+        }
+    )
+    invalid_camera_units = _forbidden_camera_composites(filesystem_camera_units)
+    if (
+        CAMERA_TEMPLATE_UNIT in expected_unit_names
+        and filesystem_camera_units == [CAMERA_TEMPLATE_PATH]
+        and not invalid_camera_units
+    ):
+        add(
+            "units-template-name:studio-camera-reconfigure",
+            "OK",
+            f"canonical_basename_sha256={CAMERA_TEMPLATE_BASENAME_SHA256} "
+            f"canonical_path_sha256={CAMERA_TEMPLATE_PATH_SHA256} service_path_count=1 "
+            "has_space_before_at=False has_path_separator_after_at=False",
+        )
+    else:
+        add(
+            "units-template-name:studio-camera-reconfigure",
+            "FAIL",
+            f"expected canonical_path_sha256={CAMERA_TEMPLATE_PATH_SHA256}; "
+            f"camera_service_paths={filesystem_camera_units} "
+            f"invalid_camera_service_paths={invalid_camera_units}; "
+            "next: remove corrupted camera service paths and keep exactly one template file",
+        )
+    try:
+        tracked_unit_paths = _git_tracked_files()
+        camera_unit_paths = _camera_service_paths(tracked_unit_paths)
+        forbidden_camera_unit_paths = _forbidden_camera_composites(tracked_unit_paths)
+        valid_index_names = camera_unit_paths == [CAMERA_TEMPLATE_PATH]
+    except Exception as exc:  # noqa: BLE001
+        add(
+            "units-git-index-names:camera-template",
+            "FAIL",
+            f"could not inspect git index names: {exc}; "
+            "next: run git ls-files -z systemd/units and keep only the canonical camera template",
+        )
+    else:
+        if valid_index_names and not forbidden_camera_unit_paths:
+            add(
+                "units-git-index-names:camera-template",
+                "OK",
+                f"canonical_path_sha256={CAMERA_TEMPLATE_PATH_SHA256} "
+                f"service_path_count={len(camera_unit_paths)} forbidden_composite_count=0 "
+                "has_space_before_at=False has_path_separator_after_at=False",
+            )
+        else:
+            add(
+                "units-git-index-names:camera-template",
+                "FAIL",
+                f"expected canonical_path_sha256={CAMERA_TEMPLATE_PATH_SHA256}; "
+                f"camera_service_paths={camera_unit_paths} "
+                f"forbidden_composites={forbidden_camera_unit_paths}; "
+                "next: remove corrupted camera service paths with git rm/git mv and rerun",
+            )
+
+    try:
+        changed_unit_paths = _git_changed_files()
+        forbidden_systemd_path_shapes = _forbidden_systemd_path_shapes(changed_unit_paths)
+        whitespace_path_count, at_systemd_path_count = _systemd_path_shape_counts(
+            changed_unit_paths
+        )
+        changed_camera_paths = _camera_service_paths(changed_unit_paths)
+        forbidden_changed_camera_paths = _forbidden_camera_composites(changed_unit_paths)
+    except Exception as exc:  # noqa: BLE001
+        add(
+            "units-pr-diff-path-shapes:systemd",
+            "FAIL",
+            f"could not inspect PR changed unit paths: {exc}; "
+            "next: run git diff --name-only -z BASE...HEAD -- systemd/units",
+        )
+        add(
+            "units-pr-diff-camera-template",
+            "FAIL",
+            f"could not inspect PR changed unit paths: {exc}; "
+            "next: run git diff --name-only BASE...HEAD -- systemd/units",
+        )
+    else:
+        if not forbidden_systemd_path_shapes:
+            add(
+                "units-pr-diff-path-shapes:systemd",
+                "OK",
+                f"changed_systemd_count={len(changed_unit_paths)} "
+                f"systemd_diff_manifest_sha256={_paths_manifest_sha(changed_unit_paths)} "
+                f"whitespace_path_count={whitespace_path_count} "
+                f"at_systemd_path_count={at_systemd_path_count} "
+                f"canonical_camera_path_sha256={CAMERA_TEMPLATE_PATH_SHA256}",
+            )
+        else:
+            add(
+                "units-pr-diff-path-shapes:systemd",
+                "FAIL",
+                f"changed_systemd_count={len(changed_unit_paths)} "
+                f"systemd_diff_manifest_sha256={_paths_manifest_sha(changed_unit_paths)} "
+                f"forbidden_systemd_paths={forbidden_systemd_path_shapes}; "
+                "next: remove whitespace/@systemd composite paths from the PR diff and rerun",
+            )
+        changed_camera_ok = changed_camera_paths in ([], [CAMERA_TEMPLATE_PATH])
+        if changed_camera_ok and not forbidden_changed_camera_paths:
+            add(
+                "units-pr-diff-camera-template",
+                "OK",
+                f"canonical_path_sha256={CAMERA_TEMPLATE_PATH_SHA256} "
+                f"changed_camera_service_count={len(changed_camera_paths)} "
+                "forbidden_composite_count=0 has_space_before_at=False",
+            )
+        else:
+            add(
+                "units-pr-diff-camera-template",
+                "FAIL",
+                f"expected PR diff camera changes to be empty or exactly the canonical template; "
+                f"changed_camera_service_paths={changed_camera_paths} "
+                f"forbidden_changed_composites={forbidden_changed_camera_paths}; "
+                "next: remove corrupted camera paths from the PR diff and rerun",
+            )
 
     for rel in SCRIPTS:
         tracked = REPO / rel
@@ -138,6 +1424,21 @@ def run_checks(*, skip_systemctl: bool = False) -> list[dict[str, str]]:
         else:
             add(f"scripts-tracked:{rel}", "OK", "repo == activation root")
 
+    staged_chromium = _staged_chromium_executable()
+    if staged_chromium and _path_under(Path(staged_chromium), PLAYWRIGHT_BROWSER_ROOT):
+        add(
+            "playwright-browser-staged:chromium",
+            "OK",
+            f"staged under {PLAYWRIGHT_BROWSER_ROOT}",
+        )
+    else:
+        add(
+            "playwright-browser-staged:chromium",
+            "FAIL",
+            f"no executable Chromium under {PLAYWRIGHT_BROWSER_ROOT}; "
+            "next: run scripts/hapax-playwright-chromium-prestage before live recheck",
+        )
+
     if not skip_systemctl:
         for timer in TIMERS:
             enabled = _systemctl("is-enabled", timer) or "unknown"
@@ -149,6 +1450,32 @@ def run_checks(*, skip_systemctl: bool = False) -> list[dict[str, str]]:
                 f"enabled={enabled} active={active}"
                 + ("" if state == "OK" else f"; next: systemctl --user enable --now {timer}"),
             )
+        coord_active = _systemctl("is-active", COORD_SERVICE) or "unknown"
+        coord_wd = _systemctl("show", "-p", "WorkingDirectory", "--value", COORD_SERVICE)
+        coord_state = (
+            "OK" if coord_active == "active" and coord_wd == str(COORD_ACTIVATION) else "FAIL"
+        )
+        add(
+            f"units-active:{COORD_SERVICE}",
+            coord_state,
+            f"active={coord_active} working_directory={coord_wd or 'unknown'}"
+            + (
+                ""
+                if coord_state == "OK"
+                else f"; next: systemctl --user restart {COORD_SERVICE} after installing the activation-root unit"
+            ),
+        )
+        try:
+            detail = _exercise_coord_deploy_helper()
+        except Exception as exc:  # noqa: BLE001
+            add(
+                "coord-deploy-exercise",
+                "FAIL",
+                f"{COORD_DEPLOY_RELPATH} exercise failed: {exc}; "
+                "next: run the helper against a temp git origin with fake systemctl",
+            )
+        else:
+            add("coord-deploy-exercise", "OK", detail)
 
     now = datetime.now(UTC).timestamp()
     for name, (fname, budget, producer) in FEEDS.items():
@@ -201,7 +1528,7 @@ def run_checks(*, skip_systemctl: bool = False) -> list[dict[str, str]]:
                 f"vocab feed unreadable: {exc}; next: re-run the exporter, inspect {vocab_path}",
             )
 
-    coord_next = "next: systemctl --user status hapax-coord; coord-deploy.sh redeploys"
+    coord_next = f"next: systemctl --user status hapax-coord; {COORD_DEPLOY_RELPATH} redeploys"
     deployed_sha = ""
     try:
         body, elapsed = _http_json(f"{COORD_URL}/api/coord/version")
@@ -215,7 +1542,13 @@ def run_checks(*, skip_systemctl: bool = False) -> list[dict[str, str]]:
 
     if deployed_sha and DEPLOY_SHA_FILE.exists():
         on_disk = DEPLOY_SHA_FILE.read_text().strip()
-        if on_disk.startswith(deployed_sha) or deployed_sha.startswith(on_disk[:9]):
+        if not on_disk:
+            add(
+                "coord-provenance",
+                "FAIL",
+                f"{DEPLOY_SHA_FILE} is empty; next: {COORD_DEPLOY_RELPATH} must write the deployed sha",
+            )
+        elif _sha_prefix_match(deployed_sha, on_disk):
             add("coord-provenance", "OK", f"served sha matches {DEPLOY_SHA_FILE.name}")
         else:
             add(
@@ -228,66 +1561,314 @@ def run_checks(*, skip_systemctl: bool = False) -> list[dict[str, str]]:
         add(
             "coord-provenance",
             "FAIL",
-            f"{DEPLOY_SHA_FILE} missing; next: coord-deploy.sh writes it",
+            f"{DEPLOY_SHA_FILE} missing; next: {COORD_DEPLOY_RELPATH} writes it",
         )
 
     try:
-        t0 = time.monotonic()
-        with urllib.request.urlopen(f"{COORD_URL}/", timeout=5) as resp:
-            page = resp.read(4096).decode(errors="replace")
-        elapsed = time.monotonic() - t0
+        page, elapsed = _http_text(f"{COORD_URL}/")
         dark = "background: hsl" in page
+        boot = 'src="/js/boot.js"' in page or "src='/js/boot.js'" in page
+        named = "HAPAX COORDINATION" in page or "connecting to the yard" in page
         fast = elapsed < 2.0
-        if dark and fast:
+        if dark and boot and named and fast:
             add(
                 "coord-boot-shell",
                 "OK",
-                f"dark boot shell served in {elapsed:.2f}s (<2s; pixel-level instant-paint "
-                "witnessed via the yard-inspect playwright harness)",
+                f"dark boot shell + boot.js served in {elapsed:.2f}s (<2s)",
             )
         else:
             add(
                 "coord-boot-shell",
                 "FAIL",
-                f"dark={dark} elapsed={elapsed:.2f}s; {coord_next}",
+                f"dark={dark} boot_js={boot} named_shell={named} elapsed={elapsed:.2f}s; {coord_next}",
             )
     except Exception as exc:  # noqa: BLE001
         add("coord-boot-shell", "FAIL", f"/ unreachable: {exc}; {coord_next}")
+
+    try:
+        if browser_probe is None:
+            witness = _browser_live_surface(COORD_URL, deployed_sha)
+        else:
+            witness = browser_probe(COORD_URL)
+    except Exception as exc:  # noqa: BLE001
+        witness = BrowserSurfaceWitness(
+            ok=False,
+            detail=f"browser probe raised: {exc}; next: fix the browser witness path",
+        )
+
+    if not witness.ok:
+        add(
+            "coord-last-good-paint",
+            "FAIL",
+            f"{witness.detail}; next: verify / renders through Playwright",
+        )
+        add(
+            "coord-yard-status-strip",
+            "FAIL",
+            f"{witness.detail}; next: verify live dashboard render includes #yard-status",
+        )
+    else:
+        paint_source = "last-good" if witness.last_good_seen else "missing"
+        paint_elapsed = witness.last_good_elapsed if witness.last_good_seen else None
+        paint_elapsed_label = "missing" if paint_elapsed is None else f"{paint_elapsed:.3f}s"
+        last_good_elapsed_label = (
+            "missing" if witness.last_good_elapsed is None else f"{witness.last_good_elapsed:.3f}s"
+        )
+        paint_ok = (
+            paint_elapsed is not None
+            and paint_elapsed < 2.0
+            and witness.last_good_seen
+            and witness.last_good_visible_seen
+            and witness.last_good_content_seen
+            and witness.last_good_rect_area > 0
+            and witness.dark_paint_seen
+            and not witness.white_paint_seen
+            and witness.pixel_sample_count > 0
+            and witness.pixel_white_ratio is not None
+            and witness.pixel_white_ratio == 0.0
+        )
+        add(
+            "coord-last-good-paint",
+            "OK" if paint_ok else "FAIL",
+            f"browser paint_source={paint_source} paint_elapsed={paint_elapsed_label} "
+            f"last_good_seen={witness.last_good_seen} "
+            f"last_good_elapsed={last_good_elapsed_label} "
+            f"last_good_visible={witness.last_good_visible_seen} "
+            f"last_good_content={witness.last_good_content_seen} "
+            f"last_good_rect_area={witness.last_good_rect_area} "
+            f"dark_paint={witness.dark_paint_seen} "
+            f"white_paint={witness.white_paint_seen} "
+            f"pixel_samples={witness.pixel_sample_count} "
+            f"pixel_white_ratio={witness.pixel_white_ratio} "
+            f"pixel_nonwhite_ratio={witness.pixel_nonwhite_ratio} "
+            f"witness_elapsed={witness.elapsed:.2f}s "
+            f"{witness.detail}"
+            + (
+                ""
+                if paint_ok
+                else "; next: seed and render #last-good-replay under 2s with zero sampled white pixels"
+            ),
+        )
+
+        fresh_yard_elapsed = (
+            "missing"
+            if witness.fresh_yard_elapsed is None
+            else f"{witness.fresh_yard_elapsed:.3f}s"
+        )
+        yard_sha_prefix = _visible_sha_prefix(deployed_sha)
+        yard_sha_visible = not yard_sha_prefix or yard_sha_prefix in witness.fresh_yard_text
+        yard_ok = (
+            witness.fresh_yard_seen
+            and witness.fresh_yard_elapsed is not None
+            and witness.fresh_yard_elapsed < 2.0
+            and witness.fresh_yard_chip_count > 0
+            and yard_sha_visible
+        )
+        add(
+            "coord-yard-status-strip",
+            "OK" if yard_ok else "FAIL",
+            f"browser fresh_yard_seen={witness.fresh_yard_seen} "
+            f"fresh_yard_elapsed={fresh_yard_elapsed} chips={witness.fresh_yard_chip_count} "
+            f"yard_sha_prefix={yard_sha_prefix or 'missing'} "
+            f"yard_sha_visible={yard_sha_visible} "
+            f"yard_text={_text_excerpt(witness.fresh_yard_text)!r} "
+            f"dashboard_seen={witness.dashboard_seen} witness_elapsed={witness.elapsed:.2f}s "
+            f"{witness.detail}"
+            + (
+                ""
+                if yard_ok
+                else "; next: verify panel-yard-status renders health chips and the deployed SHA prefix before 2s"
+            ),
+        )
 
     try:
         rails, elapsed = _http_json(f"{COORD_URL}/api/coord/rails")
         feed_state = rails.get("feed_state")
         stations = rails.get("stations") or []
         items = rails.get("items") or []
-        if feed_state == "live" and stations and elapsed < 2.0:
-            add(
-                "coord-rails-consumed",
-                "OK",
-                f"feed_state=live, {len(stations)} stations from the consumed vocab, "
-                f"{len(items)} items in {elapsed:.2f}s",
+        ladder_tokens: list[str] = []
+        observed_stage_tokens: dict[str, str] = {}
+        try:
+            ladder_tokens, vocab_tokens, observed_stage_tokens = _exported_vocab_contract(
+                vocab_path
             )
-        else:
+        except Exception as exc:  # noqa: BLE001
+            vocab_tokens = set()
             add(
                 "coord-rails-consumed",
                 "FAIL",
-                f"feed_state={feed_state} stations={len(stations)} elapsed={elapsed:.2f}s; "
-                "next: check feed freshness above, then the coord service log",
+                f"{vocab_path} unusable for station parity: {exc}; "
+                "next: uv run python scripts/hapax-sdlc-vocab-export",
             )
-        verdicts = [i for i in items if i.get("review")]
-        blocked = [i for i in verdicts if str(i.get("review")).lower() == "blocked"]
-        if verdicts:
-            add(
-                "coord-verdicts-visible",
-                "OK",
-                f"{len(verdicts)} items carry live review verdicts ({len(blocked)} blocked)",
+        station_tokens = [_station_token(station) for station in stations]
+        unparseable_stations = len([token for token in station_tokens if not token])
+        outside_vocab = sorted(
+            {token for token in station_tokens if token and token not in vocab_tokens}
+        )
+        station_order_matches = bool(ladder_tokens) and station_tokens == ladder_tokens
+        event_log_error = ""
+        unmapped_event_stages: list[str] = []
+        expected_item_stations: dict[str, str] = {}
+        if vocab_tokens:
+            try:
+                expected_item_stations, unmapped_event_stages = _event_log_station_expectations(
+                    COORD / FEEDS["sdlc-events"][0], observed_stage_tokens
+                )
+            except Exception as exc:  # noqa: BLE001
+                event_log_error = str(exc)
+        served_item_stations = {
+            str(item.get("id")).strip(): _station_token(item.get("station"))
+            for item in items
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        }
+        missing_items = sorted(set(expected_item_stations) - set(served_item_stations))
+        station_mismatches = sorted(
+            f"{item_id}:{served_item_stations.get(item_id) or 'missing'}!={expected}"
+            for item_id, expected in expected_item_stations.items()
+            if served_item_stations.get(item_id) != expected
+        )
+        if vocab_tokens:
+            hard_ok = (
+                feed_state == "live"
+                and station_tokens
+                and not unparseable_stations
+                and not outside_vocab
+                and station_order_matches
+                and not event_log_error
+                and not missing_items
+                and not station_mismatches
+                and elapsed < 2.0
             )
-        else:
+            if hard_ok and expected_item_stations and not unmapped_event_stages:
+                add(
+                    "coord-rails-consumed",
+                    "OK",
+                    f"feed_state=live, {len(station_tokens)} stations match exported ladder order, "
+                    f"{len(expected_item_stations)} item station(s) match sdlc-events.jsonl via "
+                    f"observed_stages, {len(items)} served items in {elapsed:.2f}s",
+                )
+            elif hard_ok and unmapped_event_stages:
+                add(
+                    "coord-rails-consumed",
+                    "WARN",
+                    f"feed_state=live, {len(station_tokens)} stations match exported ladder order, "
+                    f"{len(expected_item_stations)} known item station(s) match sdlc-events.jsonl; "
+                    f"honest unknown passthrough: {unmapped_event_stages[:3]}, "
+                    f"{len(items)} served items in {elapsed:.2f}s",
+                )
+            else:
+                failure_bits = [
+                    f"feed_state={feed_state}",
+                    f"stations={len(stations)}",
+                    f"unparseable={unparseable_stations}",
+                    f"outside_vocab={outside_vocab[:5]}",
+                    f"station_order_matches={station_order_matches}",
+                    f"event_log_error={event_log_error or 'none'}",
+                    f"unmapped_event_stages={unmapped_event_stages[:3]}",
+                    f"missing_items={missing_items[:3]}",
+                    f"station_mismatches={station_mismatches[:3]}",
+                    f"elapsed={elapsed:.2f}s",
+                ]
+                add(
+                    "coord-rails-consumed",
+                    "FAIL",
+                    " ".join(failure_bits)
+                    + "; next: check sdlc-vocab.json freshness, published sdlc-events.jsonl, "
+                    "and that the coord rails fold consumes exported ladder/observed-stage tokens",
+                )
+        try:
+            expected_reviews, expected_receipts = _review_receipt_expectations(
+                COORD / FEEDS["review-receipts"][0]
+            )
+            rails_by_id = {
+                str(item.get("id")).strip(): item
+                for item in items
+                if isinstance(item, dict) and str(item.get("id") or "").strip()
+            }
+            missing_reviews = sorted(set(expected_reviews) - set(rails_by_id))
+            review_mismatches = sorted(
+                f"{task_id}:{rails_by_id.get(task_id, {}).get('review')!s}!={expected}"
+                for task_id, expected in expected_reviews.items()
+                if task_id in rails_by_id
+                and str(rails_by_id[task_id].get("review") or "").strip() != expected
+            )
+            missing_receipts = sorted(set(expected_receipts) - set(rails_by_id))
+            receipt_mismatches = sorted(
+                f"{task_id}:{rails_by_id.get(task_id, {}).get('receipt')!s}!={expected}"
+                for task_id, expected in expected_receipts.items()
+                if task_id in rails_by_id
+                and str(rails_by_id[task_id].get("receipt") or "").strip() != expected
+            )
+            expected_blocked = [
+                task_id
+                for task_id, verdict in expected_reviews.items()
+                if verdict.lower() == "blocked"
+            ]
+            expected_blocked_reviews = {
+                task_id: expected_reviews[task_id] for task_id in expected_blocked
+            }
+            rendered_blocked_ids = _rendered_expected_verdict_ids(
+                expected_blocked_reviews, witness.rendered_verdict_text
+            )
+            rendered_receipt_ids = _rendered_expected_verdict_ids(
+                expected_receipts, witness.rendered_verdict_text
+            )
+            visible_blocked = [
+                task_id
+                for task_id in expected_blocked
+                if task_id in rails_by_id
+                and str(rails_by_id[task_id].get("review") or "").strip().lower() == "blocked"
+            ]
+        except Exception as exc:  # noqa: BLE001
             add(
                 "coord-verdicts-visible",
                 "FAIL",
-                "no rails item carries a review verdict; "
-                "next: check review-receipts feed + the coord fold",
+                f"review-receipts feed unusable for rails comparison: {exc}; "
+                "next: run scripts/hapax-review-receipts-export and scripts/hapax-rails-event-log",
             )
+        else:
+            rendered_verdicts_ok = (
+                witness.ok
+                and witness.rendered_blocked_seen
+                and witness.rendered_review_seen
+                and bool(rendered_blocked_ids)
+                and (not expected_receipts or bool(rendered_receipt_ids))
+            )
+            if (
+                visible_blocked
+                and not missing_reviews
+                and not review_mismatches
+                and not missing_receipts
+                and not receipt_mismatches
+                and rendered_verdicts_ok
+            ):
+                add(
+                    "coord-verdicts-visible",
+                    "OK",
+                    f"{len(expected_reviews)} review receipt(s) and {len(expected_receipts)} "
+                    f"acceptance receipt(s) match rails items ({len(visible_blocked)} blocked); "
+                    f"rendered_blocked={witness.rendered_blocked_seen} "
+                    f"rendered_receipt={witness.rendered_receipt_seen} "
+                    f"rendered_review={witness.rendered_review_seen} "
+                    f"rendered_blocked_ids={rendered_blocked_ids[:3]} "
+                    f"rendered_receipt_ids={rendered_receipt_ids[:3]} "
+                    f"dom={witness.rendered_verdict_detail or 'seen'}",
+                )
+            else:
+                add(
+                    "coord-verdicts-visible",
+                    "FAIL",
+                    f"expected_reviews={len(expected_reviews)} expected_receipts={len(expected_receipts)} "
+                    f"visible_blocked={len(visible_blocked)} missing_reviews={missing_reviews[:3]} "
+                    f"review_mismatches={review_mismatches[:3]} missing_receipts={missing_receipts[:3]} "
+                    f"receipt_mismatches={receipt_mismatches[:3]}; "
+                    f"rendered_blocked={witness.rendered_blocked_seen} "
+                    f"rendered_receipt={witness.rendered_receipt_seen} "
+                    f"rendered_review={witness.rendered_review_seen}; "
+                    f"rendered_blocked_ids={rendered_blocked_ids[:3]} "
+                    f"rendered_receipt_ids={rendered_receipt_ids[:3]}; "
+                    "next: check review-receipts feed and the coord rails fold",
+                )
     except Exception as exc:  # noqa: BLE001
         add("coord-rails-consumed", "FAIL", f"rails endpoint unreachable: {exc}; {coord_next}")
 

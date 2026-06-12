@@ -21,6 +21,12 @@ VAULT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
 OUT = Path.home() / ".cache/hapax/coord/review-receipts.json"
 
 
+def _mapping_rows(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    return [row for row in value if isinstance(row, dict)]
+
+
 def dossier_summary(path: Path) -> dict | None:
     try:
         d = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace"))
@@ -32,7 +38,7 @@ def dossier_summary(path: Path) -> dict | None:
         }
     if not isinstance(d, dict):
         return None
-    reviewers = d.get("reviewers") or []
+    reviewers = _mapping_rows(d.get("reviewers"))
     return {
         "task_id": d.get("task_id") or path.name.split(".review-dossier")[0],
         "pr": d.get("pr"),
@@ -44,7 +50,7 @@ def dossier_summary(path: Path) -> dict | None:
         "critical_count": sum(
             1
             for r in reviewers
-            for f in (r.get("findings") or [])
+            for f in _mapping_rows(r.get("findings"))
             if f.get("severity") == "critical"
         ),
         "no_quorum_cause": d.get("no_quorum_cause"),

@@ -395,7 +395,15 @@ ACTION=="add", SUBSYSTEM=="video4linux", ENV{ID_V4L_CAPABILITIES}==":capture:", 
 
 ### Template unit
 
-`systemd/units/studio-camera-reconfigure@.service` (new). Uses `%h` (systemd unit specifier for the user's home directory) and `%i` (instance name from the template); no literal path prefixes.
+`systemd/units/studio-camera-reconfigure@.service` (new). Uses `%h` (systemd unit specifier for the user's home directory) and `%i` (instance name from the template), rooted at the source-activation worktree rather than a mutable development checkout.
+
+Recheck:
+
+```bash
+systemctl --user cat studio-camera-reconfigure@.service | rg -F '%h/.cache/hapax/source-activation/worktree/systemd/units/studio-camera-reconfigure.sh'
+git diff --name-status origin/main...HEAD -- systemd/units | cat -vet
+HAPAX_RECHECK_PREMERGE_BRIDGE=1 HAPAX_RECHECK_ACTIVATION=/data/cache/hapax/scratch/vocab-export uv run python scripts/hapax-coord-feeds-recheck | rg 'units-(template-name|git-index-names|pr-diff-path-shapes|pr-diff-camera-template)'
+```
 
 ```ini
 [Unit]
@@ -405,10 +413,10 @@ After=dev-%i.device
 
 [Service]
 Type=oneshot
-ExecStart=%h/projects/hapax-council/systemd/units/studio-camera-reconfigure.sh %i
+ExecStart=%h/.cache/hapax/source-activation/worktree/systemd/units/studio-camera-reconfigure.sh %i
 ```
 
-`%h` resolves to the invoking user's home directory; `%i` is the template instance.
+`%h` resolves to the invoking user's home directory; `%i` is the template instance. Source activation supplies the deployed script root.
 
 `studio-camera-reconfigure.sh` (new, in `systemd/units/`):
 

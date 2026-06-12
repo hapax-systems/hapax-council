@@ -237,12 +237,17 @@ def fold_once() -> int:
             source_file=str(DEPLOY_SHA_FILE),
         )
 
+    EVENT_LOG.parent.mkdir(parents=True, exist_ok=True)
     if events:
-        EVENT_LOG.parent.mkdir(parents=True, exist_ok=True)
         # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
         with EVENT_LOG.open("a", encoding="utf-8") as f:
             for evt in events:
                 f.write(json.dumps(evt, sort_keys=True) + "\n")
+    else:
+        # A quiet fold is still a live producer heartbeat. The rails endpoint
+        # uses EVENT_LOG mtime for feed health, so refresh it even when no
+        # transition event was appended.
+        EVENT_LOG.touch()
 
     new_shadow = {
         "tasks": tasks,

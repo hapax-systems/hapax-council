@@ -67,6 +67,25 @@ class TestReceiptsExporter:
         payload = json.loads(out.read_text())
         assert payload["dossiers"][0]["verdict"] == "unparseable"
 
+    def test_parseable_malformed_dossier_shape_does_not_crash(self, tmp_path, monkeypatch):
+        mod, vault, out = self._run(tmp_path, monkeypatch)
+        (vault / "t4.review-dossier.yaml").write_text(
+            "task_id: t4\nreview_team_verdict: blocked\nhead_sha: abc123\n"
+            "reviewers:\n"
+            "- family: codex\n  verdict: block\n  findings: scalar-not-list\n"
+            "- scalar-reviewer\n"
+        )
+        (vault / "t5.review-dossier.yaml").write_text(
+            "task_id: t5\nreview_team_verdict: blocked\nreviewers: scalar-not-list\n"
+        )
+        assert mod.main() == 0
+        payload = json.loads(out.read_text())
+        summaries = {d["task_id"]: d for d in payload["dossiers"]}
+        assert summaries["t4"]["families"] == ["codex"]
+        assert summaries["t4"]["critical_count"] == 0
+        assert summaries["t5"]["families"] == []
+        assert summaries["t5"]["critical_count"] == 0
+
 
 class TestVocabExporter:
     def test_observed_forms_bridge_to_ladder_tokens(self, tmp_path, monkeypatch):
