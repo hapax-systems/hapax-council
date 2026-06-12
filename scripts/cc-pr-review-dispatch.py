@@ -698,7 +698,7 @@ def review_pr(
             LOG.warning("task note %s has no task_id — cannot key a dossier", note_path.name)
             return {"status": "no_task", "pr": pr_number}
         keyed_matches.append((note_path, frontmatter, task_id))
-    _, primary_frontmatter, primary_task_id = keyed_matches[0]
+    task_ids = [item[2] for item in keyed_matches]
 
     if not force:
         fresh_results: list[dict[str, Any]] = []
@@ -802,17 +802,17 @@ def review_pr(
     team_class = review_team.strongest_team_class(
         [review_team.team_class_for(fm, pr_info.files, registry) for _, fm, _ in keyed_matches]
     )
-    writer_family = review_team.writer_family_for_lane(
-        str(primary_frontmatter.get("assigned_to") or ""), registry
+    assigned_lane = next(
+        (str(fm.get("assigned_to") or "") for _, fm, _ in keyed_matches if fm.get("assigned_to")),
+        "",
     )
+    writer_family = review_team.writer_family_for_lane(assigned_lane, registry)
     constitution = review_team.constitute_team(
         team_class, writer_family, registry, pr_number=pr_number
     )
     plan = {
         "pr": pr_number,
-        "task_id": (
-            primary_task_id if len(keyed_matches) == 1 else [item[2] for item in keyed_matches]
-        ),
+        "task_id": task_ids[0] if len(task_ids) == 1 else task_ids,
         "head_sha": pr_info.head_sha,
         "team_class": team_class,
         "quorum_required": constitution.quorum_required,
@@ -842,7 +842,7 @@ def review_pr(
         render_reviewer_prompt(
             seat=seat,
             pr_info=pr_info,
-            task_id=task_id,
+            task_id=task_ids[0] if len(task_ids) == 1 else ", ".join(task_ids),
             team_class=team_class,
             lenses=lenses,
             charters=charters,

@@ -423,6 +423,7 @@ checklist: {}
         assert (note_a.parent / "task-a.review-dossier.yaml").is_file()
         assert (note_b.parent / "task-b.review-dossier.yaml").is_file()
         assert len(reviewers.invocations) == 3
+        assert "Linked cc-task: task-a, task-b" in reviewers.invocations[0][2]
 
         second_reviewers = RecordingReviewers()
         second = dispatch.review_pr(
