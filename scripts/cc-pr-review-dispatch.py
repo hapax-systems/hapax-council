@@ -380,6 +380,17 @@ def extract_review(reply: str) -> dict[str, Any] | None:
     return _parse_review_yaml(reply, parse_path="raw")
 
 
+class ReviewerProcessError(RuntimeError):
+    """A reviewer CLI exited nonzero. Carries the merged output so the
+    quota-wall classifier can read what the PROCESS said (channel trust:
+    only this path gets pattern-level wall matching)."""
+
+    def __init__(self, output: str, *, returncode: int) -> None:
+        super().__init__(f"reviewer exited rc={returncode}: {output[:300]}")
+        self.output = output
+        self.returncode = returncode
+
+
 def default_reviewer_runner(seat: review_team.Seat, family_cfg: dict[str, Any], prompt: str) -> str:
     """Run one reviewer CLI (argv from the registry, prompt on stdin)."""
 
@@ -402,10 +413,12 @@ def default_reviewer_runner(seat: review_team.Seat, family_cfg: dict[str, Any], 
             proc.returncode,
             proc.stderr.strip()[:300],
         )
-        # real CLI quota walls arrive on STDERR with a nonzero exit (round-3
-        # review finding): surface stderr so the quota-wall classifier sees
-        # it — stdout alone would be empty and classify as invalid-output
-        return (proc.stdout + "\n" + proc.stderr).strip()
+        # a NONZERO exit is the CLI speaking, not the model (round-5 channel
+        # trust): raise so the classifier knows the process failed — pattern-
+        # level wall matching applies only on this path
+        raise ReviewerProcessError(
+            (proc.stdout + "\n" + proc.stderr).strip(), returncode=proc.returncode
+        )
     return proc.stdout
 
 
@@ -421,20 +434,33 @@ def dispatch_reviews(
 
     def run_one(index: int) -> dict[str, Any]:
         seat = constitution.seats[index]
-        error_text = ""
+        process_failed = False
+        process_output = ""
         try:
             reply = reviewer_runner(seat, family_cfgs[seat.family], prompts[index])
+        except ReviewerProcessError as exc:
+            LOG.warning("reviewer %s (%s) process failed: %s", seat.id, seat.family, exc)
+            reply = ""
+            process_failed = True
+            process_output = exc.output
         except Exception as exc:  # noqa: BLE001 — one dead reviewer must not kill the round
             LOG.warning("reviewer %s (%s) failed: %s", seat.id, seat.family, exc)
             reply = ""
-            error_text = str(exc)
+            process_failed = True
+            process_output = str(exc)
         parsed = extract_review(reply or "")
         if parsed is None:
             # a provider usage wall is a FAMILY-AVAILABILITY signal, not a
             # parse failure — naming it lets the next constitution degrade
             # instead of seal (postmortem 2026-06-12: the claude weekly wall
-            # rode as invalid-output for 13h and froze every merge)
-            if review_team.is_quota_wall(reply or "") or review_team.is_quota_wall(error_text):
+            # rode as invalid-output for 13h and froze every merge). Channel
+            # trust (round-5): pattern matching only on PROCESS failure;
+            # clean-exit text matches exact provider sentences only.
+            if process_failed:
+                walled = review_team.is_quota_wall(process_output, process_failed=True)
+            else:
+                walled = review_team.is_quota_wall(reply or "", process_failed=False)
+            if walled:
                 LOG.warning(
                     "reviewer %s (%s) hit a provider quota wall -> verdict quota-wall",
                     seat.id,
@@ -445,7 +471,7 @@ def dispatch_reviews(
                 LOG.warning("reviewer %s output unparseable -> verdict invalid-output", seat.id)
                 verdict = "invalid-output"
             reply_excerpt = truncate_context(
-                (reply or error_text or ""), limit=MAX_REVIEW_REPLY_EXCERPT_CHARS
+                (reply or process_output or ""), limit=MAX_REVIEW_REPLY_EXCERPT_CHARS
             ).strip()
             return {
                 "id": seat.id,

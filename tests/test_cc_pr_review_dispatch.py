@@ -1087,8 +1087,9 @@ class TestFamilyOutageDegradation:
         assert entries[0]["degraded_family_outage"] == ["claude"]
 
     def test_wall_on_stderr_classifies(self) -> None:
-        """Round-3 finding: real CLI walls arrive on STDERR with rc!=0 — the
-        runner must surface them to the classifier."""
+        """Round-3/5 findings: real CLI walls arrive on STDERR with rc!=0 —
+        the runner raises a typed process error, and pattern-level wall
+        matching applies ONLY on that channel."""
 
         family_cfg = {
             "family": "claude",
@@ -1100,5 +1101,8 @@ class TestFamilyOutageDegradation:
             "timeout_seconds": 30,
         }
         seat = dispatch.review_team.Seat(id="claude-1", family="claude")
-        reply = dispatch.default_reviewer_runner(seat, family_cfg, "prompt")
-        assert dispatch.review_team.is_quota_wall(reply)
+        try:
+            dispatch.default_reviewer_runner(seat, family_cfg, "prompt")
+            raise AssertionError("nonzero exit must raise ReviewerProcessError")
+        except dispatch.ReviewerProcessError as exc:
+            assert dispatch.review_team.is_quota_wall(exc.output, process_failed=True)

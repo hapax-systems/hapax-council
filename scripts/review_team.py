@@ -79,6 +79,20 @@ _QUOTA_WALL_RE = re.compile(
 #: (round-4 review finding).
 _QUOTA_WALL_MAX_CHARS = 600
 
+#: Channel trust (round-5 review finding): a reviewer process that exited
+#: NONZERO speaks with CLI authority — pattern matching applies. A clean-exit
+#: reply is MODEL-INFLUENCED TEXT: only exact literal provider wall sentences
+#: count, so forging an outage requires controlling the CLI's exit path, not
+#: its prose. Extend this registry when a provider changes its wall copy
+#: (the freshness loop's job).
+QUOTA_WALL_EXACT_SENTENCES = (
+    "You've hit your weekly limit",
+    "You've hit your usage limit",
+    "You have hit your usage limit",
+    "Too Many Requests",
+    "RESOURCE_EXHAUSTED",
+)
+
 #: The dispatcher's family-outage witness state (canonical path; the
 #: dispatcher aliases this). Admission consults it so a forged dossier
 #: cannot self-certify a degradation (round-4 review finding).
@@ -86,11 +100,13 @@ FAMILY_OUTAGE_STATE = Path.home() / ".cache" / "hapax" / "review-team" / "family
 FAMILY_OUTAGE_TTL_S = 2 * 3600
 
 
-def is_quota_wall(text: str) -> bool:
+def is_quota_wall(text: str, *, process_failed: bool = False) -> bool:
     """True when reviewer output/error text is a provider usage wall.
 
-    Deliberately strict: phrase-level patterns only, and only on SHORT
-    text — forging an outage must be harder than hitting one.
+    Deliberately strict — forging an outage must be harder than hitting one:
+    short text only; PATTERN matching only when the reviewer PROCESS failed
+    (nonzero exit — CLI authority); a clean-exit reply matches only the exact
+    literal provider sentences in :data:`QUOTA_WALL_EXACT_SENTENCES`.
     """
 
     if not text:
@@ -98,7 +114,9 @@ def is_quota_wall(text: str) -> bool:
     stripped = text.strip()
     if len(stripped) > _QUOTA_WALL_MAX_CHARS:
         return False
-    return bool(_QUOTA_WALL_RE.search(stripped))
+    if process_failed:
+        return bool(_QUOTA_WALL_RE.search(stripped))
+    return any(sentence in stripped for sentence in QUOTA_WALL_EXACT_SENTENCES)
 
 
 GATE_KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_GATE_OFF"
@@ -685,6 +703,16 @@ def _dossier_validity_blockers(
             blockers.append("review_dossier_degradation_flags_inconsistent")
             return tuple(blockers)
         degraded_outage = _note_out
+        # a degraded family must be a REAL roster family (round-5 finding:
+        # a nonsense family name in the markers + witness state would buy a
+        # t1->t2 downgrade while leaving the actual roster untouched)
+        _full_roster = {str(entry["family"]) for entry in registry["families"]}
+        _unknown_degraded = sorted(set(degraded_outage) - _full_roster)
+        if _unknown_degraded:
+            blockers.append(
+                "review_dossier_degradation_unknown_family:" + ",".join(_unknown_degraded)
+            )
+            return tuple(blockers)
         # external witness (round-4 finding: dossier-internal consistency can
         # be forged wholesale): each degraded family must appear in the
         # dispatcher's outage state with observed_at within TTL BEFORE this

@@ -863,11 +863,19 @@ class TestFamilyOutageDegradation:
         rt = _load_review_team_module()
         assert rt.is_quota_wall(self.WALL_2026_06_12)
 
-    def test_wall_variants_classify(self) -> None:
+    def test_wall_variants_classify_on_process_failure(self) -> None:
         rt = _load_review_team_module()
-        assert rt.is_quota_wall("HTTP 429 Too Many Requests")
-        assert rt.is_quota_wall("RESOURCE_EXHAUSTED: Quota exceeded")
-        assert rt.is_quota_wall("rate limit reached for requests")
+        assert rt.is_quota_wall("HTTP 429 Too Many Requests", process_failed=True)
+        assert rt.is_quota_wall("RESOURCE_EXHAUSTED: Quota exceeded", process_failed=True)
+        assert rt.is_quota_wall("rate limit reached for requests", process_failed=True)
+
+    def test_clean_exit_text_matches_exact_sentences_only(self) -> None:
+        # round-5 channel trust: model-influenced text cannot forge a wall
+        # with quota-looking prose — only the literal provider sentences count
+        rt = _load_review_team_module()
+        assert not rt.is_quota_wall("HTTP 429 error while fetching", process_failed=False)
+        assert not rt.is_quota_wall("quota exceeded in the parser fixture", process_failed=False)
+        assert rt.is_quota_wall(self.WALL_2026_06_12, process_failed=False)
 
     def test_review_prose_is_not_a_wall(self) -> None:
         rt = _load_review_team_module()
@@ -1119,3 +1127,30 @@ class TestFamilyOutageDegradation:
         )
         assert len(long_reply) > 600
         assert not rt.is_quota_wall(long_reply)
+
+    def test_unknown_degraded_family_blocks_admission(self, tmp_path) -> None:
+        # round-5: a nonsense family in the markers must not buy a downgrade
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_outage:claudex",
+            "degraded_to:t2_standard",
+            "post_recovery_rereview_required",
+        )
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("gemini-2", "gemini", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=self._witness(tmp_path, families=("claudex",)),
+        )
+        assert any(b.startswith("review_dossier_degradation_unknown_family:") for b in blockers)
