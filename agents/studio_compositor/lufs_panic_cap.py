@@ -65,7 +65,7 @@ DEFAULT_SINK_NAME: str = "hapax-broadcast-master"
 DEFAULT_MONITOR_SOURCE: str = "hapax-broadcast-master.monitor"
 
 AWARENESS_STATE_PATH: Path = Path("/dev/shm/hapax-awareness/state.json")
-REFUSAL_LOG_PATH: Path = Path("/dev/shm/hapax-refusal/log.jsonl")
+REFUSAL_LOG_PATH: Path = Path("/dev/shm/hapax-refusals/log.jsonl")
 
 SAMPLE_RATE_HZ: int = 44100
 CHANNEL_COUNT: int = 2
@@ -439,6 +439,7 @@ class LufsPanicCap:
             ),
         }
         try:
+            # jsonl-rotation: exempt(domain rotation; refusal-brief rotator archives daily)
             with REFUSAL_LOG_PATH.open("a") as fh:
                 fh.write(json.dumps(entry) + "\n")
         except Exception:

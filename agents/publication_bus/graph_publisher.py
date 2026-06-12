@@ -309,6 +309,7 @@ def persist_graph_state(
         "deposit_id": deposit_id,
     }
     history_path = graph_dir / "version-doi-history.jsonl"
+    # jsonl-rotation: exempt(per-graph version ledger; bounded by deposit/version events)
     with history_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(history_entry) + "\n")
 

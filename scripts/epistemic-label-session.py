@@ -73,6 +73,7 @@ def write_label(record: dict, labels: dict[str, int], manifest_hash: str) -> Non
         "provenance": "operator_label_entry",
         "labels": labels,
     }
+    # jsonl-rotation: exempt(one-shot human labeling session output)
     with OUTPUT.open("a") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 

@@ -50,7 +50,7 @@ class DMNDaemon:
         self._pulse = DMNPulse(self._buffer)
         self._running = True
         self._start_time = time.monotonic()
-        self._feedback_cursor: int = 0  # byte offset into impingements.jsonl
+        self._feedback_cursor: int = 0  # byte offset into fortress-actions.jsonl
         self._last_aperture_s: float = 0.0
 
     async def run(self) -> None:
@@ -155,7 +155,15 @@ class DMNDaemon:
             return
         try:
             size = path.stat().st_size
-            if size <= self._feedback_cursor:
+            if size < self._feedback_cursor:
+                log.warning(
+                    "Fortress feedback cursor reset after shrink: path=%s size=%d cursor=%d",
+                    path,
+                    size,
+                    self._feedback_cursor,
+                )
+                self._feedback_cursor = 0
+            if size == self._feedback_cursor:
                 return
             with path.open("r", encoding="utf-8") as f:
                 f.seek(self._feedback_cursor)

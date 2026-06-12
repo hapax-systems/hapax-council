@@ -186,6 +186,16 @@ class DiscordWebhookPoster:
         if not self._event_path.exists():
             return
         try:
+            size = self._event_path.stat().st_size
+            if byte_offset > size:
+                log.warning(
+                    "event cursor reset after shrink: path=%s size=%d cursor=%d",
+                    self._event_path,
+                    size,
+                    byte_offset,
+                )
+                byte_offset = 0
+                self._write_cursor(byte_offset)
             with self._event_path.open("rb") as fh:
                 fh.seek(byte_offset)
                 while True:

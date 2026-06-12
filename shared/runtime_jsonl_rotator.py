@@ -1,11 +1,8 @@
 """Size-based rotation for hot JSONL runtime ledgers.
 
-The audit-w0 log-bomb task covers three append-only files that are written by
-long-running daemons but reopened for each append:
-
-* ``~/hapax-state/affordance/dispatch-trace.jsonl``
-* ``~/hapax-state/affordance/recruitment-log.jsonl``
-* ``/dev/shm/hapax-dmn/impingements.jsonl``
+The registry covers append-only files that are written by long-running
+daemons but reopened for each append. Dynamic, partitioned, or domain-rotated
+ledgers stay outside this registry with explicit writer-side exemptions.
 
 Rotation uses POSIX rename, then creates a fresh live file at the original path.
 Writers with an already-open fd finish on the renamed slice; later appends reopen
@@ -27,6 +24,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 MIB = 1024 * 1024
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PROFILES_DIR = REPO_ROOT / "profiles"
+HAPAX_HOME = Path(os.environ.get("HAPAX_HOME", str(Path.home())))
+HAPAX_CACHE_DIR = HAPAX_HOME / ".cache"
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,118 @@ DEFAULT_TARGETS: dict[str, RotationTarget] = {
         max_bytes=8 * MIB,
         archive_dir=Path("/dev/shm/hapax-dmn/archive"),
         keep_archives=4,
+    ),
+    "axiom-tool-usage": RotationTarget(
+        name="axiom-tool-usage",
+        path=HAPAX_CACHE_DIR / "axiom-audit" / "tool-usage.jsonl",
+        max_bytes=16 * MIB,
+        archive_dir=HAPAX_CACHE_DIR / "axiom-audit" / "archive",
+        keep_archives=14,
+    ),
+    "broadcast-events": RotationTarget(
+        name="broadcast-events",
+        path=Path("/dev/shm/hapax-broadcast/events.jsonl"),
+        max_bytes=8 * MIB,
+        archive_dir=Path("/dev/shm/hapax-broadcast/archive"),
+        keep_archives=4,
+    ),
+    "dmn-fortress-actions": RotationTarget(
+        name="dmn-fortress-actions",
+        path=Path("/dev/shm/hapax-dmn/fortress-actions.jsonl"),
+        max_bytes=8 * MIB,
+        archive_dir=Path("/dev/shm/hapax-dmn/archive"),
+        keep_archives=4,
+    ),
+    "fortress-sessions": RotationTarget(
+        name="fortress-sessions",
+        path=PROFILES_DIR / "fortress-sessions.jsonl",
+        max_bytes=16 * MIB,
+        archive_dir=PROFILES_DIR / "archive",
+        keep_archives=14,
+    ),
+    "fortress-chronicle": RotationTarget(
+        name="fortress-chronicle",
+        path=PROFILES_DIR / "fortress-chronicle.jsonl",
+        max_bytes=16 * MIB,
+        archive_dir=PROFILES_DIR / "archive",
+        keep_archives=14,
+    ),
+    "mail-monitor-api-calls": RotationTarget(
+        name="mail-monitor-api-calls",
+        path=Path.home() / ".cache" / "mail-monitor" / "api-calls.jsonl",
+        max_bytes=16 * MIB,
+        archive_dir=Path.home() / ".cache" / "mail-monitor" / "archive",
+        keep_archives=14,
+    ),
+    "structural-intent": RotationTarget(
+        name="structural-intent",
+        path=Path.home() / "hapax-state" / "stream-experiment" / "structural-intent.jsonl",
+        max_bytes=16 * MIB,
+        archive_dir=Path.home() / "hapax-state" / "stream-experiment" / "archive",
+        keep_archives=14,
+    ),
+    "axiom-enforcement-audit": RotationTarget(
+        name="axiom-enforcement-audit",
+        path=PROFILES_DIR / ".enforcement-audit.jsonl",
+        max_bytes=16 * MIB,
+        archive_dir=PROFILES_DIR / "archive",
+        keep_archives=14,
+    ),
+    "evidence-receipts": RotationTarget(
+        name="evidence-receipts",
+        path=Path.home() / ".cache" / "hapax" / "evidence-ledger" / "receipts.jsonl",
+        max_bytes=16 * MIB,
+        archive_dir=Path.home() / ".cache" / "hapax" / "evidence-ledger" / "archive",
+        keep_archives=14,
+    ),
+    "evidence-trace-graph": RotationTarget(
+        name="evidence-trace-graph",
+        path=Path.home() / ".cache" / "hapax" / "evidence-ledger" / "trace-graph.jsonl",
+        max_bytes=16 * MIB,
+        archive_dir=Path.home() / ".cache" / "hapax" / "evidence-ledger" / "archive",
+        keep_archives=14,
+    ),
+    "legibility-records": RotationTarget(
+        name="legibility-records",
+        path=Path.home() / ".cache" / "hapax" / "evidence-ledger" / "legibility-records.jsonl",
+        max_bytes=16 * MIB,
+        archive_dir=Path.home() / ".cache" / "hapax" / "evidence-ledger" / "archive",
+        keep_archives=14,
+    ),
+    "liveness-recovery-ledger": RotationTarget(
+        name="liveness-recovery-ledger",
+        path=Path.home() / ".cache" / "hapax" / "liveness" / "recovery-ledger.jsonl",
+        max_bytes=16 * MIB,
+        archive_dir=Path.home() / ".cache" / "hapax" / "liveness" / "archive",
+        keep_archives=14,
+    ),
+    "recovery-failopen-tmpfs": RotationTarget(
+        name="recovery-failopen-tmpfs",
+        path=Path("/dev/shm/hapax/recovery/failopen.jsonl"),
+        max_bytes=8 * MIB,
+        archive_dir=Path("/dev/shm/hapax/recovery/archive"),
+        keep_archives=4,
+    ),
+    "recovery-failopen-fallback": RotationTarget(
+        name="recovery-failopen-fallback",
+        path=Path.home() / ".cache" / "hapax" / "recovery" / "failopen.jsonl",
+        max_bytes=16 * MIB,
+        archive_dir=Path.home() / ".cache" / "hapax" / "recovery" / "archive",
+        keep_archives=14,
+    ),
+    "recovery-shadow-compare": RotationTarget(
+        name="recovery-shadow-compare",
+        path=Path("/dev/shm/hapax/recovery/shadow-compare.jsonl"),
+        max_bytes=8 * MIB,
+        archive_dir=Path("/dev/shm/hapax/recovery/archive"),
+        keep_archives=4,
+    ),
+    "research-marker-changes": RotationTarget(
+        name="research-marker-changes",
+        path=Path.home() / "hapax-state" / "research-registry" / "research_marker_changes.jsonl",
+        max_bytes=16 * MIB,
+        archive_dir=Path.home() / "hapax-state" / "research-registry" / "archive",
+        keep_archives=14,
     ),
 }
 

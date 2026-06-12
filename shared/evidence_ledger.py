@@ -195,6 +195,7 @@ class EvidenceLedger:
 
     def append(self, entry: EvidenceEntry) -> None:
         path = self._case_file(entry.case_id)
+        # jsonl-rotation: exempt(per-case evidence ledger; complete case history stays in one file)
         with path.open("a") as f:
             f.write(entry.model_dump_json() + "\n")
         # Best-effort, off-by-default observability mirror into the coord SSOT log.

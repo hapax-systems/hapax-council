@@ -215,6 +215,7 @@ class AttributionFileWriter:
                 # Sub-PIPE_BUF append; threads in the same process are
                 # serialized by the lock above, multi-process writers
                 # would need fcntl.flock.
+                # jsonl-rotation: exempt(kind-partitioned vault ledger; readers need full kind history)
                 with path.open("a", encoding="utf-8") as f:
                     f.write(line)
             except OSError:

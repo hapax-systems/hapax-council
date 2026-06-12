@@ -254,6 +254,7 @@ def _load_labels() -> dict[str, Label]:
 def _save_label(label: Label) -> None:
     """Append a label to the labels file."""
     LABELS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # jsonl-rotation: exempt(operator labeling dataset; bounded by manual review sessions)
     with LABELS_FILE.open("a") as f:
         f.write(
             json.dumps(

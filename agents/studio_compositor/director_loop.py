@@ -469,6 +469,7 @@ def _refusal_brief_log(
                 "reroll_chars": len(raw_reroll),
             }
         )
+        # jsonl-rotation: exempt(domain rotation; refusal-brief rotator archives daily)
         with _REFUSAL_BRIEF_LOG.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
     except Exception:
@@ -652,6 +653,7 @@ def _emit_intent_artifacts(intent: DirectorIntent, condition_id: str) -> None:
         payload = intent.model_dump_for_jsonl()
         payload["condition_id"] = condition_id
         payload["emitted_at"] = time.time()
+        # jsonl-rotation: exempt(domain rotation; _maybe_rotate_jsonl caps at 5MiB and keeps 3)
         with _DIRECTOR_INTENT_JSONL.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(payload) + "\n")
     except Exception:

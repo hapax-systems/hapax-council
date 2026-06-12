@@ -370,6 +370,7 @@ class BroadcastAudioHealthProducer:
             row["failure_reason"] = result.detection.failure_reason
         if result.error is not None:
             row["error"] = result.error
+        # jsonl-rotation: exempt(date-partitioned retention ledger; prune_old_files caps age)
         with path.open("a") as fh:
             fh.write(json.dumps(row) + "\n")
 

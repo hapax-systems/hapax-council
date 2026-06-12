@@ -83,6 +83,17 @@ class TestCursor:
         poster.run_once()  # no new events
         assert post_fn.call_count == 2
 
+    def test_cursor_reset_after_event_file_shrinks(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        cursor = tmp_path / "cursor.txt"
+        cursor.write_text("999")
+        _write_events(bus, [{"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-new"}])
+
+        poster, post_fn = _make_poster(event_path=bus, cursor_path=cursor)
+        poster.run_once()
+        assert post_fn.call_count == 1
+        assert int(cursor.read_text()) == bus.stat().st_size
+
 
 # ── Event filtering ──────────────────────────────────────────────────
 

@@ -109,6 +109,7 @@ class FlaggedStore:
         payload = json.dumps(line, sort_keys=False, separators=(",", ":"))
         with self._lock:
             date_dir.mkdir(parents=True, exist_ok=True)
+            # jsonl-rotation: exempt(date/capability partitioned store; 7d operator prune helper)
             with target.open("a", encoding="utf-8") as f:
                 f.write(payload + "\n")
         return target

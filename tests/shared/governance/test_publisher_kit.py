@@ -152,6 +152,16 @@ class TestCursor:
         publisher.run_once()
         assert not (tmp_path / "cursor.txt").exists()
 
+    def test_cursor_reset_after_event_file_shrinks(self, tmp_path, _allowlist_allow):
+        bus = tmp_path / "events.jsonl"
+        cursor = tmp_path / "cursor.txt"
+        cursor.write_text("999")
+        _write_events(bus, [{"event_type": "broadcast_rotated", "id": "x"}])
+        publisher = _make(tmp_path)
+        publisher.run_once()
+        assert publisher.send_calls == 1
+        assert int(cursor.read_text()) == bus.stat().st_size
+
 
 # ── Event filtering ─────────────────────────────────────────────────
 

@@ -77,6 +77,7 @@ def emit_refusal_feedback(message: dict[str, Any], *, kind: str = "feedback") ->
     REFUSAL_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(entry, separators=(",", ":")) + "\n"
     try:
+        # jsonl-rotation: exempt(domain rotation; refusal-brief rotator archives daily)
         with REFUSAL_LOG_PATH.open("a", encoding="utf-8") as fp:
             fp.write(line)
             fp.flush()

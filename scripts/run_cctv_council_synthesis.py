@@ -165,6 +165,7 @@ async def run_cctv() -> None:
             "timestamp": datetime.now(UTC).isoformat(),
         }
 
+        # jsonl-rotation: exempt(one-shot CCTV adjudication output)
         with OUTPUT_FILE.open("a") as f:
             f.write(json.dumps(result, ensure_ascii=False) + "\n")
 

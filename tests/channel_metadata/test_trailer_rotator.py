@@ -95,6 +95,18 @@ class TestCursor:
         rotator.run_once()
         assert client.execute.call_count == 2
 
+    def test_cursor_reset_after_event_file_shrinks(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("YOUTUBE_CHANNEL_ID", "UC-test")
+        bus = tmp_path / "events.jsonl"
+        cursor = tmp_path / "cursor.txt"
+        cursor.write_text("999")
+        _write_events(bus, [{"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-new"}])
+
+        rotator, client = _make_rotator(event_path=bus, cursor_path=cursor)
+        rotator.run_once()
+        assert client.execute.call_count == 1
+        assert int(cursor.read_text()) == bus.stat().st_size
+
     def test_malformed_event_line_skipped(self, tmp_path, monkeypatch):
         monkeypatch.setenv("YOUTUBE_CHANNEL_ID", "UC-test")
         bus = tmp_path / "events.jsonl"

@@ -167,6 +167,7 @@ class GrantSubmissionRunner:
         try:
             target = self._output_dir(now=now) / "outcomes.jsonl"
             target.parent.mkdir(parents=True, exist_ok=True)
+            # jsonl-rotation: exempt(per-run outcome ledger; output dir is unique per run)
             with target.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(asdict(outcome), default=str) + "\n")
         except Exception:
