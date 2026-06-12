@@ -369,6 +369,15 @@ def _int_field(value: Any, field: str, blockers: list[str]) -> int | None:
         return None
 
 
+def _task_class_floor(frontmatter: Mapping[str, Any] | None) -> str | None:
+    if frontmatter is None:
+        return None
+    risk = str(frontmatter.get("risk_tier") or "").strip().upper()
+    if risk == "T1":
+        return "t1_critical"
+    return None
+
+
 def synthesize_dossier(
     *,
     task_id: str,
@@ -506,6 +515,9 @@ def _dossier_validity_blockers(
     if not isinstance(sizing, Mapping):
         blockers.append(f"review_dossier_malformed:unknown_team_class:{team_class or 'missing'}")
         return tuple(blockers)
+    class_floor = _task_class_floor(frontmatter)
+    if class_floor is not None and team_class != class_floor:
+        blockers.append(f"review_dossier_team_class_below_task_floor:{team_class}!={class_floor}")
 
     reviews = dossier.get("reviewers")
     if not isinstance(reviews, list) or not all(isinstance(r, Mapping) for r in reviews):
@@ -524,10 +536,22 @@ def _dossier_validity_blockers(
     if not isinstance(lenses, list) or not all(isinstance(l, str) for l in lenses):
         blockers.append("review_dossier_malformed:lenses")
         lenses = []
+    required_lenses = set(registry.get("always_on_lenses") or [])
+    missing_required_lenses = required_lenses - set(lenses)
+    if missing_required_lenses:
+        blockers.append(
+            "review_dossier_missing_required_lenses:" + ",".join(sorted(missing_required_lenses))
+        )
     for review in reviews:
         blockers.extend(_review_checklist_blockers(review, lenses))
 
     accepts = _checklist_complete_accepts(reviews, lenses)
+    roster = {entry["family"] for entry in registry["families"]}
+    unknown_accept_families = {str(r.get("family")) for r in accepts} - roster
+    if unknown_accept_families:
+        blockers.append(
+            "review_dossier_unknown_accept_family:" + ",".join(sorted(unknown_accept_families))
+        )
     required_quorum = _int_field(sizing.get("quorum_accept"), "sizing.quorum_accept", blockers)
     if required_quorum is None:
         return tuple(blockers)
@@ -548,7 +572,6 @@ def _dossier_validity_blockers(
             f"review_dossier_family_diversity:accept_families={len(accept_families)}/{min_families}"
         )
     if sizing.get("require_all_families"):
-        roster = {entry["family"] for entry in registry["families"]}
         missing_families = roster - {str(r.get("family")) for r in accepts}
         if missing_families:
             blockers.append(

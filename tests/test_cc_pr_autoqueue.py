@@ -35,13 +35,25 @@ def _load_module() -> ModuleType:
 
 autoqueue = _load_module()
 
-COMPLETE_TESTS_COVER_CHECKLIST = {
+COMPLETE_ALWAYS_ON_CHECKLIST = {
     "tests-cover-the-diff": {
         "diff-behavior-coverage": "pass",
         "red-before-green": "na",
         "new-paths-tested": "pass",
         "no-coverage-theater": "pass",
-    }
+    },
+    "exit-predicate-adequacy": {
+        "predicate-testable": "pass",
+        "predicate-evidenced": "pass",
+        "diff-matches-predicate": "pass",
+        "witness-durability": "pass",
+    },
+    "doc-claims-recheck": {
+        "recheck-cmds-present": "pass",
+        "claims-match-code": "pass",
+        "stale-docs-updated": "pass",
+        "next-actions-on-error": "pass",
+    },
 }
 
 
@@ -72,7 +84,7 @@ def _write_review_dossier(
                 "family": family,
                 "verdict": "accept",
                 "findings": [],
-                "checklist": COMPLETE_TESTS_COVER_CHECKLIST,
+                "checklist": COMPLETE_ALWAYS_ON_CHECKLIST,
             }
             for family in ("codex", "gemini", "claude")
         ]
@@ -86,7 +98,7 @@ def _write_review_dossier(
         "quorum_required": 2,
         "constituted_at": "2026-06-11T00:00:00+00:00",
         "constitution_notes": [],
-        "lenses": ["tests-cover-the-diff"],
+        "lenses": list(COMPLETE_ALWAYS_ON_CHECKLIST),
         "reviewers": reviewers,
         "escalations": [],
         "accept_count": accepts,
@@ -154,7 +166,7 @@ class TestReviewTeamGate:
                     "family": "codex",
                     "verdict": "accept",
                     "findings": [],
-                    "checklist": COMPLETE_TESTS_COVER_CHECKLIST,
+                    "checklist": COMPLETE_ALWAYS_ON_CHECKLIST,
                 },
                 {
                     "id": "gemini-1",

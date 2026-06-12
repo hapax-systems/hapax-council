@@ -17,6 +17,27 @@ LENS_DIR = REPO_ROOT / "config" / "review-lenses"
 REGISTRY_PATH = LENS_DIR / "registry.yaml"
 
 CHECKLIST_ITEM_RE = re.compile(r"^- \[ \] (?P<slug>[a-z0-9-]+): \S", re.MULTILINE)
+ALWAYS_ON_CHECKLIST = {
+    "tests-cover-the-diff": {
+        "diff-behavior-coverage": "pass",
+        "red-before-green": "na",
+        "new-paths-tested": "pass",
+        "no-coverage-theater": "pass",
+    },
+    "exit-predicate-adequacy": {
+        "predicate-testable": "pass",
+        "predicate-evidenced": "pass",
+        "diff-matches-predicate": "pass",
+        "witness-durability": "pass",
+    },
+    "doc-claims-recheck": {
+        "recheck-cmds-present": "pass",
+        "claims-match-code": "pass",
+        "stale-docs-updated": "pass",
+        "next-actions-on-error": "pass",
+    },
+}
+ALWAYS_ON_LENSES = tuple(ALWAYS_ON_CHECKLIST)
 
 
 def _registry() -> dict:
@@ -65,6 +86,8 @@ class TestLensRegistry:
         for entry in roster:
             assert isinstance(entry["reviewer_command"], list) and entry["reviewer_command"]
             assert entry["timeout_seconds"] > 0
+        gemini = next(entry for entry in roster if entry["family"] == "gemini")
+        assert "--skip-trust" in gemini["reviewer_command"]
 
     def test_surface_rows_cover_spec_table(self) -> None:
         reg = _registry()
@@ -267,18 +290,7 @@ def _review(
         "family": family,
         "verdict": verdict,
         "findings": findings or [],
-        "checklist": (
-            checklist
-            if checklist is not None
-            else {
-                "tests-cover-the-diff": {
-                    "diff-behavior-coverage": "pass",
-                    "red-before-green": "na",
-                    "new-paths-tested": "pass",
-                    "no-coverage-theater": "pass",
-                }
-            }
-        ),
+        "checklist": (checklist if checklist is not None else ALWAYS_ON_CHECKLIST),
     }
 
 
@@ -303,7 +315,7 @@ def _synth(rt, reviews: list[dict], *, team_class: str = "t2_standard") -> dict:
         team_class=team_class,
         registry=reg,
         reviews=reviews,
-        lenses=("tests-cover-the-diff",),
+        lenses=ALWAYS_ON_LENSES,
         constituted_at="2026-06-11T20:00:00+00:00",
     )
 
@@ -518,6 +530,43 @@ class TestVerdictBlockers:
         note = _write_dossier(tmp_path, "task-x", dossier)
         blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
         assert "review_dossier_malformed:quorum_required:two" in blockers
+
+    def test_missing_mandatory_lens_floor_blocks_even_if_verdict_lies(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = self._good_dossier(rt)
+        dossier["lenses"] = []
+        dossier["review_team_verdict"] = "quorum-accept"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
+        assert any(b.startswith("review_dossier_missing_required_lenses:") for b in blockers)
+
+    def test_task_risk_tier_floor_blocks_downgraded_dossier(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = self._good_dossier(rt)
+        dossier["team_class"] = "t3_docs"
+        dossier["quorum_required"] = 2
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-x", "risk_tier": "T1"}, note, pr_head_sha="a" * 40
+        )
+        assert "review_dossier_team_class_below_task_floor:t3_docs!=t1_critical" in blockers
+
+    def test_unregistered_accept_family_blocks_even_if_family_count_passes(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("mystery-1", "mystery", "accept"),
+                _review("claude-1", "claude", "block"),
+            ],
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
+        assert "review_dossier_unknown_accept_family:mystery" in blockers
 
     def test_t2_single_family_accepts_block_even_if_verdict_lies(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()

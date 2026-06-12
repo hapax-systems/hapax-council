@@ -13,7 +13,9 @@ reliable legibility (ideally all three).*
    Shell-captured values must be stripped (`sed 's/\x1b\[[0-9;]*m//g'`) before
    landing in frontmatter.
 3. Required fields for `type: cc-task`: `task_id`, `status`, `authority_case`,
-   `parent_spec`. Review-floor closes additionally need `<task_id>.acceptance.yaml`
+   `parent_spec`. PR-linked tasks additionally need a current
+   `<task_id>.review-dossier.yaml` with review-team quorum before merge
+   admission. Review-floor closes additionally need `<task_id>.acceptance.yaml`
    (see PR #4049) and AVSDLC axes/witness fields where media surfaces are touched.
 4. Reason codes must name the true failure: an unparseable note is reported as
    such by `cc-pr-autoqueue`, never as a generic missing link.

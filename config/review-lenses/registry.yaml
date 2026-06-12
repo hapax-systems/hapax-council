@@ -89,7 +89,7 @@ families:
     reviewer_command: ["codex", "exec", "--sandbox", "read-only", "-"]
     timeout_seconds: 1200
   - family: gemini
-    reviewer_command: ["gemini", "--approval-mode", "plan", "-p", "Perform the review request provided on stdin; reply with ONLY the dossier YAML."]
+    reviewer_command: ["gemini", "--skip-trust", "--approval-mode", "plan", "-p", "Perform the review request provided on stdin; reply with ONLY the dossier YAML."]
     timeout_seconds: 1200
 
 # Authoring-lane -> model family (writer's family never holds the majority
