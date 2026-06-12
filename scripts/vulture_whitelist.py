@@ -4088,3 +4088,41 @@ synthetic_outbound_determination_packet
 from shared.perception_registry import PerceptionPoint  # noqa: E402
 
 PerceptionPoint._geometry_policy
+
+# Platform session contract v1: exported adapter-conformance helpers are invoked
+# by fixture suites and future trainyard adapter runners. Pydantic field validators
+# are framework entrypoints, and the diff-only vulture gate does not count tests.
+from shared.platform_session_contract import (  # noqa: F401, E402
+    ControlMessage as _PlatformSessionControlMessage,
+)
+from shared.platform_session_contract import (  # noqa: F401, E402
+    PlatformSessionEvent as _PlatformSessionEvent,
+)
+from shared.platform_session_contract import (  # noqa: F401, E402
+    adapter_artifacts as _platform_session_adapter_artifacts,
+)
+from shared.platform_session_contract import (  # noqa: F401, E402
+    adapter_contracts as _platform_session_adapter_contracts,
+)
+from shared.platform_session_contract import (  # noqa: F401, E402
+    artifact_projection_rows as _platform_session_artifact_projection_rows,
+)
+from shared.platform_session_contract import (  # noqa: F401, E402
+    parse_jsonl_events as _platform_session_parse_jsonl_events,
+)
+from shared.platform_session_contract import (  # noqa: F401, E402
+    resolve_identity as _platform_session_resolve_identity,
+)
+from shared.platform_session_contract import (  # noqa: F401, E402
+    run_conformance_fixture as _platform_session_run_conformance_fixture,
+)
+
+_PlatformSessionControlMessage._require_timezone
+_PlatformSessionEvent._require_timezone
+_PlatformSessionEvent.to_json_line
+_platform_session_adapter_artifacts
+_platform_session_adapter_contracts
+_platform_session_artifact_projection_rows
+_platform_session_parse_jsonl_events
+_platform_session_resolve_identity
+_platform_session_run_conformance_fixture

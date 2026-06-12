@@ -1,0 +1,4 @@
+{"ts":"2026-06-12T06:00:00Z","type":"session_configured","session":"cx-red","slot":"alpha"}
+{"ts":"2026-06-12T06:00:01Z","type":"task_started","task_id":"platform-contract-v1-spec-20260612"}
+{"ts":"2026-06-12T06:00:02Z","type":"claim","task_id":"platform-contract-v1-spec-20260612"}
+{"ts":"2026-06-12T06:00:03Z","type":"tool_call","tool":"apply_patch","arguments":{"files":["docs/specs/platform-session-contract-v1-20260612.md"]}}
