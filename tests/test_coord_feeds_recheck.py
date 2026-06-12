@@ -923,6 +923,8 @@ def test_coord_deploy_helper_fetches_writes_sha_and_is_idempotent(tmp_path):
     )
     assert failed.returncode == 42
     assert "rolled activation worktree back" in failed.stderr
+    assert "next:" in failed.stderr
+    assert "journalctl --user -u hapax-coord.service" in failed.stderr
     assert (worktree / ".deployed-sha").read_text().strip() == first_sha
     assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == first_sha
     assert restart_log.read_text().splitlines() == [

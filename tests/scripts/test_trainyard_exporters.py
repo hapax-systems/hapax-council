@@ -86,6 +86,21 @@ class TestReceiptsExporter:
         assert summaries["t5"]["families"] == []
         assert summaries["t5"]["critical_count"] == 0
 
+    def test_missing_vault_fails_closed_without_replacing_feed(self, tmp_path, monkeypatch, capsys):
+        mod = _load("hapax-review-receipts-export")
+        vault = tmp_path / "missing-active"
+        out = tmp_path / "review-receipts.json"
+        previous = b'{"schema":1,"dossiers":[{"task_id":"old"}],"acceptances":[]}\n'
+        out.write_bytes(previous)
+        monkeypatch.setattr(mod, "VAULT", vault)
+        monkeypatch.setattr(mod, "OUT", out)
+
+        assert mod.main() == 2
+        captured = capsys.readouterr()
+        assert out.read_bytes() == previous
+        assert "review-receipts BLOCKED" in captured.err
+        assert "next:" in captured.err
+
 
 class TestVocabExporter:
     def test_observed_forms_bridge_to_ladder_tokens(self, tmp_path, monkeypatch):
@@ -105,3 +120,18 @@ class TestVocabExporter:
         assert payload["observed_stages"]["S13_FOO"]["ladder_token"] == "unknown"
         assert payload["observed_statuses"]["claimed"] == 1
         assert "ladder_tokens" in payload and "stage_re" in payload
+
+    def test_missing_vault_fails_closed_without_replacing_feed(self, tmp_path, monkeypatch, capsys):
+        mod = _load("hapax-sdlc-vocab-export")
+        vault = tmp_path / "missing-active"
+        out = tmp_path / "sdlc-vocab.json"
+        previous = b'{"schema":1,"observed_stages":{"S6":{"count":1}}}\n'
+        out.write_bytes(previous)
+        monkeypatch.setattr(mod, "VAULT", vault)
+        monkeypatch.setattr(mod, "OUT", out)
+
+        assert mod.main() == 2
+        captured = capsys.readouterr()
+        assert out.read_bytes() == previous
+        assert "sdlc-vocab BLOCKED" in captured.err
+        assert "next:" in captured.err

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -19,6 +20,31 @@ import yaml
 
 VAULT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
 OUT = Path.home() / ".cache/hapax/coord/review-receipts.json"
+
+
+class SourceVaultUnavailable(RuntimeError):
+    """Raised when the canonical cc-task source vault cannot be read."""
+
+
+def _require_source_vault() -> None:
+    if not VAULT.exists():
+        raise SourceVaultUnavailable(
+            f"active cc-task vault missing at {VAULT}; "
+            "next: restore or mount the active task vault before exporting"
+        )
+    if not VAULT.is_dir():
+        raise SourceVaultUnavailable(
+            f"active cc-task vault is not a directory at {VAULT}; "
+            "next: restore the active task vault directory before exporting"
+        )
+    try:
+        with os.scandir(VAULT):
+            pass
+    except OSError as exc:
+        raise SourceVaultUnavailable(
+            f"active cc-task vault unreadable at {VAULT}: {exc}; "
+            "next: restore readable access before exporting"
+        ) from exc
 
 
 def _mapping_rows(value: object) -> list[dict]:
@@ -75,6 +101,11 @@ def acceptance_summary(path: Path) -> dict | None:
 
 
 def main() -> int:
+    try:
+        _require_source_vault()
+    except SourceVaultUnavailable as exc:
+        print(f"review-receipts BLOCKED: {exc}", file=sys.stderr)
+        return 2
     dossiers = [s for p in sorted(VAULT.glob("*.review-dossier.yaml")) if (s := dossier_summary(p))]
     receipts = [s for p in sorted(VAULT.glob("*.acceptance.yaml")) if (s := acceptance_summary(p))]
     payload = {

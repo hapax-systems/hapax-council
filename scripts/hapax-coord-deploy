@@ -33,6 +33,7 @@ if [ "$DEPLOYED_SHA" != "none" ] && git -C "$WT" cat-file -e "$DEPLOYED_SHA^{com
 elif [ "$CURRENT_SHA" != "none" ] && git -C "$WT" cat-file -e "$CURRENT_SHA^{commit}" 2>/dev/null; then
     ROLLBACK_SHA="$CURRENT_SHA"
 fi
+RESTART_NEXT="next: inspect systemctl --user status hapax-coord.service and journalctl --user -u hapax-coord.service -n 100, fix the service failure, then rerun scripts/hapax-coord-deploy"
 
 git -C "$WT" checkout --detach --force "$TARGET_SHA" --quiet
 echo "coord-deploy: checked out $TARGET_SHA; restarting hapax-coord"
@@ -42,11 +43,11 @@ else
     rc=$?
     if [ -n "$ROLLBACK_SHA" ] && [ "$ROLLBACK_SHA" != "$TARGET_SHA" ]; then
         git -C "$WT" checkout --detach --force "$ROLLBACK_SHA" --quiet || true
-        echo "coord-deploy: restart failed; rolled activation worktree back to $ROLLBACK_SHA" >&2
+        echo "coord-deploy: restart failed; rolled activation worktree back to $ROLLBACK_SHA; $RESTART_NEXT" >&2
     elif [ -n "$ROLLBACK_SHA" ]; then
-        echo "coord-deploy: restart failed; activation worktree remains at $ROLLBACK_SHA" >&2
+        echo "coord-deploy: restart failed; activation worktree remains at $ROLLBACK_SHA; $RESTART_NEXT" >&2
     else
-        echo "coord-deploy: restart failed; no prior activation worktree sha available" >&2
+        echo "coord-deploy: restart failed; no prior activation worktree sha available; $RESTART_NEXT" >&2
     fi
     exit "$rc"
 fi

@@ -33,7 +33,33 @@ VAULT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
 OUT = Path.home() / ".cache/hapax/coord/sdlc-vocab.json"
 
 
+class SourceVaultUnavailable(RuntimeError):
+    """Raised when the canonical cc-task source vault cannot be read."""
+
+
+def _require_source_vault() -> None:
+    if not VAULT.exists():
+        raise SourceVaultUnavailable(
+            f"active cc-task vault missing at {VAULT}; "
+            "next: restore or mount the active task vault before exporting"
+        )
+    if not VAULT.is_dir():
+        raise SourceVaultUnavailable(
+            f"active cc-task vault is not a directory at {VAULT}; "
+            "next: restore the active task vault directory before exporting"
+        )
+    try:
+        with os.scandir(VAULT):
+            pass
+    except OSError as exc:
+        raise SourceVaultUnavailable(
+            f"active cc-task vault unreadable at {VAULT}: {exc}; "
+            "next: restore readable access before exporting"
+        ) from exc
+
+
 def observed_vocab() -> tuple[dict[str, int], dict[str, int]]:
+    _require_source_vault()
     stages: dict[str, int] = {}
     statuses: dict[str, int] = {}
     for note in VAULT.glob("*.md"):
@@ -62,7 +88,11 @@ def _ladder_token(raw: str) -> str:
 
 
 def main() -> int:
-    stages, statuses = observed_vocab()
+    try:
+        stages, statuses = observed_vocab()
+    except SourceVaultUnavailable as exc:
+        print(f"sdlc-vocab BLOCKED: {exc}", file=sys.stderr)
+        return 2
     payload = {
         "schema": 1,
         "generated_at": datetime.now(UTC).isoformat(),
