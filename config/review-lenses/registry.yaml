@@ -59,7 +59,9 @@ sizing:
     team_size_min: 4
     team_size_max: 5
     quorum_accept: 3
+    min_families: 2
     require_all_families: true
+    degraded_quorum_on_family_outage: true
     criticals_must_resolve: true
     block_on_named_critical: true
 

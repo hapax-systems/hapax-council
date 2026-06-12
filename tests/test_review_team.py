@@ -76,7 +76,9 @@ class TestLensRegistry:
         assert t1["team_size_min"] == 4
         assert t1["team_size_max"] == 5
         assert t1["quorum_accept"] == 3
+        assert t1["min_families"] == 2
         assert t1["require_all_families"] is True
+        assert t1["degraded_quorum_on_family_outage"] is True
         assert t1["criticals_must_resolve"] is True
 
     def test_families_roster_covers_three_model_families(self) -> None:
@@ -455,6 +457,120 @@ class TestSynthesizeDossier:
         )
         assert dossier["review_team_verdict"] == "no-quorum"
 
+    def test_t1_degrades_on_family_outage_with_two_family_three_accepts(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("gemini-2", "gemini", "accept-with-findings"),
+                _review("claude-1", "claude", "invalid-output"),
+            ],
+            team_class="t1_critical",
+        )
+        assert dossier["review_team_verdict"] == "quorum-accept"
+        assert dossier["quorum_mode"] == "degraded-family-outage"
+        assert dossier["unavailable_families"] == ["claude"]
+
+    def test_t1_absent_family_is_not_an_outage(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("gemini-2", "gemini", "accept-with-findings"),
+            ],
+            team_class="t1_critical",
+        )
+        assert dossier["accept_count"] == 3
+        assert dossier["review_team_verdict"] == "no-quorum"
+        assert "quorum_mode" not in dossier
+        assert "unavailable_families" not in dossier
+
+    def test_t1_degraded_quorum_still_needs_two_accepting_families(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("gemini-1", "gemini", "accept"),
+                _review("gemini-2", "gemini", "accept"),
+                _review("gemini-3", "gemini", "accept-with-findings"),
+                _review("claude-1", "claude", "invalid-output"),
+            ],
+            team_class="t1_critical",
+        )
+        assert dossier["accept_count"] == 3
+        assert dossier["review_team_verdict"] == "no-quorum"
+
+    def test_t1_missing_degraded_quorum_policy_fails_closed(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        del reg["sizing"]["t1_critical"]["degraded_quorum_on_family_outage"]
+        dossier = rt.synthesize_dossier(
+            task_id="task-x",
+            pr_number=99,
+            head_sha="a" * 40,
+            team_class="t1_critical",
+            registry=reg,
+            reviews=[
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("gemini-2", "gemini", "accept-with-findings"),
+                _review("claude-1", "claude", "invalid-output"),
+            ],
+            lenses=ALWAYS_ON_LENSES,
+            constituted_at="2026-06-11T20:00:00+00:00",
+        )
+        assert dossier["accept_count"] == 3
+        assert dossier["review_team_verdict"] == "no-quorum"
+
+    def test_t1_malformed_degraded_quorum_policy_fails_closed(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        reg["sizing"]["t1_critical"]["degraded_quorum_on_family_outage"] = "false"
+        dossier = rt.synthesize_dossier(
+            task_id="task-x",
+            pr_number=99,
+            head_sha="a" * 40,
+            team_class="t1_critical",
+            registry=reg,
+            reviews=[
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("gemini-2", "gemini", "accept-with-findings"),
+                _review("claude-1", "claude", "invalid-output"),
+            ],
+            lenses=ALWAYS_ON_LENSES,
+            constituted_at="2026-06-11T20:00:00+00:00",
+        )
+        assert dossier["accept_count"] == 3
+        assert dossier["review_team_verdict"] == "no-quorum"
+
+    def test_t1_degraded_quorum_requires_every_non_outage_family(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        reg["families"] = [*reg["families"], {"family": "llama", "reviewer_command": ["llama"]}]
+        dossier = rt.synthesize_dossier(
+            task_id="task-x",
+            pr_number=99,
+            head_sha="a" * 40,
+            team_class="t1_critical",
+            registry=reg,
+            reviews=[
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("codex-2", "codex", "accept-with-findings"),
+                _review("claude-1", "claude", "invalid-output"),
+                _review("llama-1", "llama", "block"),
+            ],
+            lenses=ALWAYS_ON_LENSES,
+            constituted_at="2026-06-11T20:00:00+00:00",
+        )
+        assert dossier["accept_count"] == 3
+        assert dossier["review_team_verdict"] == "no-quorum"
+
     def test_t2_needs_two_accepting_families(self) -> None:
         rt = _load_review_team_module()
         dossier = _synth(
@@ -754,6 +870,116 @@ class TestVerdictBlockers:
         )
         assert any(b.startswith("review_dossier_family_diversity:") for b in blockers)
         assert any(b.startswith("review_dossier_writer_family_majority:") for b in blockers)
+
+    def test_missing_min_families_defaults_by_require_all_families(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        del reg["sizing"]["t1_critical"]["min_families"]
+        del reg["sizing"]["t2_standard"]["min_families"]
+
+        t1_dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("codex-2", "codex", "accept"),
+                _review("codex-3", "codex", "accept"),
+                _review("claude-1", "claude", "invalid-output"),
+            ],
+            team_class="t1_critical",
+        )
+        t1_dossier["review_team_verdict"] = "quorum-accept"
+        t1_note = _write_dossier(tmp_path, "task-x", t1_dossier)
+        t1_blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-x", "risk_tier": "T1"},
+            t1_note,
+            pr_head_sha="a" * 40,
+            registry=reg,
+        )
+        assert "review_dossier_family_diversity:accept_families=1/2" in t1_blockers
+
+        t2_dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", "accept"),
+                _review("claude-2", "claude", "accept"),
+                _review("claude-3", "claude", "accept"),
+            ],
+        )
+        t2_dossier["task_id"] = "task-y"
+        t2_note = _write_dossier(tmp_path, "task-y", t2_dossier)
+        t2_blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-y"}, t2_note, pr_head_sha="a" * 40, registry=reg
+        )
+        assert not any(
+            blocker.startswith("review_dossier_family_diversity:accept_families=")
+            for blocker in t2_blockers
+        )
+
+    def test_t1_degraded_quorum_dossier_passes_with_family_outage(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("gemini-2", "gemini", "accept-with-findings"),
+                _review("claude-1", "claude", "invalid-output"),
+            ],
+            team_class="t1_critical",
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-x", "risk_tier": "T1"}, note, pr_head_sha="a" * 40
+        )
+        assert blockers == ()
+
+    def test_t1_malformed_degraded_quorum_policy_blocks_admission(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("gemini-2", "gemini", "accept-with-findings"),
+                _review("claude-1", "claude", "invalid-output"),
+            ],
+            team_class="t1_critical",
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        reg = rt.load_lens_registry()
+        reg["sizing"]["t1_critical"]["degraded_quorum_on_family_outage"] = "false"
+        blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-x", "risk_tier": "T1"},
+            note,
+            pr_head_sha="a" * 40,
+            registry=reg,
+        )
+        assert (
+            "review_dossier_malformed:sizing.degraded_quorum_on_family_outage:false:"
+            "set_to_boolean_true_or_false"
+        ) in blockers
+        assert "review_dossier_family_diversity:missing_accept_from=claude" in blockers
+
+    def test_t1_all_available_missing_family_accept_blocks_even_if_verdict_lies(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("codex-2", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "block"),
+            ],
+            team_class="t1_critical",
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-x", "risk_tier": "T1"}, note, pr_head_sha="a" * 40
+        )
+        assert "review_dossier_family_diversity:missing_accept_from=claude" in blockers
 
     def test_incomplete_accept_checklist_blocks_even_if_verdict_lies(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()

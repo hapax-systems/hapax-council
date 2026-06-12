@@ -383,6 +383,19 @@ def dispatch_reviews(
         return list(pool.map(run_one, range(len(constitution.seats))))
 
 
+def reconcile_review_findings_against_pr_evidence(
+    reviews: list[dict[str, Any]],
+    *,
+    pr_info: PRInfo,
+    diff: str,
+    repo_root: Path,
+) -> list[dict[str, Any]]:
+    """Return reviewer output unchanged; critical findings are reviewer-owned."""
+
+    _ = (pr_info, diff, repo_root)
+    return reviews
+
+
 def render_dossier_markdown(dossier: dict[str, Any]) -> str:
     lines = [
         f"## Review-team dossier — `{dossier['review_team_verdict']}`",
@@ -392,6 +405,14 @@ def render_dossier_markdown(dossier: dict[str, Any]) -> str:
         f"{dossier['quorum_required']} required",
         "",
     ]
+    if dossier.get("quorum_mode"):
+        lines.append(f"Quorum mode: `{dossier['quorum_mode']}`")
+        if dossier.get("quorum_mode_detail"):
+            lines.append(f"- detail: {dossier['quorum_mode_detail']}")
+        unavailable = dossier.get("unavailable_families") or []
+        if unavailable:
+            lines.append(f"- unavailable families: {', '.join(str(f) for f in unavailable)}")
+        lines.append("")
     if dossier["escalations"]:
         lines.append("### Escalations (cross-family splits and criticals first)")
         for esc in dossier["escalations"]:
@@ -402,12 +423,27 @@ def render_dossier_markdown(dossier: dict[str, Any]) -> str:
     lines.append("### Reviewers")
     for review in dossier["reviewers"]:
         lines.append(f"- **{review['id']}** ({review['family']}): `{review['verdict']}`")
+        for evidence_note in review.get("evidence_notes") or []:
+            title = evidence_note.get("title") or "(untitled)"
+            reason = evidence_note.get("reason") or ""
+            from_severity = evidence_note.get("from_severity") or "?"
+            to_severity = evidence_note.get("to_severity") or "?"
+            lines.append(
+                f"  - evidence note: {title} ({from_severity} -> {to_severity})"
+                f"{': ' + reason if reason else ''}"
+            )
         for finding in review.get("findings") or []:
             where = f" — {finding.get('file')}:{finding.get('line')}" if finding.get("file") else ""
             lines.append(
                 f"  - {finding.get('severity', '?')} [{finding.get('lens', '?')}] "
                 f"{finding.get('title', '')}{where}"
             )
+            if finding.get("review_team_evidence_note"):
+                detail = finding.get("evidence_note_detail") or ""
+                lines.append(
+                    f"    - evidence note: `{finding['review_team_evidence_note']}`"
+                    f"{' - ' + detail if detail else ''}"
+                )
         checklist = review.get("checklist") or {}
         addressed = sum(len(v) for v in checklist.values() if isinstance(v, dict))
         lines.append(f"  - checklist items addressed: {addressed}")
@@ -490,7 +526,7 @@ def render_prior_file_excerpts(
         try:
             path.relative_to(repo_root)
             source_lines = path.read_text(encoding="utf-8").splitlines()
-        except (OSError, ValueError):
+        except (OSError, UnicodeDecodeError, ValueError):
             continue
         start = max(1, line - radius)
         end = min(len(source_lines), line + radius)
@@ -875,7 +911,8 @@ def review_pr(
         )
     ]
     prior_file_excerpts = render_prior_file_excerpts(prior_criticals, repo_root=repo_root)
-    diff = truncate_diff(fetch_pr_diff(pr_number, repo=repo, repo_root=repo_root, runner=gh_runner))
+    full_diff = fetch_pr_diff(pr_number, repo=repo, repo_root=repo_root, runner=gh_runner)
+    diff = truncate_diff(full_diff)
     task_note_text = "\n\n".join(
         f"## Linked task note: {path.name}\n\n{path.read_text(encoding='utf-8')}"
         for path, _, _ in keyed_matches
@@ -897,7 +934,12 @@ def review_pr(
         )
         for seat in constitution.seats
     ]
-    reviews = dispatch_reviews(constitution, prompts, registry, reviewer_runner)
+    reviews = reconcile_review_findings_against_pr_evidence(
+        dispatch_reviews(constitution, prompts, registry, reviewer_runner),
+        pr_info=pr_info,
+        diff=full_diff,
+        repo_root=repo_root,
+    )
     results: list[dict[str, Any]] = []
     comment_bodies: list[str] = []
     for target_note_path, target_frontmatter, target_task_id in keyed_matches:

@@ -44,6 +44,11 @@ QUORUM_ACCEPT = "quorum-accept"
 #: Reviewer verdicts that count toward the accept quorum.
 ACCEPT_VERDICTS = frozenset({"accept", "accept-with-findings"})
 
+#: Reviewer verdicts that prove a model family was available for the round.
+#: ``invalid-output`` is deliberately excluded: a whole family returning only
+#: invalid output is treated as an outage, not a dissenting review.
+AVAILABLE_FAMILY_VERDICTS = ACCEPT_VERDICTS | frozenset({"block"})
+
 #: Reviewer verdicts the dispatcher may record. ``invalid-output`` is what an
 #: unparseable reviewer reply becomes — it never counts as an accept.
 REVIEWER_VERDICTS = frozenset({"accept", "accept-with-findings", "block", "invalid-output"})
@@ -378,6 +383,55 @@ def _int_field(value: Any, field: str, blockers: list[str]) -> int | None:
         return None
 
 
+def _bool_field(value: Any, field: str, blockers: list[str]) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    blockers.append(f"review_dossier_malformed:{field}:{value}:set_to_boolean_true_or_false")
+    return None
+
+
+def _min_accept_families(sizing: Mapping[str, Any]) -> int:
+    default = 2 if sizing.get("require_all_families") else 1
+    return int(sizing.get("min_families", default))
+
+
+def _degraded_quorum_on_family_outage(sizing: Mapping[str, Any]) -> bool:
+    return sizing.get("degraded_quorum_on_family_outage") is True
+
+
+def _family_outage_families(
+    reviews: Sequence[Mapping[str, Any]],
+    roster: set[str],
+) -> set[str]:
+    outage: set[str] = set()
+    for family in roster:
+        family_reviews = [r for r in reviews if str(r.get("family") or "") == family]
+        if family_reviews and not any(
+            str(review.get("verdict") or "").lower() in AVAILABLE_FAMILY_VERDICTS
+            for review in family_reviews
+        ):
+            outage.add(family)
+    return outage
+
+
+def _missing_required_accept_families(
+    sizing: Mapping[str, Any],
+    roster: set[str],
+    reviews: Sequence[Mapping[str, Any]],
+    accepts: Sequence[Mapping[str, Any]],
+) -> set[str]:
+    if not sizing.get("require_all_families"):
+        return set()
+    accept_families = {str(r.get("family")) for r in accepts}
+    if _degraded_quorum_on_family_outage(sizing):
+        outage_families = _family_outage_families(reviews, roster)
+        if outage_families:
+            return (roster - outage_families) - accept_families
+    return roster - accept_families
+
+
 def _task_class_floor(frontmatter: Mapping[str, Any] | None) -> str | None:
     if frontmatter is None:
         return None
@@ -406,18 +460,25 @@ def synthesize_dossier(
     """Reconcile blind reviews into a dossier (the synthesizer, spec §3/§5).
 
     Verdict ladder: any unresolved named critical -> ``blocked`` (criticals are
-    resolved, not outvoted); else accepts >= quorum (t1 additionally needs >=1
-    accept from EVERY roster family) -> ``quorum-accept``; else ``no-quorum``.
+    resolved, not outvoted); else accepts >= quorum and family requirements are
+    met -> ``quorum-accept``; else ``no-quorum``. T1 normally needs every roster
+    family, except when the registry explicitly enables degraded quorum for a
+    model-family outage.
     Cross-family verdict splits and blocks without a named critical are
     escalated to the top of the dossier — family disagreement is signal.
     """
 
     sizing = registry["sizing"][team_class]
-    roster = [entry["family"] for entry in registry["families"]]
+    roster = {entry["family"] for entry in registry["families"]}
     accepts = _checklist_complete_accepts(reviews, lenses)
     accept_families = {str(r.get("family")) for r in accepts}
     block_reviews = [r for r in reviews if str(r.get("verdict", "")).lower() == "block"]
     criticals = _unresolved_criticals(reviews)
+    outage_families = _family_outage_families(reviews, roster)
+    degraded_family_outage = bool(outage_families) and _degraded_quorum_on_family_outage(sizing)
+    missing_required_accept_families = _missing_required_accept_families(
+        sizing, roster, reviews, accepts
+    )
     scoped_files = None if changed_files is None else [str(f) for f in changed_files]
     if changed_files is not None and changed_file_count is None:
         changed_file_count = len(scoped_files)
@@ -476,14 +537,14 @@ def synthesize_dossier(
         verdict = "blocked"
     else:
         quorum_met = len(accepts) >= int(sizing["quorum_accept"])
-        min_families = int(sizing.get("min_families", 1))
+        min_families = _min_accept_families(sizing)
         if quorum_met and len(accept_families) < min_families:
             quorum_met = False
-        if quorum_met and sizing.get("require_all_families"):
-            quorum_met = set(roster) <= accept_families
+        if quorum_met and missing_required_accept_families:
+            quorum_met = False
         verdict = QUORUM_ACCEPT if quorum_met else "no-quorum"
 
-    return {
+    dossier = {
         "dossier_schema": 1,
         "task_id": task_id,
         "pr": pr_number,
@@ -504,6 +565,14 @@ def synthesize_dossier(
         "accept_count": len(accepts),
         "review_team_verdict": verdict,
     }
+    if verdict == QUORUM_ACCEPT and degraded_family_outage:
+        dossier["quorum_mode"] = "degraded-family-outage"
+        dossier["quorum_mode_detail"] = (
+            "one or more model families produced only invalid-output; quorum retained "
+            f"{len(accepts)} accepts across {len(accept_families)} accepting families"
+        )
+        dossier["unavailable_families"] = sorted(outage_families)
+    return dossier
 
 
 # --- Admission gate (consumed by scripts/cc-pr-autoqueue.py) ------------------
@@ -557,6 +626,11 @@ def _dossier_validity_blockers(
     if not isinstance(sizing, Mapping):
         blockers.append(f"review_dossier_malformed:unknown_team_class:{team_class or 'missing'}")
         return tuple(blockers)
+    _bool_field(
+        sizing.get("degraded_quorum_on_family_outage"),
+        "sizing.degraded_quorum_on_family_outage",
+        blockers,
+    )
     if changed_files is not None:
         if not scoped_files:
             blockers.append("review_dossier_changed_files_unknown")
@@ -650,13 +724,16 @@ def _dossier_validity_blockers(
     if len(accepts) < required_quorum:
         blockers.append(f"review_dossier_quorum_not_met:{len(accepts)}/{required_quorum}")
     accept_families = {str(r.get("family")) for r in accepts}
-    min_families = _int_field(sizing.get("min_families", 1), "sizing.min_families", blockers)
+    min_family_default = 2 if sizing.get("require_all_families") else 1
+    min_families = _int_field(
+        sizing.get("min_families", min_family_default), "sizing.min_families", blockers
+    )
     if min_families is not None and len(accept_families) < min_families:
         blockers.append(
             f"review_dossier_family_diversity:accept_families={len(accept_families)}/{min_families}"
         )
     if sizing.get("require_all_families"):
-        missing_families = roster - {str(r.get("family")) for r in accepts}
+        missing_families = _missing_required_accept_families(sizing, roster, reviews, accepts)
         if missing_families:
             blockers.append(
                 "review_dossier_family_diversity:missing_accept_from="

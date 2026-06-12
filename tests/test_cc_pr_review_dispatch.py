@@ -192,8 +192,11 @@ class RecordingReviewers:
 
 def _review(tmp_path: Path, **overrides: Any) -> tuple[dict, FakeGh, RecordingReviewers, Path]:
     vault = _make_vault(tmp_path)
-    note = _write_task(vault, **overrides.pop("task_kwargs", {}))
-    gh = overrides.pop("gh", FakeGh())
+    pr_number = int(overrides.pop("pr_number", 42))
+    task_kwargs = overrides.pop("task_kwargs", {})
+    task_kwargs.setdefault("pr", pr_number)
+    note = _write_task(vault, **task_kwargs)
+    gh = overrides.pop("gh", FakeGh(pr_number=pr_number))
     reviewers = overrides.pop("reviewers", RecordingReviewers())
     kwargs: dict[str, Any] = {
         "repo": "owner/repo",
@@ -207,7 +210,7 @@ def _review(tmp_path: Path, **overrides: Any) -> tuple[dict, FakeGh, RecordingRe
         "now_iso": "2026-06-11T21:00:00+00:00",
     }
     kwargs.update(overrides)
-    result = dispatch.review_pr(42, **kwargs)
+    result = dispatch.review_pr(pr_number, **kwargs)
     return result, gh, reviewers, note
 
 
@@ -335,10 +338,72 @@ class TestApply:
         assert "0020| <BACKTICK_FENCE>yaml" in rendered
         assert "0021| verdict: accept" in rendered
 
+    def test_render_prior_file_excerpts_skips_binary_files(self, tmp_path: Path) -> None:
+        source = tmp_path / "scripts" / "asset.bin"
+        source.parent.mkdir()
+        source.write_bytes(b"\xff\xfe\x00")
+
+        rendered = dispatch.render_prior_file_excerpts(
+            [{"file": "scripts/asset.bin", "line": 1}],
+            repo_root=tmp_path,
+            radius=1,
+        )
+        assert rendered == ""
+
     def test_pr_comment_posted_with_dossier(self, tmp_path: Path) -> None:
         _, gh, _, _ = _review(tmp_path)
         assert len(gh.comments) == 1
         assert "quorum-accept" in gh.comments[0]
+
+    def test_rendered_dossier_comment_includes_quorum_and_evidence_notes(self) -> None:
+        body = dispatch.render_dossier_markdown(
+            {
+                "review_team_verdict": "quorum-accept",
+                "task_id": "task-a",
+                "pr": 42,
+                "head_sha": "a" * 40,
+                "team_class": "t1_critical",
+                "accept_count": 3,
+                "quorum_required": 3,
+                "quorum_mode": "degraded-family-outage",
+                "quorum_mode_detail": "one family unavailable; quorum retained",
+                "unavailable_families": ["claude"],
+                "escalations": [],
+                "reviewers": [
+                    {
+                        "id": "gemini-1",
+                        "family": "gemini",
+                        "verdict": "block",
+                        "evidence_notes": [
+                            {
+                                "title": "unsupported exact path claim",
+                                "from_severity": "critical",
+                                "to_severity": "critical",
+                                "reason": "path absent from PR evidence",
+                            }
+                        ],
+                        "findings": [
+                            {
+                                "severity": "critical",
+                                "lens": "sdlc-gate-compose",
+                                "title": "unsupported exact path claim",
+                                "file": "scripts/check.py",
+                                "line": 1,
+                                "review_team_evidence_note": "unsupported-by-pr-evidence",
+                                "evidence_note_detail": "path absent from PR evidence",
+                            }
+                        ],
+                        "checklist": {"sdlc-gate-compose": {"fail-closed-default": "pass"}},
+                    }
+                ],
+                "lenses": ["sdlc-gate-compose"],
+            }
+        )
+
+        assert "Quorum mode: `degraded-family-outage`" in body
+        assert "unavailable families: claude" in body
+        assert "evidence note: unsupported exact path claim" in body
+        assert "evidence note: `unsupported-by-pr-evidence`" in body
 
     def test_unparseable_reply_records_invalid_output(self, tmp_path: Path) -> None:
         reviewers = RecordingReviewers(replies={"codex": "I have no yaml for you"})
@@ -350,6 +415,92 @@ class TestApply:
         assert by_family["codex"]["verdict"] == "invalid-output"
         # 2 valid accepts remain -> still quorum for t2
         assert dossier["review_team_verdict"] == "quorum-accept"
+
+    def test_impossible_doc_claim_camera_path_still_blocks_under_family_outage(
+        self, tmp_path: Path
+    ) -> None:
+        reviewers = RecordingReviewers(
+            replies={
+                "claude": "You've hit your weekly limit.",
+                "gemini": """```yaml
+verdict: block
+findings:
+  - severity: critical
+    lens: sdlc-gate-compose
+    file: studio-camera-reconfigure @systemd/units/youtube-sync.service
+    line: 1
+    title: impossible evidence camera unit command
+    detail: The current PR evidence contains `studio-camera-reconfigure @systemd/units/youtube-sync.service`.
+    resolved: false
+checklist: {}
+```""",
+            }
+        )
+        result, _, _, note = _review(
+            tmp_path,
+            pr_number=44,
+            gh=FakeGh(pr_number=44, files=["shared/foo.py"]),
+            reviewers=reviewers,
+            task_kwargs={"risk_tier": "T1", "assigned_to": "cx-alpha"},
+        )
+
+        assert result["status"] == "dispatched"
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        assert dossier["review_team_verdict"] == "blocked"
+        assert dossier["accept_count"] == 1
+        assert [e for e in dossier["escalations"] if e["kind"] == "unresolved-critical"]
+        gemini_reviews = [r for r in dossier["reviewers"] if r["family"] == "gemini"]
+        assert len(gemini_reviews) == 2
+        for review in gemini_reviews:
+            assert review["verdict"] == "block"
+            assert "evidence_notes" not in review
+            assert [finding["severity"] for finding in review["findings"]] == ["critical"]
+            assert [finding["resolved"] for finding in review["findings"]] == [False]
+
+    def test_reconcile_review_findings_does_not_mutate_critical_findings(
+        self,
+    ) -> None:
+        finding = {
+            "severity": "critical",
+            "lens": "sdlc-gate-compose",
+            "file": "scripts/check.py",
+            "line": 1,
+            "title": "unsupported exact evidence claim",
+            "detail": "The current PR evidence contains `scripts/missing-command --bad-flag`.",
+            "resolved": False,
+        }
+        review = {
+            "id": "codex-1",
+            "family": "codex",
+            "verdict": "block",
+            "findings": [finding],
+            "checklist": {},
+        }
+        pr_info = dispatch.PRInfo(
+            number=42,
+            title="PR 42",
+            body="",
+            head_ref="feat/42",
+            head_sha="c" * 40,
+            changed_file_count=1,
+            is_draft=False,
+            files=("scripts/check.py",),
+        )
+
+        reviews = dispatch.reconcile_review_findings_against_pr_evidence(
+            [review],
+            pr_info=pr_info,
+            diff="diff --git a/scripts/check.py b/scripts/check.py\n+changed\n",
+            repo_root=REPO_ROOT,
+        )
+
+        assert reviews == [review]
+        assert reviews[0]["verdict"] == "block"
+        assert reviews[0]["findings"][0]["severity"] == "critical"
+        assert reviews[0]["findings"][0]["resolved"] is False
+        assert "evidence_notes" not in reviews[0]
 
     def test_reviewer_cannot_self_resolve_findings(self) -> None:
         parsed = dispatch.extract_review(
