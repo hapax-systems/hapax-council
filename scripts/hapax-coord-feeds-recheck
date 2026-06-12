@@ -33,7 +33,7 @@ Checks, each named in the output, each FAIL carrying a next action:
                          unknown passthrough is honest -> WARN, not FAIL
   * coord-live         — /api/coord/version answers with a deployed sha
   * coord-provenance   — that sha matches the activation worktree's
-                         .deployed-sha (deploy/rebuild provenance)
+                         .deployed-sha and git HEAD (deploy/rebuild provenance)
   * coord-boot-shell   — / serves the dark boot shell in <2s (pixel-level
                          instant-paint claims are witnessed by the playwright
                          harness; this is the HTTP half)
@@ -665,6 +665,19 @@ def _run_cmd(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | N
     return proc.stdout.strip()
 
 
+def _git_head(path: Path) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout.strip()
+
+
 def _write_deploy_fixture_commit(repo: Path, marker: str) -> str:
     (repo / "README.md").write_text(f"{marker}\n")
     _run_cmd(["git", "-C", str(repo), "add", "README.md"])
@@ -763,9 +776,9 @@ def _exercise_coord_deploy_helper() -> str:
             raise RuntimeError("deploy helper succeeded even though fake restart failed")
         deployed = (worktree / ".deployed-sha").read_text().strip()
         head = _run_cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"])
-        if deployed != first_sha or head != second_sha:
+        if deployed != first_sha or head != first_sha:
             raise RuntimeError(
-                f"failed restart promoted receipt incorrectly deployed={deployed[:9]} "
+                f"failed restart left ghost release deployed={deployed[:9]} "
                 f"head={head[:9]} first={first_sha[:9]} second={second_sha[:9]}"
             )
         restarts = restart_log.read_text().splitlines()
@@ -795,7 +808,7 @@ def _exercise_coord_deploy_helper() -> str:
     return (
         f"first={first_sha[:9]} second={second_sha[:9]} wrote .deployed-sha after restart, "
         "refreshed stale origin/main, advanced worktree, skipped idempotent restart, "
-        "kept old receipt on failed restart, retried restart on change"
+        "rolled back worktree on failed restart, retried restart on change"
     )
 
 
@@ -1339,6 +1352,7 @@ def run_checks(
                     "target_ref": "origin/main",
                     "writes_deployed_sha": True,
                     "writes_deployed_sha_after_restart": True,
+                    "rolls_back_worktree_on_restart_failure": True,
                     "restarts_service": COORD_SERVICE,
                 }
                 mismatches = {
@@ -1359,7 +1373,7 @@ def run_checks(
                         "OK",
                         f"runtime helper {COORD_DEPLOY_SCRIPT} sha256={runtime_deploy_sha[:16]} "
                         f"matches tracked {COORD_DEPLOY_RELPATH} and contracts origin/main -> "
-                        f"{COORD_ACTIVATION} with .deployed-sha",
+                        f"{COORD_ACTIVATION} with post-restart .deployed-sha and rollback",
                     )
 
     expected_unit_names = set(UNITS)
@@ -1614,19 +1628,37 @@ def run_checks(
 
     if deployed_sha and DEPLOY_SHA_FILE.exists():
         on_disk = DEPLOY_SHA_FILE.read_text().strip()
+        activation_head = _git_head(COORD_ACTIVATION)
         if not on_disk:
             add(
                 "coord-provenance",
                 "FAIL",
                 f"{DEPLOY_SHA_FILE} is empty; next: {COORD_DEPLOY_RELPATH} must write the deployed sha",
             )
-        elif _sha_prefix_match(deployed_sha, on_disk):
-            add("coord-provenance", "OK", f"served sha matches {DEPLOY_SHA_FILE.name}")
+        elif not activation_head:
+            add(
+                "coord-provenance",
+                "FAIL",
+                f"could not read activation git HEAD at {COORD_ACTIVATION}; "
+                f"next: restore the coord activation worktree with {COORD_DEPLOY_RELPATH}",
+            )
+        elif (
+            _sha_prefix_match(deployed_sha, on_disk)
+            and _sha_prefix_match(deployed_sha, activation_head)
+            and _sha_prefix_match(on_disk, activation_head)
+        ):
+            add(
+                "coord-provenance",
+                "OK",
+                f"served sha, {DEPLOY_SHA_FILE.name}, and activation HEAD all match "
+                f"{activation_head[:9]}",
+            )
         else:
             add(
                 "coord-provenance",
                 "FAIL",
-                f"served {deployed_sha[:9]} != on-disk {on_disk[:9]}; "
+                f"served={deployed_sha[:9]} receipt={on_disk[:9]} "
+                f"activation_head={activation_head[:9]}; "
                 "next: wait for/trigger the coord rebuild timer",
             )
     elif deployed_sha:

@@ -55,6 +55,34 @@ def _scaffold(tmp_path: Path) -> dict[str, str]:
     activation = tmp_path / "activation"
     coord_activation = tmp_path / "coord-activation" / "worktree"
     coord_activation.mkdir(parents=True)
+    (coord_activation / "README.md").write_text("coord activation fixture\n")
+    subprocess.run(["git", "init", str(coord_activation)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(coord_activation), "add", "README.md"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(coord_activation),
+            "-c",
+            "user.name=Hapax Test",
+            "-c",
+            "user.email=test@hapax.local",
+            "commit",
+            "-m",
+            "activation fixture",
+        ],
+        check=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_DATE": "2026-06-12T00:00:00+0000",
+            "GIT_COMMITTER_DATE": "2026-06-12T00:00:00+0000",
+        },
+    )
+    activation_sha = subprocess.check_output(
+        ["git", "-C", str(coord_activation), "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
     coord_source_repo = tmp_path / "hapax-coord"
     coord_source_repo.mkdir()
     coord = tmp_path / "coord"
@@ -140,7 +168,7 @@ def _scaffold(tmp_path: Path) -> dict[str, str]:
         )
         + "\n"
     )
-    (tmp_path / ".deployed-sha").write_text("abc123def4567890\n")
+    (tmp_path / ".deployed-sha").write_text(f"{activation_sha}\n")
     return {
         "HAPAX_RECHECK_REPO": str(repo),
         "HAPAX_RECHECK_COORD_DIR": str(coord),
@@ -153,6 +181,18 @@ def _scaffold(tmp_path: Path) -> dict[str, str]:
         "HAPAX_RECHECK_DEPLOY_SHA": str(tmp_path / ".deployed-sha"),
         "HAPAX_RECHECK_COORD_URL": "http://127.0.0.1:1",  # unreachable by default
     }
+
+
+def _deployed_sha(env: dict[str, str]) -> str:
+    return Path(env["HAPAX_RECHECK_DEPLOY_SHA"]).read_text().strip()
+
+
+def _version(env: dict[str, str]) -> dict[str, str]:
+    return {"deployed_sha": _deployed_sha(env)}
+
+
+def _yard_text(mod, tail: str = "vocab 13 blocked") -> str:
+    return f"YARD {mod._visible_sha_prefix(mod.DEPLOY_SHA_FILE.read_text())} {tail}"
 
 
 def _by_check(results):
@@ -199,6 +239,7 @@ def _deploy_fixture_commit(repo: Path, marker: str) -> str:
 
 
 def _browser_ok(mod):
+    prefix = mod._visible_sha_prefix(mod.DEPLOY_SHA_FILE.read_text())
     return lambda _url: mod.BrowserSurfaceWitness(
         ok=True,
         detail="test browser witness",
@@ -213,7 +254,7 @@ def _browser_ok(mod):
         fresh_yard_visible_seen=True,
         fresh_yard_rect_area=4096,
         fresh_yard_chip_count=3,
-        fresh_yard_text="YARD abc123def vocab 13 blocked",
+        fresh_yard_text=f"YARD {prefix} vocab 13 blocked",
         dashboard_seen=True,
         dark_paint_seen=True,
         white_paint_seen=False,
@@ -881,8 +922,9 @@ def test_coord_deploy_helper_fetches_writes_sha_and_is_idempotent(tmp_path):
         timeout=30,
     )
     assert failed.returncode == 42
+    assert "rolled activation worktree back" in failed.stderr
     assert (worktree / ".deployed-sha").read_text().strip() == first_sha
-    assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == second_sha
+    assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == first_sha
     assert restart_log.read_text().splitlines() == [
         "--user restart hapax-coord.service",
         "--user restart hapax-coord.service",
@@ -982,6 +1024,25 @@ def test_coord_deploy_contract_without_sha_write_fails(tmp_path):
     r = res["coord-deploy-script"]
     assert r["state"] == "FAIL"
     assert "writes_deployed_sha" in r["detail"]
+
+
+def test_coord_deploy_contract_without_restart_failure_rollback_fails(tmp_path):
+    env = _scaffold(tmp_path)
+    bad_contract = '"rolls_back_worktree_on_restart_failure":true'
+    for deploy in (
+        Path(env["HAPAX_RECHECK_REPO"]) / "scripts/hapax-coord-deploy",
+        Path(env["HAPAX_RECHECK_COORD_DEPLOY_SCRIPT"]),
+    ):
+        deploy.write_text(
+            deploy.read_text().replace(
+                bad_contract, '"rolls_back_worktree_on_restart_failure":false'
+            )
+        )
+    mod = _load(env)
+    res = _by_check(_run(mod))
+    r = res["coord-deploy-script"]
+    assert r["state"] == "FAIL"
+    assert "rolls_back_worktree_on_restart_failure" in r["detail"]
 
 
 def test_differing_installed_unit_fails_with_next_action(tmp_path):
@@ -1215,7 +1276,7 @@ def _stub_server(version: dict, rails: dict):
 def test_live_coord_probes_pass_against_stub(tmp_path):
     env = _scaffold(tmp_path)
     srv = _stub_server(
-        version={"deployed_sha": "abc123def4567890"},
+        version=_version(env),
         rails={
             "feed_state": "live",
             "stations": ["S0", "S5", "S6", "S7"],
@@ -1245,7 +1306,7 @@ def test_live_coord_probes_pass_against_stub(tmp_path):
 def test_verdict_feed_matches_but_missing_rendered_text_fails_visibility(tmp_path):
     env = _scaffold(tmp_path)
     srv = _stub_server(
-        version={"deployed_sha": "abc123def4567890"},
+        version=_version(env),
         rails={
             "feed_state": "live",
             "stations": ["S0", "S5", "S6", "S7"],
@@ -1268,7 +1329,7 @@ def test_verdict_feed_matches_but_missing_rendered_text_fails_visibility(tmp_pat
             fresh_yard_visible_seen=True,
             fresh_yard_rect_area=4096,
             fresh_yard_chip_count=3,
-            fresh_yard_text="YARD abc123def vocab 13 blocked",
+            fresh_yard_text=_yard_text(mod),
             dashboard_seen=True,
             dark_paint_seen=True,
             white_paint_seen=False,
@@ -1298,7 +1359,7 @@ def test_yard_summary_alone_does_not_satisfy_verdict_visibility(tmp_path):
     }
     (Path(env["HAPAX_RECHECK_COORD_DIR"]) / "review-receipts.json").write_text(json.dumps(receipts))
     srv = _stub_server(
-        version={"deployed_sha": "abc123def4567890"},
+        version=_version(env),
         rails={
             "feed_state": "live",
             "stations": ["S0", "S5", "S6", "S7"],
@@ -1321,7 +1382,7 @@ def test_yard_summary_alone_does_not_satisfy_verdict_visibility(tmp_path):
             fresh_yard_visible_seen=True,
             fresh_yard_rect_area=4096,
             fresh_yard_chip_count=3,
-            fresh_yard_text="YARD abc123def vocab 13 blocked 6 receipts",
+            fresh_yard_text=_yard_text(mod, "vocab 13 blocked 6 receipts"),
             dashboard_seen=True,
             dark_paint_seen=True,
             white_paint_seen=False,
@@ -1351,7 +1412,7 @@ def test_yard_summary_alone_does_not_satisfy_verdict_visibility(tmp_path):
 def test_invisible_non_yard_verdict_text_fails_visibility(tmp_path):
     env = _scaffold(tmp_path)
     srv = _stub_server(
-        version={"deployed_sha": "abc123def4567890"},
+        version=_version(env),
         rails={
             "feed_state": "live",
             "stations": ["S0", "S5", "S6", "S7"],
@@ -1384,7 +1445,7 @@ def test_invisible_non_yard_verdict_text_fails_visibility(tmp_path):
                     fresh_yard_visible_seen=True,
                     fresh_yard_rect_area=4096,
                     fresh_yard_chip_count=3,
-                    fresh_yard_text="YARD abc123def vocab 13 blocked",
+                    fresh_yard_text=_yard_text(mod),
                     dashboard_seen=True,
                     dark_paint_seen=True,
                     white_paint_seen=False,
@@ -1413,7 +1474,7 @@ def test_invisible_non_yard_verdict_text_fails_visibility(tmp_path):
 def test_white_pixel_sample_fails_last_good_paint(tmp_path):
     env = _scaffold(tmp_path)
     srv = _stub_server(
-        version={"deployed_sha": "abc123def4567890"},
+        version=_version(env),
         rails={
             "feed_state": "live",
             "stations": ["S0", "S5", "S6", "S7"],
@@ -1436,7 +1497,7 @@ def test_white_pixel_sample_fails_last_good_paint(tmp_path):
             fresh_yard_visible_seen=True,
             fresh_yard_rect_area=4096,
             fresh_yard_chip_count=3,
-            fresh_yard_text="YARD abc123def vocab 13 blocked",
+            fresh_yard_text=_yard_text(mod),
             dashboard_seen=True,
             dark_paint_seen=True,
             white_paint_seen=True,
@@ -1462,7 +1523,7 @@ def test_white_pixel_sample_fails_last_good_paint(tmp_path):
 def test_mostly_white_pixel_sample_fails_last_good_paint(tmp_path):
     env = _scaffold(tmp_path)
     srv = _stub_server(
-        version={"deployed_sha": "abc123def4567890"},
+        version=_version(env),
         rails={
             "feed_state": "live",
             "stations": ["S0", "S5", "S6", "S7"],
@@ -1485,7 +1546,7 @@ def test_mostly_white_pixel_sample_fails_last_good_paint(tmp_path):
             fresh_yard_visible_seen=True,
             fresh_yard_rect_area=4096,
             fresh_yard_chip_count=3,
-            fresh_yard_text="YARD abc123def vocab 13 blocked",
+            fresh_yard_text=_yard_text(mod),
             dashboard_seen=True,
             dark_paint_seen=True,
             white_paint_seen=False,
@@ -1511,7 +1572,7 @@ def test_mostly_white_pixel_sample_fails_last_good_paint(tmp_path):
 def test_rails_stations_must_match_exported_vocab(tmp_path):
     env = _scaffold(tmp_path)
     srv = _stub_server(
-        version={"deployed_sha": "abc123def4567890"},
+        version=_version(env),
         rails={
             "feed_state": "live",
             "stations": ["S0", "HARDCODED", "S6", "S7"],
@@ -1531,7 +1592,7 @@ def test_rails_stations_must_match_exported_vocab(tmp_path):
 def test_rails_stations_must_match_exported_ladder_not_valid_subset(tmp_path):
     env = _scaffold(tmp_path)
     srv = _stub_server(
-        version={"deployed_sha": "abc123def4567890"},
+        version=_version(env),
         rails={
             "feed_state": "live",
             "stations": ["S0", "S5"],
@@ -1551,7 +1612,7 @@ def test_rails_stations_must_match_exported_ladder_not_valid_subset(tmp_path):
 def test_rails_item_station_must_match_event_log_via_exported_vocab(tmp_path):
     env = _scaffold(tmp_path)
     srv = _stub_server(
-        version={"deployed_sha": "abc123def4567890"},
+        version=_version(env),
         rails={
             "feed_state": "live",
             "stations": ["S0", "S5", "S6", "S7"],
@@ -1590,7 +1651,7 @@ def test_rails_unknown_stage_passthrough_warns_not_fails(tmp_path):
         + "\n"
     )
     srv = _stub_server(
-        version={"deployed_sha": "abc123def4567890"},
+        version=_version(env),
         rails={
             "feed_state": "live",
             "stations": ["S0", "S5", "S6", "S7"],
@@ -1611,7 +1672,7 @@ def test_rails_unknown_stage_passthrough_warns_not_fails(tmp_path):
 def test_verdictless_rails_fails_visibility(tmp_path):
     env = _scaffold(tmp_path)
     srv = _stub_server(
-        version={"deployed_sha": "abc123def4567890"},
+        version=_version(env),
         rails={
             "feed_state": "live",
             "stations": ["S0", "S5", "S6", "S7"],
@@ -1631,7 +1692,7 @@ def test_verdictless_rails_fails_visibility(tmp_path):
 def test_rails_verdicts_must_match_review_receipts_feed(tmp_path):
     env = _scaffold(tmp_path)
     srv = _stub_server(
-        version={"deployed_sha": "abc123def4567890"},
+        version=_version(env),
         rails={
             "feed_state": "live",
             "stations": ["S0", "S5", "S6", "S7"],
@@ -1655,7 +1716,7 @@ def test_hardcoded_block_without_review_receipts_feed_fails_visibility(tmp_path)
     env = _scaffold(tmp_path)
     (Path(env["HAPAX_RECHECK_COORD_DIR"]) / "review-receipts.json").write_text("{}")
     srv = _stub_server(
-        version={"deployed_sha": "abc123def4567890"},
+        version=_version(env),
         rails={
             "feed_state": "live",
             "stations": ["S0", "S5", "S6", "S7"],
@@ -1681,7 +1742,7 @@ def test_rails_receipts_must_match_acceptance_feed(tmp_path):
     }
     (Path(env["HAPAX_RECHECK_COORD_DIR"]) / "review-receipts.json").write_text(json.dumps(receipts))
     srv = _stub_server(
-        version={"deployed_sha": "abc123def4567890"},
+        version=_version(env),
         rails={
             "feed_state": "live",
             "stations": ["S0", "S5", "S6", "S7"],
@@ -1709,7 +1770,7 @@ def test_provenance_mismatch_fails(tmp_path):
     env = _scaffold(tmp_path)
     Path(env["HAPAX_RECHECK_DEPLOY_SHA"]).write_text("ffff999988887777\n")
     srv = _stub_server(
-        version={"deployed_sha": "abc123def4567890"},
+        version=_version(env),
         rails={
             "feed_state": "live",
             "stations": ["S0", "S5", "S6", "S7"],
@@ -1725,11 +1786,33 @@ def test_provenance_mismatch_fails(tmp_path):
         srv.shutdown()
 
 
+def test_activation_head_mismatch_fails_provenance(tmp_path):
+    env = _scaffold(tmp_path)
+    _deploy_fixture_commit(Path(env["HAPAX_RECHECK_COORD_ACTIVATION"]), "head-drift")
+    srv = _stub_server(
+        version=_version(env),
+        rails={
+            "feed_state": "live",
+            "stations": ["S0", "S5", "S6", "S7"],
+            "items": [{"id": "t1", "station": "S5"}],
+        },
+    )
+    try:
+        env["HAPAX_RECHECK_COORD_URL"] = f"http://127.0.0.1:{srv.server_address[1]}"
+        mod = _load(env)
+        res = _by_check(_run(mod))
+        assert res["coord-provenance"]["state"] == "FAIL"
+        assert "activation_head=" in res["coord-provenance"]["detail"]
+    finally:
+        srv.shutdown()
+
+
 def test_empty_deployed_sha_fails_provenance(tmp_path):
     env = _scaffold(tmp_path)
+    version = _version(env)
     Path(env["HAPAX_RECHECK_DEPLOY_SHA"]).write_text("")
     srv = _stub_server(
-        version={"deployed_sha": "abc123def4567890"},
+        version=version,
         rails={
             "feed_state": "live",
             "stations": ["S0", "S5", "S6", "S7"],
@@ -1761,7 +1844,7 @@ def test_fresh_dashboard_paint_does_not_satisfy_last_good_check_without_replay(t
             fresh_yard_visible_seen=True,
             fresh_yard_rect_area=4096,
             fresh_yard_chip_count=2,
-            fresh_yard_text="YARD abc123def vocab 13 blocked",
+            fresh_yard_text=_yard_text(mod),
             dashboard_seen=True,
             dark_paint_seen=True,
             white_paint_seen=False,
@@ -1823,7 +1906,7 @@ def test_hidden_or_empty_replay_marker_fails_last_good_paint(tmp_path):
                 fresh_yard_visible_seen=True,
                 fresh_yard_rect_area=4096,
                 fresh_yard_chip_count=2,
-                fresh_yard_text="YARD abc123def vocab 13 blocked",
+                fresh_yard_text=_yard_text(mod),
                 dashboard_seen=True,
                 dark_paint_seen=True,
                 white_paint_seen=False,
@@ -1855,7 +1938,7 @@ def test_white_first_paint_fails_last_good_even_with_replay(tmp_path):
             fresh_yard_visible_seen=True,
             fresh_yard_rect_area=4096,
             fresh_yard_chip_count=2,
-            fresh_yard_text="YARD abc123def vocab 13 blocked",
+            fresh_yard_text=_yard_text(mod),
             dashboard_seen=True,
             dark_paint_seen=True,
             white_paint_seen=True,
@@ -1921,7 +2004,7 @@ def test_hidden_or_offscreen_yard_status_fails_strip(tmp_path):
                 fresh_yard_visible_seen=False,
                 fresh_yard_rect_area=area,
                 fresh_yard_chip_count=2,
-                fresh_yard_text="YARD abc123def vocab 13 blocked",
+                fresh_yard_text=_yard_text(mod),
                 dashboard_seen=True,
                 dark_paint_seen=True,
                 white_paint_seen=False,
@@ -1940,7 +2023,7 @@ def test_hidden_or_offscreen_yard_status_fails_strip(tmp_path):
 def test_fresh_yard_status_without_deployed_sha_fails_strip(tmp_path):
     env = _scaffold(tmp_path)
     srv = _stub_server(
-        version={"deployed_sha": "abc123def4567890"},
+        version=_version(env),
         rails={
             "feed_state": "live",
             "stations": ["S0", "S5", "S6", "S7"],
@@ -1978,7 +2061,10 @@ def test_fresh_yard_status_without_deployed_sha_fails_strip(tmp_path):
         res = _by_check(_run(mod, browser_probe=missing_sha))
         assert res["coord-last-good-paint"]["state"] == "OK"
         assert res["coord-yard-status-strip"]["state"] == "FAIL"
-        assert "yard_sha_prefix=abc123def" in res["coord-yard-status-strip"]["detail"]
+        assert (
+            f"yard_sha_prefix={mod._visible_sha_prefix(_deployed_sha(env))}"
+            in res["coord-yard-status-strip"]["detail"]
+        )
         assert "yard_sha_visible=False" in res["coord-yard-status-strip"]["detail"]
         assert "yard_text='YARD vocab 13 blocked'" in res["coord-yard-status-strip"]["detail"]
     finally:
@@ -2003,7 +2089,7 @@ def test_slow_live_yard_status_fails_strip(tmp_path):
             fresh_yard_visible_seen=True,
             fresh_yard_rect_area=4096,
             fresh_yard_chip_count=2,
-            fresh_yard_text="YARD abc123def vocab 13 blocked",
+            fresh_yard_text=_yard_text(mod),
             dashboard_seen=True,
             dark_paint_seen=True,
             white_paint_seen=False,
