@@ -89,6 +89,26 @@
       "recheck_cmds": [
         "grep -L 'source-activation' systemd/units/hapax-cc-hygiene.service systemd/units/hapax-coord.service systemd/units/hapax-lane-reaper.service  # empty when the w1 S2 wave lands"
       ]
+    },
+    {
+      "id": "W4-LANE-REAPER-PID-GUARD-FOLLOWUP",
+      "severity": "medium",
+      "claim": "scripts/hapax-lane-reaper removes worktrees with git worktree remove --force after tmux/git checks but without proving no live PIDs hold cwd/files inside (round-3 review, codex-1).",
+      "fix": "Follow-up: extend the 567d1ff78 GC-guard live-PID predicate (release dirs) to the reaper's worktree-removal path.",
+      "status": "follow_up",
+      "recheck_cmds": [
+        "grep -n 'worktree remove' scripts/hapax-lane-reaper  # guarded by a live-PID check when the follow-up lands"
+      ]
+    },
+    {
+      "id": "W4-NOTIFY-HANDLER-DURABLE-CHANNEL-FOLLOWUP",
+      "severity": "medium",
+      "claim": "notify-failure@.service is notify-send only: requires live graphical session/DBus, leaves no durable trace \u2014 a boot-time or logged-out failure notifies nobody (round-3 review, claude-1; explicitly suggested as follow-up, not blocker).",
+      "fix": "Follow-up: add an ntfy post (shared/notify.py conventions) to the handler; blast radius is every OnFailure-wired unit (82 pre-existing + 46 from W4), so it gets its own PR.",
+      "status": "follow_up",
+      "recheck_cmds": [
+        "grep -c ntfy systemd/units/notify-failure@.service  # > 0 when the follow-up lands"
+      ]
     }
   ],
   "exit_predicate": {
@@ -145,6 +165,41 @@
         {
           "finding": "claude-1 minor: mutation_scope_refs omits scripts/",
           "disposition": "fixed \u2014 task note mutation_scope_refs amended to the actual surface (scripts/, docs/runbooks/, tests/, docs/audits/ added)"
+        }
+      ]
+    },
+    {
+      "round": 3,
+      "head_sha": "e806dedac",
+      "verdict": "no-quorum (dead reviewers: gemini-1, gemini-2 \u2014 THIRD consecutive gemini-pair death; codex-1 + claude-1 completed)",
+      "findings_dispositions": [
+        {
+          "finding": "codex-1 major canonical-root: S2 units mutable-rooted (RE-RAISE of round-2 deferred finding)",
+          "disposition": "deferral stands (W4-CANONICAL-ROOT-S2-FOLLOWUP); claude-1's round-3 minor independently endorses the deferral as documented+tracked. State unchanged by design \u2014 codex re-raises on unchanged state."
+        },
+        {
+          "finding": "codex-1 major canonical-root: scripts/hapax-lane-reaper worktree removal lacks live-PID guard",
+          "disposition": "FOLLOW-UP (new finding id W4-LANE-REAPER-PID-GUARD-FOLLOWUP): the reaper script was not touched by W4 (only its unit gained OnFailure=); the live-PID-deletion predicate is the GC-guard class just landed for release dirs in 567d1ff78 \u2014 same pattern should extend to worktree removal. Out of W4's observability mutation surface."
+        },
+        {
+          "finding": "claude-1 major exit-predicate-adequacy: v4l2-bridge unprotected; logos-api/studio-compositor/obs-livestream unmapped (unpinned)",
+          "disposition": "fixed \u2014 OnFailure added to hapax-v4l2-bridge + hapax-v4l2-bridge-watchdog and both mapped; studio-compositor + hapax-obs-livestream mapped under compositor-director-broadcast; logos-runtime-reactive subsystem added with logos-api.service"
+        },
+        {
+          "finding": "claude-1 minor: album gate call-site wiring unpinned",
+          "disposition": "fixed \u2014 source pin asserts the save-try is guarded by _album_cover_save_allowed()"
+        },
+        {
+          "finding": "claude-1 minor: PR body stale (38 tests, _evidence path)",
+          "disposition": "fixed \u2014 PR body updated to 49 tests + docs/audits path"
+        },
+        {
+          "finding": "claude-1 minor deploy-drift: album unit swap procedure not repo-durable",
+          "disposition": "fixed \u2014 docs/audits/.../deploy-notes.md: daemon-reload semantics, unit+drop-in swap sequence, storm rechecks"
+        },
+        {
+          "finding": "claude-1 minor: notify-failure@ is notify-send only (no durable channel)",
+          "disposition": "FOLLOW-UP (W4-NOTIFY-HANDLER-DURABLE-CHANNEL-FOLLOWUP) per reviewer's own suggestion \u2014 handler predates W4 and serves 82+ pre-existing units; adding ntfy via shared/notify.py conventions is a one-line-blast-radius-everywhere change that deserves its own reviewed PR."
         }
       ]
     }

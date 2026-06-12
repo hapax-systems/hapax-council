@@ -173,3 +173,15 @@ class TestNoAlbumPolarityFixed:
                 f"point of W4-ALBUM-POLARITY-STORM is that this is an "
                 f"expected state — INFO on transition only"
             )
+
+    def test_main_routes_save_through_the_gate(self) -> None:
+        """Call-site pin (review round 3, PR #4106): the helper being
+        well-tested means nothing if main() stops calling it — the save
+        would again run with _current_album=None and every behavioral
+        test would stay green. main() is hardware-bound, so pin the
+        wiring at source level: the gate guards a try."""
+        assert re.search(r"if _album_cover_save_allowed\(\):\s*\n\s+try:", _source()), (
+            "main()'s PNG-save try is no longer guarded by "
+            "_album_cover_save_allowed() — the no-album state regresses "
+            "to attempting saves (W4-ALBUM-POLARITY-STORM call-site)"
+        )

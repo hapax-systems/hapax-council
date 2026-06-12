@@ -80,6 +80,15 @@ S1S2_CONSTITUENT_UNITS: dict[str, tuple[str, ...]] = {
         "hapax-darkplaces.service",
         "hapax-darkplaces-v4l2.service",
         "hapax-darkplaces-obs-media-stream.service",
+        # Round-3 review gaps: the /dev/video42 shmsrc writer + its
+        # watchdog (same egress chain as the format guard), and the
+        # already-protected chain members that were unmapped — an
+        # unmapped unit is unpinned: a future PR could drop its
+        # OnFailure= without any test going red.
+        "hapax-v4l2-bridge.service",
+        "hapax-v4l2-bridge-watchdog.service",
+        "studio-compositor.service",
+        "hapax-obs-livestream.service",
         "studio-fx-output.service",
         "hapax-broadcast-orchestrator.service",
         "hapax-live-surface-guard.service",
@@ -107,6 +116,10 @@ S1S2_CONSTITUENT_UNITS: dict[str, tuple[str, ...]] = {
     ),
     # S1 — governance, consent & refusal
     "governance-consent-refusal": ("hapax-refusal-brief-rotate.service",),
+    # S1 — logos runtime & reactive engine (round-3 review gap: logos-api
+    # is the key-chain link the hapax-secrets rationale itself names —
+    # it carried OnFailure= but nothing pinned it).
+    "logos-runtime-reactive": ("logos-api.service",),
     # S1 — grounding inference substrate (repo-versioned part only;
     # litellm container config is deployed-only and out of scope).
     # hapax-secrets is the root of the documented key chain
