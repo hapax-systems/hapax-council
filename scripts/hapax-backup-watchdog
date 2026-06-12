@@ -8,9 +8,15 @@ set -euo pipefail
 #   2. GDrive critical offsite: last restic snapshot < 48 hours old
 #   3. Qdrant snapshot dir on NAS: non-empty, collections present
 #   4. Restic repo integrity: Tier 1 plus GDrive critical metadata checks
+#   5. Backup receipts (tier1-local, tier2-remote): fresh, complete, and
+#      zero failed component witnesses (canary for the class-closure
+#      mechanism in scripts/hapax-backup-lib.sh — a green backup run with
+#      a failed component is impossible by construction; this check
+#      independently alerts if receipts go stale, red, or missing)
 #
 # Notifications via ntfy (localhost:8090) and desktop notify-send.
 # Exit code: 0 = all healthy, 1 = at least one check failed.
+# HAPAX_WATCHDOG_LIB_ONLY=1: define functions only (for tests).
 
 NTFY_URL="${HAPAX_NTFY_URL:-http://localhost:8090/hapax-backup}"
 TIER1_REPO="/mnt/nas/backups/restic"
@@ -20,6 +26,9 @@ TIER1_MAX_AGE_HOURS=36
 GDRIVE_CRITICAL_MAX_AGE_HOURS="${HAPAX_GDRIVE_CRITICAL_MAX_AGE_HOURS:-48}"
 TIER1_PASSWORD_ENTRY="${HAPAX_TIER1_RESTIC_PASSWORD_ENTRY:-backups/restic-password}"
 GDRIVE_CRITICAL_PASSWORD_ENTRY="${HAPAX_GDRIVE_CRITICAL_RESTIC_PASSWORD_ENTRY:-backblaze/restic-password}"
+HAPAX_BACKUP_RECEIPT_DIR="${HAPAX_BACKUP_RECEIPT_DIR:-$HOME/.local/state/hapax/backup-receipts}"
+TIER1_RECEIPT_MAX_AGE_HOURS="${HAPAX_TIER1_RECEIPT_MAX_AGE_HOURS:-36}"
+TIER2_RECEIPT_MAX_AGE_HOURS="${HAPAX_TIER2_RECEIPT_MAX_AGE_HOURS:-36}"
 
 FAILURES=()
 
@@ -108,12 +117,60 @@ check_restic_integrity() {
     fi
 }
 
+check_backup_receipt() {
+    local tier="$1" label="$2" max_hours="$3"
+    local receipt="$HAPAX_BACKUP_RECEIPT_DIR/${tier}-latest.json"
+    log "Checking $label backup receipt (max ${max_hours}h)..."
+
+    if [[ ! -f "$receipt" ]]; then
+        FAILURES+=("$label: no backup receipt at $receipt")
+        return
+    fi
+
+    local failures aborted finished
+    failures="$(jq -r '.failures // empty' "$receipt" 2>/dev/null)"
+    aborted="$(jq -r '.aborted // empty' "$receipt" 2>/dev/null)"
+    finished="$(jq -r '.finished_at // empty' "$receipt" 2>/dev/null)"
+    if [[ -z "$failures" || -z "$finished" ]]; then
+        FAILURES+=("$label: unreadable backup receipt at $receipt")
+        return
+    fi
+
+    if (( failures > 0 )); then
+        local failed_names
+        failed_names="$(jq -r '[.components[] | select(.status == "fail") | .name] | join(", ")' "$receipt" 2>/dev/null)"
+        FAILURES+=("$label: receipt records $failures failed component(s): ${failed_names:-unknown}")
+    fi
+    if [[ "$aborted" == "true" ]]; then
+        FAILURES+=("$label: last run aborted before completing all components")
+    fi
+
+    local finished_epoch now_epoch age_hours
+    finished_epoch="$(date -d "$finished" +%s 2>/dev/null)" || {
+        FAILURES+=("$label: cannot parse receipt finished_at '$finished'")
+        return
+    }
+    now_epoch="$(date +%s)"
+    age_hours=$(( (now_epoch - finished_epoch) / 3600 ))
+    if (( age_hours > max_hours )); then
+        FAILURES+=("$label: receipt is ${age_hours}h old (max ${max_hours}h)")
+    elif (( failures == 0 )) && [[ "$aborted" != "true" ]]; then
+        log "  $label: OK — receipt ${age_hours}h old, all components ok"
+    fi
+}
+
+if [[ "${HAPAX_WATCHDOG_LIB_ONLY:-0}" == "1" ]]; then
+    return 0 2>/dev/null || exit 0
+fi
+
 # Run checks
 check_snapshot_age "$TIER1_REPO" "Tier1-NAS" "$TIER1_MAX_AGE_HOURS" "$TIER1_PASSWORD_ENTRY"
 check_snapshot_age "$GDRIVE_CRITICAL_REPO" "GDrive-Critical" "$GDRIVE_CRITICAL_MAX_AGE_HOURS" "$GDRIVE_CRITICAL_PASSWORD_ENTRY"
 check_qdrant_snapshots
 check_restic_integrity "$TIER1_REPO" "Tier1-NAS" "$TIER1_PASSWORD_ENTRY"
 check_restic_integrity "$GDRIVE_CRITICAL_REPO" "GDrive-Critical" "$GDRIVE_CRITICAL_PASSWORD_ENTRY" true
+check_backup_receipt tier1-local "Tier1-receipt" "$TIER1_RECEIPT_MAX_AGE_HOURS"
+check_backup_receipt tier2-remote "Tier2-receipt" "$TIER2_RECEIPT_MAX_AGE_HOURS"
 
 # Report
 if (( ${#FAILURES[@]} > 0 )); then
