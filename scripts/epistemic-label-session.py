@@ -73,6 +73,7 @@ def write_label(record: dict, labels: dict[str, int], manifest_hash: str) -> Non
         "provenance": "operator_label_entry",
         "labels": labels,
     }
+    # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
     with OUTPUT.open("a") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 

@@ -29,6 +29,7 @@ def emit(event_type: str, **fields: Any) -> None:
     }
     try:
         EVENT_DIR.mkdir(parents=True, exist_ok=True)
+        # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
         with EVENT_FILE.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record) + "\n")
     except OSError as exc:

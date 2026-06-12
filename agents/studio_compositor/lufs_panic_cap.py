@@ -439,6 +439,7 @@ class LufsPanicCap:
             ),
         }
         try:
+            # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
             with REFUSAL_LOG_PATH.open("a") as fh:
                 fh.write(json.dumps(entry) + "\n")
         except Exception:

@@ -87,5 +87,6 @@ def write_chronicle_entry(episode: FortressEpisode) -> None:
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     CHRONICLE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
     with CHRONICLE_PATH.open("a") as f:
         f.write(json.dumps(entry) + "\n")

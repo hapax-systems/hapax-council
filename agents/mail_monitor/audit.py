@@ -77,6 +77,7 @@ def audit_call(
     with _LOCK:
         try:
             AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
             with AUDIT_LOG_PATH.open("a", encoding="utf-8") as fp:
                 fp.write(line)
                 # Flush so the digest job sees the call within 1s of the call

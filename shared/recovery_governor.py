@@ -619,6 +619,7 @@ class RecoveryGovernor:
         target_dir = (Path.home() / ".cache" / "hapax" / "recovery") if fallback else self._dir
         try:
             target_dir.mkdir(parents=True, exist_ok=True)
+            # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
             with (target_dir / "failopen.jsonl").open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(rec) + "\n")
             self._bump_counter(target_dir / "counters.json", "failopen")
@@ -715,6 +716,7 @@ def _ledger_shadow(governor: RecoveryGovernor, grant: RecoveryGrant) -> None:
     }
     try:
         governor._dir.mkdir(parents=True, exist_ok=True)
+        # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
         with (governor._dir / "shadow-compare.jsonl").open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec) + "\n")
     except OSError:

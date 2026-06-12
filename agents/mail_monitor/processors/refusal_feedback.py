@@ -77,6 +77,7 @@ def emit_refusal_feedback(message: dict[str, Any], *, kind: str = "feedback") ->
     REFUSAL_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(entry, separators=(",", ":")) + "\n"
     try:
+        # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
         with REFUSAL_LOG_PATH.open("a", encoding="utf-8") as fp:
             fp.write(line)
             fp.flush()

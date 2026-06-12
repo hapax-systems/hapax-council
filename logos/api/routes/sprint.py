@@ -211,7 +211,10 @@ async def transition_measure(measure_id: str, body: TransitionRequest) -> Transi
     }
 
     try:
-        with _SHM_COMPLETED.open("a", encoding="utf-8") as f:
+        with (
+            # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
+            _SHM_COMPLETED.open("a", encoding="utf-8") as f
+        ):  # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
             f.write(json.dumps(signal) + "\n")
     except OSError as exc:
         log.error("Failed to write sprint completion signal: %s", exc)

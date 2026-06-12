@@ -167,6 +167,7 @@ class GrantSubmissionRunner:
         try:
             target = self._output_dir(now=now) / "outcomes.jsonl"
             target.parent.mkdir(parents=True, exist_ok=True)
+            # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
             with target.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(asdict(outcome), default=str) + "\n")
         except Exception:

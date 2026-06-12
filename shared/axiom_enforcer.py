@@ -143,6 +143,7 @@ def _audit_log(
             "source": "live",
             "violations": violation_entries,
         }
+        # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
         with AUDIT_LOG.open("a") as f:
             f.write(json.dumps(entry) + "\n")
     except Exception as e:

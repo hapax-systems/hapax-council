@@ -3,7 +3,7 @@
 
 Every append-mode open of a ``*.jsonl`` path in first-party code must be
 covered by the rotation registry (shared/runtime_jsonl_rotator.py TARGETS) or
-carry an explicit ``# jsonl-rotation: exempt(<reason>)`` pragma on the same
+carry an explicit ```` pragma on the same
 line. The registry is the single source of truth — coverage is computed FROM
 it, so registering a target automatically licenses its writers (generative,
 not a second list to drift).
@@ -36,8 +36,13 @@ def registry_names() -> set[str]:
     return names
 
 
-def _mode_is_append(call: ast.Call) -> bool:
-    for arg in list(call.args[1:2]) + [k.value for k in call.keywords if k.arg == "mode"]:
+def _mode_is_append(call: ast.Call, *, is_method: bool) -> bool:
+    """Mode position differs: builtin open(path, mode) vs PATH.open(mode)."""
+    idx = 0 if is_method else 1
+    candidates = list(call.args[idx : idx + 1]) + [
+        k.value for k in call.keywords if k.arg == "mode"
+    ]
+    for arg in candidates:
         if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and "a" in arg.value:
             return True
     return False
@@ -53,28 +58,67 @@ def _jsonl_basename(node: ast.AST) -> str | None:
     return None
 
 
+def _jsonl_name_bindings(tree: ast.AST) -> dict[str, str]:
+    """Names bound (anywhere in the module) to expressions that mention a
+    .jsonl basename — the codebase's dominant writer idiom is
+    ``SOME_FILE = Path(...)/"x.jsonl"`` then ``SOME_FILE.open("a")``
+    (dossier finding 2026-06-12: literal-only matching detected ZERO of the
+    three original log bombs)."""
+    bindings: dict[str, str] = {}
+    for node in ast.walk(tree):
+        targets: list[ast.expr] = []
+        value: ast.expr | None = None
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        if value is None:
+            continue
+        base = _jsonl_basename(value)
+        if base is None:
+            continue
+        for tgt in targets:
+            if isinstance(tgt, ast.Name):
+                bindings[tgt.id] = base
+            elif isinstance(tgt, ast.Attribute):
+                bindings[tgt.attr] = base
+    return bindings
+
+
 def check_file(path: Path, covered: set[str], src_lines: list[str]) -> list[str]:
     problems: list[str] = []
     try:
         tree = ast.parse("\n".join(src_lines))
     except SyntaxError:
         return problems
+    bindings = _jsonl_name_bindings(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         fn = node.func
-        is_open = (isinstance(fn, ast.Name) and fn.id == "open") or (
-            isinstance(fn, ast.Attribute) and fn.attr == "open"
-        )
-        if not is_open or not _mode_is_append(node):
+        is_builtin_open = isinstance(fn, ast.Name) and fn.id == "open"
+        is_method_open = isinstance(fn, ast.Attribute) and fn.attr == "open"
+        if not (is_builtin_open or is_method_open):
+            continue
+        if not _mode_is_append(node, is_method=is_method_open):
             continue
         base = _jsonl_basename(node)
         if base is None and isinstance(fn, ast.Attribute):
             base = _jsonl_basename(fn.value)
+            # the dominant idiom: NAME.open("a") / self.NAME.open("a") where
+            # NAME was bound to a .jsonl path elsewhere in the module
+            if base is None:
+                inner = fn.value
+                if isinstance(inner, ast.Name):
+                    base = bindings.get(inner.id)
+                elif isinstance(inner, ast.Attribute):
+                    base = bindings.get(inner.attr)
         if base is None:
             continue
-        line = src_lines[node.lineno - 1] if node.lineno <= len(src_lines) else ""
-        if "jsonl-rotation: exempt" in line:
+        # pragma on the call line OR the immediately preceding comment line
+        # (ruff-format rewraps long trailing comments; standalone lines are stable)
+        window = src_lines[max(0, node.lineno - 2) : node.lineno]
+        if any("jsonl-rotation: exempt" in ln for ln in window):
             continue
         if base not in covered:
             problems.append(
@@ -96,7 +140,7 @@ def main() -> int:
             problems.extend(check_file(py, covered, src_lines))
     if problems:
         print("Unrotated jsonl writers (register in runtime_jsonl_rotator.TARGETS")
-        print("or annotate `# jsonl-rotation: exempt(<reason>)`):")
+        print("or annotate ``):")
         for p in problems:
             print(f"  {p}")
         return 1

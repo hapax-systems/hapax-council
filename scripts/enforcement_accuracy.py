@@ -210,6 +210,7 @@ def cmd_backfill() -> None:
                                 }
                             ],
                         }
+                        # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
                         with AUDIT_LOG.open("a") as f:
                             f.write(json.dumps(entry) + "\n")
                 count += 1
@@ -221,6 +222,7 @@ def cmd_backfill() -> None:
         if entries:
             matched += 1
             total += len(entries)
+            # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
             with AUDIT_LOG.open("a") as f:
                 for entry in entries:
                     f.write(json.dumps(entry) + "\n")
@@ -254,6 +256,7 @@ def _load_labels() -> dict[str, Label]:
 def _save_label(label: Label) -> None:
     """Append a label to the labels file."""
     LABELS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
     with LABELS_FILE.open("a") as f:
         f.write(
             json.dumps(

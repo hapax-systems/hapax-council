@@ -758,6 +758,7 @@ def write_visual_variance_ledger(
 
     durable_dir.mkdir(parents=True, exist_ok=True)
     summary_path = durable_dir / f"{ledger.generated_at[:10]}.jsonl"
+    # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
     with summary_path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(_ledger_summary(ledger), sort_keys=True) + "\n")
 

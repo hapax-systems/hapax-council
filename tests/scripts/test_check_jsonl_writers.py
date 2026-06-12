@@ -55,3 +55,54 @@ def test_live_tree_is_clean():
         [sys.executable, str(GATE)], capture_output=True, text=True, check=False
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_evasion_canary_name_bound_path_constant_is_caught():
+    """Dossier finding 2026-06-12: the dominant idiom — a module-level path
+    constant opened by name — must be caught. This is the EXACT shape of the
+    three original log bombs (DISPATCH_TRACE_FILE.open('a'))."""
+    gate = _load_gate()
+    src = (
+        "from pathlib import Path\n"
+        'DISPATCH_TRACE_FILE = Path.home() / "hapax-state" / "rogue-trace.jsonl"\n'
+        "def emit(rec):\n"
+        '    with DISPATCH_TRACE_FILE.open("a") as f:\n'
+        "        f.write(rec)\n"
+    )
+    problems = gate.check_file(
+        REPO / "shared" / "fake_pipeline.py", covered=set(), src_lines=src.splitlines()
+    )
+    assert len(problems) == 1
+    assert "rogue-trace.jsonl" in problems[0]
+
+
+def test_deadlock_canary_name_bound_registered_passes():
+    gate = _load_gate()
+    src = (
+        "from pathlib import Path\n"
+        'TRACE = Path("/dev/shm/x") / "dispatch-trace.jsonl"\n'
+        'f = TRACE.open("a")\n'
+    )
+    problems = gate.check_file(
+        REPO / "shared" / "fake_pipeline.py",
+        covered={"dispatch-trace.jsonl"},
+        src_lines=src.splitlines(),
+    )
+    assert problems == []
+
+
+def test_evasion_canary_self_attribute_constant_is_caught():
+    gate = _load_gate()
+    src = (
+        "from pathlib import Path\n"
+        "class W:\n"
+        "    def __init__(self):\n"
+        '        self.ledger_path = Path("/tmp/rogue-ledger2.jsonl")\n'
+        "    def emit(self):\n"
+        '        with self.ledger_path.open("a") as f:\n'
+        '            f.write("x")\n'
+    )
+    problems = gate.check_file(
+        REPO / "agents" / "fake.py", covered=set(), src_lines=src.splitlines()
+    )
+    assert len(problems) == 1

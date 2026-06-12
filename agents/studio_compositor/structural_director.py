@@ -153,6 +153,7 @@ def _publish(intent: StructuralIntent) -> None:
         error_refs.append("structural_intent_publish_failed")
     try:
         _STRUCTURAL_INTENT_JSONL.parent.mkdir(parents=True, exist_ok=True)
+        # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
         with _STRUCTURAL_INTENT_JSONL.open("a", encoding="utf-8") as fh:
             fh.write(intent.model_dump_json() + "\n")
         applied_refs.append("jsonl:stream-experiment/structural-intent.jsonl")

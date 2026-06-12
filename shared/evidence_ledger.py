@@ -195,6 +195,7 @@ class EvidenceLedger:
 
     def append(self, entry: EvidenceEntry) -> None:
         path = self._case_file(entry.case_id)
+        # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
         with path.open("a") as f:
             f.write(entry.model_dump_json() + "\n")
         # Best-effort, off-by-default observability mirror into the coord SSOT log.
@@ -231,6 +232,7 @@ class EvidenceLedger:
 
     def append_receipt(self, receipt: ReceiptEnvelope) -> None:
         path = self._dir / "receipts.jsonl"
+        # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
         with path.open("a") as f:
             f.write(receipt.model_dump_json() + "\n")
 
@@ -261,6 +263,7 @@ class TraceGraph:
         self._dir.mkdir(parents=True, exist_ok=True)
 
     def add_link(self, link: TraceLink) -> None:
+        # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
         with self._path.open("a") as f:
             f.write(link.model_dump_json() + "\n")
 
@@ -431,6 +434,7 @@ class LegibilityEvidenceRegistry:
         mirror_case_id: str | None = None,
         traces_to: list[str] | None = None,
     ) -> None:
+        # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
         with self._path.open("a") as f:
             f.write(record.model_dump_json() + "\n")
         if mirror_case_id:

@@ -215,6 +215,7 @@ def enqueue_audit(
 
     try:
         AUDIT_QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
         with AUDIT_QUEUE_PATH.open("a") as fh:
             fh.write(payload + "\n")
     except OSError as exc:

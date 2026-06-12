@@ -118,6 +118,7 @@ class FortressSessionTracker:
             "events_summary": self.events_summary,
         }
         SESSIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
         with SESSIONS_PATH.open("a") as f:
             f.write(json.dumps(record) + "\n")
         log.info(

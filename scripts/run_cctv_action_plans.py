@@ -144,6 +144,7 @@ async def run_cctv() -> None:
             "timestamp": datetime.now(UTC).isoformat(),
         }
 
+        # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
         with OUTPUT_FILE.open("a") as f:
             f.write(json.dumps(result, ensure_ascii=False) + "\n")
 

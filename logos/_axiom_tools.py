@@ -32,7 +32,10 @@ def _log_tool_usage(tool_name: str) -> None:
     """Append a usage entry to the axiom tool usage log."""
     try:
         USAGE_LOG.parent.mkdir(parents=True, exist_ok=True)
-        with USAGE_LOG.open("a") as f:
+        with (
+            # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
+            USAGE_LOG.open("a") as f
+        ):  # jsonl-rotation: exempt(registry candidate — consumer shrink-audit pending, see audit-w0 follow-up)
             f.write(json.dumps({"ts": time.time(), "tool": tool_name}) + "\n")
     except OSError:
         pass  # Never fail the tool call over logging
