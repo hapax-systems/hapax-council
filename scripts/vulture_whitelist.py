@@ -4082,3 +4082,9 @@ from shared.evidence_ledger import (  # noqa: F401, E402
 determination_exchange_packet_to_external_evidence
 synthetic_inbound_observation_packet
 synthetic_outbound_determination_packet
+
+# pydantic @model_validator(mode="after") — invoked by the framework during
+# model construction, never by a static call site (PR #4073).
+from shared.perception_registry import PerceptionPoint  # noqa: E402
+
+PerceptionPoint._geometry_policy

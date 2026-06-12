@@ -162,7 +162,9 @@ class TestSttSourceResolver:
         path.write_text("rode\n")
         r = resolver_mod.SttSourceResolver(path=path)
         assert r.current_tag() == "rode"
-        assert "RODE" in r.resolve()
+        # voice-p2-perception-registry: the rode point resolves to the live
+        # mk5 capture node (the direct-USB RX node is absent from the graph).
+        assert r.resolve() == "hapax-mic-rode-capture"
 
     def test_reads_yeti_tag(self, tmp_path: Path):
         path = tmp_path / "voice-source.txt"

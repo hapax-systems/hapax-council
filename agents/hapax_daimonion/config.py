@@ -10,6 +10,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from agents.hapax_daimonion.audio_input import stt_source_priority
 from agents.hapax_daimonion.turn_budget import SILENCE_TIMEOUT_S
 
 log = logging.getLogger(__name__)
@@ -62,20 +63,16 @@ class DaimonionConfig(BaseModel):
     context_gate_ambient_classification: bool = True
     context_gate_ambient_block_threshold: float = 0.15
 
-    # Audio hardware — operator-preferred priority list. Resolver
-    # (agents/hapax_daimonion/audio_input.py::resolve_source) walks the
-    # list at daimonion start and picks the first source that pw-cli
-    # reports as live. The default lists the WebRTC AEC virtual source
-    # ahead of the raw Yeti so a freshly-installed
-    # config/pipewire/hapax-echo-cancel.conf takes effect without a
-    # config edit. Audio-pathways Phase 2 (#134).
+    # Audio hardware — operator-preferred priority list, resolved over
+    # config/perception-registry.yaml (stt.ear subscription; §5d roles-
+    # are-subscriptions). Resolver (agents/hapax_daimonion/audio_input.py::
+    # resolve_source) walks the list at daimonion start and picks the
+    # first source pw-cli reports live. The legacy hardcoded ladder
+    # remains the degraded-posture fallback inside stt_source_priority().
     #
     # Backward compat: a single str is auto-wrapped to a 1-element list
     # by the post-init validator below, with a deprecation warning.
-    audio_input_source: list[str] = [
-        "echo_cancel_capture",
-        "alsa_input.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo",
-    ]
+    audio_input_source: list[str] = Field(default_factory=stt_source_priority)
 
     @field_validator("audio_input_source", mode="before")
     @classmethod

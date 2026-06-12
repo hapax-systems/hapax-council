@@ -20,6 +20,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from shared.perception_registry import load_default_registry
+
 log = logging.getLogger("hapax.cpal.stt_source_resolver")
 
 # Kept in sync with rode_wireless_adapter._VALID_TAGS.
@@ -29,11 +31,10 @@ VOICE_SOURCE_CONTACT_MIC = "contact-mic"
 
 VOICE_SOURCE_PATH = Path("/dev/shm/hapax-compositor/voice-source.txt")
 
-# PipeWire node names / substrings that pw-cat --target accepts. Rode's
-# Wireless Pro receiver enumerates as a USB audio class device; PipeWire
-# assembles the source name from the ALSA card string. The substring form
-# matches regardless of the trailing hash PipeWire appends.
-_TAG_TO_SOURCE: dict[str, str] = {
+# Degraded-posture map used only when config/perception-registry.yaml is
+# absent or invalid. The registry's voice_source_tag fields are the live
+# SSOT (points rode/yeti/cortado declare the tags this file accepts).
+_LEGACY_TAG_TO_SOURCE: dict[str, str] = {
     VOICE_SOURCE_RODE: "alsa_input.usb-RODE_Wireless_Pro",
     # Prefer the AEC'd virtual source; the compositor loads module-echo-cancel
     # whenever HAPAX_AEC_ACTIVE is on. ``audio_input.py`` already falls back
@@ -42,6 +43,31 @@ _TAG_TO_SOURCE: dict[str, str] = {
     VOICE_SOURCE_CONTACT_MIC: "contact_mic",
 }
 
+
+def _tag_to_source_map() -> dict[str, str]:
+    """tag → pw-cat target, resolved over the perception registry.
+
+    Roles are subscriptions to points (CASE-VOICE-FOUNDATION-20260610
+    §5d); the voice-source tag file is the operator-directed point
+    selector, so each tag maps to a registry point's capture node.
+    Fail-open to the legacy map when the registry is unavailable or its
+    tag vocabulary drifts from the rode_wireless_adapter contract.
+    """
+    registry = load_default_registry()
+    if registry is None:
+        return dict(_LEGACY_TAG_TO_SOURCE)
+    tags = registry.voice_source_tag_map()
+    if set(tags) != set(_LEGACY_TAG_TO_SOURCE):
+        log.warning(
+            "perception registry voice_source_tags %s != expected %s; using legacy map",
+            sorted(tags),
+            sorted(_LEGACY_TAG_TO_SOURCE),
+        )
+        return dict(_LEGACY_TAG_TO_SOURCE)
+    return tags
+
+
+_TAG_TO_SOURCE: dict[str, str] = _tag_to_source_map()
 _FALLBACK_SOURCE = _TAG_TO_SOURCE[VOICE_SOURCE_YETI]
 _CACHE_TTL_S = 5.0
 

@@ -13,6 +13,8 @@ import os
 import subprocess
 from collections.abc import Callable
 
+from shared.perception_registry import load_default_registry
+
 log = logging.getLogger(__name__)
 
 # Preferred source when echo-cancellation is known to be active.
@@ -21,8 +23,39 @@ _AEC_SOURCE_NAME = "echo_cancel_capture"
 _RODE_WIRELESS_PATTERN = "alsa_input.usb-R__DE_Wireless_PRO_RX"
 _RAW_YETI_PATTERN = "alsa_input.usb-Blue_Microphones_Yeti"
 
-# Priority: Rode wireless (if plugged in) > AEC > Yeti fallback.
-DEFAULT_SOURCE_PRIORITY: list[str] = [_RODE_WIRELESS_PATTERN, _AEC_SOURCE_NAME, _RAW_YETI_PATTERN]
+# Degraded-posture constants used only when config/perception-registry.yaml
+# is absent or invalid (same fail-open contract as an empty pw-cli answer).
+_LEGACY_SOURCE_PRIORITY: list[str] = [_RODE_WIRELESS_PATTERN, _AEC_SOURCE_NAME, _RAW_YETI_PATTERN]
+
+_STT_EAR_SUBSCRIPTION = "stt.ear"
+
+
+def stt_source_priority() -> list[str]:
+    """Capture-target priority for the STT ear, resolved over the
+    perception registry (CASE-VOICE-FOUNDATION-20260610 §5d: roles are
+    subscriptions to points; stt.ear → point.respeaker.asr_beam with the
+    rode/yeti fallback ladder). Falls back to the legacy hardcoded
+    priority when the registry or the subscription is unavailable.
+    """
+    registry = load_default_registry()
+    if registry is None:
+        return list(_LEGACY_SOURCE_PRIORITY)
+    try:
+        targets = registry.resolve_subscription_targets(_STT_EAR_SUBSCRIPTION)
+    except KeyError:
+        log.warning(
+            "perception registry lacks %r subscription; using legacy priority",
+            _STT_EAR_SUBSCRIPTION,
+        )
+        return list(_LEGACY_SOURCE_PRIORITY)
+    if not targets:
+        return list(_LEGACY_SOURCE_PRIORITY)
+    return targets
+
+
+# Resolved once at import; HAPAX_AUDIO_INPUT_TARGET still overrides at
+# stream construction and explicit config wins over this default.
+DEFAULT_SOURCE_PRIORITY: list[str] = stt_source_priority()
 
 
 PwCliRunner = Callable[[], str]
