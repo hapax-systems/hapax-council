@@ -312,7 +312,7 @@ class TestMainWiring:
         monkeypatch.setattr(
             probe_module,
             "post_ntfy_alert",
-            lambda base, topic, corr, thr: (calls.append(corr) or (True, None)),
+            lambda base, topic, corr, thr: calls.append(corr) or (True, None),
         )
         rcs = []
         for _ in range(3):

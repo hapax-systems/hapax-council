@@ -116,9 +116,7 @@ class TestReleaseRootContract:
     def test_exec_paths_use_release_root(self) -> None:
         text = UNIT_FILE.read_text()
         for directive in ("ExecStart=", "WorkingDirectory="):
-            line = next(
-                line for line in text.splitlines() if line.startswith(directive)
-            )
+            line = next(line for line in text.splitlines() if line.startswith(directive))
             assert RELEASE_ROOT in line, (
                 f"{directive} does not point at the release root: {line!r}. "
                 f"Running from a mutable checkout lets live behavior drift "
