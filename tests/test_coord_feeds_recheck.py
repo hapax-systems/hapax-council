@@ -896,8 +896,13 @@ def test_green_world_disk_checks_pass(tmp_path):
     assert res["units-template-name:studio-camera-reconfigure"]["state"] == "OK"
     assert res["units-git-index-names:camera-template"]["state"] == "OK"
     assert res["units-pr-diff-path-shapes:systemd"]["state"] == "OK"
+    assert (
+        "bad_exact_youtube_camera_path_count=0"
+        in (res["units-pr-diff-path-shapes:systemd"]["detail"])
+    )
     assert res["units-pr-diff-camera-template"]["state"] == "OK"
     assert res["units-doc-camera-command"]["state"] == "OK"
+    assert "bad_exact_youtube_camera_doc_count=0" in (res["units-doc-camera-command"]["detail"])
     assert res["playwright-browser-staged:chromium"]["state"] == "OK"
     assert res["coord-service-root"]["state"] == "OK"
     assert res["coord-deploy-script"]["state"] == "OK"
@@ -2108,6 +2113,26 @@ def test_corrupted_camera_doc_command_fails(tmp_path):
     assert r["state"] == "FAIL"
     assert "bad_camera_doc_commands" in r["detail"]
     assert "expected_command_sha256" in r["detail"]
+
+
+def test_exact_youtube_camera_composite_claim_fails(tmp_path):
+    env = _scaffold(tmp_path)
+    bad_unit = "studio-camera-reconfigure" + chr(32) + "@systemd/units/" + "youtube-sync.service"
+    bad_path = Path(env["HAPAX_RECHECK_REPO"]) / "systemd/units" / bad_unit
+    bad_path.parent.mkdir(parents=True)
+    bad_path.write_text("[Unit]\nDescription=bad exact composite camera/youtube path\n")
+    doc = Path(env["HAPAX_RECHECK_REPO"]) / "docs/superpowers/specs/camera.md"
+    doc.write_text(f"systemctl --user cat {bad_unit}\n")
+
+    mod = _load(env)
+    res = _by_check(_run(mod))
+
+    diff_shape = res["units-pr-diff-path-shapes:systemd"]
+    doc_command = res["units-doc-camera-command"]
+    assert diff_shape["state"] == "FAIL"
+    assert "bad_exact_youtube_camera_path_count=1" in diff_shape["detail"]
+    assert doc_command["state"] == "FAIL"
+    assert "bad_exact_youtube_camera_doc_count=1" in doc_command["detail"]
 
 
 def test_missing_installed_unit_fails(tmp_path):

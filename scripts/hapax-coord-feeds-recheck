@@ -140,6 +140,10 @@ CAMERA_TEMPLATE_PATH = f"systemd/units/{CAMERA_TEMPLATE_UNIT}"
 CAMERA_TEMPLATE_PATH_SHA256 = hashlib.sha256(CAMERA_TEMPLATE_PATH.encode()).hexdigest()[:16]
 CAMERA_TEMPLATE_BASENAME_SHA256 = hashlib.sha256(CAMERA_TEMPLATE_UNIT.encode()).hexdigest()[:16]
 CAMERA_DOC_COMMAND = f"systemctl --user cat {CAMERA_TEMPLATE_UNIT}"
+CAMERA_YOUTUBE_COMPOSITE_UNIT = (
+    "studio-camera-reconfigure" + chr(32) + "@systemd/units/" + "youtube-sync.service"
+)
+CAMERA_YOUTUBE_COMPOSITE_PATH = f"systemd/units/{CAMERA_YOUTUBE_COMPOSITE_UNIT}"
 CAMERA_DOC_COMMAND_SHA256 = hashlib.sha256(CAMERA_DOC_COMMAND.encode()).hexdigest()[:16]
 SCRIPTS = (
     "scripts/hapax-sdlc-vocab-export",
@@ -432,6 +436,10 @@ def _systemd_path_shape_counts(paths: list[str]) -> tuple[int, int]:
     return whitespace_count, at_systemd_count
 
 
+def _exact_youtube_camera_path_count(paths: list[str]) -> int:
+    return sum(1 for path in paths if path == CAMERA_YOUTUBE_COMPOSITE_PATH)
+
+
 def _forbidden_systemd_path_shapes(paths: list[str]) -> list[str]:
     return sorted(
         path
@@ -491,6 +499,10 @@ def _bad_camera_doc_command_lines(lines: list[tuple[str, int, str]]) -> list[str
         if not has_canonical or has_spaced_template or has_composite_template:
             bad.append(f"{rel}:{lineno}")
     return bad
+
+
+def _exact_youtube_camera_doc_command_count(lines: list[tuple[str, int, str]]) -> int:
+    return sum(1 for _, _, line in lines if CAMERA_YOUTUBE_COMPOSITE_UNIT in line)
 
 
 def _filesystem_camera_service_paths(units: Path) -> list[str]:
@@ -1813,6 +1825,7 @@ def run_checks(
         whitespace_path_count, at_systemd_path_count = _systemd_path_shape_counts(
             changed_unit_paths
         )
+        bad_exact_youtube_camera_path_count = _exact_youtube_camera_path_count(changed_unit_paths)
         changed_camera_paths = _camera_service_paths(changed_unit_paths)
         forbidden_changed_camera_paths = _forbidden_camera_composites(changed_unit_paths)
     except Exception as exc:  # noqa: BLE001
@@ -1837,6 +1850,7 @@ def run_checks(
                 f"systemd_diff_manifest_sha256={_paths_manifest_sha(changed_unit_paths)} "
                 f"whitespace_path_count={whitespace_path_count} "
                 f"at_systemd_path_count={at_systemd_path_count} "
+                f"bad_exact_youtube_camera_path_count={bad_exact_youtube_camera_path_count} "
                 f"canonical_camera_path_sha256={CAMERA_TEMPLATE_PATH_SHA256}",
             )
         else:
@@ -1845,6 +1859,9 @@ def run_checks(
                 "FAIL",
                 f"changed_systemd_count={len(changed_unit_paths)} "
                 f"systemd_diff_manifest_sha256={_paths_manifest_sha(changed_unit_paths)} "
+                f"whitespace_path_count={whitespace_path_count} "
+                f"at_systemd_path_count={at_systemd_path_count} "
+                f"bad_exact_youtube_camera_path_count={bad_exact_youtube_camera_path_count} "
                 f"forbidden_systemd_paths={forbidden_systemd_path_shapes}; "
                 "next: remove whitespace/@systemd composite paths from the PR diff and rerun",
             )
@@ -1869,12 +1886,14 @@ def run_checks(
 
     camera_doc_lines = _camera_doc_command_lines()
     bad_camera_doc_lines = _bad_camera_doc_command_lines(camera_doc_lines)
+    bad_exact_youtube_camera_doc_count = _exact_youtube_camera_doc_command_count(camera_doc_lines)
     if not bad_camera_doc_lines:
         add(
             "units-doc-camera-command",
             "OK",
             f"camera_doc_command_count={len(camera_doc_lines)} "
             "bad_camera_doc_command_count=0 "
+            f"bad_exact_youtube_camera_doc_count={bad_exact_youtube_camera_doc_count} "
             f"canonical_command_sha256={CAMERA_DOC_COMMAND_SHA256}",
         )
     else:
@@ -1882,6 +1901,7 @@ def run_checks(
             "units-doc-camera-command",
             "FAIL",
             f"bad_camera_doc_commands={bad_camera_doc_lines}; "
+            f"bad_exact_youtube_camera_doc_count={bad_exact_youtube_camera_doc_count}; "
             f"expected_command_sha256={CAMERA_DOC_COMMAND_SHA256}; "
             "next: use the canonical studio-camera-reconfigure template command and rerun",
         )
