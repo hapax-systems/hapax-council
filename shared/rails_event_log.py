@@ -44,6 +44,10 @@ DEPLOY_SHA_FILE = Path.home() / ".cache/hapax/coord-activation/worktree/.deploye
 _TASK_FIELDS = ("stage", "status", "assigned_to", "pr")
 
 
+class SourceVaultUnavailable(RuntimeError):
+    """Raised when the task vault cannot be witnessed for this fold."""
+
+
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -84,6 +88,29 @@ def _emit(events: list[dict[str, Any]], **fields: Any) -> None:
     evt.update(fields)
     evt["event_id"] = _event_id(evt)
     events.append(evt)
+
+
+def _require_source_vault() -> None:
+    try:
+        if not VAULT.exists():
+            raise SourceVaultUnavailable(
+                f"cc-task active vault missing: {VAULT}; "
+                "next: restore or mount the Obsidian cc-task vault before folding"
+            )
+        if not VAULT.is_dir():
+            raise SourceVaultUnavailable(
+                f"cc-task active vault is not a directory: {VAULT}; "
+                "next: restore the Obsidian cc-task active directory before folding"
+            )
+        with os.scandir(VAULT):
+            pass
+    except SourceVaultUnavailable:
+        raise
+    except OSError as exc:
+        raise SourceVaultUnavailable(
+            f"cc-task active vault unreadable: {VAULT}: {exc}; "
+            "next: restore readable access before folding"
+        ) from exc
 
 
 def _task_facts() -> dict[str, dict[str, str]]:
@@ -153,6 +180,8 @@ def _deploy_fact() -> dict[str, str]:
 def fold_once() -> int:
     """Diff every feed against the shadow; append transition events. Returns
     the number of events emitted."""
+    _require_source_vault()
+
     shadow: dict[str, Any] = {}
     if SHADOW.exists():
         try:

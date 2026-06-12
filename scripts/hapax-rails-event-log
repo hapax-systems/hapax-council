@@ -12,11 +12,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from shared.rails_event_log import EVENT_LOG, fold_once  # noqa: E402
+from shared.rails_event_log import EVENT_LOG, SourceVaultUnavailable, fold_once  # noqa: E402
 
 
 def main() -> int:
-    n = fold_once()
+    try:
+        n = fold_once()
+    except SourceVaultUnavailable as exc:
+        print(f"rails-event-log BLOCKED: {exc}", file=sys.stderr)
+        return 2
     print(f"rails-event-log: {n} event(s) appended -> {EVENT_LOG}")
     return 0
 

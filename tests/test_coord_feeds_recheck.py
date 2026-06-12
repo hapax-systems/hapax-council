@@ -442,6 +442,287 @@ def test_browser_live_surface_exercises_playwright_path(tmp_path, monkeypatch):
     assert calls["screenshots"] == [{"full_page": False, "timeout": 2_000}]
 
 
+def _run_browser_witness_dom_harness(witness_js: str) -> dict[str, dict]:
+    harness = r"""
+const vm = require("node:vm");
+const witness = __WITNESS_JS__;
+
+function rect(left, top, width, height) {
+  return {left, top, width, height, right: left + width, bottom: top + height};
+}
+
+class TextNode {
+  constructor(value) {
+    this.nodeType = 3;
+    this.nodeValue = value;
+    this.parentElement = null;
+    this.isConnected = true;
+  }
+
+  get textContent() {
+    return this.nodeValue;
+  }
+}
+
+class Element {
+  constructor(tag, opts = {}) {
+    this.nodeType = 1;
+    this.tagName = tag.toUpperCase();
+    this.id = opts.id || "";
+    this.className = opts.className || "";
+    this.style = Object.assign({}, opts.style || {});
+    this.dataset = Object.assign({}, opts.dataset || {});
+    this.children = [];
+    this.parentElement = null;
+    this.isConnected = true;
+    this._rect = opts.rect || rect(0, 0, 120, 24);
+    if (opts.text) this.append(new TextNode(opts.text));
+  }
+
+  append(...nodes) {
+    for (const node of nodes) {
+      node.parentElement = this;
+      this.children.push(node);
+    }
+  }
+
+  get textContent() {
+    return this.children.map((child) => child.textContent || "").join("");
+  }
+
+  get innerText() {
+    return this.textContent;
+  }
+
+  getBoundingClientRect() {
+    return this._rect;
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
+  }
+
+  querySelectorAll(selector) {
+    const selectors = selector.split(",").map((part) => part.trim()).filter(Boolean);
+    const results = [];
+    const visit = (node) => {
+      for (const child of node.children || []) {
+        if (child.nodeType !== 1) continue;
+        if (selectors.some((part) => matches(child, part))) results.push(child);
+        visit(child);
+      }
+    };
+    visit(this);
+    return results;
+  }
+
+  closest(selector) {
+    const selectors = selector.split(",").map((part) => part.trim()).filter(Boolean);
+    let current = this;
+    while (current && current.nodeType === 1) {
+      if (selectors.some((part) => matches(current, part))) return current;
+      current = current.parentElement;
+    }
+    return null;
+  }
+}
+
+class Document {
+  constructor(documentElement, body) {
+    this.documentElement = documentElement;
+    this.body = body;
+  }
+
+  querySelector(selector) {
+    if (matches(this.documentElement, selector)) return this.documentElement;
+    return this.documentElement.querySelector(selector);
+  }
+
+  querySelectorAll(selector) {
+    const results = this.documentElement.querySelectorAll(selector);
+    if (matches(this.documentElement, selector)) results.unshift(this.documentElement);
+    return results;
+  }
+
+  createTreeWalker(root, _show, filter) {
+    const texts = [];
+    const visit = (node) => {
+      for (const child of node.children || []) {
+        if (child.nodeType === 3) {
+          texts.push(child);
+        } else {
+          visit(child);
+        }
+      }
+    };
+    visit(root);
+    let index = 0;
+    return {
+      nextNode() {
+        while (index < texts.length) {
+          const node = texts[index++];
+          if (filter.acceptNode(node) === NodeFilter.FILTER_ACCEPT) return node;
+        }
+        return null;
+      }
+    };
+  }
+}
+
+function matches(element, selector) {
+  if (!selector) return false;
+  if (selector.startsWith("#")) return element.id === selector.slice(1);
+  if (selector.startsWith(".")) {
+    return element.className.split(/\s+/).filter(Boolean).includes(selector.slice(1));
+  }
+  return element.tagName.toLowerCase() === selector.toLowerCase();
+}
+
+function el(tag, opts = {}) {
+  return new Element(tag, opts);
+}
+
+function baseDocument() {
+  const html = el("html", {
+    rect: rect(0, 0, 1440, 1000),
+    style: {backgroundColor: "rgb(18, 20, 22)"}
+  });
+  const body = el("body", {
+    rect: rect(0, 0, 1440, 1000),
+    style: {backgroundColor: "rgb(18, 20, 22)"}
+  });
+  html.append(body);
+  body.append(el("div", {
+    id: "hapax-coord-dashboard",
+    text: "dashboard",
+    rect: rect(10, 10, 400, 100)
+  }));
+  body.append(el("div", {
+    id: "last-good-replay",
+    text: "cached replay blocked receipts",
+    rect: rect(10, 120, 400, 120)
+  }));
+  const yard = el("div", {
+    id: "yard-status",
+    text: "YARD abc123def vocab 13 blocked 6 receipts",
+    rect: rect(10, 260, 600, 80)
+  });
+  yard.append(el("span", {
+    className: "ys-chip",
+    text: "chip",
+    rect: rect(20, 270, 40, 20)
+  }));
+  body.append(yard);
+  return new Document(html, body);
+}
+
+function installGlobals(doc) {
+  globalThis.window = globalThis;
+  globalThis.innerHeight = 1000;
+  globalThis.innerWidth = 1440;
+  globalThis.document = doc;
+  globalThis.Node = {ELEMENT_NODE: 1};
+  globalThis.NodeFilter = {SHOW_TEXT: 4, FILTER_ACCEPT: 1, FILTER_REJECT: 2};
+  globalThis.getComputedStyle = (node) => ({
+    display: node.style.display || "block",
+    visibility: node.style.visibility || "visible",
+    opacity: node.style.opacity ?? "1",
+    backgroundColor: node.style.backgroundColor || "rgba(0, 0, 0, 0)"
+  });
+  globalThis.performance = {now: () => 75};
+  globalThis.MutationObserver = class {
+    constructor(_callback) {}
+    observe() {}
+  };
+  globalThis.setInterval = () => 0;
+  globalThis.requestAnimationFrame = () => 0;
+  delete globalThis.__hapaxCoordWitness;
+}
+
+function attachCase(doc, name) {
+  const verdictText = "task-dom review blocked 6 receipts accepted";
+  if (name === "visible") {
+    doc.body.append(el("div", {text: verdictText, rect: rect(20, 380, 500, 40)}));
+    return;
+  }
+  if (name === "display-none-ancestor") {
+    const hidden = el("section", {
+      rect: rect(20, 380, 500, 40),
+      style: {display: "none"}
+    });
+    hidden.append(el("span", {text: verdictText, rect: rect(20, 380, 500, 40)}));
+    doc.body.append(hidden);
+    return;
+  }
+  if (name === "opacity-zero-ancestor") {
+    const hidden = el("section", {
+      rect: rect(20, 380, 500, 40),
+      style: {opacity: "0"}
+    });
+    hidden.append(el("span", {text: verdictText, rect: rect(20, 380, 500, 40)}));
+    doc.body.append(hidden);
+    return;
+  }
+  if (name === "zero-area") {
+    doc.body.append(el("div", {text: verdictText, rect: rect(20, 380, 0, 40)}));
+    return;
+  }
+  if (name === "offscreen") {
+    doc.body.append(el("div", {text: verdictText, rect: rect(20, 1200, 500, 40)}));
+    return;
+  }
+  throw new Error(`unknown case ${name}`);
+}
+
+function runCase(name) {
+  const doc = baseDocument();
+  attachCase(doc, name);
+  installGlobals(doc);
+  vm.runInThisContext(witness, {timeout: 1000});
+  return globalThis.__hapaxCoordWitness;
+}
+
+const names = [
+  "visible",
+  "display-none-ancestor",
+  "opacity-zero-ancestor",
+  "zero-area",
+  "offscreen"
+];
+const results = Object.fromEntries(names.map((name) => [name, runCase(name)]));
+console.log(JSON.stringify(results));
+""".replace("__WITNESS_JS__", json.dumps(witness_js))
+    proc = subprocess.run(
+        ["node"],
+        input=harness,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def test_browser_witness_js_filters_invisible_non_yard_verdict_dom(tmp_path):
+    mod = _load(_scaffold(tmp_path))
+    states = _run_browser_witness_dom_harness(mod._BROWSER_WITNESS_JS)
+
+    visible = states["visible"]
+    assert visible["renderedBlockedSeen"] is True
+    assert visible["renderedReceiptSeen"] is True
+    assert visible["renderedReviewSeen"] is True
+    assert "task-dom review blocked" in visible["renderedVerdictText"]
+
+    for name in ("display-none-ancestor", "opacity-zero-ancestor", "zero-area", "offscreen"):
+        state = states[name]
+        assert state["freshYardVisibleSeen"] is True
+        assert state["renderedBlockedSeen"] is False
+        assert state["renderedReceiptSeen"] is False
+        assert state["renderedReviewSeen"] is False
+        assert "task-dom" not in state["renderedVerdictText"]
+
+
 def test_launch_chromium_requires_prestaged_browser(tmp_path, monkeypatch):
     mod = _load(_scaffold(tmp_path))
 
