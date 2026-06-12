@@ -201,9 +201,11 @@ else
             echo "coord-deploy: restart failed; rollback checkout to $ROLLBACK_SHA failed (rc=$rollback_rc): $rollback_detail; $service_detail; $RESTART_NEXT" >&2
         fi
     elif [ -n "$ROLLBACK_SHA" ]; then
-        echo "coord-deploy: restart failed; activation worktree remains at $ROLLBACK_SHA; $RESTART_NEXT" >&2
+        service_detail="$(stop_unreceipted_service_after_receipt_failure)"
+        echo "coord-deploy: restart failed; activation worktree remains at $ROLLBACK_SHA; $service_detail; $RESTART_NEXT" >&2
     else
-        echo "coord-deploy: restart failed; no prior activation worktree sha available; $RESTART_NEXT" >&2
+        service_detail="$(stop_unreceipted_service_after_receipt_failure)"
+        echo "coord-deploy: restart failed; no prior activation worktree sha available; $service_detail; $RESTART_NEXT" >&2
     fi
     exit "$rc"
 fi

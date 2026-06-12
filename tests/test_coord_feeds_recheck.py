@@ -1184,6 +1184,73 @@ def test_coord_deploy_helper_rejects_malformed_deployed_sha_path_before_restart(
     assert restart_log.read_text().splitlines() == ["--user restart hapax-coord.service"]
 
 
+def test_coord_deploy_helper_stops_service_when_first_restart_fails_without_receipt(tmp_path):
+    origin = tmp_path / "origin.git"
+    source = tmp_path / "source"
+    act_root = tmp_path / "coord-activation"
+    fakebin = tmp_path / "bin"
+    restart_log = tmp_path / "systemctl.log"
+    fakebin.mkdir()
+    systemctl = fakebin / "systemctl"
+    systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "${HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG:?}"\n'
+        'if [ "${HAPAX_COORD_DEPLOY_FAIL_RESTART_ONCE:-}" = "1" ] && '
+        '[ ! -e "${HAPAX_COORD_DEPLOY_FAIL_ONCE_MARKER:?}" ]; then\n'
+        '  touch "${HAPAX_COORD_DEPLOY_FAIL_ONCE_MARKER:?}"\n'
+        "  exit 42\n"
+        "fi\n"
+    )
+    systemctl.chmod(0o755)
+
+    _cmd(["git", "init", "--bare", str(origin)])
+    _cmd(["git", "init", str(source)])
+    _cmd(["git", "-C", str(source), "checkout", "-b", "main"])
+    first_sha = _deploy_fixture_commit(source, "first")
+    _cmd(["git", "-C", str(source), "remote", "add", "origin", str(origin)])
+    _cmd(["git", "-C", str(source), "push", "-u", "origin", "main"])
+
+    env = {
+        **os.environ,
+        "HAPAX_COORD_DEPLOY_REPO": str(source),
+        "HAPAX_COORD_DEPLOY_ACT_ROOT": str(act_root),
+        "HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG": str(restart_log),
+        "PATH": f"{fakebin}:{os.environ.get('PATH', '')}",
+    }
+    failed = subprocess.run(
+        [str(_DEPLOY_SCRIPT)],
+        env={
+            **env,
+            "HAPAX_COORD_DEPLOY_FAIL_RESTART_ONCE": "1",
+            "HAPAX_COORD_DEPLOY_FAIL_ONCE_MARKER": str(tmp_path / "first-restart.failed"),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    worktree = act_root / "worktree"
+    assert failed.returncode == 42
+    assert "activation worktree remains at" in failed.stderr
+    assert "stopped hapax-coord.service to avoid serving unreceipted target" in failed.stderr
+    assert "next:" in failed.stderr
+    assert not (worktree / ".deployed-sha").exists()
+    assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == first_sha
+    assert restart_log.read_text().splitlines() == [
+        "--user restart hapax-coord.service",
+        "--user stop hapax-coord.service",
+    ]
+
+    _cmd([str(_DEPLOY_SCRIPT)], env=env)
+    assert (worktree / ".deployed-sha").read_text().strip() == first_sha
+    assert restart_log.read_text().splitlines() == [
+        "--user restart hapax-coord.service",
+        "--user stop hapax-coord.service",
+        "--user restart hapax-coord.service",
+    ]
+
+
 def test_coord_deploy_helper_reports_next_for_missing_source_repo(tmp_path):
     failed = subprocess.run(
         [str(_DEPLOY_SCRIPT)],

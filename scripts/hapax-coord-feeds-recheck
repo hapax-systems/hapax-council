@@ -809,6 +809,43 @@ def _exercise_coord_deploy_helper() -> str:
             "HAPAX_TEST_REAL_GIT": real_git,
             "PATH": f"{fakebin}:{os.environ.get('PATH', '')}",
         }
+
+        first_fail_act_root = root / "first-failure-activation"
+        first_fail_restart_log = root / "first-failure-systemctl.log"
+        first_fail = subprocess.run(
+            [str(COORD_DEPLOY_SCRIPT)],
+            env={
+                **env,
+                "HAPAX_COORD_DEPLOY_ACT_ROOT": str(first_fail_act_root),
+                "HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG": str(first_fail_restart_log),
+                "HAPAX_COORD_DEPLOY_FAIL_RESTART_ONCE": "1",
+                "HAPAX_COORD_DEPLOY_FAIL_ONCE_MARKER": str(root / "first-restart.failed"),
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        if first_fail.returncode == 0:
+            raise RuntimeError("deploy helper succeeded even though first restart failed")
+        if "stopped hapax-coord.service to avoid serving unreceipted target" not in (
+            first_fail.stderr
+        ):
+            raise RuntimeError(f"first restart failure did not stop service: {first_fail.stderr}")
+        first_fail_worktree = first_fail_act_root / "worktree"
+        first_fail_head = _run_cmd(["git", "-C", str(first_fail_worktree), "rev-parse", "HEAD"])
+        if first_fail_head != first_sha or (first_fail_worktree / ".deployed-sha").exists():
+            raise RuntimeError(
+                f"first restart failure receipt mismatch head={first_fail_head[:9]} "
+                f"expected={first_sha[:9]}"
+            )
+        first_fail_restarts = first_fail_restart_log.read_text().splitlines()
+        if first_fail_restarts != [
+            "--user restart hapax-coord.service",
+            "--user stop hapax-coord.service",
+        ]:
+            raise RuntimeError(f"first restart failure log mismatch: {first_fail_restarts}")
+
         _run_cmd([str(COORD_DEPLOY_SCRIPT)], env=env)
         worktree = act_root / "worktree"
         deployed = (worktree / ".deployed-sha").read_text().strip()
@@ -954,6 +991,7 @@ def _exercise_coord_deploy_helper() -> str:
         f"first={first_sha[:9]} second={second_sha[:9]} third={third_sha[:9]} "
         "wrote .deployed-sha after restart, "
         "refreshed stale origin/main, advanced worktree, skipped idempotent restart, "
+        "stopped service when first restart failed before receipt, "
         "rolled back worktree and restarted rollback service on failed restart, "
         "stopped service when rollback checkout failed, retried restart on change"
     )
