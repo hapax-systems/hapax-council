@@ -420,7 +420,11 @@ def check_orphan_pr(
     """
     now = now or _now()
     events: list[HygieneEvent] = []
-    linked = {note.pr for note in notes if note.pr}
+    linked: set[int] = set()
+    for note in notes:
+        if note.pr:
+            linked.add(note.pr)
+        linked.update(note.linked_prs)
     cutoff = now - timedelta(hours=ORPHAN_PR_AGE_HOURS)
     for pr in _gh_pr_list(repo_root):
         number = pr.get("number")
@@ -629,6 +633,17 @@ def check_refusal_pipeline_dormancy(
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
 
 
+def _parse_pr_number(raw: Any) -> int | None:
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+    return None
+
+
 def parse_task_note(path: Path) -> TaskNote | None:
     """Best-effort parse of a vault cc-task note. Returns None on any failure."""
     try:
@@ -650,14 +665,16 @@ def parse_task_note(path: Path) -> TaskNote | None:
     status = fm.get("status")
     if not task_id or not status:
         return None
-    pr = fm.get("pr")
-    if isinstance(pr, str):
-        try:
-            pr = int(pr)
-        except ValueError:
-            pr = None
-    elif not isinstance(pr, int):
-        pr = None
+    pr = _parse_pr_number(fm.get("pr"))
+    linked_prs: list[int] = []
+    for key, value in fm.items():
+        if key != "pr" and str(key).startswith("pr_"):
+            parsed = _parse_pr_number(value)
+            if parsed is not None:
+                linked_prs.append(parsed)
+    if pr is not None:
+        linked_prs.insert(0, pr)
+    linked_prs = list(dict.fromkeys(linked_prs))
     tags_raw = fm.get("tags")
     if isinstance(tags_raw, list):
         tags = [str(tag) for tag in tags_raw if tag is not None]
@@ -684,6 +701,7 @@ def parse_task_note(path: Path) -> TaskNote | None:
         claimed_at=_parse_dt(fm.get("claimed_at")),
         branch=fm.get("branch"),
         pr=pr,
+        linked_prs=tuple(linked_prs),
         parent_request=(
             str(fm["parent_request"]) if fm.get("parent_request") is not None else None
         ),
