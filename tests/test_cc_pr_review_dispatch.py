@@ -1000,3 +1000,88 @@ class TestNoQuorumRecovery:
         wake_files = list((tmp_path / "wake").glob("*.md"))
         assert len(wake_files) == 1, "no-quorum must wake the orchestrating lane"
         assert sent, "auto-wake send was not attempted"
+
+
+class TestFamilyOutageDegradation:
+    """Postmortem 2026-06-12 failure class #1 (REVIEW-FAMILY-WALL-BLINDNESS):
+    provider walls become quota-wall seat states, a walled family is OUT for
+    the next constitution, t1 degrades with receipts — the gate never seals.
+    The 2026-06-12 scenario (claude walled, gemini+codex live) is the
+    permanent fixture the n-tier symmetry principal demands."""
+
+    WALL = "You've hit your weekly limit · resets 5pm (America/Chicago)"
+
+    def _isolate_state(self, monkeypatch: Any, tmp_path: Path) -> tuple[Path, Path]:
+        state = tmp_path / "family-outage.json"
+        ledger = tmp_path / "degraded-merges.jsonl"
+        monkeypatch.setattr(dispatch, "FAMILY_OUTAGE_STATE", state)
+        monkeypatch.setattr(dispatch, "DEGRADED_MERGES_LEDGER", ledger)
+        return state, ledger
+
+    def test_wall_reply_classifies_as_quota_wall(self, monkeypatch: Any, tmp_path: Path) -> None:
+        self._isolate_state(monkeypatch, tmp_path)
+        reviewers = RecordingReviewers(replies={"claude": self.WALL})
+        result, _, _, _ = _review(tmp_path, reviewers=reviewers)
+        dossier = result["dossier"]
+        claude_seats = [r for r in dossier["reviewers"] if r["family"] == "claude"]
+        assert claude_seats, "harness must seat a claude reviewer at t2"
+        assert all(r["verdict"] == "quota-wall" for r in claude_seats)
+
+    def test_walled_round_records_the_family_outage(self, monkeypatch: Any, tmp_path: Path) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        reviewers = RecordingReviewers(replies={"claude": self.WALL})
+        _review(tmp_path, reviewers=reviewers)
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert "claude" in recorded
+
+    def test_recovered_family_clears_its_expired_outage_entry(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """TTL expiry is the re-probe cadence: an OUT family is never seated,
+        so it cannot clear itself mid-outage — after the TTL it rejoins the
+        constitution, and a parseable verdict then REMOVES the stale entry
+        (a still-walled family would instead re-record and sit out another
+        TTL window)."""
+
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        # entry is OLDER than the TTL -> gemini is seated again this round
+        state.write_text(json.dumps({"gemini": "2026-06-12T08:58:00+00:00"}), encoding="utf-8")
+        _review(tmp_path, now_iso="2026-06-12T21:00:00+00:00")
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert "gemini" not in recorded
+
+    def test_outage_expires_after_ttl(self, monkeypatch: Any, tmp_path: Path) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(json.dumps({"claude": "2026-06-12T08:58:00+00:00"}), encoding="utf-8")
+        out = dispatch.load_family_outage("2026-06-12T21:00:00+00:00", state)
+        assert out == frozenset()
+
+    def test_family_offline_simulation_degrades_and_flows(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """The 2026-06-12 scenario: claude OUT on an observed wall, a
+        t1-critical PR arrives — the SDLC must flow degraded-but-open."""
+
+        state, ledger = self._isolate_state(monkeypatch, tmp_path)
+        now = "2026-06-12T21:00:00+00:00"
+        state.write_text(json.dumps({"claude": now}), encoding="utf-8")
+        result, _, _, note = _review(
+            tmp_path,
+            now_iso=now,
+            task_kwargs={"risk_tier": "T1"},
+            gh=FakeGh(files=["shared/foo.py", "tests/test_foo.py"]),
+        )
+        dossier = result["dossier"]
+        seated = {r["family"] for r in dossier["reviewers"]}
+        assert "claude" not in seated, "walled family must not be seated"
+        assert dossier["review_team_verdict"] == "quorum-accept"
+        assert dossier["degraded_family_outage"] == ["claude"]
+        assert dossier["post_recovery_rereview_required"] is True
+        entries = [
+            json.loads(line)
+            for line in ledger.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(entries) == 1
+        assert entries[0]["pr"] == 42
+        assert entries[0]["degraded_family_outage"] == ["claude"]

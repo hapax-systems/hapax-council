@@ -78,6 +78,70 @@ SEND_SCRIPTS = {
 YAML_FENCE_FULL_RE = re.compile(r"\A```ya?ml\s*\n(.*?)```\s*\Z", re.DOTALL)
 PARSEABLE_VERDICTS = {"accept", "accept-with-findings", "block"}
 
+#: Family quota-wall state (postmortem 2026-06-12, failure class #1): a
+#: family whose seats ALL hit a provider wall in a round is OUT for the next
+#: constitutions until a seat answers again or the TTL lapses. The TTL keeps
+#: a stale outage from degrading reviews after a quiet recovery.
+FAMILY_OUTAGE_STATE = Path.home() / ".cache" / "hapax" / "review-team" / "family-outage.json"
+DEGRADED_MERGES_LEDGER = Path.home() / ".cache" / "hapax" / "review-team" / "degraded-merges.jsonl"
+FAMILY_OUTAGE_TTL_S = 2 * 3600
+
+
+def load_family_outage(now_iso: str, state_path: Path | None = None) -> frozenset[str]:
+    """Families currently out on an observed quota wall (TTL-bounded)."""
+
+    state_path = state_path or FAMILY_OUTAGE_STATE
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return frozenset()
+    if not isinstance(state, dict):
+        return frozenset()
+    now = datetime.fromisoformat(now_iso)
+    out: set[str] = set()
+    for family, observed in state.items():
+        try:
+            age = (now - datetime.fromisoformat(str(observed))).total_seconds()
+        except ValueError:
+            continue
+        if 0 <= age <= FAMILY_OUTAGE_TTL_S:
+            out.add(str(family))
+    return frozenset(out)
+
+
+def update_family_outage(
+    reviews: list[dict[str, Any]],
+    now_iso: str,
+    state_path: Path | None = None,
+) -> frozenset[str]:
+    """Fold a round's seat verdicts into the outage state.
+
+    All seats of a family walled -> family OUT (stamped now). Any parseable
+    verdict from a family -> family back (cleared). invalid-output alone is
+    ambiguous and leaves the state untouched.
+    """
+
+    state_path = state_path or FAMILY_OUTAGE_STATE
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if not isinstance(state, dict):
+            state = {}
+    except (OSError, json.JSONDecodeError):
+        state = {}
+    by_family: dict[str, list[str]] = {}
+    for r in reviews:
+        by_family.setdefault(str(r.get("family")), []).append(str(r.get("verdict")))
+    for family, verdicts in by_family.items():
+        if all(v == "quota-wall" for v in verdicts):
+            state[family] = now_iso
+        elif any(v in PARSEABLE_VERDICTS for v in verdicts):
+            state.pop(family, None)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = state_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=1), encoding="utf-8")
+    os.replace(tmp, state_path)
+    return load_family_outage(now_iso, state_path)
+
 
 @dataclass(frozen=True)
 class PRInfo:
@@ -353,21 +417,36 @@ def dispatch_reviews(
 
     def run_one(index: int) -> dict[str, Any]:
         seat = constitution.seats[index]
+        error_text = ""
         try:
             reply = reviewer_runner(seat, family_cfgs[seat.family], prompts[index])
         except Exception as exc:  # noqa: BLE001 — one dead reviewer must not kill the round
             LOG.warning("reviewer %s (%s) failed: %s", seat.id, seat.family, exc)
             reply = ""
+            error_text = str(exc)
         parsed = extract_review(reply or "")
         if parsed is None:
-            LOG.warning("reviewer %s output unparseable -> verdict invalid-output", seat.id)
+            # a provider usage wall is a FAMILY-AVAILABILITY signal, not a
+            # parse failure — naming it lets the next constitution degrade
+            # instead of seal (postmortem 2026-06-12: the claude weekly wall
+            # rode as invalid-output for 13h and froze every merge)
+            if review_team.is_quota_wall(reply or "") or review_team.is_quota_wall(error_text):
+                LOG.warning(
+                    "reviewer %s (%s) hit a provider quota wall -> verdict quota-wall",
+                    seat.id,
+                    seat.family,
+                )
+                verdict = "quota-wall"
+            else:
+                LOG.warning("reviewer %s output unparseable -> verdict invalid-output", seat.id)
+                verdict = "invalid-output"
             reply_excerpt = truncate_context(
-                reply or "", limit=MAX_REVIEW_REPLY_EXCERPT_CHARS
+                (reply or error_text or ""), limit=MAX_REVIEW_REPLY_EXCERPT_CHARS
             ).strip()
             return {
                 "id": seat.id,
                 "family": seat.family,
-                "verdict": "invalid-output",
+                "verdict": verdict,
                 "findings": [],
                 "checklist": {},
                 "raw_reply_excerpt": reply_excerpt,
@@ -850,8 +929,14 @@ def review_pr(
         "",
     )
     writer_family = review_team.writer_family_for_lane(assigned_lane, registry)
+    outage_families = load_family_outage(now_iso)
+    if outage_families:
+        LOG.warning(
+            "family outage active (%s) — constitution may degrade (never seals)",
+            ",".join(sorted(outage_families)),
+        )
     constitution = review_team.constitute_team(
-        team_class, writer_family, registry, pr_number=pr_number
+        team_class, writer_family, registry, pr_number=pr_number, outage_families=outage_families
     )
     plan = {
         "pr": pr_number,
@@ -898,6 +983,7 @@ def review_pr(
         for seat in constitution.seats
     ]
     reviews = dispatch_reviews(constitution, prompts, registry, reviewer_runner)
+    update_family_outage(reviews, now_iso)
     results: list[dict[str, Any]] = []
     comment_bodies: list[str] = []
     for target_note_path, target_frontmatter, target_task_id in keyed_matches:
@@ -924,11 +1010,32 @@ def review_pr(
             dead = [
                 str(r.get("id") or r.get("family"))
                 for r in reviews
-                if str(r.get("verdict")) == "invalid-output"
+                if str(r.get("verdict")) in ("invalid-output", "quota-wall")
             ]
             dossier["no_quorum_cause"] = (
                 f"dead reviewers: {', '.join(dead)}" if dead else "verdict split below quorum"
             )
+        if dossier["review_team_verdict"] == review_team.QUORUM_ACCEPT and dossier.get(
+            "degraded_family_outage"
+        ):
+            # the degraded-merges ledger: every accept earned under an outage
+            # is enumerable for post-recovery re-review (postmortem
+            # remediation; the degradation rule's receipt half)
+            DEGRADED_MERGES_LEDGER.parent.mkdir(parents=True, exist_ok=True)
+            with DEGRADED_MERGES_LEDGER.open("a", encoding="utf-8") as ledger:
+                ledger.write(
+                    json.dumps(
+                        {
+                            "ts": now_iso,
+                            "task_id": target_task_id,
+                            "pr": pr_number,
+                            "head_sha": pr_info.head_sha,
+                            "degraded_family_outage": dossier["degraded_family_outage"],
+                        },
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
         target_dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
         LOG.info(
             "dossier written: %s (verdict %s)",

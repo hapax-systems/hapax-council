@@ -851,3 +851,89 @@ class TestLensCharters:
             assert len(items) >= 3, f"{lens}: only {len(items)} checklist items"
             assert len(items) == len(set(items)), f"{lens}: duplicate item slugs"
             assert "pass / finding / NA" in text, f"{lens}: missing verdict contract"
+
+
+class TestFamilyOutageDegradation:
+    """Postmortem 2026-06-12 failure class #1: walls degrade the gate, never seal it."""
+
+    WALL_2026_06_12 = "You've hit your weekly limit · resets 5pm (America/Chicago)"
+
+    def test_the_20260612_wall_text_is_a_quota_wall(self) -> None:
+        rt = _load_review_team_module()
+        assert rt.is_quota_wall(self.WALL_2026_06_12)
+
+    def test_wall_variants_classify(self) -> None:
+        rt = _load_review_team_module()
+        assert rt.is_quota_wall("HTTP 429 Too Many Requests")
+        assert rt.is_quota_wall("RESOURCE_EXHAUSTED: Quota exceeded")
+        assert rt.is_quota_wall("rate limit reached for requests")
+
+    def test_review_prose_is_not_a_wall(self) -> None:
+        rt = _load_review_team_module()
+        assert not rt.is_quota_wall("verdict: block\nfindings: the ring index wraps early")
+        assert not rt.is_quota_wall("")
+
+    def test_t1_degrades_on_evidenced_outage(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        team = rt.constitute_team(
+            "t1_critical", "codex", reg, pr_number=7, outage_families=frozenset({"claude"})
+        )
+        families = {seat.family for seat in team.seats}
+        assert "claude" not in families
+        assert len(families) >= 2
+        assert "degraded_family_outage:claude" in team.notes
+        assert "degraded_to:t2_standard" in team.notes
+        assert "post_recovery_rereview_required" in team.notes
+        # degraded quorum is t2's, and reachable with claude gone
+        assert team.quorum_required == int(reg["sizing"]["t2_standard"]["quorum_accept"])
+
+    def test_t1_still_seals_when_family_missing_without_outage_evidence(self) -> None:
+        import pytest
+
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        with pytest.raises(ValueError, match="family"):
+            rt.constitute_team(
+                "t1_critical",
+                "claude",
+                reg,
+                pr_number=5,
+                available_families=("claude", "codex"),
+            )
+
+    def test_degraded_synthesis_accepts_without_the_walled_family(self) -> None:
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_outage:claude",
+            "degraded_to:t2_standard",
+            "post_recovery_rereview_required",
+        )
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("gemini-2", "gemini", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+        assert dossier["review_team_verdict"] == rt.QUORUM_ACCEPT
+        assert dossier["degraded_family_outage"] == ["claude"]
+        assert dossier["post_recovery_rereview_required"] is True
+
+    def test_undegraded_t1_still_requires_all_families_at_verdict(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("gemini-2", "gemini", "accept"),
+                _review("claude-1", "claude", "quota-wall", checklist={}),
+            ],
+            team_class="t1_critical",
+        )
+        assert dossier["review_team_verdict"] == "no-quorum"
+        assert dossier["degraded_family_outage"] == []

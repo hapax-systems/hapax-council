@@ -46,8 +46,35 @@ ACCEPT_VERDICTS = frozenset({"accept", "accept-with-findings"})
 
 #: Reviewer verdicts the dispatcher may record. ``invalid-output`` is what an
 #: unparseable reviewer reply becomes — it never counts as an accept.
-REVIEWER_VERDICTS = frozenset({"accept", "accept-with-findings", "block", "invalid-output"})
+#: ``quota-wall`` is a provider usage wall, a FAMILY-AVAILABILITY signal:
+#: on 2026-06-12 the claude weekly wall surfaced as invalid-output for 13
+#: hours and t1's require_all_families sealed the merge gate fleet-wide
+#: (postmortem failure class #1). Walls must be named so the constitution
+#: can degrade instead of seal.
+REVIEWER_VERDICTS = frozenset(
+    {"accept", "accept-with-findings", "block", "invalid-output", "quota-wall"}
+)
 TEAM_CLASS_RANK = {"t3_docs": 0, "t2_standard": 1, "t1_critical": 2}
+
+#: Provider usage-wall shapes (the 2026-06-12 claude weekly-wall text is the
+#: canonical fixture; the rest cover the codex/gemini families' phrasings).
+_QUOTA_WALL_RE = re.compile(
+    r"(hit your (weekly|usage|session|5-hour) limit"
+    r"|usage limit (reached|exceeded)"
+    r"|rate.?limit"
+    r"|\bquota\b"
+    r"|RESOURCE_EXHAUSTED"
+    r"|\b429\b"
+    r"|resets \d{1,2}\s?[ap]m)",
+    re.IGNORECASE,
+)
+
+
+def is_quota_wall(text: str) -> bool:
+    """True when reviewer output/error text is a provider usage wall."""
+
+    return bool(text) and bool(_QUOTA_WALL_RE.search(text))
+
 
 GATE_KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_GATE_OFF"
 CHECKLIST_ITEM_RE = re.compile(r"^- \[ \] (?P<slug>[a-z0-9-]+):", re.MULTILINE)
@@ -162,6 +189,7 @@ def constitute_team(
     *,
     pr_number: int,
     available_families: Sequence[str] | None = None,
+    outage_families: frozenset[str] | set[str] = frozenset(),
 ) -> Constitution:
     """Constitute the review team for a class — deterministic, fail-closed.
 
@@ -169,6 +197,15 @@ def constitute_team(
     t1 = 4-5 seats, ALL roster families or :class:`ValueError`. The writer's
     family never holds the majority alone (cap = ``size // 2``); non-writer
     families seat first, rotated by ``pr_number`` for fairness.
+
+    DEGRADATION RULE (n-tier symmetry principal; postmortem 2026-06-12,
+    failure class #1): when a roster family is out on an OBSERVED quota wall
+    (``outage_families``), t1's require_all_families does not seal the gate —
+    the team degrades to t2 composition from the available families, and the
+    constitution notes carry ``degraded_family_outage:<family>`` +
+    ``post_recovery_rereview_required`` so the dossier, admission, and the
+    degraded-merges ledger all see the degradation. A family missing for any
+    OTHER reason (config error) still raises — only evidenced outages degrade.
     """
 
     sizing = registry["sizing"][team_class]
@@ -178,19 +215,31 @@ def constitute_team(
     else:
         wanted = {f for f in available_families}
         available = [f for f in roster if f in wanted]
-    notes = [f"family_unavailable:{f}" for f in roster if f not in available]
+    out = [f for f in available if f in outage_families]
+    available = [f for f in available if f not in outage_families]
+    notes = [f"family_unavailable:{f}" for f in roster if f not in available and f not in out]
+    degraded: list[str] = []
 
     if team_class == "t1_critical":
         size = int(sizing["team_size_min"])
         if sizing.get("require_all_families"):
             missing = [f for f in roster if f not in available]
-            if missing:
+            if missing and all(f in outage_families for f in missing):
+                degraded = sorted(missing)
+                sizing = registry["sizing"]["t2_standard"]
+                size = int(sizing["team_size"])
+                notes.extend(f"degraded_family_outage:{f}" for f in degraded)
+                notes.append("degraded_to:t2_standard")
+                notes.append("post_recovery_rereview_required")
+            elif missing:
                 raise ValueError(
                     "t1_critical requires every model family on the team; "
                     f"unavailable family: {','.join(missing)}"
                 )
     else:
         size = int(sizing["team_size"])
+        if out:
+            notes.extend(f"degraded_family_outage:{f}" for f in sorted(out))
     min_families = int(sizing.get("min_families", 1))
     if not available:
         raise ValueError("no reviewer families available")
@@ -414,6 +463,18 @@ def synthesize_dossier(
 
     sizing = registry["sizing"][team_class]
     roster = [entry["family"] for entry in registry["families"]]
+    # an outage-degraded constitution judges itself by the DEGRADED rules:
+    # t2 sizing, roster minus the walled families (postmortem 2026-06-12 —
+    # otherwise require_all_families would seal the verdict it already
+    # degraded the constitution for)
+    degraded_outage = sorted(
+        n.split(":", 1)[1]
+        for n in constitution_notes
+        if str(n).startswith("degraded_family_outage:")
+    )
+    if degraded_outage and any(str(n) == "degraded_to:t2_standard" for n in constitution_notes):
+        sizing = registry["sizing"]["t2_standard"]
+        roster = [f for f in roster if f not in degraded_outage]
     accepts = _checklist_complete_accepts(reviews, lenses)
     accept_families = {str(r.get("family")) for r in accepts}
     block_reviews = [r for r in reviews if str(r.get("verdict", "")).lower() == "block"]
@@ -498,6 +559,8 @@ def synthesize_dossier(
         "changed_file_count": changed_file_count,
         "changed_files": scoped_files,
         "constitution_notes": list(constitution_notes),
+        "degraded_family_outage": degraded_outage,
+        "post_recovery_rereview_required": bool(degraded_outage),
         "lenses": list(lenses),
         "reviewers": [dict(r) for r in reviews],
         "escalations": escalations,
