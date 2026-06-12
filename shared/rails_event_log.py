@@ -118,8 +118,11 @@ def _task_facts() -> dict[str, dict[str, str]]:
     for note in VAULT.glob("*.md"):
         try:
             text = note.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
+        except OSError as exc:
+            raise SourceVaultUnavailable(
+                f"cc-task active note unreadable: {note}: {exc}; "
+                "next: restore readable access before folding"
+            ) from exc
         # frontmatter ONLY — a `status:` line in the note body must never
         # shadow the real task state (review finding, PR #4100 fix round)
         fm = frontmatter_from_text(text)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -76,6 +77,35 @@ def test_missing_vault_fails_closed_without_heartbeat_or_shadow_rewrite(tmp_path
     vault.rename(tmp_path / "active-offline")
 
     with pytest.raises(rel.SourceVaultUnavailable, match="cc-task active vault missing"):
+        rel.fold_once()
+
+    assert rel.EVENT_LOG.read_bytes() == event_before
+    assert rel.SHADOW.read_bytes() == shadow_before
+    assert rel.EVENT_LOG.stat().st_mtime_ns == event_mtime_before
+    assert rel.SHADOW.stat().st_mtime_ns == shadow_mtime_before
+
+
+def test_unreadable_task_note_fails_closed_without_heartbeat_or_shadow_rewrite(
+    tmp_path, monkeypatch
+):
+    vault = _setup(tmp_path, monkeypatch)
+    note = vault / "task-source.md"
+    note.write_text("---\nstage: S5_REVIEW_GATE\nstatus: offered\n---\n")
+    assert rel.fold_once() >= 2
+    event_before = rel.EVENT_LOG.read_bytes()
+    shadow_before = rel.SHADOW.read_bytes()
+    event_mtime_before = rel.EVENT_LOG.stat().st_mtime_ns
+    shadow_mtime_before = rel.SHADOW.stat().st_mtime_ns
+    original_read_text = Path.read_text
+
+    def flaky_read_text(self, *args, **kwargs):
+        if self == note:
+            raise OSError("permission denied")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+
+    with pytest.raises(rel.SourceVaultUnavailable, match="cc-task active note unreadable"):
         rel.fold_once()
 
     assert rel.EVENT_LOG.read_bytes() == event_before

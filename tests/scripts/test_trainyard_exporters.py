@@ -135,3 +135,31 @@ class TestVocabExporter:
         assert out.read_bytes() == previous
         assert "sdlc-vocab BLOCKED" in captured.err
         assert "next:" in captured.err
+
+    def test_unreadable_task_note_fails_closed_without_replacing_feed(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        mod = _load("hapax-sdlc-vocab-export")
+        vault = tmp_path / "active"
+        vault.mkdir()
+        bad_note = vault / "bad.md"
+        bad_note.write_text("---\nstage: S6_IMPLEMENTATION\n---\n")
+        out = tmp_path / "sdlc-vocab.json"
+        previous = b'{"schema":1,"observed_stages":{"S5":{"count":1}}}\n'
+        out.write_bytes(previous)
+        monkeypatch.setattr(mod, "VAULT", vault)
+        monkeypatch.setattr(mod, "OUT", out)
+        original_read_text = Path.read_text
+
+        def flaky_read_text(self, *args, **kwargs):
+            if self == bad_note:
+                raise OSError("permission denied")
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", flaky_read_text)
+
+        assert mod.main() == 2
+        captured = capsys.readouterr()
+        assert out.read_bytes() == previous
+        assert "active cc-task note unreadable" in captured.err
+        assert "next:" in captured.err

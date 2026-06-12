@@ -75,6 +75,42 @@ elif [ "$CURRENT_SHA" != "none" ] && git -C "$WT" cat-file -e "$CURRENT_SHA^{com
     ROLLBACK_SHA="$CURRENT_SHA"
 fi
 RESTART_NEXT="next: inspect systemctl --user status hapax-coord.service and journalctl --user -u hapax-coord.service -n 100, fix the service failure, then rerun scripts/hapax-coord-deploy"
+RECEIPT_NEXT="next: inspect $WT/.deployed-sha permissions and systemctl --user status hapax-coord.service, reconcile activation/deployed sha state, then rerun scripts/hapax-coord-deploy"
+
+receipt_fail() {
+    local rc="$1"
+    local detail="$2"
+    detail="${detail//$'\n'/; }"
+    if [ -z "$detail" ]; then
+        detail="no output"
+    fi
+    if [ -n "$ROLLBACK_SHA" ] && [ "$ROLLBACK_SHA" != "$TARGET_SHA" ]; then
+        git -C "$WT" checkout --detach --force "$ROLLBACK_SHA" --quiet || true
+        echo "coord-deploy: receipt write failed after restart; rolled activation worktree back to $ROLLBACK_SHA; $detail; $RECEIPT_NEXT" >&2
+    elif [ -n "$ROLLBACK_SHA" ]; then
+        echo "coord-deploy: receipt write failed after restart; activation worktree remains at $ROLLBACK_SHA; $detail; $RECEIPT_NEXT" >&2
+    else
+        echo "coord-deploy: receipt write failed after restart; no prior activation worktree sha available; $detail; $RECEIPT_NEXT" >&2
+    fi
+    exit "$rc"
+}
+
+write_receipt_or_fail() {
+    local out
+    local rc
+    if out="$(printf '%s\n' "$TARGET_SHA" > "$WT/.deployed-sha.tmp" 2>&1)"; then
+        :
+    else
+        rc=$?
+        receipt_fail "$rc" "write .deployed-sha.tmp failed: $out"
+    fi
+    if out="$(mv "$WT/.deployed-sha.tmp" "$WT/.deployed-sha" 2>&1)"; then
+        :
+    else
+        rc=$?
+        receipt_fail "$rc" "promote .deployed-sha failed: $out"
+    fi
+}
 
 run_or_fail "checkout activation worktree $WT" git -C "$WT" checkout --detach --force "$TARGET_SHA" --quiet
 echo "coord-deploy: checked out $TARGET_SHA; restarting hapax-coord"
@@ -92,6 +128,5 @@ else
     fi
     exit "$rc"
 fi
-printf '%s\n' "$TARGET_SHA" > "$WT/.deployed-sha.tmp"
-mv "$WT/.deployed-sha.tmp" "$WT/.deployed-sha"
+write_receipt_or_fail
 echo "coord-deploy: activated $TARGET_SHA"

@@ -402,7 +402,8 @@ Recheck:
 ```bash
 systemctl --user cat studio-camera-reconfigure@.service | rg -F '%h/.cache/hapax/source-activation/worktree/systemd/units/studio-camera-reconfigure.sh'
 git diff --name-status origin/main...HEAD -- systemd/units | cat -vet
-HAPAX_RECHECK_PREMERGE_BRIDGE=1 HAPAX_RECHECK_ACTIVATION=/data/cache/hapax/scratch/vocab-export uv run python scripts/hapax-coord-feeds-recheck | rg 'units-(template-name|git-index-names|pr-diff-path-shapes|pr-diff-camera-template)'
+uv run python scripts/hapax-coord-feeds-recheck | rg 'units-(template-name|git-index-names|pr-diff-path-shapes|pr-diff-camera-template)'
+HAPAX_RECHECK_PREMERGE_BRIDGE=1 HAPAX_RECHECK_ACTIVATION="$PWD" uv run python scripts/hapax-coord-feeds-recheck | rg 'units-(template-name|git-index-names|pr-diff-path-shapes|pr-diff-camera-template)'
 ```
 
 ```ini

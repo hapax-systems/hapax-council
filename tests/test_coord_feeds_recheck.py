@@ -995,6 +995,69 @@ def test_coord_deploy_helper_reports_next_for_activation_root_setup_failure(tmp_
     assert "HAPAX_COORD_DEPLOY_ACT_ROOT" in failed.stderr
 
 
+def test_coord_deploy_helper_rolls_back_when_receipt_write_fails_after_restart(tmp_path):
+    origin = tmp_path / "origin.git"
+    source = tmp_path / "source"
+    writer = tmp_path / "writer"
+    act_root = tmp_path / "coord-activation"
+    fakebin = tmp_path / "bin"
+    restart_log = tmp_path / "systemctl.log"
+    fakebin.mkdir()
+    systemctl = fakebin / "systemctl"
+    systemctl.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "${HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG:?}"\n'
+    )
+    systemctl.chmod(0o755)
+
+    _cmd(["git", "init", "--bare", str(origin)])
+    _cmd(["git", "init", str(source)])
+    _cmd(["git", "-C", str(source), "checkout", "-b", "main"])
+    first_sha = _deploy_fixture_commit(source, "first")
+    _cmd(["git", "-C", str(source), "remote", "add", "origin", str(origin)])
+    _cmd(["git", "-C", str(source), "push", "-u", "origin", "main"])
+
+    env = {
+        **os.environ,
+        "HAPAX_COORD_DEPLOY_REPO": str(source),
+        "HAPAX_COORD_DEPLOY_ACT_ROOT": str(act_root),
+        "HAPAX_COORD_DEPLOY_SYSTEMCTL_LOG": str(restart_log),
+        "PATH": f"{fakebin}:{os.environ.get('PATH', '')}",
+    }
+    _cmd([str(_DEPLOY_SCRIPT)], env=env)
+    worktree = act_root / "worktree"
+    assert (worktree / ".deployed-sha").read_text().strip() == first_sha
+
+    _cmd(["git", "clone", "-b", "main", str(origin), str(writer)])
+    second_sha = _deploy_fixture_commit(writer, "second")
+    _cmd(["git", "-C", str(writer), "push", "origin", "main"])
+    (worktree / ".deployed-sha.tmp").mkdir()
+
+    failed = subprocess.run(
+        [str(_DEPLOY_SCRIPT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert failed.returncode != 0
+    assert "receipt write failed after restart" in failed.stderr
+    assert "rolled activation worktree back" in failed.stderr
+    assert "next:" in failed.stderr
+    assert (worktree / ".deployed-sha").read_text().strip() == first_sha
+    assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == first_sha
+    assert restart_log.read_text().splitlines() == [
+        "--user restart hapax-coord.service",
+        "--user restart hapax-coord.service",
+    ]
+
+    (worktree / ".deployed-sha.tmp").rmdir()
+    _cmd([str(_DEPLOY_SCRIPT)], env=env)
+    assert (worktree / ".deployed-sha").read_text().strip() == second_sha
+    assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == second_sha
+
+
 def test_coord_rebuild_timer_checked_when_systemctl_enabled(tmp_path):
     env = _scaffold(tmp_path)
     mod = _load(env)

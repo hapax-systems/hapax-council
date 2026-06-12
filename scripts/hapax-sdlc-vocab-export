@@ -65,8 +65,11 @@ def observed_vocab() -> tuple[dict[str, int], dict[str, int]]:
     for note in VAULT.glob("*.md"):
         try:
             text = note.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
+        except OSError as exc:
+            raise SourceVaultUnavailable(
+                f"active cc-task note unreadable at {note}: {exc}; "
+                "next: restore readable access before exporting"
+            ) from exc
         fm = frontmatter_from_text(text)
         for field, target in (("stage", stages), ("status", statuses)):
             value = fm.get(field)
