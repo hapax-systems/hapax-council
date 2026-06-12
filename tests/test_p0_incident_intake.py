@@ -168,6 +168,19 @@ def test_lane_supervisor_alert_gets_stable_operational_fingerprint():
     assert classification.fingerprint == "lane_supervisor_alert:launcher_lifetime:zeta"
 
 
+def test_lufs_panic_cap_alert_gets_technical_intake():
+    classification = classify_notification(
+        "LUFS panic-cap",
+        "Broadcast master peaked -3.50 LUFS-S sustained 1000ms.",
+        priority="high",
+        tags=[],
+    )
+
+    assert classification.technical is True
+    assert classification.kind == "audio_lufs_breach"
+    assert classification.fingerprint == "audio_lufs_breach:lufs-panic-cap"
+
+
 def test_service_failed_cli_records_incident_and_sends_bounded_pointer(tmp_path):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()

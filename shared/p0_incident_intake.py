@@ -43,6 +43,7 @@ TECHNICAL_TITLE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("[VIOLATION]", "cc_hygiene_violation"),
     ("Infra Registry Drift", "infra_registry_drift"),
     ("Hapax lane-supervisor:", "lane_supervisor_alert"),
+    ("LUFS panic-cap", "audio_lufs_breach"),
     ("Audio: LUFS Breach", "audio_lufs_breach"),
     ("Audio: Crest spike", "audio_crest_spike"),
     ("Voice witness watchdog:", "voice_witness_watchdog"),

@@ -185,6 +185,26 @@ class TestSendNotification:
         )
         mock_dismiss.assert_called_once_with("p0-incident-stack-failed-abc123")
 
+    @patch("shared.p0_incident_intake.record_notification", side_effect=OSError("state locked"))
+    @patch("shared.notify._send_desktop", return_value=True)
+    def test_technical_intake_failure_logs_next_action(
+        self,
+        mock_desktop,
+        _mock_record,
+        _dedup,
+        _watershed,
+        _logos,
+        caplog,
+    ):
+        with caplog.at_level("WARNING", logger="shared.notify"):
+            result = send_notification("LUFS panic-cap", "too hot", priority="high")
+
+        assert result is True
+        assert "notify: p0 incident intake failed; next action:" in caplog.text
+        assert "~/.cache/hapax/p0-incident-intake/state.json" in caplog.text
+        assert "scripts/hapax-p0-incident-intake notification" in caplog.text
+        mock_desktop.assert_called_once_with("LUFS panic-cap", "too hot", priority="high")
+
 
 # ── send_webhook tests ───────────────────────────────────────────────────────
 
