@@ -560,6 +560,7 @@ class TestVerdictBlockers:
             note,
             pr_head_sha="a" * 40,
             changed_files=("scripts/review_team.py",),
+            changed_file_count=1,
         )
         assert "review_dossier_team_class_scope_mismatch:t2_standard!=t1_critical" in blockers
         assert any(
@@ -568,6 +569,29 @@ class TestVerdictBlockers:
             and "sdlc-legibility" in b
             for b in blockers
         )
+
+    def test_stronger_team_class_satisfies_weaker_scope(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),
+                _review("codex-2", "codex", "accept"),
+            ],
+            team_class="t1_critical",
+        )
+        dossier["lenses"] = list(ALWAYS_ON_LENSES)
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            changed_files=("shared/foo.py",),
+            changed_file_count=1,
+        )
+        assert not any(b.startswith("review_dossier_team_class_scope_mismatch:") for b in blockers)
 
     def test_empty_changed_file_scope_blocks(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
@@ -591,6 +615,19 @@ class TestVerdictBlockers:
             changed_file_count=2,
         )
         assert "review_dossier_changed_files_truncated:1/2" in blockers
+
+    def test_missing_changed_file_count_blocks_when_files_are_supplied(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._good_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            changed_files=("shared/foo.py",),
+        )
+        assert "review_dossier_changed_files_count_unknown" in blockers
 
     def test_dossier_task_id_mismatch_blocks(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
@@ -631,6 +668,15 @@ class TestVerdictBlockers:
         note = _write_dossier(tmp_path, "task-x", dossier)
         blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
         assert "review_dossier_unknown_reviewer_verdict:banana" in blockers
+
+    def test_duplicate_reviewer_id_blocks(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = self._good_dossier(rt)
+        dossier["reviewers"][1]["id"] = "codex-1"
+        dossier["review_team_verdict"] = "quorum-accept"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
+        assert "review_dossier_duplicate_reviewer_id:codex-1" in blockers
 
     def test_unregistered_accept_family_blocks_even_if_family_count_passes(
         self, tmp_path: Path

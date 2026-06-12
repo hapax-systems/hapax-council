@@ -383,6 +383,29 @@ class TestApply:
         assert second["dossier"]["review_team_verdict"] == "quorum-accept"
         assert second_reviewers.invocations
 
+    def test_multi_task_pr_writes_each_task_dossier(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        note_a = _write_task(vault, task_id="task-a")
+        note_b = _write_task(vault, task_id="task-b")
+        reviewers = RecordingReviewers()
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T22:00:00+00:00",
+        )
+        assert result["status"] == "multi_dispatched"
+        assert {item["task_id"] for item in result["results"]} == {"task-a", "task-b"}
+        assert (note_a.parent / "task-a.review-dossier.yaml").is_file()
+        assert (note_b.parent / "task-b.review-dossier.yaml").is_file()
+        assert len(reviewers.invocations) == 3
+
     def test_skipped_fresh_quorum_dossier_replays_missing_receipt(self, tmp_path: Path) -> None:
         result, _, _, note = _review(
             tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}

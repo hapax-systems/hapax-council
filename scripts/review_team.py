@@ -47,6 +47,7 @@ ACCEPT_VERDICTS = frozenset({"accept", "accept-with-findings"})
 #: Reviewer verdicts the dispatcher may record. ``invalid-output`` is what an
 #: unparseable reviewer reply becomes — it never counts as an accept.
 REVIEWER_VERDICTS = frozenset({"accept", "accept-with-findings", "block", "invalid-output"})
+TEAM_CLASS_RANK = {"t3_docs": 0, "t2_standard": 1, "t1_critical": 2}
 
 GATE_KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_GATE_OFF"
 CHECKLIST_ITEM_RE = re.compile(r"^- \[ \] (?P<slug>[a-z0-9-]+):", re.MULTILINE)
@@ -114,6 +115,14 @@ def team_class_for(
     if risk == "T3" or docs_only:
         return "t3_docs"
     return "t2_standard"
+
+
+def strongest_team_class(classes: Sequence[str]) -> str:
+    """Return the strongest known team class from a non-empty sequence."""
+
+    if not classes:
+        raise ValueError("at least one team class is required")
+    return max(classes, key=lambda item: TEAM_CLASS_RANK.get(item, -1))
 
 
 def writer_family_for_lane(lane: str | None, registry: Mapping[str, Any]) -> str:
@@ -264,7 +273,20 @@ def find_task_note(
 ) -> tuple[Path, dict[str, Any]] | None:
     """The cc-task note linked to a PR: by ``pr`` field first, else by branch."""
 
-    branch_match: tuple[Path, dict[str, Any]] | None = None
+    matches = find_task_notes(vault_root, pr_number=pr_number, head_ref=head_ref)
+    return matches[0] if matches else None
+
+
+def find_task_notes(
+    vault_root: Path,
+    *,
+    pr_number: int | None = None,
+    head_ref: str | None = None,
+) -> tuple[tuple[Path, dict[str, Any]], ...]:
+    """All cc-task notes linked to a PR: by ``pr`` field first, else by branch."""
+
+    pr_matches: list[tuple[Path, dict[str, Any]]] = []
+    branch_matches: list[tuple[Path, dict[str, Any]]] = []
     for folder in ("active", "closed"):
         root = vault_root / folder
         if not root.is_dir():
@@ -278,10 +300,10 @@ def find_task_note(
             except (TypeError, ValueError):
                 note_pr = None
             if pr_number is not None and note_pr == pr_number:
-                return path, fm
-            if branch_match is None and head_ref and str(fm.get("branch") or "") == head_ref:
-                branch_match = (path, fm)
-    return branch_match
+                pr_matches.append((path, fm))
+            elif head_ref and str(fm.get("branch") or "") == head_ref:
+                branch_matches.append((path, fm))
+    return tuple(pr_matches or branch_matches)
 
 
 def charter_text(lens: str, lens_dir: Path | None = None) -> str:
@@ -539,13 +561,15 @@ def _dossier_validity_blockers(
     if changed_files is not None:
         if not scoped_files:
             blockers.append("review_dossier_changed_files_unknown")
+        elif changed_file_count is None:
+            blockers.append("review_dossier_changed_files_count_unknown")
         elif changed_file_count is not None and len(scoped_files) < changed_file_count:
             blockers.append(
                 f"review_dossier_changed_files_truncated:{len(scoped_files)}/{changed_file_count}"
             )
         else:
             expected_team_class = team_class_for(frontmatter or {}, scoped_files, registry)
-            if team_class != expected_team_class:
+            if TEAM_CLASS_RANK.get(team_class, -1) < TEAM_CLASS_RANK.get(expected_team_class, -1):
                 blockers.append(
                     f"review_dossier_team_class_scope_mismatch:{team_class}!={expected_team_class}"
                 )
@@ -560,6 +584,12 @@ def _dossier_validity_blockers(
     if not isinstance(reviews, list) or not all(isinstance(r, Mapping) for r in reviews):
         blockers.append("review_dossier_malformed:reviewers_not_a_list")
         return tuple(blockers)
+    reviewer_ids = [str(r.get("id") or "missing") for r in reviews]
+    duplicate_reviewer_ids = sorted(
+        {reviewer_id for reviewer_id in reviewer_ids if reviewer_ids.count(reviewer_id) > 1}
+    )
+    if duplicate_reviewer_ids:
+        blockers.append("review_dossier_duplicate_reviewer_id:" + ",".join(duplicate_reviewer_ids))
     roster = {entry["family"] for entry in registry["families"]}
     unknown_reviewer_families = {str(r.get("family") or "missing") for r in reviews} - roster
     if unknown_reviewer_families:

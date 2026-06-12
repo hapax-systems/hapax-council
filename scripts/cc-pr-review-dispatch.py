@@ -674,18 +674,23 @@ def review_pr(
     if pr_info.is_draft:
         return {"status": "draft_skipped", "pr": pr_number}
 
-    match = review_team.find_task_note(vault_root, pr_number=pr_number, head_ref=pr_info.head_ref)
-    if match is None:
+    matches = review_team.find_task_notes(
+        vault_root, pr_number=pr_number, head_ref=pr_info.head_ref
+    )
+    if not matches:
         LOG.warning("PR #%d has no linked cc-task note — cannot review-team it", pr_number)
         return {"status": "no_task", "pr": pr_number}
-    note_path, frontmatter = match
-    task_id = str(frontmatter.get("task_id") or "").strip()
-    if not task_id:
-        LOG.warning("task note %s has no task_id — cannot key a dossier", note_path.name)
-        return {"status": "no_task", "pr": pr_number}
+    keyed_matches: list[tuple[Path, dict[str, Any], str]] = []
+    for note_path, frontmatter in matches:
+        task_id = str(frontmatter.get("task_id") or "").strip()
+        if not task_id:
+            LOG.warning("task note %s has no task_id — cannot key a dossier", note_path.name)
+            return {"status": "no_task", "pr": pr_number}
+        keyed_matches.append((note_path, frontmatter, task_id))
+    note_path, frontmatter, task_id = keyed_matches[0]
 
     dossier_path = review_team.review_dossier_path(note_path, task_id)
-    if dossier_path.is_file() and not force:
+    if len(keyed_matches) == 1 and dossier_path.is_file() and not force:
         try:
             existing = yaml.safe_load(dossier_path.read_text(encoding="utf-8"))
         except (OSError, yaml.YAMLError):
@@ -732,7 +737,9 @@ def review_pr(
                 }
 
     lenses = review_team.lenses_for_files(pr_info.files, registry)
-    team_class = review_team.team_class_for(frontmatter, pr_info.files, registry)
+    team_class = review_team.strongest_team_class(
+        [review_team.team_class_for(fm, pr_info.files, registry) for _, fm, _ in keyed_matches]
+    )
     writer_family = review_team.writer_family_for_lane(
         str(frontmatter.get("assigned_to") or ""), registry
     )
@@ -741,7 +748,7 @@ def review_pr(
     )
     plan = {
         "pr": pr_number,
-        "task_id": task_id,
+        "task_id": task_id if len(keyed_matches) == 1 else [item[2] for item in keyed_matches],
         "head_sha": pr_info.head_sha,
         "team_class": team_class,
         "quorum_required": constitution.quorum_required,
@@ -753,10 +760,19 @@ def review_pr(
     if not apply:
         return {"status": "planned", "plan": plan}
 
-    prior_criticals = _prior_unresolved_criticals(dossier_path)
+    prior_criticals = [
+        finding
+        for path, _, match_task_id in keyed_matches
+        for finding in _prior_unresolved_criticals(
+            review_team.review_dossier_path(path, match_task_id)
+        )
+    ]
     prior_file_excerpts = render_prior_file_excerpts(prior_criticals, repo_root=repo_root)
     diff = truncate_diff(fetch_pr_diff(pr_number, repo=repo, repo_root=repo_root, runner=gh_runner))
-    task_note_text = note_path.read_text(encoding="utf-8")
+    task_note_text = "\n\n".join(
+        f"## Linked task note: {path.name}\n\n{path.read_text(encoding='utf-8')}"
+        for path, _, _ in keyed_matches
+    )
     charters = "\n\n".join(review_team.charter_text(lens) for lens in lenses)
     prompts = [
         render_reviewer_prompt(
@@ -775,33 +791,64 @@ def review_pr(
         for seat in constitution.seats
     ]
     reviews = dispatch_reviews(constitution, prompts, registry, reviewer_runner)
-    dossier = review_team.synthesize_dossier(
-        task_id=task_id,
-        pr_number=pr_number,
-        head_sha=pr_info.head_sha,
-        team_class=team_class,
-        registry=registry,
-        reviews=reviews,
-        lenses=lenses,
-        constituted_at=now_iso,
-        constitution_notes=constitution.notes,
-    )
-    if dossier["review_team_verdict"] == "no-quorum":
-        dead = [
-            str(r.get("id") or r.get("family"))
-            for r in reviews
-            if str(r.get("verdict")) == "invalid-output"
-        ]
-        dossier["no_quorum_cause"] = (
-            f"dead reviewers: {', '.join(dead)}" if dead else "verdict split below quorum"
+    results: list[dict[str, Any]] = []
+    comment_bodies: list[str] = []
+    for target_note_path, target_frontmatter, target_task_id in keyed_matches:
+        target_dossier_path = review_team.review_dossier_path(target_note_path, target_task_id)
+        dossier = review_team.synthesize_dossier(
+            task_id=target_task_id,
+            pr_number=pr_number,
+            head_sha=pr_info.head_sha,
+            team_class=team_class,
+            registry=registry,
+            reviews=reviews,
+            lenses=lenses,
+            constituted_at=now_iso,
+            constitution_notes=constitution.notes,
         )
-    dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
-    LOG.info("dossier written: %s (verdict %s)", dossier_path, dossier["review_team_verdict"])
+        if dossier["review_team_verdict"] == "no-quorum":
+            dead = [
+                str(r.get("id") or r.get("family"))
+                for r in reviews
+                if str(r.get("verdict")) == "invalid-output"
+            ]
+            dossier["no_quorum_cause"] = (
+                f"dead reviewers: {', '.join(dead)}" if dead else "verdict split below quorum"
+            )
+        target_dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
+        LOG.info(
+            "dossier written: %s (verdict %s)",
+            target_dossier_path,
+            dossier["review_team_verdict"],
+        )
+        comment_bodies.append(render_dossier_markdown(dossier))
+        side_effects = replay_dossier_side_effects(
+            target_frontmatter,
+            target_note_path,
+            target_task_id,
+            dossier,
+            repo=repo,
+            now_iso=now_iso,
+            registry=registry,
+            wake_dir=wake_dir,
+            send_runner=send_runner,
+            pr_number=pr_info.number,
+            changed_files=pr_info.files,
+            changed_file_count=pr_info.changed_file_count,
+        )
+        results.append(
+            {
+                "task_id": target_task_id,
+                "dossier": dossier,
+                "dossier_path": str(target_dossier_path),
+                "side_effects": side_effects,
+            }
+        )
 
     try:
         post_pr_comment(
             pr_number,
-            render_dossier_markdown(dossier),
+            "\n\n---\n\n".join(comment_bodies),
             repo=repo,
             repo_root=repo_root,
             runner=gh_runner,
@@ -809,28 +856,16 @@ def review_pr(
     except Exception as exc:  # noqa: BLE001 — persisted dossier side effects must continue
         LOG.warning("posting review-team dossier comment failed: %s", exc)
 
-    side_effects = replay_dossier_side_effects(
-        frontmatter,
-        note_path,
-        task_id,
-        dossier,
-        repo=repo,
-        now_iso=now_iso,
-        registry=registry,
-        wake_dir=wake_dir,
-        send_runner=send_runner,
-        pr_number=pr_info.number,
-        changed_files=pr_info.files,
-        changed_file_count=pr_info.changed_file_count,
-    )
-
-    return {
-        "status": "dispatched",
-        "plan": plan,
-        "dossier": dossier,
-        "dossier_path": str(dossier_path),
-        "side_effects": side_effects,
-    }
+    if len(results) == 1:
+        only = results[0]
+        return {
+            "status": "dispatched",
+            "plan": plan,
+            "dossier": only["dossier"],
+            "dossier_path": only["dossier_path"],
+            "side_effects": only["side_effects"],
+        }
+    return {"status": "multi_dispatched", "plan": plan, "results": results}
 
 
 def review_all_open_prs(
