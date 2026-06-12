@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+"""cc-noop-canary-grade — grade minted no-op canary cells.
+
+Three-valued per (month, tier): pass / fail / probe-error; any diff is a
+FIXING-CORRECT-CODE event in the failure ledger. Normally ridden by the
+cc-task-offer-ready reconcile tick; this CLI exists for manual runs.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+from noop_canary.grade import grade_month  # noqa: E402
+from noop_canary.reconcile import DEFAULT_REGISTRY, REPO_ROOT, _gh_pr_info  # noqa: E402
+from noop_canary.registry import load_registry  # noqa: E402
+
+DEFAULT_VAULT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY)
+    parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
+    parser.add_argument("--vault-root", type=Path, default=DEFAULT_VAULT)
+    parser.add_argument("--state", type=Path, default=None)
+    parser.add_argument("--ledger", type=Path, default=None)
+    parser.add_argument("--month", default=None, help="YYYY-MM (default: current)")
+    parser.add_argument("--now", default=None, help="ISO timestamp override (testing)")
+    args = parser.parse_args(argv)
+
+    vault = args.vault_root.expanduser()
+    now = args.now or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    month = args.month or now[:7]
+    state = args.state or vault / "_evidence" / "noop-canary" / "state.yaml"
+    ledger = args.ledger or vault / "_evidence" / "failure-ledger" / "events.jsonl"
+
+    registry = load_registry(args.registry.expanduser())
+    outcomes = grade_month(
+        month=month,
+        platform_tiers=registry.platform_tiers,
+        vault_root=vault,
+        state_path=state,
+        ledger_path=ledger,
+        now=now,
+        pr_info_fn=_gh_pr_info,
+    )
+    summary = ", ".join(f"{tier}={outcome}" for tier, outcome in sorted(outcomes.items()))
+    print(f"cc-noop-canary-grade: {month} — {summary or 'no cells decided'}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

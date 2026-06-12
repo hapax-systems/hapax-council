@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -358,8 +359,28 @@ def promote(task_id: str, *, vault_root: Path, dry_run: bool) -> int:
     return 0
 
 
+def noop_canary_tick(vault_root: Path) -> None:
+    """Carrier for the no-op canary mint/grade cycle (idempotent per
+    month x tier). Fail-soft by contract: ready->offered promotion must
+    survive a broken canary plane, and canary rot surfaces as probe-error
+    events plus this stderr line — never as a green tick."""
+    if os.environ.get("HAPAX_NOOP_CANARY_OFF"):
+        return
+    try:
+        scripts_dir = str(REPO_ROOT / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        from noop_canary.reconcile import reconcile_vault
+
+        reconcile_vault(vault_root=vault_root)
+    except Exception as exc:
+        print(f"cc-task-offer-ready: noop-canary tick skipped: {exc}", file=sys.stderr)
+
+
 def reconcile(*, vault_root: Path, dry_run: bool) -> int:
     """Sweep all ready tasks and promote those with satisfied dependencies."""
+    if not dry_run:
+        noop_canary_tick(vault_root)
     active = vault_root / "active"
     if not active.is_dir():
         return 0
