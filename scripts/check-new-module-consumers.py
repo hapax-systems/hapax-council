@@ -26,6 +26,10 @@ def is_module_file(path: Path) -> bool:
         return False
     if path.name.startswith("test_"):
         return False
+    if path.name == "__init__.py":
+        # a package marker is consumed by any import of the package itself —
+        # the package's modules carry the consumer requirement, not the marker
+        return False
     return parts[0] in SOURCE_PATHS
 
 
@@ -153,6 +157,49 @@ def get_imported_modules(file_path: Path, module_name: str) -> set[str]:
     return imports
 
 
+def systemd_consumer_units(target_module_name: str, repo_root: Path | None = None) -> list[str]:
+    """Units whose ExecStart runs the module — the consumer relation for
+    standalone daemon agents (review #4095-2: the project's dominant producer
+    type has no Python importer; its consumer IS the systemd unit)."""
+    root = repo_root or Path()
+    units_dir = root / "systemd" / "units"
+    if not units_dir.is_dir():
+        return []
+    needles = (
+        f"-m {target_module_name}",
+        f"-m {target_module_name}.__main__",
+        target_module_name.replace(".", "/") + ".py",
+    )
+    hits: list[str] = []
+    for unit in sorted(units_dir.glob("*.service")):
+        try:
+            body = unit.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if any(n in body for n in needles):
+            hits.append(unit.name)
+    return hits
+
+
+def tooling_consumer_refs(target_file_path: Path, repo_root: Path | None = None) -> list[str]:
+    """Pre-commit/CI registrations count as consumers for scripts/ producers
+    (a gate or workflow that EXECUTES the script is its consumer)."""
+    root = repo_root or Path()
+    hits: list[str] = []
+    rel = str(target_file_path)
+    candidates = [root / ".pre-commit-config.yaml"]
+    wf_dir = root / ".github" / "workflows"
+    if wf_dir.is_dir():
+        candidates.extend(sorted(wf_dir.glob("*.yml")))
+    for cfg in candidates:
+        try:
+            if rel in cfg.read_text(encoding="utf-8", errors="replace"):
+                hits.append(str(cfg))
+        except OSError:
+            continue
+    return hits
+
+
 def count_consumers(
     target_module_name: str,
     all_source_files: list[Path],
@@ -165,8 +212,14 @@ def count_consumers(
         if file_path == target_file_path:
             continue
         imported = imports_by_file.get(file_path, set())
+        # scripts/ executables import their packages WITHOUT the dir prefix
+        # (scripts/ rides sys.path): `from cc_hygiene.ntfy import ...` consumes
+        # scripts.cc_hygiene.ntfy. Accept the tail form for scripts.* targets.
+        names = [target_module_name]
+        if target_module_name.startswith("scripts.") and "." in target_module_name[8:]:
+            names.append(target_module_name[len("scripts.") :])
         for imp in imported:
-            if imp == target_module_name or imp.startswith(target_module_name + "."):
+            if any(imp == n or imp.startswith(n + ".") for n in names):
                 count += 1
                 break
     return count
@@ -238,6 +291,13 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"Module {module_name} is allowlisted as an entry point. Skipping consumer check."
             )
+            continue
+
+        unit_consumers = systemd_consumer_units(module_name)
+        tooling_consumers = tooling_consumer_refs(module_path)
+        if unit_consumers or tooling_consumers:
+            refs = ", ".join(unit_consumers + tooling_consumers)
+            print(f"Module {module_name}: non-import consumer(s) found ({refs}).")
             continue
 
         consumer_count = count_consumers(

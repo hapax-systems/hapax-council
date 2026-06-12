@@ -116,3 +116,60 @@ def test_count_consumers() -> None:
         imports_by_file,
     )
     assert count == 2
+
+
+class TestCanaries:
+    """Anti-theses canaries: the gate must demonstrably FIRE on an unconsumed
+    producer and PASS legitimate patterns — through main(), not helpers."""
+
+    def _repo(self, tmp_path, monkeypatch):
+        import check_new_module_consumers as gate
+
+        (tmp_path / "agents").mkdir()
+        (tmp_path / "shared").mkdir()
+        (tmp_path / "config").mkdir()
+        monkeypatch.chdir(tmp_path)
+        return gate
+
+    def test_evasion_canary_unconsumed_module_blocks(self, tmp_path, monkeypatch):
+        gate = self._repo(tmp_path, monkeypatch)
+        rogue = tmp_path / "agents" / "rogue_widget.py"
+        rogue.write_text("def run():\n    pass\n")
+        monkeypatch.setattr(
+            gate, "git_diff_added_files", lambda args: [Path("agents/rogue_widget.py")]
+        )
+        rc = gate.main([])
+        assert rc == 1, "an unconsumed new producer MUST block"
+
+    def test_deadlock_canary_imported_module_passes(self, tmp_path, monkeypatch):
+        gate = self._repo(tmp_path, monkeypatch)
+        (tmp_path / "agents" / "widget.py").write_text("def run():\n    pass\n")
+        (tmp_path / "shared" / "uses.py").write_text("from agents.widget import run\n")
+        monkeypatch.setattr(gate, "git_diff_added_files", lambda args: [Path("agents/widget.py")])
+        assert gate.main([]) == 0
+
+    def test_deadlock_canary_systemd_consumer_passes(self, tmp_path, monkeypatch):
+        gate = self._repo(tmp_path, monkeypatch)
+        (tmp_path / "agents" / "lone_daemon.py").write_text("def run():\n    pass\n")
+        units = tmp_path / "systemd" / "units"
+        units.mkdir(parents=True)
+        (units / "hapax-lone.service").write_text(
+            "[Service]\nExecStart=uv run python -m agents.lone_daemon\n"
+        )
+        monkeypatch.setattr(
+            gate, "git_diff_added_files", lambda args: [Path("agents/lone_daemon.py")]
+        )
+        assert gate.main([]) == 0, "a systemd-consumed daemon is NOT unwired"
+
+    def test_deadlock_canary_allowlist_passes(self, tmp_path, monkeypatch):
+        import json
+
+        gate = self._repo(tmp_path, monkeypatch)
+        (tmp_path / "agents" / "entrypoint.py").write_text("def run():\n    pass\n")
+        (tmp_path / "config" / "new-module-allowlist.json").write_text(
+            json.dumps(["agents.entrypoint"])
+        )
+        monkeypatch.setattr(
+            gate, "git_diff_added_files", lambda args: [Path("agents/entrypoint.py")]
+        )
+        assert gate.main([]) == 0
