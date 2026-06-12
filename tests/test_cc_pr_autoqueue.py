@@ -11,6 +11,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import pytest
 import yaml
 
 from shared.merge_queue_lineage import MergeQueueLineageRecord, write_jsonl_records
@@ -33,6 +34,202 @@ def _load_module() -> ModuleType:
 
 
 autoqueue = _load_module()
+
+COMPLETE_ALWAYS_ON_CHECKLIST = {
+    "tests-cover-the-diff": {
+        "diff-behavior-coverage": "pass",
+        "red-before-green": "na",
+        "new-paths-tested": "pass",
+        "no-coverage-theater": "pass",
+    },
+    "exit-predicate-adequacy": {
+        "predicate-testable": "pass",
+        "predicate-evidenced": "pass",
+        "diff-matches-predicate": "pass",
+        "witness-durability": "pass",
+    },
+    "doc-claims-recheck": {
+        "recheck-cmds-present": "pass",
+        "claims-match-code": "pass",
+        "stale-docs-updated": "pass",
+        "next-actions-on-error": "pass",
+    },
+}
+
+
+@pytest.fixture(autouse=True)
+def _review_team_gate_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pre-gate admission tests run with the review-team gate off.
+
+    The review-team quorum gate (review_team.review_team_verdict_blockers) is
+    exercised explicitly by TestReviewTeamGate, which re-enables it per test.
+    """
+
+    monkeypatch.setenv("HAPAX_REVIEW_TEAM_GATE_OFF", "1")
+
+
+def _write_review_dossier(
+    vault: Path,
+    task_id: str,
+    *,
+    head_sha: str,
+    verdict: str = "quorum-accept",
+    reviewers: list[dict[str, Any]] | None = None,
+    folder: str = "active",
+) -> Path:
+    if reviewers is None:
+        reviewers = [
+            {
+                "id": f"{family}-1",
+                "family": family,
+                "verdict": "accept",
+                "findings": [],
+                "checklist": COMPLETE_ALWAYS_ON_CHECKLIST,
+            }
+            for family in ("codex", "gemini", "claude")
+        ]
+    accepts = sum(1 for r in reviewers if r["verdict"] in ("accept", "accept-with-findings"))
+    dossier = {
+        "dossier_schema": 1,
+        "task_id": task_id,
+        "pr": 42,
+        "head_sha": head_sha,
+        "team_class": "t2_standard",
+        "quorum_required": 2,
+        "constituted_at": "2026-06-11T00:00:00+00:00",
+        "constitution_notes": [],
+        "lenses": list(COMPLETE_ALWAYS_ON_CHECKLIST),
+        "reviewers": reviewers,
+        "escalations": [],
+        "accept_count": accepts,
+        "review_team_verdict": verdict,
+    }
+    path = vault / folder / f"{task_id}.review-dossier.yaml"
+    path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
+    return path
+
+
+class TestReviewTeamGate:
+    """Spec §5: a quorum-accept review dossier is an admission requirement."""
+
+    def _classify(self, vault: Path, pr_payload: dict[str, Any]):
+        pr = autoqueue._parse_pr(pr_payload)
+        assert pr is not None
+        tasks = autoqueue.load_task_notes(vault)
+        return autoqueue.classify_pr(pr, tasks=tasks, queued_prs=set())
+
+    def test_green_pr_without_dossier_is_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", pr=42)
+        decision = self._classify(vault, _pr(42))
+        assert decision.action == "blocked"
+        assert "missing_review_dossier" in decision.reasons
+
+    def test_green_pr_with_quorum_dossier_queues(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", pr=42)
+        _write_review_dossier(vault, "task-a", head_sha="sha-42")
+        decision = self._classify(vault, _pr(42))
+        assert decision.action == "queue", decision.reasons
+
+    def test_changed_file_scope_mismatch_blocks(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", pr=42)
+        _write_review_dossier(vault, "task-a", head_sha="sha-42")
+        decision = self._classify(vault, _pr(42, files=["scripts/review_team.py"]))
+        assert decision.action == "blocked"
+        assert (
+            "review_dossier_team_class_scope_mismatch:t2_standard!=t1_critical" in decision.reasons
+        )
+        assert any(
+            r.startswith("review_dossier_missing_required_lenses:") and "sdlc-gate-compose" in r
+            for r in decision.reasons
+        )
+
+    def test_empty_changed_file_scope_blocks(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", pr=42)
+        _write_review_dossier(vault, "task-a", head_sha="sha-42")
+        decision = self._classify(vault, _pr(42, files=[]))
+        assert decision.action == "blocked"
+        assert "review_dossier_changed_files_unknown" in decision.reasons
+
+    def test_truncated_changed_file_scope_blocks(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", pr=42)
+        _write_review_dossier(vault, "task-a", head_sha="sha-42")
+        decision = self._classify(
+            vault,
+            _pr(42, files=["shared/foo.py"], changed_files_count=101),
+        )
+        assert decision.action == "blocked"
+        assert "review_dossier_changed_files_truncated:1/101" in decision.reasons
+
+    def test_stale_dossier_blocks_after_push(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", pr=42)
+        _write_review_dossier(vault, "task-a", head_sha="sha-OLD")
+        decision = self._classify(vault, _pr(42))
+        assert decision.action == "blocked"
+        assert any(r.startswith("review_dossier_stale_head:") for r in decision.reasons)
+
+    def test_no_quorum_dossier_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", pr=42)
+        _write_review_dossier(
+            vault,
+            "task-a",
+            head_sha="sha-42",
+            verdict="no-quorum",
+            reviewers=[
+                {
+                    "id": "codex-1",
+                    "family": "codex",
+                    "verdict": "accept",
+                    "findings": [],
+                    "checklist": COMPLETE_ALWAYS_ON_CHECKLIST,
+                },
+                {
+                    "id": "gemini-1",
+                    "family": "gemini",
+                    "verdict": "invalid-output",
+                    "findings": [],
+                    "checklist": {},
+                },
+                {
+                    "id": "claude-1",
+                    "family": "claude",
+                    "verdict": "invalid-output",
+                    "findings": [],
+                    "checklist": {},
+                },
+            ],
+        )
+        decision = self._classify(vault, _pr(42))
+        assert decision.action == "blocked"
+        assert "review_dossier_quorum_not_met:1/2" in decision.reasons
+
+    def test_killswitch_admits_without_dossier(self, tmp_path: Path) -> None:
+        # autouse fixture sets HAPAX_REVIEW_TEAM_GATE_OFF=1
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", pr=42)
+        decision = self._classify(vault, _pr(42))
+        assert decision.action == "queue", decision.reasons
 
 
 def _recent_observed_at(index: int, *, total: int = 4) -> datetime:
@@ -142,6 +339,8 @@ def _pr(
     *,
     branch: str | None = None,
     title: str | None = None,
+    files: list[str] | None = None,
+    changed_files_count: int | None = None,
     body: str = "",
     draft: bool = False,
     merge_state: str = "CLEAN",
@@ -150,6 +349,7 @@ def _pr(
     review_decision: str | None = None,
     auto_merge: bool = False,
 ) -> dict[str, Any]:
+    file_list = ["shared/foo.py"] if files is None else files
     return {
         "number": number,
         "id": f"PR_test_{number}",
@@ -157,6 +357,8 @@ def _pr(
         "body": body,
         "headRefName": branch or f"feat/{number}",
         "headRefOid": f"sha-{number}",
+        "changedFiles": len(file_list) if changed_files_count is None else changed_files_count,
+        "files": [{"path": path} for path in file_list],
         "isDraft": draft,
         "mergeStateStatus": merge_state,
         "labels": [{"name": label} for label in labels or []],

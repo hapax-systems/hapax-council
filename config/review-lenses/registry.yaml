@@ -1,0 +1,114 @@
+# PR review-team lens registry — strategic constitution, tactical sizing,
+# cross-family independence.
+#
+# Spec (ratified): ~/Documents/Personal/30-areas/hapax/pr-review-team-design-2026-06-11.md
+# Consumers: scripts/review_team.py (selection/constitution/gate),
+#            scripts/cc-pr-review-dispatch.py (dispatcher).
+# Charters: every lens listed here MUST have config/review-lenses/<lens>.md
+#           (pinned by tests/test_review_team.py).
+registry_schema: 1
+registry_id: review-lenses
+declared_at: "2026-06-11T00:00:00Z"
+
+# Always-on lenses are the floor, not the ceiling — every PR, every team.
+always_on_lenses:
+  - tests-cover-the-diff
+  - exit-predicate-adequacy
+  - doc-claims-recheck
+
+# Surface -> mandatory lenses (spec §1). Globs match changed-file paths
+# (repo-relative, POSIX). "dir/**" is a prefix match; everything else is
+# fnmatch (so "*.md" matches at any depth and "*mcp*" is a substring match).
+surface_lenses:
+  - surface: daimonion
+    globs: ["agents/hapax_daimonion/**"]
+    lenses: [correctness, live-runtime-composition, voice-doctrine]
+  - surface: governance
+    globs: ["shared/governance/**", "axioms/**"]
+    lenses: [axiom-compliance, formal-soundness, consent-provenance]
+  - surface: audio
+    globs: ["config/pipewire/**", "config/audio-*", "scripts/*audio*"]
+    lenses: [audio-protected-invariants, audio-routing-witness, audio-levels-doctrine]
+  - surface: deploy
+    globs: ["systemd/**", "scripts/*deploy*"]
+    lenses: [wire-contract, deploy-drift, canonical-root]
+  - surface: sdlc
+    globs: ["scripts/cc-*", "scripts/review_team.py", "shared/sdlc_lifecycle.py", "shared/release_gate.py", "config/review-lenses/**"]
+    lenses: [sdlc-legibility, sdlc-gate-compose]
+  - surface: trust-boundary
+    globs: ["*mcp*", "*oauth*", "*egress*", "*publish*"]
+    lenses: [security, silent-failure-hunting]
+
+# Applied when EVERY changed file lives under tests/** (spec §1 row 6).
+tests_only_lenses: [test-validity, anti-theater]
+
+# Tactical sizing (spec §2). quorum_accept counts accept/accept-with-findings
+# verdicts; any unresolved named critical blocks regardless of quorum.
+sizing:
+  t3_docs:
+    team_size: 2
+    quorum_accept: 2
+    min_families: 2
+    block_on_named_critical: true
+  t2_standard:
+    team_size: 3
+    quorum_accept: 2
+    min_families: 2
+    block_on_named_critical: true
+  t1_critical:
+    team_size_min: 4
+    team_size_max: 5
+    quorum_accept: 3
+    require_all_families: true
+    criticals_must_resolve: true
+    block_on_named_critical: true
+
+# Changed-file surfaces that force t1_critical regardless of task risk_tier
+# (governance / deploy-path / segment-critical, spec §2 row 3).
+t1_surface_globs:
+  - "shared/governance/**"
+  - "axioms/**"
+  - "config/pipewire/**"
+  - "systemd/**"
+  - "scripts/*deploy*"
+  - ".github/**"
+  - "hooks/**"
+  - "scripts/review_team.py"
+  - "config/review-lenses/**"
+
+# A diff is docs-only (t3_docs candidate) when every changed file matches.
+docs_only_globs: ["docs/**", "*.md"]
+
+# Model-family roster (spec §3). reviewer_command is an argv prefix; the
+# blind reviewer prompt is piped on stdin. Tune flags here, not in code.
+families:
+  - family: claude
+    reviewer_command: ["claude", "-p"]
+    timeout_seconds: 1200
+  - family: codex
+    reviewer_command: ["codex", "exec", "--sandbox", "read-only", "-"]
+    timeout_seconds: 1200
+  - family: gemini
+    reviewer_command: ["gemini", "--skip-trust", "--approval-mode", "plan", "-p", "Perform the review request provided on stdin; reply with ONLY the dossier YAML."]
+    timeout_seconds: 1200
+
+# Authoring-lane -> model family (writer's family never holds the majority
+# alone). vibe lanes never review (off-limits surfaces per CLAUDE.md).
+lane_families:
+  exact:
+    alpha: claude
+    beta: claude
+    gamma: claude
+    delta: claude
+    epsilon: claude
+    zeta: claude
+    eta: claude
+    theta: claude
+    iota: gemini
+    kappa: gemini
+    lambda: gemini
+    mu: gemini
+  prefixes:
+    cx-: codex
+    vbe-: vibe
+  default: claude

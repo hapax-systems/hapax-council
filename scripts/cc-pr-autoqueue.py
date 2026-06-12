@@ -40,6 +40,11 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import review_team  # noqa: E402
 
 from shared.merge_queue_lineage import (  # noqa: E402
     DEFAULT_LEDGER_PATH,
@@ -177,6 +182,8 @@ class PullRequest:
     title: str
     head_ref: str
     head_sha: str | None
+    files: tuple[str, ...] | None
+    changed_files_count: int | None
     body: str
     is_draft: bool
     merge_state_status: str
@@ -410,11 +417,29 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
         number = int(item["number"])
     except (KeyError, TypeError, ValueError):
         return None
+    files_payload = item.get("files")
+    files = (
+        tuple(
+            str(entry["path"])
+            for entry in files_payload
+            if isinstance(entry, dict) and entry.get("path")
+        )
+        if isinstance(files_payload, list)
+        else None
+    )
+    try:
+        changed_files_count = (
+            int(item["changedFiles"]) if item.get("changedFiles") is not None else None
+        )
+    except (TypeError, ValueError):
+        changed_files_count = None
     return PullRequest(
         number=number,
         node_id=_scalar(item.get("id")),
         title=_scalar(item.get("title")) or "",
         head_ref=_scalar(item.get("headRefName")) or "",
+        files=files,
+        changed_files_count=changed_files_count,
         body=str(item.get("body") or ""),
         is_draft=bool(item.get("isDraft")),
         head_sha=_scalar(item.get("headRefOid")),
@@ -454,6 +479,8 @@ def fetch_open_prs(
                 "body",
                 "headRefName",
                 "headRefOid",
+                "files",
+                "changedFiles",
                 "isDraft",
                 "mergeStateStatus",
                 "labels",
@@ -636,6 +663,9 @@ def _task_blockers(
     require_route_metadata: bool,
     open_pr_number: int | None = None,
     allow_release_auto_arm: bool = False,
+    pr_head_sha: str | None = None,
+    changed_files: tuple[str, ...] | None = None,
+    changed_file_count: int | None = None,
 ) -> list[str]:
     blockers: list[str] = []
     if not task.authority_case:
@@ -649,6 +679,22 @@ def _task_blockers(
     # only with a signed acceptance receipt beside the note. Applies to active
     # and closed task links alike; non-review-floor tasks return no blockers.
     blockers.extend(acceptance_receipt_blockers(task.frontmatter, task.path))
+
+    # Review-team quorum gate (CASE-ROUTING-OPERATIONALIZATION-20260609): every
+    # PR admits only with a quorum-accept review dossier beside the task note,
+    # keyed to the PR's current head sha. No quorum, no merge. Dossiers are
+    # produced by scripts/cc-pr-review-dispatch.py; emergency bypass is
+    # HAPAX_REVIEW_TEAM_GATE_OFF=1 (gate only, not the whole autoqueue).
+    blockers.extend(
+        review_team.review_team_verdict_blockers(
+            task.frontmatter,
+            task.path,
+            pr_head_sha=pr_head_sha,
+            pr_number=open_pr_number,
+            changed_files=changed_files or (),
+            changed_file_count=changed_file_count,
+        )
+    )
 
     if task.folder == "closed":
         if task.status not in CLOSED_READY_STATUSES:
@@ -859,6 +905,9 @@ def classify_pr(
                 require_route_metadata=require_route_metadata,
                 open_pr_number=pr.number,
                 allow_release_auto_arm=len(matches) == 1,
+                pr_head_sha=pr.head_sha,
+                changed_files=pr.files,
+                changed_file_count=pr.changed_files_count,
             )
             if len(matches) == 1:
                 reasons.extend(blockers)
@@ -1410,6 +1459,7 @@ def run_reconciler(
     mutation_results: list[dict[str, Any]] = []
     if apply:
         for decision in decisions:
+            admission_status = _admission_status_for(decision)
             status_result = set_autoqueue_admission_status(
                 decision, repo=repo, repo_root=repo_root, runner=runner, now=now
             )
@@ -1420,12 +1470,13 @@ def run_reconciler(
                 "dequeue",
             }:
                 if status_result is not None:
+                    assert admission_status is not None
                     ok, message = status_result
                     mutation_results.append(
                         {
                             **decision.as_dict(),
                             "action": "set_admission_status",
-                            "status_state": _admission_status_for(decision)[0],
+                            "status_state": admission_status[0],
                             "ok": ok,
                             "message": message,
                         }
@@ -1436,13 +1487,14 @@ def run_reconciler(
                 and status_result is not None
                 and not status_result[0]
             ):
+                assert admission_status is not None
                 mutation_results.append(
                     {
                         **decision.as_dict(),
                         "ok": False,
                         "message": "admission status write failed; queue mutation skipped",
                         "admission_status": {
-                            "state": _admission_status_for(decision)[0],
+                            "state": admission_status[0],
                             "ok": status_result[0],
                             "message": status_result[1],
                         },
@@ -1469,9 +1521,10 @@ def run_reconciler(
                 "message": message,
             }
             if status_result is not None:
+                assert admission_status is not None
                 status_ok, status_message = status_result
                 result["admission_status"] = {
-                    "state": _admission_status_for(decision)[0],
+                    "state": admission_status[0],
                     "ok": status_ok,
                     "message": status_message,
                 }
