@@ -7,6 +7,7 @@ speculative partials must never queue ahead of final transcription.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 
@@ -48,12 +49,22 @@ class _FakeModel:
     def __init__(self, delay_s: float = 0.0) -> None:
         self.calls: list[dict] = []
         self._delay_s = delay_s
+        self._active = 0
+        self.max_active = 0
+        self._lock = threading.Lock()
 
     def transcribe(self, audio, **kwargs):
-        self.calls.append({"kwargs": kwargs, "thread": threading.current_thread().name})
-        if self._delay_s:
-            time.sleep(self._delay_s)
-        return iter([_FakeSegment("hello world")]), _FakeInfo()
+        with self._lock:
+            self._active += 1
+            self.max_active = max(self.max_active, self._active)
+            self.calls.append({"kwargs": kwargs, "thread": threading.current_thread().name})
+        try:
+            if self._delay_s:
+                time.sleep(self._delay_s)
+            return iter([_FakeSegment("hello world")]), _FakeInfo()
+        finally:
+            with self._lock:
+                self._active -= 1
 
 
 def _make_stt(delay_s: float = 0.0) -> tuple[ResidentSTT, _FakeModel]:
@@ -73,19 +84,21 @@ async def test_hot_path_uses_small_beam_and_no_word_timestamps() -> None:
     assert kwargs.get("word_timestamps", False) is False
 
 
-async def test_speculative_runs_on_separate_executor() -> None:
-    """A long speculative decode must not delay final transcription —
-    they run on distinct single-thread executors."""
-    stt, model = _make_stt()
+async def test_speculative_and_final_use_separate_executors_but_one_model_lane() -> None:
+    """Executor queues are separate, but the shared model is not entered concurrently."""
+    stt, model = _make_stt(delay_s=0.1)
 
-    await stt.transcribe(_PCM_HALF_SECOND, _speculative=True)
-    await stt.transcribe(_PCM_HALF_SECOND)
+    speculative = asyncio.create_task(stt.transcribe(_PCM_HALF_SECOND, _speculative=True))
+    await asyncio.sleep(0.02)
+    final = asyncio.create_task(stt.transcribe(_PCM_HALF_SECOND))
+    await asyncio.gather(speculative, final)
 
     spec_thread = model.calls[0]["thread"]
     final_thread = model.calls[1]["thread"]
     assert spec_thread != final_thread
     assert spec_thread.startswith("stt-spec")
     assert final_thread.startswith("stt-final")
+    assert model.max_active == 1
 
 
 async def test_prosody_runs_off_the_stt_executor(

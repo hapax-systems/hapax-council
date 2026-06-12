@@ -37,6 +37,7 @@ import logging
 import os
 import socket
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,7 @@ TTS_REQUEST_DEADLINE_ENV = "HAPAX_TTS_REQUEST_DEADLINE_S"
 TTS_STREAM_PROTOCOL = "hapax.tts.pcm-stream.v1"
 _DEFAULT_TTS_REQUEST_DEADLINE_S = 30.0
 _TTS_CLIENT_TIMEOUT_OVERHEAD_S = 2.0
+_TERMINAL_TTS_SERVER_ERROR_TYPES = frozenset({"DeadlineExceeded", "DeadlineExpired"})
 
 # The daimonion unit caps OMP_NUM_THREADS=2 for the whole process, which
 # throttled CPU Kokoro to RTF 0.10-0.135 (audit SS7-P0). The TTS path
@@ -128,6 +130,12 @@ class _SocketBuffer:
                 raise EOFError("tts server closed mid-frame")
             out.extend(chunk)
         return bytes(out)
+
+
+@dataclass(frozen=True)
+class _ServerSynthesisResult:
+    pcm: bytes
+    liveness: dict[str, Any] | None
 
 
 def select_tier(use_case: str) -> str:
@@ -274,7 +282,12 @@ def _apply_tts_thread_cap() -> None:
             os.environ.get("OMP_NUM_THREADS", "unset"),
         )
     except Exception:
-        log.warning("TTS torch thread-cap raise failed (non-fatal)", exc_info=True)
+        log.warning(
+            "TTS torch thread-cap raise failed (non-fatal); check torch import/runtime "
+            "state and %s",
+            TTS_TORCH_THREADS_ENV,
+            exc_info=True,
+        )
 
 
 def _arc_prosody(
@@ -418,7 +431,7 @@ class TTSManager:
         lexicon = _speech_lexicon_apply(redaction.text)
 
         if self._transport == "server":
-            pcm = self._synthesize_via_server(
+            server_result = self._synthesize_via_server(
                 lexicon.text,
                 use_case=use_case,
                 speed=speed,
@@ -426,8 +439,24 @@ class TTSManager:
                 role=role,
                 arc_position=arc_position,
             )
+            if isinstance(server_result, _ServerSynthesisResult):
+                pcm = server_result.pcm
+                server_liveness = server_result.liveness or {}
+            else:
+                # Compatibility for focused tests that monkeypatch the private
+                # method; production returns _ServerSynthesisResult.
+                pcm = server_result
+                server_liveness = getattr(self, "_last_server_liveness", None) or {}
             if pcm:
                 return pcm
+            server_error_type = server_liveness.get("error_type")
+            if server_error_type in _TERMINAL_TTS_SERVER_ERROR_TYPES:
+                log.warning(
+                    "TTS server deadline skipped utterance without local fallback [%s]: %s",
+                    use_case,
+                    server_liveness.get("error"),
+                )
+                return b""
             # Server down/empty must NOT silence the voice (review finding,
             # 2026-06-11): fall back to in-process synthesis. The local path
             # below carries its own Chatterbox->Kokoro fallback chain.
@@ -546,7 +575,7 @@ class TTSManager:
         interview_mode: bool,
         role: str | None,
         arc_position: float | None,
-    ) -> bytes:
+    ) -> _ServerSynthesisResult:
         request_id = f"tts-{time.time_ns()}"
         priority = priority_class_for_use_case(use_case)
         started = time.monotonic()
@@ -576,14 +605,15 @@ class TTSManager:
                 reader = _SocketBuffer(sock)
                 header = json.loads(reader.read_line().decode("utf-8"))
                 if header.get("status") != "ok":
-                    self._record_server_error(
+                    liveness = self._record_server_error(
                         request_id=request_id,
                         started=started,
                         status=str(header.get("status") or "error"),
                         error=str(header.get("error") or "server error"),
+                        error_type=str(header.get("error_type") or "Error"),
                         priority=priority,
                     )
-                    return b""
+                    return _ServerSynthesisResult(b"", liveness)
 
                 chunks: list[bytes] = []
                 pcm_len = 0
@@ -614,19 +644,20 @@ class TTSManager:
             ValueError,
             json.JSONDecodeError,
         ) as exc:
-            self._record_server_error(
+            liveness = self._record_server_error(
                 request_id=request_id,
                 started=started,
                 status="error",
                 error=str(exc),
+                error_type=type(exc).__name__,
                 priority=priority,
             )
             log.warning("TTS server synthesis failed: %s", exc)
-            return b""
+            return _ServerSynthesisResult(b"", liveness)
 
         backend = header.get("backend")
         self._last_synthesis_backend = str(backend) if backend else None
-        self._last_server_liveness = {
+        liveness = {
             "mode": "server",
             "status": "ok",
             "socket_path": str(self._server_socket_path),
@@ -640,7 +671,8 @@ class TTSManager:
             "pcm_bytes": pcm_len,
             "error": None,
         }
-        return b"".join(chunks)
+        self._last_server_liveness = liveness
+        return _ServerSynthesisResult(b"".join(chunks), liveness)
 
     def _record_server_error(
         self,
@@ -649,10 +681,11 @@ class TTSManager:
         started: float,
         status: str,
         error: str,
+        error_type: str,
         priority: str,
-    ) -> None:
+    ) -> dict[str, Any]:
         self._last_synthesis_backend = None
-        self._last_server_liveness = {
+        liveness = {
             "mode": "server",
             "status": status,
             "socket_path": str(self._server_socket_path),
@@ -660,4 +693,7 @@ class TTSManager:
             "priority": priority,
             "round_trip_ms": round((time.monotonic() - started) * 1000),
             "error": error,
+            "error_type": error_type,
         }
+        self._last_server_liveness = liveness
+        return liveness

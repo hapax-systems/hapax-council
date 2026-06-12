@@ -105,9 +105,7 @@ def _count_state_reads(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     return reads
 
 
-def test_throttled_call_does_no_file_io(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_throttled_call_does_no_file_io(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The hot path (one call per 32ms VAD chunk) must interval-gate
     BEFORE any state-file read — per-chunk JSON parse of the SHM file
     is what starved the audio loop below real-time."""
@@ -115,9 +113,7 @@ def test_throttled_call_does_no_file_io(
     assert publish_operator_voice_pitch_sample(_sine_pcm(220.0), path=path, now=1000.0)
 
     reads = _count_state_reads(monkeypatch)
-    written = publish_operator_voice_pitch_sample(
-        _sine_pcm(220.0), path=path, now=1000.2
-    )
+    written = publish_operator_voice_pitch_sample(_sine_pcm(220.0), path=path, now=1000.2)
     assert written is False  # inside MIN_INTERVAL_S
     assert reads[0] == 0
 
@@ -145,7 +141,7 @@ def test_cold_cache_warms_from_existing_state_file(tmp_path: Path) -> None:
             _sine_pcm(220.0), path=path, now=1000.0 + i, min_interval_s=0.0
         )
 
-    voice_pitch_baseline._reset_state_cache()
+    voice_pitch_baseline._state_cache.clear()
 
     assert publish_operator_voice_pitch_sample(_sine_pcm(300.0), path=path, now=1006.0)
     # 6 readings only if the 5 persisted samples survived the cache reset

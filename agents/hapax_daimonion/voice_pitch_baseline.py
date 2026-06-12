@@ -48,11 +48,6 @@ class _PitchState:
 _state_cache: dict[Path, _PitchState] = {}
 
 
-def _reset_state_cache() -> None:
-    """Drop cached state (test hook; simulates a process restart)."""
-    _state_cache.clear()
-
-
 def publish_operator_voice_pitch_sample(
     pcm_data: bytes,
     *,

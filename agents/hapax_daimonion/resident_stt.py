@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -51,6 +52,7 @@ class ResidentSTT:
         self._device = device
         self._compute_type = compute_type
         self._model = None
+        self._model_lock = threading.Lock()
 
     @property
     def is_loaded(self) -> bool:
@@ -121,30 +123,33 @@ class ResidentSTT:
         try:
             audio = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
-            t0 = time.monotonic()
-            segments, info = self._model.transcribe(
-                audio,
-                language="en",  # skip language detection (saves ~50ms)
-                # Hot-path lean decode (audit SS7-P0): beam 2 instead of 5,
-                # no word timestamps — both cut decode latency; word-level
-                # alignment fed only prosody, which now runs off this path.
-                beam_size=2,
-                vad_filter=False,  # we already did VAD
-                # Whisper treats initial_prompt as "preceding transcript" and
-                # conditions on its style/vocabulary. Realistic example sentences
-                # with "Hapax" bias the decoder toward the word — keyword lists
-                # don't work well. Covers both pronunciations (HAY-paks, HA-packs).
-                initial_prompt=(
-                    "Hey Hapax, what's going on? "
-                    "Hapax, can you check that for me? "
-                    "Thanks Hapax. "
-                    "Hey Hapax, what do you think about this? "
-                    "Hapax, tell me about the studio session."
-                ),
-            )
+            with self._model_lock:
+                t0 = time.monotonic()
+                segments, info = self._model.transcribe(
+                    audio,
+                    language="en",  # skip language detection (saves ~50ms)
+                    # Hot-path lean decode (audit SS7-P0): beam 2 instead of 5,
+                    # no word timestamps — both cut decode latency; word-level
+                    # alignment fed only prosody, which now runs off this path.
+                    beam_size=2,
+                    vad_filter=False,  # we already did VAD
+                    # Whisper treats initial_prompt as "preceding transcript" and
+                    # conditions on its style/vocabulary. Realistic example sentences
+                    # with "Hapax" bias the decoder toward the word — keyword lists
+                    # don't work well. Covers both pronunciations (HAY-paks, HA-packs).
+                    initial_prompt=(
+                        "Hey Hapax, what's going on? "
+                        "Hapax, can you check that for me? "
+                        "Thanks Hapax. "
+                        "Hey Hapax, what do you think about this? "
+                        "Hapax, tell me about the studio session."
+                    ),
+                )
 
-            # Decode happens lazily during segment iteration — time it.
-            text_parts: list[str] = [seg.text for seg in segments]
+                # Decode happens lazily during segment iteration; keep the model
+                # lock until the iterator is consumed so CTranslate2 is never
+                # entered concurrently from final/speculative executor lanes.
+                text_parts: list[str] = [seg.text for seg in segments]
             decode_ms = (time.monotonic() - t0) * 1000.0
 
             text = " ".join(text_parts).strip()

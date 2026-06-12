@@ -311,7 +311,7 @@ class AudioInputStream:
             self._drop_count,
             self._drop_count * self._frame_ms / 1000.0,
             streak_s,
-            self._total_dropped,
+            self.total_dropped_frames,
         )
         self._drop_count = 0
 
