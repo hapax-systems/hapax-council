@@ -6,6 +6,7 @@ PartOf=hapax-visual-stack.target
 # activation with AMD "data fabric sync flood" evidence. Keep DarkPlaces
 # opt-in until the renderer feed is validated in a controlled session.
 ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple

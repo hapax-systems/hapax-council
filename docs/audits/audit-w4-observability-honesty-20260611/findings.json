@@ -1,0 +1,156 @@
+{
+  "task_id": "audit-w4-observability-honesty-20260611",
+  "authority_case": "CASE-AUDIT-W4-OBSERVABILITY-HONESTY",
+  "class_closure_binding": "formal-first",
+  "generated_at": "2026-06-12T07:05:00Z",
+  "branch": "epsilon/audit-w4-observability-honesty-20260612",
+  "scope_note": "Task mutation_scope_refs name systemd/units/, config/prometheus/, agents/ \u2014 but both storm sources live in scripts/ (album-identifier.py, private-broadcast-echo-probe.py). Task Scope text names the storms explicitly; proceeded per Scope text and flagged here + in the PR per prep-packet D4.",
+  "findings": [
+    {
+      "id": "W4-ONFAILURE-GAP",
+      "severity": "high",
+      "claim": "~40 S1/S2-constituent repo unit files had no OnFailure= and no probe \u2014 they failed silently (audit universal 'watcher dies' class).",
+      "fix": "OnFailure=notify-failure@%n.service added to 39 unit files; codex-claim-audit.service exempted (exit 1 = issues-found by design, posts its own ntfy; OnFailure would double-notify). Frozen map + exemptions pinned by tests/test_s1s2_onfailure_coverage.py (pattern: wgsl affordance coverage pin).",
+      "status": "resolved_in_repo",
+      "recheck_cmds": [
+        "uv run --no-sync pytest tests/test_s1s2_onfailure_coverage.py -q"
+      ]
+    },
+    {
+      "id": "W4-PROM-ZERO-RULES",
+      "severity": "critical",
+      "claim": "Live Prometheus (podium llm-stack) evaluated ZERO rule groups; deployed prometheus.yml had no rule_files stanza and was unversioned.",
+      "fix": "Repo SSOT created: config/prometheus/prometheus.yml (canonical deployed copy + rule_files) + rules/hapax-observability.yml with 4 alert rules (HapaxExporterDown, HapaxPrivateBroadcastEchoLeak, HapaxEchoProbeStale, HapaxLufsPanicStorm). Honest scope: no alertmanager exists; rules are evaluated+visible only, ntfy bridge is follow-on. Deploy procedure in config/prometheus/README.md. Review round 1 (codex-1): HapaxEchoProbeStale gained an absent() arm \u2014 bare time()-metric>300 is an empty vector (silent) when the series never existed, which is exactly the W4-TEXTFILE-ORPHAN failure mode.",
+      "status": "pending_deploy",
+      "recheck_cmds": [
+        "uv run --no-sync pytest tests/test_prometheus_observability_config.py -q",
+        "ssh hapax-podium.local \"bash -c 'curl -s 127.0.0.1:9090/api/v1/rules | jq .data.groups[].rules[].name'\"  # post-merge: 4 rules"
+      ]
+    },
+    {
+      "id": "W4-EXPORTERS-UNSCRAPED",
+      "severity": "high",
+      "claim": ":9483 (daimonion CPAL), :9484 (lufs-panic-cap), :9498 (yt telemetry) all UP and serving metrics but absent from prometheus.yml; litellm scrape down with 401 since master-key rollout.",
+      "fix": "Three scrape jobs added (project=hapax-council labels); litellm job gains authorization.credentials_file=/etc/prometheus/litellm-key materialized at deploy from llm-stack .env (key never in repo).",
+      "status": "pending_deploy",
+      "recheck_cmds": [
+        "ssh hapax-podium.local \"bash -c 'curl -s 127.0.0.1:9090/api/v1/targets | jq -r \\\".data.activeTargets[] | \\\\\\\"\\\\(.labels.job) \\\\(.health)\\\\\\\"\\\"'\"  # post-merge: 9483/9484/9498 jobs up, litellm up"
+      ]
+    },
+    {
+      "id": "W4-TEXTFILE-ORPHAN",
+      "severity": "high",
+      "claim": "NEW (beyond task text): node_exporter serves 0 hapax_ metrics while /var/lib/node_exporter/textfile_collector/ holds the whole audio M-suite + echo-probe + recovery .prom files; the Arch unit lacks --collector.textfile.directory. Second orphan dir at ~/.local/share/node_exporter/textfile_collector/ (live-surface-guard).",
+      "fix": "Documented in config/prometheus/README.md step 4 (conf.d flag + consolidation). Requires sudo on podium \u2014 outside repo mutation surface.",
+      "status": "pending_operator",
+      "recheck_cmds": [
+        "ssh hapax-podium.local \"bash -c 'curl -s localhost:9100/metrics | grep -c ^hapax_'\"  # expect > 0"
+      ]
+    },
+    {
+      "id": "W4-ALBUM-POLARITY-STORM",
+      "severity": "high",
+      "claim": "scripts/album-identifier.py raised ValueError('No album currently identified') inside the PNG-save try on every poll tick of the routine no-album state; blanket except logged ERROR+traceback \u2014 776 ERR in 6h (~129/h). Unit file was unversioned on podium.",
+      "fix": "No-album state gated BEFORE the try with _no_album_logged transition latch (one INFO per transition); log.exception reserved for real save failures. Unit versioned at systemd/units/album-identifier.service (+.d/memory.conf) with OnFailure=. Pinned by tests/test_album_identifier_polarity.py. Review round 1 (codex-1, PR #4106): gate extracted to _album_cover_save_allowed() with behavioral tests driving the real branch (50-tick storm scenario, latch re-arm, boot-state {}); unit release-root pinned per audit-w1 #4090 pattern instead of the mutable main clone.",
+      "status": "resolved_in_repo",
+      "recheck_cmds": [
+        "uv run --no-sync pytest tests/test_album_identifier_polarity.py -q",
+        "ssh hapax-podium.local \"bash -c 'journalctl --user -u album-identifier.service --since \\\"-1h\\\" | grep -c \\\"No album currently identified\\\"'\"  # post-deploy+restart: < 10"
+      ]
+    },
+    {
+      "id": "W4-ECHO-PROBE-STORM",
+      "severity": "critical",
+      "claim": "Echo probe threshold 0.05 sat INSIDE the ambient correlated-hum band (clean ticks witnessed 0.033-0.066) and ntfy fired unconditionally per 30s breach tick: 874\u21922,823\u21921,970 LEAK ntfys/day \u2014 alert fatigue that buries real leaks (real-leak band witnessed Jun 9-10: 0.21-1.00).",
+      "fix": "Root-cause calibration + alert design, invariant NOT muted: default threshold 0.15 (flag overridable), 3 consecutive breach ticks before first ntfy, \u226515min per-episode cooldown (state file ~/.cache/hapax/private-broadcast-echo-probe-state.json), textfile gauge + new _collect_ts inertness stamp written EVERY tick, exit codes 0/2/3 unchanged. Durable alert path is the Prometheus rule pair (leak >0.15 for 2m; probe-stale >300s). Pinned by tests/test_private_broadcast_echo_probe.py (21 tests).",
+      "status": "resolved_in_repo",
+      "recheck_cmds": [
+        "uv run --no-sync pytest tests/test_private_broadcast_echo_probe.py -q",
+        "ssh hapax-podium.local \"bash -c 'journalctl --user -u hapax-private-broadcast-echo-probe.service --since \\\"-24h\\\" | grep -c LEAK'\"  # post-deploy steady state: < 50/day",
+        "ssh hapax-podium.local \"bash -c 'cat /var/lib/node_exporter/textfile_collector/hapax_private_broadcast_echo.prom'\"  # gauge + collect_ts updating every 30s"
+      ]
+    },
+    {
+      "id": "W4-COMPOSITOR-SCRAPE-STALE",
+      "severity": "medium",
+      "claim": "Parked GStreamer compositor's :9482 scrape job still registered \u2014 permanently-down target; honesty cuts both ways (a stale registration trains operators to ignore 'down').",
+      "fix": "Job commented out in repo prometheus.yml with re-enable note bound to compositor unpark; HapaxExporterDown rule description documents the invariant (registered \u21d2 expected up).",
+      "status": "pending_deploy",
+      "recheck_cmds": [
+        "ssh hapax-podium.local \"bash -c 'curl -s 127.0.0.1:9090/api/v1/targets | jq -r .data.activeTargets[].labels.job | grep -c studio-compositor || true'\"  # post-merge: 0 while parked"
+      ]
+    },
+    {
+      "id": "W4-CANONICAL-ROOT-S2-FOLLOWUP",
+      "severity": "medium",
+      "claim": "S2 coordination/observability units touched by the OnFailure sweep still run from mutable project trees (hapax-cc-hygiene, hapax-coord, hapax-lane-reaper, weather-sync, llm-cost-alert, log-anomaly-alert); failures/alerts can reflect unactivated local edits (round-2 review, codex-1 canonical-root).",
+      "fix": "Deferred to the audit-w1 release-pinning class (S2 wave). tabbyapi exempt: external project root, council source-activation machinery does not serve it.",
+      "status": "follow_up",
+      "recheck_cmds": [
+        "grep -L 'source-activation' systemd/units/hapax-cc-hygiene.service systemd/units/hapax-coord.service systemd/units/hapax-lane-reaper.service  # empty when the w1 S2 wave lands"
+      ]
+    }
+  ],
+  "exit_predicate": {
+    "statement": "every S1/S2 unit has OnFailure= or a probe",
+    "mechanical_form": "tests/test_s1s2_onfailure_coverage.py (frozen map from subsystem-audit-2026-06-11-v2 unit-registry.yaml basis 2.1.0 + W4 prep packet)",
+    "satisfied_in_repo": true,
+    "live_evidence": "post-merge per podium deploy policy (deploy loop is origin/main-only); sequence in prep packet C5"
+  },
+  "pending_operator": [
+    "podium sudo: /etc/conf.d/prometheus-node-exporter textfile flag + node-exporter restart (W4-TEXTFILE-ORPHAN)",
+    "podium llm-stack: compose mounts (rules/, litellm-key) + litellm-key materialization \u2014 outside repo mutation surface, README step 2-3"
+  ],
+  "review_rounds": [
+    {
+      "round": 1,
+      "head_sha": "49fc00d4b",
+      "verdict": "no-quorum (dead reviewers: gemini-1, claude-1, gemini-2 \u2014 availability, not author rejection)",
+      "surviving_findings": "codex-1: canonical-root (unit ran from mutable checkout), tests-cover-the-diff (source-grep-only polarity test), doc-claims-recheck (EchoProbeStale absent-metric gap)",
+      "disposition": "all three fixed; re-dispatch on new head sha"
+    },
+    {
+      "round": 2,
+      "head_sha": "454f68dd9",
+      "verdict": "no-quorum (dead reviewers: gemini-1, gemini-2; codex-1 + claude-1 completed)",
+      "findings_dispositions": [
+        {
+          "finding": "codex-1 major tests-cover-the-diff: release-root migration untested",
+          "disposition": "fixed \u2014 TestReleaseRootContract pins ExecStart/WorkingDirectory on the source-activation root, forbids the mutable-clone path, requires the ExecStartPre source check"
+        },
+        {
+          "finding": "codex-1 major canonical-root: touched S2 units still run from mutable trees (cc-hygiene, coord, lane-reaper, weather-sync, llm-cost-alert, log-anomaly-alert, tabbyapi)",
+          "disposition": "DEFERRED with rationale: W4's mutation to those units is the [Unit]-section OnFailure line only; re-rooting S2 coordination/observability daemons is the audit-w1 release-pinning class (#4090 swept S1) and expands W4's surface into live lane infra mid-flight. tabbyapi additionally runs an external project root (~/projects/tabbyAPI) the council source-activation machinery cannot serve. Recorded as follow-up W4-CANONICAL-ROOT-S2-FOLLOWUP for the w1 class owner."
+        },
+        {
+          "finding": "claude-1 major doc-claims-recheck: runbook still teaches 0.05",
+          "disposition": "fixed \u2014 docs/runbooks/audio-incidents.md detection + verification recalibrated to 0.15 with band note (clean 0.03-0.07, real leak 0.21-1.00)"
+        },
+        {
+          "finding": "claude-1 major exit-predicate-adequacy: CLASS-CLOSURE artifacts unreachable from PR",
+          "disposition": "fixed \u2014 findings.json + pytest receipt committed at docs/audits/audit-w4-observability-honesty-20260611/ (repo-durable); vault copy remains the working mirror"
+        },
+        {
+          "finding": "claude-1 major exit-predicate-adequacy: frozen map omits hapax-darkplaces, hapax-secrets, screwm live-surface trio",
+          "disposition": "fixed \u2014 all five added to map + OnFailure swept; freeze-verifiability note + deliberate-exclusion rationale added to the test docstring"
+        },
+        {
+          "finding": "claude-1 minor: main() gating wiring untested",
+          "disposition": "fixed \u2014 TestMainWiring drives main() with record_pair stubbed: exit 2 on every leak tick, gauge+collect_ts written on clean ticks, ntfy exactly once over 3 breach ticks"
+        },
+        {
+          "finding": "claude-1 minor: docstring 0.05 diagnosis example stale",
+          "disposition": "fixed \u2014 annotated as deliberately-sensitive diagnostic override"
+        },
+        {
+          "finding": "claude-1 minor: mutation_scope_refs omits scripts/",
+          "disposition": "fixed \u2014 task note mutation_scope_refs amended to the actual surface (scripts/, docs/runbooks/, tests/, docs/audits/ added)"
+        }
+      ]
+    }
+  ],
+  "evidence_paths": {
+    "repo": "docs/audits/audit-w4-observability-honesty-20260611/ (findings.json + pytest-receipt-20260612.txt \u2014 committed, PR-reachable)",
+    "vault_mirror": "_evidence/audit-w4-observability-honesty-20260611/"
+  }
+}

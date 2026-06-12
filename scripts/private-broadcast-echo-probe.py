@@ -17,6 +17,8 @@ Run via systemd user timer (every 30s):
 
 Or one-shot for diagnosis:
     uv run scripts/private-broadcast-echo-probe.py
+    # deliberately-sensitive diagnostic override (default is 0.15; 0.05
+    # sits inside the ambient hum band and WILL flag a healthy bus):
     uv run scripts/private-broadcast-echo-probe.py --duration 2 --threshold 0.05
 
 Env / flags:

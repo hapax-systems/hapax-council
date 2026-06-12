@@ -64,9 +64,15 @@ import numpy as np, scipy.io.wavfile as w
 _, p = w.read('/tmp/p.wav'); _, b = w.read('/tmp/b.wav')
 n = min(len(p), len(b))
 corr = float(np.corrcoef(p[:n], b[:n])[0,1])
-print(f'corr={corr:.3f}', '— LEAK' if abs(corr) > 0.05 else '— ok')
+print(f'corr={corr:.3f}', '— LEAK' if abs(corr) > 0.15 else '— ok')
 "
 ```
+
+Threshold calibration (audit-w4, 2026-06-12): the original 0.05 sat
+INSIDE the ambient correlated-hum band — clean ticks witnessed at
+0.033–0.066 — and flagged a healthy bus as LEAK. Real leaks (Jun 9–10
+incident) measured 0.21–1.00. 0.15 separates cleanly; it matches the
+echo probe's default and the `HapaxPrivateBroadcastEchoLeak` rule.
 
 ### 1-command recovery
 
@@ -80,7 +86,9 @@ section below.)
 
 ### Verification
 
-Re-run the detection cross-correlation. Confirm `corr < 0.05`.
+Re-run the detection cross-correlation. Confirm `corr < 0.15` (ambient
+hum alone can sit at 0.03–0.07 on a perfectly healthy bus — do not chase
+values in that band).
 
 ### Postmortem evidence-collection
 

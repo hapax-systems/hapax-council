@@ -103,6 +103,43 @@ class TestCoverSaveGateBehavior:
         assert mod._album_cover_save_allowed() is True
 
 
+UNIT_FILE = REPO_ROOT / "systemd" / "units" / "album-identifier.service"
+RELEASE_ROOT = "%h/.cache/hapax/source-activation/worktree"
+
+
+class TestReleaseRootContract:
+    """The versioned unit runs from the source-activation release root,
+    never the mutable main clone (review round 2, PR #4106: the root
+    migration itself needs a pin or it can silently regress while the
+    'release-root' claim still looks tested)."""
+
+    def test_exec_paths_use_release_root(self) -> None:
+        text = UNIT_FILE.read_text()
+        for directive in ("ExecStart=", "WorkingDirectory="):
+            line = next(
+                line for line in text.splitlines() if line.startswith(directive)
+            )
+            assert RELEASE_ROOT in line, (
+                f"{directive} does not point at the release root: {line!r}. "
+                f"Running from a mutable checkout lets live behavior drift "
+                f"with un-activated local edits (audit-w1 #4090 class)."
+            )
+        assert "%h/projects/hapax-council" not in text, (
+            "unit references the mutable main clone — release-root regression"
+        )
+
+    def test_runtime_source_check_guards_start(self) -> None:
+        text = UNIT_FILE.read_text()
+        assert (
+            "ExecStartPre=" in text
+            and "hapax-compositor-runtime-source-check" in text
+            and "--require-file scripts/album-identifier.py" in text
+        ), (
+            "ExecStartPre runtime-source-check missing — the unit could "
+            "start against a release root that lacks the script"
+        )
+
+
 def _source() -> str:
     return SCRIPT.read_text()
 

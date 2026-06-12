@@ -21,6 +21,22 @@ Maintenance contract:
 - Deployed-only units (pipewire/wireplumber system-managed; litellm
   container) are out of scope: this pin covers repo-versioned files.
 
+Freeze verifiability (review round 2, PR #4106): the ex-ante registry
+lives in the operator vault (outside the repo), so the map itself is
+the reviewable freeze. Known deliberate EXCLUSIONS, with rationale:
+- pipewire/wireplumber: system-managed, no repo unit files.
+- litellm/qdrant/prometheus: containers; failure visibility is the
+  HapaxExporterDown rule, not systemd OnFailure.
+- hapax-claude-lane@/hapax-quake-live-camera@ etc. template instances
+  whose parent subsystems are S3 in the registry.
+Units the registry plausibly implies that earlier drafts MISSED were
+added in round 2 (hapax-darkplaces — the live Screwm render surface;
+hapax-secrets — root of the secrets→logos-api→tabbyapi→daimonion key
+chain; the hapax-screwm-* live-surface trio). If you believe a unit is
+S1/S2-constituent and absent here, add it with a comment — the cost of
+an extra OnFailure= line is one ntfy; the cost of a miss is a silent
+death.
+
 Pattern: tests/test_wgsl_node_affordance_coverage.py (regression pin).
 """
 
@@ -59,6 +75,9 @@ S1S2_CONSTITUENT_UNITS: dict[str, tuple[str, ...]] = {
     ),
     # S1 — studio compositor, director & broadcast chain
     "compositor-director-broadcast": (
+        # The renderer itself — the live Screwm/DarkPlaces surface
+        # (round-2 review gap: satellites were mapped, the core wasn't).
+        "hapax-darkplaces.service",
         "hapax-darkplaces-v4l2.service",
         "hapax-darkplaces-obs-media-stream.service",
         "studio-fx-output.service",
@@ -81,12 +100,23 @@ S1S2_CONSTITUENT_UNITS: dict[str, tuple[str, ...]] = {
         "visual-layer-aggregator.service",
         "hapax-screwm-drift-state-source.service",
         "hapax-darkplaces-bridge.service",
+        # Live-surface screwm feeds (round-2 review gap).
+        "hapax-screwm-audio-reactivity.service",
+        "hapax-screwm-media-drift.service",
+        "hapax-screwm-self-perception.service",
     ),
     # S1 — governance, consent & refusal
     "governance-consent-refusal": ("hapax-refusal-brief-rotate.service",),
     # S1 — grounding inference substrate (repo-versioned part only;
-    # litellm container config is deployed-only and out of scope)
-    "grounding-inference-substrate": ("tabbyapi.service",),
+    # litellm container config is deployed-only and out of scope).
+    # hapax-secrets is the root of the documented key chain
+    # (secrets → logos-api → tabbyapi → daimonion): its failure cascades,
+    # but the cascade's OnFailure storms don't name the root cause — the
+    # root unit must notify in its own name (round-2 review gap).
+    "grounding-inference-substrate": (
+        "tabbyapi.service",
+        "hapax-secrets.service",
+    ),
     # S2 — coordination & SDLC (dispatch, lanes, PR plumbing)
     "coordination-sdlc": (
         "hapax-coordinator.service",

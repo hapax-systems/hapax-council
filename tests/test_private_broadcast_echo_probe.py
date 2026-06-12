@@ -239,6 +239,99 @@ class TestAlertGating:
         assert state["streak"] == 1
 
 
+def _wav_bytes(samples: list[int]) -> bytes:
+    """Build a mono 16-bit 48k WAV buffer from int samples."""
+    import array
+    import io
+    import wave as wave_mod
+
+    buf = io.BytesIO()
+    with wave_mod.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(48000)
+        wf.writeframes(array.array("h", samples).tobytes())
+    return buf.getvalue()
+
+
+class TestMainWiring:
+    """Drive main() with record_pair stubbed (review round 2, PR #4106):
+    the two PR claims — gauge written unconditionally BEFORE gating, and
+    exit codes bypassing decide_alert entirely — must be pinned through
+    the real wiring, not inspection."""
+
+    def _run_main(self, probe_module, monkeypatch, tmp_path, samples_pair, extra_args=()):
+        wav_a = _wav_bytes(samples_pair[0])
+        wav_b = _wav_bytes(samples_pair[1])
+        monkeypatch.setattr(probe_module, "record_pair", lambda *a, **k: (wav_a, wav_b))
+        argv = [
+            "echo-probe",
+            "--textfile-dir",
+            str(tmp_path / "textfiles"),
+            "--state-file",
+            str(tmp_path / "state.json"),
+            "--ntfy-topic",
+            "",
+            "--json",
+            *extra_args,
+        ]
+        monkeypatch.setattr(sys, "argv", argv)
+        return probe_module.main()
+
+    def test_leak_tick_exits_2_even_while_ntfy_suppressed(
+        self, probe_module, monkeypatch, tmp_path, capsys
+    ) -> None:
+        random.seed(3)
+        leak = [random.randint(-1000, 1000) for _ in range(4096)]
+        rc = self._run_main(probe_module, monkeypatch, tmp_path, (leak, leak[:]))
+        assert rc == 2, "first leak tick must exit 2 — exit codes bypass the ntfy gating"
+        prom = (tmp_path / "textfiles" / "hapax_private_broadcast_echo.prom").read_text()
+        assert "hapax_private_broadcast_echo_correlation" in prom
+        assert "hapax_private_broadcast_echo_collect_ts" in prom
+
+    def test_clean_tick_exits_0_and_still_writes_gauge(
+        self, probe_module, monkeypatch, tmp_path
+    ) -> None:
+        rng_a, rng_b = random.Random(11), random.Random(12)
+        a = [rng_a.randint(-1000, 1000) for _ in range(4096)]
+        b = [rng_b.randint(-1000, 1000) for _ in range(4096)]
+        rc = self._run_main(probe_module, monkeypatch, tmp_path, (a, b))
+        assert rc == 0
+        prom = (tmp_path / "textfiles" / "hapax_private_broadcast_echo.prom").read_text()
+        assert "hapax_private_broadcast_echo_collect_ts" in prom, (
+            "clean tick skipped the textfile — the gauge must be written "
+            "EVERY tick or Prometheus staleness detection lies"
+        )
+
+    def test_ntfy_fires_only_on_third_consecutive_leak_tick(
+        self, probe_module, monkeypatch, tmp_path
+    ) -> None:
+        random.seed(5)
+        leak = [random.randint(-1000, 1000) for _ in range(4096)]
+        calls: list[float] = []
+        monkeypatch.setattr(
+            probe_module,
+            "post_ntfy_alert",
+            lambda base, topic, corr, thr: (calls.append(corr) or (True, None)),
+        )
+        rcs = []
+        for _ in range(3):
+            rcs.append(
+                self._run_main(
+                    probe_module,
+                    monkeypatch,
+                    tmp_path,
+                    (leak, leak[:]),
+                    extra_args=("--ntfy-topic", "test-topic"),
+                )
+            )
+        assert rcs == [2, 2, 2], "every leak tick exits 2 regardless of ntfy gating"
+        assert len(calls) == 1, (
+            f"ntfy posted {len(calls)}x over 3 breach ticks; the gating must "
+            f"hold it to exactly one (the 3rd tick)"
+        )
+
+
 class TestStatePersistence:
     def test_missing_state_file_loads_fresh(self, probe_module, tmp_path) -> None:
         state = probe_module.load_state(tmp_path / "absent.json")
