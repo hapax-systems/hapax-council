@@ -97,9 +97,11 @@ class TestVocabExporter:
         monkeypatch.setattr(mod, "OUT", out)
         (vault / "a.md").write_text("---\nstage: S6_IMPLEMENTATION\nstatus: claimed\n---\n")
         (vault / "b.md").write_text('---\nstage: "S3.5"\nstatus: offered\n---\n')
+        (vault / "c.md").write_text("---\nstage: S13_FOO\nstatus: bogus\n---\n")
         assert mod.main() == 0
         payload = json.loads(out.read_text())
         assert payload["observed_stages"]["S6_IMPLEMENTATION"]["ladder_token"] == "S6"
         assert payload["observed_stages"]["S3.5"]["ladder_token"] == "S3_5"
+        assert payload["observed_stages"]["S13_FOO"]["ladder_token"] == "unknown"
         assert payload["observed_statuses"]["claimed"] == 1
         assert "ladder_tokens" in payload and "stage_re" in payload

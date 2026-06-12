@@ -540,6 +540,7 @@ def test_missing_staged_browser_fails_with_next_action(tmp_path):
 def test_coord_deploy_helper_fetches_writes_sha_and_is_idempotent(tmp_path):
     origin = tmp_path / "origin.git"
     source = tmp_path / "source"
+    writer = tmp_path / "writer"
     act_root = tmp_path / "coord-activation"
     fakebin = tmp_path / "bin"
     restart_log = tmp_path / "systemctl.log"
@@ -577,8 +578,10 @@ def test_coord_deploy_helper_fetches_writes_sha_and_is_idempotent(tmp_path):
     _cmd([str(_DEPLOY_SCRIPT)], env=env)
     assert restart_log.read_text().splitlines() == ["--user restart hapax-coord.service"]
 
-    second_sha = _deploy_fixture_commit(source, "second")
-    _cmd(["git", "-C", str(source), "push", "origin", "main"])
+    _cmd(["git", "clone", "-b", "main", str(origin), str(writer)])
+    second_sha = _deploy_fixture_commit(writer, "second")
+    _cmd(["git", "-C", str(writer), "push", "origin", "main"])
+    assert _cmd(["git", "-C", str(source), "rev-parse", "origin/main"]) == first_sha
     failed = subprocess.run(
         [str(_DEPLOY_SCRIPT)],
         env={**env, "HAPAX_COORD_DEPLOY_FAIL_RESTART": "1"},
@@ -596,6 +599,7 @@ def test_coord_deploy_helper_fetches_writes_sha_and_is_idempotent(tmp_path):
     ]
 
     _cmd([str(_DEPLOY_SCRIPT)], env=env)
+    assert _cmd(["git", "-C", str(source), "rev-parse", "origin/main"]) == second_sha
     assert (worktree / ".deployed-sha").read_text().strip() == second_sha
     assert _cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"]) == second_sha
     assert restart_log.read_text().splitlines() == [

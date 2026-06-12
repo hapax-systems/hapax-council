@@ -670,6 +670,7 @@ def _exercise_coord_deploy_helper() -> str:
         root = Path(tmp)
         origin = root / "origin.git"
         source = root / "source"
+        writer = root / "writer"
         act_root = root / "activation"
         fakebin = root / "bin"
         restart_log = root / "systemctl.log"
@@ -716,8 +717,15 @@ def _exercise_coord_deploy_helper() -> str:
         if restarts != ["--user restart hapax-coord.service"]:
             raise RuntimeError(f"idempotent deploy restarted unexpectedly: {restarts}")
 
-        second_sha = _write_deploy_fixture_commit(source, "second")
-        _run_cmd(["git", "-C", str(source), "push", "origin", "main"])
+        _run_cmd(["git", "clone", "-b", "main", str(origin), str(writer)])
+        second_sha = _write_deploy_fixture_commit(writer, "second")
+        _run_cmd(["git", "-C", str(writer), "push", "origin", "main"])
+        stale_remote_ref = _run_cmd(["git", "-C", str(source), "rev-parse", "origin/main"])
+        if stale_remote_ref != first_sha:
+            raise RuntimeError(
+                f"fixture expected stale source origin/main={first_sha[:9]}, "
+                f"got {stale_remote_ref[:9]}"
+            )
         failed = subprocess.run(
             [str(COORD_DEPLOY_SCRIPT)],
             env={**env, "HAPAX_COORD_DEPLOY_FAIL_RESTART": "1"},
@@ -743,12 +751,13 @@ def _exercise_coord_deploy_helper() -> str:
             raise RuntimeError(f"failed deploy restart log mismatch: {restarts}")
 
         _run_cmd([str(COORD_DEPLOY_SCRIPT)], env=env)
+        refreshed_remote_ref = _run_cmd(["git", "-C", str(source), "rev-parse", "origin/main"])
         deployed = (worktree / ".deployed-sha").read_text().strip()
         head = _run_cmd(["git", "-C", str(worktree), "rev-parse", "HEAD"])
-        if deployed != second_sha or head != second_sha:
+        if deployed != second_sha or head != second_sha or refreshed_remote_ref != second_sha:
             raise RuntimeError(
                 f"second deploy mismatch deployed={deployed[:9]} head={head[:9]} "
-                f"expected={second_sha[:9]}"
+                f"origin/main={refreshed_remote_ref[:9]} expected={second_sha[:9]}"
             )
         restarts = restart_log.read_text().splitlines()
         if restarts != [
@@ -760,8 +769,8 @@ def _exercise_coord_deploy_helper() -> str:
 
     return (
         f"first={first_sha[:9]} second={second_sha[:9]} wrote .deployed-sha after restart, "
-        "advanced worktree, skipped idempotent restart, kept old receipt on failed restart, "
-        "retried restart on change"
+        "refreshed stale origin/main, advanced worktree, skipped idempotent restart, "
+        "kept old receipt on failed restart, retried restart on change"
     )
 
 

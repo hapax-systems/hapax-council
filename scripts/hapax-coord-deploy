@@ -12,8 +12,8 @@ if [ "${1:-}" = "--contract-json" ]; then
     exit 0
 fi
 
-git -C "$REPO" fetch origin main --quiet
-TARGET_SHA="$(git -C "$REPO" rev-parse origin/main)"
+git -C "$REPO" fetch origin +refs/heads/main:refs/remotes/origin/main --quiet
+TARGET_SHA="$(git -C "$REPO" rev-parse refs/remotes/origin/main)"
 
 mkdir -p "$ACT_ROOT"
 if [ ! -d "$WT/.git" ] && [ ! -f "$WT/.git" ]; then
