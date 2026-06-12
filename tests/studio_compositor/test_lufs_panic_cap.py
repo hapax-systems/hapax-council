@@ -11,6 +11,7 @@ import pytest
 
 from agents.studio_compositor.lufs_panic_cap import (
     DEFAULT_BREACH_WINDOW_MS,
+    REFUSAL_LOG_PATH,
     LufsPanicCap,
     _db_to_linear,
     _sine_ease,
@@ -211,6 +212,9 @@ class TestPublishAwareness:
 
 
 class TestPublishRefusalLog:
+    def test_uses_domain_rotated_refusals_path(self) -> None:
+        assert Path("/dev/shm/hapax-refusals/log.jsonl") == REFUSAL_LOG_PATH
+
     def test_skips_when_parent_dir_missing(self, tmp_path: Path) -> None:
         cap = LufsPanicCap()
         with patch(

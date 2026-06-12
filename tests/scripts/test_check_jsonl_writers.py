@@ -35,7 +35,7 @@ def test_deadlock_canary_registered_writer_passes():
     src = 'def w():\n    with open("/tmp/dispatch-trace.jsonl", "a") as f:\n        f.write("x")\n'
     problems = gate.check_file(
         REPO / "agents" / "fake.py",
-        covered={"dispatch-trace.jsonl"},
+        covered={"/tmp/dispatch-trace.jsonl"},
         src_lines=src.splitlines(),
     )
     assert problems == []
@@ -46,6 +46,40 @@ def test_deadlock_canary_exempt_pragma_passes():
     src = 'f = open("/tmp/oneshot-debug.jsonl", "a")  # jsonl-rotation: exempt(test scratch)\n'
     problems = gate.check_file(
         REPO / "agents" / "fake.py", covered=set(), src_lines=src.splitlines()
+    )
+    assert problems == []
+
+
+def test_registered_basename_does_not_cover_unrelated_path():
+    gate = _load_gate()
+    src = (
+        'EVENTS = Path("/dev/shm/hapax-public-events/events.jsonl")\n'
+        "def w():\n"
+        '    with EVENTS.open("a") as f:\n'
+        '        f.write("x")\n'
+    )
+    problems = gate.check_file(
+        REPO / "agents" / "fake.py",
+        covered={"/dev/shm/hapax-broadcast/events.jsonl"},
+        src_lines=src.splitlines(),
+    )
+    assert len(problems) == 1
+    assert "/dev/shm/hapax-public-events/events.jsonl" in problems[0]
+
+
+def test_registered_path_covers_name_bound_writer():
+    gate = _load_gate()
+    src = (
+        'EVENT_DIR = Path("/dev/shm/hapax-broadcast")\n'
+        'EVENT_FILE = EVENT_DIR / "events.jsonl"\n'
+        "def w():\n"
+        '    with EVENT_FILE.open("a") as f:\n'
+        '        f.write("x")\n'
+    )
+    problems = gate.check_file(
+        REPO / "agents" / "fake.py",
+        covered={"/dev/shm/hapax-broadcast/events.jsonl"},
+        src_lines=src.splitlines(),
     )
     assert problems == []
 

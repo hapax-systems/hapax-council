@@ -7,7 +7,14 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
-from shared.runtime_jsonl_rotator import RotationTarget, rotate_target, rotate_targets
+from shared.runtime_jsonl_rotator import (
+    DEFAULT_TARGETS,
+    PRIMARY_PROFILES_DIR,
+    PROFILES_DIR,
+    RotationTarget,
+    rotate_target,
+    rotate_targets,
+)
 
 
 def _target(tmp_path: Path, *, max_bytes: int = 12, keep_archives: int = 2) -> RotationTarget:
@@ -23,6 +30,38 @@ def _target(tmp_path: Path, *, max_bytes: int = 12, keep_archives: int = 2) -> R
 def _read_gzip(path: Path) -> str:
     with gzip.open(path, "rb") as fh:
         return fh.read().decode("utf-8")
+
+
+def test_default_registry_targets_are_internally_consistent() -> None:
+    assert DEFAULT_TARGETS
+    assert len(DEFAULT_TARGETS) == len({target.path for target in DEFAULT_TARGETS.values()})
+    assert all(key == target.name for key, target in DEFAULT_TARGETS.items())
+    assert all(target.path.name.endswith(".jsonl") for target in DEFAULT_TARGETS.values())
+    assert all(target.max_bytes > 0 for target in DEFAULT_TARGETS.values())
+    assert all(target.keep_archives > 0 for target in DEFAULT_TARGETS.values())
+
+
+def test_default_registry_keeps_full_history_evidence_ledgers_out() -> None:
+    target_names = set(DEFAULT_TARGETS)
+    assert "evidence-receipts" not in target_names
+    assert "evidence-trace-graph" not in target_names
+    assert "legibility-records" not in target_names
+
+
+def test_default_registry_includes_primary_profiles_when_activation_is_elsewhere() -> None:
+    primary_names = {
+        "fortress-sessions-primary",
+        "fortress-chronicle-primary",
+        "axiom-enforcement-audit-primary",
+    }
+    if PRIMARY_PROFILES_DIR == PROFILES_DIR:
+        assert DEFAULT_TARGETS.keys().isdisjoint(primary_names)
+    else:
+        assert primary_names <= DEFAULT_TARGETS.keys()
+        assert all(
+            DEFAULT_TARGETS[name].path.is_relative_to(PRIMARY_PROFILES_DIR)
+            for name in primary_names
+        )
 
 
 def test_noop_when_file_is_under_cap(tmp_path: Path) -> None:

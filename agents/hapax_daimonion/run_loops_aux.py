@@ -315,6 +315,7 @@ def _publish_recruitment_log(
             "source": source[:40],
             "narrative": (imp_narrative or "")[:160],
         }
+        # jsonl-rotation: exempt(domain rolling log; trimmed to _RECRUITMENT_LOG_MAX_LINES)
         with _RECRUITMENT_LOG.open("a", encoding="utf-8") as f:
             f.write(_json.dumps(record) + "\n")
         try:

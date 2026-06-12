@@ -2,11 +2,11 @@
 """Class-closure gate for the unrotated-jsonl-writer disease (audit W0.2).
 
 Every append-mode open of a ``*.jsonl`` path in first-party code must be
-covered by the rotation registry (shared/runtime_jsonl_rotator.py TARGETS) or
-carry an explicit ``# jsonl-rotation: exempt(<reason>)`` pragma on the same
-line. The registry is the single source of truth — coverage is computed FROM
-it, so registering a target automatically licenses its writers (generative,
-not a second list to drift).
+covered by the rotation registry (``shared/runtime_jsonl_rotator.py``
+``DEFAULT_TARGETS``) or carry an explicit
+``# jsonl-rotation: exempt(<reason>)`` pragma. The registry is the single
+source of truth — coverage is computed FROM it, so registering a target
+automatically licenses its writers without a second drift-prone list.
 
 Effect-based per the taxonomy anti-theses: the check walks the AST for the
 append-open EFFECT (open/Path.open with mode containing 'a' whose target
@@ -16,6 +16,7 @@ expression mentions a .jsonl name), not for blessed function names.
 from __future__ import annotations
 
 import ast
+import posixpath
 import sys
 from pathlib import Path
 
@@ -23,34 +24,132 @@ REPO = Path(__file__).resolve().parent.parent
 SCAN_DIRS = ("agents", "shared", "scripts", "logos")
 
 
-def registry_names() -> set[str]:
-    """Basenames covered by the rotation registry (parsed, not imported —
-    the gate must not depend on the runtime venv)."""
+def _normalize_path(parts: list[str]) -> str | None:
+    useful = [part for part in parts if part]
+    if not useful or not any(part.endswith(".jsonl") or ".jsonl" in part for part in useful):
+        return None
+    path = useful[0]
+    for part in useful[1:]:
+        path = posixpath.join(path, part)
+    path = path.replace("\\", "/")
+    if ".jsonl" not in path:
+        return None
+    path = path[: path.index(".jsonl") + len(".jsonl")]
+    if "/" not in path:
+        return Path(path).name
+    return posixpath.normpath(path)
+
+
+def _path_parts(node: ast.AST, bindings: dict[str, list[str]]) -> list[str]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node.value]
+    if isinstance(node, ast.Name):
+        return bindings.get(node.id, [])
+    if isinstance(node, ast.Attribute):
+        return bindings.get(node.attr, [])
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return _path_parts(node.left, bindings) + _path_parts(node.right, bindings)
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == "Path" and node.args:
+            return _path_parts(node.args[0], bindings)
+        if isinstance(func, ast.Attribute):
+            if func.attr in {"expanduser", "resolve"}:
+                return _path_parts(func.value, bindings)
+            if func.attr == "get" and len(node.args) >= 2:
+                return _path_parts(node.args[1], bindings)
+        return []
+    return []
+
+
+def _path_expr(node: ast.AST, bindings: dict[str, list[str]]) -> str | None:
+    return _normalize_path(_path_parts(node, bindings))
+
+
+def _path_name_bindings(tree: ast.AST) -> dict[str, list[str]]:
+    """Names bound to literal path fragments.
+
+    The codebase commonly builds paths as ``DIR = Path("/x")`` and
+    ``FILE = DIR / "y.jsonl"``. Binding the directory name lets the checker
+    distinguish unrelated ``events.jsonl`` ledgers by path suffix.
+    """
+
+    bindings: dict[str, list[str]] = {}
+    for node in ast.walk(tree):
+        targets: list[ast.expr] = []
+        value: ast.expr | None = None
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        if value is None:
+            continue
+        parts = _path_parts(value, bindings)
+        if not parts:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                bindings[target.id] = parts
+            elif isinstance(target, ast.Attribute):
+                bindings[target.attr] = parts
+    return bindings
+
+
+def registry_paths() -> set[str]:
+    """Path suffixes covered by the rotation registry.
+
+    Parsed, not imported: the gate must not depend on the runtime venv.
+    """
     src = (REPO / "shared" / "runtime_jsonl_rotator.py").read_text()
     tree = ast.parse(src)
-    names: set[str] = set()
+    bindings = _path_name_bindings(tree)
+    paths: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if node.value.endswith(".jsonl"):
-                names.add(Path(node.value).name)
-    return names
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        if not isinstance(fn, ast.Name) or fn.id != "RotationTarget":
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "path":
+                continue
+            path = _path_expr(keyword.value, bindings)
+            if path:
+                paths.add(path)
+    return paths
 
 
-def _mode_is_append(call: ast.Call) -> bool:
-    for arg in list(call.args[1:2]) + [k.value for k in call.keywords if k.arg == "mode"]:
+def _mode_is_append(call: ast.Call, *, is_method: bool) -> bool:
+    idx = 0 if is_method else 1
+    for arg in list(call.args[idx : idx + 1]) + [k.value for k in call.keywords if k.arg == "mode"]:
         if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and "a" in arg.value:
             return True
     return False
 
 
-def _jsonl_basename(node: ast.AST) -> str | None:
-    """A .jsonl basename mentioned anywhere inside the expression, if any."""
-    for sub in ast.walk(node):
-        if isinstance(sub, ast.Constant) and isinstance(sub.value, str) and ".jsonl" in sub.value:
-            tail = sub.value.rsplit("/", 1)[-1]
+def _mentioned_jsonl_name(node: ast.AST) -> str | None:
+    """Fallback basename for dynamic paths that still mention ``*.jsonl``."""
+    for child in ast.walk(node):
+        if (
+            isinstance(child, ast.Constant)
+            and isinstance(child.value, str)
+            and ".jsonl" in child.value
+        ):
+            tail = child.value.rsplit("/", 1)[-1]
             if tail.endswith(".jsonl"):
                 return tail
     return None
+
+
+def _covered(ref: str, covered_paths: set[str]) -> bool:
+    for covered in covered_paths:
+        if ref == covered:
+            return True
+        if "/" in ref and ref.endswith("/" + covered.lstrip("/")):
+            return True
+        if "/" in covered and covered.endswith("/" + ref.lstrip("/")):
+            return True
+    return False
 
 
 def check_file(path: Path, covered: set[str], src_lines: list[str]) -> list[str]:
@@ -59,33 +158,47 @@ def check_file(path: Path, covered: set[str], src_lines: list[str]) -> list[str]
         tree = ast.parse("\n".join(src_lines))
     except SyntaxError:
         return problems
+    bindings = _path_name_bindings(tree)
+    covered_names = {Path(item).name for item in covered}
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         fn = node.func
-        is_open = (isinstance(fn, ast.Name) and fn.id == "open") or (
-            isinstance(fn, ast.Attribute) and fn.attr == "open"
-        )
-        if not is_open or not _mode_is_append(node):
+        is_builtin_open = isinstance(fn, ast.Name) and fn.id == "open"
+        is_method_open = isinstance(fn, ast.Attribute) and fn.attr == "open"
+        if not (is_builtin_open or is_method_open):
             continue
-        base = _jsonl_basename(node)
-        if base is None and isinstance(fn, ast.Attribute):
-            base = _jsonl_basename(fn.value)
-        if base is None:
+        if not _mode_is_append(node, is_method=is_method_open):
             continue
-        line = src_lines[node.lineno - 1] if node.lineno <= len(src_lines) else ""
-        if "jsonl-rotation: exempt" in line:
+
+        target = node.args[0] if is_builtin_open and node.args else None
+        if is_method_open:
+            target = fn.value
+        if target is None:
             continue
-        if base not in covered:
+
+        path_ref = _path_expr(target, bindings)
+        mentioned_name = _mentioned_jsonl_name(target)
+        if path_ref and Path(path_ref).name in covered_names:
+            ref = path_ref
+        elif mentioned_name:
+            ref = path_ref or mentioned_name
+        else:
+            continue
+
+        window = src_lines[max(0, node.lineno - 2) : node.lineno]
+        if any("jsonl-rotation: exempt" in line for line in window):
+            continue
+        if not _covered(ref, covered):
             problems.append(
                 f"{path.relative_to(REPO)}:{node.lineno}: append-mode jsonl writer "
-                f"'{base}' has no rotation-registry target and no exempt pragma"
+                f"'{ref}' has no rotation-registry target and no exempt pragma"
             )
     return problems
 
 
 def main() -> int:
-    covered = registry_names()
+    covered = registry_paths()
     problems: list[str] = []
     for d in SCAN_DIRS:
         root = REPO / d
@@ -95,7 +208,7 @@ def main() -> int:
             src_lines = py.read_text(errors="replace").splitlines()
             problems.extend(check_file(py, covered, src_lines))
     if problems:
-        print("Unrotated jsonl writers (register in runtime_jsonl_rotator.TARGETS")
+        print("Unrotated jsonl writers (register in runtime_jsonl_rotator.DEFAULT_TARGETS")
         print("or annotate `# jsonl-rotation: exempt(<reason>)`):")
         for p in problems:
             print(f"  {p}")

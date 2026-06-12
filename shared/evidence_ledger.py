@@ -232,6 +232,7 @@ class EvidenceLedger:
 
     def append_receipt(self, receipt: ReceiptEnvelope) -> None:
         path = self._dir / "receipts.jsonl"
+        # jsonl-rotation: exempt(full-history evidence ledger; receipts_for_case scans live file)
         with path.open("a") as f:
             f.write(receipt.model_dump_json() + "\n")
 
@@ -262,6 +263,7 @@ class TraceGraph:
         self._dir.mkdir(parents=True, exist_ok=True)
 
     def add_link(self, link: TraceLink) -> None:
+        # jsonl-rotation: exempt(full-history evidence ledger; all_links scans live file)
         with self._path.open("a") as f:
             f.write(link.model_dump_json() + "\n")
 
@@ -432,6 +434,7 @@ class LegibilityEvidenceRegistry:
         mirror_case_id: str | None = None,
         traces_to: list[str] | None = None,
     ) -> None:
+        # jsonl-rotation: exempt(full-history evidence ledger; all_records scans live file)
         with self._path.open("a") as f:
             f.write(record.model_dump_json() + "\n")
         if mirror_case_id:

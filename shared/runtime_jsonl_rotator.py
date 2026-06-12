@@ -7,6 +7,9 @@ ledgers stay outside this registry with explicit writer-side exemptions.
 Rotation uses POSIX rename, then creates a fresh live file at the original path.
 Writers with an already-open fd finish on the renamed slice; later appends reopen
 the original path. The slice is append-gzipped into an archive and removed.
+Byte-cursor bus consumers must treat shrink/rotation as a cursor reset; unread
+records already moved into an archived slice are retained for audit, not replayed
+through the live-file bus.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from pathlib import Path
 MIB = 1024 * 1024
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROFILES_DIR = REPO_ROOT / "profiles"
+PRIMARY_PROFILES_DIR = Path.home() / "projects" / "hapax-council" / "profiles"
 HAPAX_HOME = Path(os.environ.get("HAPAX_HOME", str(Path.home())))
 HAPAX_CACHE_DIR = HAPAX_HOME / ".cache"
 
@@ -135,27 +139,6 @@ DEFAULT_TARGETS: dict[str, RotationTarget] = {
         archive_dir=PROFILES_DIR / "archive",
         keep_archives=14,
     ),
-    "evidence-receipts": RotationTarget(
-        name="evidence-receipts",
-        path=Path.home() / ".cache" / "hapax" / "evidence-ledger" / "receipts.jsonl",
-        max_bytes=16 * MIB,
-        archive_dir=Path.home() / ".cache" / "hapax" / "evidence-ledger" / "archive",
-        keep_archives=14,
-    ),
-    "evidence-trace-graph": RotationTarget(
-        name="evidence-trace-graph",
-        path=Path.home() / ".cache" / "hapax" / "evidence-ledger" / "trace-graph.jsonl",
-        max_bytes=16 * MIB,
-        archive_dir=Path.home() / ".cache" / "hapax" / "evidence-ledger" / "archive",
-        keep_archives=14,
-    ),
-    "legibility-records": RotationTarget(
-        name="legibility-records",
-        path=Path.home() / ".cache" / "hapax" / "evidence-ledger" / "legibility-records.jsonl",
-        max_bytes=16 * MIB,
-        archive_dir=Path.home() / ".cache" / "hapax" / "evidence-ledger" / "archive",
-        keep_archives=14,
-    ),
     "liveness-recovery-ledger": RotationTarget(
         name="liveness-recovery-ledger",
         path=Path.home() / ".cache" / "hapax" / "liveness" / "recovery-ledger.jsonl",
@@ -192,6 +175,33 @@ DEFAULT_TARGETS: dict[str, RotationTarget] = {
         keep_archives=14,
     ),
 }
+
+if PRIMARY_PROFILES_DIR != PROFILES_DIR:
+    DEFAULT_TARGETS.update(
+        {
+            "fortress-sessions-primary": RotationTarget(
+                name="fortress-sessions-primary",
+                path=PRIMARY_PROFILES_DIR / "fortress-sessions.jsonl",
+                max_bytes=16 * MIB,
+                archive_dir=PRIMARY_PROFILES_DIR / "archive",
+                keep_archives=14,
+            ),
+            "fortress-chronicle-primary": RotationTarget(
+                name="fortress-chronicle-primary",
+                path=PRIMARY_PROFILES_DIR / "fortress-chronicle.jsonl",
+                max_bytes=16 * MIB,
+                archive_dir=PRIMARY_PROFILES_DIR / "archive",
+                keep_archives=14,
+            ),
+            "axiom-enforcement-audit-primary": RotationTarget(
+                name="axiom-enforcement-audit-primary",
+                path=PRIMARY_PROFILES_DIR / ".enforcement-audit.jsonl",
+                max_bytes=16 * MIB,
+                archive_dir=PRIMARY_PROFILES_DIR / "archive",
+                keep_archives=14,
+            ),
+        }
+    )
 
 
 def _utc_now(now: datetime | None = None) -> datetime:
