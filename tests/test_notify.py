@@ -5,11 +5,13 @@ All I/O is mocked. No real HTTP requests or subprocess calls.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from shared.notify import (
     _DESKTOP_URGENCY,
+    _dismiss_existing_intake_notifications,
     _send_desktop,
     briefing_uri,
     nudges_uri,
@@ -87,6 +89,35 @@ class TestSendDesktop:
         mock_run.return_value = MagicMock(returncode=1)
         result = _send_desktop("T", "M")
         assert result is False
+
+
+def test_dismiss_existing_intake_notifications_uses_mako_marker():
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd == ["makoctl", "list", "-j"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    [
+                        {"id": 11, "body": "SDLC intake: p0-incident-demo\nold"},
+                        {"id": 12, "body": "unrelated"},
+                        {"id": 13, "body": "SDLC intake: p0-incident-demo\nnewer"},
+                        {"body": "SDLC intake: p0-incident-demo without id"},
+                    ]
+                ),
+            )
+        return SimpleNamespace(returncode=0, stdout="")
+
+    with patch("shared.notify._run_subprocess", side_effect=fake_run):
+        _dismiss_existing_intake_notifications("p0-incident-demo")
+
+    assert calls[0][0] == ["makoctl", "list", "-j"]
+    assert [call[0] for call in calls[1:]] == [
+        ["makoctl", "dismiss", "--no-history", "-n", "11"],
+        ["makoctl", "dismiss", "--no-history", "-n", "13"],
+    ]
 
 
 # ── send_notification (unified) tests ────────────────────────────────────────

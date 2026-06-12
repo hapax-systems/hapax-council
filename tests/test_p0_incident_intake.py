@@ -6,6 +6,8 @@ import subprocess
 import sys
 import textwrap
 from datetime import UTC, datetime, timedelta
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
 
 from shared.p0_incident_intake import (
@@ -23,6 +25,15 @@ INTAKE_SCRIPT = REPO_ROOT / "scripts" / "hapax-p0-incident-intake"
 def _write_fake_bin(path: Path, body: str) -> None:
     path.write_text(textwrap.dedent(body).lstrip(), encoding="utf-8")
     path.chmod(0o755)
+
+
+def _load_cli_module():
+    loader = SourceFileLoader("hapax_p0_incident_intake_cli", str(INTAKE_SCRIPT))
+    spec = spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = module_from_spec(spec)
+    loader.exec_module(module)
+    return module
 
 
 def test_service_failure_creates_governed_p0_task(tmp_path):
@@ -258,3 +269,35 @@ def test_service_failed_cli_falls_back_to_desktop_when_recording_fails(tmp_path)
     assert "--urgency=critical" in notify_text
     assert "P0 intake failed: Service Failed: demo.service" in notify_text
     assert "SDLC intake failed before task creation" in notify_text
+
+
+def test_cli_dismiss_existing_intake_notifications_uses_mako_marker(monkeypatch):
+    cli = _load_cli_module()
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd == ["makoctl", "list", "-j"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=json.dumps(
+                    [
+                        {"id": 21, "body": "SDLC intake: p0-incident-cli\nold"},
+                        {"id": 22, "body": "other task"},
+                        {"id": 23, "body": "SDLC intake: p0-incident-cli\nnew"},
+                    ]
+                ),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    cli._dismiss_existing_intake_notifications("p0-incident-cli")
+
+    assert calls[0][0] == ["makoctl", "list", "-j"]
+    assert [call[0] for call in calls[1:]] == [
+        ["makoctl", "dismiss", "--no-history", "-n", "21"],
+        ["makoctl", "dismiss", "--no-history", "-n", "23"],
+    ]
