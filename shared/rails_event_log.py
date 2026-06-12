@@ -28,19 +28,20 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from shared.sdlc_lifecycle import frontmatter_from_text
+
 EVENT_LOG = Path.home() / ".cache/hapax/coord/sdlc-events.jsonl"
 SHADOW = Path.home() / ".cache/hapax/coord/sdlc-events.shadow.json"
 VAULT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
 DEPLOY_SHA_FILE = Path.home() / ".cache/hapax/coord-activation/worktree/.deployed-sha"
 
-_FM_FIELD = re.compile(r"^(stage|status|assigned_to|pr):\s*(\S+)", re.M)
+_TASK_FIELDS = ("stage", "status", "assigned_to", "pr")
 
 
 def _now_iso() -> str:
@@ -48,10 +49,15 @@ def _now_iso() -> str:
 
 
 def _event_id(payload: dict[str, Any]) -> str:
+    # seq distinguishes genuinely repeated transitions (a flip-flop returning
+    # to the same edge) while staying replay-stable: seq derives from the
+    # persisted shadow, so a re-fold after a crash-before-shadow-write
+    # rederives the same ids and consumers dedupe them (review finding,
+    # PR #4100 fix round).
     basis = json.dumps(
         {
             k: payload.get(k)
-            for k in ("item_id", "kind", "stage_from", "stage_to", "verdict", "reason")
+            for k in ("item_id", "kind", "stage_from", "stage_to", "verdict", "reason", "seq")
         },
         sort_keys=True,
     )
@@ -70,6 +76,7 @@ def _emit(events: list[dict[str, Any]], **fields: Any) -> None:
         "gate": None,
         "verdict": None,
         "reason": None,
+        "seq": None,
         "ts": _now_iso(),
         "source_file": None,
         "source_offset": None,
@@ -83,10 +90,13 @@ def _task_facts() -> dict[str, dict[str, str]]:
     facts: dict[str, dict[str, str]] = {}
     for note in VAULT.glob("*.md"):
         try:
-            head = note.read_text(encoding="utf-8", errors="replace")[:4000]
+            text = note.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        fields = {k: v.strip().strip('"') for k, v in _FM_FIELD.findall(head)}
+        # frontmatter ONLY — a `status:` line in the note body must never
+        # shadow the real task state (review finding, PR #4100 fix round)
+        fm = frontmatter_from_text(text)
+        fields = {k: str(fm[k]).strip() for k in _TASK_FIELDS if fm.get(k) not in (None, "")}
         if fields:
             facts[note.stem] = {**fields, "_source": str(note)}
     return facts
@@ -152,6 +162,17 @@ def fold_once() -> int:
 
     events: list[dict[str, Any]] = []
 
+    # per-stream transition counters, persisted in the shadow: replay-stable
+    # (a re-fold before the shadow write rederives identical seqs -> identical
+    # event_ids), while a GENUINE repeat of the same edge gets a fresh seq and
+    # so a distinct event_id (review finding, PR #4100 fix round)
+    seq_map: dict[str, int] = dict(shadow.get("seq", {}))
+
+    def _next_seq(item_id: str, kind: str) -> int:
+        key = f"{item_id}|{kind}"
+        seq_map[key] = seq_map.get(key, 0) + 1
+        return seq_map[key]
+
     tasks = _task_facts()
     prev_tasks = shadow.get("tasks", {})
     for tid, cur in tasks.items():
@@ -165,6 +186,7 @@ def fold_once() -> int:
                     stage_from=prev.get(field),
                     stage_to=cur.get(field),
                     lane=cur.get("assigned_to"),
+                    seq=_next_seq(tid, kind),
                     source_file=cur.get("_source"),
                 )
 
@@ -183,6 +205,7 @@ def fold_once() -> int:
                 gate="review-team",
                 verdict=cur.get("verdict"),
                 reason=cur.get("head_sha"),
+                seq=_next_seq(cur.get("task_id", name), "review"),
                 source_file=cur.get("_source"),
             )
 
@@ -198,6 +221,7 @@ def fold_once() -> int:
                 gate="acceptance",
                 verdict=cur.get("verdict"),
                 actor=cur.get("acceptor"),
+                seq=_next_seq(cur.get("task_id", name), "receipt"),
                 source_file=cur.get("_source"),
             )
 
@@ -209,6 +233,7 @@ def fold_once() -> int:
             kind="deploy",
             stage_from=(shadow.get("deploy", {}).get("sha") or "unknown")[:9],
             stage_to=deploy["sha"][:9],
+            seq=_next_seq("hapax-coord", "deploy"),
             source_file=str(DEPLOY_SHA_FILE),
         )
 
@@ -224,6 +249,7 @@ def fold_once() -> int:
         "dossiers": dossiers,
         "acceptances": acceptances,
         "deploy": deploy,
+        "seq": seq_map,
         "folded_at": _now_iso(),
     }
     tmp = SHADOW.with_suffix(".tmp")

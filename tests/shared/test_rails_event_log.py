@@ -80,3 +80,60 @@ def test_unparseable_dossier_is_an_honest_event(tmp_path, monkeypatch):
     rel.fold_once()
     evts = _events(tmp_path)
     assert any(e["kind"] == "review" and e["verdict"] == "unparseable" for e in evts)
+
+
+def test_repeated_transition_gets_a_distinct_event_id(tmp_path, monkeypatch):
+    # review finding (PR #4100): a flip-flop returning to the same edge must
+    # NOT reuse the first crossing's event_id, or dedup eats real history
+    vault = _setup(tmp_path, monkeypatch)
+    note = vault / "task-f.md"
+    note.write_text("---\nstage: S5_REVIEW_GATE\n---\n")
+    rel.fold_once()
+    note.write_text("---\nstage: S6_IMPLEMENTATION\n---\n")
+    rel.fold_once()
+    note.write_text("---\nstage: S5_REVIEW_GATE\n---\n")
+    rel.fold_once()
+    note.write_text("---\nstage: S6_IMPLEMENTATION\n---\n")
+    rel.fold_once()
+    crossings = [
+        e
+        for e in _events(tmp_path)
+        if e["kind"] == "stage"
+        and e["stage_from"] == "S5_REVIEW_GATE"
+        and e["stage_to"] == "S6_IMPLEMENTATION"
+    ]
+    assert len(crossings) == 2
+    assert crossings[0]["event_id"] != crossings[1]["event_id"]
+    assert crossings[0]["seq"] != crossings[1]["seq"]
+
+
+def test_replay_after_crash_rederives_identical_event_ids(tmp_path, monkeypatch):
+    # the dedupe contract: a re-fold whose shadow write was lost re-emits the
+    # SAME ids (consumers drop them); only a persisted shadow advances seq
+    vault = _setup(tmp_path, monkeypatch)
+    note = vault / "task-g.md"
+    note.write_text("---\nstage: S5_REVIEW_GATE\n---\n")
+    rel.fold_once()
+    shadow_snapshot = (tmp_path / "shadow.json").read_text()
+    note.write_text("---\nstage: S6_IMPLEMENTATION\n---\n")
+    rel.fold_once()
+    # crash simulation: shadow reverts to its pre-fold state, fold replays
+    (tmp_path / "shadow.json").write_text(shadow_snapshot)
+    rel.fold_once()
+    replayed = [e for e in _events(tmp_path) if e["stage_to"] == "S6_IMPLEMENTATION"]
+    assert len(replayed) == 2
+    assert replayed[0]["event_id"] == replayed[1]["event_id"]
+
+
+def test_body_fields_never_shadow_frontmatter(tmp_path, monkeypatch):
+    # review finding (PR #4100): a `status:`/`stage:` line in the note BODY
+    # must not be read as task state
+    vault = _setup(tmp_path, monkeypatch)
+    note = vault / "task-h.md"
+    note.write_text(
+        "---\nstage: S5_REVIEW_GATE\nstatus: offered\n---\n## Log\nstage: S11\nstatus: abandoned\n"
+    )
+    rel.fold_once()
+    evts = _events(tmp_path)
+    assert any(e["kind"] == "stage" and e["stage_to"] == "S5_REVIEW_GATE" for e in evts)
+    assert not any(e["stage_to"] in ("S11", "abandoned") for e in evts)

@@ -4,8 +4,11 @@
 The trainyard (hapax-coord) consumes this JSON instead of re-deriving stage
 and status vocabularies in Lisp — the audit found its hand-coded enum matched
 0/253 live tasks. The export is GENERATED from the owning SSOTs:
-  * stages: shared.sdlc_lifecycle (STAGE_RE + the ladder-token bridge)
-  * observed vocab: the live task corpus (so consumers can parity-check)
+  * stages: shared.sdlc_invariants.SDLC_LADDER (operational tokens; the
+    BLOCKED pseudo-state rides separately as pseudo_stages) + the
+    shared.sdlc_lifecycle STAGE_RE / ladder-token bridge
+  * observed vocab: the live task corpus (so consumers can parity-check),
+    frontmatter only — body text never counts
 Writes ~/.cache/hapax/coord/sdlc-vocab.json atomically.
 """
 
@@ -13,19 +16,21 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from shared.sdlc_lifecycle import STAGE_RE, stage_token  # noqa: E402
+from shared.sdlc_invariants import SDLC_LADDER  # noqa: E402
+from shared.sdlc_lifecycle import (  # noqa: E402
+    STAGE_RE,
+    frontmatter_from_text,
+    stage_token,
+)
 
 VAULT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
 OUT = Path.home() / ".cache/hapax/coord/sdlc-vocab.json"
-LADDER = ["S0", "S1", "S2", "S3", "S3_5", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11"]
-_FM_FIELD = re.compile(r"^(stage|status):\s*(\S+)", re.M)
 
 
 def observed_vocab() -> tuple[dict[str, int], dict[str, int]]:
@@ -33,13 +38,15 @@ def observed_vocab() -> tuple[dict[str, int], dict[str, int]]:
     statuses: dict[str, int] = {}
     for note in VAULT.glob("*.md"):
         try:
-            head = note.read_text(encoding="utf-8", errors="replace")[:4000]
+            text = note.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for field, value in _FM_FIELD.findall(head):
-            value = value.strip().strip('"')
-            target = stages if field == "stage" else statuses
-            target[value] = target.get(value, 0) + 1
+        fm = frontmatter_from_text(text)
+        for field, target in (("stage", stages), ("status", statuses)):
+            value = fm.get(field)
+            if value not in (None, ""):
+                value = str(value).strip()
+                target[value] = target.get(value, 0) + 1
     return stages, statuses
 
 
@@ -49,13 +56,14 @@ def main() -> int:
         "schema": 1,
         "generated_at": datetime.now(UTC).isoformat(),
         "stage_re": STAGE_RE.pattern,
-        "ladder_tokens": LADDER,
+        "ladder_tokens": [s for s in SDLC_LADDER.stages if s not in SDLC_LADDER.blocked],
+        "pseudo_stages": sorted(SDLC_LADDER.blocked),
         "observed_stages": {
             raw: {"count": n, "ladder_token": stage_token(raw) or "unknown"}
             for raw, n in sorted(stages.items())
         },
         "observed_statuses": dict(sorted(statuses.items())),
-        "source": "shared.sdlc_lifecycle + live task corpus",
+        "source": "shared.sdlc_invariants.SDLC_LADDER + shared.sdlc_lifecycle + live task corpus",
     }
     OUT.parent.mkdir(parents=True, exist_ok=True)
     tmp = OUT.with_suffix(".tmp")
