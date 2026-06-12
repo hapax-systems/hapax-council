@@ -398,6 +398,9 @@ def synthesize_dossier(
     lenses: Sequence[str],
     constituted_at: str,
     constitution_notes: Sequence[str] = (),
+    writer_family: str | None = None,
+    changed_files: Sequence[str] | None = None,
+    changed_file_count: int | None = None,
 ) -> dict[str, Any]:
     """Reconcile blind reviews into a dossier (the synthesizer, spec §3/§5).
 
@@ -414,6 +417,9 @@ def synthesize_dossier(
     accept_families = {str(r.get("family")) for r in accepts}
     block_reviews = [r for r in reviews if str(r.get("verdict", "")).lower() == "block"]
     criticals = _unresolved_criticals(reviews)
+    scoped_files = [str(f) for f in changed_files or ()]
+    if changed_files is not None and changed_file_count is None:
+        changed_file_count = len(scoped_files)
 
     escalations: list[dict[str, Any]] = []
     for reviewer_id, finding in criticals:
@@ -484,6 +490,11 @@ def synthesize_dossier(
         "team_class": team_class,
         "quorum_required": int(sizing["quorum_accept"]),
         "constituted_at": constituted_at,
+        "registry_id": registry.get("registry_id"),
+        "registry_declared_at": registry.get("declared_at"),
+        "writer_family": writer_family,
+        "changed_file_count": changed_file_count,
+        "changed_files": scoped_files,
         "constitution_notes": list(constitution_notes),
         "lenses": list(lenses),
         "reviewers": [dict(r) for r in reviews],
