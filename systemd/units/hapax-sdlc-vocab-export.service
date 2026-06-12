@@ -1,0 +1,7 @@
+# Hapax-Auto-Enable: true
+[Unit]
+Description=Export the SDLC vocabulary for the trainyard (RC-4 consume-don't-rederive)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/hapax-sdlc-vocab-export
