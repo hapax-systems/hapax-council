@@ -203,6 +203,7 @@ class TestSendNotification:
         assert "notify: p0 incident intake failed; next action:" in caplog.text
         assert "~/.cache/hapax/p0-incident-intake/state.json" in caplog.text
         assert "scripts/hapax-p0-incident-intake notification" in caplog.text
+        assert "--technical" in caplog.text
         mock_desktop.assert_called_once_with("LUFS panic-cap", "too hot", priority="high")
 
 

@@ -394,7 +394,7 @@ def _record_p0_incident_intake(
         _log.warning(
             "notify: p0 incident intake failed; next action: inspect "
             "~/.cache/hapax/p0-incident-intake/state.json and events.jsonl, then "
-            "rerun scripts/hapax-p0-incident-intake notification with this title/body",
+            "rerun scripts/hapax-p0-incident-intake notification --technical with this title/body",
             exc_info=True,
         )
         return None

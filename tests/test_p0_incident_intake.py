@@ -10,6 +10,9 @@ from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
 
+import pytest
+
+import shared.p0_incident_intake as p0_intake
 from shared.p0_incident_intake import (
     DEFAULT_AUTHORITY_CASE,
     DEFAULT_PARENT_SPEC,
@@ -123,6 +126,32 @@ def test_same_incident_updates_existing_task(tmp_path):
     task = first_result.task_path.read_text(encoding="utf-8")
     assert "incident_count: 2" in task
     assert "p0-incident-intake updated" in task
+
+
+def test_record_notification_requires_durable_ledger_append(tmp_path, monkeypatch):
+    task_root = tmp_path / "tasks"
+    state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+
+    def fake_append_jsonl(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(p0_intake, "append_jsonl", fake_append_jsonl)
+
+    with pytest.raises(RuntimeError, match="p0 incident ledger append failed"):
+        record_notification(
+            "Service Failed: demo.service",
+            "systemd OnFailure fired.",
+            priority="urgent",
+            tags=["skull"],
+            task_root=task_root,
+            state_path=state_path,
+            ledger_path=ledger_path,
+            now=datetime(2026, 6, 12, 20, 0, tzinfo=UTC),
+        )
+
+    assert not state_path.exists()
+    assert not ledger_path.exists()
 
 
 def test_high_priority_nontechnical_notification_does_not_create_task(tmp_path):

@@ -170,10 +170,7 @@ def record_notification(
         updated = True
 
     task_record["task_path"] = str(task_path)
-    incidents[classification.fingerprint] = task_record
-    state["updated_at"] = _iso(now)
-    _store_state(state_path, state)
-    append_jsonl(
+    appended = append_jsonl(
         ledger_path,
         {
             "ts": _iso(now),
@@ -189,7 +186,14 @@ def record_notification(
             "priority": priority,
         },
         sort_keys=True,
+        raising=True,
     )
+    if not appended:
+        raise RuntimeError(f"p0 incident ledger append failed: {ledger_path}")
+
+    incidents[classification.fingerprint] = task_record
+    state["updated_at"] = _iso(now)
+    _store_state(state_path, state)
 
     return IntakeResult(
         technical=True,
