@@ -73,6 +73,8 @@ LOG = logging.getLogger("cc-pr-autoqueue")
 
 DEFAULT_REPO = "hapax-systems/hapax-council"
 DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+DEFAULT_REPORT_PATH = Path.home() / ".cache" / "hapax" / "orchestration" / "cc-pr-autoqueue-report.json"
+DEFAULT_ADMISSION_GOVERNOR_PATH = Path.home() / ".cache" / "hapax" / "pr-admission-governor.yaml"
 KILLSWITCH_ENVS = ("HAPAX_CC_PR_AUTOQUEUE_OFF", "HAPAX_CC_HYGIENE_OFF")
 
 PASS_STATES = {"SUCCESS", "SKIPPED", "NEUTRAL"}
@@ -109,6 +111,8 @@ AUTOQUEUE_ADMISSION_TTL_SECONDS = 30 * 60
 # when the blocker text changes, the proof must eventually stop advertising
 # cleared blockers.
 FAILURE_DESCRIPTION_REFRESH_SECONDS = 10 * 60
+AUTOQUEUE_REPORT_SCHEMA_VERSION = 1
+AUTOQUEUE_REPORT_STALENESS_SECONDS = 7 * 60
 CI_REPAIR_KINDS = {"cicd-speedup", "ci-repair", "ci-speedup", "merge-queue-repair"}
 CI_REPAIR_TAGS = {"cicd", "ci", "autoqueue"}
 INDEPENDENT_QUEUE_ADMISSION = {"independent", "independent_route"}
@@ -335,6 +339,200 @@ def _string_tuple(value: Any) -> tuple[str, ...]:
         return tuple(text for item in value if (text := _scalar(item)))
     text = _scalar(value)
     return (text,) if text else ()
+
+
+def _isoformat_z(value: datetime) -> str:
+    return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _file_mtime_iso(path: Path) -> str | None:
+    try:
+        return _isoformat_z(datetime.fromtimestamp(path.stat().st_mtime, tz=UTC))
+    except OSError:
+        return None
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, tuple):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, str | int | float | bool) or value is None:
+        return value
+    return str(value)
+
+
+def _admission_governor_projection(path: Path, *, observed_at: datetime) -> dict[str, Any]:
+    """Raw governor feed projection for cockpit consumers.
+
+    The autoqueue is not the admission-governor authority; it only exposes the
+    governor file state beside its own PR decisions so downstream panels can
+    render missing/stale governor data distinctly from a normal-mode governor.
+    """
+    base: dict[str, Any] = {
+        "source_id": "pr-admission-governor",
+        "authority_class": "admission-authority",
+        "path": str(path),
+        "watch": True,
+        "observed_at": _isoformat_z(observed_at),
+        "mtime": None,
+        "present": False,
+        "read_error": None,
+        "raw": None,
+        "mode": None,
+        "reason": None,
+        "set_by": None,
+        "hysteresis": {
+            "entry_open_pr_count": None,
+            "exit_below_count": None,
+            "exit_stable_ticks_required": None,
+            "stable_ticks_observed": None,
+        },
+    }
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        base["read_error"] = "missing"
+        return base
+    except OSError as exc:
+        base["read_error"] = f"unreadable:{exc.__class__.__name__}"
+        return base
+    try:
+        raw = yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        base["present"] = True
+        base["mtime"] = _file_mtime_iso(path)
+        base["read_error"] = f"yaml_error:{str(exc).splitlines()[0][:90]}"
+        return base
+    if not isinstance(raw, dict):
+        base["present"] = True
+        base["mtime"] = _file_mtime_iso(path)
+        base["read_error"] = f"not_mapping:{type(raw).__name__}"
+        return base
+    base.update(
+        {
+            "present": True,
+            "mtime": _file_mtime_iso(path),
+            "raw": _jsonable(raw),
+            "mode": raw.get("mode"),
+            "reason": raw.get("reason"),
+            "set_by": raw.get("set_by"),
+            "hysteresis": {
+                "entry_open_pr_count": raw.get("entry_open_pr_count"),
+                "exit_below_count": raw.get("exit_below_count"),
+                "exit_stable_ticks_required": raw.get("exit_stable_ticks_required"),
+                "stable_ticks_observed": raw.get("stable_ticks_observed"),
+            },
+        }
+    )
+    return base
+
+
+def _stable_pr_admission(decision: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "pr": decision["pr"],
+        "title": decision.get("title"),
+        "head_ref": decision.get("head_ref"),
+        "task_id": decision.get("task_id"),
+        "task_ids": decision.get("task_ids"),
+        "task_status": decision.get("task_status"),
+        "action": decision["action"],
+        # The verdict vocabulary is the autoqueue action itself; cockpit code
+        # must not remap it into an invented state machine.
+        "verdict": decision["action"],
+        "blockers": list(decision.get("reasons") or ()),
+        "auto_arm": bool(decision.get("auto_arm")),
+    }
+
+
+def _with_stable_feed_metadata(
+    report: dict[str, Any],
+    *,
+    report_path: Path,
+    admission_governor_path: Path,
+    now: datetime,
+) -> dict[str, Any]:
+    payload = dict(report)
+    payload.update(
+        {
+            "schema_version": AUTOQUEUE_REPORT_SCHEMA_VERSION,
+            "event": "cc_pr_autoqueue_report",
+            "generated_at": _isoformat_z(now),
+            "source_definition": {
+                "source_id": "cc-pr-autoqueue",
+                "authority_class": "per-pr-admission-verdicts",
+                "path": str(report_path),
+                "staleness_budget_seconds": AUTOQUEUE_REPORT_STALENESS_SECONDS,
+                "watch": True,
+            },
+            "consumed_sources": [
+                {
+                    "source_id": "pr-admission-governor",
+                    "authority_class": "admission-authority",
+                    "path": str(admission_governor_path),
+                    "watch": True,
+                }
+            ],
+            "admission_governor": _admission_governor_projection(
+                admission_governor_path, observed_at=now
+            ),
+            "per_pr_admission": [
+                _stable_pr_admission(decision) for decision in report.get("decisions", [])
+            ],
+        }
+    )
+    return payload
+
+
+def write_stable_report(
+    report: dict[str, Any],
+    *,
+    report_path: Path,
+    admission_governor_path: Path = DEFAULT_ADMISSION_GOVERNOR_PATH,
+    now: datetime | None = None,
+) -> tuple[dict[str, Any], tuple[bool, str]]:
+    now = now or datetime.now(UTC)
+    payload = _with_stable_feed_metadata(
+        report,
+        report_path=report_path,
+        admission_governor_path=admission_governor_path,
+        now=now,
+    )
+    try:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = report_path.with_name(f".{report_path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        tmp.replace(report_path)
+    except OSError as exc:
+        return payload, (False, f"{exc.__class__.__name__}: {exc}")
+    return payload, (True, str(report_path))
+
+
+def _finalize_reconciler_report(
+    report: dict[str, Any],
+    *,
+    report_path: Path | None,
+    admission_governor_path: Path,
+    now: datetime,
+) -> dict[str, Any]:
+    if report_path is None:
+        return report
+    payload, (ok, message) = write_stable_report(
+        report,
+        report_path=report_path,
+        admission_governor_path=admission_governor_path,
+        now=now,
+    )
+    payload["stable_report"] = {
+        "path": str(report_path),
+        "written": ok,
+        "message": message,
+    }
+    if not ok:
+        LOG.warning("stable autoqueue report write failed: %s", message)
+    return payload
 
 
 def _check_name(item: dict[str, Any]) -> str:
@@ -1352,16 +1550,25 @@ def run_reconciler(
     storm_failed_merge_group_threshold: int = DEFAULT_STORM_FAILED_MERGE_GROUP_THRESHOLD,
     storm_recent_run_limit: int = DEFAULT_STORM_RECENT_RUN_LIMIT,
     auto_arm_ledger_path: Path | None = None,
+    report_path: Path | None = None,
+    admission_governor_path: Path = DEFAULT_ADMISSION_GOVERNOR_PATH,
     runner: Any = None,
 ) -> dict[str, Any]:
+    now = datetime.now(UTC)
     if any(os.environ.get(name) == "1" for name in KILLSWITCH_ENVS):
-        return {
+        report = {
             "repo": repo,
             "apply": apply,
             "skipped": True,
             "reason": "killswitch",
             "killswitch_envs": list(KILLSWITCH_ENVS),
         }
+        return _finalize_reconciler_report(
+            report,
+            report_path=report_path,
+            admission_governor_path=admission_governor_path,
+            now=now,
+        )
 
     repo_root = repo_root or default_repo_root()
     tasks = load_task_notes(vault_root)
@@ -1380,7 +1587,6 @@ def run_reconciler(
         )
         for pr in prs
     ]
-    now = datetime.now(UTC)
     lineage_records = read_jsonl_records(lineage_ledger_path) if lineage_ledger_path else []
     throttle_policy = FleetThrottlePolicy(advisory_open_pr_count=advisory_open_pr_count)
     # Quarantine WRITE side (FM-3/FM-4 reversible quarantine): open quarantines for
@@ -1530,7 +1736,7 @@ def run_reconciler(
                 }
             mutation_results.append(result)
 
-    return {
+    report = {
         "repo": repo,
         "apply": apply,
         "require_route_metadata": require_route_metadata,
@@ -1574,6 +1780,12 @@ def run_reconciler(
         },
         "mutations": mutation_results,
     }
+    return _finalize_reconciler_report(
+        report,
+        report_path=report_path,
+        admission_governor_path=admission_governor_path,
+        now=now,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1612,6 +1824,23 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=DEFAULT_LEDGER_PATH,
         help="Merge queue lineage JSONL used to classify recent failed non-ready runs.",
+    )
+    parser.add_argument(
+        "--report-path",
+        type=Path,
+        default=DEFAULT_REPORT_PATH,
+        help="Stable JSON feed path for cockpit/coord consumers.",
+    )
+    parser.add_argument(
+        "--admission-governor-path",
+        type=Path,
+        default=DEFAULT_ADMISSION_GOVERNOR_PATH,
+        help="Admission governor YAML path included raw in the stable report.",
+    )
+    parser.add_argument(
+        "--no-write-report",
+        action="store_true",
+        help="Do not write the stable cockpit/coord JSON feed.",
     )
     parser.add_argument(
         "--disable-storm-mode",
@@ -1672,6 +1901,8 @@ def main(argv: list[str] | None = None) -> int:
         advisory_open_pr_count=args.advisory_open_pr_count,
         storm_failed_merge_group_threshold=args.storm_failed_merge_group_threshold,
         storm_recent_run_limit=args.storm_recent_run_limit,
+        report_path=None if args.no_write_report else args.report_path,
+        admission_governor_path=args.admission_governor_path,
     )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0

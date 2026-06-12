@@ -1214,6 +1214,131 @@ def test_dequeues_queued_pr_when_required_checks_are_absent(tmp_path: Path) -> N
     )
 
 
+def test_writes_stable_report_with_verbatim_governor_and_blockers(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="blocked-task", pr=84, status="claimed")
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(84)]
+    governor_path = tmp_path / "pr-admission-governor.yaml"
+    governor_raw = {
+        "mode": "frozen",
+        "updated": "2026-06-12T00:00:00Z",
+        "set_by": "auto",
+        "reason": "auto-freeze: fixture reason",
+        "entry_open_pr_count": 12,
+        "exit_below_count": 5,
+        "exit_stable_ticks_required": 3,
+        "stable_ticks_observed": 2,
+        "allowed_existing_branches": ["feat/84"],
+    }
+    governor_path.write_text(yaml.safe_dump(governor_raw, sort_keys=False), encoding="utf-8")
+    report_path = tmp_path / "orchestration" / "cc-pr-autoqueue-report.json"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+        report_path=report_path,
+        admission_governor_path=governor_path,
+    )
+
+    assert report["stable_report"]["written"] is True
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == autoqueue.AUTOQUEUE_REPORT_SCHEMA_VERSION
+    assert payload["source_definition"] == {
+        "source_id": "cc-pr-autoqueue",
+        "authority_class": "per-pr-admission-verdicts",
+        "path": str(report_path),
+        "staleness_budget_seconds": autoqueue.AUTOQUEUE_REPORT_STALENESS_SECONDS,
+        "watch": True,
+    }
+    assert payload["admission_governor"]["raw"] == governor_raw
+    assert payload["admission_governor"]["mode"] == "frozen"
+    assert payload["admission_governor"]["reason"] == "auto-freeze: fixture reason"
+    assert payload["admission_governor"]["set_by"] == "auto"
+    assert payload["admission_governor"]["hysteresis"] == {
+        "entry_open_pr_count": 12,
+        "exit_below_count": 5,
+        "exit_stable_ticks_required": 3,
+        "stable_ticks_observed": 2,
+    }
+    assert payload["per_pr_admission"] == [
+        {
+            "pr": 84,
+            "title": "PR 84",
+            "head_ref": "feat/84",
+            "task_id": "blocked-task",
+            "task_ids": None,
+            "task_status": "claimed",
+            "action": "blocked",
+            "verdict": "blocked",
+            "blockers": ["active_task_status_not_ready:claimed"],
+            "auto_arm": False,
+        }
+    ]
+
+
+def test_stable_report_marks_missing_governor_without_defaulting_normal(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="ready-task", pr=85)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(85)]
+    report_path = tmp_path / "orchestration" / "cc-pr-autoqueue-report.json"
+
+    autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+        report_path=report_path,
+        admission_governor_path=tmp_path / "missing-governor.yaml",
+    )
+
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    governor = payload["admission_governor"]
+    assert governor["present"] is False
+    assert governor["read_error"] == "missing"
+    assert governor["raw"] is None
+    assert governor["mode"] is None
+    assert governor["hysteresis"]["exit_below_count"] is None
+
+
+def test_stable_report_jsonifies_governor_yaml_scalars(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="ready-task", pr=86)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(86)]
+    governor_path = tmp_path / "pr-admission-governor.yaml"
+    governor_path.write_text(
+        "\n".join(
+            [
+                "mode: frozen",
+                "updated: 2026-06-12",
+                "entry_open_pr_count: 10",
+                "exit_below_count: 6",
+                "exit_stable_ticks_required: 2",
+                "stable_ticks_observed: 1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    report_path = tmp_path / "orchestration" / "cc-pr-autoqueue-report.json"
+
+    autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+        report_path=report_path,
+        admission_governor_path=governor_path,
+    )
+
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["admission_governor"]["raw"]["updated"] == "2026-06-12"
+
+
 def test_stabilization_holds_downstream_prs_while_ci_repair_is_active(
     tmp_path: Path,
 ) -> None:
