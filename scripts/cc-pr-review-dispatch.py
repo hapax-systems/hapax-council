@@ -82,9 +82,9 @@ PARSEABLE_VERDICTS = {"accept", "accept-with-findings", "block"}
 #: family whose seats ALL hit a provider wall in a round is OUT for the next
 #: constitutions until a seat answers again or the TTL lapses. The TTL keeps
 #: a stale outage from degrading reviews after a quiet recovery.
-FAMILY_OUTAGE_STATE = Path.home() / ".cache" / "hapax" / "review-team" / "family-outage.json"
+FAMILY_OUTAGE_STATE = review_team.FAMILY_OUTAGE_STATE  # canonical path lives with the validator
 DEGRADED_MERGES_LEDGER = Path.home() / ".cache" / "hapax" / "review-team" / "degraded-merges.jsonl"
-FAMILY_OUTAGE_TTL_S = 2 * 3600
+FAMILY_OUTAGE_TTL_S = review_team.FAMILY_OUTAGE_TTL_S
 
 
 def load_family_outage(now_iso: str, state_path: Path | None = None) -> frozenset[str]:

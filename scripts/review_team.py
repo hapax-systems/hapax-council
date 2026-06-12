@@ -22,10 +22,12 @@ the admission blockers; the dispatcher killswitch is
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -61,19 +63,42 @@ TEAM_CLASS_RANK = {"t3_docs": 0, "t2_standard": 1, "t1_critical": 2}
 _QUOTA_WALL_RE = re.compile(
     r"(hit your (weekly|usage|session|5-hour) limit"
     r"|usage limit (reached|exceeded)"
-    r"|rate.?limit"
-    r"|\bquota\b"
+    r"|rate.?limit(ed)?\s+(reached|exceeded|hit)"
+    r"|too many requests"
+    r"|quota\s+(exceeded|reached|exhausted)"
     r"|RESOURCE_EXHAUSTED"
     r"|\b429\b"
     r"|resets \d{1,2}\s?[ap]m)",
     re.IGNORECASE,
 )
 
+#: Real provider walls are terse one-liners. A long unparseable reply that
+#: merely MENTIONS quota-ish words (a half-written review of rate-limit code,
+#: or attacker-influenced diff text echoed back) must never classify as a
+#: wall — that would forge a family outage and degrade the next constitution
+#: (round-4 review finding).
+_QUOTA_WALL_MAX_CHARS = 600
+
+#: The dispatcher's family-outage witness state (canonical path; the
+#: dispatcher aliases this). Admission consults it so a forged dossier
+#: cannot self-certify a degradation (round-4 review finding).
+FAMILY_OUTAGE_STATE = Path.home() / ".cache" / "hapax" / "review-team" / "family-outage.json"
+FAMILY_OUTAGE_TTL_S = 2 * 3600
+
 
 def is_quota_wall(text: str) -> bool:
-    """True when reviewer output/error text is a provider usage wall."""
+    """True when reviewer output/error text is a provider usage wall.
 
-    return bool(text) and bool(_QUOTA_WALL_RE.search(text))
+    Deliberately strict: phrase-level patterns only, and only on SHORT
+    text — forging an outage must be harder than hitting one.
+    """
+
+    if not text:
+        return False
+    stripped = text.strip()
+    if len(stripped) > _QUOTA_WALL_MAX_CHARS:
+        return False
+    return bool(_QUOTA_WALL_RE.search(stripped))
 
 
 GATE_KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_GATE_OFF"
@@ -597,6 +622,7 @@ def _dossier_validity_blockers(
     pr_number: int | None = None,
     changed_files: Sequence[str] | None = None,
     changed_file_count: int | None = None,
+    outage_state_path: Path | None = None,
 ) -> tuple[str, ...]:
     blockers: list[str] = []
     scoped_files = (
@@ -659,6 +685,33 @@ def _dossier_validity_blockers(
             blockers.append("review_dossier_degradation_flags_inconsistent")
             return tuple(blockers)
         degraded_outage = _note_out
+        # external witness (round-4 finding: dossier-internal consistency can
+        # be forged wholesale): each degraded family must appear in the
+        # dispatcher's outage state with observed_at within TTL BEFORE this
+        # dossier's constituted_at. Recovery clears the state entry, which
+        # mechanically enforces post_recovery_rereview_required — degraded
+        # dossiers stop admitting the moment the family answers again.
+        witness_path = outage_state_path or FAMILY_OUTAGE_STATE
+        unwitnessed = list(degraded_outage)
+        try:
+            witness_state = json.loads(Path(witness_path).read_text(encoding="utf-8"))
+            constituted = datetime.fromisoformat(str(dossier.get("constituted_at")))
+            unwitnessed = []
+            for fam in degraded_outage:
+                try:
+                    observed = datetime.fromisoformat(str(witness_state.get(fam)))
+                    age_s = (constituted - observed).total_seconds()
+                    if not (0 <= age_s <= FAMILY_OUTAGE_TTL_S):
+                        unwitnessed.append(fam)
+                except (TypeError, ValueError):
+                    unwitnessed.append(fam)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass  # unreadable witness state -> every family stays unwitnessed
+        if unwitnessed:
+            blockers.append(
+                "review_dossier_degradation_unwitnessed:" + ",".join(sorted(unwitnessed))
+            )
+            return tuple(blockers)
         if sizing_degraded:
             sizing = (registry.get("sizing") or {}).get("t2_standard")
             if not isinstance(sizing, Mapping):
@@ -797,6 +850,7 @@ def review_dossier_validity_blockers(
     changed_files: Sequence[str] | None = None,
     changed_file_count: int | None = None,
     registry: Mapping[str, Any] | None = None,
+    outage_state_path: Path | None = None,
 ) -> tuple[str, ...]:
     """Validate a recorded review dossier without honoring any gate killswitch."""
 
@@ -828,6 +882,7 @@ def review_dossier_validity_blockers(
         pr_number=pr_number,
         changed_files=changed_files,
         changed_file_count=changed_file_count,
+        outage_state_path=outage_state_path,
     )
 
 
@@ -840,6 +895,7 @@ def review_team_verdict_blockers(
     changed_files: Sequence[str] | None = None,
     changed_file_count: int | None = None,
     registry: Mapping[str, Any] | None = None,
+    outage_state_path: Path | None = None,
 ) -> tuple[str, ...]:
     """Admission blockers from the review-team quorum gate (no quorum, no merge).
 
@@ -863,4 +919,5 @@ def review_team_verdict_blockers(
         changed_files=changed_files,
         changed_file_count=changed_file_count,
         registry=registry,
+        outage_state_path=outage_state_path,
     )

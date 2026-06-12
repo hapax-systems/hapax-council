@@ -7,6 +7,7 @@ Spec: ~/Documents/Personal/30-areas/hapax/pr-review-team-design-2026-06-11.md
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -962,7 +963,10 @@ class TestFamilyOutageDegradation:
         rt = _load_review_team_module()
         note = _write_dossier(tmp_path, "task-x", self._degraded_dossier(rt))
         blockers = rt.review_team_verdict_blockers(
-            self._tfb_frontmatter(), note, pr_head_sha="a" * 40
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=self._witness(tmp_path),
         )
         assert blockers == (), f"degraded dossier must admit, got: {blockers}"
 
@@ -995,7 +999,10 @@ class TestFamilyOutageDegradation:
         )
         note = _write_dossier(tmp_path, "task-x", dossier)
         blockers = rt.review_team_verdict_blockers(
-            self._tfb_frontmatter(), note, pr_head_sha="a" * 40
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=self._witness(tmp_path),
         )
         assert any(b.startswith("review_dossier_degraded_family_was_seated:") for b in blockers)
 
@@ -1031,7 +1038,10 @@ class TestFamilyOutageDegradation:
         assert dossier["degraded_family_outage"] == ["claude"]
         note = _write_dossier(tmp_path, "task-x", dossier)
         blockers = rt.review_team_verdict_blockers(
-            self._tfb_frontmatter(), note, pr_head_sha="a" * 40
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=self._witness(tmp_path),
         )
         assert blockers == (), f"t2 outage dossier must admit by its own rules, got: {blockers}"
 
@@ -1059,5 +1069,53 @@ class TestFamilyOutageDegradation:
         assert "review_dossier_degradation_flags_inconsistent" in blockers
 
     @staticmethod
+    def _witness(tmp_path, families=("claude",), observed="2026-06-11T19:30:00+00:00"):
+        p = tmp_path / "family-outage.json"
+        p.write_text(json.dumps({f: observed for f in families}), encoding="utf-8")
+        return p
+
+    @staticmethod
     def _tfb_frontmatter(task_id: str = "task-x") -> dict:
         return {"task_id": task_id}
+
+    def test_unwitnessed_degradation_blocks_admission(self, tmp_path) -> None:
+        """Round-4 finding: dossier-internal consistency can be forged — the
+        dispatcher's outage state is the external witness, and without it a
+        degraded dossier must not admit."""
+
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._degraded_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=tmp_path / "absent-witness.json",
+        )
+        assert any(b.startswith("review_dossier_degradation_unwitnessed:") for b in blockers)
+
+    def test_recovered_witness_invalidates_pending_degraded_admission(self, tmp_path) -> None:
+        # the family recovered (entry cleared) -> the pending degraded dossier
+        # stops admitting: post_recovery_rereview_required, enforced mechanically
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._degraded_dossier(rt))
+        empty_witness = tmp_path / "family-outage.json"
+        empty_witness.write_text("{}", encoding="utf-8")
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=empty_witness,
+        )
+        assert any(b.startswith("review_dossier_degradation_unwitnessed:") for b in blockers)
+
+    def test_long_quotaish_review_text_is_not_a_wall(self) -> None:
+        # round-4: forging an outage via reply content must be harder than
+        # hitting one — long unparseable text mentioning quota words stays
+        # invalid-output
+        rt = _load_review_team_module()
+        long_reply = (
+            "This change refactors the rate limit reached handling and the "
+            "quota exceeded paths in the ingestion layer. " * 20
+        )
+        assert len(long_reply) > 600
+        assert not rt.is_quota_wall(long_reply)
