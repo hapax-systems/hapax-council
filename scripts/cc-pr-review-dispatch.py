@@ -142,9 +142,28 @@ def fetch_pr_diff(pr_number: int, *, repo: str, repo_root: Path, runner: Any) ->
 def truncate_diff(diff: str, limit: int = MAX_DIFF_CHARS) -> str:
     if len(diff) <= limit:
         return diff
-    return (
-        diff[:limit] + f"\n[diff truncated at {limit} chars — run `gh pr diff` for the full diff]\n"
+    marker = (
+        f"[diff truncated to balanced per-file excerpts at {limit} chars — "
+        "run `gh pr diff` for the full diff]\n"
     )
+    starts = [match.start() for match in re.finditer(r"(?m)^diff --git ", diff)]
+    if not starts:
+        return diff[:limit] + "\n" + marker
+    spans = [
+        diff[start : starts[index + 1] if index + 1 < len(starts) else len(diff)]
+        for index, start in enumerate(starts)
+    ]
+    per_file = max(1, (limit - len(marker) - (80 * len(spans))) // max(1, len(spans)))
+    chunks: list[str] = [marker]
+    for span in spans:
+        if len(span) <= per_file:
+            chunks.append(span)
+        else:
+            first_line = span.splitlines()[0] if span.splitlines() else "diff --git <unknown>"
+            chunks.append(
+                span[:per_file] + f"\n[file diff truncated at {per_file} chars for {first_line}]\n"
+            )
+    return "\n".join(chunks)
 
 
 def truncate_context(text: str, limit: int = MAX_TASK_NOTE_CHARS) -> str:
@@ -409,7 +428,7 @@ def write_acceptance_receipt_if_due(
         frontmatter,
         note_path,
         pr_head_sha=str(dossier.get("head_sha") or ""),
-        changed_files=changed_files,
+        changed_files=changed_files or (),
     )
     if blockers:
         LOG.warning("acceptance receipt withheld; review-team gate blocks: %s", ",".join(blockers))
@@ -597,27 +616,41 @@ def review_pr(
         except (OSError, yaml.YAMLError):
             existing = None
         if isinstance(existing, dict) and existing.get("head_sha") == pr_info.head_sha:
-            side_effects = {}
-            if apply:
-                side_effects = replay_dossier_side_effects(
-                    frontmatter,
-                    note_path,
-                    task_id,
-                    existing,
-                    repo=repo,
-                    now_iso=now_iso,
-                    registry=registry,
-                    wake_dir=wake_dir,
-                    send_runner=send_runner,
-                    changed_files=pr_info.files,
+            existing_blockers = review_team.review_dossier_validity_blockers(
+                frontmatter,
+                note_path,
+                pr_head_sha=pr_info.head_sha,
+                changed_files=pr_info.files or (),
+                registry=registry,
+            )
+            if existing_blockers:
+                LOG.info(
+                    "current-head dossier is not admissible; re-reviewing PR #%d: %s",
+                    pr_number,
+                    ",".join(existing_blockers),
                 )
-            return {
-                "status": "skipped_fresh",
-                "pr": pr_number,
-                "dossier_path": str(dossier_path),
-                "review_team_verdict": existing.get("review_team_verdict"),
-                "side_effects": side_effects,
-            }
+            else:
+                side_effects = {}
+                if apply:
+                    side_effects = replay_dossier_side_effects(
+                        frontmatter,
+                        note_path,
+                        task_id,
+                        existing,
+                        repo=repo,
+                        now_iso=now_iso,
+                        registry=registry,
+                        wake_dir=wake_dir,
+                        send_runner=send_runner,
+                        changed_files=pr_info.files,
+                    )
+                return {
+                    "status": "skipped_fresh",
+                    "pr": pr_number,
+                    "dossier_path": str(dossier_path),
+                    "review_team_verdict": existing.get("review_team_verdict"),
+                    "side_effects": side_effects,
+                }
 
     lenses = review_team.lenses_for_files(pr_info.files, registry)
     team_class = review_team.team_class_for(frontmatter, pr_info.files, registry)

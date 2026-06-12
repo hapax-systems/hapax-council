@@ -15,13 +15,13 @@
 ## Design decisions locked here
 
 1. **Dossier location/keying** — same pattern as acceptance receipts: `<task_id>.review-dossier.yaml` beside the task note. Keyed to `head_sha`; a push/synchronize invalidates the old dossier (gate emits `review_dossier_stale_head:*`).
-2. **Gate placement** — `_task_blockers()` in cc-pr-autoqueue.py, right after `acceptance_receipt_blockers()`, with a new `pr_head_sha` parameter threaded from `classify_pr`. Reason codes name the truth (sdlc-legibility): `missing_review_dossier`, `review_dossier_malformed:*`, `review_dossier_stale_head:<sha8>`, `review_dossier_quorum_not_met:<accepts>/<required>`, `review_dossier_unresolved_critical:<count>`, `review_dossier_family_diversity:<detail>`, `review_team_verdict_not_quorum_accept:<verdict>`.
-3. **Gate recomputes, never trusts** — the gate re-derives accepts/criticals/family-diversity from the dossier's reviewer entries; the `review_team_verdict` field must ALSO say `quorum-accept` (fail-closed both ways, anti-theater).
+2. **Gate placement** — `_task_blockers()` in cc-pr-autoqueue.py, right after `acceptance_receipt_blockers()`, with `pr_head_sha` and changed-file paths threaded from `classify_pr`. Reason codes name the truth (sdlc-legibility): `missing_review_dossier`, `review_dossier_changed_files_unknown`, `review_dossier_malformed:*`, `review_dossier_stale_head:<sha8>`, `review_dossier_team_class_scope_mismatch:<recorded>!=<expected>`, `review_dossier_missing_required_lenses:<lenses>`, `review_dossier_quorum_not_met:<accepts>/<required>`, `review_dossier_unresolved_critical:<count>`, `review_dossier_family_diversity:<detail>`, `review_team_verdict_not_quorum_accept:<verdict>`.
+3. **Gate recomputes, never trusts** — the gate re-derives expected team class and mandatory lenses from the PR changed-file list, and re-derives accepts/criticals/family-diversity from the dossier's reviewer entries. The `review_team_verdict` field must ALSO say `quorum-accept` (fail-closed both ways, anti-theater). Missing or empty changed-file scope blocks admission rather than downgrading to T2/always-on.
 4. **Rollout killswitch** — `HAPAX_REVIEW_TEAM_GATE_OFF=1` disables only the new blockers (the whole-autoqueue killswitches stay as-is). Default ON per ratified directive "No quorum, no merge". Dispatcher has `HAPAX_REVIEW_TEAM_DISPATCH_OFF=1`.
 5. **Dossier IS the acceptance receipt** — on quorum-accept for a `frontier_review_required` task, the dispatcher writes `<task_id>.acceptance.yaml` (acceptor `review-team:<families>`, artifact = dossier path + PR URL) unless a receipt already exists. `shared/sdlc_lifecycle.py` is NOT modified.
 6. **Blindness** — each reviewer gets PR meta + diff + charter texts + output contract; never another reviewer's verdict. Prior-sha unresolved criticals for the same PR ARE included (resolution verification, not peeking).
-7. **Classification at dispatch time only** — the gate never needs changed-file lists; it reads `team_class`/`quorum_required` recorded in the dossier.
-8. **Reviewer invocation** — family roster in the registry holds argv templates (prompt on stdin): claude `claude -p`, codex `codex exec --sandbox read-only -`, gemini `gemini --approval-mode plan -p` (tunable in config without code change). Dispatcher abstracts this behind a `runner` callable so tests stub it.
+7. **Classification is replayable at admission** — the dispatcher records `team_class`, `quorum_required`, and lenses in the dossier, but the gate recomputes the expected class and lens floor from the PR changed-file list before trusting the dossier.
+8. **Reviewer invocation** — family roster in the registry holds argv templates (prompt on stdin): claude `claude -p`, codex `codex exec --sandbox read-only -`, gemini `gemini --skip-trust --approval-mode plan -p "Perform the review request provided on stdin; reply with ONLY the dossier YAML."` (tunable in config without code change). Dispatcher abstracts this behind a `runner` callable so tests stub it.
 9. **Invalid reviewer output fails closed** — unparseable verdict YAML records `verdict: invalid-output` (never counts toward quorum).
 10. **Writer family never holds the majority alone** — derived from the task's lane (`assigned_to`) via the registry `lane_families` map; constitution caps writer-family seats at `ceil(n/2)-1` for T2+, and T1 requires all three families.
 
@@ -31,7 +31,7 @@
 - Create: `config/review-lenses/<lens>.md` × 21 — versioned charter checklists
 - Create: `scripts/review_team.py` — pure logic: registry, selection, constitution, synthesis, gate blockers
 - Create: `scripts/cc-pr-review-dispatch.py` — dispatcher CLI (gh fetch, prompts, parallel dispatch, dossier/comment/receipt/auto-wake)
-- Modify: `scripts/cc-pr-autoqueue.py` — import review_team; `_task_blockers(..., pr_head_sha)`; killswitch
+- Modify: `scripts/cc-pr-autoqueue.py` — import review_team; `_task_blockers(..., pr_head_sha, changed_files)`; changed-file scope fail-closed; killswitch
 - Create: `tests/test_review_team.py`, `tests/test_cc_pr_review_dispatch.py`
 - Modify: `tests/test_cc_pr_autoqueue.py` — admission blocks without quorum / admits with quorum dossier
 
@@ -83,10 +83,10 @@ Trust boundaries: **security** (input validation at boundary, no secret leakage,
 
 ### Task 5: Gate wiring in cc-pr-autoqueue.py
 
-**Files:** Modify `scripts/cc-pr-autoqueue.py` (import + `_task_blockers` + `classify_pr` head_sha threading); Modify `tests/test_cc_pr_autoqueue.py`.
+**Files:** Modify `scripts/cc-pr-autoqueue.py` (import + `_task_blockers` + `classify_pr` head_sha and changed-file threading); Modify `tests/test_cc_pr_autoqueue.py`.
 
-- [ ] **Step 1: Failing tests:** matched ready task + green PR + NO dossier → action blocked with `missing_review_dossier`; with quorum-accept dossier at matching head_sha → queue; stale sha → blocked; `HAPAX_REVIEW_TEAM_GATE_OFF=1` → queue.
-- [ ] **Step 2-4: Wire + green.** `sys.path` gains scripts dir (mirror REPO_ROOT pattern); `import review_team`; `_task_blockers(..., pr_head_sha=pr.head_sha)` extends with `review_team.review_team_verdict_blockers(...)` after acceptance receipt line.
+- [ ] **Step 1: Failing tests:** matched ready task + green PR + NO dossier → action blocked with `missing_review_dossier`; with quorum-accept dossier at matching head_sha and matching changed-file scope → queue; stale sha → blocked; missing/empty changed-file scope → blocked with `review_dossier_changed_files_unknown`; surface-required class/lens mismatch → blocked; `HAPAX_REVIEW_TEAM_GATE_OFF=1` → queue.
+- [ ] **Step 2-4: Wire + green.** `sys.path` gains scripts dir (mirror REPO_ROOT pattern); `import review_team`; fetch `files` from `gh pr list`; `_task_blockers(..., pr_head_sha=pr.head_sha, changed_files=pr.files)` extends with `review_team.review_team_verdict_blockers(...)` after acceptance receipt line.
 - [ ] **Step 5: Run FULL existing autoqueue test file** (regressions: every pre-existing test now needs either the killswitch fixture or a dossier — prefer an autouse monkeypatch fixture setting the killswitch in legacy tests, with the new tests explicitly clearing it; keeps 100+ assertions honest without rewriting them).
 - [ ] **Step 6: Commit** `feat(autoqueue): review-team quorum admission gate`.
 
@@ -94,13 +94,13 @@ Trust boundaries: **security** (input validation at boundary, no secret leakage,
 
 **Files:** Create `scripts/cc-pr-review-dispatch.py`; Test `tests/test_cc_pr_review_dispatch.py`.
 
-- [ ] **Step 1: Failing tests** (stub `gh` runner + stub reviewer runner): `--pr N` dry-run prints constitution (class, lenses, seats); `--apply` calls reviewer runner once per seat with blind prompts (assert: no prompt contains another reviewer's verdict; charters + diff + output contract present); YAML fence extraction parses verdict; garbage output → `invalid-output`; diff truncated at 200KB with truncation notice.
+- [ ] **Step 1: Failing tests** (stub `gh` runner + stub reviewer runner): `--pr N` dry-run prints constitution (class, lenses, seats); `--apply` calls reviewer runner once per seat with blind prompts (assert: no prompt contains another reviewer's verdict; charters + diff + output contract present); YAML fence extraction parses verdict; garbage output → `invalid-output`; oversized diffs are truncated into bounded per-file excerpts with a truncation notice.
 - [ ] **Step 2-4: TDD.** `gh pr view --json number,title,body,headRefName,headRefOid,isDraft,files` + `gh pr diff`; task-note lookup via `review_team.find_task_note(vault_root, pr_number, head_ref)`; ThreadPoolExecutor dispatch with per-family timeout; prompt = header + task/PR meta + prior unresolved criticals (same PR) + charter texts + diff + output contract (yaml fence, verdict enum, findings with file:line, checklist per lens item).
 - [ ] **Step 5: Commit** `feat(review-team): blind parallel dispatcher`.
 
 ### Task 7: Dispatcher side-effects — dossier, comment, receipt, auto-wake
 
-- [ ] **Step 1: Failing tests:** dossier written beside note; markdown comment body posted via gh runner (contains per-reviewer verdicts + escalations at top); quorum-accept + review-floor → acceptance.yaml written (acceptor `review-team:<families>`, artifact = dossier path + PR url), existing receipt never overwritten; BLOCK/critical → wake payload file `~/.cache/hapax/review-team/wake/<task_id>-<sha8>.md` (path overridable for tests) + best-effort lane send invoked; idempotency: existing same-sha dossier → skip unless `--force`; `--all` scans open PRs and skips fresh-dossier ones.
+- [ ] **Step 1: Failing tests:** dossier written beside note; markdown comment body posted via gh runner (contains per-reviewer verdicts + escalations at top); quorum-accept + review-floor + gate-valid current changed-file scope → acceptance.yaml written (acceptor `review-team:<families>`, artifact = dossier path + PR url), existing receipt never overwritten; BLOCK/critical → wake payload file `~/.cache/hapax/review-team/wake/<task_id>-<sha8>.md` (path overridable for tests) + best-effort lane send invoked; idempotency: existing same-sha gate-valid dossier → skip unless `--force`; existing same-sha blocked/no-quorum/invalid dossier → re-review without manual `--force`; `--all` scans open PRs and skips only fresh admissible dossiers.
 - [ ] **Step 2-4: TDD until green.** Lane send: `scripts/hapax-{claude,codex,gemini}-send --session <lane> -- <short pointer to payload file>` chosen by lane_families; failures logged, never fatal.
 - [ ] **Step 5: Commit** `feat(review-team): dossier receipts, PR comment, critical auto-wake`.
 

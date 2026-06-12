@@ -502,6 +502,11 @@ def _dossier_validity_blockers(
     changed_files: Sequence[str] | None = None,
 ) -> tuple[str, ...]:
     blockers: list[str] = []
+    scoped_files = (
+        tuple(f.strip() for f in changed_files if f and f.strip())
+        if changed_files is not None
+        else None
+    )
 
     dossier_sha = str(dossier.get("head_sha") or "")
     if not dossier_sha:
@@ -517,11 +522,14 @@ def _dossier_validity_blockers(
         blockers.append(f"review_dossier_malformed:unknown_team_class:{team_class or 'missing'}")
         return tuple(blockers)
     if changed_files is not None:
-        expected_team_class = team_class_for(frontmatter or {}, changed_files, registry)
-        if team_class != expected_team_class:
-            blockers.append(
-                f"review_dossier_team_class_scope_mismatch:{team_class}!={expected_team_class}"
-            )
+        if not scoped_files:
+            blockers.append("review_dossier_changed_files_unknown")
+        else:
+            expected_team_class = team_class_for(frontmatter or {}, scoped_files, registry)
+            if team_class != expected_team_class:
+                blockers.append(
+                    f"review_dossier_team_class_scope_mismatch:{team_class}!={expected_team_class}"
+                )
     else:
         class_floor = _task_class_floor(frontmatter)
         if class_floor is not None and team_class != class_floor:
@@ -547,8 +555,8 @@ def _dossier_validity_blockers(
         blockers.append("review_dossier_malformed:lenses")
         lenses = []
     required_lenses = set(
-        lenses_for_files(changed_files, registry)
-        if changed_files is not None
+        lenses_for_files(scoped_files, registry)
+        if scoped_files is not None
         else registry.get("always_on_lenses") or []
     )
     missing_required_lenses = required_lenses - set(lenses)

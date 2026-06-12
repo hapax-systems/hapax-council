@@ -569,6 +569,17 @@ class TestVerdictBlockers:
             for b in blockers
         )
 
+    def test_empty_changed_file_scope_blocks(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._good_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            changed_files=(),
+        )
+        assert "review_dossier_changed_files_unknown" in blockers
+
     def test_unregistered_accept_family_blocks_even_if_family_count_passes(
         self, tmp_path: Path
     ) -> None:

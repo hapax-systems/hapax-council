@@ -23,6 +23,18 @@ reliable legibility (ideally all three).*
 ## Enforcement
 
 - `scripts/cc-task-lint` — run any time; CI-friendly exit codes.
+- `uv run python scripts/cc-pr-review-dispatch.py --pr <PR> --repo hapax-systems/hapax-council`
+  — recheck the review-team constitution plan and linked task note without
+  mutating reviewer artifacts.
+- `uv run python scripts/cc-pr-review-dispatch.py --pr <PR> --repo hapax-systems/hapax-council --apply`
+  — produce or refresh the review-team dossier through automation; acceptance
+  receipts are written only by this path after quorum acceptance and gate-valid
+  dossier scope.
+- `uv run python scripts/cc-pr-autoqueue.py --repo hapax-systems/hapax-council --limit 100`
+  — recheck merge admission; PR-linked tasks without a current quorum dossier
+  report `missing_review_dossier`, stale dossiers report
+  `review_dossier_stale_head:*`, and unavailable changed-file scope reports
+  `review_dossier_changed_files_unknown`.
 - `cc-pr-autoqueue` logs every unparseable note per run and appends the
   filenames to any `missing_cc_task_link` reason.
 

@@ -299,11 +299,17 @@ class TestApply:
 
     def test_diff_is_truncated(self, tmp_path: Path) -> None:
         gh = FakeGh()
-        gh.diff = "diff --git a/x b/x\n" + ("+x\n" * 200_000)
+        gh.diff = (
+            "diff --git a/first b/first\n"
+            + ("+x\n" * 200_000)
+            + "diff --git a/scripts/review_team.py b/scripts/review_team.py\n"
+            + "+balanced later file sentinel\n"
+        )
         _, _, reviewers, _ = _review(tmp_path, gh=gh)
         for _, _, prompt in reviewers.invocations:
             assert len(prompt) < 400_000
             assert "[diff truncated" in prompt
+            assert "balanced later file sentinel" in prompt
 
     def test_skips_fresh_dossier_without_force(self, tmp_path: Path) -> None:
         result, _, reviewers, note = _review(tmp_path)
@@ -325,6 +331,28 @@ class TestApply:
         )
         assert result2["status"] == "skipped_fresh"
         assert reviewers2.invocations == []
+
+    def test_same_head_blocked_dossier_re_reviews_without_force(self, tmp_path: Path) -> None:
+        first_reviewers = RecordingReviewers(replies={"claude": BLOCK_REPLY})
+        first, _, _, note = _review(tmp_path, reviewers=first_reviewers)
+        assert first["dossier"]["review_team_verdict"] == "blocked"
+
+        second_reviewers = RecordingReviewers()
+        second = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=note.parent.parent,
+            apply=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=second_reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T22:00:00+00:00",
+        )
+        assert second["status"] == "dispatched"
+        assert second["dossier"]["review_team_verdict"] == "quorum-accept"
+        assert second_reviewers.invocations
 
     def test_skipped_fresh_quorum_dossier_replays_missing_receipt(self, tmp_path: Path) -> None:
         result, _, _, note = _review(
@@ -591,6 +619,7 @@ class TestExitPredicate:
             "body": "",
             "headRefName": "feat/42",
             "headRefOid": "c" * 40,
+            "files": [{"path": "shared/foo.py"}, {"path": "tests/test_foo.py"}],
             "isDraft": False,
             "mergeStateStatus": "CLEAN",
             "labels": [],

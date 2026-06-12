@@ -182,7 +182,7 @@ class PullRequest:
     title: str
     head_ref: str
     head_sha: str | None
-    files: tuple[str, ...]
+    files: tuple[str, ...] | None
     body: str
     is_draft: bool
     merge_state_status: str
@@ -416,10 +416,15 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
         number = int(item["number"])
     except (KeyError, TypeError, ValueError):
         return None
-    files = tuple(
-        str(entry["path"])
-        for entry in item.get("files") or []
-        if isinstance(entry, dict) and entry.get("path")
+    files_payload = item.get("files")
+    files = (
+        tuple(
+            str(entry["path"])
+            for entry in files_payload
+            if isinstance(entry, dict) and entry.get("path")
+        )
+        if isinstance(files_payload, list)
+        else None
     )
     return PullRequest(
         number=number,
@@ -675,7 +680,7 @@ def _task_blockers(
             task.frontmatter,
             task.path,
             pr_head_sha=pr_head_sha,
-            changed_files=changed_files,
+            changed_files=changed_files or (),
         )
     )
 

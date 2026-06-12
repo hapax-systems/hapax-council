@@ -153,6 +153,15 @@ class TestReviewTeamGate:
             for r in decision.reasons
         )
 
+    def test_empty_changed_file_scope_blocks(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", pr=42)
+        _write_review_dossier(vault, "task-a", head_sha="sha-42")
+        decision = self._classify(vault, _pr(42, files=[]))
+        assert decision.action == "blocked"
+        assert "review_dossier_changed_files_unknown" in decision.reasons
+
     def test_stale_dossier_blocks_after_push(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -327,6 +336,7 @@ def _pr(
     review_decision: str | None = None,
     auto_merge: bool = False,
 ) -> dict[str, Any]:
+    file_list = ["shared/foo.py"] if files is None else files
     return {
         "number": number,
         "id": f"PR_test_{number}",
@@ -334,7 +344,7 @@ def _pr(
         "body": body,
         "headRefName": branch or f"feat/{number}",
         "headRefOid": f"sha-{number}",
-        "files": [{"path": path} for path in files or []],
+        "files": [{"path": path} for path in file_list],
         "isDraft": draft,
         "mergeStateStatus": merge_state,
         "labels": [{"name": label} for label in labels or []],
