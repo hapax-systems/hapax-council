@@ -119,6 +119,12 @@ MODELS: dict[str, str] = {
     "reasoning": "reasoning",
     "coding": "coding",
     "local-fast": "local-fast",
+    # appendix-fast: the appendix-served grounding route (Command-R 35B EXL3
+    # 4.0bpw via TabbyAPI on the appendix 3090, reached cross-rig). The
+    # LiteLLM route is already served + in test_council_model_routes
+    # VALID_LITELLM_ROUTES; this alias lets agents select it explicitly
+    # rather than only reaching it via the local-fast proxy fallback.
+    "appendix-fast": "appendix-fast",
     "local-research-instruct": "local-research-instruct",
     # Gemini 3 family — Phase A substrate, ADD-ONLY (do not migrate
     # `fast`/`long-context` until smoke + 14d observability shows parity).

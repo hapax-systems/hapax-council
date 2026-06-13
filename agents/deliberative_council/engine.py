@@ -62,7 +62,13 @@ _MEMBER_TIMEOUT_S = 120.0
 # with NO tools (tool_calls_limit=0). FLAGGED: these caps are deliberately
 # generous-but-finite — tune via the tool_calls_log if a healthy member
 # legitimately needs more research depth.
-_RESEARCH_LIMITS = UsageLimits(request_limit=6, tool_calls_limit=8)
+# tool_calls_limit raised 8 -> 12 (request 6 -> 8) per the live seg-prep
+# journal (2026-06-11 23:39): healthy members needed 9-11 research tool calls
+# (opus=9, balanced=10, mistral=11, web-research=9); the cap=8 forced every
+# member over-limit -> members_valid=1/6 (below floor 4) -> 0 segments
+# released. 12 covers the observed max (11) + headroom; the FLAGGED comment
+# above explicitly invites this tuning via the tool_calls_log.
+_RESEARCH_LIMITS = UsageLimits(request_limit=8, tool_calls_limit=12)
 _SCORE_LIMITS = UsageLimits(request_limit=2, tool_calls_limit=0)
 
 
