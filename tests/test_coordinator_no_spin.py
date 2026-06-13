@@ -269,6 +269,19 @@ class TestBackoff:
         remaining = entry.cooldown_until - now
         assert remaining <= BACKOFF_MAX_S + 1
 
+    def test_backoff_cap_does_not_overflow_before_min_applies(self) -> None:
+        ledger, _ = make_ledger(k=1)
+        now = 100.0
+
+        # This would raise OverflowError if record_refusal computed
+        # base * (2**exponent) before checking whether the cap already applies.
+        for _i in range(1100):
+            now += BACKOFF_MAX_S + 100
+            ledger.record_refusal("t1", "lane-a", "reason-x", now=now)
+
+        entry = ledger._entries[("t1", "lane-a", "reason-x")]
+        assert entry.cooldown_until - now <= BACKOFF_MAX_S + 1
+
 
 # ── success reset ─────────────────────────────────────────────────────────────
 

@@ -18,6 +18,7 @@ state that caused the refusal may have changed.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 
@@ -138,10 +139,17 @@ class DispatchRefusalLedger:
         if entry.attempts >= threshold:
             # Enter exponential-backoff cooldown.
             exponent = entry.attempts - threshold
-            backoff = min(
-                self.backoff_base_s * (2**exponent),
-                self.backoff_max_s,
-            )
+            if self.backoff_base_s <= 0:
+                backoff = 0.0
+            elif self.backoff_base_s >= self.backoff_max_s:
+                backoff = self.backoff_max_s
+            else:
+                exponent_to_cap = math.ceil(math.log2(self.backoff_max_s / self.backoff_base_s))
+                backoff = (
+                    self.backoff_max_s
+                    if exponent >= exponent_to_cap
+                    else self.backoff_base_s * (2**exponent)
+                )
             entry.cooldown_until = now + backoff
             log.warning(
                 "no-spin: (%s, %s) refusal #%d (%s) -> cooldown %.0fs",

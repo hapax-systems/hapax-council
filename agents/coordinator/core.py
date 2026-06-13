@@ -302,8 +302,12 @@ class Coordinator:
         state.dispatches_this_tick = dispatches
         state.lanes = {role: _lane_to_dict(l) for role, l in lanes.items()}
 
-        # No-spin law: starvation detector (offered>0, dispatched=0 for 1h → escalate).
-        self._refusal_ledger.tick_starvation(len(offered), dispatches, now=now_mono)
+        # No-spin law: starvation detector (offered>0, dispatched=0 for 1h →
+        # escalate). A no-spin cooldown skip is an intentional circuit-breaker
+        # hold, not a fresh starvation condition; reset starvation tracking while
+        # the refusal ledger is actively preventing repeat dispatch attempts.
+        starvation_offered = 0 if skipped_cooldown > 0 else len(offered)
+        self._refusal_ledger.tick_starvation(starvation_offered, dispatches, now=now_mono)
 
         # Surface refusal stats in SHM.
         refusal_stats = self._refusal_ledger.stats()

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -114,22 +115,31 @@ class TestTickIntegration:
         lanes: dict[str, LaneState],
         dispatch_result: subprocess.CompletedProcess | Exception,
         tmp_path: Path,
-    ) -> None:
+        *,
+        now: float | None = None,
+    ) -> int:
         """Run one Coordinator.tick() with mocked internals."""
-        with (
-            patch.object(coord, "_scan_tasks", return_value=tasks),
-            patch.object(coord, "_check_lanes", return_value=lanes),
-            patch("agents.coordinator.core.admission_state") as mock_admission,
-            patch("agents.coordinator.core.SHM_DIR", tmp_path / "shm"),
-            patch("agents.coordinator.core.SHM_FILE", tmp_path / "shm" / "state.json"),
-            patch("subprocess.run") as mock_run,
-        ):
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(coord, "_scan_tasks", return_value=tasks))
+            stack.enter_context(patch.object(coord, "_check_lanes", return_value=lanes))
+            mock_admission = stack.enter_context(patch("agents.coordinator.core.admission_state"))
+            stack.enter_context(patch("agents.coordinator.core.SHM_DIR", tmp_path / "shm"))
+            stack.enter_context(
+                patch("agents.coordinator.core.SHM_FILE", tmp_path / "shm" / "state.json")
+            )
+            mock_run = stack.enter_context(patch("subprocess.run"))
+            if now is not None:
+                stack.enter_context(
+                    patch("agents.coordinator.core.time.monotonic", return_value=now)
+                )
+                stack.enter_context(patch("agents.coordinator.core.time.time", return_value=now))
             mock_admission.return_value = MagicMock(state="open")
             if isinstance(dispatch_result, Exception):
                 mock_run.side_effect = dispatch_result
             else:
                 mock_run.return_value = dispatch_result
             coord.tick()
+            return mock_run.call_count
 
     def test_deterministic_refusal_enters_cooldown_after_k(self, tmp_path: Path) -> None:
         """After K identical deterministic dispatch failures through tick(),
@@ -277,28 +287,21 @@ class TestTickIntegration:
         fail = _failing_dispatch_result(DETERMINISTIC_REASON)
 
         subprocess_calls = 0
-        storm_ticks = 50  # enough to demonstrate cooldown; K=3 so only 3 should dispatch
+        storm_ticks = 1028
+        now = 10_000.0
+        tick_s = 30.0
 
         for _i in range(storm_ticks):
-            with (
-                patch.object(coord, "_scan_tasks", return_value=tasks),
-                patch.object(coord, "_check_lanes", return_value=lanes),
-                patch("agents.coordinator.core.admission_state") as mock_admission,
-                patch("agents.coordinator.core.SHM_DIR", tmp_path / "shm"),
-                patch("agents.coordinator.core.SHM_FILE", tmp_path / "shm" / "state.json"),
-                patch("subprocess.run", return_value=fail) as mock_run,
-            ):
-                mock_admission.return_value = MagicMock(state="open")
-                coord.tick()
-                subprocess_calls += mock_run.call_count
+            now += tick_s
+            subprocess_calls += self._run_tick(coord, tasks, lanes, fail, tmp_path, now=now)
 
         # The no-spin law should have limited dispatch attempts to K (before
-        # cooldown) plus a few re-probes after cooldown expiry.  With the
-        # default 120s dispatch cooldown between ticks there may be no re-probes
-        # in 50 ticks, so we just check dramatically fewer than 50.
-        assert subprocess_calls <= DEFAULT_K + 5
-        # Exactly 1 escalation.
+        # cooldown) plus bounded re-probes over the full 1,028-tick / 30s storm.
+        assert subprocess_calls <= 25
+        assert subprocess_calls >= DEFAULT_K
+        # Exactly 1 refusal escalation and no duplicate starvation escalation.
         assert coord._refusal_ledger._escalate_fn.call_count == 1
+        assert coord._refusal_ledger.stats(now=now)["starvation_escalated"] is False
 
 
 # ── hapax-methodology-dispatch retry surface investigation ────────────────────
@@ -317,12 +320,7 @@ class TestMethodologyDispatchRetrySurface:
 
     def test_no_retry_surface_in_dispatcher(self) -> None:
         """The hapax-methodology-dispatch script contains no retry/loop logic."""
-        dispatcher = Path.home() / "projects/hapax-council/scripts/hapax-methodology-dispatch"
-        if not dispatcher.exists():
-            # Use the worktree copy if the canonical path doesn't exist.
-            dispatcher = (
-                Path.home() / "projects/hapax-council--epsilon/scripts/hapax-methodology-dispatch"
-            )
+        dispatcher = Path(__file__).resolve().parents[1] / "scripts/hapax-methodology-dispatch"
         assert dispatcher.exists(), f"dispatcher not found at {dispatcher}"
         text = dispatcher.read_text(encoding="utf-8")
         # The script should not contain retry-loop patterns.
