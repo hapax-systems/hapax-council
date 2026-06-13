@@ -401,6 +401,46 @@ class TestValence:
         )
         assert valence < 0
 
+    def test_performance_rising_dim_is_problematizing(self):
+        """Stimmung dims are uniformly 0=good/1=bad, so a rise (delta>0) is
+        worsening → must problematize (negative), regardless of which dim."""
+        cascade = _make_cascade()
+        for dim in ("health", "perception_confidence", "processing_throughput", "error_rate"):
+            valence = cascade._step_valence(
+                _make_event(
+                    source="performance",
+                    magnitude=0.5,
+                    metadata={"dimension": dim, "baseline": 0.1, "delta": 0.3},
+                )
+            )
+            assert valence < 0, f"rising {dim} should problematize, got {valence}"
+
+    def test_performance_falling_dim_is_affirming(self):
+        """A fall (delta<0) is improving → must affirm (positive), every dim."""
+        cascade = _make_cascade()
+        for dim in ("health", "perception_confidence", "resource_pressure", "llm_cost_pressure"):
+            valence = cascade._step_valence(
+                _make_event(
+                    source="performance",
+                    magnitude=0.5,
+                    metadata={"dimension": dim, "baseline": 0.3, "delta": -0.3},
+                )
+            )
+            assert valence > 0, f"falling {dim} should affirm, got {valence}"
+
+    def test_performance_zero_delta_is_neutral(self):
+        """No movement (delta==0) → no valence (was a category error that
+        affirmed large swings regardless of direction)."""
+        cascade = _make_cascade()
+        valence = cascade._step_valence(
+            _make_event(
+                source="performance",
+                magnitude=0.8,
+                metadata={"dimension": "health", "baseline": 0.1, "delta": 0.0},
+            )
+        )
+        assert valence == 0.0
+
     def test_valence_clamped(self):
         cascade = _make_cascade()
         valence = cascade._step_valence(_make_event(source="correction", magnitude=1.0))
@@ -771,13 +811,13 @@ class TestRuminationValence:
     def test_positive_performance_events_do_not_trigger_gate(self):
         """6 positive-valence performance events should NOT gate the dimension."""
         cascade = _make_cascade()
-        # performance with magnitude > baseline (0.5) → positive valence
+        # falling dim (delta<0) is improving → positive (affirming) valence
         for i in range(6):
             event = CascadeEvent(
                 source="performance",
                 text=f"good_{i}",
                 magnitude=0.6,
-                metadata={"baseline": 0.3},  # magnitude > baseline → affirming
+                metadata={"baseline": 0.3, "delta": -0.3},  # improving → affirming
             )
             cascade.process(event, stimmung_stance="nominal")
         # performance maps to "processing_quality" dimension

@@ -412,10 +412,15 @@ class ApperceptionCascade:
             elif direction in ("degrading", "worsening"):
                 base = -0.3
 
-        # Performance: above baseline affirms, below problematizes
+        # Performance: stimmung dimension values are UNIFORMLY "0.0 = good, 1.0 = bad"
+        # (shared/stimmung.py:61; update_health = 1 - healthy/total, update_perception
+        # = 1 - confidence, etc.). So a rise above baseline is WORSENING -> problematize;
+        # a fall is improving -> affirm. valence = -sign(delta) * magnitude. (Was doubly
+        # wrong: (|delta| - baseline) was a category error AND assumed high=good — round-2
+        # audit critical + the polarity reviewers flagged on the first pass.)
         if event.source == "performance":
-            baseline = event.metadata.get("baseline", 0.5)
-            base = (event.magnitude - baseline) * 1.0
+            delta = event.metadata.get("delta", 0.0)
+            base = -1.0 if delta > 0 else (1.0 if delta < 0 else 0.0)
 
         # Scale by magnitude
         valence = base * event.magnitude
