@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -13,11 +14,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from shared.governance.omg_referent import (
-    ENV_OPERATOR_LEGAL_NAME,
-    OperatorNameLeak,
-    safe_render,
-)
+from shared.governance.omg_referent import ENV_OPERATOR_LEGAL_NAME
 from shared.operator_referent import REFERENTS
 from shared.preprint_artifact import PreprintArtifact
 from shared.publication_hardening.codebase import (
@@ -135,6 +132,17 @@ class PublicationHardeningGate:
         )
         decision = _aggregate_decision(child_results)
         flagged = _flagged_issues(child_results)
+        # Surface a disabled legal-name guard at the aggregate level even though
+        # the child PASSes: an operator reviewing the receipt must see the guard
+        # is off, not have it hidden inside child_results.
+        flagged = (
+            *flagged,
+            *(
+                f"legal_name: {finding}"
+                for finding in legal_name_child.findings
+                if "unconfigured" in finding
+            ),
+        )
         override, override_error = _publication_gate_override(artifact)
 
         if override_error:
@@ -200,22 +208,26 @@ class PublicationHardeningGate:
         before fan-out. REJECT is non-overridable: a legal-name leak cannot be
         released by a ``by_referent`` operator override.
 
+        Scans the authored publication text directly (case-insensitive). It does
+        NOT use ``omg_referent.safe_render``: that renders the ``{operator}``
+        template token first (stochastically, with ``segment_id=None``), which
+        would mutate the scanned text and make the decision non-deterministic — a
+        scanner must read what the author wrote, unchanged.
+
         When the pattern source ``HAPAX_OPERATOR_NAME`` is unconfigured the scan
         cannot run; the child PASSES but emits a ``legal_name_guard_unconfigured``
-        finding so the disabled state is visible in every gate receipt rather
-        than silently no-opping.
+        finding (surfaced to the aggregate receipt by ``evaluate``) so a disabled
+        guard is visible rather than silently no-opping.
         """
-        if not os.environ.get(ENV_OPERATOR_LEGAL_NAME):
+        pattern = os.environ.get(ENV_OPERATOR_LEGAL_NAME, "").strip()
+        if not pattern:
             return PublicationGateChildResult(
                 name="legal_name",
                 decision=PublicationGateDecision.PASS,
                 findings=("legal_name_guard_unconfigured: HAPAX_OPERATOR_NAME unset",),
             )
-        try:
-            safe_render(text, segment_id=None)
-        except OperatorNameLeak:
-            # Omit the matched substring: the receipt must never re-emit the
-            # leak (omg_referent contract).
+        if re.search(re.escape(pattern), text, flags=re.IGNORECASE):
+            # Omit the matched substring: the receipt must never re-emit the leak.
             return PublicationGateChildResult(
                 name="legal_name",
                 decision=PublicationGateDecision.REJECT,
@@ -336,11 +348,13 @@ def _publication_gate_context(artifact: PreprintArtifact) -> PublicationGateCont
     )
 
 
-_AUTHORIZED_OVERRIDE_REFERENTS: frozenset[str] = frozenset(REFERENTS)
-"""Referents permitted to author a HOLD override. Sourced from the canonical
-non-formal referent set (``shared.operator_referent.REFERENTS``); personal legal
-names are excluded by construction — an override is a public audit record and
-must not embed the operator's legal identity."""
+_AUTHORIZED_OVERRIDE_REFERENTS: frozenset[str] = frozenset(
+    referent.casefold() for referent in REFERENTS
+)
+"""Case-folded referents permitted to author a HOLD override. Sourced from the
+canonical non-formal referent set (``shared.operator_referent.REFERENTS``);
+personal legal names are excluded by construction — an override is a public
+audit record and must not embed the operator's legal identity."""
 
 
 def _publication_gate_override(
@@ -355,7 +369,7 @@ def _publication_gate_override(
     reason = str(raw.get("reason") or "").strip()
     if not by_referent or not reason:
         return None, "operator_override_invalid: referent_and_reason_required"
-    if by_referent not in _AUTHORIZED_OVERRIDE_REFERENTS:
+    if by_referent.casefold() not in _AUTHORIZED_OVERRIDE_REFERENTS:
         return None, "operator_override_invalid: unauthorized_referent"
     normalized = {
         "by_referent": by_referent,

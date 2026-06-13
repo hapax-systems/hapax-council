@@ -151,6 +151,8 @@ def test_gate_legal_name_guard_warns_when_unconfigured(monkeypatch) -> None:
 
     legal = next(c for c in result.child_results if c.name == "legal_name")
     assert any("unconfigured" in finding for finding in legal.findings)
+    # the disabled-guard warning must also surface on the aggregate receipt
+    assert any("unconfigured" in issue for issue in result.flagged_issues)
     assert result.decision == PublicationGateDecision.PASS
 
 
@@ -165,6 +167,18 @@ def test_gate_override_rejects_unauthorized_referent() -> None:
     assert result.decision == PublicationGateDecision.HOLD
     assert result.override is None
     assert any("unauthorized_referent" in issue for issue in result.flagged_issues)
+
+
+def test_gate_override_accepts_case_insensitive_referent() -> None:
+    """A valid non-formal referent in any casing authors a HOLD override."""
+    artifact = _artifact(
+        publication_gate_override={"by_referent": "oudepode", "reason": "receipts checked"},
+    )
+    result = _gate(codebase_decision=CodebaseDecision.HOLD).evaluate(artifact)
+
+    assert result.decision == PublicationGateDecision.OPERATOR_OVERRIDDEN_HOLD
+    assert result.passes()
+    assert result.override is not None
 
 
 def test_gate_context_is_passed_to_codebase_verifier() -> None:
