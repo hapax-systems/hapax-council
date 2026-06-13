@@ -1,6 +1,7 @@
 [Unit]
 Description=Hapax CC task cascade unblock reconciler
 After=hapax-secrets.service
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot

@@ -2,6 +2,7 @@
 Description=TabbyAPI — EXL3 inference engine on :5000
 After=network.target
 After=ollama.service
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple

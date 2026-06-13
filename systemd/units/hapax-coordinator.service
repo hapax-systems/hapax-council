@@ -2,6 +2,7 @@
 Description=Hapax coordination daemon — Gemini-backed intelligent triage + lane dispatch
 After=network.target
 ConditionPathExists=%h/.cache/hapax/rebuild/worktree/pyproject.toml
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple

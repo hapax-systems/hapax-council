@@ -1,0 +1,20 @@
+[Unit]
+Description=Album Identifier — IR vision + audio track recognition
+After=logos-api.service studio-compositor.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+# Release-root pinned (audit-w1 S1 pattern, #4090): the deployed unit ran
+# from the mutable main clone — live behavior could drift with an edited
+# checkout instead of the activated release (review finding, PR #4106).
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/album-identifier.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/album-identifier.py
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=PI6_IP=192.168.68.81
+
+[Install]
+WantedBy=default.target

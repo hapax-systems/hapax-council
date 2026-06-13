@@ -12,6 +12,7 @@ Documentation=https://github.com/ryanklee/hapax-council/blob/main/agents/refusal
 # Archive copy is the operator's record — never deleted by this
 # daemon. Append-only is constitutional per the spec (any "clear log"
 # affordance creates HITL pressure).
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot

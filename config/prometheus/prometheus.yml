@@ -1,0 +1,144 @@
+# Prometheus configuration — repo SSOT (audit-w4-observability-honesty).
+#
+# Deployed at podium:/home/hapax/llm-stack/prometheus.yml (mounted ro into
+# the llm-stack prometheus container, --web.enable-lifecycle on). This file
+# is the canonical copy of the previously-unversioned deployed config PLUS
+# the W4 additions: rule_files (was absent — live /api/v1/rules returned
+# {"groups":[]}), scrape jobs for the three live-but-unscraped hapax
+# exporters (:9483/:9484/:9498), and authenticated litellm scraping
+# (target 401'd since the master-key rollout).
+#
+# Deploy procedure: config/prometheus/README.md. Do NOT edit the podium
+# copy directly — change here, merge, deploy.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# W4: alert rules live under config/prometheus/rules/, mounted at
+# /etc/prometheus/rules (compose mount — see README). Without this stanza
+# every rule file on disk is dead weight.
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  # --- Cockpit APIs (host services) ---
+  - job_name: "council-cockpit"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:8051"]
+        labels:
+          project: "hapax-council"
+          component: "cockpit-api"
+
+  - job_name: "officium-cockpit"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:8050"]
+        labels:
+          project: "hapax-officium"
+          component: "cockpit-api"
+
+  # --- LiteLLM (container) ---
+  # W4.3: /metrics 401s since LITELLM_MASTER_KEY went mandatory. The key is
+  # materialized at deploy into /etc/prometheus/litellm-key (from llm-stack
+  # .env), NEVER committed. See README step 3.
+  - job_name: "litellm"
+    metrics_path: /metrics
+    authorization:
+      credentials_file: /etc/prometheus/litellm-key
+    static_configs:
+      - targets: ["litellm:4000"]
+        labels:
+          component: "llm-proxy"
+
+  # --- Qdrant (container, built-in metrics) ---
+  - job_name: "qdrant"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["qdrant:6333"]
+        labels:
+          component: "vector-db"
+
+  # --- Prometheus self-monitoring ---
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # --- Host metrics (node_exporter) ---
+  # Textfile collector flag required on the HOST unit or the entire audio
+  # M-suite + echo-probe gauges stay orphaned on disk (W4-TEXTFILE-ORPHAN):
+  # /etc/conf.d/prometheus-node-exporter needs
+  #   --collector.textfile.directory=/var/lib/node_exporter/textfile_collector
+  # (sudo, one-time — README step 4).
+  - job_name: "node-exporter"
+    static_configs:
+      - targets: ["host.docker.internal:9100"]
+        labels:
+          component: "node"
+
+  # --- Reverie prediction monitor (via logos-api) ---
+  - job_name: "reverie-predictions"
+    metrics_path: /api/predictions/metrics
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["host.docker.internal:8051"]
+        labels:
+          component: "reverie-predictions"
+
+  # --- NVIDIA GPU (nvidia_gpu_exporter on host) ---
+  # Requires: paru -S nvidia_gpu_exporter-bin && sudo systemctl enable --now nvidia_gpu_exporter
+  - job_name: "nvidia-gpu"
+    static_configs:
+      - targets: ["host.docker.internal:9835"]
+        labels:
+          component: "gpu"
+
+  # --- Studio compositor (:9482) — PARKED, scrape disabled ---
+  # The GStreamer compositor is parked (Screwm/DarkPlaces is the live
+  # surface); its in-process exporter is down by design, and a registered
+  # always-down target would trip HapaxExporterDown forever — the inverse
+  # of the honesty this task restores (W4-COMPOSITOR-SCRAPE-STALE).
+  # Re-enable this job in the same PR that unparks the compositor:
+  # - job_name: "studio-compositor"
+  #   metrics_path: /metrics
+  #   scrape_interval: 15s
+  #   static_configs:
+  #     - targets: ["host.docker.internal:9482"]
+  #       labels:
+  #         project: "hapax-council"
+  #         component: "studio-compositor"
+
+  - job_name: "quota-observability"
+    metrics_path: /metrics
+    scrape_interval: 60s
+    static_configs:
+      - targets: ["host.docker.internal:9497"]
+        labels:
+          project: "hapax-council"
+          component: "quota-observability"
+
+  # --- W4: live hapax exporters, previously running unscraped ---
+  - job_name: "hapax-daimonion"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:9483"]
+        labels:
+          project: "hapax-council"
+          component: "daimonion-cpal-telemetry"
+
+  - job_name: "hapax-lufs-panic-cap"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:9484"]
+        labels:
+          project: "hapax-council"
+          component: "lufs-panic-cap"
+
+  - job_name: "hapax-youtube-telemetry"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:9498"]
+        labels:
+          project: "hapax-council"
+          component: "youtube-telemetry"

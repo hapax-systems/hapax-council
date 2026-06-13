@@ -2,6 +2,7 @@
 Description=Hapax private→broadcast echo probe (Auditor D leak detector)
 Documentation=https://github.com/ryanklee/hapax-council/blob/main/docs/runbooks/audio-incidents.md#private-leak-l12
 After=pipewire.service hapax-secrets.service
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot

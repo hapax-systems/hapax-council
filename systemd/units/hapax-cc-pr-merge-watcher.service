@@ -2,6 +2,7 @@
 Description=Hapax CC-task PR-merge auto-close watcher (H9, PR3 of cc-hygiene)
 Documentation=file://%h/projects/hapax-council/docs/research/2026-04-26-task-list-hygiene-operator-visibility.md
 After=hapax-secrets.service
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot

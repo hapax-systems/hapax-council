@@ -5,6 +5,7 @@ Wants=hapax-darkplaces-v4l2.service
 PartOf=hapax-darkplaces-v4l2.service hapax-visual-stack.target
 ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
 ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/darkplaces-obs-media-stream.sh
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple

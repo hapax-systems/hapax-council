@@ -3,6 +3,7 @@ Description=Hapax Reverie — visual expression daemon
 After=hapax-secrets.service hapax-dmn.service
 Wants=hapax-dmn.service
 PartOf=hapax-visual-stack.target
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple

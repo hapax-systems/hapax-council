@@ -4,6 +4,7 @@ Documentation=file:///home/hapax/projects/hapax-council/docs/governance/private-
 Documentation=file:///home/hapax/projects/hapax-council/scripts/hapax-private-broadcast-leak-guard
 After=pipewire.service wireplumber.service pipewire-pulse.service
 Wants=pipewire.service wireplumber.service pipewire-pulse.service
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot

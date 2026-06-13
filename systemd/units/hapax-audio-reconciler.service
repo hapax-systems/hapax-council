@@ -3,6 +3,7 @@ Description=Hapax Audio Reconciler - continuous desired-state enforcement for br
 Documentation=file:///home/hapax/.config/hapax/audio-link-map.conf
 After=pipewire.service wireplumber.service
 Requires=pipewire.service
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple

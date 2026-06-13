@@ -3,6 +3,7 @@ Description=Hapax DarkPlaces state bridge — copies live state into game direct
 PartOf=hapax-darkplaces.service hapax-darkplaces-v4l2.service
 After=hapax-darkplaces.service hapax-darkplaces-v4l2.service
 ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple
