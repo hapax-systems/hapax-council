@@ -48,6 +48,23 @@ _log = logging.getLogger(__name__)
 
 _MEMBER_TIMEOUT_S = 120.0
 
+# ── DEGRADE-TO-AVAILABLE ─────────────────────────────────────────────────────
+# Provider-side failures (quota exhaustion, content filtering) are EXCUSED
+# ABSENCES: the member was unable to participate through no fault of the
+# verdict's integrity.  Excused failures lower the effective quorum floor
+# (never below 1) so the remaining members — including the always-available
+# resident Command-R — can still produce a valid, degraded verdict.
+# The QUALITY floor (per-axis score thresholds) is NEVER lowered.
+# See cc-task seg-prep-council-coherence-degrade-not-refuse-20260613.
+PROVIDER_EXCUSED_REASONS: frozenset[str] = frozenset(
+    {
+        "UsageLimitExceeded",
+        "ContentFilterError",
+        "RateLimitError",
+        "QuotaExceededError",
+    }
+)
+
 # ── PRINCIPLED EXECUTION BOUNDS ──────────────────────────────────────────────
 # cc-task cctv-council-perfect-health-faillloud-convergence. pydantic-ai 1.63's
 # default UsageLimits leaves ``tool_calls_limit=None`` (UNBOUNDED): a member ran
@@ -230,15 +247,47 @@ def _assess_health(
     A verdict is trustworthy only across INDEPENDENT families, so coverage is
     counted both by member and by DISTINCT family. ``below_quorum`` is True when
     either floor is unmet — the engine turns that into ConvergenceStatus.REFUSED.
+
+    DEGRADE-TO-AVAILABLE (seg-prep-council-coherence-degrade-not-refuse-20260613):
+    Provider-side failures (quota, content filter) are EXCUSED absences. The
+    effective quorum floor is lowered by the number of excused members, but never
+    below 1 (the resident Command-R always participates). This lets the council
+    produce a degraded verdict instead of refusing when cloud providers are down.
+    The QUALITY floor (per-axis score thresholds) is NEVER lowered.
     """
     requested = config.model_aliases
     valid_aliases = [r.model_alias for r in results]
     families_valid = {model_family(a) for a in valid_aliases}
     families_requested = {model_family(a) for a in requested}
-    below = (
-        len(valid_aliases) < config.min_valid_members
-        or len(families_valid) < config.min_valid_families
+
+    # Count excused failures (provider-side errors that are not member faults).
+    excused_members = [f for f in failed if f.reason in PROVIDER_EXCUSED_REASONS]
+    excused_families = {model_family(f.model_alias) for f in excused_members}
+    # Only excuse a family if ALL its members failed with provider-side errors
+    # (if one anthropic member failed but another survived, the family is covered).
+    excused_family_count = len(
+        excused_families - families_valid  # families with no surviving member
     )
+
+    # Effective floor: lower by excused count, never below 1.
+    effective_member_floor = max(1, config.min_valid_members - len(excused_members))
+    effective_family_floor = max(1, config.min_valid_families - excused_family_count)
+
+    below = (
+        len(valid_aliases) < effective_member_floor or len(families_valid) < effective_family_floor
+    )
+
+    if excused_members:
+        _log.info(
+            "Council degrade-to-available: %d excused (%s), effective floor %d/%d (was %d/%d)",
+            len(excused_members),
+            ", ".join(f"{f.model_alias}:{f.reason}" for f in excused_members),
+            effective_member_floor,
+            effective_family_floor,
+            config.min_valid_members,
+            config.min_valid_families,
+        )
+
     return CouncilHealth(
         members_requested=len(requested),
         members_valid=len(valid_aliases),
@@ -246,8 +295,9 @@ def _assess_health(
         families_valid=len(families_valid),
         failed_members=tuple(failed),
         below_quorum=below,
-        quorum_floor_members=config.min_valid_members,
-        quorum_floor_families=config.min_valid_families,
+        quorum_floor_members=effective_member_floor,
+        quorum_floor_families=effective_family_floor,
+        excused_failures=len(excused_members),
     )
 
 

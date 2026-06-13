@@ -140,6 +140,10 @@ class CouncilHealth(BaseModel):
     were requested, plus every member that failed (alias + exception type). The
     engine sets ``below_quorum`` from the CouncilConfig floor; a below-quorum or
     no-family-diversity panel yields ConvergenceStatus.REFUSED.
+
+    ``excused_failures`` counts members that failed with provider-side errors
+    (UsageLimitExceeded, ContentFilterError) — these lower the effective quorum
+    floor instead of refusing the whole council (degrade-to-available).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -152,6 +156,7 @@ class CouncilHealth(BaseModel):
     below_quorum: bool = False
     quorum_floor_members: int = 0
     quorum_floor_families: int = 0
+    excused_failures: int = 0
 
 
 class EvidenceClassification(BaseModel):
