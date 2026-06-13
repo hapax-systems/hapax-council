@@ -269,6 +269,27 @@ class TestBackoff:
         remaining = entry.cooldown_until - now
         assert remaining <= BACKOFF_MAX_S + 1
 
+    def test_backoff_zero_base_means_no_cooldown(self) -> None:
+        """Defensive edge: base<=0 yields a 0s cooldown (never in cooldown)."""
+        recorder = EscalationRecorder()
+        ledger = DispatchRefusalLedger(k=1, backoff_base_s=0.0, _escalate_fn=recorder)
+        now = 100.0
+        ledger.record_refusal("t1", "lane-a", "reason-x", now=now)
+        entry = ledger._entries[("t1", "lane-a", "reason-x")]
+        assert entry.cooldown_until == pytest.approx(now, abs=0.1)
+        assert not ledger.any_cooldown_for_pair("t1", "lane-a", now=now + 0.01)
+
+    def test_backoff_base_at_or_above_cap_pins_to_cap(self) -> None:
+        """Defensive edge: base>=max pins every cooldown straight to the cap."""
+        recorder = EscalationRecorder()
+        ledger = DispatchRefusalLedger(
+            k=1, backoff_base_s=5000.0, backoff_max_s=3600.0, _escalate_fn=recorder
+        )
+        now = 100.0
+        ledger.record_refusal("t1", "lane-a", "reason-x", now=now)
+        entry = ledger._entries[("t1", "lane-a", "reason-x")]
+        assert entry.cooldown_until == pytest.approx(now + 3600.0, abs=0.1)
+
     def test_backoff_cap_does_not_overflow_before_min_applies(self) -> None:
         ledger, _ = make_ledger(k=1)
         now = 100.0

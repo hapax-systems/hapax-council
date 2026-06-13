@@ -91,6 +91,11 @@ SESSION_PREFIXES = (
 )
 DISPATCH_COOLDOWN_S = 120.0
 
+# The methodology dispatcher lives in the primary clone (not this worktree). A
+# module constant so tests can point it at a hermetic fixture instead of relying
+# on the operator's exact ~/projects/hapax-council layout existing.
+METHODOLOGY_DISPATCHER = Path.home() / "projects/hapax-council/scripts/hapax-methodology-dispatch"
+
 # A lane that owns a non-terminal task but has emitted no progress signal for this
 # long (or whose supervising launcher PID is gone) is projected `stalled` and its
 # held task reoffered. 15 min of zero progress on a held task is a real stall, not
@@ -316,12 +321,17 @@ class Coordinator:
         # a task that is offered, undispatched, and NOT cooled must still drive the
         # starvation horizon. Only when EVERY offered task is cooled does the count
         # reach 0 (the intentional no-double-escalation case).
+        # Gate on idle capacity: a fleet with NO idle lanes is saturated (busy
+        # working), not starving — counting offered work as starved there would
+        # page the operator for a healthy fleet (executive_function noise). The
+        # 2026-06-12 incident had idle_lanes=1, dispatched=0: capacity present,
+        # dispatch still failing — that is the starvation this detector is for.
         cooled_offered = sum(
             1
             for t in offered
             if self._refusal_ledger.any_cooldown_for_task(t.task_id, now=now_mono)
         )
-        starvation_offered = len(offered) - cooled_offered
+        starvation_offered = (len(offered) - cooled_offered) if idle_lanes else 0
         self._refusal_ledger.tick_starvation(starvation_offered, dispatches, now=now_mono)
 
         # Surface refusal stats in SHM.
@@ -427,7 +437,7 @@ class Coordinator:
         Returns (success, refusal_reason).  On success refusal_reason is empty.
         On failure refusal_reason is the stderr text (for the refusal ledger).
         """
-        dispatcher = Path.home() / "projects/hapax-council/scripts/hapax-methodology-dispatch"
+        dispatcher = METHODOLOGY_DISPATCHER
         if not dispatcher.exists():
             log.warning("hapax-methodology-dispatch not found, cannot dispatch to %s", lane.role)
             return False, "dispatcher_not_found"

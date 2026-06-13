@@ -22,6 +22,8 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agents.coordinator.core import (
     SCHEDULER_LEGACY_ENV,
     Coordinator,
@@ -132,6 +134,18 @@ class TestNtfyEscalate:
 class TestTickIntegration:
     """Exercise Coordinator.tick() with mocked I/O to verify the full
     tick → _dispatch → refusal_ledger path."""
+
+    @pytest.fixture(autouse=True)
+    def _hermetic_dispatcher(self, tmp_path: Path):
+        """Point the methodology dispatcher at a hermetic fixture so these tick
+        tests don't depend on the operator's ~/projects/hapax-council clone
+        existing — without this, _dispatch returns dispatcher_not_found before the
+        mocked subprocess result is reached on any clean checkout (review-dossier:
+        codex-1 / claude-1, non-hermetic dispatcher path)."""
+        fixture = tmp_path / "hapax-methodology-dispatch"
+        fixture.write_text("#!/bin/sh\nexit 0\n")
+        with patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", fixture):
+            yield
 
     def _make_coordinator(self) -> Coordinator:
         coord = Coordinator()
@@ -479,14 +493,42 @@ class TestTickIntegration:
             assert repaired == base, f"repair perturbed plan (legacy={legacy})"
             assert skipped == 0
 
-    def test_dispatcher_not_found_reason(self) -> None:
+    def test_dispatcher_not_found_reason(self, tmp_path: Path) -> None:
         """When the methodology dispatcher is missing, _dispatch reports the
         dispatcher_not_found refusal reason (not a silent success)."""
         coord = Coordinator()
-        with patch("agents.coordinator.core.Path.exists", return_value=False):
+        missing = tmp_path / "no-such-dispatcher"
+        with patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", missing):
             success, reason = coord._dispatch(TASK_A, LANE_ALPHA)
         assert success is False
         assert reason == "dispatcher_not_found"
+
+    def test_saturated_fleet_does_not_page_as_starvation(self, tmp_path: Path) -> None:
+        """A fleet with NO idle lanes (all busy working) must not fire a starvation
+        escalation even with offered work — that is saturation, not starvation
+        (review-dossier minor, claude-1: spurious-page risk on busy fleets)."""
+        coord = self._make_coordinator()
+        coord._refusal_ledger.starvation_horizon_s = 0.0
+        # Lane is alive but BUSY (claimed a task) → excluded from idle_lanes.
+        busy_lane = LaneState(
+            role="alpha",
+            session="hapax-claude-alpha",
+            platform="claude",
+            alive=True,
+            idle=False,
+            claimed_task="something-else",
+        )
+        lanes = _make_lanes(busy_lane)
+        fail = _failing_dispatch_result(DETERMINISTIC_REASON)
+        now = 110_000.0
+
+        # Offered work, zero idle capacity, well past the horizon.
+        for _i in range(4):
+            now += 30.0
+            self._run_tick(coord, [TASK_A], lanes, fail, tmp_path, now=now)
+
+        assert coord._refusal_ledger.stats(now=now)["starvation_escalated"] is False
+        assert coord._refusal_ledger._starvation.starved_since == 0.0
 
     def test_oserror_dispatch_tracked_as_transient(self, tmp_path: Path) -> None:
         """An OSError from subprocess.run is recorded as a transient refusal."""
