@@ -388,6 +388,18 @@ class ApperceptionCascade:
         "performance": 0.0,
     }
 
+    _PERF_DIM_POLARITY: dict[str, float] = {
+        # +1 = good-when-high (a rise AFFIRMS the self-model); -1 = bad-when-high (a
+        # rise PROBLEMATIZES). Only dims in apperception_tick._STIMMUNG_BASELINES fire
+        # performance events; unknown dims default to 0.0 (neutral) — never a wrong sign.
+        "health": 1.0,
+        "processing_throughput": 1.0,
+        "perception_confidence": 1.0,
+        "resource_pressure": -1.0,
+        "error_rate": -1.0,
+        "llm_cost_pressure": -1.0,
+    }
+
     def _step_valence(self, event: CascadeEvent) -> float:
         """Affirms or problematizes self-model?
 
@@ -412,10 +424,17 @@ class ApperceptionCascade:
             elif direction in ("degrading", "worsening"):
                 base = -0.3
 
-        # Performance: above baseline affirms, below problematizes
+        # Performance: direction x dimension polarity. A rise in a good-when-high
+        # dim (confidence/throughput/health) AFFIRMS; a rise in a bad-when-high dim
+        # (error_rate/resource_pressure/llm_cost_pressure) PROBLEMATIZES. The signed
+        # delta rides in metadata['delta'] (magnitude is |delta|). Was a category
+        # error: (|delta| - baseline) compared a change-magnitude to a value-level,
+        # so it affirmed large swings regardless of direction (round-2 audit critical).
         if event.source == "performance":
-            baseline = event.metadata.get("baseline", 0.5)
-            base = (event.magnitude - baseline) * 1.0
+            polarity = self._PERF_DIM_POLARITY.get(event.metadata.get("dimension", ""), 0.0)
+            delta = event.metadata.get("delta", 0.0)
+            direction = 1.0 if delta > 0 else (-1.0 if delta < 0 else 0.0)
+            base = polarity * direction
 
         # Scale by magnitude
         valence = base * event.magnitude
