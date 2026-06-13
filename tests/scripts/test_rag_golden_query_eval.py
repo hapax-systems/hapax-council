@@ -344,3 +344,155 @@ def test_run_embedding_health_preflight_delegates_to_guardrail(monkeypatch) -> N
             "expected_dimensions": 768,
         }
     ]
+
+
+def test_run_suite_with_faithfulness_suite_produces_evaluated_status() -> None:
+    """When a faithfulness suite with required_claims is provided, the
+    answer_faithfulness status flips from not_evaluated to evaluated and
+    per-query answer_metrics are populated."""
+    module = _load_module()
+    suite = {
+        "suite_id": "test-suite",
+        "version": 1,
+        "queries": [
+            {
+                "id": "q1",
+                "topic": "rag",
+                "query": "what is the RAG compounding failure",
+                "expected_sources": [{"source_contains": "target", "grade": 3}],
+            },
+            {
+                "id": "q2",
+                "topic": "rag",
+                "query": "unrelated query",
+                "expected_sources": [{"source_contains": "other", "grade": 2}],
+            },
+        ],
+    }
+    faithfulness_suite = {
+        "suite_id": "faith-test",
+        "version": 1,
+        "queries": [
+            {
+                "id": "q1",
+                "query": "what is the RAG compounding failure",
+                "required_claims": [
+                    {
+                        "id": "c1",
+                        "answer_terms": ["metadata", "contamination"],
+                        "support_terms": ["metadata", "contamination"],
+                    }
+                ],
+            },
+            # q2 deliberately has no required_claims → not scored.
+        ],
+    }
+
+    class FakeClient:
+        def query_points(self, **kwargs):
+            return SimpleNamespace(
+                points=[
+                    SimpleNamespace(
+                        id=1,
+                        score=0.9,
+                        payload={
+                            "source": "/tmp/target.md",
+                            "source_service": "obsidian",
+                            "text": "RAG metadata contamination found in audit",
+                        },
+                    )
+                ]
+            )
+
+    report = module.run_suite(
+        suite,
+        collection="documents",
+        limit=5,
+        precision_k=5,
+        qdrant_url="http://localhost:6333",
+        embedding_model="nomic-embed-cpu",
+        ollama_url="http://localhost:11434",
+        client=FakeClient(),
+        embedder=lambda _query: [0.1, 0.2],
+        faithfulness_suite=faithfulness_suite,
+    )
+
+    af = report["answer_faithfulness"]
+    assert af["status"] == "evaluated"
+    assert af["queries_scored"] == 1
+    assert af["queries_total"] == 2
+    assert af["mean_required_claim_recall"] is not None
+    assert af["mean_supported_required_claim_rate"] is not None
+
+    # q1 has answer_metrics, q2 does not.
+    q1 = next(q for q in report["queries"] if q["id"] == "q1")
+    q2 = next(q for q in report["queries"] if q["id"] == "q2")
+    assert "answer_metrics" in q1
+    assert "answer_metrics" not in q2
+    assert q1["answer_metrics"]["required_claim_recall"] is not None
+    assert q1["answer_metrics"]["supported_required_claim_rate"] is not None
+
+
+def test_run_suite_without_faithfulness_suite_stays_not_evaluated() -> None:
+    """Without a faithfulness suite, answer_faithfulness remains not_evaluated."""
+    module = _load_module()
+    suite = {
+        "suite_id": "test-suite",
+        "version": 1,
+        "queries": [
+            {
+                "id": "q1",
+                "topic": "rag",
+                "query": "test",
+                "expected_sources": [{"source_contains": "x", "grade": 1}],
+            }
+        ],
+    }
+
+    class FakeClient:
+        def query_points(self, **_kwargs):
+            return SimpleNamespace(points=[])
+
+    report = module.run_suite(
+        suite,
+        collection="documents",
+        limit=5,
+        precision_k=5,
+        qdrant_url="http://localhost:6333",
+        embedding_model="nomic-embed-cpu",
+        ollama_url="http://localhost:11434",
+        client=FakeClient(),
+        embedder=lambda _query: [0.1, 0.2],
+    )
+
+    assert report["answer_faithfulness"]["status"] == "not_evaluated"
+
+
+def test_render_markdown_with_faithfulness_evaluated() -> None:
+    """render_markdown handles evaluated faithfulness status correctly."""
+    module = _load_module()
+    report = {
+        "generated_at": "2026-06-13T00:00:00Z",
+        "suite_id": "test",
+        "suite_version": 1,
+        "collection": "docs",
+        "limit": 10,
+        "exclude_inventory": False,
+        "retrieval_summary": {},
+        "answer_faithfulness": {
+            "status": "evaluated",
+            "queries_scored": 3,
+            "queries_total": 5,
+            "mean_required_claim_recall": 0.8,
+            "mean_supported_required_claim_rate": 0.6,
+            "mean_answer_faithfulness": 0.75,
+            "mean_contribution_score": 0.6,
+            "total_forbidden_claim_hits": 0,
+        },
+        "queries": [],
+    }
+    md = module.render_markdown(report)
+    assert "Status: `evaluated`" in md
+    assert "Queries scored: `3/5`" in md
+    assert "Mean required-claim recall: `0.8`" in md
+    assert "Mean supported-claim rate: `0.6`" in md
