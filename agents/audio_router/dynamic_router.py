@@ -89,13 +89,17 @@ def read_stimmung_state(path: Path | None = None) -> StimmungState:
         log.debug("stimmung read failed — using defaults", exc_info=True)
         return StimmungState()
 
-    stance = data.get("stance") or _STANCE_FALLBACK
+    stance = (data.get("overall_stance") or "").strip().upper() or _STANCE_FALLBACK
     if stance not in {"NOMINAL", "ENGAGED", "SEEKING", "ANT", "FORTRESS", "CONSTRAINED"}:
         stance = _STANCE_FALLBACK
 
     def _f(key: str, default: float = 0.5) -> float:
         try:
-            value = float(data.get(key, default))
+            raw = data.get(key, default)
+            # Live stimmung dims are {value, trend, freshness_s, ...} dicts.
+            if isinstance(raw, dict):
+                raw = raw.get("value", default)
+            value = float(raw)
             return max(0.0, min(1.0, value))
         except (TypeError, ValueError):
             return default
