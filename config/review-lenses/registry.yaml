@@ -83,7 +83,14 @@ docs_only_globs: ["docs/**", "*.md"]
 # blind reviewer prompt is piped on stdin. Tune flags here, not in code.
 families:
   - family: claude
-    reviewer_command: ["claude", "-p"]
+    # --append-system-prompt forces bare-fence output. Without it, Claude (a
+    # reasoning model) prepends its analysis as prose, so the whole reply is no
+    # longer a single yaml fence and the strict dossier parser (extract_review,
+    # deliberately bare-fence-only for channel trust) discards it as
+    # invalid-output — a lost accept (the claude seat rode as invalid-output
+    # across rounds 6-8 of PR #4119 despite returning verdict: accept). gemini
+    # gets the same instruction via its -p arg; codex complies natively.
+    reviewer_command: ["claude", "-p", "--append-system-prompt", "You are a blind PR reviewer invoked non-interactively. Output policy is ABSOLUTE and overrides any urge to explain: your ENTIRE reply MUST be exactly one fenced yaml code block (opening ```yaml, your verdict/findings/checklist, closing ```) and NOTHING ELSE — no preamble, no reasoning, no prose, no text whatsoever before or after the fence. The dossier parser requires the whole reply to be a single bare yaml fence; ANY character outside it discards your entire review as invalid-output (a silently lost vote). Do all reasoning silently; emit only the fence."]
     timeout_seconds: 1200
   - family: codex
     reviewer_command: ["codex", "exec", "--sandbox", "read-only", "-"]

@@ -93,6 +93,20 @@ class TestLensRegistry:
         assert "fenced yaml code block" in gemini_command
         assert "ONLY the dossier YAML" not in gemini_command
 
+    def test_claude_family_forces_bare_fence_output(self) -> None:
+        """Claude (a reasoning model) must be given a bare-fence output directive,
+        or it prepends prose and the strict dossier parser discards its verdict as
+        invalid-output (a lost vote — PR #4119 rounds 6-8). It carries the same
+        no-prose contract gemini gets, delivered via --append-system-prompt."""
+        roster = _registry()["families"]
+        claude = next(entry for entry in roster if entry["family"] == "claude")
+        cmd = claude["reviewer_command"]
+        assert "--append-system-prompt" in cmd, "claude needs a system-prompt directive"
+        command = " ".join(str(part) for part in cmd)
+        # the directive must demand a single bare yaml fence with no prose
+        assert "one fenced yaml code block" in command
+        assert "invalid-output" in command  # states the consequence
+
     def test_surface_rows_cover_spec_table(self) -> None:
         reg = _registry()
         surfaces = {row["surface"]: row for row in reg["surface_lenses"]}
