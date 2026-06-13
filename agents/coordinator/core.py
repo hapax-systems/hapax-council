@@ -28,6 +28,7 @@ from shared.dispatch_service_time import (
     QueueTask,
     parse_ts,
     plan_dispatches,
+    wsjf_effective,
 )
 from shared.jsonl_append import append_jsonl
 from shared.notify import send_notification
@@ -61,6 +62,11 @@ def pressure_dispatch_budget(
     if state == "paced":
         return (1, base_cooldown * 2.0)
     return (idle_count, base_cooldown)
+
+
+def _queue_task_routable(task: QueueTask, lane: QueueLane) -> bool:
+    platforms = {platform.lower() for platform in task.platform_suitability}
+    return "any" in platforms or lane.platform.lower() in platforms
 
 
 TASKS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
@@ -265,16 +271,42 @@ class Coordinator:
             )
             for l in idle_lanes
         ]
-        plan = plan_dispatches(
-            queue_tasks,
-            queue_lanes,
-            max_dispatches=max_dispatches,
-            age_norm_s=age_norm_s,
-            legacy=legacy,
-        )
+        skipped_cooldown = 0
+        if legacy:
+            plan = plan_dispatches(
+                queue_tasks,
+                queue_lanes,
+                max_dispatches=max_dispatches,
+                age_norm_s=age_norm_s,
+                legacy=True,
+            )
+        else:
+            plan = []
+            remaining = list(queue_tasks)
+            for qlane in [lane for lane in queue_lanes if lane.cooldown_remaining_s <= 0]:
+                if len(plan) >= max_dispatches:
+                    break
+                routable = [task for task in remaining if _queue_task_routable(task, qlane)]
+                eligible = [
+                    task
+                    for task in routable
+                    if not self._refusal_ledger.any_cooldown_for_pair(
+                        task.task_id, qlane.role, now=now_mono
+                    )
+                ]
+                if routable and not eligible:
+                    skipped_cooldown += len(routable)
+                    continue
+                if not eligible:
+                    continue
+                best = max(
+                    eligible,
+                    key=lambda task: wsjf_effective(task.wsjf, task.age_s, age_norm_s),
+                )
+                plan.append((best.task_id, qlane.role))
+                remaining.remove(best)
         task_by_id = {t.task_id: t for t in offered}
         lane_by_role = {l.role: l for l in idle_lanes}
-        skipped_cooldown = 0
         for task_id, role in plan:
             task = task_by_id.get(task_id)
             lane = lane_by_role.get(role)

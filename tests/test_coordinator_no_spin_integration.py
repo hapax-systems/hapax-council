@@ -44,6 +44,19 @@ TASK_A = Task(
     created_at=0.0,
 )
 
+TASK_B = Task(
+    task_id="task-b",
+    title="Task B",
+    status="offered",
+    assigned_to="unassigned",
+    wsjf=1.0,
+    effort_class="standard",
+    platform_suitability=("any",),
+    quality_floor="deterministic_ok",
+    path=Path("/fake/task-b.md"),
+    created_at=0.0,
+)
+
 LANE_ALPHA = LaneState(
     role="alpha",
     session="hapax-claude-alpha",
@@ -183,6 +196,34 @@ class TestTickIntegration:
             coord.tick()
             # The dispatch should have been skipped because of cooldown.
             mock_run.assert_not_called()
+
+    def test_cooled_pair_does_not_block_other_dispatchable_task(self, tmp_path: Path) -> None:
+        """A cooled high-WSJF pair must not consume the lane for other work."""
+        coord = self._make_coordinator()
+        lanes = _make_lanes(LANE_ALPHA)
+        fail = _failing_dispatch_result(DETERMINISTIC_REASON)
+        now = 10_000.0
+
+        for _i in range(DEFAULT_K):
+            now += 30.0
+            self._run_tick(coord, [TASK_A], lanes, fail, tmp_path, now=now)
+
+        now += 30.0
+        with (
+            patch.object(coord, "_scan_tasks", return_value=[TASK_A, TASK_B]),
+            patch.object(coord, "_check_lanes", return_value=lanes),
+            patch("agents.coordinator.core.admission_state") as mock_admission,
+            patch("agents.coordinator.core.SHM_DIR", tmp_path / "shm"),
+            patch("agents.coordinator.core.SHM_FILE", tmp_path / "shm" / "state.json"),
+            patch("agents.coordinator.core.time.monotonic", return_value=now),
+            patch("agents.coordinator.core.time.time", return_value=now),
+            patch("subprocess.run", return_value=_success_dispatch_result()) as mock_run,
+        ):
+            mock_admission.return_value = MagicMock(state="open")
+            coord.tick()
+
+        args = mock_run.call_args.args[0]
+        assert "task-b" in args
 
     def test_success_clears_refusal_state(self, tmp_path: Path) -> None:
         """A successful dispatch clears all refusal state for that task."""
