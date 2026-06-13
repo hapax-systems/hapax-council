@@ -119,7 +119,7 @@ class PublicationHardeningGate:
         context = _publication_gate_context(artifact)
         lint_child = self._lint_child(text, artifact)
         entity_child = self._entity_child(text)
-        legal_name_child = self._legal_name_child(text)
+        legal_name_child = self._legal_name_child(_artifact_legal_name_surface(artifact))
         codebase_child = self._codebase_child(text, context)
         review_child, review_report = self._review_child(text, artifact, lint_child)
 
@@ -197,11 +197,18 @@ class PublicationHardeningGate:
         before fan-out. REJECT is non-overridable: a legal-name leak cannot be
         released by a ``by_referent`` operator override.
 
-        Scans the authored publication text directly (case-insensitive). It does
-        NOT use ``omg_referent.safe_render``: that renders the ``{operator}``
-        template token first (stochastically, with ``segment_id=None``), which
-        would mutate the scanned text and make the decision non-deterministic — a
-        scanner must read what the author wrote, unchanged.
+        Scans the artifact's full public identity surface — the authored
+        publication text PLUS co-author identity fields (name / given / family /
+        alias). Publishers render co-authors into public metadata (Zenodo
+        creators, OSF, CFF authors) even when ``attribution_block`` is empty, so a
+        legal name there leaks just as a byline does; ``_artifact_publication_text``
+        alone misses it. The scan is case-insensitive and reads the surface
+        unchanged: it does NOT use ``omg_referent.safe_render`` (which renders the
+        ``{operator}`` template token stochastically, with ``segment_id=None``,
+        mutating the scanned text and making the decision non-deterministic — a
+        scanner must read what the author wrote). The operator's legal name is
+        injected only at the per-surface *formal* render, downstream of this gate;
+        it must never appear in the authored artifact.
 
         When the pattern source ``HAPAX_OPERATOR_NAME`` is unconfigured the scan
         cannot run; the child PASSES but records a ``legal_name_guard_unconfigured``
@@ -221,7 +228,12 @@ class PublicationHardeningGate:
             return PublicationGateChildResult(
                 name="legal_name",
                 decision=PublicationGateDecision.REJECT,
-                findings=("operator legal name detected in publication text",),
+                findings=(
+                    "operator legal name detected in publication surface — replace "
+                    "it with a canonical referent (The Operator / Oudepode / OTO), "
+                    "or restrict formal legal-name use to the per-surface formal "
+                    "render rather than the authored artifact",
+                ),
             )
         return PublicationGateChildResult(
             name="legal_name",
@@ -360,7 +372,10 @@ def _publication_gate_override(
     if not by_referent or not reason:
         return None, "operator_override_invalid: referent_and_reason_required"
     if by_referent.casefold() not in _AUTHORIZED_OVERRIDE_REFERENTS:
-        return None, "operator_override_invalid: unauthorized_referent"
+        return None, (
+            "operator_override_invalid: unauthorized_referent — author the override "
+            "with a canonical referent (The Operator / Oudepode / OTO)"
+        )
     normalized = {
         "by_referent": by_referent,
         "reason": reason,
@@ -383,6 +398,38 @@ def _artifact_publication_text(artifact: PreprintArtifact) -> str:
         )
         if part
     )
+
+
+def _artifact_legal_name_surface(artifact: PreprintArtifact) -> str:
+    """Every authored surface a publisher can render the operator's identity into.
+
+    Superset of ``_artifact_publication_text``: appends each co-author's identity
+    fields (``name`` / ``given_names`` / ``family_names`` / ``alias``). Publishers
+    render co-authors into public metadata — Zenodo ``creators``, OSF, CFF
+    ``authors`` — even when ``attribution_block`` is empty, so a legal name there
+    leaks identically to one in a byline. The default co-authors carry the
+    referent (``Oudepode`` / ``The Operator`` / ``OTO``), never a legal name; the
+    legal name is injected only at the per-surface formal render, downstream of
+    this gate.
+    """
+    parts: list[str] = [_artifact_publication_text(artifact)]
+    for author in artifact.co_authors:
+        # The space-joined "given family" form catches a legal name split across a
+        # CFF/Zenodo person entry's given_names/family_names, which the individual
+        # fields would never match as the contiguous configured name.
+        combined = " ".join(p for p in (author.given_names, author.family_names) if p)
+        parts.extend(
+            field
+            for field in (
+                author.name,
+                author.given_names,
+                author.family_names,
+                author.alias,
+                combined,
+            )
+            if field
+        )
+    return "\n".join(part for part in parts if part)
 
 
 def _artifact_author_model(artifact: PreprintArtifact) -> str | None:

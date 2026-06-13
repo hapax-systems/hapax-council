@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
+from shared.co_author_model import OUDEPODE
 from shared.preprint_artifact import PreprintArtifact
 from shared.publication_hardening.codebase import (
     CodebaseDecision,
@@ -154,6 +156,51 @@ def test_gate_legal_name_guard_warns_when_unconfigured(monkeypatch) -> None:
     # advisory, not a decision-affecting flagged issue
     assert not any("unconfigured" in issue for issue in result.flagged_issues)
     assert result.decision == PublicationGateDecision.PASS
+
+
+def test_gate_rejects_operator_legal_name_in_co_authors(monkeypatch) -> None:
+    """corporate_boundary: a legal name in a co-author's identity fields — which
+    publishers render into public metadata (Zenodo creators, CFF authors) — is a
+    REJECT, even when it never appears in the authored body or byline. This is the
+    co_authors coverage gap (gate scanned only _artifact_publication_text)."""
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Jane Doe")
+    artifact = _artifact(
+        attribution_block="Oudepode (distributor) · Hapax (performer)",
+        co_authors=[replace(OUDEPODE, given_names="Jane", family_names="Doe")],
+    )
+    result = _gate().evaluate(artifact)
+
+    assert result.decision == PublicationGateDecision.REJECT
+    assert not result.passes()
+    legal = next(c for c in result.child_results if c.name == "legal_name")
+    assert legal.decision == PublicationGateDecision.REJECT
+
+
+def test_gate_legal_name_configured_but_clean_passes(monkeypatch) -> None:
+    """The live-guard happy path (most common production state once provisioned):
+    HAPAX_OPERATOR_NAME is set and the artifact is clean. The guard ran (no
+    'unconfigured' finding) and PASSED — distinct from the unset-env no-op."""
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Jane Doe")
+    result = _gate().evaluate(_artifact(attribution_block="Oudepode · Hapax"))
+
+    legal = next(c for c in result.child_results if c.name == "legal_name")
+    assert legal.decision == PublicationGateDecision.PASS
+    assert not any("unconfigured" in finding for finding in legal.findings)
+    assert result.decision == PublicationGateDecision.PASS
+
+
+def test_gate_reject_receipt_omits_leaked_name(monkeypatch) -> None:
+    """Non-re-emission invariant: a rejected receipt must never echo the matched
+    legal name — not in any child finding, not in the serialized frontmatter.
+    A privacy guard that leaks the name into its own audit record is self-defeating."""
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Jane Doe")
+    result = _gate().evaluate(
+        _artifact(attribution_block="Jane Doe (distributor) · Hapax (performer)")
+    )
+
+    assert result.decision == PublicationGateDecision.REJECT
+    assert all("Jane Doe" not in finding for c in result.child_results for finding in c.findings)
+    assert "Jane Doe" not in str(result.to_frontmatter())
 
 
 def test_gate_override_rejects_unauthorized_referent() -> None:

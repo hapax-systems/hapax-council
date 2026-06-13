@@ -30,6 +30,17 @@ does NOT appear in source markdown — the pii-guard hook blocks legal
 names there. The render pipeline reads from this env at publish time
 and never writes it back to source.
 
+> **Never author the legal name into an artifact.** The publication
+> hardening gate (`shared/publication_hardening/gate.py`) REJECTs a
+> configured `HAPAX_OPERATOR_NAME` found anywhere in the authored
+> artifact — title, abstract, body, `attribution_block`, **and
+> co-author identity fields** (`name`/`given_names`/`family_names`/
+> `alias`, which publishers render into Zenodo creators / CFF authors).
+> Use the canonical referent (`Oudepode` / `The Operator` / `OTO`) in
+> authored fields. The legal name is interpolated **only at the
+> per-surface formal render**, downstream of the gate, on the formal
+> surfaces that warrant it — you never type it into the artifact.
+
 **If unset:** the renderer falls back to the placeholder
 `"The Operator"` and emits a warning. Useful for testing; not for
 public publish-events.
