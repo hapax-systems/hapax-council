@@ -152,6 +152,7 @@ class CouncilHealth(BaseModel):
     below_quorum: bool = False
     quorum_floor_members: int = 0
     quorum_floor_families: int = 0
+    excused_failures: int = 0
 
 
 class EvidenceClassification(BaseModel):

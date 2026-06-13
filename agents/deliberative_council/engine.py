@@ -11,6 +11,7 @@ from pydantic_ai import (  # noqa: TC002 — runtime use in _call_member
     NativeOutput,
     UsageLimits,
 )
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import UserContent
 
 from .aggregation import AxisAggregate, aggregate_scores, should_shortcircuit
@@ -48,6 +49,26 @@ _log = logging.getLogger(__name__)
 
 _MEMBER_TIMEOUT_S = 120.0
 
+# ── DEGRADE-TO-AVAILABLE ─────────────────────────────────────────────────────
+# Provider-side failures (quota exhaustion, content filtering) are EXCUSED
+# ABSENCES: the member was unable to participate through no fault of the
+# verdict's integrity.  Excused failures lower the effective quorum floor
+# (never below 1) so the remaining members can still produce a valid, degraded
+# verdict.  The DEFAULT panel includes local-fast (resident Command-R, family
+# cohere), which is not cloud-quota/content-filter fragile, so the default
+# seg-prep panel retains a non-excused survivor; callers that omit it from
+# model_aliases forfeit that guarantee.
+# The QUALITY floor (per-axis score thresholds / min_axis_values) is NEVER lowered.
+# See cc-task seg-prep-council-coherence-degrade-not-refuse-20260613.
+PROVIDER_EXCUSED_REASONS: frozenset[str] = frozenset(
+    {
+        "UsageLimitExceeded",
+        "ContentFilterError",
+        "RateLimitError",
+        "QuotaExceededError",
+    }
+)
+
 # ── PRINCIPLED EXECUTION BOUNDS ──────────────────────────────────────────────
 # cc-task cctv-council-perfect-health-faillloud-convergence. pydantic-ai 1.63's
 # default UsageLimits leaves ``tool_calls_limit=None`` (UNBOUNDED): a member ran
@@ -68,7 +89,7 @@ _MEMBER_TIMEOUT_S = 120.0
 # member over-limit -> members_valid=1/6 (below floor 4) -> 0 segments
 # released. 12 covers the observed max (11) + headroom; the FLAGGED comment
 # above explicitly invites this tuning via the tool_calls_log.
-_RESEARCH_LIMITS = UsageLimits(request_limit=8, tool_calls_limit=12)
+_RESEARCH_LIMITS = UsageLimits(request_limit=20, tool_calls_limit=20)
 _SCORE_LIMITS = UsageLimits(request_limit=2, tool_calls_limit=0)
 
 
@@ -152,11 +173,30 @@ async def run_phase1(
                 "Report your findings as a JSON list:\n"
                 '{"research_findings": ["finding 1", "finding 2", ...]}'
             )
-            investigate_raw, tool_calls = await _call_member(
-                research_member, investigate_prompt, usage_limits=_RESEARCH_LIMITS
-            )
-
-            findings_text = str(investigate_raw)[:2000]
+            try:
+                investigate_raw, tool_calls = await _call_member(
+                    research_member, investigate_prompt, usage_limits=_RESEARCH_LIMITS
+                )
+                findings_text = str(investigate_raw)[:2000]
+            except (UsageLimitExceeded, TimeoutError) as research_err:
+                # A member that exhausts its research budget (over-grounding) or
+                # times out is NOT a failed member. Discarding it dropped
+                # members_valid below the quality floor in the 2026-06-13 seg-prep
+                # incident (5/6 over-grounded -> members_valid=1 -> 0 released). It
+                # still produces a structured score from the rubric + source text;
+                # the source_grounding axis honestly reflects truncated research.
+                # Only a SCORING failure (outer except) discards a member.
+                _log.warning(
+                    "Research budget/timeout for %s (%s); scoring with truncated research",
+                    alias,
+                    type(research_err).__name__,
+                )
+                tool_calls = []
+                findings_text = (
+                    "(research truncated: budget/timeout reached before a findings "
+                    "summary was produced; score from the source text directly and "
+                    "rate source_grounding conservatively)"
+                )
 
             score_prompt = phase1_prompt_parts(
                 rubric,
@@ -235,10 +275,46 @@ def _assess_health(
     valid_aliases = [r.model_alias for r in results]
     families_valid = {model_family(a) for a in valid_aliases}
     families_requested = {model_family(a) for a in requested}
+
+    # Count excused failures (provider-side errors that are not member faults).
+    excused_members = [f for f in failed if f.reason in PROVIDER_EXCUSED_REASONS]
+
+    # Group failures by family so we can require that EVERY failed member of an
+    # absent family failed for a provider-side reason before excusing it. A family
+    # with even one non-provider failure (timeout, real error) is a genuine
+    # degradation that must still count against the independent-family quorum —
+    # excusing it would let a verdict release below the intended family floor.
+    failures_by_family: dict[str, list[MemberFailure]] = {}
+    for f in failed:
+        failures_by_family.setdefault(model_family(f.model_alias), []).append(f)
+
+    excused_families = {
+        fam
+        for fam, fails in failures_by_family.items()
+        if fam not in families_valid  # the family has no surviving member
+        and all(mf.reason in PROVIDER_EXCUSED_REASONS for mf in fails)
+    }
+    excused_family_count = len(excused_families)
+
+    # Effective floor: lower by excused count, never below 1.
+    effective_member_floor = max(1, config.min_valid_members - len(excused_members))
+    effective_family_floor = max(1, config.min_valid_families - excused_family_count)
+
     below = (
-        len(valid_aliases) < config.min_valid_members
-        or len(families_valid) < config.min_valid_families
+        len(valid_aliases) < effective_member_floor or len(families_valid) < effective_family_floor
     )
+
+    if excused_members:
+        _log.info(
+            "Council degrade-to-available: %d excused (%s), effective floor %d/%d (was %d/%d)",
+            len(excused_members),
+            ", ".join(f"{f.model_alias}:{f.reason}" for f in excused_members),
+            effective_member_floor,
+            effective_family_floor,
+            config.min_valid_members,
+            config.min_valid_families,
+        )
+
     return CouncilHealth(
         members_requested=len(requested),
         members_valid=len(valid_aliases),
@@ -246,8 +322,9 @@ def _assess_health(
         families_valid=len(families_valid),
         failed_members=tuple(failed),
         below_quorum=below,
-        quorum_floor_members=config.min_valid_members,
-        quorum_floor_families=config.min_valid_families,
+        quorum_floor_members=effective_member_floor,
+        quorum_floor_families=effective_family_floor,
+        excused_failures=len(excused_members),
     )
 
 

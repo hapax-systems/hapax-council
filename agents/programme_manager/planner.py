@@ -841,7 +841,7 @@ def _default_llm_fn(prompt: str) -> str:
     result = call_resident_command_r(
         prompt,
         chat_url=tabby_chat_url(),
-        max_tokens=8192,
+        max_tokens=16384,
         temperature=0.7,
         timeout_s=_LLM_TIMEOUT_S,
     )
