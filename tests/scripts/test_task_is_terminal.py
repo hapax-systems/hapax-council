@@ -244,7 +244,7 @@ class TestSessionKeyedFallback:
 
     def test_newest_session_keyed_wins(self, tmp_path: Path) -> None:
         """When multiple session-keyed files exist, the most recent one wins."""
-        import time
+        import os
 
         env = _make_test_env(
             tmp_path,
@@ -256,13 +256,12 @@ class TestSessionKeyedFallback:
         # Create an older file naming a different task
         old_file = cache_dir / "cc-active-task-cx-test-old_session"
         old_file.write_text("wrong-task\n", encoding="utf-8")
-
-        # Ensure time separation for mtime ordering
-        time.sleep(0.05)
+        os.utime(old_file, (1_700_000_000, 1_700_000_000))
 
         # Create a newer file naming the correct task
         new_file = cache_dir / "cc-active-task-cx-test-new_session"
         new_file.write_text("test-task-001\n", encoding="utf-8")
+        os.utime(new_file, (1_700_000_010, 1_700_000_010))
 
         result = _run_terminal_check(env)
         assert "LIVE" in result.stdout, (

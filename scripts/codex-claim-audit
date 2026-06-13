@@ -68,6 +68,7 @@ process_count=0
 quota_blocked_count=0
 pr_protected_count=0
 reconcile_count=0
+release_failure_count=0
 report=""
 cache_report=""
 coherence_report=""
@@ -75,6 +76,7 @@ process_report=""
 quota_report=""
 pr_protected_report=""
 reconcile_report=""
+release_failure_report=""
 release_cache_message=""
 
 # ---------------------------------------------------------------------------
@@ -396,6 +398,8 @@ _clear_claim_cache_for_release() {
         if [ -n "$RECONCILE_HOST" ]; then
           if ! _reconcile_clear_to_host "$assigned" "$task_id"; then
             release_cache_message="    -> KEPT claim cache $(basename "$claim_file") because remote reconciliation failed or found a different live claim\n"
+            release_failure_count=$((release_failure_count + 1))
+            release_failure_report="${release_failure_report}  RELEASE_HELD: $(basename "$claim_file") task=${task_id} assigned=${assigned} reason=reconcile_failed\n"
             return 1
           fi
         fi
@@ -413,6 +417,8 @@ _clear_claim_cache_for_release() {
   if [ -n "$RECONCILE_HOST" ]; then
     if ! _reconcile_clear_to_host "$assigned" "$task_id"; then
       release_cache_message="    -> HELD release for missing local claim cache $(basename "$claim_file") because remote reconciliation failed or found a different live claim\n"
+      release_failure_count=$((release_failure_count + 1))
+      release_failure_report="${release_failure_report}  RELEASE_HELD: $(basename "$claim_file") task=${task_id} assigned=${assigned} reason=missing_local_reconcile_failed\n"
       return 1
     fi
   fi
@@ -427,45 +433,62 @@ _clear_claim_cache_for_release() {
 _reconcile_clear_to_host() {
   local assigned="$1" task_id="$2"
   local remote_file="$RECONCILE_CACHE_DIR/cc-active-task-$assigned"
-  local caller_host
+  local caller_host remote_file_q task_id_q caller_host_q remote_result remote_rc
   caller_host="$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf unknown)"
+  remote_file_q="$(printf '%q' "$remote_file")"
+  task_id_q="$(printf '%q' "$task_id")"
+  caller_host_q="$(printf '%q' "$caller_host")"
   if [ "$DRY_RUN" = true ]; then
     reconcile_count=$((reconcile_count + 1))
     reconcile_report="${reconcile_report}  [DRY-RUN] WOULD RECONCILE ${assigned} task=${task_id} -> ${RECONCILE_HOST}:${remote_file}\n"
     return 0
   fi
-  # Safety: read the remote file contents first and only delete if it names
-  # the SAME task_id. If the remote host has already advanced the role to
-  # another task, deleting would erase a live remote claim.
-  local remote_task=""
-  if ! remote_task="$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$RECONCILE_HOST" \
-    "if [ -s '$remote_file' ]; then head -n1 '$remote_file' | tr -d '[:space:]'; fi" 2>/dev/null)"; then
-    reconcile_report="${reconcile_report}  RECONCILE_FAILED: cc-active-task-${assigned} on ${RECONCILE_HOST} task=${task_id} (ssh read failed; check: ssh ${RECONCILE_HOST}, HAPAX_RECONCILE_HOST env, or rerun with --dry-run)\n"
-    _journal_attr "RECONCILE_FAILED" "cc-active-task-${assigned}" "ssh read from ${RECONCILE_HOST} failed task=${task_id}"
-    return 1
-  fi
-  if [ -z "$remote_task" ]; then
-    # Remote file doesn't exist or is empty — nothing to reconcile.
-    reconcile_count=$((reconcile_count + 1))
-    reconcile_report="${reconcile_report}  RECONCILE_SKIP: cc-active-task-${assigned} on ${RECONCILE_HOST} (remote file absent or empty)\n"
-    return 0
-  fi
-  if [ "$remote_task" != "$task_id" ]; then
-    # Remote host has a DIFFERENT task claimed for this role — do NOT delete.
+
+  # Safety: compare and delete in one remote shell so a claim re-point between
+  # separate ssh calls cannot erase a newly live remote claim.
+  set +e
+  remote_result="$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$RECONCILE_HOST" \
+    "remote_file=${remote_file_q}; task_id=${task_id_q}; caller_host=${caller_host_q}; \
+if [ ! -s \"\$remote_file\" ]; then printf 'ABSENT\n'; exit 0; fi; \
+remote_task=\$(head -n1 \"\$remote_file\" 2>/dev/null | tr -d '[:space:]'); \
+if [ \"\$remote_task\" != \"\$task_id\" ]; then printf 'MISMATCH:%s\n' \"\$remote_task\"; exit 3; fi; \
+rm -f \"\$remote_file\" && logger -t codex-claim-audit \"RECONCILE_CLEAR cc-active-task-${assigned} task=\$task_id from=\$caller_host\" && printf 'CLEARED\n'" 2>/dev/null)"
+  remote_rc=$?
+  set -e
+
+  if [ "$remote_rc" -eq 3 ]; then
+    local remote_task="${remote_result#MISMATCH:}"
     reconcile_report="${reconcile_report}  RECONCILE_SKIP: cc-active-task-${assigned} on ${RECONCILE_HOST} remote_task=${remote_task} != local_task=${task_id} (remote claim is live for different task)\n"
     _journal_attr "RECONCILE_SKIP" "cc-active-task-${assigned}" "remote ${RECONCILE_HOST} has different task=${remote_task} (ours=${task_id})"
     return 1
   fi
-  if ssh -o ConnectTimeout=5 -o BatchMode=yes "$RECONCILE_HOST" \
-       "rm -f '$remote_file' && logger -t codex-claim-audit 'RECONCILE_CLEAR cc-active-task-${assigned} task=${task_id} from=${caller_host}'" 2>/dev/null; then
-    reconcile_count=$((reconcile_count + 1))
-    reconcile_report="${reconcile_report}  RECONCILED: cleared cc-active-task-${assigned} on ${RECONCILE_HOST} task=${task_id}\n"
-    _journal_attr "RECONCILE" "cc-active-task-${assigned}" "cleared on ${RECONCILE_HOST} task=${task_id}"
-  else
-    reconcile_report="${reconcile_report}  RECONCILE_FAILED: cc-active-task-${assigned} on ${RECONCILE_HOST} task=${task_id} (ssh failed; check: ssh ${RECONCILE_HOST}, HAPAX_RECONCILE_HOST env, or rerun with --dry-run)\n"
-    _journal_attr "RECONCILE_FAILED" "cc-active-task-${assigned}" "ssh to ${RECONCILE_HOST} failed task=${task_id}"
+  if [ "$remote_rc" -ne 0 ]; then
+    reconcile_report="${reconcile_report}  RECONCILE_FAILED: cc-active-task-${assigned} on ${RECONCILE_HOST} task=${task_id} (ssh read failed; check: ssh ${RECONCILE_HOST}, HAPAX_RECONCILE_HOST env, or rerun with --dry-run)\n"
+    _journal_attr "RECONCILE_FAILED" "cc-active-task-${assigned}" "ssh guarded clear on ${RECONCILE_HOST} failed task=${task_id}"
     return 1
   fi
+  case "$remote_result" in
+    ABSENT*)
+      # Remote file doesn't exist or is empty — nothing to reconcile.
+      reconcile_count=$((reconcile_count + 1))
+      reconcile_report="${reconcile_report}  RECONCILE_SKIP: cc-active-task-${assigned} on ${RECONCILE_HOST} (remote file absent or empty)\n"
+      return 0
+      ;;
+    CLEARED*)
+      reconcile_count=$((reconcile_count + 1))
+      reconcile_report="${reconcile_report}  RECONCILED: cleared cc-active-task-${assigned} on ${RECONCILE_HOST} task=${task_id}\n"
+      _journal_attr "RECONCILE" "cc-active-task-${assigned}" "cleared on ${RECONCILE_HOST} task=${task_id}"
+      return 0
+      ;;
+  esac
+  if [ -z "$remote_result" ]; then
+    reconcile_count=$((reconcile_count + 1))
+    reconcile_report="${reconcile_report}  RECONCILE_SKIP: cc-active-task-${assigned} on ${RECONCILE_HOST} (remote file absent or empty)\n"
+    return 0
+  fi
+  reconcile_report="${reconcile_report}  RECONCILE_FAILED: cc-active-task-${assigned} on ${RECONCILE_HOST} task=${task_id} (unexpected ssh response: ${remote_result})\n"
+  _journal_attr "RECONCILE_FAILED" "cc-active-task-${assigned}" "unexpected response from ${RECONCILE_HOST}: ${remote_result}"
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -721,7 +744,7 @@ done <<< "$process_input"
 # Reporting
 # ---------------------------------------------------------------------------
 
-issue_count=$((phantom_count + coherence_count + process_count + quota_blocked_count))
+issue_count=$((phantom_count + coherence_count + process_count + quota_blocked_count + release_failure_count))
 
 if [ "$issue_count" -gt 0 ]; then
   if [ "$quota_blocked_count" -gt 0 ]; then
@@ -752,6 +775,10 @@ if [ "$issue_count" -gt 0 ]; then
     printf "codex-claim-audit: %d cache(s) reconciled to %s\n" "$reconcile_count" "$RECONCILE_HOST"
     printf '%b' "$reconcile_report"
   fi
+  if [ "$release_failure_count" -gt 0 ]; then
+    printf "codex-claim-audit: %d release preflight failure(s)\n" "$release_failure_count"
+    printf '%b' "$release_failure_report"
+  fi
 
   if command -v curl >/dev/null 2>&1; then
     curl -s \
@@ -761,8 +788,12 @@ if [ "$issue_count" -gt 0 ]; then
       -H "Tags: warning,robot" \
       "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
   fi
+  if [ "$release_failure_count" -gt 0 ]; then
+    exit 2
+  fi
   if [ "$RELEASE" = true ] \
     && { [ "$quota_blocked_count" -eq 0 ] || [ "$RELEASE_QUOTA_BLOCKED" = true ]; } \
+    && [ "$release_failure_count" -eq 0 ] \
     && [ "$cache_mismatch_count" -eq 0 ] \
     && [ "$coherence_count" -eq 0 ] \
     && [ "$process_count" -eq 0 ]; then

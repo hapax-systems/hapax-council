@@ -131,6 +131,27 @@ def _ssh_stub(
         cmd="${{@: -1}}"
         printf '%s\\n' "$cmd" >> "{calls}"
         case "$cmd" in
+          remote_file=*)
+            if [[ "{"1" if read_fails else "0"}" == "1" ]]; then
+              exit 255
+            fi
+            if [[ ! -s "{remote_state}" ]]; then
+              printf 'ABSENT\\n'
+              exit 0
+            fi
+            remote_task="$(head -n1 "{remote_state}" | tr -d '[:space:]')"
+            task_id="$(printf '%s\\n' "$cmd" | sed -nE 's/.*task_id=([^ ;]+).*/\\1/p' | head -n1)"
+            if [[ "$remote_task" != "$task_id" ]]; then
+              printf 'MISMATCH:%s\\n' "$remote_task"
+              exit 3
+            fi
+            if [[ "{"1" if clear_fails else "0"}" == "1" ]]; then
+              exit 255
+            fi
+            rm -f "{remote_state}"
+            printf 'CLEARED\\n'
+            exit 0
+            ;;
           if\\ \\[\\ -s*)
             if [[ "{"1" if read_fails else "0"}" == "1" ]]; then
               exit 255
@@ -441,7 +462,7 @@ class TestHostReconciliation:
             claimed_at="2026-06-10T01:00:00Z",
         )
         claim_file = _write_claim_cache(cache_dir, "cx-gold", task_id)
-        _ssh_stub(tmp_path, remote_task=task_id)
+        _stub, _remote_state, calls = _ssh_stub(tmp_path, remote_task=task_id)
 
         result = _run_audit(
             tmp_path,
@@ -455,6 +476,7 @@ class TestHostReconciliation:
         assert result.returncode == 0
         assert not claim_file.exists()
         assert "RECONCILED" in result.stdout
+        assert len(calls.read_text(encoding="utf-8").splitlines()) == 1
 
     def test_reconcile_mismatch_keeps_local_and_note_claimed(self, tmp_path: Path) -> None:
         """A different remote task is a live-claim fork; local release fails closed."""
@@ -485,6 +507,7 @@ class TestHostReconciliation:
 
         assert claim_file.exists()
         assert note.read_text(encoding="utf-8") == original_note
+        assert result.returncode == 2
         assert "RECONCILE_SKIP" in result.stdout
         assert "HELD: claim release preflight failed" in result.stdout
 
@@ -547,6 +570,7 @@ class TestHostReconciliation:
 
         assert claim_file.exists()
         assert note.read_text(encoding="utf-8") == original_note
+        assert result.returncode == 2
         assert "RECONCILE_FAILED" in result.stdout
 
     def test_missing_local_cache_reconciles_remote_before_note_release(
@@ -805,6 +829,8 @@ class TestSystemdUnits:
         )
         text = dropin.read_text()
         assert "SuccessExitStatus=1" in text
+        assert "SuccessExitStatus=2" not in text
+        assert "exit 2" in text
 
     def test_dropin_has_governed_install_path(self) -> None:
         repo = SCRIPT.parent.parent
