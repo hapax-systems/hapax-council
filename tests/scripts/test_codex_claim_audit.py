@@ -713,6 +713,79 @@ class TestHostReconciliation:
         assert "RECONCILED" in result.stdout
         assert "status: offered" in note.read_text(encoding="utf-8")
 
+    def test_missing_local_cache_open_branch_pr_retains_remote(self, tmp_path: Path) -> None:
+        """A vanished local cache must NOT erase a live REMOTE open-PR claim.
+
+        Regression for the cross-family critical: the PR/branch reality check
+        was nested inside `[ -f $claim_file ]`, so when the local cache vanished
+        the missing-local reconcile path cleared the remote claim with no reality
+        check — the exact delta/zeta + appendix-fork surface. The check is now
+        hoisted above the local/missing split: an open branch PR protects the
+        remote claim and the note stays claimed.
+        """
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir(parents=True)
+
+        task_id = "phantom-missing-but-live-pr"
+        note = _write_task_note(
+            vault,
+            task_id,
+            assigned_to="cx-gold",
+            pr="null",
+            branch="cx-gold/live-branch",
+            status="claimed",
+            claimed_at="2026-06-10T01:00:00Z",
+        )
+        _stub, remote_state, _calls = _ssh_stub(tmp_path, assigned="cx-gold", remote_task=task_id)
+        gh = _gh_stub(tmp_path, state="CLOSED", open_pr_branch="cx-gold/live-branch")
+
+        result = _run_audit(
+            tmp_path,
+            vault,
+            cache_dir,
+            release=True,
+            extra_args=_reconcile_args(remote_state),
+            gh_stub_path=gh,
+        )
+
+        assert remote_state.exists(), "remote claim with an OPEN branch PR must be retained"
+        assert "PR_OPEN_PROTECTED" in result.stdout
+        assert "status: offered" not in note.read_text(encoding="utf-8")
+        assert "RECONCILED" not in result.stdout  # reconcile never reached
+
+    def test_missing_local_cache_gh_indeterminate_retains_remote(self, tmp_path: Path) -> None:
+        """Missing local cache + gh down on the branch probe = fail-safe retain."""
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir(parents=True)
+
+        task_id = "phantom-missing-gh-down"
+        note = _write_task_note(
+            vault,
+            task_id,
+            assigned_to="cx-gold",
+            pr="null",
+            branch="cx-gold/some-branch",
+            status="claimed",
+            claimed_at="2026-06-10T01:00:00Z",
+        )
+        _stub, remote_state, _calls = _ssh_stub(tmp_path, assigned="cx-gold", remote_task=task_id)
+        gh = _gh_stub_failing(tmp_path)
+
+        result = _run_audit(
+            tmp_path,
+            vault,
+            cache_dir,
+            release=True,
+            extra_args=_reconcile_args(remote_state),
+            gh_stub_path=gh,
+        )
+
+        assert remote_state.exists(), "indeterminate branch PR state must fail-safe retain remote"
+        assert "PR_OPEN_PROTECTED" in result.stdout
+        assert "status: offered" not in note.read_text(encoding="utf-8")
+
     def test_cache_sweep_deletion_uses_host_reconciliation(self, tmp_path: Path) -> None:
         """Stale-cache sweep must not bypass host reconciliation."""
         vault = _make_vault(tmp_path)
