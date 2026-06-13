@@ -1256,26 +1256,34 @@ class VisualLayerAggregator:
             except Exception:
                 log.debug("Cross-resonance bridge failed", exc_info=True)
 
-            # Temporal bands now ride the perception/state tick instead of the
-            # 15s health-poll. The state tick is adaptive, bounded [0.5, 5.0]s
-            # (0.5-1.5s when active, 3s base, up to 5s under degraded/critical),
-            # so the impression is at most ~5s stale and usually <=3s — vs the
-            # prior fixed 15s (the round-2 adequacy audit's primary temporal
-            # deficit: every voice turn read a 15s-stale impression). Coupling to
-            # this loop is correct because write_temporal_bands summarizes the
-            # local perception ring that poll_perception() updates here; writing
-            # faster than the loop would only re-publish stale data. A guaranteed
-            # fixed-3s standalone producer (independent of load) is the deferred
-            # round-2 item 8. Moved here from _update_stimmung (the _api_poll_loop).
-            try:
-                from .stimmung_methods import write_temporal_bands
-
-                write_temporal_bands(self)
-            except Exception:
-                log.debug("temporal bands write failed", exc_info=True)
+            self._emit_temporal_bands()
 
             tick_interval = self._adaptive_tick_interval(state)
             await asyncio.sleep(tick_interval)
+
+    def _emit_temporal_bands(self) -> bool:
+        """Write temporal bands from the perception ring, swallowing failures so
+        the fast loop never dies on a producer error.
+
+        Temporal bands now ride this perception/state tick instead of the prior
+        15s health-poll. The tick is adaptive, bounded [0.5, 5.0]s (0.5-1.5s when
+        active, 3s base, up to 5s under degraded/critical), so the impression is
+        at most ~5s stale (usually <=3s) vs the prior fixed 15s — the round-2
+        adequacy audit's primary temporal deficit (every voice turn read a
+        15s-stale impression). Coupling to this loop is correct: the bands
+        summarize the perception ring that poll_perception() refreshes here, so
+        writing faster than the loop would only re-publish stale data. A
+        guaranteed fixed-3s producer independent of load is the deferred round-2
+        item 8. Returns True iff bands were written this call.
+        """
+        try:
+            from .stimmung_methods import write_temporal_bands
+
+            write_temporal_bands(self)
+            return True
+        except Exception:
+            log.debug("temporal bands write failed", exc_info=True)
+            return False
 
     async def _api_poll_loop(self) -> None:
         """Slow API loop: health/GPU at 15s, slow endpoints at 60s, ambient at 45s."""
