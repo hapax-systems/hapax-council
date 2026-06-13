@@ -62,11 +62,14 @@ class TestFullState:
 class TestStimmung:
     def test_stance_parses_to_enum(self, monkeypatch, tmp_path):
         _redirect_paths_to_empty(monkeypatch, tmp_path)
+        # Live schema: dims at the TOP LEVEL as {name: {value: float, ...}},
+        # no "dimensions" wrapper, sub-key is "value".
         _write_stimmung(
             tmp_path,
             {
                 "overall_stance": "seeking",
-                "dimensions": {"exploration_deficit": 0.4, "audience_engagement": 0.2},
+                "exploration_deficit": {"value": 0.4},
+                "audience_engagement": {"value": 0.2},
             },
         )
         field = build_perceptual_field()
@@ -79,16 +82,16 @@ class TestStimmung:
         field = build_perceptual_field()
         assert field.stimmung.overall_stance is None
 
-    def test_dimensions_dict_with_reading_unpacks(self, monkeypatch, tmp_path):
+    def test_dimensions_dict_with_value_unpacks(self, monkeypatch, tmp_path):
+        # Live schema: each top-level dim is a dict carrying a "value" sub-key
+        # (plus trend/freshness_s/sigma/n which are ignored here).
         _redirect_paths_to_empty(monkeypatch, tmp_path)
         _write_stimmung(
             tmp_path,
             {
                 "overall_stance": "nominal",
-                "dimensions": {
-                    "exploration_deficit": {"reading": 0.35, "_source": "vla"},
-                    "audience_engagement": {"reading": 0.1},
-                },
+                "exploration_deficit": {"value": 0.35, "trend": "rising", "_source": "vla"},
+                "audience_engagement": {"value": 0.1},
             },
         )
         field = build_perceptual_field()

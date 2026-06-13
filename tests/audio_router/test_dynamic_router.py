@@ -47,16 +47,18 @@ def test_read_stimmung_state_returns_defaults_when_file_absent(tmp_path: Path) -
 
 def test_read_stimmung_state_parses_full_payload(tmp_path: Path) -> None:
     path = tmp_path / "state.json"
+    # Live VLA schema: overall_stance (lowercased; router uppercases) + each dim
+    # as a {value, trend, ...} dict (sub-key "value"); timestamp is metadata.
     path.write_text(
         json.dumps(
             {
-                "stance": "SEEKING",
-                "energy": 0.8,
-                "coherence": 0.4,
-                "focus": 0.6,
-                "intention_clarity": 0.7,
-                "presence": 0.9,
-                "exploration_deficit": 0.65,
+                "overall_stance": "seeking",
+                "energy": {"value": 0.8},
+                "coherence": {"value": 0.4},
+                "focus": {"value": 0.6},
+                "intention_clarity": {"value": 0.7},
+                "presence": {"value": 0.9},
+                "exploration_deficit": {"value": 0.65},
                 "timestamp": 1700000000.0,
             }
         )
@@ -69,14 +71,14 @@ def test_read_stimmung_state_parses_full_payload(tmp_path: Path) -> None:
 
 def test_read_stimmung_state_clamps_out_of_range_floats(tmp_path: Path) -> None:
     path = tmp_path / "state.json"
-    path.write_text(json.dumps({"stance": "NOMINAL", "energy": 1.5}))
+    path.write_text(json.dumps({"overall_stance": "nominal", "energy": {"value": 1.5}}))
     state = read_stimmung_state(path)
     assert state.energy == 1.0
 
 
 def test_read_stimmung_state_falls_back_on_unknown_stance(tmp_path: Path) -> None:
     path = tmp_path / "state.json"
-    path.write_text(json.dumps({"stance": "BOGUS_STANCE"}))
+    path.write_text(json.dumps({"overall_stance": "BOGUS_STANCE"}))
     state = read_stimmung_state(path)
     assert state.stance == "NOMINAL"
 
@@ -87,6 +89,36 @@ def test_read_stimmung_state_handles_malformed_json(tmp_path: Path) -> None:
     state = read_stimmung_state(path)
     assert state.stance == "NOMINAL"
     assert state.energy == 0.5
+
+
+@pytest.mark.parametrize(
+    "stimmung_stance,expected_router_stance",
+    [
+        ("nominal", "NOMINAL"),
+        ("seeking", "SEEKING"),
+        ("cautious", "CONSTRAINED"),
+        ("degraded", "CONSTRAINED"),
+        ("critical", "CONSTRAINED"),
+    ],
+)
+def test_read_stimmung_state_maps_producer_vocabulary(
+    tmp_path: Path, stimmung_stance: str, expected_router_stance: str
+) -> None:
+    """The stimmung Stance enum (nominal/seeking/cautious/degraded/critical) is a
+    DIFFERENT vocabulary than the router's; severity stances must NOT silently
+    collapse to NOMINAL — they map to CONSTRAINED (the pulled-back stance)."""
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"overall_stance": stimmung_stance}))
+    state = read_stimmung_state(path)
+    assert state.stance == expected_router_stance
+
+
+def test_read_stimmung_state_router_native_stance_passes_through(tmp_path: Path) -> None:
+    """Router-native stances (e.g. FORTRESS) still pass through unchanged."""
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"overall_stance": "fortress"}))
+    state = read_stimmung_state(path)
+    assert state.stance == "FORTRESS"
 
 
 # ── Voice / Mode-D / override readers ────────────────────────────────
@@ -364,11 +396,11 @@ def test_dynamic_router_tick_re_emits_when_stimmung_changes(
 ) -> None:
     router = DynamicRouter(evilpet_midi=MagicMock(), s4_midi_port=None)
     stimmung = isolated_router_files / "stimmung.json"
-    stimmung.write_text(json.dumps({"stance": "NOMINAL"}))
+    stimmung.write_text(json.dumps({"overall_stance": "nominal"}))
     with patch("agents.audio_router.dynamic_router.recall_preset", return_value=1) as recall_mock:
         router.tick(now=0.0)
         # Switch to FORTRESS — policy clamps to T0 = different preset
-        stimmung.write_text(json.dumps({"stance": "FORTRESS"}))
+        stimmung.write_text(json.dumps({"overall_stance": "fortress"}))
         router.tick(now=0.2)
     # Two distinct presets emitted (NOMINAL → broadcast-ghost vs FORTRESS → unadorned)
     presets_emitted = [c.args[0] for c in recall_mock.call_args_list]
