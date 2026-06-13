@@ -389,3 +389,49 @@ class TestDifferentReasons:
         ledger.record_refusal("t1", "lane-a", "reason-A", now=now + 1)
         # reason-A crossed K=2 → pair is cooled.
         assert ledger.any_cooldown_for_pair("t1", "lane-a", now=now + 2)
+
+
+# ── task-scoped cooldown (starvation discount) ────────────────────────────────
+
+
+class TestAnyCooldownForTask:
+    def test_true_when_task_cooled_on_any_lane(self) -> None:
+        ledger, _ = make_ledger(k=1)
+        ledger.record_refusal("t1", "lane-a", "reason-x", now=100.0)
+        # Cooled on lane-a → task is held regardless of lane.
+        assert ledger.any_cooldown_for_task("t1", now=101.0)
+        # A different task with no refusals is not held.
+        assert not ledger.any_cooldown_for_task("t2", now=101.0)
+
+    def test_false_after_clear(self) -> None:
+        ledger, _ = make_ledger(k=1)
+        ledger.record_refusal("t1", "lane-a", "reason-x", now=100.0)
+        ledger.clear("t1")
+        assert not ledger.any_cooldown_for_task("t1", now=101.0)
+
+    def test_false_after_cooldown_expires(self) -> None:
+        ledger, _ = make_ledger(k=1)
+        ledger.record_refusal("t1", "lane-a", "reason-x", now=100.0)
+        assert ledger.any_cooldown_for_task("t1", now=101.0)
+        # Past the first backoff window the task is no longer held.
+        assert not ledger.any_cooldown_for_task("t1", now=100.0 + BACKOFF_BASE_S + 1)
+
+
+# ── escalation body content ───────────────────────────────────────────────────
+
+
+class TestEscalationBody:
+    def test_escalation_body_contains_reason_and_pair(self) -> None:
+        """The circuit-breaker escalation carries the named refusal reason and the
+        (task, lane) pair — the exit predicate requires the reason to ride the
+        escalation, not just a bare count."""
+        ledger, recorder = make_ledger(k=2)
+        reason = "BLOCKED: route policy refuse: runtime_actuation_receipt_absent"
+        ledger.record_refusal("cctv-task", "cx-alpha", reason, now=100.0)
+        ledger.record_refusal("cctv-task", "cx-alpha", reason, now=101.0)
+
+        assert len(recorder.calls) == 1
+        _title, body = recorder.calls[0]
+        assert reason in body
+        assert "cctv-task" in body
+        assert "cx-alpha" in body

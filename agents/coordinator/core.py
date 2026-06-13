@@ -271,55 +271,28 @@ class Coordinator:
             )
             for l in idle_lanes
         ]
-        skipped_cooldown = 0
-        if legacy:
-            plan = plan_dispatches(
-                queue_tasks,
-                queue_lanes,
-                max_dispatches=max_dispatches,
-                age_norm_s=age_norm_s,
-                legacy=True,
-            )
-        else:
-            plan = []
-            remaining = list(queue_tasks)
-            for qlane in [lane for lane in queue_lanes if lane.cooldown_remaining_s <= 0]:
-                if len(plan) >= max_dispatches:
-                    break
-                routable = [task for task in remaining if _queue_task_routable(task, qlane)]
-                eligible = [
-                    task
-                    for task in routable
-                    if not self._refusal_ledger.any_cooldown_for_pair(
-                        task.task_id, qlane.role, now=now_mono
-                    )
-                ]
-                if routable and not eligible:
-                    skipped_cooldown += len(routable)
-                    continue
-                if not eligible:
-                    continue
-                best = max(
-                    eligible,
-                    key=lambda task: wsjf_effective(task.wsjf, task.age_s, age_norm_s),
-                )
-                plan.append((best.task_id, qlane.role))
-                remaining.remove(best)
+        # Delegate ordering/aging/fairness to the tested plan_dispatches (both the
+        # default lane-outer VOQ planner and the `legacy` revert path), then run a
+        # no-spin repair pass: a (task, lane) pair in refusal cooldown is replanned
+        # to the next eligible task for that lane instead of head-of-line-blocking
+        # it. The repair applies in BOTH scheduler modes — the legacy path no longer
+        # lets a cooled high-WSJF pair freeze a lane other work could use.
+        plan = plan_dispatches(
+            queue_tasks,
+            queue_lanes,
+            max_dispatches=max_dispatches,
+            age_norm_s=age_norm_s,
+            legacy=legacy,
+        )
+        plan, skipped_cooldown = self._repair_cooled_plan(
+            plan, queue_tasks, queue_lanes, age_norm_s=age_norm_s, now_mono=now_mono
+        )
         task_by_id = {t.task_id: t for t in offered}
         lane_by_role = {l.role: l for l in idle_lanes}
         for task_id, role in plan:
             task = task_by_id.get(task_id)
             lane = lane_by_role.get(role)
             if task is None or lane is None:
-                continue
-            # No-spin law: skip if ANY (task, lane, *) triple is in cooldown.
-            if self._refusal_ledger.any_cooldown_for_pair(task_id, role, now=now_mono):
-                skipped_cooldown += 1
-                log.debug(
-                    "no-spin: skipping dispatch %s → %s (in cooldown)",
-                    task_id,
-                    role,
-                )
                 continue
             success, refusal_reason = self._dispatch(task, lane)
             if success:
@@ -334,11 +307,21 @@ class Coordinator:
         state.dispatches_this_tick = dispatches
         state.lanes = {role: _lane_to_dict(l) for role, l in lanes.items()}
 
-        # No-spin law: starvation detector (offered>0, dispatched=0 for 1h →
-        # escalate). A no-spin cooldown skip is an intentional circuit-breaker
-        # hold, not a fresh starvation condition; reset starvation tracking while
-        # the refusal ledger is actively preventing repeat dispatch attempts.
-        starvation_offered = 0 if skipped_cooldown > 0 else len(offered)
+        # No-spin law: fleet-starvation detector (offered>0, dispatched=0 for 1h →
+        # ONE escalation). Count only offered tasks the refusal ledger is NOT
+        # already holding: a cooled pair has its own circuit-breaker escalation, so
+        # counting it here would double-escalate the same root cause. But zeroing
+        # the count whenever ANY single pair is cooled (the prior behavior) let one
+        # cooled pair silently mask genuine starvation of the rest of the fleet —
+        # a task that is offered, undispatched, and NOT cooled must still drive the
+        # starvation horizon. Only when EVERY offered task is cooled does the count
+        # reach 0 (the intentional no-double-escalation case).
+        cooled_offered = sum(
+            1
+            for t in offered
+            if self._refusal_ledger.any_cooldown_for_task(t.task_id, now=now_mono)
+        )
+        starvation_offered = len(offered) - cooled_offered
         self._refusal_ledger.tick_starvation(starvation_offered, dispatches, now=now_mono)
 
         # Surface refusal stats in SHM.
@@ -384,6 +367,59 @@ class Coordinator:
             if "any" in platforms or lane.platform in platforms:
                 return lane
         return None
+
+    def _repair_cooled_plan(
+        self,
+        plan: list[tuple[str, str]],
+        queue_tasks: list[QueueTask],
+        queue_lanes: list[QueueLane],
+        *,
+        age_norm_s: float,
+        now_mono: float,
+    ) -> tuple[list[tuple[str, str]], int]:
+        """No-spin law for the planned dispatches: drop refusal-cooled pairs and
+        replan their freed lane to the best eligible non-cooled task.
+
+        ``plan_dispatches`` is cooldown-blind (it only knows the per-lane dispatch
+        rate-limit, not the refusal ledger). This pass enforces the no-spin
+        invariant on top of whatever plan it produced — in both the default and
+        the ``legacy`` scheduler — so a cooled (task, lane) pair never head-of-line-
+        blocks a lane that another offered task could use.
+
+        Returns ``(repaired_plan, skipped_cooldown)`` where ``skipped_cooldown``
+        counts lanes freed by a cooled pair that had no eligible backfill.
+        """
+
+        def cooled(task_id: str, role: str) -> bool:
+            return self._refusal_ledger.any_cooldown_for_pair(task_id, role, now=now_mono)
+
+        lane_by_role = {lane.role: lane for lane in queue_lanes}
+        planned: set[str] = {task_id for task_id, _ in plan}
+        repaired: list[tuple[str, str]] = []
+        skipped = 0
+        for task_id, role in plan:
+            if not cooled(task_id, role):
+                repaired.append((task_id, role))
+                continue
+            # Cooled: free the lane and try to backfill with the best eligible task
+            # (routable, not already planned, not itself in cooldown on this lane).
+            planned.discard(task_id)
+            lane = lane_by_role.get(role)
+            candidates = [
+                t
+                for t in queue_tasks
+                if t.task_id not in planned
+                and lane is not None
+                and _queue_task_routable(t, lane)
+                and not cooled(t.task_id, role)
+            ]
+            if candidates:
+                best = max(candidates, key=lambda t: wsjf_effective(t.wsjf, t.age_s, age_norm_s))
+                repaired.append((best.task_id, role))
+                planned.add(best.task_id)
+            else:
+                skipped += 1
+        return repaired, skipped
 
     def _dispatch(self, task: Task, lane: LaneState) -> tuple[bool, str]:
         """Attempt to dispatch a task to a lane.

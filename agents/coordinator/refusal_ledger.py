@@ -191,6 +191,19 @@ class DispatchRefusalLedger:
         """True if any refusal triple for this (task_id, lane) is in cooldown."""
         return self.is_cooled_down(task_id, lane, now=now)
 
+    def any_cooldown_for_task(self, task_id: str, *, now: float | None = None) -> bool:
+        """True if ANY (task_id, *, *) triple is in cooldown on any lane.
+
+        Used by the starvation detector to tell a task the circuit breaker is
+        already holding (its own escalation has fired) from a task that is
+        genuinely starving (offered, undispatched, but not in cooldown).
+        """
+        now = now if now is not None else time.monotonic()
+        for key, entry in self._entries.items():
+            if key[0] == task_id and entry.cooldown_until > now:
+                return True
+        return False
+
     def clear(self, task_id: str | None = None) -> None:
         """Clear refusal state.  If task_id is given, only clears that task's entries."""
         if task_id is None:

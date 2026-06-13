@@ -16,18 +16,21 @@ Addresses review-dossier criticals:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from agents.coordinator.core import (
+    SCHEDULER_LEGACY_ENV,
     Coordinator,
     LaneState,
     Task,
     _ntfy_escalate,
 )
 from agents.coordinator.refusal_ledger import DEFAULT_K
+from shared.dispatch_service_time import QueueLane, QueueTask, plan_dispatches
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -64,6 +67,21 @@ LANE_ALPHA = LaneState(
     alive=True,
     idle=True,
     claimed_task=None,
+)
+
+# Offered but NOT routable to a claude lane — used to construct a genuinely
+# starving task that the refusal ledger is NOT holding (no cooldown of its own).
+TASK_C = Task(
+    task_id="task-c",
+    title="Task C",
+    status="offered",
+    assigned_to="unassigned",
+    wsjf=5.0,
+    effort_class="standard",
+    platform_suitability=("codex",),
+    quality_floor="deterministic_ok",
+    path=Path("/fake/task-c.md"),
+    created_at=0.0,
 )
 
 DETERMINISTIC_REASON = "BLOCKED: route policy refuse: runtime_actuation_receipt_absent"
@@ -343,6 +361,142 @@ class TestTickIntegration:
         # Exactly 1 refusal escalation and no duplicate starvation escalation.
         assert coord._refusal_ledger._escalate_fn.call_count == 1
         assert coord._refusal_ledger.stats(now=now)["starvation_escalated"] is False
+
+    def test_cooled_pair_does_not_mask_genuine_fleet_starvation(self, tmp_path: Path) -> None:
+        """A single cooled pair must NOT suppress the fleet-starvation escalation
+        for OTHER offered work that is genuinely starving.
+
+        Regression for the review-dossier critical (codex-1 / claude-1): the prior
+        ``starvation_offered = 0 if skipped_cooldown > 0`` zeroed the starvation
+        input whenever ANY pair was cooled, so a queue with one cooled pair could
+        run for hours with offered, undispatched, NON-cooled work and never fire
+        the required starvation escalation. With the fix, only offered tasks the
+        ledger is actually holding are discounted."""
+        coord = self._make_coordinator()
+        lanes = _make_lanes(LANE_ALPHA)  # claude lane only
+        fail = _failing_dispatch_result(DETERMINISTIC_REASON)
+        now = 50_000.0
+
+        # Phase 1: cool (task-a, alpha) on its own — drives the circuit breaker.
+        for _i in range(DEFAULT_K):
+            now += 30.0
+            self._run_tick(coord, [TASK_A], lanes, fail, tmp_path, now=now)
+        assert coord._refusal_ledger.any_cooldown_for_task("task-a", now=now)
+        assert coord._refusal_ledger._escalate_fn.call_count == 1  # the refusal escalation
+
+        # Phase 2: now task-c is offered alongside the cooled task-a. task-c is
+        # codex-only, so it can never route to the claude lane: offered>0,
+        # dispatched=0, and NOT in cooldown — genuine fleet starvation.
+        coord._refusal_ledger.starvation_horizon_s = 0.0
+        coord._refusal_ledger._starvation.starved_since = 0.0
+        coord._refusal_ledger._starvation.escalated = False
+
+        now += 30.0
+        self._run_tick(coord, [TASK_A, TASK_C], lanes, fail, tmp_path, now=now)  # start horizon
+        now += 1.0
+        self._run_tick(coord, [TASK_A, TASK_C], lanes, fail, tmp_path, now=now)  # crosses horizon
+
+        # The starvation escalation MUST have fired despite task-a being cooled.
+        assert coord._refusal_ledger._starvation.escalated is True
+        assert coord._refusal_ledger.stats(now=now)["starvation_escalated"] is True
+
+    def test_all_offered_cooled_does_not_double_escalate_starvation(self, tmp_path: Path) -> None:
+        """The complement: when EVERY offered task is cooled, the starvation
+        detector stays silent — the circuit breaker already escalated, so we must
+        not double-escalate the same root cause."""
+        coord = self._make_coordinator()
+        coord._refusal_ledger.starvation_horizon_s = 0.0
+        lanes = _make_lanes(LANE_ALPHA)
+        fail = _failing_dispatch_result(DETERMINISTIC_REASON)
+        now = 70_000.0
+
+        # Cool the only offered task, then keep ticking long past the horizon.
+        for _i in range(DEFAULT_K + 5):
+            now += 30.0
+            self._run_tick(coord, [TASK_A], lanes, fail, tmp_path, now=now)
+
+        assert coord._refusal_ledger.any_cooldown_for_task("task-a", now=now)
+        # Only the circuit-breaker escalation fired; no starvation escalation.
+        assert coord._refusal_ledger.stats(now=now)["starvation_escalated"] is False
+
+    def test_legacy_scheduler_cooled_pair_does_not_block_other_work(self, tmp_path: Path) -> None:
+        """Regression for the review-dossier critical (codex-1): under the legacy
+        scheduler (HAPAX_DISPATCH_SCHEDULER_LEGACY=1), a cooled high-WSJF pair must
+        not head-of-line-block a lane that other dispatchable work could use."""
+        with patch.dict(os.environ, {SCHEDULER_LEGACY_ENV: "1"}):
+            coord = self._make_coordinator()
+            lanes = _make_lanes(LANE_ALPHA)
+            fail = _failing_dispatch_result(DETERMINISTIC_REASON)
+            now = 90_000.0
+
+            # Cool the high-WSJF task-a on the only lane.
+            for _i in range(DEFAULT_K):
+                now += 30.0
+                self._run_tick(coord, [TASK_A], lanes, fail, tmp_path, now=now)
+            assert coord._refusal_ledger.any_cooldown_for_pair("task-a", "alpha", now=now)
+
+            # task-a (wsjf 10, cooled) + task-b (wsjf 1, dispatchable). Legacy WSJF
+            # order would pick task-a first and freeze the lane; the no-spin repair
+            # must replan the lane to task-b instead.
+            now += 30.0
+            with (
+                patch.object(coord, "_scan_tasks", return_value=[TASK_A, TASK_B]),
+                patch.object(coord, "_check_lanes", return_value=lanes),
+                patch("agents.coordinator.core.admission_state") as mock_admission,
+                patch("agents.coordinator.core.SHM_DIR", tmp_path / "shm"),
+                patch("agents.coordinator.core.SHM_FILE", tmp_path / "shm" / "state.json"),
+                patch("agents.coordinator.core.time.monotonic", return_value=now),
+                patch("agents.coordinator.core.time.time", return_value=now),
+                patch("subprocess.run", return_value=_success_dispatch_result()) as mock_run,
+            ):
+                mock_admission.return_value = MagicMock(state="open")
+                coord.tick()
+
+            assert mock_run.call_args is not None, "legacy path dispatched nothing"
+            args = mock_run.call_args.args[0]
+            assert "task-b" in args
+            assert "task-a" not in args
+
+    def test_repair_is_noop_without_cooldowns(self) -> None:
+        """The no-spin repair pass must not perturb normal dispatch when nothing is
+        cooled — pins that the routine dispatch path provably delegates to the
+        tested plan_dispatches (review-dossier major, claude-1)."""
+        coord = self._make_coordinator()
+        tasks = [
+            QueueTask(task_id="a", wsjf=5.0, platform_suitability=("any",), age_s=0.0),
+            QueueTask(task_id="b", wsjf=9.0, platform_suitability=("any",), age_s=0.0),
+            QueueTask(task_id="c", wsjf=1.0, platform_suitability=("claude",), age_s=0.0),
+        ]
+        lanes = [
+            QueueLane(role="alpha", platform="claude", cooldown_remaining_s=0.0),
+            QueueLane(role="beta", platform="claude", cooldown_remaining_s=0.0),
+        ]
+        for legacy in (False, True):
+            base = plan_dispatches(tasks, lanes, max_dispatches=2, age_norm_s=0.0, legacy=legacy)
+            repaired, skipped = coord._repair_cooled_plan(
+                base, tasks, lanes, age_norm_s=0.0, now_mono=1000.0
+            )
+            assert repaired == base, f"repair perturbed plan (legacy={legacy})"
+            assert skipped == 0
+
+    def test_dispatcher_not_found_reason(self) -> None:
+        """When the methodology dispatcher is missing, _dispatch reports the
+        dispatcher_not_found refusal reason (not a silent success)."""
+        coord = Coordinator()
+        with patch("agents.coordinator.core.Path.exists", return_value=False):
+            success, reason = coord._dispatch(TASK_A, LANE_ALPHA)
+        assert success is False
+        assert reason == "dispatcher_not_found"
+
+    def test_oserror_dispatch_tracked_as_transient(self, tmp_path: Path) -> None:
+        """An OSError from subprocess.run is recorded as a transient refusal."""
+        coord = self._make_coordinator()
+        self._run_tick(coord, [TASK_A], _make_lanes(LANE_ALPHA), OSError("boom"), tmp_path)
+        ledger = coord._refusal_ledger
+        assert len(ledger._entries) == 1
+        entry = next(iter(ledger._entries.values()))
+        assert entry.reason.startswith("OSError")
+        assert entry.transient is True
 
 
 # ── hapax-methodology-dispatch retry surface investigation ────────────────────
