@@ -11,8 +11,15 @@ from __future__ import annotations
 
 from unittest import mock
 
+import pytest
+
+from agents.visual_layer_aggregator import aggregator as agg_mod
 from agents.visual_layer_aggregator import constants as _c
 from agents.visual_layer_aggregator.aggregator import VisualLayerAggregator
+
+
+class _StopLoop(Exception):
+    """Sentinel raised from a patched asyncio.sleep to exit the while-True loop."""
 
 
 class TestEmitTemporalBands:
@@ -43,3 +50,37 @@ class TestEmitTemporalBands:
         agg = VisualLayerAggregator()  # fresh, empty ring
         assert agg._emit_temporal_bands() is True  # producer ran (early-returned)
         assert not (tmp_path / "bands.json").exists()
+
+
+class TestStateTickLoopIntegration:
+    """Integration: prove the bands actually RIDE the perception/state tick — the
+    real _state_tick_loop must call _emit_temporal_bands each pass (a refactor
+    dropping the call, or relocating it back to the slow poll, is caught here)."""
+
+    async def test_state_tick_loop_emits_temporal_bands(self, monkeypatch):
+        agg = VisualLayerAggregator()
+
+        fake_state = mock.MagicMock()
+        fake_state.display_state = "ambient"
+        fake_state.signals = {}
+        fake_state.voice_session = mock.MagicMock(active=False, state="off")
+
+        monkeypatch.setattr(agg, "poll_perception", mock.MagicMock())
+        monkeypatch.setattr(agg, "compute_and_write", mock.MagicMock(return_value=fake_state))
+        monkeypatch.setattr(agg, "_tick_apperception", mock.MagicMock())
+        monkeypatch.setattr(agg, "_adaptive_tick_interval", mock.MagicMock(return_value=3.0))
+        monkeypatch.setattr(
+            "agents.visual_layer_aggregator.apperception_bridges.write_cross_resonance",
+            mock.MagicMock(),
+        )
+        emit_spy = mock.MagicMock(return_value=True)
+        monkeypatch.setattr(agg, "_emit_temporal_bands", emit_spy)
+
+        async def _stop(_seconds):
+            raise _StopLoop  # exit after exactly one iteration
+
+        monkeypatch.setattr(agg_mod.asyncio, "sleep", _stop)
+
+        with pytest.raises(_StopLoop):
+            await agg._state_tick_loop()
+        emit_spy.assert_called_once()

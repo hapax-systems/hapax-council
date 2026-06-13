@@ -206,6 +206,24 @@ class TestNewEventSources:
         # signed delta must ride in metadata so valence knows direction (dims are 0=good/1=bad)
         assert events[0].metadata["delta"] > 0  # health rose above baseline → worsening
 
+    def test_real_emitter_carries_signed_delta(self):
+        """Exercise the REAL emitter (ApperceptionTick._collect_events), not an
+        inline reimplementation: a performance event must carry the signed delta
+        (value - baseline) in metadata so the valence step knows direction."""
+        from shared.apperception_tick import _STIMMUNG_BASELINES, ApperceptionTick
+
+        tick = ApperceptionTick()
+        events = tick._collect_events("nominal", stimmung_data={"health": {"value": 0.5}})
+        perf = [
+            e
+            for e in events
+            if e.source == "performance" and e.metadata.get("dimension") == "health"
+        ]
+        assert len(perf) == 1, "real emitter must produce a performance event for health"
+        expected = 0.5 - _STIMMUNG_BASELINES["health"]  # signed (+0.4)
+        assert abs(perf[0].metadata["delta"] - expected) < 1e-9
+        assert perf[0].metadata["delta"] > 0  # rose above baseline → worsening
+
     def test_performance_within_baseline(self):
         """Stimmung health at 0.2 (baseline 0.1) → delta 0.1 → no event."""
         from shared.apperception_tick import _STIMMUNG_BASELINES
