@@ -301,7 +301,14 @@ task_is_terminal() {
   status="$(grep -oP '^status:\s*\K\S+' "$note" 2>/dev/null | head -n1 || true)"
   case "$status" in
     done | completed | closed | withdrawn | superseded) return 0 ;;
+    claimed | in_progress) ;;
+    *) return 0 ;;
   esac
+  local note_assigned=""
+  note_assigned="$(grep -oP '^assigned_to:\s*\K\S+' "$note" 2>/dev/null | head -n1 || true)"
+  if [[ -n "$note_assigned" && "$note_assigned" != "$ROLE" ]]; then
+    return 0
+  fi
   # PR merged but the note not yet closed (the dead-lane window): stop now; the
   # merge-watcher closes the note shortly. Fail-open on any gh hiccup.
   local pr=""

@@ -549,6 +549,39 @@ class TestHostReconciliation:
         assert note.read_text(encoding="utf-8") == original_note
         assert "RECONCILE_FAILED" in result.stdout
 
+    def test_missing_local_cache_reconciles_remote_before_note_release(
+        self, tmp_path: Path
+    ) -> None:
+        """A vanished local cache must still reconcile appendix before note release."""
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir(parents=True)
+
+        task_id = "phantom-local-missing"
+        note = _write_task_note(
+            vault,
+            task_id,
+            assigned_to="cx-gold",
+            pr="null",
+            branch="null",
+            status="claimed",
+            claimed_at="2026-06-10T01:00:00Z",
+        )
+        _stub, remote_state, _calls = _ssh_stub(tmp_path, remote_task=task_id)
+
+        result = _run_audit(
+            tmp_path,
+            vault,
+            cache_dir,
+            release=True,
+            extra_args=["--reconcile-host=fake-host", "--reconcile-cache-dir=/remote/cache"],
+            gh_state="CLOSED",
+        )
+
+        assert not remote_state.exists()
+        assert "RECONCILED" in result.stdout
+        assert "status: offered" in note.read_text(encoding="utf-8")
+
     def test_cache_sweep_deletion_uses_host_reconciliation(self, tmp_path: Path) -> None:
         """Stale-cache sweep must not bypass host reconciliation."""
         vault = _make_vault(tmp_path)
@@ -772,6 +805,16 @@ class TestSystemdUnits:
         )
         text = dropin.read_text()
         assert "SuccessExitStatus=1" in text
+
+    def test_dropin_has_governed_install_path(self) -> None:
+        repo = SCRIPT.parent.parent
+        dropin = repo / "systemd" / "units" / "codex-claim-audit.service.d"
+        installer = repo / "systemd" / "scripts" / "install-units.sh"
+        body = installer.read_text(encoding="utf-8")
+        assert dropin.is_dir()
+        assert '"$REPO_DIR"/*.service.d' in body
+        assert "dest_dropin_dir" in body
+        assert '"$conf" "$dest_conf"' in body
 
     def test_preset_includes_timer(self) -> None:
         preset = SCRIPT.parent.parent / "systemd" / "user-preset.d" / "hapax.preset"

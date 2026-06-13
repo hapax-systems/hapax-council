@@ -175,6 +175,28 @@ class TestTaskIsTerminalMissingCache:
         result = _run_terminal_check(env)
         assert "TERMINAL" in result.stdout
 
+    def test_missing_cache_offered_note_is_terminal(self, tmp_path: Path) -> None:
+        """Missing cache is fail-open only while the note still claims this lane."""
+        env = _make_test_env(
+            tmp_path,
+            claim_content=None,
+            note_status="offered",
+            note_assigned="unassigned",
+        )
+        result = _run_terminal_check(env)
+        assert "TERMINAL" in result.stdout
+
+    def test_missing_cache_reassigned_note_is_terminal(self, tmp_path: Path) -> None:
+        """A note assigned to another lane means this lane moved on."""
+        env = _make_test_env(
+            tmp_path,
+            claim_content=None,
+            note_status="claimed",
+            note_assigned="cx-other",
+        )
+        result = _run_terminal_check(env)
+        assert "TERMINAL" in result.stdout
+
     def test_note_missing_is_terminal(self, tmp_path: Path) -> None:
         """Note not in active/ = TERMINAL (moved to closed/)."""
         env = _make_test_env(

@@ -410,6 +410,12 @@ _clear_claim_cache_for_release() {
       return 1
     fi
   fi
+  if [ -n "$RECONCILE_HOST" ]; then
+    if ! _reconcile_clear_to_host "$assigned" "$task_id"; then
+      release_cache_message="    -> HELD release for missing local claim cache $(basename "$claim_file") because remote reconciliation failed or found a different live claim\n"
+      return 1
+    fi
+  fi
   release_cache_message="    -> no claim cache $(basename "$claim_file") present\n"
   return 0
 }
