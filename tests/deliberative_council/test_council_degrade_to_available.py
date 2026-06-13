@@ -103,24 +103,35 @@ class TestAssessHealthDegradation:
         assert health.excused_failures == 0
 
     def test_mixed_excused_and_non_excused(self) -> None:
-        """Mix of excused and non-excused failures.  Floor drops only by excused count."""
+        """Mix of excused and non-excused failures.  Per-member floor drops by
+        excused member count, but per-family excusal requires ALL of a family's
+        failed members to be provider-excused."""
         config = CouncilConfig(model_aliases=self.FULL_PANEL)
         results = [
             _result("local-fast", {"a": 4}),
             _result("web-research", {"a": 3}),
         ]
         failed = [
-            MemberFailure(model_alias="opus", reason="ContentFilterError"),  # excused
+            MemberFailure(model_alias="opus", reason="ContentFilterError"),  # excused member
             MemberFailure(model_alias="balanced", reason="TimeoutError"),  # NOT excused
-            MemberFailure(model_alias="gemini-3-pro", reason="UsageLimitExceeded"),  # excused
+            MemberFailure(
+                model_alias="gemini-3-pro", reason="UsageLimitExceeded"
+            ),  # excused member
             MemberFailure(model_alias="mistral-large", reason="EmptyScores"),  # NOT excused
         ]
         health = _assess_health(results, failed, config)
-        # 2 excused → effective floor = max(1, 4-2) = 2 members.
-        # 2 valid >= 2 → NOT below quorum.
+        # 2 excused MEMBERS → effective member floor = max(1, 4-2) = 2.
+        # 2 valid >= 2 → OK on member count.
         assert health.excused_failures == 2
         assert health.quorum_floor_members == 2
-        assert health.below_quorum is False
+        # BUT family-level excusal requires ALL of a family's failures to be
+        # provider-excused.  anthropic: opus(provider)+balanced(timeout) → mixed → NOT
+        # excused.  mistral: mistral-large(EmptyScores) → non-provider → NOT excused.
+        # Only google is excused (gemini-3-pro all-provider).
+        # families_valid = {cohere, perplexity} = 2.
+        # effective family floor = max(1, 4-1) = 3.  2 < 3 → below quorum.
+        assert health.quorum_floor_families == 3
+        assert health.below_quorum is True
 
     def test_excused_family_not_double_counted_when_survivor_exists(self) -> None:
         """If one anthropic member (balanced) fails with ContentFilterError but
@@ -161,6 +172,75 @@ class TestAssessHealthDegradation:
         # Floor = max(1, 1-1) = 1.  0 valid < 1 → below quorum.
         assert health.quorum_floor_members == 1
         assert health.below_quorum is True
+
+    def test_mixed_failure_family_is_not_excused(self) -> None:
+        """A family with NO survivor whose failures are MIXED (one provider-excused,
+        one real timeout) must NOT be excused — the real failure means the family
+        degradation is genuine, not just a provider outage.
+
+        Contrast with test_four_excused_one_resident_surviving_is_not_below_quorum
+        where ALL of each absent family's failures are provider-excused.
+
+        This is the critical fix from the review-team BLOCK on PR #4116:
+        opus:ContentFilterError + balanced:TimeoutError → anthropic family is NOT
+        excused → family floor stays at 4 → families_valid=3 < 4 → REFUSED."""
+        config = CouncilConfig(model_aliases=self.FULL_PANEL)
+        # 3 survivors from 3 families (google, cohere, perplexity).
+        results = [
+            _result("gemini-3-pro", {"a": 4}),
+            _result("local-fast", {"a": 4}),
+            _result("web-research", {"a": 3}),
+        ]
+        failed = [
+            # Anthropic family: one excused, one NOT → family NOT excused.
+            MemberFailure(model_alias="opus", reason="ContentFilterError"),
+            MemberFailure(model_alias="balanced", reason="TimeoutError"),
+            # Mistral family: all excused → family IS excused.
+            MemberFailure(model_alias="mistral-large", reason="UsageLimitExceeded"),
+        ]
+        health = _assess_health(results, failed, config)
+        # Per-member: 2 excused (opus + mistral-large), effective member floor = max(1, 4-2) = 2.
+        # 3 valid >= 2 → OK on members.
+        assert health.excused_failures == 2
+        assert health.quorum_floor_members == 2
+        # Per-family: only mistral is excused (all its failures are provider-side).
+        # anthropic is NOT excused (balanced failed with TimeoutError, a real error).
+        # families_valid = {google, cohere, perplexity} = 3.
+        # effective family floor = max(1, 4-1) = 3.  3 >= 3 → just barely OK.
+        assert health.families_valid == 3
+        assert health.quorum_floor_families == 3
+        assert health.below_quorum is False
+
+    def test_mixed_failure_family_causes_refused_when_below_floor(self) -> None:
+        """Same scenario as above but with fewer survivors: the non-excused
+        anthropic family pushes families_valid below the effective floor → REFUSED.
+
+        This proves the fix works end-to-end: without the fix, the anthropic
+        family would be wrongly excused and the verdict would pass."""
+        config = CouncilConfig(model_aliases=self.FULL_PANEL)
+        # Only 2 survivors from 2 families (cohere, perplexity).
+        results = [
+            _result("local-fast", {"a": 4}),
+            _result("web-research", {"a": 3}),
+        ]
+        failed = [
+            # Anthropic: mixed → NOT excused.
+            MemberFailure(model_alias="opus", reason="ContentFilterError"),
+            MemberFailure(model_alias="balanced", reason="TimeoutError"),
+            # Google: all provider → excused.
+            MemberFailure(model_alias="gemini-3-pro", reason="UsageLimitExceeded"),
+            # Mistral: all provider → excused.
+            MemberFailure(model_alias="mistral-large", reason="ContentFilterError"),
+        ]
+        health = _assess_health(results, failed, config)
+        # Per-member: 3 excused, effective member floor = max(1, 4-3) = 1. 2 >= 1 → OK.
+        assert health.excused_failures == 3
+        # Per-family: google + mistral excused (2), anthropic NOT excused.
+        # families_valid = {cohere, perplexity} = 2.
+        # effective family floor = max(1, 4-2) = 2.  2 >= 2 → OK on family too.
+        assert health.families_valid == 2
+        assert health.quorum_floor_families == 2
+        assert health.below_quorum is False
 
 
 # ── deliberate() integration tests ───────────────────────────────────────────

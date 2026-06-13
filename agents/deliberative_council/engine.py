@@ -262,12 +262,23 @@ def _assess_health(
 
     # Count excused failures (provider-side errors that are not member faults).
     excused_members = [f for f in failed if f.reason in PROVIDER_EXCUSED_REASONS]
-    excused_families = {model_family(f.model_alias) for f in excused_members}
-    # Only excuse a family if ALL its members failed with provider-side errors
-    # (if one anthropic member failed but another survived, the family is covered).
-    excused_family_count = len(
-        excused_families - families_valid  # families with no surviving member
-    )
+
+    # Group failures by family so we can require that EVERY failed member of an
+    # absent family failed for a provider-side reason before excusing it. A family
+    # with even one non-provider failure (timeout, real error) is a genuine
+    # degradation that must still count against the independent-family quorum —
+    # excusing it would let a verdict release below the intended family floor.
+    failures_by_family: dict[str, list[MemberFailure]] = {}
+    for f in failed:
+        failures_by_family.setdefault(model_family(f.model_alias), []).append(f)
+
+    excused_families = {
+        fam
+        for fam, fails in failures_by_family.items()
+        if fam not in families_valid  # the family has no surviving member
+        and all(mf.reason in PROVIDER_EXCUSED_REASONS for mf in fails)
+    }
+    excused_family_count = len(excused_families)
 
     # Effective floor: lower by excused count, never below 1.
     effective_member_floor = max(1, config.min_valid_members - len(excused_members))
