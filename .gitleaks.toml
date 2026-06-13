@@ -50,6 +50,7 @@ paths = [
   '''tests/''',
   '''agents/''',
   '''docs/superpowers/''',
+  '''docs/audits/''',
   '''^assets/quake/maps/screwm(?:-research|-rnd)?(?:-(?:light|vis))?\.log$''',
   '''^docs/research/2026-04-20-delta-queue-flow-organization\.md$''',
   '''^docs/research/2026-04-20-dynamic-livestream-audit-catalog\.md$''',
