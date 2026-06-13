@@ -197,12 +197,14 @@ class TestNewEventSources:
                         source="performance",
                         text=f"{dim_name}: {value:.2f} (baseline {baseline:.2f}, delta {delta:+.2f})",
                         magnitude=min(abs(delta), 1.0),
-                        metadata={"baseline": baseline, "dimension": dim_name},
+                        metadata={"baseline": baseline, "dimension": dim_name, "delta": delta},
                     )
                 )
         assert len(events) == 1
         assert events[0].source == "performance"
         assert events[0].metadata["dimension"] == "health"
+        # signed delta must ride in metadata so valence knows direction (dims are 0=good/1=bad)
+        assert events[0].metadata["delta"] > 0  # health rose above baseline → worsening
 
     def test_performance_within_baseline(self):
         """Stimmung health at 0.2 (baseline 0.1) → delta 0.1 → no event."""
