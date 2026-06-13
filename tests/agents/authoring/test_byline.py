@@ -34,6 +34,7 @@ from agents.authoring.byline import (
     Byline,
     BylineCoauthor,
     BylineVariant,
+    SurfaceRegister,
     render_byline,
 )
 
@@ -56,6 +57,37 @@ def full_coauthor_byline() -> Byline:
             BylineCoauthor(name="Claude Code", role="co-publisher"),
         ),
     )
+
+
+class TestSurfaceRegister:
+    """Register-aware attribution: AESTHETIC renders the non-formal referent
+    (Oudepode/OTO); FORMAL (default) renders the legal name. Per operator
+    preference 2026-06-13."""
+
+    def test_formal_is_the_default_and_renders_legal_name(
+        self, full_coauthor_byline: Byline
+    ) -> None:
+        out = render_byline(full_coauthor_byline, variant=BylineVariant.V3)
+        assert "Real Person" in out
+        assert "Oudepode" not in out
+
+    def test_aesthetic_renders_referent_not_legal_name(self, full_coauthor_byline: Byline) -> None:
+        for variant in BylineVariant:
+            out = render_byline(
+                full_coauthor_byline,
+                variant=variant,
+                register=SurfaceRegister.AESTHETIC,
+            )
+            assert "Oudepode" in out, f"{variant} should carry the referent"
+            assert "Real Person" not in out, f"{variant} leaked the legal name"
+
+    def test_aesthetic_v0_is_bare_referent(self, operator_only_byline: Byline) -> None:
+        out = render_byline(
+            operator_only_byline,
+            variant=BylineVariant.V0,
+            register=SurfaceRegister.AESTHETIC,
+        )
+        assert out == "Oudepode"
 
 
 # ── Enum ─────────────────────────────────────────────────────────────
