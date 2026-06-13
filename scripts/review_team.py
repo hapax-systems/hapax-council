@@ -24,6 +24,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
+import py_compile
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -414,14 +415,75 @@ def charter_checklist_items(lens: str, lens_dir: Path | None = None) -> tuple[st
 # --- Dossier synthesis --------------------------------------------------------
 
 
-def _unresolved_criticals(reviews: Sequence[Mapping[str, Any]]) -> list[tuple[str, dict]]:
+#: Council repo root, for resolving repo-relative finding paths during refutation.
+_REVIEW_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+#: A critical that asserts a DETERMINISTIC, checkable fact can be auto-refuted by
+#: running the check (postmortem 2026-06-13: false "SyntaxError"/"corrupted-file"
+#: criticals jammed PR #4109 across three rounds with no refutation path). The
+#: checks are conservative + fail-safe — only a check that CONTRADICTS the claim
+#: refutes it; any error or inconclusive check leaves the critical standing.
+_SYNTAX_CLAIM_RE = re.compile(r"syntax\s*error|indentation\s*error|invalid python syntax", re.I)
+_MISSING_FILE_CLAIM_RE = re.compile(
+    r"corrupt|malformed filename|invalid filename|missing file|does not exist|no such file", re.I
+)
+
+
+def _auto_refute_critical(
+    finding: Mapping[str, Any], repo_root: Path | None = None
+) -> tuple[bool, str]:
+    """Return ``(refuted, evidence)`` for a critical claiming a checkable fact.
+
+    Deterministic and FAIL-SAFE: a real syntax error / genuinely missing file
+    leaves the critical standing, and any exception returns ``(False, "")`` so a
+    buggy check can never auto-clear a real critical.
+    """
+    try:
+        root = repo_root or _REVIEW_REPO_ROOT
+        claim = f"{finding.get('title', '')} {finding.get('detail', '')}"
+        rel = str(finding.get("file") or "").strip()
+        if not rel:
+            return (False, "")
+        path = root / rel
+        if _SYNTAX_CLAIM_RE.search(claim) and rel.endswith(".py") and path.is_file():
+            try:
+                py_compile.compile(str(path), doraise=True)
+            except py_compile.PyCompileError:
+                return (False, "")  # real syntax error -> critical stands
+            return (True, f"py_compile clean on {rel} at HEAD — no SyntaxError/IndentationError")
+        if _MISSING_FILE_CLAIM_RE.search(claim) and path.exists():
+            return (
+                True,
+                f"{rel} exists and is readable at HEAD — not missing/corrupt "
+                "(systemd name@.service templates are valid syntax)",
+            )
+        return (False, "")
+    except Exception:
+        return (False, "")  # fail-safe: never auto-clear a critical on error
+
+
+def _unresolved_criticals(
+    reviews: Sequence[Mapping[str, Any]], repo_root: Path | None = None
+) -> list[tuple[str, dict]]:
     out: list[tuple[str, dict]] = []
     for review in reviews:
         for finding in review.get("findings") or []:
             if not isinstance(finding, Mapping):
                 continue
-            if str(finding.get("severity", "")).lower() == "critical":
-                out.append((str(review.get("id")), dict(finding)))
+            if str(finding.get("severity", "")).lower() != "critical":
+                continue
+            # ONLY a freshly-COMPUTED deterministic check may clear a critical —
+            # never a reviewer-supplied `refuted`/`resolved` field (that would let
+            # a reviewer self-clear their own critical; see test_reviewer_supplied
+            # _resolved_true_critical_still_blocks). The check is recomputed each
+            # call, so the annotation below is informational only, not an input.
+            refuted, evidence = _auto_refute_critical(finding, repo_root)
+            if refuted:
+                if isinstance(finding, dict):
+                    finding["auto_refuted"] = True
+                    finding["auto_refutation_evidence"] = evidence
+                continue
+            out.append((str(review.get("id")), dict(finding)))
     return out
 
 
