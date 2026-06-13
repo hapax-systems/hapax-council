@@ -15,6 +15,14 @@ from pathlib import Path
 HEADLESS_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "hapax-claude-headless"
 
 
+def _headless_terminal_functions() -> str:
+    """Return the real terminal-check functions from hapax-claude-headless."""
+    text = HEADLESS_SCRIPT.read_text(encoding="utf-8")
+    start = text.index("find_active_note() {")
+    end = text.index("\ndispatch_host_is_local() {", start)
+    return text[start:end]
+
+
 def _make_test_env(
     tmp_path: Path,
     *,
@@ -64,7 +72,10 @@ def _make_test_env(
             encoding="utf-8",
         )
 
-    # Create a test script that sources the functions and calls task_is_terminal
+    function_source = tmp_path / "headless_terminal_functions.sh"
+    function_source.write_text(_headless_terminal_functions(), encoding="utf-8")
+
+    # Create a test script that sources the real functions and calls task_is_terminal
     test_script = tmp_path / "test_terminal.sh"
     test_script.write_text(
         textwrap.dedent(f"""\
@@ -79,61 +90,7 @@ def _make_test_env(
         # Stub gh to always fail (we're testing cache logic, not GH)
         gh() {{ return 1; }}
         export -f gh
-
-        find_active_note() {{
-          local task="$1" note=""
-          if [[ -f "$CC_TASK_ACTIVE/$task.md" ]]; then
-            note="$CC_TASK_ACTIVE/$task.md"
-          else
-            note="$(ls "$CC_TASK_ACTIVE/$task-"*.md 2>/dev/null | head -n1 || true)"
-          fi
-          printf '%s' "$note"
-        }}
-
-        # Source the function from the actual script (extract it)
-        # We inline the function here to test it in isolation
-        task_is_terminal() {{
-          local task="$1"
-          [[ -n "$task" ]] || return 1
-
-          local claimed="" claim_source="primary"
-          if [[ -s "$CLAIM_FILE" ]]; then
-            claimed="$(head -n1 "$CLAIM_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
-          fi
-
-          if [[ -z "$claimed" ]]; then
-            local session_claim="" newest_mtime=0
-            for candidate in "$HOME/.cache/hapax/cc-active-task-${{ROLE}}-"*; do
-              [[ -s "$candidate" ]] || continue
-              local mtime
-              mtime="$(stat -c %Y "$candidate" 2>/dev/null || echo 0)"
-              if (( mtime > newest_mtime )); then
-                newest_mtime="$mtime"
-                session_claim="$candidate"
-              fi
-            done
-            if [[ -n "$session_claim" && -s "$session_claim" ]]; then
-              claimed="$(head -n1 "$session_claim" 2>/dev/null | tr -d '[:space:]' || true)"
-              claim_source="session-keyed:$(basename "$session_claim")"
-            fi
-          fi
-
-          if [[ -z "$claimed" ]]; then
-            printf 'INDETERMINATE claim_source=none\\n' >&2
-          elif [[ "$claimed" != "$task" ]]; then
-            return 0
-          fi
-
-          local note=""
-          note="$(find_active_note "$task")"
-          [[ -n "$note" ]] || return 0
-          local status=""
-          status="$(grep -oP '^status:\\s*\\K\\S+' "$note" 2>/dev/null | head -n1 || true)"
-          case "$status" in
-            done | completed | closed | withdrawn | superseded) return 0 ;;
-          esac
-          return 1
-        }}
+        source "{function_source}"
 
         if task_is_terminal "{task_id}"; then
           echo "TERMINAL"
@@ -186,7 +143,7 @@ class TestTaskIsTerminalMissingCache:
             "This killed delta/zeta on 2026-06-12. "
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
-        assert "INDETERMINATE" in result.stderr
+        assert "indeterminate" in result.stderr.lower()
 
     def test_present_matching_cache_is_not_terminal(self, tmp_path: Path) -> None:
         """Claim cache present and matching task = NOT terminal."""

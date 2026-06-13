@@ -110,6 +110,70 @@ def _gh_stub_failing(tmp_path: Path) -> Path:
     return stub
 
 
+def _ssh_stub(
+    tmp_path: Path,
+    *,
+    remote_task: str | None = None,
+    read_fails: bool = False,
+    clear_fails: bool = False,
+) -> tuple[Path, Path, Path]:
+    """Create a fake ssh command plus a remote claim-file fixture."""
+    stub = tmp_path / "bin" / "ssh"
+    stub.parent.mkdir(parents=True, exist_ok=True)
+    remote_state = tmp_path / "remote-claim"
+    calls = tmp_path / "ssh-calls.log"
+    if remote_task is not None:
+        remote_state.write_text(f"{remote_task}\n", encoding="utf-8")
+    stub.write_text(
+        textwrap.dedent(f"""\
+        #!/usr/bin/env bash
+        set -euo pipefail
+        cmd="${{@: -1}}"
+        printf '%s\\n' "$cmd" >> "{calls}"
+        case "$cmd" in
+          if\\ \\[\\ -s*)
+            if [[ "{"1" if read_fails else "0"}" == "1" ]]; then
+              exit 255
+            fi
+            if [[ -s "{remote_state}" ]]; then
+              head -n1 "{remote_state}" | tr -d '[:space:]'
+            fi
+            exit 0
+            ;;
+          rm\\ -f*)
+            if [[ "{"1" if clear_fails else "0"}" == "1" ]]; then
+              exit 255
+            fi
+            rm -f "{remote_state}"
+            exit 0
+            ;;
+        esac
+        exit 0
+        """),
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return stub, remote_state, calls
+
+
+def _write_quota_receipt(tmp_path: Path, role: str) -> Path:
+    receipt = (
+        tmp_path
+        / "fakehome"
+        / ".cache"
+        / "hapax"
+        / "relay"
+        / "receipts"
+        / f"{role}-quota-wall.yaml"
+    )
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    receipt.write_text(
+        "status: quota_blocked\nresets_at: 2999-01-01T00:00:00Z\n",
+        encoding="utf-8",
+    )
+    return receipt
+
+
 def _run_audit(
     tmp_path: Path,
     vault: Path,
@@ -212,23 +276,35 @@ class TestPROpenClaimProtection:
         _run_audit(tmp_path, vault, cache_dir, release=True, gh_state="MERGED")
         assert not claim_file.exists()
 
-    def test_phantom_release_open_pr_protected(self, tmp_path: Path) -> None:
-        """A cache under phantom release must be protected if its PR is OPEN."""
+    def test_quota_release_open_pr_protected_before_note_mutation(self, tmp_path: Path) -> None:
+        """Quota release must not mutate the note when the task's PR is OPEN."""
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
 
-        _write_task_note(
+        note = _write_task_note(
             vault,
-            "phantom-with-pr-task",
+            "quota-with-open-pr-task",
             assigned_to="cx-alpha",
             pr="4109",
             branch="codex/cx-oofta",
-            status="offered",
+            status="claimed",
         )
-        claim_file = _write_claim_cache(cache_dir, "cx-alpha", "phantom-with-pr-task")
+        claim_file = _write_claim_cache(cache_dir, "cx-alpha", "quota-with-open-pr-task")
+        _write_quota_receipt(tmp_path, "cx-alpha")
+        original_note = note.read_text(encoding="utf-8")
 
-        _run_audit(tmp_path, vault, cache_dir, release=True, gh_state="OPEN")
+        result = _run_audit(
+            tmp_path,
+            vault,
+            cache_dir,
+            release=True,
+            extra_args=["--release-quota-blocked"],
+            gh_state="OPEN",
+        )
+
         assert claim_file.exists()
+        assert note.read_text(encoding="utf-8") == original_note
+        assert "PR_OPEN_PROTECTED" in result.stdout
 
     def test_orphaned_cache_open_pr_protected(self, tmp_path: Path) -> None:
         """Cache whose note is in closed/ but PR is still OPEN must be kept."""
@@ -349,32 +425,157 @@ class TestGHFailSafe:
 class TestHostReconciliation:
     """Failure class #4 regression."""
 
-    def test_reconcile_flag_accepted(self, tmp_path: Path) -> None:
-        """--reconcile-host is accepted and processes phantom claims."""
+    def test_reconcile_success_clears_remote_then_local(self, tmp_path: Path) -> None:
+        """Matching remote claim is cleared before the local claim is removed."""
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
 
+        task_id = "phantom-task-reconcile"
         _write_task_note(
             vault,
-            "phantom-task-reconcile",
+            task_id,
             assigned_to="cx-gold",
             pr="null",
             branch="null",
             status="claimed",
             claimed_at="2026-06-10T01:00:00Z",
         )
-        _write_claim_cache(cache_dir, "cx-gold", "phantom-task-reconcile")
+        claim_file = _write_claim_cache(cache_dir, "cx-gold", task_id)
+        _ssh_stub(tmp_path, remote_task=task_id)
 
         result = _run_audit(
             tmp_path,
             vault,
             cache_dir,
             release=True,
-            extra_args=["--reconcile-host=fake-host"],
+            extra_args=["--reconcile-host=fake-host", "--reconcile-cache-dir=/remote/cache"],
             gh_state="CLOSED",
         )
 
-        assert "PHANTOM" in result.stdout
+        assert result.returncode == 0
+        assert not claim_file.exists()
+        assert "RECONCILED" in result.stdout
+
+    def test_reconcile_mismatch_keeps_local_and_note_claimed(self, tmp_path: Path) -> None:
+        """A different remote task is a live-claim fork; local release fails closed."""
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+
+        note = _write_task_note(
+            vault,
+            "phantom-mismatch-task",
+            assigned_to="cx-gold",
+            pr="null",
+            branch="null",
+            status="claimed",
+            claimed_at="2026-06-10T01:00:00Z",
+        )
+        claim_file = _write_claim_cache(cache_dir, "cx-gold", "phantom-mismatch-task")
+        _ssh_stub(tmp_path, remote_task="other-live-task")
+        original_note = note.read_text(encoding="utf-8")
+
+        result = _run_audit(
+            tmp_path,
+            vault,
+            cache_dir,
+            release=True,
+            extra_args=["--reconcile-host=fake-host", "--reconcile-cache-dir=/remote/cache"],
+            gh_state="CLOSED",
+        )
+
+        assert claim_file.exists()
+        assert note.read_text(encoding="utf-8") == original_note
+        assert "RECONCILE_SKIP" in result.stdout
+        assert "HELD: claim release preflight failed" in result.stdout
+
+    def test_reconcile_absent_remote_allows_local_clear(self, tmp_path: Path) -> None:
+        """Absent remote file is explicitly safe and local stale cache can clear."""
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+
+        task_id = "phantom-remote-absent"
+        _write_task_note(
+            vault,
+            task_id,
+            assigned_to="cx-gold",
+            pr="null",
+            branch="null",
+            status="claimed",
+            claimed_at="2026-06-10T01:00:00Z",
+        )
+        claim_file = _write_claim_cache(cache_dir, "cx-gold", task_id)
+        _ssh_stub(tmp_path, remote_task=None)
+
+        result = _run_audit(
+            tmp_path,
+            vault,
+            cache_dir,
+            release=True,
+            extra_args=["--reconcile-host=fake-host", "--reconcile-cache-dir=/remote/cache"],
+            gh_state="CLOSED",
+        )
+
+        assert not claim_file.exists()
+        assert "RECONCILE_SKIP" in result.stdout
+
+    def test_reconcile_ssh_failure_keeps_local_and_note_claimed(self, tmp_path: Path) -> None:
+        """ssh read failure must not be collapsed into remote-absent success."""
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+
+        note = _write_task_note(
+            vault,
+            "phantom-ssh-fails",
+            assigned_to="cx-gold",
+            pr="null",
+            branch="null",
+            status="claimed",
+            claimed_at="2026-06-10T01:00:00Z",
+        )
+        claim_file = _write_claim_cache(cache_dir, "cx-gold", "phantom-ssh-fails")
+        _ssh_stub(tmp_path, remote_task="phantom-ssh-fails", read_fails=True)
+        original_note = note.read_text(encoding="utf-8")
+
+        result = _run_audit(
+            tmp_path,
+            vault,
+            cache_dir,
+            release=True,
+            extra_args=["--reconcile-host=fake-host", "--reconcile-cache-dir=/remote/cache"],
+            gh_state="CLOSED",
+        )
+
+        assert claim_file.exists()
+        assert note.read_text(encoding="utf-8") == original_note
+        assert "RECONCILE_FAILED" in result.stdout
+
+    def test_cache_sweep_deletion_uses_host_reconciliation(self, tmp_path: Path) -> None:
+        """Stale-cache sweep must not bypass host reconciliation."""
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+
+        _write_task_note(
+            vault,
+            "sweep-reconcile-task",
+            assigned_to="cx-beta",
+            pr="null",
+            branch="beta/old-work",
+            status="done",
+        )
+        claim_file = _write_claim_cache(cache_dir, "cx-alpha", "sweep-reconcile-task")
+        _ssh_stub(tmp_path, remote_task="sweep-reconcile-task")
+
+        result = _run_audit(
+            tmp_path,
+            vault,
+            cache_dir,
+            release=True,
+            extra_args=["--reconcile-host=fake-host", "--reconcile-cache-dir=/remote/cache"],
+            gh_state="CLOSED",
+        )
+
+        assert not claim_file.exists()
+        assert "RECONCILED" in result.stdout
 
     def test_dry_run_prevents_all_mutations(self, tmp_path: Path) -> None:
         """--dry-run prevents BOTH cache deletion AND task note mutation."""
@@ -531,6 +732,8 @@ class TestSystemdUnits:
         unit = SCRIPT.parent.parent / "systemd" / "units" / "codex-claim-audit.service"
         text = unit.read_text()
         assert "[Service]" in text
+        assert "WorkingDirectory=%h/.cache/hapax/source-activation/worktree" in text
+        assert "Environment=GH_REPO=hapax-systems/hapax-council" in text
         assert "source-activation/worktree/scripts/codex-claim-audit" in text, (
             "ExecStart must point to source-activation worktree, not mutable dev tree"
         )
