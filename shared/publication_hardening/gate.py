@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -12,6 +13,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from shared.governance.omg_referent import (
+    ENV_OPERATOR_LEGAL_NAME,
+    OperatorNameLeak,
+    safe_render,
+)
+from shared.operator_referent import REFERENTS
 from shared.preprint_artifact import PreprintArtifact
 from shared.publication_hardening.codebase import (
     CodebaseDecision,
@@ -59,7 +66,7 @@ class PublicationGateContext(PublicationGateModel):
 class PublicationGateChildResult(PublicationGateModel):
     """One child predicate result included in the gate receipt."""
 
-    name: Literal["lint", "known_entities", "codebase", "review"]
+    name: Literal["lint", "known_entities", "legal_name", "codebase", "review"]
     decision: PublicationGateDecision
     findings: tuple[str, ...] = Field(default_factory=tuple)
     evidence_refs: tuple[str, ...] = Field(default_factory=tuple)
@@ -115,10 +122,17 @@ class PublicationHardeningGate:
         context = _publication_gate_context(artifact)
         lint_child = self._lint_child(text, artifact)
         entity_child = self._entity_child(text)
+        legal_name_child = self._legal_name_child(text)
         codebase_child = self._codebase_child(text, context)
         review_child, review_report = self._review_child(text, artifact, lint_child)
 
-        child_results = (lint_child, entity_child, codebase_child, review_child)
+        child_results = (
+            lint_child,
+            entity_child,
+            legal_name_child,
+            codebase_child,
+            review_child,
+        )
         decision = _aggregate_decision(child_results)
         flagged = _flagged_issues(child_results)
         override, override_error = _publication_gate_override(artifact)
@@ -176,6 +190,40 @@ class PublicationHardeningGate:
             name="known_entities",
             decision=PublicationGateDecision.REJECT if findings else PublicationGateDecision.PASS,
             findings=tuple(str(finding) for finding in findings),
+        )
+
+    def _legal_name_child(self, text: str) -> PublicationGateChildResult:
+        """REJECT when the operator's personal legal name appears in the text.
+
+        Anchors ``corporate_boundary`` (the operator's personal legal name must
+        never reach a public surface) at the one path every artifact traverses
+        before fan-out. REJECT is non-overridable: a legal-name leak cannot be
+        released by a ``by_referent`` operator override.
+
+        When the pattern source ``HAPAX_OPERATOR_NAME`` is unconfigured the scan
+        cannot run; the child PASSES but emits a ``legal_name_guard_unconfigured``
+        finding so the disabled state is visible in every gate receipt rather
+        than silently no-opping.
+        """
+        if not os.environ.get(ENV_OPERATOR_LEGAL_NAME):
+            return PublicationGateChildResult(
+                name="legal_name",
+                decision=PublicationGateDecision.PASS,
+                findings=("legal_name_guard_unconfigured: HAPAX_OPERATOR_NAME unset",),
+            )
+        try:
+            safe_render(text, segment_id=None)
+        except OperatorNameLeak:
+            # Omit the matched substring: the receipt must never re-emit the
+            # leak (omg_referent contract).
+            return PublicationGateChildResult(
+                name="legal_name",
+                decision=PublicationGateDecision.REJECT,
+                findings=("operator legal name detected in publication text",),
+            )
+        return PublicationGateChildResult(
+            name="legal_name",
+            decision=PublicationGateDecision.PASS,
         )
 
     def _codebase_child(
@@ -288,6 +336,13 @@ def _publication_gate_context(artifact: PreprintArtifact) -> PublicationGateCont
     )
 
 
+_AUTHORIZED_OVERRIDE_REFERENTS: frozenset[str] = frozenset(REFERENTS)
+"""Referents permitted to author a HOLD override. Sourced from the canonical
+non-formal referent set (``shared.operator_referent.REFERENTS``); personal legal
+names are excluded by construction — an override is a public audit record and
+must not embed the operator's legal identity."""
+
+
 def _publication_gate_override(
     artifact: PreprintArtifact,
 ) -> tuple[PublicationGateOverride | None, str | None]:
@@ -300,6 +355,8 @@ def _publication_gate_override(
     reason = str(raw.get("reason") or "").strip()
     if not by_referent or not reason:
         return None, "operator_override_invalid: referent_and_reason_required"
+    if by_referent not in _AUTHORIZED_OVERRIDE_REFERENTS:
+        return None, "operator_override_invalid: unauthorized_referent"
     normalized = {
         "by_referent": by_referent,
         "reason": reason,

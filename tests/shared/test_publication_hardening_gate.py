@@ -72,6 +72,7 @@ def test_gate_passes_when_all_child_reports_pass() -> None:
     assert {child.name for child in result.child_results} == {
         "lint",
         "known_entities",
+        "legal_name",
         "codebase",
         "review",
     }
@@ -127,6 +128,43 @@ def test_reject_cannot_be_operator_overridden() -> None:
     assert not result.passes()
     assert result.override is None
     assert "operator_override_ignored_for_reject" in result.flagged_issues
+
+
+def test_gate_rejects_operator_legal_name_in_attribution(monkeypatch) -> None:
+    """corporate_boundary: a personal legal name in the artifact text is a
+    non-overridable REJECT at the aggregate gate, independent of publisher."""
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Real Person")
+    result = _gate().evaluate(
+        _artifact(attribution_block="Real Person (distributor) · Hapax (performer)")
+    )
+
+    assert result.decision == PublicationGateDecision.REJECT
+    assert not result.passes()
+    assert any(child.name == "legal_name" for child in result.child_results)
+
+
+def test_gate_legal_name_guard_warns_when_unconfigured(monkeypatch) -> None:
+    """Unset HAPAX_OPERATOR_NAME = the guard is a no-op; the gate must surface
+    this as an explicit finding, never silently disable the guard."""
+    monkeypatch.delenv("HAPAX_OPERATOR_NAME", raising=False)
+    result = _gate().evaluate(_artifact(attribution_block="Real Person, Hapax"))
+
+    legal = next(c for c in result.child_results if c.name == "legal_name")
+    assert any("unconfigured" in finding for finding in legal.findings)
+    assert result.decision == PublicationGateDecision.PASS
+
+
+def test_gate_override_rejects_unauthorized_referent() -> None:
+    """A HOLD override authored by a non-ratified referent is invalid: the
+    HOLD stands and the receipt flags the unauthorized referent."""
+    artifact = _artifact(
+        publication_gate_override={"by_referent": "Real Person", "reason": "ship it"},
+    )
+    result = _gate(review_confidence=0.2).evaluate(artifact)
+
+    assert result.decision == PublicationGateDecision.HOLD
+    assert result.override is None
+    assert any("unauthorized_referent" in issue for issue in result.flagged_issues)
 
 
 def test_gate_context_is_passed_to_codebase_verifier() -> None:
