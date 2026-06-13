@@ -1256,11 +1256,17 @@ class VisualLayerAggregator:
             except Exception:
                 log.debug("Cross-resonance bridge failed", exc_info=True)
 
-            # Temporal bands at PERCEPTION cadence (3s), not the 15s health-poll.
-            # write_temporal_bands reads only the local ring (fast-loop-fresh), so
-            # the impression is <=3s stale instead of <=15s — the round-2 adequacy
-            # audit's primary temporal deficit (every voice turn read a 15s-stale
-            # impression). Moved here from _update_stimmung (the slow _api_poll_loop).
+            # Temporal bands now ride the perception/state tick instead of the
+            # 15s health-poll. The state tick is adaptive, bounded [0.5, 5.0]s
+            # (0.5-1.5s when active, 3s base, up to 5s under degraded/critical),
+            # so the impression is at most ~5s stale and usually <=3s — vs the
+            # prior fixed 15s (the round-2 adequacy audit's primary temporal
+            # deficit: every voice turn read a 15s-stale impression). Coupling to
+            # this loop is correct because write_temporal_bands summarizes the
+            # local perception ring that poll_perception() updates here; writing
+            # faster than the loop would only re-publish stale data. A guaranteed
+            # fixed-3s standalone producer (independent of load) is the deferred
+            # round-2 item 8. Moved here from _update_stimmung (the _api_poll_loop).
             try:
                 from .stimmung_methods import write_temporal_bands
 
