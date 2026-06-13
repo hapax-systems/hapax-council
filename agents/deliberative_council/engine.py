@@ -52,9 +52,12 @@ _MEMBER_TIMEOUT_S = 120.0
 # Provider-side failures (quota exhaustion, content filtering) are EXCUSED
 # ABSENCES: the member was unable to participate through no fault of the
 # verdict's integrity.  Excused failures lower the effective quorum floor
-# (never below 1) so the remaining members — including the always-available
-# resident Command-R — can still produce a valid, degraded verdict.
-# The QUALITY floor (per-axis score thresholds) is NEVER lowered.
+# (never below 1) so the remaining members can still produce a valid, degraded
+# verdict.  The DEFAULT panel includes local-fast (resident Command-R, family
+# cohere), which is not cloud-quota/content-filter fragile, so the default
+# seg-prep panel retains a non-excused survivor; callers that omit it from
+# model_aliases forfeit that guarantee.
+# The QUALITY floor (per-axis score thresholds / min_axis_values) is NEVER lowered.
 # See cc-task seg-prep-council-coherence-degrade-not-refuse-20260613.
 PROVIDER_EXCUSED_REASONS: frozenset[str] = frozenset(
     {

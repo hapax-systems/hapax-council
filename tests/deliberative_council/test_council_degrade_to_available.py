@@ -1,11 +1,13 @@
 """Degrade-to-available: council coherence must NOT refuse when cloud members fail
-with provider-side errors (UsageLimitExceeded, ContentFilterError).
+with provider-side errors (UsageLimitExceeded, ContentFilterError), provided
+enough members survive to meet the QUALITY floor (min_axis_values).
 
 cc-task seg-prep-council-coherence-degrade-not-refuse-20260613.
 
-Exit predicate: a test that injects ContentFilterError/UsageLimitExceeded for the
-cloud aliases and asserts a non-refused release with members_valid >= 1 (the
-resident Command-R always participates).
+Exit predicate: a test that loses 2 cloud members to UsageLimitExceeded, keeps
+>=4 survivors (including the resident Command-R), and at the DEFAULT config
+(min_axis_values=2, min_valid_members=4, min_valid_families=4) produces a
+non-REFUSED verdict.  The quality floor is NEVER lowered.
 """
 
 from __future__ import annotations
@@ -70,7 +72,9 @@ class TestAssessHealthDegradation:
 
     def test_only_resident_surviving_is_not_below_quorum(self) -> None:
         """ALL cloud members fail with provider errors.  Only the resident
-        Command-R (local-fast) survives.  valid=1 >= effective floor 1 → OK."""
+        Command-R (local-fast) survives.  valid=1 >= effective QUORUM floor 1
+        → quorum passes.  (But the QUALITY floor min_axis_values=2 is unmet
+        by a single scorer — that is tested at the deliberate() level.)"""
         config = CouncilConfig(model_aliases=self.FULL_PANEL)
         results = [_result("local-fast", {"a": 4})]
         failed = [
@@ -152,7 +156,6 @@ class TestAssessHealthDegradation:
         assert health.excused_failures == 2
         # anthropic is still covered by opus, so only google family is excused.
         # families_valid = {anthropic, cohere, perplexity, mistral} = 4
-        # excused_family_count = {google} - {anthropic, cohere, perplexity, mistral} = {google} = 1
         # effective family floor = max(1, 4-1) = 3.  4 >= 3 → OK.
         assert health.families_valid == 4
         assert health.below_quorum is False
@@ -211,12 +214,17 @@ class TestAssessHealthDegradation:
         assert health.quorum_floor_families == 3
         assert health.below_quorum is False
 
-    def test_mixed_failure_family_causes_refused_when_below_floor(self) -> None:
-        """Same scenario as above but with fewer survivors: the non-excused
-        anthropic family pushes families_valid below the effective floor → REFUSED.
+    def test_mixed_failure_family_discriminates_floor(self) -> None:
+        """Prove the family-excusal fix is discriminating: the quorum_floor_families
+        is 2 (google+mistral excused), NOT 3 (what the old ANY-based code would
+        have produced by also excusing anthropic).
 
-        This proves the fix works end-to-end: without the fix, the anthropic
-        family would be wrongly excused and the verdict would pass."""
+        Without the round-2 fix, anthropic would be wrongly excused (because opus
+        had a provider failure) → excused_family_count=3 → effective floor=1 →
+        the verdict would pass even with families_valid=2.  With the fix,
+        excused_family_count=2 → effective floor=2 → the verdict still passes,
+        but the floor is HIGHER (2 vs 1), correctly reflecting that the anthropic
+        timeout is a genuine degradation signal."""
         config = CouncilConfig(model_aliases=self.FULL_PANEL)
         # Only 2 survivors from 2 families (cohere, perplexity).
         results = [
@@ -224,7 +232,7 @@ class TestAssessHealthDegradation:
             _result("web-research", {"a": 3}),
         ]
         failed = [
-            # Anthropic: mixed → NOT excused.
+            # Anthropic: mixed → NOT family-excused.
             MemberFailure(model_alias="opus", reason="ContentFilterError"),
             MemberFailure(model_alias="balanced", reason="TimeoutError"),
             # Google: all provider → excused.
@@ -239,7 +247,7 @@ class TestAssessHealthDegradation:
         # families_valid = {cohere, perplexity} = 2.
         # effective family floor = max(1, 4-2) = 2.  2 >= 2 → OK on family too.
         assert health.families_valid == 2
-        assert health.quorum_floor_families == 2
+        assert health.quorum_floor_families == 2  # discriminating: 2, not 1 (old) or 3
         assert health.below_quorum is False
 
 
@@ -247,8 +255,12 @@ class TestAssessHealthDegradation:
 
 
 class TestDeliberateDegradeToAvailable:
-    """deliberate() must produce a non-REFUSED verdict when cloud members fail
-    with provider-side errors and the resident Command-R survives."""
+    """deliberate() must produce a non-REFUSED verdict when enough cloud members
+    survive to meet both the quorum AND quality floors at the DEFAULT config.
+
+    The DEFAULT panel includes local-fast (resident Command-R, family cohere),
+    which is not cloud-quota/content-filter fragile.  Callers that omit it from
+    model_aliases forfeit the resident-survivor guarantee."""
 
     @staticmethod
     def _patch_phase1(results: list[PhaseOneResult], failed_aliases: list[tuple[str, str]]):
@@ -261,10 +273,68 @@ class TestDeliberateDegradeToAvailable:
 
         return patch("agents.deliberative_council.engine.run_phase1", side_effect=_fake)
 
-    async def test_cloud_content_filter_resident_survives_not_refused(self) -> None:
-        """Exit predicate: 2+ cloud members injected-failing with
-        ContentFilterError/UsageLimitExceeded, resident (local-fast) survives,
-        verdict is NOT refused."""
+    async def test_resident_only_refuses_at_default_quality_floor(self) -> None:
+        """ALL cloud members fail with provider errors, only the resident
+        Command-R (local-fast) survives.  The quorum floor PASSES (degraded to 1),
+        but the QUALITY floor (min_axis_values=2) is unmet by a single scorer →
+        the verdict is correctly REFUSED.  This proves the quality floor is sacred:
+        degrade-to-available lowers the quorum, NEVER the quality bar."""
+        results = [_result("local-fast", {"a": 4, "b": 3})]
+        cloud_failures = [
+            ("opus", "UsageLimitExceeded"),
+            ("balanced", "ContentFilterError"),
+            ("gemini-3-pro", "UsageLimitExceeded"),
+            ("web-research", "RateLimitError"),
+            ("mistral-large", "ContentFilterError"),
+        ]
+        with self._patch_phase1(results, cloud_failures):
+            verdict = await deliberate(
+                _input(), CouncilMode.DISCONFIRMATION, EpistemicQualityRubric()
+            )
+        # Quorum passes (excused), but quality floor (min_axis_values=2) kills it.
+        assert verdict.convergence_status == ConvergenceStatus.REFUSED
+        health = verdict.receipt["council_health"]
+        assert health["members_valid"] == 1
+        assert health["excused_failures"] == 5
+        # The quorum floor itself is met (degraded to 1).
+        assert health["below_quorum"] is False
+
+    async def test_degrade_to_available_releases_with_quorum_survivors(self) -> None:
+        """The REAL exit predicate: 6-member DEFAULT panel, exactly 2 cloud
+        members fail with UsageLimitExceeded (provider-excused), 4 survive
+        (including local-fast), at the DEFAULT config (min_axis_values=2,
+        min_valid_members=4, min_valid_families=4) → non-REFUSED verdict.
+
+        This is the production scenario the keystone is designed for: lose ~2
+        cloud members to quota, keep >=4 survivors across >=4 families, and
+        RELEASE without lowering the quality floor."""
+        results = [
+            _result("opus", {"a": 4, "b": 4}),
+            _result("local-fast", {"a": 3, "b": 4}),
+            _result("web-research", {"a": 4, "b": 3}),
+            _result("mistral-large", {"a": 4, "b": 4}),
+        ]
+        cloud_failures = [
+            ("balanced", "UsageLimitExceeded"),
+            ("gemini-3-pro", "UsageLimitExceeded"),
+        ]
+        with self._patch_phase1(results, cloud_failures):
+            verdict = await deliberate(
+                _input(), CouncilMode.DISCONFIRMATION, EpistemicQualityRubric()
+            )
+        assert verdict.convergence_status != ConvergenceStatus.REFUSED
+        health = verdict.receipt["council_health"]
+        assert health["members_valid"] >= 4
+        assert health["excused_failures"] == 2
+        assert health["below_quorum"] is False
+        # Quality floor is NOT lowered — scores are real.
+        assert verdict.scores
+
+    async def test_cloud_content_filter_two_survivors_not_refused(self) -> None:
+        """4 cloud members fail with ContentFilterError/UsageLimitExceeded,
+        2 survivors (local-fast + web-research).  Quorum passes (degraded),
+        but with only 2 scorers the quality floor (min_axis_values=2) is just
+        barely met → non-REFUSED."""
         results = [
             _result("local-fast", {"a": 4, "b": 3}),
             _result("web-research", {"a": 3, "b": 4}),
@@ -284,30 +354,7 @@ class TestDeliberateDegradeToAvailable:
         assert health["members_valid"] >= 1
         assert health["excused_failures"] == 4
         assert health["below_quorum"] is False
-        # Quality floor is NOT lowered — scores must still meet per-axis thresholds.
         assert verdict.scores  # non-empty scores
-
-    async def test_all_cloud_fail_resident_only_not_refused(self) -> None:
-        """Even if ALL cloud members fail with provider errors, the resident
-        Command-R alone produces a non-refused verdict."""
-        # Single-member panel will have min_axis_values=2 constraint, so we need
-        # to use a config that lowers that for this extreme case.
-        results = [_result("local-fast", {"a": 4, "b": 3})]
-        cloud_failures = [
-            ("opus", "UsageLimitExceeded"),
-            ("balanced", "ContentFilterError"),
-            ("gemini-3-pro", "UsageLimitExceeded"),
-            ("web-research", "RateLimitError"),
-            ("mistral-large", "ContentFilterError"),
-        ]
-        config = CouncilConfig(min_axis_values=1)  # allow single-member axis
-        with self._patch_phase1(results, cloud_failures):
-            verdict = await deliberate(
-                _input(), CouncilMode.DISCONFIRMATION, EpistemicQualityRubric(), config
-            )
-        assert verdict.convergence_status != ConvergenceStatus.REFUSED
-        assert verdict.receipt["council_health"]["members_valid"] == 1
-        assert verdict.receipt["council_health"]["excused_failures"] == 5
 
     async def test_non_excused_failures_still_refuse_through_deliberate(self) -> None:
         """Non-provider failures must still REFUSE — the degrade-to-available
