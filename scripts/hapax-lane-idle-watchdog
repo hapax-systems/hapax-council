@@ -209,18 +209,51 @@ is_gemini_idle() {
 # A lane walled until a known future reset is intentionally paused — the headless
 # wrapper backs off until the quota frees, so this watchdog must NOT relaunch /
 # revive / nudge it in the meantime (that would re-hit the wall every tick).
-# Echoes the receipt's resets_at iff walled until a FUTURE time; else returns 1.
+# Echoes a backoff reason iff the lane is still walled; else returns 1.
+#
+# Freshness fallback (quota-wall-backoff-freshness): the original check honored
+# ONLY a known FUTURE resets_at. But a server-side throttle can carry no reset
+# time (resets_at: unknown), and the reset-boundary parser can emit a PAST
+# timestamp (observed: detected_at 03:38Z with resets_at 03:00Z — the prior 5h
+# boundary, not the next). In both cases the future-only check returns "not
+# walled" and the lane is re-nudged on the very next tick → re-walls → thrash.
+# So when resets_at is unusable, fall back to detected_at + a backoff floor: a
+# freshly detected wall means the lane is actively quota-blocked with an unknown
+# end, and must not be nudged yet. A stale receipt (old detection, no future
+# reset) correctly falls through to allow legitimate revival.
+QUOTA_WALL_BACKOFF_FLOOR_S="${HAPAX_QUOTA_WALL_BACKOFF_FLOOR_S:-900}"
+
 quota_walled_until() {
     local role="$1"
     local receipt="$HOME/.cache/hapax/relay/receipts/${role}-quota-wall.yaml"
     [ -f "$receipt" ] || return 1
-    local resets_at
+    local now_epoch="${now:-$(date +%s)}"
+
+    # (1) Honor a concrete FUTURE reset time when present.
+    local resets_at reset_epoch
     resets_at="$(sed -n 's/^resets_at:[[:space:]]*//p' "$receipt" | head -n1)"
-    [ -n "$resets_at" ] && [ "$resets_at" != "unknown" ] || return 1
-    local reset_epoch
-    reset_epoch="$(date -d "$resets_at" +%s 2>/dev/null)" || return 1
-    [ "$reset_epoch" -gt "${now:-$(date +%s)}" ] || return 1
-    printf '%s\n' "$resets_at"
+    if [ -n "$resets_at" ] && [ "$resets_at" != "unknown" ]; then
+        reset_epoch="$(date -d "$resets_at" +%s 2>/dev/null || echo 0)"
+        if [ "$reset_epoch" -gt "$now_epoch" ]; then
+            printf '%s\n' "$resets_at"
+            return 0
+        fi
+    fi
+
+    # (2) Freshness fallback: resets_at missing / unknown / in the past. If the
+    # wall was detected within the backoff floor, treat it as still active with an
+    # unknown end so a fresh wall is not immediately re-nudged.
+    local detected_at det_epoch
+    detected_at="$(sed -n 's/^detected_at:[[:space:]]*//p' "$receipt" | head -n1)"
+    if [ -n "$detected_at" ]; then
+        det_epoch="$(date -d "$detected_at" +%s 2>/dev/null || echo 0)"
+        if [ "$det_epoch" -gt 0 ] && [ "$((now_epoch - det_epoch))" -lt "$QUOTA_WALL_BACKOFF_FLOOR_S" ]; then
+            printf 'fresh-wall (detected %s, end unknown)\n' "$detected_at"
+            return 0
+        fi
+    fi
+
+    return 1
 }
 
 # ─── Lane discovery ──────────────────────────────────────────────────────────
