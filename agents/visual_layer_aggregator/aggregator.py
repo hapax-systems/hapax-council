@@ -645,12 +645,11 @@ class VisualLayerAggregator:
         from .stimmung_methods import (
             update_stimmung_sources,
             write_stimmung,
-            write_temporal_bands,
         )
 
         update_stimmung_sources(self)  # calls update_biometrics internally
         write_stimmung(self)
-        write_temporal_bands(self)
+        # write_temporal_bands moved to _state_tick_loop (3s cadence; round-2 audit)
 
     # ── Content scheduling ───────────────────────────────────────────────────
 
@@ -1256,6 +1255,18 @@ class VisualLayerAggregator:
                 write_cross_resonance(self)
             except Exception:
                 log.debug("Cross-resonance bridge failed", exc_info=True)
+
+            # Temporal bands at PERCEPTION cadence (3s), not the 15s health-poll.
+            # write_temporal_bands reads only the local ring (fast-loop-fresh), so
+            # the impression is <=3s stale instead of <=15s — the round-2 adequacy
+            # audit's primary temporal deficit (every voice turn read a 15s-stale
+            # impression). Moved here from _update_stimmung (the slow _api_poll_loop).
+            try:
+                from .stimmung_methods import write_temporal_bands
+
+                write_temporal_bands(self)
+            except Exception:
+                log.debug("temporal bands write failed", exc_info=True)
 
             tick_interval = self._adaptive_tick_interval(state)
             await asyncio.sleep(tick_interval)
