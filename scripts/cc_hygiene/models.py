@@ -153,6 +153,7 @@ class TaskNote(BaseModel):
     claimed_at: datetime | None = None
     branch: str | None = None
     pr: int | None = None
+    linked_prs: tuple[int, ...] = ()
     parent_request: str | None = None
     """Upstream request id (e.g. ``REQ-…``) resolved against hapax-requests."""
     parent_plan: str | None = None

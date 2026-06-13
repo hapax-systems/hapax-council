@@ -195,6 +195,16 @@ notify() {
       -d "$body" "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 \
       || log "notify: ntfy POST to $NTFY_URL/$NTFY_TOPIC failed"
   fi
+  if [ -x "$REPO_DIR/scripts/hapax-p0-incident-intake" ]; then
+    "$REPO_DIR/scripts/hapax-p0-incident-intake" notification \
+      --title "$title" \
+      --message "$body" \
+      --priority urgent \
+      --tag skull \
+      --technical >/dev/null 2>&1 \
+      && return 0
+    log "notify: p0 incident intake failed; next action: inspect ~/.cache/hapax/p0-incident-intake/state.json and events.jsonl, then rerun $REPO_DIR/scripts/hapax-p0-incident-intake notification with this title/body"
+  fi
   if command -v notify-send >/dev/null 2>&1; then
     notify-send -u critical "$title" "$body" >/dev/null 2>&1 || true
   fi
@@ -561,6 +571,8 @@ progress_ntfy() {
   curl -sf -d "Lane progress watchdog: lane $1 stalled on $2 — $3" \
     -H "Title: Lane resume exhausted" -H "Priority: high" -H "Tags: warning,robot" \
     "$PROGRESS_NTFY_URL/$PROGRESS_NTFY_TOPIC" >/dev/null 2>&1 || true
+  # Governed incident record alongside the ntfy channel.
+  "$(dirname "$(readlink -f "$0")")/hapax-alert" high "Lane resume exhausted" "lane $1 stalled on $2 — $3" --tag lane --record-only
 }
 
 emit_progress_metrics() {

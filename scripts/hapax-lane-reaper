@@ -196,6 +196,8 @@ for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "
                 -d "lane-reaper: $role wedged — reaped ${attempts}x past tau without recovery; STOP (needs attention)" \
                 -H "Title: Lane wedged (reap cap)" -H "Priority: high" -H "Tags: warning,robot" \
                 "${HAPAX_NTFY_URL:-http://localhost:8092}/${HAPAX_NTFY_TOPIC:-hapax}" >/dev/null 2>&1 || true
+            # Governed incident record alongside the ntfy channel.
+            "$(dirname "$(readlink -f "$0")")/hapax-alert" high "Lane wedged (reap cap)" "$role wedged — reaped ${attempts}x past tau without recovery; STOP (needs attention)" --tag lane --record-only
             continue
             ;;
     esac

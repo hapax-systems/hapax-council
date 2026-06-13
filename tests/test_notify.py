@@ -5,10 +5,13 @@ All I/O is mocked. No real HTTP requests or subprocess calls.
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from shared.notify import (
     _DESKTOP_URGENCY,
+    _dismiss_existing_intake_notifications,
     _send_desktop,
     briefing_uri,
     nudges_uri,
@@ -54,6 +57,30 @@ class TestSendDesktop:
         cmd = mock_run.call_args[0][0]
         assert "--urgency=critical" in cmd
 
+    @patch("shared.notify._run_subprocess")
+    def test_replace_id_coalesces_desktop_notification(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+
+        _send_desktop('T "quoted"', "M\nnext", priority="urgent", replace_id=12345)
+        cmd = mock_run.call_args[0][0]
+        assert cmd[:8] == [
+            "gdbus",
+            "call",
+            "--session",
+            "--dest",
+            "org.freedesktop.Notifications",
+            "--object-path",
+            "/org/freedesktop/Notifications",
+            "--method",
+        ]
+        assert "org.freedesktop.Notifications.Notify" in cmd
+        assert "12345" in cmd
+        assert json.loads(cmd[9]) == "LLM Stack"
+        assert json.loads(cmd[11]) == "dialog-error"
+        assert json.loads(cmd[12]) == 'T "quoted"'
+        assert json.loads(cmd[13]) == "M\nnext"
+        assert '{"urgency": <byte 2>, "desktop-entry": <"org.hapax.system">}' in cmd
+
     @patch("shared.notify._run_subprocess", side_effect=FileNotFoundError)
     def test_no_notify_send(self, mock_run):
         result = _send_desktop("T", "M")
@@ -64,6 +91,35 @@ class TestSendDesktop:
         mock_run.return_value = MagicMock(returncode=1)
         result = _send_desktop("T", "M")
         assert result is False
+
+
+def test_dismiss_existing_intake_notifications_uses_mako_marker():
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd == ["makoctl", "list", "-j"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    [
+                        {"id": 11, "body": "SDLC intake: p0-incident-demo\nold"},
+                        {"id": 12, "body": "unrelated"},
+                        {"id": 13, "body": "SDLC intake: p0-incident-demo\nnewer"},
+                        {"body": "SDLC intake: p0-incident-demo without id"},
+                    ]
+                ),
+            )
+        return SimpleNamespace(returncode=0, stdout="")
+
+    with patch("shared.notify._run_subprocess", side_effect=fake_run):
+        _dismiss_existing_intake_notifications("p0-incident-demo")
+
+    assert calls[0][0] == ["makoctl", "list", "-j"]
+    assert [call[0] for call in calls[1:]] == [
+        ["makoctl", "dismiss", "--no-history", "-n", "11"],
+        ["makoctl", "dismiss", "--no-history", "-n", "13"],
+    ]
 
 
 # ── send_notification (unified) tests ────────────────────────────────────────
@@ -88,6 +144,69 @@ class TestSendNotification:
     def test_passes_priority(self, mock_desktop, _dedup, _watershed, _logos):
         send_notification("T", "M", priority="urgent", tags=["skull"])
         mock_desktop.assert_called_once_with("T", "M", priority="urgent")
+
+    @patch("shared.notify._dismiss_existing_intake_notifications")
+    @patch("shared.p0_incident_intake.record_notification")
+    @patch("shared.notify._send_desktop", return_value=True)
+    def test_technical_alert_records_p0_intake_and_replace_id(
+        self,
+        mock_desktop,
+        mock_record,
+        mock_dismiss,
+        _dedup,
+        _watershed,
+        _logos,
+    ):
+        mock_record.return_value = SimpleNamespace(
+            technical=True,
+            task_id="p0-incident-stack-failed-abc123",
+            replace_id=456,
+            click_url="obsidian://open?vault=Personal&file=20-projects/example",
+        )
+
+        result = send_notification(
+            "Stack Failed",
+            "1 check failed",
+            priority="high",
+            tags=["rotating_light"],
+        )
+
+        assert result is True
+        mock_record.assert_called_once_with(
+            "Stack Failed",
+            "1 check failed",
+            priority="high",
+            tags=["rotating_light"],
+            technical=None,
+        )
+        mock_desktop.assert_called_once_with(
+            "Stack Failed",
+            "1 check failed\nSDLC intake: p0-incident-stack-failed-abc123",
+            priority="high",
+            replace_id=456,
+        )
+        mock_dismiss.assert_called_once_with("p0-incident-stack-failed-abc123")
+
+    @patch("shared.p0_incident_intake.record_notification", side_effect=OSError("state locked"))
+    @patch("shared.notify._send_desktop", return_value=True)
+    def test_technical_intake_failure_logs_next_action(
+        self,
+        mock_desktop,
+        _mock_record,
+        _dedup,
+        _watershed,
+        _logos,
+        caplog,
+    ):
+        with caplog.at_level("WARNING", logger="shared.notify"):
+            result = send_notification("LUFS panic-cap", "too hot", priority="high")
+
+        assert result is True
+        assert "notify: p0 incident intake failed; next action:" in caplog.text
+        assert "~/.cache/hapax/p0-incident-intake/state.json" in caplog.text
+        assert "scripts/hapax-p0-incident-intake notification" in caplog.text
+        assert "--technical" in caplog.text
+        mock_desktop.assert_called_once_with("LUFS panic-cap", "too hot", priority="high")
 
 
 # ── send_webhook tests ───────────────────────────────────────────────────────

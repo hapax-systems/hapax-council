@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+"""Mint/update governed P0 incident intake from technical notifications."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.p0_incident_intake import record_notification
+
+
+def _path_arg(value: str) -> Path:
+    return Path(value).expanduser()
+
+
+def _notify_send(
+    title: str,
+    message: str,
+    *,
+    priority: str,
+    replace_id: int | None,
+) -> bool:
+    if replace_id is not None:
+        return _notify_gdbus(title, message, priority=priority, replace_id=replace_id)
+
+    urgency = "critical" if priority in {"high", "urgent"} else "normal"
+    cmd = [
+        "notify-send",
+        f"--urgency={urgency}",
+        "--app-name=Hapax System",
+        "--icon=dialog-error",
+    ]
+    cmd.extend([title, message])
+    try:
+        return subprocess.run(cmd, timeout=5, capture_output=True).returncode == 0  # noqa: S603
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _notify_gdbus(
+    title: str,
+    message: str,
+    *,
+    priority: str,
+    replace_id: int,
+) -> bool:
+    urgency_byte = 2 if priority in {"high", "urgent"} else 1
+    cmd = [
+        "gdbus",
+        "call",
+        "--session",
+        "--dest",
+        "org.freedesktop.Notifications",
+        "--object-path",
+        "/org/freedesktop/Notifications",
+        "--method",
+        "org.freedesktop.Notifications.Notify",
+        _gvariant_string("Hapax System"),
+        str(replace_id),
+        _gvariant_string("dialog-error" if urgency_byte == 2 else ""),
+        _gvariant_string(title),
+        _gvariant_string(message),
+        "[]",
+        f'{{"urgency": <byte {urgency_byte}>, "desktop-entry": <"org.hapax.system">}}',
+        "0",
+    ]
+    try:
+        return subprocess.run(cmd, timeout=5, capture_output=True).returncode == 0  # noqa: S603
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _gvariant_string(value: str) -> str:
+    return json.dumps(value)
+
+
+def _record(args: argparse.Namespace, *, title: str, message: str, technical: bool) -> int:
+    try:
+        result = record_notification(
+            title,
+            message,
+            priority=args.priority,
+            tags=args.tag,
+            technical=technical,
+            task_root=args.task_root,
+            state_path=args.state_path,
+            ledger_path=args.ledger_path,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI boundary must fail visibly.
+        print(
+            f"p0 incident intake failed: {type(exc).__name__}: {_clip_for_operator(str(exc))}",
+            file=sys.stderr,
+        )
+        print(_failure_next_action(args), file=sys.stderr)
+        if not args.no_desktop:
+            body = "\n".join(
+                (
+                    "SDLC intake failed before task creation; this is a raw fallback notification.",
+                    message,
+                    f"Error: {type(exc).__name__}: {_clip_for_operator(str(exc), 500)}",
+                    f"State: {args.state_path}",
+                    f"Ledger: {args.ledger_path}",
+                    "Next: repair intake storage and rerun hapax-p0-incident-intake with the same alert payload.",
+                )
+            )
+            sent = _notify_send(
+                f"P0 intake failed: {title}",
+                body,
+                priority=args.priority,
+                replace_id=None,
+            )
+            if not sent:
+                print("fallback desktop notification failed", file=sys.stderr)
+        return 1
+    if not result.technical:
+        print(f"not technical incident: {result.reason}", file=sys.stderr)
+        return 0
+
+    status = "created" if result.created else "updated"
+    print(f"{status} {result.task_id} {result.task_path}")
+
+    if args.no_desktop:
+        return 0
+
+    _dismiss_existing_intake_notifications(result.task_id)
+    body = "\n".join(
+        part
+        for part in (
+            f"SDLC intake: {result.task_id}",
+            message,
+            f"Task: {result.click_url}" if result.click_url else "",
+        )
+        if part
+    )
+    _notify_send(title, body, priority=args.priority, replace_id=result.replace_id)
+    return 0
+
+
+def _clip_for_operator(text: str, limit: int = 240) -> str:
+    text = " ".join(text.strip().split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "..."
+
+
+def _failure_next_action(args: argparse.Namespace) -> str:
+    paths = (
+        f"task_root={args.task_root}",
+        f"state_path={args.state_path}",
+        f"ledger_path={args.ledger_path}",
+    )
+    return (
+        "Next action: inspect P0 intake storage "
+        + ", ".join(paths)
+        + "; fix writability/corruption, then rerun this hapax-p0-incident-intake "
+        "subcommand with the same alert payload."
+    )
+
+
+def _dismiss_existing_intake_notifications(task_id: str | None) -> None:
+    if task_id is None:
+        return
+    marker = f"SDLC intake: {task_id}"
+    try:
+        result = subprocess.run(
+            ["makoctl", "list", "-j"],
+            timeout=2,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return
+        notifications = json.loads(result.stdout or "[]")
+        if not isinstance(notifications, list):
+            return
+        for notification in notifications:
+            if not isinstance(notification, dict):
+                continue
+            body = str(notification.get("body") or "")
+            notification_id = notification.get("id")
+            if marker not in body or notification_id is None:
+                continue
+            subprocess.run(
+                ["makoctl", "dismiss", "--no-history", "-n", str(notification_id)],
+                timeout=2,
+                capture_output=True,
+            )
+    except Exception:
+        return
+
+
+def _service_failed(args: argparse.Namespace) -> int:
+    title = f"Service Failed: {args.unit}"
+    message = "\n".join(
+        (
+            f"systemd OnFailure fired for user unit `{args.unit}`.",
+            f"Check: journalctl --user -u {args.unit} --no-pager -n 50",
+            "Triage: identify root cause, remediate or explicitly refuse, then verify the unit.",
+        )
+    )
+    return _record(args, title=title, message=message, technical=True)
+
+
+def _notification(args: argparse.Namespace) -> int:
+    return _record(args, title=args.title, message=args.message, technical=args.technical)
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.set_defaults(func=None)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    def add_common(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--priority", default="urgent", choices=("high", "urgent"))
+        p.add_argument("--tag", action="append", default=["skull"])
+        p.add_argument("--task-root", type=_path_arg, default=None)
+        p.add_argument("--state-path", type=_path_arg, default=None)
+        p.add_argument("--ledger-path", type=_path_arg, default=None)
+        p.add_argument("--no-desktop", action="store_true")
+
+    service = sub.add_parser("service-failed", help="Record a failed systemd user unit.")
+    add_common(service)
+    service.add_argument("unit")
+    service.set_defaults(func=_service_failed)
+
+    notification = sub.add_parser("notification", help="Record an arbitrary technical alert.")
+    add_common(notification)
+    notification.add_argument("--title", required=True)
+    notification.add_argument("--message", required=True)
+    notification.add_argument("--technical", action="store_true")
+    notification.set_defaults(func=_notification)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if args.task_root is None or args.state_path is None or args.ledger_path is None:
+        from shared.p0_incident_intake import (
+            DEFAULT_LEDGER_PATH,
+            DEFAULT_STATE_PATH,
+            DEFAULT_TASK_ROOT,
+        )
+
+        args.task_root = args.task_root or DEFAULT_TASK_ROOT
+        args.state_path = args.state_path or DEFAULT_STATE_PATH
+        args.ledger_path = args.ledger_path or DEFAULT_LEDGER_PATH
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

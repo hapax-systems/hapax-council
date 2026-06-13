@@ -114,6 +114,8 @@ elif [ "$consecutive" -ge 3 ]; then
     systemctl --user restart "$COMPOSITOR_UNIT" || log "restart failed (exit $?)"
     # Reset state after restart — grace period will suppress next ticks.
     echo "0 0" > "$STATE_FILE"
+    # Governed incident record for the escalation alongside the ntfy channel.
+    "$(dirname "$(readlink -f "$0")")/hapax-alert" high "v4l2sink stall escalation" "v4l2sink stalled ${consecutive}0s — restarted $COMPOSITOR_UNIT" --tag v4l2 --record-only
   fi
 fi
 

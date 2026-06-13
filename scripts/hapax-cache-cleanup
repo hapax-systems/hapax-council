@@ -107,6 +107,7 @@ log "Cleanup complete. Disk: ${AVAIL} free (${USE_PCT} used)"
 USE_NUM=${USE_PCT%\%}
 if [ "$USE_NUM" -gt 90 ]; then
     log "WARNING: Disk still above 90% after cleanup"
-    # Send notification
-    notify-send -u critical "Disk Space" "Root filesystem at ${USE_PCT} (${AVAIL} free) after cleanup" 2>/dev/null || true
+    # Governed incident record (+ desktop via intake) — disk pressure is a
+    # technical system incident, not a bare desktop ping.
+    "$(dirname "$(readlink -f "$0")")/hapax-alert" high "Disk Space" "Root filesystem at ${USE_PCT} (${AVAIL} free) after cleanup" --tag disk
 fi
