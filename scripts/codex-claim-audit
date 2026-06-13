@@ -99,17 +99,28 @@ _journal_attr() {
 # GitHub PR reality check
 # ---------------------------------------------------------------------------
 _gh_pr_is_open() {
-  # Returns 0 if the PR is open/draft on GitHub. Returns 1 otherwise (merged,
-  # closed, or gh unavailable — fail-open: treat as "not confirmed open" so
-  # existing behavior continues for tasks without GH access).
+  # Returns 0 if the PR is open/draft on GitHub OR if the lookup fails (fail-
+  # safe: retain the claim unless GitHub positively confirms the PR is closed/
+  # merged). Returns 1 ONLY when gh succeeds and the state is MERGED or CLOSED.
+  #
+  # Safety invariant (class #5): collapsing a lookup failure into "not open"
+  # would let the audit erase live open-PR claims when gh is unavailable,
+  # unauthenticated, rate-limited, or the network is down.
   local pr_number="$1"
   [[ -n "$pr_number" && "$pr_number" != "null" ]] || return 1
-  command -v "$GH_CMD" >/dev/null 2>&1 || return 1
+  # gh unavailable → fail-safe (treat as open)
+  command -v "$GH_CMD" >/dev/null 2>&1 || return 0
   local state=""
   state="$("$GH_CMD" pr view "$pr_number" --json state --jq .state 2>/dev/null || true)"
   case "$state" in
-    OPEN|DRAFT) return 0 ;;
-    *) return 1 ;;
+    MERGED|CLOSED) return 1 ;;  # positively confirmed not-open
+    OPEN|DRAFT) return 0 ;;     # positively confirmed open
+    *)
+      # Empty/unknown state (rate limit, network error, auth failure).
+      # Fail-safe: treat as open to retain the claim.
+      _journal_attr "GH_LOOKUP_FAILED" "pr#${pr_number}" "state=${state:-empty} — treating as open (fail-safe)"
+      return 0
+      ;;
   esac
 }
 
@@ -383,13 +394,30 @@ _reconcile_clear_to_host() {
     reconcile_report="${reconcile_report}  [DRY-RUN] WOULD RECONCILE ${assigned} task=${task_id} -> ${RECONCILE_HOST}:${remote_file}\n"
     return 0
   fi
+  # Safety: read the remote file contents first and only delete if it names
+  # the SAME task_id. If the remote host has already advanced the role to
+  # another task, deleting would erase a live remote claim.
+  local remote_task=""
+  remote_task="$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$RECONCILE_HOST" \
+    "cat '$remote_file' 2>/dev/null | head -n1 | tr -d '[:space:]'" 2>/dev/null || true)"
+  if [ -z "$remote_task" ]; then
+    # Remote file doesn't exist or is empty — nothing to reconcile.
+    reconcile_report="${reconcile_report}  RECONCILE_SKIP: cc-active-task-${assigned} on ${RECONCILE_HOST} (remote file absent or empty)\n"
+    return 0
+  fi
+  if [ "$remote_task" != "$task_id" ]; then
+    # Remote host has a DIFFERENT task claimed for this role — do NOT delete.
+    reconcile_report="${reconcile_report}  RECONCILE_SKIP: cc-active-task-${assigned} on ${RECONCILE_HOST} remote_task=${remote_task} != local_task=${task_id} (remote claim is live for different task)\n"
+    _journal_attr "RECONCILE_SKIP" "cc-active-task-${assigned}" "remote ${RECONCILE_HOST} has different task=${remote_task} (ours=${task_id})"
+    return 0
+  fi
   if ssh -o ConnectTimeout=5 -o BatchMode=yes "$RECONCILE_HOST" \
-       "rm -f '$remote_file' && logger -t codex-claim-audit 'RECONCILE_CLEAR cc-active-task-${assigned} task=${task_id} from=$(hostname -s)'" 2>/dev/null; then
+       "rm -f '$remote_file' && logger -t codex-claim-audit 'RECONCILE_CLEAR cc-active-task-${assigned} task=${task_id} from=\$(hostname -s)'" 2>/dev/null; then
     reconcile_count=$((reconcile_count + 1))
     reconcile_report="${reconcile_report}  RECONCILED: cleared cc-active-task-${assigned} on ${RECONCILE_HOST} task=${task_id}\n"
     _journal_attr "RECONCILE" "cc-active-task-${assigned}" "cleared on ${RECONCILE_HOST} task=${task_id}"
   else
-    reconcile_report="${reconcile_report}  RECONCILE_FAILED: cc-active-task-${assigned} on ${RECONCILE_HOST} task=${task_id} (ssh failed)\n"
+    reconcile_report="${reconcile_report}  RECONCILE_FAILED: cc-active-task-${assigned} on ${RECONCILE_HOST} task=${task_id} (ssh failed; check: ssh ${RECONCILE_HOST}, HAPAX_RECONCILE_HOST env, or rerun with --dry-run)\n"
     _journal_attr "RECONCILE_FAILED" "cc-active-task-${assigned}" "ssh to ${RECONCILE_HOST} failed task=${task_id}"
   fi
 }
@@ -433,15 +461,19 @@ for note in "$VAULT_ROOT/active/"*.md; do
       quota_report="${quota_report}  QUOTA_BLOCKED: ${task_id} assigned=${assigned} status=${status} evidence=${quota_evidence} pr=${pr} branch=${branch}\n"
 
       if [ "$RELEASE" = true ] && [ "$RELEASE_QUOTA_BLOCKED" = true ]; then
-        now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-        safe_evidence="$(printf '%s' "$quota_evidence" | sed 's/[&\\]/_/g')"
-        sed -i "s/^status:.*/status: offered/" "$note"
-        sed -i "s/^assigned_to:.*/assigned_to: unassigned/" "$note"
-        sed -i "s/^updated_at:.*/updated_at: $now_iso/" "$note"
-        sed -i "/^## Session log$/a\\- $now_iso codex-claim-audit released quota-blocked claim (${assigned}; evidence: ${safe_evidence})" "$note"
-        quota_report="${quota_report}    -> RELEASED back to offered for governed redispatch\n"
-        _clear_claim_cache_for_release "$assigned" "$task_id"
-        quota_report="${quota_report}${release_cache_message}"
+        if [ "$DRY_RUN" = true ]; then
+          quota_report="${quota_report}    -> [DRY-RUN] WOULD RELEASE back to offered for governed redispatch\n"
+        else
+          now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          safe_evidence="$(printf '%s' "$quota_evidence" | sed 's/[&\\]/_/g')"
+          sed -i "s/^status:.*/status: offered/" "$note"
+          sed -i "s/^assigned_to:.*/assigned_to: unassigned/" "$note"
+          sed -i "s/^updated_at:.*/updated_at: $now_iso/" "$note"
+          sed -i "/^## Session log$/a\\- $now_iso codex-claim-audit released quota-blocked claim (${assigned}; evidence: ${safe_evidence})" "$note"
+          quota_report="${quota_report}    -> RELEASED back to offered for governed redispatch\n"
+          _clear_claim_cache_for_release "$assigned" "$task_id"
+          quota_report="${quota_report}${release_cache_message}"
+        fi
       elif [ "$RELEASE" = true ]; then
         quota_report="${quota_report}    -> HELD: pass --release-quota-blocked to release quota-blocked claims\n"
       fi
@@ -470,14 +502,18 @@ for note in "$VAULT_ROOT/active/"*.md; do
     report="${report}  PHANTOM: ${task_id} assigned=${assigned} status=${status} age=${age_h}h pr=${pr} branch=${branch}\n"
 
     if [ "$RELEASE" = true ]; then
-      now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-      sed -i "s/^status:.*/status: offered/" "$note"
-      sed -i "s/^assigned_to:.*/assigned_to: unassigned/" "$note"
-      sed -i "s/^updated_at:.*/updated_at: $now_iso/" "$note"
-      sed -i "/^## Session log$/a\\- $now_iso codex-claim-audit released phantom claim (${assigned}, ${age_h}h stale)" "$note"
-      report="${report}    → RELEASED back to offered\n"
-      _clear_claim_cache_for_release "$assigned" "$task_id"
-      report="${report}${release_cache_message}"
+      if [ "$DRY_RUN" = true ]; then
+        report="${report}    → [DRY-RUN] WOULD RELEASE back to offered\n"
+      else
+        now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        sed -i "s/^status:.*/status: offered/" "$note"
+        sed -i "s/^assigned_to:.*/assigned_to: unassigned/" "$note"
+        sed -i "s/^updated_at:.*/updated_at: $now_iso/" "$note"
+        sed -i "/^## Session log$/a\\- $now_iso codex-claim-audit released phantom claim (${assigned}, ${age_h}h stale)" "$note"
+        report="${report}    → RELEASED back to offered\n"
+        _clear_claim_cache_for_release "$assigned" "$task_id"
+        report="${report}${release_cache_message}"
+      fi
     fi
   fi
 done

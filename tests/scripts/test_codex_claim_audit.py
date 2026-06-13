@@ -6,10 +6,12 @@ Pins the two failure shapes from the 2026-06-12 postmortem:
   - Failure class #4 (CLAIM-PLANE-HOST-FORK): the audit must reconcile to
     a remote host when --reconcile-host is given.
 
-Also tests the new v2 behaviors:
-  - Journal attribution: every cache mutation emits a log line.
-  - Dry-run mode: --dry-run prevents mutations.
+Also tests:
+  - gh fail-safe: lookup errors retain the claim (treat as open)
+  - Journal attribution: every cache mutation emits a structured log line.
+  - Dry-run mode: --dry-run prevents ALL mutations (notes and caches).
   - Version flag: --version prints version.
+  - Systemd unit validation.
 """
 
 from __future__ import annotations
@@ -92,6 +94,22 @@ def _gh_stub(tmp_path: Path, state: str = "OPEN") -> Path:
     return stub
 
 
+def _gh_stub_failing(tmp_path: Path) -> Path:
+    """Create a gh command that always fails (simulates unavailable/rate-limited)."""
+    stub = tmp_path / "bin" / "gh"
+    stub.parent.mkdir(parents=True, exist_ok=True)
+    stub.write_text(
+        textwrap.dedent("""\
+        #!/usr/bin/env bash
+        # Stub gh that always fails (rate limit / network error)
+        exit 1
+        """),
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return stub
+
+
 def _run_audit(
     tmp_path: Path,
     vault: Path,
@@ -101,29 +119,26 @@ def _run_audit(
     extra_args: list[str] | None = None,
     extra_env: dict[str, str] | None = None,
     gh_state: str = "OPEN",
+    gh_stub_path: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run codex-claim-audit in a test sandbox."""
-    gh_stub = _gh_stub(tmp_path, state=gh_state)
+    if gh_stub_path is None:
+        gh_stub_path = _gh_stub(tmp_path, state=gh_state)
     env = {
         "HOME": str(tmp_path / "fakehome"),
-        "PATH": f"{gh_stub.parent}:/usr/bin:/bin",
+        "PATH": f"{gh_stub_path.parent}:/usr/bin:/bin",
         "HAPAX_CLAIM_CACHE_DIR": str(cache_dir),
-        "HAPAX_GH_CMD": str(gh_stub),
-        # Empty ps fixture to skip process scan
+        "HAPAX_GH_CMD": str(gh_stub_path),
         "HAPAX_CLAIM_AUDIT_PS_FIXTURE": str(tmp_path / "empty_ps.txt"),
-        # No ntfy in tests
         "NTFY_URL": "https://localhost:1",
         "NTFY_TOPIC": "test",
     }
     if extra_env:
         env.update(extra_env)
 
-    # Create empty ps fixture
     (tmp_path / "empty_ps.txt").write_text("", encoding="utf-8")
-    # Create fake home
     fake_vault = tmp_path / "fakehome" / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
     fake_vault.mkdir(parents=True, exist_ok=True)
-    # Symlink vault into fake home
     for sub in ("active", "closed"):
         src = vault / sub
         dst = fake_vault / sub
@@ -150,7 +165,6 @@ def _run_audit(
 
 # ---------------------------------------------------------------------------
 # CLASS #5: STATE-ERASING-AUDIT-ON-LIVE-LANES
-# The audit must NEVER clear a claim cache whose PR is open on GitHub.
 # ---------------------------------------------------------------------------
 
 
@@ -158,49 +172,30 @@ class TestPROpenClaimProtection:
     """Failure class #5 regression: open PR = claim is LIVE, never cleared."""
 
     def test_cache_sweep_open_pr_not_cleared(self, tmp_path: Path) -> None:
-        """A cache file whose note status diverges but PR is OPEN must be kept.
-
-        This reproduces the exact 2026-06-12T21:04Z failure path: the cache
-        sweep (second for loop) found the cache, the note's assigned_to
-        diverged from the cache's role (e.g., note reassigned), and the old
-        code rm'd the cache without checking GitHub PR state.
-        """
+        """Cache sweep must not clear a cache whose PR is OPEN."""
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
 
-        # Task note: status=offered (not a claim status), assigned_to differs
-        # from the cache role. In the old code, this would trigger cache
-        # clearing via the cache sweep. But the PR is OPEN.
         _write_task_note(
             vault,
             "sweep-open-pr-task",
-            assigned_to="cx-beta",  # NOTE: differs from cache role cx-alpha
+            assigned_to="cx-beta",
             pr="4108",
             branch="alpha/sdlc-vocab-export-20260612",
-            status="offered",  # not a claim status -> note_is_active_claim=false
+            status="offered",
         )
-        # Cache says cx-alpha owns this task, but note says cx-beta + offered
         claim_file = _write_claim_cache(cache_dir, "cx-alpha", "sweep-open-pr-task")
 
-        result = _run_audit(
-            tmp_path,
-            vault,
-            cache_dir,
-            release=True,
-            gh_state="OPEN",
-        )
+        result = _run_audit(tmp_path, vault, cache_dir, release=True, gh_state="OPEN")
 
-        # The claim cache file MUST still exist because the PR is OPEN
         assert claim_file.exists(), (
             "REGRESSION class #5: claim cache was cleared despite PR being OPEN! "
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
-        assert "PR_OPEN_PROTECTED" in result.stdout, (
-            f"Expected PR_OPEN_PROTECTED message.\nstdout: {result.stdout}"
-        )
+        assert "PR_OPEN_PROTECTED" in result.stdout
 
     def test_cache_sweep_merged_pr_cleared(self, tmp_path: Path) -> None:
-        """A cache file whose note status diverges and PR is MERGED is cleared."""
+        """Cache sweep clears a cache whose PR is MERGED."""
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
 
@@ -214,73 +209,32 @@ class TestPROpenClaimProtection:
         )
         claim_file = _write_claim_cache(cache_dir, "cx-alpha", "sweep-merged-task")
 
-        result = _run_audit(
-            tmp_path,
-            vault,
-            cache_dir,
-            release=True,
-            gh_state="MERGED",
-        )
-
-        assert not claim_file.exists(), (
-            f"Expected stale claim cache to be cleared for merged PR.\n"
-            f"stdout: {result.stdout}\nstderr: {result.stderr}"
-        )
+        _run_audit(tmp_path, vault, cache_dir, release=True, gh_state="MERGED")
+        assert not claim_file.exists()
 
     def test_phantom_release_open_pr_protected(self, tmp_path: Path) -> None:
-        """A phantom claim being released must check PR state if the task has one.
-
-        The _clear_claim_cache_for_release function is called during phantom
-        release. If the task note has a pr field and the PR is open, the cache
-        must NOT be cleared.
-        """
+        """A cache under phantom release must be protected if its PR is OPEN."""
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
 
-        # Task is phantom (stale, no PR in the note — but we add one to test
-        # that _clear_claim_cache_for_release checks). Actually, if pr=null
-        # in the note, the phantom path triggers AND the pr check in
-        # _clear_claim_cache_for_release finds pr=null and proceeds.
-        # Let's test the case where the note has a PR but it's not in the
-        # frontmatter pr field in a way that the main loop sees pr=null but
-        # the note actually has it. This is contrived but tests the safety.
-
-        # More realistic: task has a PR, is stale, but has_pr=true prevents
-        # phantom detection. The claim cache is only touched by the cache
-        # sweep. So let's test the sweep path with status=offered and pr open.
         _write_task_note(
             vault,
             "phantom-with-pr-task",
             assigned_to="cx-alpha",
             pr="4109",
             branch="codex/cx-oofta",
-            status="offered",  # divergent status triggers cache sweep
+            status="offered",
         )
         claim_file = _write_claim_cache(cache_dir, "cx-alpha", "phantom-with-pr-task")
 
-        result = _run_audit(
-            tmp_path,
-            vault,
-            cache_dir,
-            release=True,
-            gh_state="OPEN",
-        )
-
-        assert claim_file.exists(), (
-            "REGRESSION class #5: cache cleared despite PR being OPEN! "
-            f"stdout: {result.stdout}\nstderr: {result.stderr}"
-        )
+        _run_audit(tmp_path, vault, cache_dir, release=True, gh_state="OPEN")
+        assert claim_file.exists()
 
     def test_orphaned_cache_open_pr_protected(self, tmp_path: Path) -> None:
-        """A cache file whose note is in closed/ but PR is still open must be kept.
-
-        This covers the edge case where merge-watcher moved the note to closed/
-        prematurely but the PR hasn't actually merged.
-        """
+        """Cache whose note is in closed/ but PR is still OPEN must be kept."""
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
 
-        # Note in closed/, not active/ — but PR is still open
         _write_task_note(
             vault,
             "moved-note-task",
@@ -292,21 +246,11 @@ class TestPROpenClaimProtection:
         )
         claim_file = _write_claim_cache(cache_dir, "cx-oofta", "moved-note-task")
 
-        result = _run_audit(
-            tmp_path,
-            vault,
-            cache_dir,
-            release=True,
-            gh_state="OPEN",
-        )
-
-        assert claim_file.exists(), (
-            "REGRESSION class #5: orphaned claim cache was cleared despite PR being OPEN! "
-            f"stdout: {result.stdout}\nstderr: {result.stderr}"
-        )
+        _run_audit(tmp_path, vault, cache_dir, release=True, gh_state="OPEN")
+        assert claim_file.exists()
 
     def test_orphaned_cache_closed_pr_cleared(self, tmp_path: Path) -> None:
-        """A cache file whose note is in closed/ and PR is CLOSED is cleared."""
+        """Cache whose note is in closed/ and PR is CLOSED is cleared."""
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
 
@@ -321,35 +265,95 @@ class TestPROpenClaimProtection:
         )
         claim_file = _write_claim_cache(cache_dir, "cx-oofta", "closed-note-task")
 
+        _run_audit(tmp_path, vault, cache_dir, release=True, gh_state="CLOSED")
+        assert not claim_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# gh fail-safe: lookup errors must retain the claim
+# ---------------------------------------------------------------------------
+
+
+class TestGHFailSafe:
+    """_gh_pr_is_open must fail-safe: lookup error = treat as open."""
+
+    def test_gh_unavailable_retains_claim(self, tmp_path: Path) -> None:
+        """When gh fails (rate limit, network error), claim cache must be retained."""
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+
+        _write_task_note(
+            vault,
+            "gh-fail-task",
+            assigned_to="cx-beta",
+            pr="5000",
+            branch="beta/work",
+            status="offered",
+        )
+        claim_file = _write_claim_cache(cache_dir, "cx-alpha", "gh-fail-task")
+
+        failing_gh = _gh_stub_failing(tmp_path)
         result = _run_audit(
             tmp_path,
             vault,
             cache_dir,
             release=True,
-            gh_state="CLOSED",
+            gh_stub_path=failing_gh,
         )
 
-        assert not claim_file.exists(), (
-            f"Expected orphaned cache to be cleared for CLOSED PR.\n"
+        assert claim_file.exists(), (
+            "CRITICAL: claim cache was cleared when gh was unavailable! "
+            "This is the exact class #5 failure path. "
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+
+    def test_gh_empty_output_retains_claim(self, tmp_path: Path) -> None:
+        """When gh returns empty output, claim must be retained (fail-safe)."""
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+
+        _write_task_note(
+            vault,
+            "gh-empty-task",
+            assigned_to="cx-beta",
+            pr="5001",
+            branch="beta/work2",
+            status="offered",
+        )
+        claim_file = _write_claim_cache(cache_dir, "cx-alpha", "gh-empty-task")
+
+        # gh stub that outputs empty string (simulates parse failure)
+        empty_gh = tmp_path / "bin" / "gh"
+        empty_gh.parent.mkdir(parents=True, exist_ok=True)
+        empty_gh.write_text("#!/usr/bin/env bash\necho ''\nexit 0\n", encoding="utf-8")
+        empty_gh.chmod(0o755)
+
+        result = _run_audit(
+            tmp_path,
+            vault,
+            cache_dir,
+            release=True,
+            gh_stub_path=empty_gh,
+        )
+
+        assert claim_file.exists(), (
+            f"claim cache cleared on empty gh output (should fail-safe). stdout: {result.stdout}"
         )
 
 
 # ---------------------------------------------------------------------------
 # CLASS #4: CLAIM-PLANE-HOST-FORK
-# The audit must reconcile state to a remote host when configured.
 # ---------------------------------------------------------------------------
 
 
 class TestHostReconciliation:
-    """Failure class #4 regression: single-host reconciler vs two-host plane."""
+    """Failure class #4 regression."""
 
     def test_reconcile_flag_accepted(self, tmp_path: Path) -> None:
         """--reconcile-host is accepted and processes phantom claims."""
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
 
-        # A phantom claim (no PR, stale) that will be released
         _write_task_note(
             vault,
             "phantom-task-reconcile",
@@ -361,8 +365,6 @@ class TestHostReconciliation:
         )
         _write_claim_cache(cache_dir, "cx-gold", "phantom-task-reconcile")
 
-        # ssh will fail (no real remote host), but the flag should be accepted
-        # and the RECONCILE_FAILED message emitted.
         result = _run_audit(
             tmp_path,
             vault,
@@ -372,23 +374,24 @@ class TestHostReconciliation:
             gh_state="CLOSED",
         )
 
-        # We expect phantom detection
-        assert "PHANTOM" in result.stdout, f"Expected phantom detection.\nstdout: {result.stdout}"
+        assert "PHANTOM" in result.stdout
 
-    def test_dry_run_prevents_cache_deletion(self, tmp_path: Path) -> None:
-        """--dry-run prevents claim cache mutations."""
+    def test_dry_run_prevents_all_mutations(self, tmp_path: Path) -> None:
+        """--dry-run prevents BOTH cache deletion AND task note mutation."""
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
 
-        _write_task_note(
+        note = _write_task_note(
             vault,
-            "dry-run-task",
+            "dry-run-phantom",
             assigned_to="cx-cyan",
             pr="null",
             branch="null",
-            status="done",  # stale status for cache sweep
+            status="claimed",
+            claimed_at="2026-06-10T01:00:00Z",
         )
-        claim_file = _write_claim_cache(cache_dir, "cx-cyan", "dry-run-task")
+        claim_file = _write_claim_cache(cache_dir, "cx-cyan", "dry-run-phantom")
+        original_note_text = note.read_text()
 
         result = _run_audit(
             tmp_path,
@@ -399,11 +402,11 @@ class TestHostReconciliation:
             gh_state="CLOSED",
         )
 
-        # In dry-run, claim file should still exist
-        assert claim_file.exists(), (
-            f"Dry-run should not delete claim cache.\nstdout: {result.stdout}"
+        assert claim_file.exists(), "Dry-run should not delete claim cache"
+        assert note.read_text() == original_note_text, (
+            "Dry-run should not mutate the task note via sed"
         )
-        assert "DRY-RUN" in result.stdout, f"Expected DRY-RUN message.\nstdout: {result.stdout}"
+        assert "DRY-RUN" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -415,11 +418,9 @@ class TestJournalAttribution:
     """Every claim-cache mutation must emit a structured log line."""
 
     def test_clear_emits_journal_line(self, tmp_path: Path) -> None:
-        """Clearing a stale cache must produce an attributed log line in stdout."""
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
 
-        # Task note with status=done, so the cache is stale
         _write_task_note(
             vault,
             "journal-test-task",
@@ -430,22 +431,10 @@ class TestJournalAttribution:
         )
         _write_claim_cache(cache_dir, "cx-delta", "journal-test-task")
 
-        result = _run_audit(
-            tmp_path,
-            vault,
-            cache_dir,
-            release=True,
-            gh_state="CLOSED",
-        )
-
-        # The stdout (which goes to journald via the unit) must contain an
-        # attributed line with the script version and action.
-        assert "codex-claim-audit[v2]" in result.stdout, (
-            f"Expected attributed journal line in stdout.\nstdout: {result.stdout}"
-        )
+        result = _run_audit(tmp_path, vault, cache_dir, release=True, gh_state="CLOSED")
+        assert "codex-claim-audit[v2]" in result.stdout
 
     def test_protect_emits_journal_line(self, tmp_path: Path) -> None:
-        """Protecting a cache (open PR) must produce an attributed PROTECT line."""
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
 
@@ -455,21 +444,37 @@ class TestJournalAttribution:
             assigned_to="cx-beta",
             pr="5000",
             branch="beta/work",
-            status="offered",  # divergent triggers cache sweep
+            status="offered",
         )
         _write_claim_cache(cache_dir, "cx-alpha", "protect-journal-task")
 
+        result = _run_audit(tmp_path, vault, cache_dir, release=True, gh_state="OPEN")
+        assert "PROTECT" in result.stdout
+
+    def test_gh_lookup_failure_emits_journal_line(self, tmp_path: Path) -> None:
+        """gh failure emits a GH_LOOKUP_FAILED journal line."""
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+
+        _write_task_note(
+            vault,
+            "gh-journal-task",
+            assigned_to="cx-beta",
+            pr="5002",
+            branch="beta/work3",
+            status="offered",
+        )
+        _write_claim_cache(cache_dir, "cx-alpha", "gh-journal-task")
+
+        failing_gh = _gh_stub_failing(tmp_path)
         result = _run_audit(
             tmp_path,
             vault,
             cache_dir,
             release=True,
-            gh_state="OPEN",
+            gh_stub_path=failing_gh,
         )
-
-        assert "PROTECT" in result.stdout, (
-            f"Expected PROTECT journal line.\nstdout: {result.stdout}"
-        )
+        assert "GH_LOOKUP_FAILED" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -478,8 +483,6 @@ class TestJournalAttribution:
 
 
 class TestVersionFlag:
-    """--version prints version and exits."""
-
     def test_version_output(self, tmp_path: Path) -> None:
         env = {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"}
         result = subprocess.run(
@@ -494,23 +497,16 @@ class TestVersionFlag:
 
 
 # ---------------------------------------------------------------------------
-# task_is_terminal indeterminate (new evidence from session log)
+# Missing cache coherence
 # ---------------------------------------------------------------------------
 
 
-class TestTaskIsTerminalMissingCache:
-    """Missing claim cache must be treated as indeterminate, not terminal.
-
-    This tests the codex-claim-audit's behavior with missing caches.
-    """
-
+class TestMissingCacheCoherence:
     def test_missing_cache_reports_coherence(self, tmp_path: Path) -> None:
-        """A claimed task whose cache file is missing should report CACHE_MISSING."""
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
 
-        # Task is claimed and assigned, but NO cache file exists
         _write_task_note(
             vault,
             "missing-cache-task",
@@ -520,19 +516,9 @@ class TestTaskIsTerminalMissingCache:
             status="claimed",
             claimed_at="2026-06-12T18:00:00Z",
         )
-        # Deliberately do NOT create a cache file for cx-zeta
 
-        result = _run_audit(
-            tmp_path,
-            vault,
-            cache_dir,
-            release=False,  # report-only mode
-            gh_state="OPEN",
-        )
-
-        assert "CACHE_MISSING" in result.stdout, (
-            f"Expected CACHE_MISSING coherence report.\nstdout: {result.stdout}"
-        )
+        result = _run_audit(tmp_path, vault, cache_dir, release=False, gh_state="OPEN")
+        assert "CACHE_MISSING" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -541,19 +527,34 @@ class TestTaskIsTerminalMissingCache:
 
 
 class TestSystemdUnits:
-    """Validate the tracked systemd units parse correctly."""
-
-    def test_service_unit_parses(self) -> None:
+    def test_service_uses_activation_worktree(self) -> None:
         unit = SCRIPT.parent.parent / "systemd" / "units" / "codex-claim-audit.service"
-        assert unit.exists(), f"Service unit not found at {unit}"
         text = unit.read_text()
         assert "[Service]" in text
-        assert "ExecStart=" in text
-        assert "%h/projects/hapax-council/scripts/codex-claim-audit" in text
+        assert "source-activation/worktree/scripts/codex-claim-audit" in text, (
+            "ExecStart must point to source-activation worktree, not mutable dev tree"
+        )
+        # Must NOT point to mutable dev tree
+        assert "%h/projects/hapax-council/scripts/" not in text, (
+            "ExecStart must NOT point to mutable dev tree (canonical-root violation)"
+        )
+
+    def test_service_enables_reconciliation(self) -> None:
+        unit = SCRIPT.parent.parent / "systemd" / "units" / "codex-claim-audit.service"
+        text = unit.read_text()
+        # HAPAX_RECONCILE_HOST must be set (not commented out)
+        assert "Environment=HAPAX_RECONCILE_HOST=" in text, (
+            "Host reconciliation must be enabled in the scheduled unit"
+        )
+        # Verify it's not commented out
+        for line in text.splitlines():
+            if "HAPAX_RECONCILE_HOST" in line:
+                assert not line.strip().startswith("#"), (
+                    "HAPAX_RECONCILE_HOST must not be commented out"
+                )
 
     def test_timer_unit_parses(self) -> None:
         unit = SCRIPT.parent.parent / "systemd" / "units" / "codex-claim-audit.timer"
-        assert unit.exists(), f"Timer unit not found at {unit}"
         text = unit.read_text()
         assert "[Timer]" in text
         assert "OnCalendar=" in text
@@ -566,12 +567,10 @@ class TestSystemdUnits:
             / "codex-claim-audit.service.d"
             / "99-findings-are-warning.conf"
         )
-        assert dropin.exists(), f"Drop-in not found at {dropin}"
         text = dropin.read_text()
         assert "SuccessExitStatus=1" in text
 
     def test_preset_includes_timer(self) -> None:
         preset = SCRIPT.parent.parent / "systemd" / "user-preset.d" / "hapax.preset"
-        assert preset.exists(), f"Preset not found at {preset}"
         text = preset.read_text()
         assert "codex-claim-audit.timer" in text

@@ -5,12 +5,10 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-# Canonical-root fix: ExecStart uses the deploy-resolved path, not the mutable
-# primary worktree. The install-units.sh deploy script resolves %h/projects/
-# hapax-council to the release worktree or source-activation root.
-ExecStart=%h/projects/hapax-council/scripts/codex-claim-audit --release --stale-hours=6
+# Canonical-root: ExecStart uses the source-activation worktree, not the
+# mutable dev tree. The activation worktree is a governed, reviewed checkout.
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/codex-claim-audit --release --stale-hours=6
 Environment=NTFY_URL=https://ntfy.sh
 Environment=NTFY_TOPIC=hapax-ops
 # Reconcile cleared state to appendix (class #4 fix).
-# Set HAPAX_RECONCILE_HOST to enable cross-host reconciliation.
-# Environment=HAPAX_RECONCILE_HOST=hapax-appendix
+Environment=HAPAX_RECONCILE_HOST=hapax-appendix

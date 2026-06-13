@@ -261,12 +261,23 @@ task_is_terminal() {
     claimed="$(head -n1 "$CLAIM_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
   fi
 
-  # If primary cache is missing or empty, try the session-keyed claim file.
+  # If primary cache is missing or empty, try session-keyed claim files.
+  # cc-claim writes cc-active-task-<role>-<session_id>, so we glob for all
+  # session-keyed files matching this role and pick the most recently modified.
   if [[ -z "$claimed" ]]; then
-    local session_claim="$HOME/.cache/hapax/cc-active-task-${ROLE}-session"
-    if [[ -s "$session_claim" ]]; then
+    local session_claim="" newest_mtime=0
+    for candidate in "$HOME/.cache/hapax/cc-active-task-${ROLE}-"*; do
+      [[ -s "$candidate" ]] || continue
+      local mtime
+      mtime="$(stat -c %Y "$candidate" 2>/dev/null || echo 0)"
+      if (( mtime > newest_mtime )); then
+        newest_mtime="$mtime"
+        session_claim="$candidate"
+      fi
+    done
+    if [[ -n "$session_claim" && -s "$session_claim" ]]; then
       claimed="$(head -n1 "$session_claim" 2>/dev/null | tr -d '[:space:]' || true)"
-      claim_source="session-keyed"
+      claim_source="session-keyed:$(basename "$session_claim")"
     fi
   fi
 
