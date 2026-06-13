@@ -271,6 +271,20 @@ def test_gate_redacts_legal_name_from_override_reason(monkeypatch) -> None:
     assert "Jane Doe" not in str(result.to_frontmatter())
 
 
+def test_gate_redacts_normalized_legal_name_from_override_reason(monkeypatch) -> None:
+    """Detection and redaction share one flexible-separator pattern: a
+    separator-normalized legal name (`jane-doe`) in an override reason is scrubbed
+    from the receipt, not just the literal `Jane Doe` form (the round-5 asymmetry)."""
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Jane Doe")
+    artifact = _artifact(
+        publication_gate_override={"by_referent": "Oudepode", "reason": "see ticket jane-doe-42"},
+    )
+    result = _gate(review_confidence=0.2).evaluate(artifact)
+
+    assert result.decision == PublicationGateDecision.OPERATOR_OVERRIDDEN_HOLD
+    assert "jane-doe" not in str(result.to_frontmatter())
+
+
 def test_gate_override_rejects_unauthorized_referent() -> None:
     """A HOLD override authored by a non-ratified referent is invalid: the
     HOLD stands and the receipt flags the unauthorized referent."""

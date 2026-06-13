@@ -216,12 +216,13 @@ class PublicationHardeningGate:
         released by a ``by_referent`` operator override.
 
         Scans the artifact's full public identity surface — the authored
-        publication text PLUS co-author identity fields (name / given / family /
-        alias). Publishers render co-authors into public metadata (Zenodo
-        creators, OSF, CFF authors) even when ``attribution_block`` is empty, so a
-        legal name there leaks just as a byline does; ``_artifact_publication_text``
-        alone misses it. The scan is case-insensitive and reads the surface
-        unchanged: it does NOT use ``omg_referent.safe_render`` (which renders the
+        publication text PLUS the co-author and other authored public fields
+        enumerated in :func:`_artifact_legal_name_surface` (co-author identity,
+        slug, embed URL, source path, approval referent) — matched by
+        :func:`_legal_name_pattern`, whose flexible separator class catches the
+        name across slug/URL separators, wrapped whitespace, or adjacent fields.
+        The scan reads the surface unchanged: it does NOT use
+        ``omg_referent.safe_render`` (which renders the
         ``{operator}`` template token stochastically, with ``segment_id=None``,
         mutating the scanned text and making the decision non-deterministic — a
         scanner must read what the author wrote). The operator's legal name is
@@ -244,7 +245,7 @@ class PublicationHardeningGate:
                     "provision it (e.g. via `pass`) to arm the corporate_boundary guard",
                 ),
             )
-        if re.search(re.escape(pattern), text, flags=re.IGNORECASE):
+        if _legal_name_pattern(pattern).search(text):
             # Omit the matched substring: the receipt must never re-emit the leak.
             return PublicationGateChildResult(
                 name="legal_name",
@@ -422,68 +423,72 @@ def _artifact_publication_text(artifact: PreprintArtifact) -> str:
 
 
 def _artifact_legal_name_surface(artifact: PreprintArtifact) -> str:
-    """Every authored surface a publisher can render the operator's identity into.
+    """Every authored field a publisher can render the operator's identity into.
 
-    Superset of ``_artifact_publication_text``: appends each co-author's identity
-    fields (``name`` / ``given_names`` / ``family_names`` / ``alias``) plus the
+    Superset of ``_artifact_publication_text``: adds each co-author's identity
+    fields (``name`` / ``given_names`` / ``family_names`` / ``alias``) and the
     other authored fields that reach a public surface — ``slug`` (public URLs /
     filenames / event-ids), ``embed_image_url``, ``source_path``, and
-    ``approved_by_referent`` — each in a separator-normalized form too. Publishers
-    render co-authors into public metadata (Zenodo ``creators``, OSF, CFF
-    ``authors``) even when ``attribution_block`` is empty, so a legal name there
-    leaks identically to one in a byline. The default co-authors carry the
-    referent (``Oudepode`` / ``The Operator`` / ``OTO``), never a legal name; the
-    legal name is injected only at the per-surface formal render, downstream of
-    this gate.
+    ``approved_by_referent``. Publishers render co-authors into public metadata
+    (Zenodo ``creators``, OSF, CFF ``authors``) even when ``attribution_block`` is
+    empty, so a legal name there leaks just like a byline. Fields are newline-joined
+    and matched by :func:`_legal_name_pattern`, whose flexible separator class
+    catches the name however it is rendered: split across separators (``jane-doe``),
+    whitespace (a wrapped ``Jane\\nDoe``), or two adjacent fields. The default
+    co-authors carry the referent (``Oudepode`` / ``The Operator`` / ``OTO``),
+    never a legal name; the legal name is injected only at the per-surface formal
+    render, downstream of this gate.
     """
     parts: list[str] = [_artifact_publication_text(artifact)]
     for author in artifact.co_authors:
-        # The space-joined "given family" form catches a legal name split across a
-        # CFF/Zenodo person entry's given_names/family_names, which the individual
-        # fields would never match as the contiguous configured name.
-        combined = " ".join(p for p in (author.given_names, author.family_names) if p)
         parts.extend(
             field
-            for field in (
-                author.name,
-                author.given_names,
-                author.family_names,
-                author.alias,
-                combined,
-            )
+            for field in (author.name, author.given_names, author.family_names, author.alias)
             if field
         )
-    # Other authored fields that reach public URLs / filenames / event-ids / audit
-    # records (slug, embed image URL, source path, approval referent). Each also
-    # gets a separator-normalized form so a slug/URL like "jane-doe" matches the
-    # configured "Jane Doe" — slugs and paths replace whitespace with separators.
-    for field in (
-        artifact.slug,
-        artifact.embed_image_url,
-        artifact.source_path,
-        artifact.approved_by_referent,
-    ):
-        if field:
-            parts.append(field)
-            parts.append(re.sub(r"[-_/.]+", " ", field))
+    parts.extend(
+        field
+        for field in (
+            artifact.slug,
+            artifact.embed_image_url,
+            artifact.source_path,
+            artifact.approved_by_referent,
+        )
+        if field
+    )
     return "\n".join(part for part in parts if part)
+
+
+def _legal_name_pattern(name: str) -> re.Pattern[str]:
+    """Case-insensitive regex matching the legal name with a flexible separator
+    class between tokens, so detection and redaction both catch the name however a
+    publisher renders it: ``Jane Doe`` (byline), ``jane-doe`` / ``jane_doe`` (slug /
+    URL), ``Jane  Doe`` or a line-wrapped ``Jane\\nDoe`` (prose), or a name split
+    across two adjacent fields. Symmetry is the point — the SAME pattern gates the
+    REJECT and scrubs the receipt, so a detected leak can never survive unredacted.
+    """
+    tokens = [re.escape(token) for token in name.split()]
+    body = r"[-_/.\s]+".join(tokens) if tokens else re.escape(name)
+    return re.compile(body, re.IGNORECASE)
 
 
 _LEGAL_NAME_REDACTION = "[redacted: operator legal name]"
 
 
-def _redact_legal_name(value: object, pattern: str) -> object:
-    """Recursively replace the configured legal name (case-insensitive) with a
-    redaction token in every string of a JSON-serializable receipt structure.
+def _redact_legal_name(value: object, regex: re.Pattern[str]) -> object:
+    """Recursively replace the configured legal name with a redaction token in
+    every string of a JSON-serializable receipt structure, using the SAME
+    flexible-separator pattern as detection so a detected ``jane-doe`` slug is
+    scrubbed too (not just the literal ``Jane Doe``).
 
     Mapping keys (field names) are left intact; only values are scrubbed.
     """
     if isinstance(value, str):
-        return re.sub(re.escape(pattern), _LEGAL_NAME_REDACTION, value, flags=re.IGNORECASE)
+        return regex.sub(_LEGAL_NAME_REDACTION, value)
     if isinstance(value, Mapping):
-        return {key: _redact_legal_name(item, pattern) for key, item in value.items()}
+        return {key: _redact_legal_name(item, regex) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_redact_legal_name(item, pattern) for item in value]
+        return [_redact_legal_name(item, regex) for item in value]
     return value
 
 
@@ -500,7 +505,7 @@ def _redacted_receipt(result: PublicationGateResult) -> PublicationGateResult:
     pattern = os.environ.get(ENV_OPERATOR_LEGAL_NAME, "").strip()
     if not pattern:
         return result
-    scrubbed = _redact_legal_name(result.model_dump(mode="json"), pattern)
+    scrubbed = _redact_legal_name(result.model_dump(mode="json"), _legal_name_pattern(pattern))
     return PublicationGateResult.model_validate(scrubbed)
 
 
