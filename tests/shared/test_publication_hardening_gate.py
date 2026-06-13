@@ -151,8 +151,8 @@ def test_gate_legal_name_guard_warns_when_unconfigured(monkeypatch) -> None:
 
     legal = next(c for c in result.child_results if c.name == "legal_name")
     assert any("unconfigured" in finding for finding in legal.findings)
-    # the disabled-guard warning must also surface on the aggregate receipt
-    assert any("unconfigured" in issue for issue in result.flagged_issues)
+    # advisory, not a decision-affecting flagged issue
+    assert not any("unconfigured" in issue for issue in result.flagged_issues)
     assert result.decision == PublicationGateDecision.PASS
 
 

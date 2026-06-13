@@ -132,17 +132,6 @@ class PublicationHardeningGate:
         )
         decision = _aggregate_decision(child_results)
         flagged = _flagged_issues(child_results)
-        # Surface a disabled legal-name guard at the aggregate level even though
-        # the child PASSes: an operator reviewing the receipt must see the guard
-        # is off, not have it hidden inside child_results.
-        flagged = (
-            *flagged,
-            *(
-                f"legal_name: {finding}"
-                for finding in legal_name_child.findings
-                if "unconfigured" in finding
-            ),
-        )
         override, override_error = _publication_gate_override(artifact)
 
         if override_error:
@@ -215,9 +204,10 @@ class PublicationHardeningGate:
         scanner must read what the author wrote, unchanged.
 
         When the pattern source ``HAPAX_OPERATOR_NAME`` is unconfigured the scan
-        cannot run; the child PASSES but emits a ``legal_name_guard_unconfigured``
-        finding (surfaced to the aggregate receipt by ``evaluate``) so a disabled
-        guard is visible rather than silently no-opping.
+        cannot run; the child PASSES but records a ``legal_name_guard_unconfigured``
+        finding in the gate receipt's ``child_results`` so a disabled guard is
+        visible (advisory, not a decision-affecting flagged issue) rather than
+        silently no-opping.
         """
         pattern = os.environ.get(ENV_OPERATOR_LEGAL_NAME, "").strip()
         if not pattern:
