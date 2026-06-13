@@ -172,3 +172,27 @@ class TestPhase1FailureTransparency:
         failed = verdict.receipt.get("failed_members", [])
         assert {f["model_alias"] for f in failed} == {"opus", "balanced", "gemini-3-pro"}
         assert all("TimeoutError" in f["reason"] for f in failed)
+
+
+class TestSegPrepGateUnblocks:
+    """Pins for the 2026-06-13 seg-prep GATE-1 unblocks (task
+    seg-prep-gate-code-unblocks-20260613). The live seg-prep journal
+    (2026-06-11 23:39) proved healthy members need 9-11 research tool calls;
+    the prior cap of 8 forced members_valid=1/6 -> 0 segments released."""
+
+    def test_research_budget_covers_observed_member_need(self) -> None:
+        from agents.deliberative_council.engine import _RESEARCH_LIMITS
+
+        # Observed live maximum was 11 (mistral); the budget must clear it.
+        assert _RESEARCH_LIMITS.tool_calls_limit >= 12, (
+            "research tool_calls_limit must cover the observed 11-call member "
+            "need + headroom (seg-prep GATE-1 blocker, 2026-06-11 journal)"
+        )
+        assert _RESEARCH_LIMITS.request_limit >= 8
+
+    def test_appendix_fast_alias_resolves_to_served_route(self) -> None:
+        # The appendix-served grounding route is in VALID_LITELLM_ROUTES; the
+        # MODELS alias must exist so agents can select it explicitly rather
+        # than only via the local-fast proxy fallback.
+        assert MODELS.get("appendix-fast") == "appendix-fast"
+        assert MODELS["appendix-fast"] in VALID_LITELLM_ROUTES
