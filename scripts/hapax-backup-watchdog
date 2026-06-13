@@ -134,6 +134,9 @@ if (( ${#FAILURES[@]} > 0 )); then
     notify-send --urgency=critical --app-name="Backup Watchdog" \
         "Backup Health FAIL" "$msg" 2>/dev/null || true
 
+    # Governed incident record alongside the ntfy + desktop channels.
+    "$(dirname "$(readlink -f "$0")")/hapax-alert" high "Backup Health FAIL" "$msg" --tag backup --record-only
+
     exit 1
 else
     log "BACKUP HEALTH: ALL CHECKS PASSED"

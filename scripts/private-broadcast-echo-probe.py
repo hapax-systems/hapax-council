@@ -232,6 +232,27 @@ def post_ntfy_alert(
         subprocess.run(cmd, check=True, timeout=5)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         return False, f"ntfy POST failed: {exc}"
+    # A private→broadcast leak is a consent/privacy incident
+    # (interpersonal_transparency axiom), so it MUST create a governed P0
+    # record — not only an ntfy ping. Record alongside the ntfy channel.
+    alert = Path(__file__).resolve().parent / "hapax-alert"
+    if alert.exists():
+        try:
+            subprocess.run(
+                [
+                    str(alert),
+                    "urgent",
+                    "audio private→broadcast leak suspect",
+                    body,
+                    "--tag",
+                    "audio",
+                    "--record-only",
+                ],
+                check=False,
+                timeout=5,
+            )
+        except subprocess.TimeoutExpired:
+            pass
     return True, None
 
 

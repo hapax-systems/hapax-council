@@ -307,6 +307,8 @@ check_symlink_drift() {
                 -H "Tags: rotating_light" \
                 -d "$msg — repoint via the fix-deploy-symlink-skew runbook: re-run systemd/scripts/install-units.sh + hapax-post-merge-deploy from the canonical origin/main worktree." \
                 "${NTFY_BASE_URL:-http://localhost:8090}/hapax-build" 2>/dev/null || true
+            # Governed incident record alongside the ntfy channel.
+            "$(dirname "$(readlink -f "$0")")/hapax-alert" high "deploy symlink drift" "$msg" --tag deploy --record-only
             mkdir -p "$state_dir" 2>/dev/null || true
             printf '%s\n' "$sig" > "$notified_file" 2>/dev/null || true
         fi

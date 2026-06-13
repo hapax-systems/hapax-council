@@ -579,6 +579,8 @@ for session in "${!IDLE_LANES[@]}"; do
             -H "Priority: high" \
             -H "Tags: warning" \
             "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+        # Governed incident record alongside the ntfy channel.
+        "$(dirname "$(readlink -f "$0")")/hapax-alert" high "Lane dispatch failure" "failed to dispatch $lane ($platform) after ${idle_s}s idle" --tag lane --record-only
     fi
 done
 fi

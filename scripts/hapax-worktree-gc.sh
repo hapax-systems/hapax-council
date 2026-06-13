@@ -85,6 +85,8 @@ send_ntfy_alert() {
         --data-binary "$body" \
         "$ntfy_url" >/dev/null 2>&1 || \
         printf 'hapax-worktree-gc: ntfy alert failed for %s\n' "$ntfy_url" >&2
+    # Governed incident record alongside the ntfy channel.
+    "$(dirname "$(readlink -f "$0")")/hapax-alert" high "Hapax stale unmerged worktrees" "$body" --tag worktree --record-only
 }
 
 repo="${HAPAX_WORKTREE_GC_REPO:-$HOME/projects/hapax-council}"

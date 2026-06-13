@@ -188,6 +188,8 @@ if [ "$divergent" -gt 0 ] && command -v curl >/dev/null 2>&1; then
     -H "Tags: warning,sound" \
     -d "Runbook: docs/runbooks/audio-incidents.md#broadcast-low" \
     "${NTFY_BASE%/}/${NTFY_TOPIC}" 2>/dev/null || true
+  # Governed incident record alongside the ntfy channel.
+  "$(dirname "$(readlink -f "$0")")/hapax-alert" high "audio stage divergence ($divergent of $total_checked)" "Runbook: docs/runbooks/audio-incidents.md#broadcast-low" --tag audio --record-only
 fi
 
 echo "audio-stage-check: $total_checked stages checked, $divergent diverged (mode=$mode_label)"
