@@ -419,19 +419,51 @@ class TestTickIntegration:
         detector stays silent — the circuit breaker already escalated, so we must
         not double-escalate the same root cause."""
         coord = self._make_coordinator()
-        coord._refusal_ledger.starvation_horizon_s = 0.0
+        # Horizon above the K-tick pre-cooldown window (3 ticks * 30s) so the
+        # uncooled ticks before the circuit breaker engages cannot themselves fire
+        # a starvation page — otherwise the later cooldown would reset
+        # starvation_escalated and hide that an extra operator page went out.
+        coord._refusal_ledger.starvation_horizon_s = 120.0
         lanes = _make_lanes(LANE_ALPHA)
         fail = _failing_dispatch_result(DETERMINISTIC_REASON)
         now = 70_000.0
 
-        # Cool the only offered task, then keep ticking long past the horizon.
         for _i in range(DEFAULT_K + 5):
             now += 30.0
             self._run_tick(coord, [TASK_A], lanes, fail, tmp_path, now=now)
 
         assert coord._refusal_ledger.any_cooldown_for_task("task-a", now=now)
-        # Only the circuit-breaker escalation fired; no starvation escalation.
         assert coord._refusal_ledger.stats(now=now)["starvation_escalated"] is False
+        # Exactly ONE escalation total — the circuit breaker — and no starvation
+        # page slipped out (call_count would be 2 if it had).
+        assert coord._refusal_ledger._escalate_fn.call_count == 1
+
+    def test_transient_cooldown_still_drives_starvation(self, tmp_path: Path) -> None:
+        """A task stuck in a TRANSIENT cooldown (timeouts → K=10, no escalation)
+        must still drive the starvation horizon. The circuit breaker never paged
+        for it, so discounting it from starvation would drop it silently — neither
+        escalated nor surfaced (review-dossier critical, codex-1)."""
+        coord = self._make_coordinator()
+        coord._refusal_ledger.transient_k = 2  # cool transiently fast for the test
+        coord._refusal_ledger.starvation_horizon_s = 60.0
+        lanes = _make_lanes(LANE_ALPHA)  # idle lane present → capacity exists
+        timeout = subprocess.TimeoutExpired(cmd=["dispatch"], timeout=10)
+        now = 130_000.0
+
+        # Drive the task into a transient cooldown, then keep ticking past horizon.
+        for _i in range(5):
+            now += 30.0
+            self._run_tick(coord, [TASK_A], lanes, timeout, tmp_path, now=now)
+
+        # The task IS cooled, but transiently (no circuit-breaker escalation)...
+        assert coord._refusal_ledger.any_cooldown_for_task("task-a", now=now)
+        assert not coord._refusal_ledger.any_cooldown_for_task(
+            "task-a", escalated_only=True, now=now
+        )
+        # ...so starvation MUST have fired (it would not under the old discount).
+        assert coord._refusal_ledger.stats(now=now)["starvation_escalated"] is True
+        title = coord._refusal_ledger._escalate_fn.call_args.args[0]
+        assert "starvation" in title.lower()
 
     def test_legacy_scheduler_cooled_pair_does_not_block_other_work(self, tmp_path: Path) -> None:
         """Regression for the review-dossier critical (codex-1): under the legacy

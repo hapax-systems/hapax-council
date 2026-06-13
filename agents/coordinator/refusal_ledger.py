@@ -59,10 +59,35 @@ _TRANSIENT_MARKERS = frozenset(
     }
 )
 
+# An explicit route-policy / validation block is DETERMINISTIC even if its text
+# happens to mention a transient marker (e.g. "route policy refuse: upstream
+# timeout"). Deterministic precedence prevents a substring collision from
+# silently demoting such a refusal to the transient class (K=10, no escalation),
+# which would defeat the circuit breaker the no-spin law exists to provide.
+_DETERMINISTIC_MARKERS = frozenset(
+    {
+        "blocked",
+        "route policy",
+        "policy refuse",
+        "refuse:",
+        "validation",
+        "not authorized",
+        "consent",
+    }
+)
+
 
 def is_transient_reason(reason: str) -> bool:
-    """True if the refusal reason is transient (timeouts, connection errors)."""
+    """True if the refusal reason is transient (timeouts, connection errors).
+
+    Deterministic markers take precedence: a reason that is an explicit policy or
+    validation block is never transient, even if it also contains a transient
+    substring — otherwise a route-policy refusal mentioning "timeout" would be
+    misclassified as self-healing and never escalate.
+    """
     reason_lower = reason.lower()
+    if any(marker in reason_lower for marker in _DETERMINISTIC_MARKERS):
+        return False
     return any(marker.lower() in reason_lower for marker in _TRANSIENT_MARKERS)
 
 
@@ -191,17 +216,24 @@ class DispatchRefusalLedger:
         """True if any refusal triple for this (task_id, lane) is in cooldown."""
         return self.is_cooled_down(task_id, lane, now=now)
 
-    def any_cooldown_for_task(self, task_id: str, *, now: float | None = None) -> bool:
-        """True if ANY (task_id, *, *) triple is in cooldown on any lane.
+    def any_cooldown_for_task(
+        self, task_id: str, *, escalated_only: bool = False, now: float | None = None
+    ) -> bool:
+        """True if a (task_id, *, *) triple is in cooldown on any lane.
 
-        Used by the starvation detector to tell a task the circuit breaker is
-        already holding (its own escalation has fired) from a task that is
-        genuinely starving (offered, undispatched, but not in cooldown).
+        With ``escalated_only=True`` only cooldowns that have already fired their
+        circuit-breaker escalation count. This is what the starvation detector
+        uses to discount offered work: a deterministic refusal past K already
+        paged the operator, so counting it as starvation would double-escalate.
+        A *transient* cooldown (timeouts: K=10, no escalation) does NOT qualify —
+        nobody was paged, so a task stuck transiently must still drive the
+        starvation horizon rather than being silently discounted.
         """
         now = now if now is not None else time.monotonic()
         for key, entry in self._entries.items():
             if key[0] == task_id and entry.cooldown_until > now:
-                return True
+                if not escalated_only or entry.escalated:
+                    return True
         return False
 
     def clear(self, task_id: str | None = None) -> None:

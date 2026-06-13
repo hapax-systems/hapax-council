@@ -197,6 +197,15 @@ class TestRefusalClassification:
     def test_connection_refused_is_transient(self) -> None:
         assert is_transient_reason("connection refused on port 8051")
 
+    def test_deterministic_marker_overrides_transient_substring(self) -> None:
+        """A policy/validation block that happens to mention a transient marker is
+        still deterministic — the substring collision must not demote it to the
+        transient class (K=10, no escalation) and defeat the circuit breaker."""
+        assert not is_transient_reason("BLOCKED: route policy refuse: upstream connection timeout")
+        assert not is_transient_reason("validation failed: temporary table missing")
+        # A bare transient reason with no deterministic marker stays transient.
+        assert is_transient_reason("TimeoutExpired: dispatch timed out after 10s")
+
 
 # ── K threshold and cooldown mechanics ────────────────────────────────────────
 
@@ -436,6 +445,32 @@ class TestAnyCooldownForTask:
         assert ledger.any_cooldown_for_task("t1", now=101.0)
         # Past the first backoff window the task is no longer held.
         assert not ledger.any_cooldown_for_task("t1", now=100.0 + BACKOFF_BASE_S + 1)
+
+    def test_escalated_only_ignores_transient_cooldown(self) -> None:
+        """escalated_only counts a deterministic (escalated) cooldown but NOT a
+        transient one — the starvation detector must not discount a transiently
+        stuck task that was never paged."""
+        ledger, _ = make_ledger(k=1)
+        ledger.transient_k = 1
+        # Deterministic refusal → escalated cooldown.
+        ledger.record_refusal("det", "lane-a", "BLOCKED: route policy refuse: x", now=100.0)
+        # Transient refusal → cooldown, but NOT escalated.
+        ledger.record_refusal("trans", "lane-a", "TimeoutExpired: timed out", now=100.0)
+
+        assert ledger.any_cooldown_for_task("det", now=100.5)
+        assert ledger.any_cooldown_for_task("det", escalated_only=True, now=100.5)
+        # Transient: held, but not an escalated hold.
+        assert ledger.any_cooldown_for_task("trans", now=100.5)
+        assert not ledger.any_cooldown_for_task("trans", escalated_only=True, now=100.5)
+
+    def test_is_cooled_down_reason_specific_branch(self) -> None:
+        """is_cooled_down with an explicit reason checks only that triple (the
+        reason-specific branch), independent of other reasons on the pair."""
+        ledger, _ = make_ledger(k=1)
+        ledger.record_refusal("t1", "lane-a", "reason-A", now=100.0)
+        assert ledger.is_cooled_down("t1", "lane-a", "reason-A", now=100.5)
+        # A different reason on the same pair is not in cooldown.
+        assert not ledger.is_cooled_down("t1", "lane-a", "reason-B", now=100.5)
 
 
 # ── escalation body content ───────────────────────────────────────────────────

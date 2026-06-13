@@ -326,10 +326,16 @@ class Coordinator:
         # page the operator for a healthy fleet (executive_function noise). The
         # 2026-06-12 incident had idle_lanes=1, dispatched=0: capacity present,
         # dispatch still failing — that is the starvation this detector is for.
+        # Discount only tasks held by an ESCALATED cooldown (deterministic refusal
+        # past K, already paged); a transient cooldown (timeouts, no escalation)
+        # must still drive the horizon, else a task stuck on transient failures is
+        # silently dropped — neither escalated nor counted.
         cooled_offered = sum(
             1
             for t in offered
-            if self._refusal_ledger.any_cooldown_for_task(t.task_id, now=now_mono)
+            if self._refusal_ledger.any_cooldown_for_task(
+                t.task_id, escalated_only=True, now=now_mono
+            )
         )
         starvation_offered = (len(offered) - cooled_offered) if idle_lanes else 0
         self._refusal_ledger.tick_starvation(starvation_offered, dispatches, now=now_mono)
