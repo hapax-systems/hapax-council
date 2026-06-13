@@ -36,10 +36,20 @@ and never writes it back to source.
 > artifact — title, abstract, body, `attribution_block`, **and
 > co-author identity fields** (`name`/`given_names`/`family_names`/
 > `alias`, which publishers render into Zenodo creators / CFF authors).
-> Use the canonical referent (`Oudepode` / `The Operator` / `OTO`) in
-> authored fields. The legal name is interpolated **only at the
-> per-surface formal render**, downstream of the gate, on the formal
-> surfaces that warrant it — you never type it into the artifact.
+> Use a canonical referent (`Oudepode` / `The Operator` /
+> `Oudepode The Operator` / `OTO`, from
+> `shared.operator_referent.REFERENTS`) in authored fields. The legal
+> name is interpolated **only at the per-surface formal render**,
+> downstream of the gate, on the formal surfaces that warrant it — you
+> never type it into the artifact.
+>
+> The guard is **inert until `HAPAX_OPERATOR_NAME` is provisioned** — it
+> PASSes with an advisory `legal_name_guard_unconfigured` finding when
+> unset (distinct from the renderer's "If unset" fallback above), so
+> provision it before relying on this protection.
+>
+> Recheck this claim:
+> `uv run pytest tests/shared/test_publication_hardening_gate.py -q`
 
 **If unset:** the renderer falls back to the placeholder
 `"The Operator"` and emits a warning. Useful for testing; not for

@@ -142,7 +142,7 @@ class PublicationHardeningGate:
         elif decision == PublicationGateDecision.REJECT and override is not None:
             flagged = (*flagged, "operator_override_ignored_for_reject")
 
-        return PublicationGateResult(
+        result = PublicationGateResult(
             decision=decision,
             generated_at=datetime.now(UTC).isoformat(),
             child_results=child_results,
@@ -152,6 +152,7 @@ class PublicationHardeningGate:
             else None,
             review_report=review_report.to_frontmatter(),
         )
+        return _redacted_receipt(result)
 
     def _lint_child(
         self,
@@ -221,7 +222,10 @@ class PublicationHardeningGate:
             return PublicationGateChildResult(
                 name="legal_name",
                 decision=PublicationGateDecision.PASS,
-                findings=("legal_name_guard_unconfigured: HAPAX_OPERATOR_NAME unset",),
+                findings=(
+                    "legal_name_guard_unconfigured: HAPAX_OPERATOR_NAME unset — "
+                    "provision it (e.g. via `pass`) to arm the corporate_boundary guard",
+                ),
             )
         if re.search(re.escape(pattern), text, flags=re.IGNORECASE):
             # Omit the matched substring: the receipt must never re-emit the leak.
@@ -430,6 +434,41 @@ def _artifact_legal_name_surface(artifact: PreprintArtifact) -> str:
             if field
         )
     return "\n".join(part for part in parts if part)
+
+
+_LEGAL_NAME_REDACTION = "[redacted: operator legal name]"
+
+
+def _redact_legal_name(value: object, pattern: str) -> object:
+    """Recursively replace the configured legal name (case-insensitive) with a
+    redaction token in every string of a JSON-serializable receipt structure.
+
+    Mapping keys (field names) are left intact; only values are scrubbed.
+    """
+    if isinstance(value, str):
+        return re.sub(re.escape(pattern), _LEGAL_NAME_REDACTION, value, flags=re.IGNORECASE)
+    if isinstance(value, Mapping):
+        return {key: _redact_legal_name(item, pattern) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_legal_name(item, pattern) for item in value]
+    return value
+
+
+def _redacted_receipt(result: PublicationGateResult) -> PublicationGateResult:
+    """Final chokepoint: scrub the configured operator legal name from every string
+    in the serialized receipt before it is returned.
+
+    The legal-name child omits the match from its OWN finding, but the same name can
+    still reach the receipt through an operator override ``reason`` or a
+    reviewer-echoed ``review_report`` (the production ``ReviewPass`` returns claim
+    text). Redacting the serialized form closes the re-emission CLASS for every
+    field at once — including fields added later — rather than each instance.
+    """
+    pattern = os.environ.get(ENV_OPERATOR_LEGAL_NAME, "").strip()
+    if not pattern:
+        return result
+    scrubbed = _redact_legal_name(result.model_dump(mode="json"), pattern)
+    return PublicationGateResult.model_validate(scrubbed)
 
 
 def _artifact_author_model(artifact: PreprintArtifact) -> str | None:

@@ -203,6 +203,43 @@ def test_gate_reject_receipt_omits_leaked_name(monkeypatch) -> None:
     assert "Jane Doe" not in str(result.to_frontmatter())
 
 
+def test_gate_redacts_legal_name_from_review_report(monkeypatch) -> None:
+    """Receipt non-re-emission, real path: a reviewer that echoes the artifact text
+    (the production ReviewPass returns claim text) must not leak the legal name into
+    review_report. The receipt-level redaction chokepoint scrubs it — the stubbed
+    sibling in the previous canary never echoed, so this exercises the live vector."""
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Jane Doe")
+    gate = PublicationHardeningGate(
+        repo_root=Path.cwd(),
+        review_pass=_ReviewPass(confidence=0.99, flagged=("claim echoes Jane Doe",)),
+        lint_runner=lambda _text, _source_path: (),
+        entity_checker=lambda _text: (),
+        codebase_verifier=lambda _text, _context: CodebaseVerificationReport(
+            decision=CodebaseDecision.PASS
+        ),
+    )
+    result = gate.evaluate(_artifact(attribution_block="Jane Doe (distributor)"))
+
+    assert result.decision == PublicationGateDecision.REJECT
+    assert "Jane Doe" not in str(result.to_frontmatter())
+
+
+def test_gate_redacts_legal_name_from_override_reason(monkeypatch) -> None:
+    """An authorized HOLD override whose free-text reason contains the legal name
+    must not serialize it into the receipt. The override still applies (the artifact
+    text is clean, so the legal-name child PASSes); only the leaked name is redacted."""
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Jane Doe")
+    artifact = _artifact(
+        publication_gate_override={"by_referent": "Oudepode", "reason": "cleared by Jane Doe"},
+    )
+    result = _gate(review_confidence=0.2).evaluate(artifact)
+
+    assert result.decision == PublicationGateDecision.OPERATOR_OVERRIDDEN_HOLD
+    assert result.passes()
+    assert result.override is not None
+    assert "Jane Doe" not in str(result.to_frontmatter())
+
+
 def test_gate_override_rejects_unauthorized_referent() -> None:
     """A HOLD override authored by a non-ratified referent is invalid: the
     HOLD stands and the receipt flags the unauthorized referent."""
