@@ -48,6 +48,7 @@ class DMNDaemon:
         self._running = True
         self._start_time = time.monotonic()
         self._feedback_cursor: int = 0  # byte offset into impingements.jsonl
+        self._last_aperture_s: float = 0.0
 
     async def run(self) -> None:
         """Main loop — never stops unless signalled."""
@@ -61,6 +62,22 @@ class DMNDaemon:
                 self._consume_fortress_feedback()
             except Exception:
                 log.exception("DMN tick failed")
+
+            # DASEIN aperture re-bind: write the unified cross-aperture snapshot
+            # (~10s) so the broadcast/voice/drift apertures can see "what the rest
+            # of me is doing". The 3 readers (shared/context.py,
+            # drift_detector/system_prompt.py, hapax_daimonion/phenomenal_context.py)
+            # were silently empty — write_aperture_snapshot() had ZERO callers
+            # (cognitive-core audit 2026-06-13: split-by-omission, the one R5 FAIL).
+            now_m = time.monotonic()
+            if now_m - self._last_aperture_s >= 10.0:
+                self._last_aperture_s = now_m
+                try:
+                    from shared.aperture_state import write_aperture_snapshot
+
+                    write_aperture_snapshot()
+                except Exception:
+                    log.warning("aperture snapshot write failed", exc_info=True)
 
             await asyncio.sleep(LOOP_TICK_S)
 
