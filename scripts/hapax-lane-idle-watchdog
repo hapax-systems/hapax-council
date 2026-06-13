@@ -641,4 +641,6 @@ if [ "$idle_count" -ge 3 ] && [ "$suppressed_appendix_only" -lt "$idle_count" ];
         -H "Priority: high" \
         -H "Tags: warning,robot" \
         "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+    # Governed incident record alongside the ntfy channel.
+    "$(dirname "$(readlink -f "$0")")/hapax-alert" high "Multiple lanes idle" "$idle_count lanes idle — $idle_summary" --tag lane --record-only
 fi

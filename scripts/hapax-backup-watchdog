@@ -131,11 +131,11 @@ if (( ${#FAILURES[@]} > 0 )); then
         -d "$msg" \
         "$NTFY_URL" >/dev/null 2>&1 || log "WARN: ntfy notification failed"
 
-    notify-send --urgency=critical --app-name="Backup Watchdog" \
-        "Backup Health FAIL" "$msg" 2>/dev/null || true
-
-    # Governed incident record alongside the ntfy + desktop channels.
-    "$(dirname "$(readlink -f "$0")")/hapax-alert" high "Backup Health FAIL" "$msg" --tag backup --record-only
+    # Governed incident record + ONE replace_id-coalesced desktop pointer via
+    # intake (NOT a raw notify-send, which stacks un-coalesced in the mako queue
+    # on every failed run). Full hapax-alert (no --record-only) so intake emits
+    # the bounded desktop pointer.
+    "$(dirname "$(readlink -f "$0")")/hapax-alert" high "Backup Health FAIL" "$msg" --tag backup
 
     exit 1
 else

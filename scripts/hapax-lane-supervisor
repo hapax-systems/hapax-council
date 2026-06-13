@@ -571,6 +571,8 @@ progress_ntfy() {
   curl -sf -d "Lane progress watchdog: lane $1 stalled on $2 — $3" \
     -H "Title: Lane resume exhausted" -H "Priority: high" -H "Tags: warning,robot" \
     "$PROGRESS_NTFY_URL/$PROGRESS_NTFY_TOPIC" >/dev/null 2>&1 || true
+  # Governed incident record alongside the ntfy channel.
+  "$(dirname "$(readlink -f "$0")")/hapax-alert" high "Lane resume exhausted" "lane $1 stalled on $2 — $3" --tag lane --record-only
 }
 
 emit_progress_metrics() {

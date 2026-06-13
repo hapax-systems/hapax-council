@@ -46,18 +46,21 @@ case "$PRIORITY" in
   urgent | high)
     EXTRA=(--technical)
     [ "$RECORD_ONLY" = "1" ] && EXTRA+=(--no-desktop)
-    if [ -x "$INTAKE" ] \
-      && "$INTAKE" notification \
+    if [ -x "$INTAKE" ]; then
+      # Capture the intake CLI's stderr (its repair guidance) instead of
+      # discarding it, so a failure carries a next action (executive_function).
+      if intake_err="$("$INTAKE" notification \
            --title "$TITLE" \
            --message "$MESSAGE" \
            --priority "$PRIORITY" \
            --tag "$TAG" \
-           "${EXTRA[@]}" >/dev/null 2>&1; then
-      exit 0
+           "${EXTRA[@]}" 2>&1 >/dev/null)"; then
+        exit 0
+      fi
+      logger -t hapax-alert "p0 intake FAILED for '${TITLE}': ${intake_err:-<no stderr>} — next action: rerun '${INTAKE} notification --title ... --priority ${PRIORITY}' and inspect ~/.cache/hapax/p0-incident-intake/state.json + events.jsonl" 2>/dev/null || true
+    else
+      logger -t hapax-alert "p0 intake unavailable (missing/not-executable: ${INTAKE}) for '${TITLE}' — next action: deploy scripts/hapax-p0-incident-intake to that path" 2>/dev/null || true
     fi
-    # Governed path unavailable for a real incident — log the gap so the
-    # degrade-to-desktop below is attributable.
-    logger -t hapax-alert "p0 intake unavailable for: ${TITLE}" 2>/dev/null || true
     ;;
 esac
 
