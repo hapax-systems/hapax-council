@@ -1,0 +1,342 @@
+"""Integration tests: Coordinator.tick() ↔ refusal ledger ↔ escalation.
+
+These tests exercise the REAL Coordinator.tick() path with mocked I/O
+(task scanning, lane checking, subprocess dispatch, ntfy), verifying
+that the no-spin law behaves correctly through the actual coordinator
+dispatch loop — not just the standalone ledger.
+
+Addresses review-dossier criticals:
+  - gemini-1: "Regression test is coverage theater that bypasses Coordinator.tick()"
+  - codex-1: "Storm coverage bypasses the coordinator path that regressed"
+  - claude-1: "No integration test for Coordinator.tick() ↔ ledger path"
+  - gemini-1: "_ntfy_escalate likely swallows NameError for send_notification"
+  - codex-1: "Empty dispatcher stderr bypasses the refusal ledger"
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from agents.coordinator.core import (
+    Coordinator,
+    LaneState,
+    Task,
+    _ntfy_escalate,
+)
+from agents.coordinator.refusal_ledger import DEFAULT_K
+
+# ── fixtures ──────────────────────────────────────────────────────────────────
+
+TASK_A = Task(
+    task_id="task-a",
+    title="Task A",
+    status="offered",
+    assigned_to="unassigned",
+    wsjf=10.0,
+    effort_class="standard",
+    platform_suitability=("any",),
+    quality_floor="deterministic_ok",
+    path=Path("/fake/task-a.md"),
+    created_at=0.0,
+)
+
+LANE_ALPHA = LaneState(
+    role="alpha",
+    session="hapax-claude-alpha",
+    platform="claude",
+    alive=True,
+    idle=True,
+    claimed_task=None,
+)
+
+DETERMINISTIC_REASON = "BLOCKED: route policy refuse: runtime_actuation_receipt_absent"
+
+
+def _make_lanes(lane: LaneState) -> dict[str, LaneState]:
+    return {lane.role: lane}
+
+
+def _failing_dispatch_result(reason: str, returncode: int = 10) -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout="", stderr=reason)
+
+
+def _success_dispatch_result() -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+
+# ── _ntfy_escalate tests (critical: import + exception handling) ──────────────
+
+
+class TestNtfyEscalate:
+    """Verify _ntfy_escalate calls send_notification correctly and handles errors."""
+
+    @patch("agents.coordinator.core.send_notification")
+    def test_calls_send_notification(self, mock_send: MagicMock) -> None:
+        """_ntfy_escalate wires through to send_notification with correct args."""
+        _ntfy_escalate("title-x", "body-y")
+        mock_send.assert_called_once_with(
+            "title-x", "body-y", priority="high", tags=["sdlc", "no-spin"]
+        )
+
+    @patch("agents.coordinator.core.send_notification", side_effect=ConnectionError("ntfy down"))
+    def test_swallows_exception(self, mock_send: MagicMock) -> None:
+        """_ntfy_escalate must not raise even when send_notification fails."""
+        _ntfy_escalate("title", "body")  # must not raise
+        mock_send.assert_called_once()
+
+    @patch("agents.coordinator.core.send_notification", side_effect=RuntimeError("boom"))
+    def test_swallows_runtime_error(self, mock_send: MagicMock) -> None:
+        """Even RuntimeError is caught — the tick must never abort on ntfy failure."""
+        _ntfy_escalate("title", "body")
+        mock_send.assert_called_once()
+
+
+# ── Coordinator.tick() integration tests ──────────────────────────────────────
+
+
+class TestTickIntegration:
+    """Exercise Coordinator.tick() with mocked I/O to verify the full
+    tick → _dispatch → refusal_ledger path."""
+
+    def _make_coordinator(self) -> Coordinator:
+        coord = Coordinator()
+        # Replace the ntfy escalation with a recorder.
+        coord._refusal_ledger._escalate_fn = MagicMock()
+        return coord
+
+    def _run_tick(
+        self,
+        coord: Coordinator,
+        tasks: list[Task],
+        lanes: dict[str, LaneState],
+        dispatch_result: subprocess.CompletedProcess | Exception,
+        tmp_path: Path,
+    ) -> None:
+        """Run one Coordinator.tick() with mocked internals."""
+        with (
+            patch.object(coord, "_scan_tasks", return_value=tasks),
+            patch.object(coord, "_check_lanes", return_value=lanes),
+            patch("agents.coordinator.core.admission_state") as mock_admission,
+            patch("agents.coordinator.core.SHM_DIR", tmp_path / "shm"),
+            patch("agents.coordinator.core.SHM_FILE", tmp_path / "shm" / "state.json"),
+            patch("subprocess.run") as mock_run,
+        ):
+            mock_admission.return_value = MagicMock(state="open")
+            if isinstance(dispatch_result, Exception):
+                mock_run.side_effect = dispatch_result
+            else:
+                mock_run.return_value = dispatch_result
+            coord.tick()
+
+    def test_deterministic_refusal_enters_cooldown_after_k(self, tmp_path: Path) -> None:
+        """After K identical deterministic dispatch failures through tick(),
+        the refusal ledger enters cooldown and the escalation fires."""
+        coord = self._make_coordinator()
+        tasks = [TASK_A]
+        lanes = _make_lanes(LANE_ALPHA)
+        fail = _failing_dispatch_result(DETERMINISTIC_REASON)
+
+        for _i in range(DEFAULT_K):
+            self._run_tick(coord, tasks, lanes, fail, tmp_path)
+
+        # After K ticks, the pair should be in cooldown.
+        ledger = coord._refusal_ledger
+        assert ledger.any_cooldown_for_pair("task-a", "alpha")
+        # Exactly 1 escalation should have fired.
+        assert ledger._escalate_fn.call_count == 1
+
+    def test_cooldown_skips_dispatch(self, tmp_path: Path) -> None:
+        """Once in cooldown, subsequent ticks skip the dispatch call entirely."""
+        coord = self._make_coordinator()
+        tasks = [TASK_A]
+        lanes = _make_lanes(LANE_ALPHA)
+        fail = _failing_dispatch_result(DETERMINISTIC_REASON)
+
+        # Drive K refusals to enter cooldown.
+        for _i in range(DEFAULT_K):
+            self._run_tick(coord, tasks, lanes, fail, tmp_path)
+
+        # Now run additional ticks — dispatch should NOT be called.
+        with (
+            patch.object(coord, "_scan_tasks", return_value=tasks),
+            patch.object(coord, "_check_lanes", return_value=lanes),
+            patch("agents.coordinator.core.admission_state") as mock_admission,
+            patch("agents.coordinator.core.SHM_DIR", tmp_path / "shm"),
+            patch("agents.coordinator.core.SHM_FILE", tmp_path / "shm" / "state.json"),
+            patch("subprocess.run") as mock_run,
+        ):
+            mock_admission.return_value = MagicMock(state="open")
+            mock_run.return_value = fail
+            coord.tick()
+            # The dispatch should have been skipped because of cooldown.
+            mock_run.assert_not_called()
+
+    def test_success_clears_refusal_state(self, tmp_path: Path) -> None:
+        """A successful dispatch clears all refusal state for that task."""
+        coord = self._make_coordinator()
+        tasks = [TASK_A]
+        lanes = _make_lanes(LANE_ALPHA)
+        fail = _failing_dispatch_result(DETERMINISTIC_REASON)
+
+        # Accumulate refusals (but not enough for cooldown).
+        for _i in range(DEFAULT_K - 1):
+            self._run_tick(coord, tasks, lanes, fail, tmp_path)
+
+        # Now dispatch succeeds.
+        success = _success_dispatch_result()
+        self._run_tick(coord, tasks, lanes, success, tmp_path)
+
+        # Refusal state should be cleared.
+        ledger = coord._refusal_ledger
+        assert not ledger.any_cooldown_for_pair("task-a", "alpha")
+        assert len(ledger._entries) == 0
+
+    def test_empty_stderr_nonzero_exit_is_tracked(self, tmp_path: Path) -> None:
+        """A nonzero exit with empty stderr must still be tracked by the
+        refusal ledger (the 'dispatch_exit_N' fallback reason)."""
+        coord = self._make_coordinator()
+        tasks = [TASK_A]
+        lanes = _make_lanes(LANE_ALPHA)
+        # Empty stderr, nonzero exit.
+        fail = _failing_dispatch_result("", returncode=2)
+
+        self._run_tick(coord, tasks, lanes, fail, tmp_path)
+
+        ledger = coord._refusal_ledger
+        # Must have exactly one entry with the fallback reason.
+        assert len(ledger._entries) == 1
+        key = next(iter(ledger._entries))
+        assert key[2] == "dispatch_exit_2"
+
+    def test_shm_state_includes_refusal_stats(self, tmp_path: Path) -> None:
+        """The SHM state.json must include the refusal_ledger section after a
+        tick with refusals."""
+        coord = self._make_coordinator()
+        tasks = [TASK_A]
+        lanes = _make_lanes(LANE_ALPHA)
+        fail = _failing_dispatch_result(DETERMINISTIC_REASON)
+
+        shm = tmp_path / "shm"
+        state_file = shm / "state.json"
+
+        with (
+            patch.object(coord, "_scan_tasks", return_value=tasks),
+            patch.object(coord, "_check_lanes", return_value=lanes),
+            patch("agents.coordinator.core.admission_state") as mock_admission,
+            patch("agents.coordinator.core.SHM_DIR", shm),
+            patch("agents.coordinator.core.SHM_FILE", state_file),
+            patch("subprocess.run", return_value=fail),
+        ):
+            mock_admission.return_value = MagicMock(state="open")
+            coord.tick()
+
+        state = json.loads(state_file.read_text())
+        assert "refusal_ledger" in state
+        assert state["refusal_ledger"]["refusal_triples"] == 1
+
+    def test_timeout_exception_tracked_as_transient(self, tmp_path: Path) -> None:
+        """A TimeoutExpired exception from subprocess.run is tracked as a
+        transient refusal."""
+        coord = self._make_coordinator()
+        tasks = [TASK_A]
+        lanes = _make_lanes(LANE_ALPHA)
+        timeout = subprocess.TimeoutExpired(cmd=["dispatch"], timeout=10)
+
+        self._run_tick(coord, tasks, lanes, timeout, tmp_path)
+
+        ledger = coord._refusal_ledger
+        assert len(ledger._entries) == 1
+        entry = next(iter(ledger._entries.values()))
+        assert entry.transient is True
+
+    def test_starvation_detected_through_tick(self, tmp_path: Path) -> None:
+        """If offered>0 and dispatched=0 for long enough, starvation escalation fires."""
+        coord = self._make_coordinator()
+        # Use a very short horizon for testing.
+        coord._refusal_ledger.starvation_horizon_s = 0.0
+        tasks = [TASK_A]
+        lanes = _make_lanes(LANE_ALPHA)
+        fail = _failing_dispatch_result(DETERMINISTIC_REASON)
+
+        # First tick starts starvation tracking; second should fire (horizon=0).
+        self._run_tick(coord, tasks, lanes, fail, tmp_path)
+        self._run_tick(coord, tasks, lanes, fail, tmp_path)
+
+        assert coord._refusal_ledger._starvation.escalated
+
+    def test_storm_replay_through_tick(self, tmp_path: Path) -> None:
+        """Replay the 2026-06-12 storm shape through Coordinator.tick().
+        After K ticks all subsequent attempts should be skipped, giving
+        dramatically fewer subprocess.run calls than the 1028 original."""
+        coord = self._make_coordinator()
+        tasks = [TASK_A]
+        lanes = _make_lanes(LANE_ALPHA)
+        fail = _failing_dispatch_result(DETERMINISTIC_REASON)
+
+        subprocess_calls = 0
+        storm_ticks = 50  # enough to demonstrate cooldown; K=3 so only 3 should dispatch
+
+        for _i in range(storm_ticks):
+            with (
+                patch.object(coord, "_scan_tasks", return_value=tasks),
+                patch.object(coord, "_check_lanes", return_value=lanes),
+                patch("agents.coordinator.core.admission_state") as mock_admission,
+                patch("agents.coordinator.core.SHM_DIR", tmp_path / "shm"),
+                patch("agents.coordinator.core.SHM_FILE", tmp_path / "shm" / "state.json"),
+                patch("subprocess.run", return_value=fail) as mock_run,
+            ):
+                mock_admission.return_value = MagicMock(state="open")
+                coord.tick()
+                subprocess_calls += mock_run.call_count
+
+        # The no-spin law should have limited dispatch attempts to K (before
+        # cooldown) plus a few re-probes after cooldown expiry.  With the
+        # default 120s dispatch cooldown between ticks there may be no re-probes
+        # in 50 ticks, so we just check dramatically fewer than 50.
+        assert subprocess_calls <= DEFAULT_K + 5
+        # Exactly 1 escalation.
+        assert coord._refusal_ledger._escalate_fn.call_count == 1
+
+
+# ── hapax-methodology-dispatch retry surface investigation ────────────────────
+
+
+class TestMethodologyDispatchRetrySurface:
+    """Exit predicate clause: 'the same guard rides hapax-methodology-dispatch's
+    retry surface if one exists'.
+
+    Investigation: hapax-methodology-dispatch has NO internal retry surface.
+    It is a single-shot script (dispatch once, exit).  Retries come exclusively
+    from the coordinator daemon tick loop, which the no-spin law now guards.
+
+    This test documents and asserts the finding so future changes that add a
+    retry surface will be caught."""
+
+    def test_no_retry_surface_in_dispatcher(self) -> None:
+        """The hapax-methodology-dispatch script contains no retry/loop logic."""
+        dispatcher = Path.home() / "projects/hapax-council/scripts/hapax-methodology-dispatch"
+        if not dispatcher.exists():
+            # Use the worktree copy if the canonical path doesn't exist.
+            dispatcher = (
+                Path.home() / "projects/hapax-council--epsilon/scripts/hapax-methodology-dispatch"
+            )
+        assert dispatcher.exists(), f"dispatcher not found at {dispatcher}"
+        text = dispatcher.read_text(encoding="utf-8")
+        # The script should not contain retry-loop patterns.
+        import re
+
+        retry_patterns = [
+            r"\bretry\b.*\bloop\b",
+            r"\bwhile\b.*\bretry\b",
+            r"\bmax_retries\b",
+            r"\bretry_count\b",
+        ]
+        for pattern in retry_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            assert match is None, (
+                f"Unexpected retry surface found in hapax-methodology-dispatch: "
+                f"{match.group()} at offset {match.start()}"
+            )

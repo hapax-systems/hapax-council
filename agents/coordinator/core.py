@@ -1,4 +1,11 @@
-"""Core coordinator logic — task queue, lane health, dispatch routing."""
+"""Core coordinator logic — task queue, lane health, dispatch routing.
+
+No-spin law (failure class #9 remediation): the dispatch refusal ledger tracks
+(task_id, lane, reason) triples and enters exponential-backoff cooldown after K
+identical deterministic refusals.  A single ntfy escalation fires at the K
+threshold.  Fleet-wide starvation (offered>0, dispatched=0 for 1h) also triggers
+one escalation.  See agents/coordinator/refusal_ledger.py.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +21,7 @@ from pathlib import Path
 
 import yaml
 
+from agents.coordinator.refusal_ledger import DispatchRefusalLedger
 from shared.dispatch_service_time import (
     AGE_NORM_S,
     QueueLane,
@@ -28,6 +36,14 @@ from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES
 from shared.sdlc_pressure_gate import admission_state
 
 log = logging.getLogger(__name__)
+
+
+def _ntfy_escalate(title: str, body: str) -> None:
+    """Send an ntfy escalation for the no-spin law.  Best-effort; never raises."""
+    try:
+        send_notification(title, body, priority="high", tags=["sdlc", "no-spin"])
+    except Exception:  # noqa: BLE001 — ntfy is best-effort; never block the tick.
+        log.exception("no-spin ntfy escalation failed (continuing)")
 
 
 def pressure_dispatch_budget(
@@ -153,6 +169,11 @@ class Coordinator:
         # per-task-lifetime reoffer counter (process-local); caps the
         # offered→claim→stall→offered loop and escalates to `blocked` past the cap.
         self._reoffer_counts: dict[str, int] = {}
+        # No-spin law: refusal ledger tracks (task, lane, reason) triples and
+        # enters cooldown after K identical deterministic refusals.
+        self._refusal_ledger = DispatchRefusalLedger(
+            _escalate_fn=_ntfy_escalate,
+        )
 
     def tick(self) -> None:
         tasks = self._scan_tasks()
@@ -253,26 +274,50 @@ class Coordinator:
         )
         task_by_id = {t.task_id: t for t in offered}
         lane_by_role = {l.role: l for l in idle_lanes}
+        skipped_cooldown = 0
         for task_id, role in plan:
             task = task_by_id.get(task_id)
             lane = lane_by_role.get(role)
             if task is None or lane is None:
                 continue
-            if self._dispatch(task, lane):
+            # No-spin law: skip if ANY (task, lane, *) triple is in cooldown.
+            if self._refusal_ledger.any_cooldown_for_pair(task_id, role, now=now_mono):
+                skipped_cooldown += 1
+                log.debug(
+                    "no-spin: skipping dispatch %s → %s (in cooldown)",
+                    task_id,
+                    role,
+                )
+                continue
+            success, refusal_reason = self._dispatch(task, lane)
+            if success:
                 self._last_dispatch[role] = now_mono
                 dispatches += 1
+                # Success clears refusal state for this task (the external issue resolved).
+                self._refusal_ledger.clear(task_id)
+            else:
+                # Every failed dispatch is recorded — no silent retries.
+                self._refusal_ledger.record_refusal(task_id, role, refusal_reason, now=now_mono)
 
         state.dispatches_this_tick = dispatches
         state.lanes = {role: _lane_to_dict(l) for role, l in lanes.items()}
-        self._write_state(state)
+
+        # No-spin law: starvation detector (offered>0, dispatched=0 for 1h → escalate).
+        self._refusal_ledger.tick_starvation(len(offered), dispatches, now=now_mono)
+
+        # Surface refusal stats in SHM.
+        refusal_stats = self._refusal_ledger.stats()
+        self._write_state(state, refusal_stats=refusal_stats)
 
         log.info(
-            "tick: offered=%d idle_lanes=%d dispatched=%d alive=%d/%d",
+            "tick: offered=%d idle_lanes=%d dispatched=%d alive=%d/%d cooled=%d skipped=%d",
             len(offered),
             state.lanes_idle,
             dispatches,
             state.lanes_alive,
             state.lanes_total,
+            refusal_stats.get("cooled_down", 0),
+            skipped_cooldown,
         )
 
     def _scan_tasks(self) -> list[Task]:
@@ -304,11 +349,16 @@ class Coordinator:
                 return lane
         return None
 
-    def _dispatch(self, task: Task, lane: LaneState) -> bool:
+    def _dispatch(self, task: Task, lane: LaneState) -> tuple[bool, str]:
+        """Attempt to dispatch a task to a lane.
+
+        Returns (success, refusal_reason).  On success refusal_reason is empty.
+        On failure refusal_reason is the stderr text (for the refusal ledger).
+        """
         dispatcher = Path.home() / "projects/hapax-council/scripts/hapax-methodology-dispatch"
         if not dispatcher.exists():
             log.warning("hapax-methodology-dispatch not found, cannot dispatch to %s", lane.role)
-            return False
+            return False, "dispatcher_not_found"
 
         try:
             result = subprocess.run(
@@ -328,20 +378,26 @@ class Coordinator:
                 capture_output=True,
                 text=True,
             )
-        except (subprocess.TimeoutExpired, OSError) as exc:
+        except subprocess.TimeoutExpired as exc:
+            log.warning("Dispatch to %s timed out: %s", lane.role, exc)
+            return False, f"TimeoutExpired: {exc}"
+        except OSError as exc:
             log.warning("Dispatch to %s failed: %s", lane.role, exc)
-            return False
+            return False, f"OSError: {exc}"
 
         if result.returncode != 0:
+            reason = result.stderr.strip()
+            if not reason:
+                reason = f"dispatch_exit_{result.returncode}"
             log.warning(
                 "Dispatch to %s failed via methodology dispatcher: %s",
                 lane.role,
-                result.stderr.strip(),
+                reason,
             )
-            return False
+            return False, reason
 
         log.info("Dispatched task %s to lane %s", task.task_id, lane.role)
-        return True
+        return True, ""
 
     def _reoffer_stalled(self, lane: LaneState) -> bool:
         """Release a stalled lane's held task back to `offered`/`unassigned`, clear the
@@ -458,7 +514,7 @@ class Coordinator:
             sort_keys=True,
         )
 
-    def _write_state(self, state: CoordinatorState) -> None:
+    def _write_state(self, state: CoordinatorState, *, refusal_stats: dict | None = None) -> None:
         SHM_DIR.mkdir(parents=True, exist_ok=True)
         payload = {
             "timestamp": state.timestamp,
@@ -472,6 +528,8 @@ class Coordinator:
             "reoffers_this_tick": state.reoffers_this_tick,
             "lanes": state.lanes,
         }
+        if refusal_stats:
+            payload["refusal_ledger"] = refusal_stats
         tmp = SHM_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload), encoding="utf-8")
         tmp.rename(SHM_FILE)
