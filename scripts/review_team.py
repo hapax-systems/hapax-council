@@ -418,46 +418,50 @@ def charter_checklist_items(lens: str, lens_dir: Path | None = None) -> tuple[st
 #: Council repo root, for resolving repo-relative finding paths during refutation.
 _REVIEW_REPO_ROOT = Path(__file__).resolve().parents[1]
 
-#: A critical that asserts a DETERMINISTIC, checkable fact can be auto-refuted by
-#: running the check (postmortem 2026-06-13: false "SyntaxError"/"corrupted-file"
-#: criticals jammed PR #4109 across three rounds with no refutation path). The
-#: checks are conservative + fail-safe — only a check that CONTRADICTS the claim
-#: refutes it; any error or inconclusive check leaves the critical standing.
-_SYNTAX_CLAIM_RE = re.compile(r"syntax\s*error|indentation\s*error|invalid python syntax", re.I)
-_MISSING_FILE_CLAIM_RE = re.compile(
-    r"corrupt|malformed filename|invalid filename|missing file|does not exist|no such file", re.I
+#: A critical claiming a literal PYTHON SYNTAX error can be auto-refuted by
+#: py_compile on the cited file — the ONLY auto-refutation safe enough to DROP a
+#: critical, because py_compile is DEFINITIVE for Python syntax and the cited
+#: file IS the artifact the claim is about (postmortem 2026-06-13: a hallucinated
+#: "SyntaxError" jammed PR #4109). Deliberately narrow to the Python exception
+#: names: bare "syntax error", "corrupt"/"missing file" etc. are NOT auto-refuted
+#: — they appear in genuine criticals (regex/SQL syntax; "corrupts the ledger")
+#: and a finding's `file` is the bug LOCATION (which exists), so refuting on them
+#: would silently DROP a real critical (worse than the jam — #4115 review). Every
+#: other critical class still blocks; only a clean py_compile drops.
+_PY_SYNTAX_CLAIM_RE = re.compile(
+    r"\bSyntaxError\b|\bIndentationError\b|invalid python syntax", re.I
 )
 
 
 def _auto_refute_critical(
     finding: Mapping[str, Any], repo_root: Path | None = None
 ) -> tuple[bool, str]:
-    """Return ``(refuted, evidence)`` for a critical claiming a checkable fact.
+    """Return ``(refuted, evidence)`` for a critical claiming a literal Python syntax error.
 
-    Deterministic and FAIL-SAFE: a real syntax error / genuinely missing file
-    leaves the critical standing, and any exception returns ``(False, "")`` so a
-    buggy check can never auto-clear a real critical.
+    FAIL-SAFE and NARROW: refutes ONLY when the claim names a Python SyntaxError /
+    IndentationError on the finding's own ``.py`` file AND py_compile is clean. A
+    real syntax error leaves the critical standing; any exception returns
+    ``(False, "")``; every other critical class (data "corruption", missing files,
+    non-Python "syntax") is left to BLOCK — never silently dropped.
     """
     try:
         root = repo_root or _REVIEW_REPO_ROOT
         claim = f"{finding.get('title', '')} {finding.get('detail', '')}"
         rel = str(finding.get("file") or "").strip()
-        if not rel:
+        if not (rel.endswith(".py") and _PY_SYNTAX_CLAIM_RE.search(claim)):
             return (False, "")
         path = root / rel
-        if _SYNTAX_CLAIM_RE.search(claim) and rel.endswith(".py") and path.is_file():
-            try:
-                py_compile.compile(str(path), doraise=True)
-            except py_compile.PyCompileError:
-                return (False, "")  # real syntax error -> critical stands
-            return (True, f"py_compile clean on {rel} at HEAD — no SyntaxError/IndentationError")
-        if _MISSING_FILE_CLAIM_RE.search(claim) and path.exists():
-            return (
-                True,
-                f"{rel} exists and is readable at HEAD — not missing/corrupt "
-                "(systemd name@.service templates are valid syntax)",
-            )
-        return (False, "")
+        if not path.is_file():
+            return (False, "")  # cited file absent in this checkout -> let it stand
+        try:
+            py_compile.compile(str(path), doraise=True)
+        except py_compile.PyCompileError:
+            return (False, "")  # real syntax error -> critical stands
+        return (
+            True,
+            f"py_compile is clean on {rel} in the gate checkout — no Python "
+            "SyntaxError/IndentationError",
+        )
     except Exception:
         return (False, "")  # fail-safe: never auto-clear a critical on error
 

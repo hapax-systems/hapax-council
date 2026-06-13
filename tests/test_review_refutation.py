@@ -1,10 +1,12 @@
 """Tests for the review-plane refutation power-up (postmortem 2026-06-13).
 
 ``review_team._auto_refute_critical`` / ``_unresolved_criticals`` deterministically
-refute false criticals (a "SyntaxError" claim on a file that py_compiles clean; a
-"corrupted/missing file" claim on a present file) so a hallucinated critical can no
-longer jam quorum — while a REAL syntax error / genuinely missing file still
-blocks, and a reviewer-supplied refuted/resolved field can never self-clear.
+refute a hallucinated literal Python-syntax critical (a "SyntaxError" claim on a
+file that py_compiles clean) so it can no longer jam quorum — while a REAL syntax
+error still blocks, EVERY other critical class (data "corruption", missing files,
+non-Python "syntax") is left to block (only py_compile is definitive enough to
+drop a critical — #4115 review), and a reviewer-supplied refuted/resolved field
+can never self-clear.
 
 (The parse-failure-resilience half of the power-up was dropped: recovering a
 verdict from a prose-wrapped/embedded fence collides with the parser's
@@ -35,7 +37,7 @@ def test_false_syntaxerror_on_clean_file_is_refuted() -> None:
         repo_root=REPO_ROOT,
     )
     assert refuted is True
-    assert "py_compile clean" in evidence
+    assert "py_compile is clean" in evidence
 
 
 def test_real_syntaxerror_is_not_refuted(tmp_path: Path) -> None:
@@ -48,21 +50,34 @@ def test_real_syntaxerror_is_not_refuted(tmp_path: Path) -> None:
     assert refuted is False  # a genuine syntax error must stand
 
 
-def test_corrupted_claim_on_existing_file_is_refuted() -> None:
-    refuted, evidence = review_team._auto_refute_critical(
-        {"file": "scripts/review_team.py", "title": "corrupted filename", "detail": ""},
+def test_corruption_critical_on_existing_file_still_blocks() -> None:
+    # #4115 review caught this: "corrupt"/"does not exist" appear in REAL criticals
+    # and a finding's `file` is the bug location (which exists). Such a critical
+    # must NOT be auto-refuted — only a literal Python SyntaxError is checkable.
+    for title in (
+        "race condition corrupts the ledger",
+        "config key does not exist at startup",
+        "memory corruption under load",
+    ):
+        refuted, _ = review_team._auto_refute_critical(
+            {"file": "scripts/review_team.py", "title": title, "detail": ""},
+            repo_root=REPO_ROOT,
+        )
+        assert refuted is False, title
+
+
+def test_non_python_syntax_claim_is_not_refuted() -> None:
+    # "syntax error" about a non-Python artifact (regex/SQL) on a clean .py must
+    # not be refuted by py_compile — only the Python exception names qualify.
+    refuted, _ = review_team._auto_refute_critical(
+        {
+            "file": "scripts/review_team.py",
+            "title": "the regex pattern has a syntax error",
+            "detail": "",
+        },
         repo_root=REPO_ROOT,
     )
-    assert refuted is True
-    assert "exists" in evidence
-
-
-def test_missing_file_claim_on_absent_file_is_not_refuted(tmp_path: Path) -> None:
-    refuted, _ = review_team._auto_refute_critical(
-        {"file": "nope/gone.py", "title": "missing file", "detail": ""},
-        repo_root=tmp_path,
-    )
-    assert refuted is False  # genuinely absent → stands
+    assert refuted is False
 
 
 def test_non_checkable_critical_is_not_refuted() -> None:
