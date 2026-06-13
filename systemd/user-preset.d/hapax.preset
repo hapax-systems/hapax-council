@@ -37,3 +37,4 @@ enable hapax-ram-allocation-audit.timer
 enable hapax-v4l2-watchdog.timer
 enable hapax-velocity-digest.timer
 enable hapax-velocity-report.timer
+enable codex-claim-audit.timer

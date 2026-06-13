@@ -1,9 +1,16 @@
 [Unit]
-Description=Codex phantom claim audit
+Description=Codex claim audit (phantom + coherence + PR-reality check)
 After=network-online.target
+# See: scripts/codex-claim-audit --version
 
 [Service]
 Type=oneshot
+# Canonical-root fix: ExecStart uses the deploy-resolved path, not the mutable
+# primary worktree. The install-units.sh deploy script resolves %h/projects/
+# hapax-council to the release worktree or source-activation root.
 ExecStart=%h/projects/hapax-council/scripts/codex-claim-audit --release --stale-hours=6
 Environment=NTFY_URL=https://ntfy.sh
 Environment=NTFY_TOPIC=hapax-ops
+# Reconcile cleared state to appendix (class #4 fix).
+# Set HAPAX_RECONCILE_HOST to enable cross-host reconciliation.
+# Environment=HAPAX_RECONCILE_HOST=hapax-appendix
