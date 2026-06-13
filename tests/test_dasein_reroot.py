@@ -18,6 +18,8 @@ import json
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from agents.dmn.__main__ import APERTURE_SNAPSHOT_INTERVAL_S, DMNDaemon
 
 
@@ -91,11 +93,23 @@ class TestPerceptionPathReRoot:
 
         assert SensorConfig().voice_perception == self._CANONICAL
 
-    def test_reverie_resolver_references_canonical_path(self):
-        # the reverie resolver builds the path inline; pin the source so a
-        # regression back to /dev/shm is caught.
-        src = (Path("agents") / "reverie" / "_content_resolvers.py").read_text(encoding="utf-8")
-        assert '".cache" / "hapax-daimonion" / "perception-state.json"' in src
+    @pytest.mark.parametrize("energy", [0.0, 0.25, 0.5, 0.75, 1.0, 1.5])
+    def test_reverie_waveform_reads_canonical_path_without_indexerror(
+        self, energy, tmp_path, monkeypatch
+    ):
+        """Exercise resolve_waveform_viz against the canonical ~/.cache perception
+        file across the full live-energy range. Pins both the path re-root AND the
+        viz off-by-one (energy>=1.0 previously indexed viz[8] -> IndexError -> the
+        whole waveform silently failed even on valid live energy)."""
+        import agents.reverie._content_resolvers as cr
+
+        perc_dir = tmp_path / ".cache" / "hapax-daimonion"
+        perc_dir.mkdir(parents=True)
+        (perc_dir / "perception-state.json").write_text(json.dumps({"audio_energy_rms": energy}))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        # don't touch the real sources protocol; assert the resolver got that far
+        monkeypatch.setattr(cr, "_inject_recalled_text", lambda *a, **k: True)
+        assert cr.resolve_waveform_viz("narrative", 0.8) is True
 
 
 class TestApertureLoopPath:

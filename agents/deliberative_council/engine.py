@@ -63,12 +63,14 @@ _MEMBER_TIMEOUT_S = 120.0
 # with NO tools (tool_calls_limit=0). FLAGGED: these caps are deliberately
 # generous-but-finite — tune via the tool_calls_log if a healthy member
 # legitimately needs more research depth.
-# tool_calls_limit raised 8 -> 12 (request 6 -> 8) per the live seg-prep
-# journal (2026-06-11 23:39): healthy members needed 9-11 research tool calls
-# (opus=9, balanced=10, mistral=11, web-research=9); the cap=8 forced every
-# member over-limit -> members_valid=1/6 (below floor 4) -> 0 segments
-# released. 12 covers the observed max (11) + headroom; the FLAGGED comment
-# above explicitly invites this tuning via the tool_calls_log.
+# tool_calls_limit raised 8 -> 12 -> 20 (request 6 -> 8 -> 20) per the live
+# seg-prep journal (2026-06-11 23:39): healthy members needed 9-11 research tool
+# calls (opus=9, balanced=10, mistral=11, web-research=9); cap=8 then cap=12
+# still forced deeper-grounding members over-limit -> discarded -> members_valid
+# below floor 4 -> 0 segments released. Paired with the graceful cap-handling
+# below (a member that hits the budget now SCORES with the research it has rather
+# than being discarded), 20/20 gives ample headroom without sacrificing the floor.
+# The FLAGGED comment above invites further tuning via the tool_calls_log.
 _RESEARCH_LIMITS = UsageLimits(request_limit=20, tool_calls_limit=20)
 _SCORE_LIMITS = UsageLimits(request_limit=2, tool_calls_limit=0)
 
