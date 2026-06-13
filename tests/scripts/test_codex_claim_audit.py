@@ -1060,9 +1060,52 @@ class TestSystemdUnits:
             / "99-findings-are-warning.conf"
         )
         text = dropin.read_text()
-        assert "SuccessExitStatus=1" in text
+        # Findings exit a DISTINCT code (10) so a set -e crash at exit 1 is not
+        # masked as success. Only 10 is whitelisted; 1 and 2 must fail the unit.
+        assert "SuccessExitStatus=10" in text
+        assert "SuccessExitStatus=1\n" not in text
         assert "SuccessExitStatus=2" not in text
-        assert "exit 2" in text
+
+    def test_dropin_success_code_matches_script_findings_exit(self, tmp_path: Path) -> None:
+        """The drop-in's SuccessExitStatus must match the script's findings code.
+
+        A drift between the two would either mask crashes (too broad) or fail
+        the unit on every audit-with-findings (too narrow).
+        """
+        script_text = SCRIPT.read_text(encoding="utf-8")
+        assert "FINDINGS_EXIT=10" in script_text
+        dropin = (
+            SCRIPT.parent.parent
+            / "systemd"
+            / "units"
+            / "codex-claim-audit.service.d"
+            / "99-findings-are-warning.conf"
+        )
+        assert "SuccessExitStatus=10" in dropin.read_text(encoding="utf-8")
+
+    def test_findings_exit_is_distinct_from_crash(self, tmp_path: Path) -> None:
+        """An audit that finds an unresolved coherence issue exits 10, not 1.
+
+        Exit 1 is reserved for set -e crashes; conflating the two is what let a
+        crash read as success under SuccessExitStatus=1.
+        """
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+        # Active claimed note whose claim cache is MISSING -> CACHE_MISSING
+        # coherence finding, no release (no --release).
+        _write_task_note(
+            vault,
+            "coherence-finding-task",
+            assigned_to="cx-gold",
+            status="claimed",
+            claimed_at="2026-06-12T08:00:00Z",
+        )
+        result = _run_audit(tmp_path, vault, cache_dir, release=False, gh_state="OPEN")
+        assert result.returncode == 10, (
+            f"findings must exit 10 (distinct from a crash), got {result.returncode}: "
+            f"{result.stdout}\n{result.stderr}"
+        )
+        assert "coherence" in result.stdout.lower()
 
     def test_dropin_has_governed_install_path(self) -> None:
         repo = SCRIPT.parent.parent

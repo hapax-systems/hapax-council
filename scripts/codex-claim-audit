@@ -38,6 +38,12 @@
 set -euo pipefail
 
 SCRIPT_VERSION=2
+# Exit code for "audit completed; unresolved findings remain". DISTINCT from a
+# set -euo pipefail crash (which exits with the failing command's status, often
+# 1/2/127): the unit drop-in treats ONLY this code as success-with-warning, so a
+# genuine mid-run abort is no longer masked as success for this t1_critical tool.
+# Release-preflight failures still exit 2 (failed unit).
+FINDINGS_EXIT=10
 VAULT_ROOT="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
 CLAIM_CACHE_DIR="${HAPAX_CLAIM_CACHE_DIR:-$HOME/.cache/hapax}"
 RELAY_RECEIPT_DIR="${HAPAX_RELAY_RECEIPT_DIR:-$HOME/.cache/hapax/relay/receipts}"
@@ -943,7 +949,7 @@ if [ "$issue_count" -gt 0 ]; then
     && [ "$process_count" -eq 0 ]; then
     exit 0
   fi
-  exit 1
+  exit "$FINDINGS_EXIT"
 else
   if [ "$stale_cache_count" -gt 0 ]; then
     printf "codex-claim-audit: %d stale claim cache file(s) cleared\n" "$stale_cache_count"
