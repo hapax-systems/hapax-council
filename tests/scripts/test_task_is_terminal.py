@@ -34,6 +34,7 @@ def _make_test_env(
     note_assigned: str = "cx-test",
     note_pr: str = "null",
     note_exists: bool = True,
+    gh_pr_state: str | None = None,
 ) -> dict[str, str | Path]:
     """Build a minimal environment to source hapax-claude-headless and call
     task_is_terminal in isolation."""
@@ -87,8 +88,14 @@ def _make_test_env(
         CLAIM_FILE="{claim_file}"
         CC_TASK_ACTIVE="{vault}"
 
-        # Stub gh to always fail (we're testing cache logic, not GH)
-        gh() {{ return 1; }}
+        # Stub gh: `pr view ... --jq .state` echoes the configured state (if
+        # any); everything else fails. Default (no state) = gh unavailable.
+        gh() {{
+          if [[ "$1" == "pr" && "$2" == "view" ]]; then
+            {('printf %s\\\\n "' + gh_pr_state + '"; return 0') if gh_pr_state else "return 1"}
+          fi
+          return 1
+        }}
         export -f gh
         source "{function_source}"
 
@@ -268,3 +275,51 @@ class TestSessionKeyedFallback:
             "Newest session-keyed file should win. "
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
+
+
+class TestTaskIsTerminalPrOpen:
+    """status=pr_open with an OPEN PR must be LIVE, never terminal (class #5)."""
+
+    def test_pr_open_with_open_pr_is_live(self, tmp_path: Path) -> None:
+        """A pr_open lane whose PR is OPEN must NOT be killed.
+
+        Regression for the cross-family critical: the status whitelist
+        (claimed|in_progress) with a `*) return 0` catch-all declared pr_open
+        terminal, killing a live open-PR lane before the PR-state check.
+        """
+        env = _make_test_env(
+            tmp_path,
+            claim_content="test-task-001",
+            note_status="pr_open",
+            note_pr="9999",
+            gh_pr_state="OPEN",
+        )
+        result = _run_terminal_check(env)
+        assert "LIVE" in result.stdout, (
+            "REGRESSION: a pr_open lane with an OPEN PR was treated as TERMINAL "
+            f"(class #5). stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+
+    def test_pr_open_with_gh_unavailable_is_live(self, tmp_path: Path) -> None:
+        """pr_open with gh unreachable still fails open (live), never terminal."""
+        env = _make_test_env(
+            tmp_path,
+            claim_content="test-task-001",
+            note_status="pr_open",
+            note_pr="9999",
+            gh_pr_state=None,  # gh fails
+        )
+        result = _run_terminal_check(env)
+        assert "LIVE" in result.stdout
+
+    def test_pr_open_with_merged_pr_is_terminal(self, tmp_path: Path) -> None:
+        """The dead-lane window: pr_open but PR already MERGED = terminal."""
+        env = _make_test_env(
+            tmp_path,
+            claim_content="test-task-001",
+            note_status="pr_open",
+            note_pr="9999",
+            gh_pr_state="MERGED",
+        )
+        result = _run_terminal_check(env)
+        assert "TERMINAL" in result.stdout

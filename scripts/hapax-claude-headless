@@ -300,9 +300,14 @@ task_is_terminal() {
   local status=""
   status="$(grep -oP '^status:\s*\K\S+' "$note" 2>/dev/null | head -n1 || true)"
   case "$status" in
-    done | completed | closed | withdrawn | superseded) return 0 ;;
-    claimed | in_progress) ;;
-    *) return 0 ;;
+    # Definitively terminal lifecycle states -> the lane's work is over.
+    done | completed | closed | withdrawn | superseded | abandoned) return 0 ;;
+    # Everything else (claimed/in_progress/pr_open/blocked/unknown) is NOT
+    # terminal on status alone: fall through to the assigned + PR-state reality
+    # checks below. A live open-PR lane (status: pr_open) must NEVER be killed
+    # here (class #5: never kill a live open-PR lane); offered/unassigned are
+    # caught by the assigned-mismatch check, and a still-open PR returns live.
+    *) ;;
   esac
   local note_assigned=""
   note_assigned="$(grep -oP '^assigned_to:\s*\K\S+' "$note" 2>/dev/null | head -n1 || true)"
