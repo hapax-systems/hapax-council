@@ -113,68 +113,53 @@ def _gh_stub_failing(tmp_path: Path) -> Path:
 def _ssh_stub(
     tmp_path: Path,
     *,
+    assigned: str,
     remote_task: str | None = None,
     read_fails: bool = False,
-    clear_fails: bool = False,
 ) -> tuple[Path, Path, Path]:
-    """Create a fake ssh command plus a remote claim-file fixture."""
+    """Create a fake ssh that EXECUTES the audit's real remote command.
+
+    Higher fidelity than re-implementing the remote logic: the fake ssh evals
+    the exact command string the script sends, against a real on-disk remote
+    claim fixture at ``<reconcile-dir>/cc-active-task-<assigned>``. This means
+    the rename-aside atomic compare-and-delete is genuinely exercised (and its
+    erasure-safety can be asserted), not merely re-stated by the stub.
+
+    Returns ``(stub_path, remote_claim_file, calls_log)``. Tests must pass
+    ``--reconcile-cache-dir=<remote_claim_file.parent>`` so the path the script
+    builds resolves to the fixture.
+    """
     stub = tmp_path / "bin" / "ssh"
     stub.parent.mkdir(parents=True, exist_ok=True)
-    remote_state = tmp_path / "remote-claim"
+    reconcile_dir = tmp_path / "remote-cache"
+    reconcile_dir.mkdir(parents=True, exist_ok=True)
+    remote_state = reconcile_dir / f"cc-active-task-{assigned}"
     calls = tmp_path / "ssh-calls.log"
     if remote_task is not None:
         remote_state.write_text(f"{remote_task}\n", encoding="utf-8")
     stub.write_text(
         textwrap.dedent(f"""\
         #!/usr/bin/env bash
-        set -euo pipefail
+        # High-fidelity ssh stub: log then eval the script's real remote command.
         cmd="${{@: -1}}"
         printf '%s\\n' "$cmd" >> "{calls}"
-        case "$cmd" in
-          remote_file=*)
-            if [[ "{"1" if read_fails else "0"}" == "1" ]]; then
-              exit 255
-            fi
-            if [[ ! -s "{remote_state}" ]]; then
-              printf 'ABSENT\\n'
-              exit 0
-            fi
-            remote_task="$(head -n1 "{remote_state}" | tr -d '[:space:]')"
-            task_id="$(printf '%s\\n' "$cmd" | sed -nE 's/.*task_id=([^ ;]+).*/\\1/p' | head -n1)"
-            if [[ "$remote_task" != "$task_id" ]]; then
-              printf 'MISMATCH:%s\\n' "$remote_task"
-              exit 3
-            fi
-            if [[ "{"1" if clear_fails else "0"}" == "1" ]]; then
-              exit 255
-            fi
-            rm -f "{remote_state}"
-            printf 'CLEARED\\n'
-            exit 0
-            ;;
-          if\\ \\[\\ -s*)
-            if [[ "{"1" if read_fails else "0"}" == "1" ]]; then
-              exit 255
-            fi
-            if [[ -s "{remote_state}" ]]; then
-              head -n1 "{remote_state}" | tr -d '[:space:]'
-            fi
-            exit 0
-            ;;
-          rm\\ -f*)
-            if [[ "{"1" if clear_fails else "0"}" == "1" ]]; then
-              exit 255
-            fi
-            rm -f "{remote_state}"
-            exit 0
-            ;;
-        esac
-        exit 0
+        if [[ "{"1" if read_fails else "0"}" == "1" ]]; then
+          exit 255
+        fi
+        eval "$cmd"
         """),
         encoding="utf-8",
     )
     stub.chmod(0o755)
     return stub, remote_state, calls
+
+
+def _reconcile_args(remote_state: Path) -> list[str]:
+    """Reconcile flags pointing the script's remote path at the real fixture."""
+    return [
+        "--reconcile-host=fake-host",
+        f"--reconcile-cache-dir={remote_state.parent}",
+    ]
 
 
 def _write_quota_receipt(tmp_path: Path, role: str) -> Path:
@@ -462,19 +447,20 @@ class TestHostReconciliation:
             claimed_at="2026-06-10T01:00:00Z",
         )
         claim_file = _write_claim_cache(cache_dir, "cx-gold", task_id)
-        _stub, _remote_state, calls = _ssh_stub(tmp_path, remote_task=task_id)
+        _stub, remote_state, calls = _ssh_stub(tmp_path, assigned="cx-gold", remote_task=task_id)
 
         result = _run_audit(
             tmp_path,
             vault,
             cache_dir,
             release=True,
-            extra_args=["--reconcile-host=fake-host", "--reconcile-cache-dir=/remote/cache"],
+            extra_args=_reconcile_args(remote_state),
             gh_state="CLOSED",
         )
 
         assert result.returncode == 0
         assert not claim_file.exists()
+        assert not remote_state.exists()  # real remote command actually cleared it
         assert "RECONCILED" in result.stdout
         assert len(calls.read_text(encoding="utf-8").splitlines()) == 1
 
@@ -493,7 +479,9 @@ class TestHostReconciliation:
             claimed_at="2026-06-10T01:00:00Z",
         )
         claim_file = _write_claim_cache(cache_dir, "cx-gold", "phantom-mismatch-task")
-        _ssh_stub(tmp_path, remote_task="other-live-task")
+        _stub, remote_state, _calls = _ssh_stub(
+            tmp_path, assigned="cx-gold", remote_task="other-live-task"
+        )
         original_note = note.read_text(encoding="utf-8")
 
         result = _run_audit(
@@ -501,11 +489,15 @@ class TestHostReconciliation:
             vault,
             cache_dir,
             release=True,
-            extra_args=["--reconcile-host=fake-host", "--reconcile-cache-dir=/remote/cache"],
+            extra_args=_reconcile_args(remote_state),
             gh_state="CLOSED",
         )
 
         assert claim_file.exists()
+        # Atomic guard: the re-pointed remote claim is preserved intact, never
+        # erased by a read-then-rm race (the rename-aside restores it).
+        assert remote_state.exists()
+        assert remote_state.read_text(encoding="utf-8").strip() == "other-live-task"
         assert note.read_text(encoding="utf-8") == original_note
         assert result.returncode == 2
         assert "RECONCILE_SKIP" in result.stdout
@@ -527,14 +519,14 @@ class TestHostReconciliation:
             claimed_at="2026-06-10T01:00:00Z",
         )
         claim_file = _write_claim_cache(cache_dir, "cx-gold", task_id)
-        _ssh_stub(tmp_path, remote_task=None)
+        _stub, remote_state, _calls = _ssh_stub(tmp_path, assigned="cx-gold", remote_task=None)
 
         result = _run_audit(
             tmp_path,
             vault,
             cache_dir,
             release=True,
-            extra_args=["--reconcile-host=fake-host", "--reconcile-cache-dir=/remote/cache"],
+            extra_args=_reconcile_args(remote_state),
             gh_state="CLOSED",
         )
 
@@ -556,7 +548,9 @@ class TestHostReconciliation:
             claimed_at="2026-06-10T01:00:00Z",
         )
         claim_file = _write_claim_cache(cache_dir, "cx-gold", "phantom-ssh-fails")
-        _ssh_stub(tmp_path, remote_task="phantom-ssh-fails", read_fails=True)
+        _stub, remote_state, _calls = _ssh_stub(
+            tmp_path, assigned="cx-gold", remote_task="phantom-ssh-fails", read_fails=True
+        )
         original_note = note.read_text(encoding="utf-8")
 
         result = _run_audit(
@@ -564,11 +558,12 @@ class TestHostReconciliation:
             vault,
             cache_dir,
             release=True,
-            extra_args=["--reconcile-host=fake-host", "--reconcile-cache-dir=/remote/cache"],
+            extra_args=_reconcile_args(remote_state),
             gh_state="CLOSED",
         )
 
         assert claim_file.exists()
+        assert remote_state.exists()  # ssh failed before any mutation
         assert note.read_text(encoding="utf-8") == original_note
         assert result.returncode == 2
         assert "RECONCILE_FAILED" in result.stdout
@@ -591,14 +586,14 @@ class TestHostReconciliation:
             status="claimed",
             claimed_at="2026-06-10T01:00:00Z",
         )
-        _stub, remote_state, _calls = _ssh_stub(tmp_path, remote_task=task_id)
+        _stub, remote_state, _calls = _ssh_stub(tmp_path, assigned="cx-gold", remote_task=task_id)
 
         result = _run_audit(
             tmp_path,
             vault,
             cache_dir,
             release=True,
-            extra_args=["--reconcile-host=fake-host", "--reconcile-cache-dir=/remote/cache"],
+            extra_args=_reconcile_args(remote_state),
             gh_state="CLOSED",
         )
 
@@ -620,19 +615,60 @@ class TestHostReconciliation:
             status="done",
         )
         claim_file = _write_claim_cache(cache_dir, "cx-alpha", "sweep-reconcile-task")
-        _ssh_stub(tmp_path, remote_task="sweep-reconcile-task")
+        _stub, remote_state, _calls = _ssh_stub(
+            tmp_path, assigned="cx-alpha", remote_task="sweep-reconcile-task"
+        )
 
         result = _run_audit(
             tmp_path,
             vault,
             cache_dir,
             release=True,
-            extra_args=["--reconcile-host=fake-host", "--reconcile-cache-dir=/remote/cache"],
+            extra_args=_reconcile_args(remote_state),
             gh_state="CLOSED",
         )
 
         assert not claim_file.exists()
+        assert not remote_state.exists()
         assert "RECONCILED" in result.stdout
+
+    def test_reconcile_to_self_skips_ssh(self, tmp_path: Path) -> None:
+        """When the reconcile target IS this host, never ssh to self.
+
+        The preset auto-enables the unit on both hosts; an unguarded reconcile
+        to self yields a persistent failed unit. The local clear path already
+        owns the local cache, so a self-target reconcile is a no-op.
+        """
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+
+        task_id = "phantom-self-reconcile"
+        note = _write_task_note(
+            vault,
+            task_id,
+            assigned_to="cx-gold",
+            pr="null",
+            branch="null",
+            status="claimed",
+            claimed_at="2026-06-10T01:00:00Z",
+        )
+        claim_file = _write_claim_cache(cache_dir, "cx-gold", task_id)
+        # ssh stub is on PATH; if the self-guard fails, it WOULD be invoked.
+        _stub, _remote_state, calls = _ssh_stub(tmp_path, assigned="cx-gold", remote_task=task_id)
+
+        result = _run_audit(
+            tmp_path,
+            vault,
+            cache_dir,
+            release=True,
+            extra_args=["--reconcile-host=localhost", f"--reconcile-cache-dir={cache_dir}"],
+            gh_state="CLOSED",
+        )
+
+        assert not calls.exists()  # ssh never called for a self-target
+        assert not claim_file.exists()  # local clear still proceeds
+        assert "self" in result.stdout
+        assert "status: offered" in note.read_text(encoding="utf-8")
 
     def test_dry_run_prevents_all_mutations(self, tmp_path: Path) -> None:
         """--dry-run prevents BOTH cache deletion AND task note mutation."""
@@ -665,6 +701,73 @@ class TestHostReconciliation:
             "Dry-run should not mutate the task note via sed"
         )
         assert "DRY-RUN" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Session-keyed lease protection (class #4/#5: never erase a live lease)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionKeyedLeaseProtection:
+    """The cache sweep must treat a session-keyed cc-active-task-<role>-<session>
+    lease as belonging to the note's base <role>, not as a stale foreign role."""
+
+    def test_session_keyed_live_lease_not_cleared(self, tmp_path: Path) -> None:
+        """A live session-keyed fallback lease must survive the sweep.
+
+        Regression for codex-1 critical: the sweep derived assigned from the
+        full filename suffix, so cc-active-task-cx-alpha-<session> was read as
+        role cx-alpha-<session> and mismatched the note's assigned_to=cx-alpha,
+        clearing a live lease for active branch/no-PR work.
+        """
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+
+        task_id = "session-keyed-live"
+        # Future claim time neutralises the staleness axis, so the ONLY thing
+        # that can protect the session-keyed lease is the base-role match.
+        _write_task_note(
+            vault,
+            task_id,
+            assigned_to="cx-alpha",
+            pr="null",
+            branch="cx-alpha/active-work",
+            status="claimed",
+            claimed_at="2999-01-01T00:00:00Z",
+        )
+        legacy = _write_claim_cache(cache_dir, "cx-alpha", task_id)
+        session_keyed = _write_claim_cache(cache_dir, "cx-alpha-sess0xDEADBEEF", task_id)
+
+        result = _run_audit(tmp_path, vault, cache_dir, release=True, gh_state="OPEN")
+
+        assert legacy.exists(), "legacy lease must survive"
+        assert session_keyed.exists(), "session-keyed lease must survive"
+        assert "CLEARED stale claim cache" not in result.stdout
+
+    def test_session_keyed_stale_lease_still_cleared(self, tmp_path: Path) -> None:
+        """A session-keyed lease whose note is terminal is still swept.
+
+        The base-role match must not OVER-protect: when the note is done (no
+        live claim), the session-keyed cache is genuinely stale and is cleared.
+        """
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+
+        task_id = "session-keyed-stale"
+        _write_task_note(
+            vault,
+            task_id,
+            assigned_to="cx-alpha",
+            pr="null",
+            branch="null",
+            status="done",
+        )
+        session_keyed = _write_claim_cache(cache_dir, "cx-alpha-sess0xCAFE", task_id)
+
+        result = _run_audit(tmp_path, vault, cache_dir, release=True, gh_state="CLOSED")
+
+        assert not session_keyed.exists(), "stale session-keyed lease must be cleared"
+        assert "CLEARED stale claim cache" in result.stdout
 
 
 # ---------------------------------------------------------------------------

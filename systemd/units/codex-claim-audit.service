@@ -1,5 +1,9 @@
 [Unit]
 Description=Codex claim audit (phantom + coherence + PR-reality check)
+# v2 makes the run network-dependent (gh pr view, ssh reconcile). Wants= pulls
+# network-online.target in for a timer-launched oneshot so After= actually
+# orders against it (After= alone does not start the target).
+Wants=network-online.target
 After=network-online.target
 # See: scripts/codex-claim-audit --version
 

@@ -20,10 +20,15 @@
 #     pr field, check `gh pr view` state. If the PR is OPEN or DRAFT, the claim
 #     is LIVE — never clear it. (Fixes class #5.)
 #   - Attributed journal logging: every claim-cache mutation emits a structured
-#     journal line via sd-notify or logger so deletions are forensically
+#     journal line via systemd-cat or logger so deletions are forensically
 #     traceable. (Fixes the 2026-06-12T19:00 cache-vanish incident.)
-#   - Host reconciliation stub: the --reconcile-host flag copies cleared/released
-#     state to a remote host's claim cache via ssh. (Fixes class #4.)
+#   - Host reconciliation: the --reconcile-host flag replicates cleared/released
+#     state to a remote host's claim cache via ssh, using an atomic rename-aside
+#     compare-and-delete so a concurrent re-point cannot erase a live remote
+#     claim. Skips ssh-to-self. (Fixes class #4.)
+#   - Session-keyed lease protection: the cache sweep treats a session-keyed
+#     cc-active-task-<role>-<session> lease as belonging to the note's base
+#     <role>, so a live fallback lease is not misread as a stale foreign role.
 #   - ExecStart changed from mutable primary worktree to repo-relative path
 #     resolved by the unit file. (Fixes canonical-root violation.)
 
@@ -160,6 +165,38 @@ _is_codexish_role() {
     cx-*|codex*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# Does a claim-cache file's role (possibly session-keyed) belong to a note's
+# base role? cc-claim writes both the legacy cc-active-task-<role> AND every
+# session-keyed cc-active-task-<role>-<session_id> (FM-2). The cache sweep
+# derives the cache role from the full filename suffix, so a session-keyed
+# lease yields cache_role=<role>-<session_id> while the note carries the base
+# assigned_to=<role>. Treat the session-keyed lease as belonging to the base
+# role so a live fallback lease is not misread as a stale foreign role (class
+# #4/#5: never erase a live lease).
+_cache_role_matches_note() {
+  local cache_role="$1" note_role="$2"
+  [ -n "$note_role" ] || return 1
+  [ "$cache_role" = "$note_role" ] && return 0
+  case "$cache_role" in
+    "$note_role"-*) return 0 ;;  # session-keyed lease for the note's base role
+    *) return 1 ;;
+  esac
+}
+
+# Is RECONCILE_HOST this same host? Guards against ssh-to-self (the preset
+# auto-enables the unit on both hosts; an unguarded reconcile to self yields a
+# persistent exit 2 / failed unit on the host it names).
+_reconcile_host_is_self() {
+  local target="$1" short fqdn
+  short="$(hostname -s 2>/dev/null || printf '')"
+  fqdn="$(hostname -f 2>/dev/null || hostname 2>/dev/null || printf '')"
+  case "$target" in
+    "$short"|"$fqdn"|localhost|127.0.0.1) return 0 ;;
+    *) [ -n "$short" ] && [ "${target%%.*}" = "$short" ] && return 0 ;;
+  esac
+  return 1
 }
 
 _claim_file_for() {
@@ -435,6 +472,12 @@ _reconcile_clear_to_host() {
   local remote_file="$RECONCILE_CACHE_DIR/cc-active-task-$assigned"
   local caller_host remote_file_q task_id_q caller_host_q remote_result remote_rc
   caller_host="$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf unknown)"
+  if _reconcile_host_is_self "$RECONCILE_HOST"; then
+    # Reconcile target is this host — the local clear path already owns this
+    # cache. No remote replication needed; do not ssh to self.
+    reconcile_report="${reconcile_report}  RECONCILE_SKIP: cc-active-task-${assigned} target ${RECONCILE_HOST} is this host (self)\n"
+    return 0
+  fi
   remote_file_q="$(printf '%q' "$remote_file")"
   task_id_q="$(printf '%q' "$task_id")"
   caller_host_q="$(printf '%q' "$caller_host")"
@@ -444,15 +487,32 @@ _reconcile_clear_to_host() {
     return 0
   fi
 
-  # Safety: compare and delete in one remote shell so a claim re-point between
-  # separate ssh calls cannot erase a newly live remote claim.
+  # Safety: atomic compare-and-delete via rename-aside. A plain
+  # read-then-rm (even in one remote shell) has a TOCTOU window: if the claim
+  # is re-pointed to a different live task between the read and the rm, the rm
+  # erases that live claim. Instead we atomically `mv` the claim to a private
+  # temp (rename is atomic), then decide from the captured copy: if it is ours,
+  # delete the temp; if it is not, restore it WITHOUT clobbering any claim
+  # written in the meantime. We never `rm` the canonical path directly, so a
+  # concurrent fresh write to it can never be erased. (Bounded cost: an ssh
+  # death between mv and restore can orphan a *.audit-claim.* temp; the sweep
+  # skips those and the next reconcile is a no-op.)
   set +e
   remote_result="$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$RECONCILE_HOST" \
     "remote_file=${remote_file_q}; task_id=${task_id_q}; caller_host=${caller_host_q}; \
+audit_tmp=\"\$remote_file.audit-claim.\$\$\"; \
 if [ ! -s \"\$remote_file\" ]; then printf 'ABSENT\n'; exit 0; fi; \
-remote_task=\$(head -n1 \"\$remote_file\" 2>/dev/null | tr -d '[:space:]'); \
-if [ \"\$remote_task\" != \"\$task_id\" ]; then printf 'MISMATCH:%s\n' \"\$remote_task\"; exit 3; fi; \
-rm -f \"\$remote_file\" && logger -t codex-claim-audit \"RECONCILE_CLEAR cc-active-task-${assigned} task=\$task_id from=\$caller_host\" && printf 'CLEARED\n'" 2>/dev/null)"
+if ! mv -f \"\$remote_file\" \"\$audit_tmp\" 2>/dev/null; then \
+  if [ ! -s \"\$remote_file\" ]; then printf 'ABSENT\n'; exit 0; fi; \
+  printf 'RACE\n'; exit 4; fi; \
+remote_task=\$(head -n1 \"\$audit_tmp\" 2>/dev/null | tr -d '[:space:]'); \
+if [ \"\$remote_task\" != \"\$task_id\" ]; then \
+  if [ -e \"\$remote_file\" ]; then rm -f \"\$audit_tmp\"; \
+  else mv \"\$audit_tmp\" \"\$remote_file\" 2>/dev/null || rm -f \"\$audit_tmp\"; fi; \
+  printf 'MISMATCH:%s\n' \"\$remote_task\"; exit 3; fi; \
+rm -f \"\$audit_tmp\"; \
+logger -t codex-claim-audit \"RECONCILE_CLEAR cc-active-task-${assigned} task=\$task_id from=\$caller_host\" 2>/dev/null || true; \
+printf 'CLEARED\n'" 2>/dev/null)"
   remote_rc=$?
   set -e
 
@@ -604,6 +664,9 @@ done
 if [ -d "$CLAIM_CACHE_DIR" ]; then
   for claim_file in "$CLAIM_CACHE_DIR"/cc-active-task-*; do
     [ -f "$claim_file" ] || continue
+    # Skip transient reconcile temps (rename-aside artifacts); they are not
+    # real claim caches and self-resolve on the next reconcile.
+    case "$claim_file" in *.audit-claim.*) continue ;; esac
     assigned="${claim_file##*/cc-active-task-}"
     claimed_task=$(sed -n '1p' "$claim_file" 2>/dev/null || true)
     [ -n "$claimed_task" ] || continue
@@ -657,7 +720,7 @@ if [ -d "$CLAIM_CACHE_DIR" ]; then
       note_is_active_claim=false
     fi
 
-    if [ "$note_is_active_claim" = false ] || [ "$note_assigned" != "$assigned" ]; then
+    if [ "$note_is_active_claim" = false ] || ! _cache_role_matches_note "$assigned" "$note_assigned"; then
       if [ "$RELEASE" = true ]; then
         # ── PR REALITY CHECK on stale caches ──
         local_pr="$(_fm_value pr "$note")"
