@@ -22,10 +22,12 @@ the admission blockers; the dispatcher killswitch is
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -46,8 +48,85 @@ ACCEPT_VERDICTS = frozenset({"accept", "accept-with-findings"})
 
 #: Reviewer verdicts the dispatcher may record. ``invalid-output`` is what an
 #: unparseable reviewer reply becomes — it never counts as an accept.
-REVIEWER_VERDICTS = frozenset({"accept", "accept-with-findings", "block", "invalid-output"})
+#: ``quota-wall`` is a provider usage wall, a FAMILY-AVAILABILITY signal:
+#: on 2026-06-12 the claude weekly wall surfaced as invalid-output for 13
+#: hours and t1's require_all_families sealed the merge gate fleet-wide
+#: (postmortem failure class #1). Walls must be named so the constitution
+#: can degrade instead of seal.
+REVIEWER_VERDICTS = frozenset(
+    {"accept", "accept-with-findings", "block", "invalid-output", "quota-wall"}
+)
 TEAM_CLASS_RANK = {"t3_docs": 0, "t2_standard": 1, "t1_critical": 2}
+
+#: Provider usage-wall shapes (the 2026-06-12 claude weekly-wall text is the
+#: canonical fixture; the rest cover the codex/gemini families' phrasings).
+_QUOTA_WALL_SHAPE_RE = re.compile(
+    r"\A("
+    r"You('ve| have) hit your (weekly|usage|session|5-hour) limit"
+    r"(?:\s+·\s+resets\s+\d{1,2}\s?[ap]m(?:\s+(?:\([A-Za-z/_-]+\)|[A-Za-z/_-]+))?)?"
+    r"|HTTP 429 Too Many Requests"
+    r"|Too Many Requests"
+    r"|RESOURCE_EXHAUSTED(?::\s+Quota (?:exceeded|exhausted))?"
+    r"|rate.?limit\s+(?:reached|exceeded|hit)(?:\s+for\s+\w+)?"
+    r"|usage limit\s+(?:reached|exceeded|hit)"
+    r"|quota\s+(?:reached|exceeded|exhausted|hit)"
+    r")\Z",
+    re.IGNORECASE,
+)
+
+#: Real provider walls are terse one-liners. A long unparseable reply that
+#: merely MENTIONS quota-ish words (a half-written review of rate-limit code,
+#: or attacker-influenced diff text echoed back) must never classify as a
+#: wall — that would forge a family outage and degrade the next constitution
+#: (round-4 review finding).
+_QUOTA_WALL_MAX_CHARS = 600
+
+#: The dispatcher's family-outage witness state (canonical path; the
+#: dispatcher aliases this). Admission consults it so a forged dossier
+#: cannot self-certify a degradation (round-4 review finding).
+FAMILY_OUTAGE_STATE = Path.home() / ".cache" / "hapax" / "review-team" / "family-outage.json"
+FAMILY_OUTAGE_TTL_S = 2 * 3600
+
+
+def is_quota_wall(text: str, *, process_failed: bool = False) -> bool:
+    """True when reviewer output/error text is a provider usage wall.
+
+    Deliberately strict — forging an outage must be harder than hitting one:
+    only process-failure diagnostics are trusted as provider evidence, short
+    text only, and the whole output must match a known provider wall shape.
+    This rejects model-controlled review stdout that merely mentions quota text.
+    """
+
+    if not process_failed or not text:
+        return False
+    stripped = text.strip()
+    if len(stripped) > _QUOTA_WALL_MAX_CHARS:
+        return False
+    return bool(_QUOTA_WALL_SHAPE_RE.fullmatch(stripped))
+
+
+def _parse_iso_datetime(value: Any) -> datetime:
+    return datetime.fromisoformat(str(value))
+
+
+def _coerce_datetime(value: datetime | str | None, *, reference: datetime) -> datetime:
+    if value is None:
+        return datetime.now(reference.tzinfo) if reference.tzinfo else datetime.now()
+    parsed = value if isinstance(value, datetime) else _parse_iso_datetime(value)
+    if reference.tzinfo and parsed.tzinfo is None:
+        return parsed.replace(tzinfo=reference.tzinfo)
+    if parsed.tzinfo and reference.tzinfo is None:
+        return parsed.replace(tzinfo=None)
+    return parsed
+
+
+def _seconds_between(later: datetime, earlier: datetime) -> float:
+    if later.tzinfo and earlier.tzinfo is None:
+        earlier = earlier.replace(tzinfo=later.tzinfo)
+    elif earlier.tzinfo and later.tzinfo is None:
+        later = later.replace(tzinfo=earlier.tzinfo)
+    return (later - earlier).total_seconds()
+
 
 GATE_KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_GATE_OFF"
 CHECKLIST_ITEM_RE = re.compile(r"^- \[ \] (?P<slug>[a-z0-9-]+):", re.MULTILINE)
@@ -162,6 +241,7 @@ def constitute_team(
     *,
     pr_number: int,
     available_families: Sequence[str] | None = None,
+    outage_families: frozenset[str] | set[str] = frozenset(),
 ) -> Constitution:
     """Constitute the review team for a class — deterministic, fail-closed.
 
@@ -169,6 +249,15 @@ def constitute_team(
     t1 = 4-5 seats, ALL roster families or :class:`ValueError`. The writer's
     family never holds the majority alone (cap = ``size // 2``); non-writer
     families seat first, rotated by ``pr_number`` for fairness.
+
+    DEGRADATION RULE (n-tier symmetry principal; postmortem 2026-06-12,
+    failure class #1): when a roster family is out on an OBSERVED quota wall
+    (``outage_families``), t1's require_all_families does not seal the gate —
+    the team degrades to t2 composition from the available families, and the
+    constitution notes carry ``degraded_family_outage:<family>`` +
+    ``post_recovery_rereview_required`` so the dossier, admission, and the
+    degraded-merges ledger all see the degradation. A family missing for any
+    OTHER reason (config error) still raises — only evidenced outages degrade.
     """
 
     sizing = registry["sizing"][team_class]
@@ -178,19 +267,35 @@ def constitute_team(
     else:
         wanted = {f for f in available_families}
         available = [f for f in roster if f in wanted]
-    notes = [f"family_unavailable:{f}" for f in roster if f not in available]
+    out = [f for f in available if f in outage_families]
+    available = [f for f in available if f not in outage_families]
+    notes = [f"family_unavailable:{f}" for f in roster if f not in available and f not in out]
+    degraded: list[str] = []
 
     if team_class == "t1_critical":
         size = int(sizing["team_size_min"])
         if sizing.get("require_all_families"):
             missing = [f for f in roster if f not in available]
-            if missing:
+            if missing and all(f in outage_families for f in missing):
+                degraded = sorted(missing)
+                sizing = registry["sizing"]["t2_standard"]
+                size = int(sizing["team_size"])
+                notes.extend(f"degraded_family_outage:{f}" for f in degraded)
+                notes.append("degraded_to:t2_standard")
+                notes.append("post_recovery_rereview_required")
+            elif missing:
                 raise ValueError(
                     "t1_critical requires every model family on the team; "
                     f"unavailable family: {','.join(missing)}"
                 )
     else:
         size = int(sizing["team_size"])
+        if out:
+            # t2/t3 keep their own sizing — the walled family simply is not
+            # seated; the markers still ride so synthesis/admission validate
+            # by the shrunken roster and the re-review obligation is recorded
+            notes.extend(f"degraded_family_outage:{f}" for f in sorted(out))
+            notes.append("post_recovery_rereview_required")
     min_families = int(sizing.get("min_families", 1))
     if not available:
         raise ValueError("no reviewer families available")
@@ -414,6 +519,23 @@ def synthesize_dossier(
 
     sizing = registry["sizing"][team_class]
     roster = [entry["family"] for entry in registry["families"]]
+    # an outage-degraded constitution judges itself by the DEGRADED rules:
+    # t2 sizing, roster minus the walled families (postmortem 2026-06-12 —
+    # otherwise require_all_families would seal the verdict it already
+    # degraded the constitution for)
+    degraded_outage = sorted(
+        n.split(":", 1)[1]
+        for n in constitution_notes
+        if str(n).startswith("degraded_family_outage:")
+    )
+    if degraded_outage:
+        # roster shrinks for ANY outage-degraded class; the t1->t2 sizing
+        # swap applies only when the constitution actually degraded sizing
+        # (round-3 review finding: t2/t3 outage dossiers must not be judged
+        # by rules their class never had)
+        roster = [f for f in roster if f not in degraded_outage]
+        if any(str(n) == "degraded_to:t2_standard" for n in constitution_notes):
+            sizing = registry["sizing"]["t2_standard"]
     accepts = _checklist_complete_accepts(reviews, lenses)
     accept_families = {str(r.get("family")) for r in accepts}
     block_reviews = [r for r in reviews if str(r.get("verdict", "")).lower() == "block"]
@@ -498,6 +620,8 @@ def synthesize_dossier(
         "changed_file_count": changed_file_count,
         "changed_files": scoped_files,
         "constitution_notes": list(constitution_notes),
+        "degraded_family_outage": degraded_outage,
+        "post_recovery_rereview_required": bool(degraded_outage),
         "lenses": list(lenses),
         "reviewers": [dict(r) for r in reviews],
         "escalations": escalations,
@@ -525,6 +649,8 @@ def _dossier_validity_blockers(
     pr_number: int | None = None,
     changed_files: Sequence[str] | None = None,
     changed_file_count: int | None = None,
+    outage_state_path: Path | None = None,
+    admission_time: datetime | str | None = None,
 ) -> tuple[str, ...]:
     blockers: list[str] = []
     scoped_files = (
@@ -557,6 +683,85 @@ def _dossier_validity_blockers(
     if not isinstance(sizing, Mapping):
         blockers.append(f"review_dossier_malformed:unknown_team_class:{team_class or 'missing'}")
         return tuple(blockers)
+
+    # DEGRADATION (PR #4110 round-2 finding: the admission gate re-sealed
+    # what the constitution degraded): a dossier whose constitution recorded
+    # an evidenced family outage is validated by the DEGRADED rules — t2
+    # sizing, roster minus the walled families. Integrity here: the notes and
+    # the explicit fields must agree and the walled family must have seated
+    # no reviewers; the post-recovery re-review obligation rides the
+    # degraded-merges ledger, not this gate.
+    _notes = [str(n) for n in (dossier.get("constitution_notes") or [])]
+    _note_out = sorted(
+        n.split(":", 1)[1] for n in _notes if n.startswith("degraded_family_outage:")
+    )
+    _field_out = sorted(str(f) for f in (dossier.get("degraded_family_outage") or []))
+    degraded_outage: list[str] = []
+    if _note_out or _field_out:
+        # consistency: notes and fields agree + the re-review flag is set.
+        # The t1->t2 sizing marker is only demanded where the class actually
+        # degraded sizing — t2/t3 outage dossiers keep their own sizing
+        # (round-3 review finding: the first cut of this check sealed every
+        # t2/t3 review conducted during an outage).
+        sizing_degraded = "degraded_to:t2_standard" in _notes
+        if (
+            _note_out != _field_out
+            or not dossier.get("post_recovery_rereview_required")
+            or (sizing_degraded and team_class != "t1_critical")
+            or (team_class == "t1_critical" and not sizing_degraded)
+        ):
+            blockers.append("review_dossier_degradation_flags_inconsistent")
+            return tuple(blockers)
+        degraded_outage = _note_out
+        # a degraded family must be a REAL roster family (round-5 finding:
+        # a nonsense family name in the markers + witness state would buy a
+        # t1->t2 downgrade while leaving the actual roster untouched)
+        _full_roster = {str(entry["family"]) for entry in registry["families"]}
+        _unknown_degraded = sorted(set(degraded_outage) - _full_roster)
+        if _unknown_degraded:
+            blockers.append(
+                "review_dossier_degradation_unknown_family:" + ",".join(_unknown_degraded)
+            )
+            return tuple(blockers)
+        # external witness (round-4 finding: dossier-internal consistency can
+        # be forged wholesale): each degraded family must appear in the
+        # dispatcher's outage state with observed_at within TTL BEFORE this
+        # dossier's constituted_at. Recovery clears the state entry, which
+        # mechanically enforces post_recovery_rereview_required — degraded
+        # dossiers stop admitting the moment the family answers again.
+        witness_path = outage_state_path or FAMILY_OUTAGE_STATE
+        unwitnessed = list(degraded_outage)
+        try:
+            witness_state = json.loads(Path(witness_path).read_text(encoding="utf-8"))
+            if not isinstance(witness_state, Mapping):
+                raise TypeError("family outage witness is not a mapping")
+            constituted = _parse_iso_datetime(dossier.get("constituted_at"))
+            admitted_at = _coerce_datetime(admission_time, reference=constituted)
+            unwitnessed = []
+            for fam in degraded_outage:
+                try:
+                    observed = _parse_iso_datetime(witness_state.get(fam))
+                    constituted_age_s = _seconds_between(constituted, observed)
+                    admission_age_s = _seconds_between(admitted_at, observed)
+                    if not (
+                        0 <= constituted_age_s <= FAMILY_OUTAGE_TTL_S
+                        and 0 <= admission_age_s <= FAMILY_OUTAGE_TTL_S
+                    ):
+                        unwitnessed.append(fam)
+                except (TypeError, ValueError):
+                    unwitnessed.append(fam)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass  # unreadable witness state -> every family stays unwitnessed
+        if unwitnessed:
+            blockers.append(
+                "review_dossier_degradation_unwitnessed:" + ",".join(sorted(unwitnessed))
+            )
+            return tuple(blockers)
+        if sizing_degraded:
+            sizing = (registry.get("sizing") or {}).get("t2_standard")
+            if not isinstance(sizing, Mapping):
+                blockers.append("review_dossier_malformed:no_t2_sizing_for_degradation")
+                return tuple(blockers)
     if changed_files is not None:
         if not scoped_files:
             blockers.append("review_dossier_changed_files_unknown")
@@ -595,6 +800,11 @@ def _dossier_validity_blockers(
         blockers.append(
             "review_dossier_unknown_reviewer_family:" + ",".join(sorted(unknown_reviewer_families))
         )
+    if degraded_outage:
+        seated_walled = sorted({str(r.get("family")) for r in reviews} & set(degraded_outage))
+        if seated_walled:
+            blockers.append("review_dossier_degraded_family_was_seated:" + ",".join(seated_walled))
+        roster = roster - set(degraded_outage)
     unknown_verdicts = {
         str(r.get("verdict") or "missing").lower()
         for r in reviews
@@ -685,6 +895,8 @@ def review_dossier_validity_blockers(
     changed_files: Sequence[str] | None = None,
     changed_file_count: int | None = None,
     registry: Mapping[str, Any] | None = None,
+    outage_state_path: Path | None = None,
+    admission_time: datetime | str | None = None,
 ) -> tuple[str, ...]:
     """Validate a recorded review dossier without honoring any gate killswitch."""
 
@@ -716,6 +928,8 @@ def review_dossier_validity_blockers(
         pr_number=pr_number,
         changed_files=changed_files,
         changed_file_count=changed_file_count,
+        outage_state_path=outage_state_path,
+        admission_time=admission_time,
     )
 
 
@@ -728,6 +942,8 @@ def review_team_verdict_blockers(
     changed_files: Sequence[str] | None = None,
     changed_file_count: int | None = None,
     registry: Mapping[str, Any] | None = None,
+    outage_state_path: Path | None = None,
+    admission_time: datetime | str | None = None,
 ) -> tuple[str, ...]:
     """Admission blockers from the review-team quorum gate (no quorum, no merge).
 
@@ -751,4 +967,6 @@ def review_team_verdict_blockers(
         changed_files=changed_files,
         changed_file_count=changed_file_count,
         registry=registry,
+        outage_state_path=outage_state_path,
+        admission_time=admission_time,
     )

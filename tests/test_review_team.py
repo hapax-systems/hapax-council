@@ -7,6 +7,7 @@ Spec: ~/Documents/Personal/30-areas/hapax/pr-review-team-design-2026-06-11.md
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -851,3 +852,353 @@ class TestLensCharters:
             assert len(items) >= 3, f"{lens}: only {len(items)} checklist items"
             assert len(items) == len(set(items)), f"{lens}: duplicate item slugs"
             assert "pass / finding / NA" in text, f"{lens}: missing verdict contract"
+
+
+class TestFamilyOutageDegradation:
+    """Postmortem 2026-06-12 failure class #1: walls degrade the gate, never seal it."""
+
+    WALL_2026_06_12 = "You've hit your weekly limit · resets 5pm America/Chicago"
+
+    def test_the_20260612_wall_text_is_a_quota_wall(self) -> None:
+        rt = _load_review_team_module()
+        assert rt.is_quota_wall(self.WALL_2026_06_12, process_failed=True)
+        assert rt.is_quota_wall(
+            "You've hit your session limit · resets 10pm (America/Chicago)",
+            process_failed=True,
+        )
+
+    def test_wall_variants_classify_on_process_failure(self) -> None:
+        rt = _load_review_team_module()
+        assert rt.is_quota_wall("HTTP 429 Too Many Requests", process_failed=True)
+        assert rt.is_quota_wall("RESOURCE_EXHAUSTED: Quota exceeded", process_failed=True)
+        assert rt.is_quota_wall("rate limit reached for requests", process_failed=True)
+        assert not rt.is_quota_wall("failed while checking line 429", process_failed=True)
+
+    def test_clean_exit_text_never_counts_as_wall_evidence(self) -> None:
+        # round-6 channel trust: model-influenced stdout cannot forge a wall,
+        # even by printing an exact provider-looking literal.
+        rt = _load_review_team_module()
+        assert not rt.is_quota_wall("HTTP 429 Too Many Requests", process_failed=False)
+        assert not rt.is_quota_wall("RESOURCE_EXHAUSTED: Quota exceeded", process_failed=False)
+        assert not rt.is_quota_wall(self.WALL_2026_06_12, process_failed=False)
+        assert not rt.is_quota_wall("HTTP 429 error while fetching", process_failed=False)
+        assert not rt.is_quota_wall("quota exceeded in the parser fixture", process_failed=False)
+        assert not rt.is_quota_wall(
+            'finding: the fixture quotes "You\'ve hit your weekly limit" in prose',
+            process_failed=False,
+        )
+        assert not rt.is_quota_wall(
+            "You've hit your weekly limit in a quoted fixture, but this is review prose",
+            process_failed=False,
+        )
+        assert not rt.is_quota_wall(
+            "You've hit your weekly limit\nverdict: block",
+            process_failed=False,
+        )
+
+    def test_review_prose_is_not_a_wall(self) -> None:
+        rt = _load_review_team_module()
+        assert not rt.is_quota_wall("verdict: block\nfindings: the ring index wraps early")
+        assert not rt.is_quota_wall("")
+
+    def test_t1_degrades_on_evidenced_outage(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        team = rt.constitute_team(
+            "t1_critical", "codex", reg, pr_number=7, outage_families=frozenset({"claude"})
+        )
+        families = {seat.family for seat in team.seats}
+        assert "claude" not in families
+        assert len(families) >= 2
+        assert "degraded_family_outage:claude" in team.notes
+        assert "degraded_to:t2_standard" in team.notes
+        assert "post_recovery_rereview_required" in team.notes
+        # degraded quorum is t2's, and reachable with claude gone
+        assert team.quorum_required == int(reg["sizing"]["t2_standard"]["quorum_accept"])
+
+    def test_t1_still_seals_when_family_missing_without_outage_evidence(self) -> None:
+        import pytest
+
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        with pytest.raises(ValueError, match="family"):
+            rt.constitute_team(
+                "t1_critical",
+                "claude",
+                reg,
+                pr_number=5,
+                available_families=("claude", "codex"),
+            )
+
+    def test_degraded_synthesis_accepts_without_the_walled_family(self) -> None:
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_outage:claude",
+            "degraded_to:t2_standard",
+            "post_recovery_rereview_required",
+        )
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("gemini-2", "gemini", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+        assert dossier["review_team_verdict"] == rt.QUORUM_ACCEPT
+        assert dossier["degraded_family_outage"] == ["claude"]
+        assert dossier["post_recovery_rereview_required"] is True
+
+    def test_undegraded_t1_still_requires_all_families_at_verdict(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("gemini-2", "gemini", "accept"),
+                _review("claude-1", "claude", "quota-wall", checklist={}),
+            ],
+            team_class="t1_critical",
+        )
+        assert dossier["review_team_verdict"] == "no-quorum"
+        assert dossier["degraded_family_outage"] == []
+
+    # --- the ADMISSION side (PR #4110 round-2 finding: the downstream gate
+    # re-sealed what the constitution degraded) ---
+
+    def _degraded_dossier(self, rt) -> dict:
+        notes = (
+            "degraded_family_outage:claude",
+            "degraded_to:t2_standard",
+            "post_recovery_rereview_required",
+        )
+        return _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("gemini-2", "gemini", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+
+    def test_degraded_t1_dossier_passes_admission_validation(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._degraded_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=self._witness(tmp_path),
+            admission_time="2026-06-11T20:30:00+00:00",
+        )
+        assert blockers == (), f"degraded dossier must admit, got: {blockers}"
+
+    def test_inconsistent_degradation_flags_block_admission(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = self._degraded_dossier(rt)
+        dossier["post_recovery_rereview_required"] = False  # forged/torn flags
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(), note, pr_head_sha="a" * 40
+        )
+        assert "review_dossier_degradation_flags_inconsistent" in blockers
+
+    def test_degraded_dossier_with_walled_family_seated_blocks(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_outage:claude",
+            "degraded_to:t2_standard",
+            "post_recovery_rereview_required",
+        )
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),  # walled family seated?!
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=self._witness(tmp_path),
+            admission_time="2026-06-11T20:30:00+00:00",
+        )
+        assert any(b.startswith("review_dossier_degraded_family_was_seated:") for b in blockers)
+
+    # --- round 3: t2/t3 during an outage keep their OWN rules (the first
+    # consistency cut sealed every non-t1 review conducted under an outage) ---
+
+    def test_t2_constitution_under_outage_marks_without_sizing_swap(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        team = rt.constitute_team(
+            "t2_standard", "codex", reg, pr_number=9, outage_families=frozenset({"claude"})
+        )
+        assert "claude" not in {s.family for s in team.seats}
+        assert "degraded_family_outage:claude" in team.notes
+        assert "post_recovery_rereview_required" in team.notes
+        assert "degraded_to:t2_standard" not in team.notes
+        assert team.quorum_required == int(reg["sizing"]["t2_standard"]["quorum_accept"])
+
+    def test_t2_outage_dossier_passes_admission_validation(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        notes = ("degraded_family_outage:claude", "post_recovery_rereview_required")
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("gemini-2", "gemini", "accept"),
+            ],
+            team_class="t2_standard",
+            constitution_notes=notes,
+        )
+        assert dossier["review_team_verdict"] == rt.QUORUM_ACCEPT
+        assert dossier["degraded_family_outage"] == ["claude"]
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=self._witness(tmp_path),
+            admission_time="2026-06-11T20:30:00+00:00",
+        )
+        assert blockers == (), f"t2 outage dossier must admit by its own rules, got: {blockers}"
+
+    def test_t1_marker_on_a_t2_dossier_is_inconsistent(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_outage:claude",
+            "degraded_to:t2_standard",  # forged: a t2 class never swaps sizing
+            "post_recovery_rereview_required",
+        )
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("gemini-2", "gemini", "accept"),
+            ],
+            team_class="t2_standard",
+            constitution_notes=notes,
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(), note, pr_head_sha="a" * 40
+        )
+        assert "review_dossier_degradation_flags_inconsistent" in blockers
+
+    @staticmethod
+    def _witness(tmp_path, families=("claude",), observed="2026-06-11T19:30:00+00:00"):
+        p = tmp_path / "family-outage.json"
+        p.write_text(json.dumps({f: observed for f in families}), encoding="utf-8")
+        return p
+
+    @staticmethod
+    def _tfb_frontmatter(task_id: str = "task-x") -> dict:
+        return {"task_id": task_id}
+
+    def test_unwitnessed_degradation_blocks_admission(self, tmp_path) -> None:
+        """Round-4 finding: dossier-internal consistency can be forged — the
+        dispatcher's outage state is the external witness, and without it a
+        degraded dossier must not admit."""
+
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._degraded_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=tmp_path / "absent-witness.json",
+        )
+        assert any(b.startswith("review_dossier_degradation_unwitnessed:") for b in blockers)
+
+    def test_recovered_witness_invalidates_pending_degraded_admission(self, tmp_path) -> None:
+        # the family recovered (entry cleared) -> the pending degraded dossier
+        # stops admitting: post_recovery_rereview_required, enforced mechanically
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._degraded_dossier(rt))
+        empty_witness = tmp_path / "family-outage.json"
+        empty_witness.write_text("{}", encoding="utf-8")
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=empty_witness,
+        )
+        assert any(b.startswith("review_dossier_degradation_unwitnessed:") for b in blockers)
+
+    def test_expired_witness_blocks_current_admission(self, tmp_path) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._degraded_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=self._witness(tmp_path),
+            admission_time="2026-06-11T22:01:00+00:00",
+        )
+        assert any(b.startswith("review_dossier_degradation_unwitnessed:") for b in blockers)
+
+    def test_non_mapping_witness_is_a_named_blocker(self, tmp_path) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._degraded_dossier(rt))
+        witness = tmp_path / "family-outage.json"
+        witness.write_text("[]", encoding="utf-8")
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=witness,
+            admission_time="2026-06-11T20:30:00+00:00",
+        )
+        assert any(b.startswith("review_dossier_degradation_unwitnessed:") for b in blockers)
+
+    def test_long_quotaish_review_text_is_not_a_wall(self) -> None:
+        # round-4: forging an outage via reply content must be harder than
+        # hitting one — long unparseable text mentioning quota words stays
+        # invalid-output
+        rt = _load_review_team_module()
+        long_reply = (
+            "This change refactors the rate limit reached handling and the "
+            "quota exceeded paths in the ingestion layer. " * 20
+        )
+        assert len(long_reply) > 600
+        assert not rt.is_quota_wall(long_reply)
+
+    def test_unknown_degraded_family_blocks_admission(self, tmp_path) -> None:
+        # round-5: a nonsense family in the markers must not buy a downgrade
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_outage:claudex",
+            "degraded_to:t2_standard",
+            "post_recovery_rereview_required",
+        )
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("gemini-2", "gemini", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=self._witness(tmp_path, families=("claudex",)),
+        )
+        assert any(b.startswith("review_dossier_degradation_unknown_family:") for b in blockers)
