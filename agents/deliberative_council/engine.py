@@ -49,26 +49,6 @@ _log = logging.getLogger(__name__)
 
 _MEMBER_TIMEOUT_S = 120.0
 
-# ── DEGRADE-TO-AVAILABLE ─────────────────────────────────────────────────────
-# Provider-side failures (quota exhaustion, content filtering) are EXCUSED
-# ABSENCES: the member was unable to participate through no fault of the
-# verdict's integrity.  Excused failures lower the effective quorum floor
-# (never below 1) so the remaining members can still produce a valid, degraded
-# verdict.  The DEFAULT panel includes local-fast (resident Command-R, family
-# cohere), which is not cloud-quota/content-filter fragile, so the default
-# seg-prep panel retains a non-excused survivor; callers that omit it from
-# model_aliases forfeit that guarantee.
-# The QUALITY floor (per-axis score thresholds / min_axis_values) is NEVER lowered.
-# See cc-task seg-prep-council-coherence-degrade-not-refuse-20260613.
-PROVIDER_EXCUSED_REASONS: frozenset[str] = frozenset(
-    {
-        "UsageLimitExceeded",
-        "ContentFilterError",
-        "RateLimitError",
-        "QuotaExceededError",
-    }
-)
-
 # ── PRINCIPLED EXECUTION BOUNDS ──────────────────────────────────────────────
 # cc-task cctv-council-perfect-health-faillloud-convergence. pydantic-ai 1.63's
 # default UsageLimits leaves ``tool_calls_limit=None`` (UNBOUNDED): a member ran
@@ -275,46 +255,10 @@ def _assess_health(
     valid_aliases = [r.model_alias for r in results]
     families_valid = {model_family(a) for a in valid_aliases}
     families_requested = {model_family(a) for a in requested}
-
-    # Count excused failures (provider-side errors that are not member faults).
-    excused_members = [f for f in failed if f.reason in PROVIDER_EXCUSED_REASONS]
-
-    # Group failures by family so we can require that EVERY failed member of an
-    # absent family failed for a provider-side reason before excusing it. A family
-    # with even one non-provider failure (timeout, real error) is a genuine
-    # degradation that must still count against the independent-family quorum —
-    # excusing it would let a verdict release below the intended family floor.
-    failures_by_family: dict[str, list[MemberFailure]] = {}
-    for f in failed:
-        failures_by_family.setdefault(model_family(f.model_alias), []).append(f)
-
-    excused_families = {
-        fam
-        for fam, fails in failures_by_family.items()
-        if fam not in families_valid  # the family has no surviving member
-        and all(mf.reason in PROVIDER_EXCUSED_REASONS for mf in fails)
-    }
-    excused_family_count = len(excused_families)
-
-    # Effective floor: lower by excused count, never below 1.
-    effective_member_floor = max(1, config.min_valid_members - len(excused_members))
-    effective_family_floor = max(1, config.min_valid_families - excused_family_count)
-
     below = (
-        len(valid_aliases) < effective_member_floor or len(families_valid) < effective_family_floor
+        len(valid_aliases) < config.min_valid_members
+        or len(families_valid) < config.min_valid_families
     )
-
-    if excused_members:
-        _log.info(
-            "Council degrade-to-available: %d excused (%s), effective floor %d/%d (was %d/%d)",
-            len(excused_members),
-            ", ".join(f"{f.model_alias}:{f.reason}" for f in excused_members),
-            effective_member_floor,
-            effective_family_floor,
-            config.min_valid_members,
-            config.min_valid_families,
-        )
-
     return CouncilHealth(
         members_requested=len(requested),
         members_valid=len(valid_aliases),
@@ -322,9 +266,8 @@ def _assess_health(
         families_valid=len(families_valid),
         failed_members=tuple(failed),
         below_quorum=below,
-        quorum_floor_members=effective_member_floor,
-        quorum_floor_families=effective_family_floor,
-        excused_failures=len(excused_members),
+        quorum_floor_members=config.min_valid_members,
+        quorum_floor_families=config.min_valid_families,
     )
 
 
