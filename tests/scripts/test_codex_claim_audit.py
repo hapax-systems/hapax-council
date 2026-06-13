@@ -922,6 +922,23 @@ class TestSystemdUnits:
         assert "[Timer]" in text
         assert "OnCalendar=" in text
 
+    def test_timer_has_auto_enable_marker(self) -> None:
+        """Exit predicate: the timer must auto-enable on deploy.
+
+        hapax-post-merge-deploy `enable --now`s units carrying the
+        `# Hapax-Auto-Enable: true` annotation (+ an [Install] section) and
+        verifies marked timers are active. Without the marker the timer relies
+        on the preset alone and would not be enabled by the governed deploy.
+        """
+        unit = SCRIPT.parent.parent / "systemd" / "units" / "codex-claim-audit.timer"
+        text = unit.read_text()
+        assert any(
+            line.strip().lower().replace(" ", "")
+            in ("#hapax-auto-enable:true", ";hapax-auto-enable:true")
+            for line in text.splitlines()
+        ), "timer must carry the # Hapax-Auto-Enable: true marker"
+        assert "[Install]" in text  # marker is a no-op without an [Install] section
+
     def test_dropin_tracked(self) -> None:
         dropin = (
             SCRIPT.parent.parent
