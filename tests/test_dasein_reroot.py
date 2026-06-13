@@ -144,3 +144,30 @@ class TestApertureLoopPath:
         ):
             wrote = d._maybe_write_aperture(now_m=1000.0)
         assert wrote is False  # error swallowed, loop continues
+
+    async def test_run_loop_invokes_aperture_caller(self, tmp_path, monkeypatch):
+        """Integration: one pass of the real run() loop must call
+        _maybe_write_aperture — a refactor that drops the caller is caught here
+        (unit tests of the method alone would not notice)."""
+        import agents.dmn.__main__ as dmn
+
+        d = DMNDaemon.__new__(DMNDaemon)
+        d._running = True
+        d._start_time = 0.0
+        d._feedback_cursor = 0
+        d._last_aperture_s = 0.0
+        d._buffer = mock.MagicMock()
+        d._pulse = mock.MagicMock()
+        d._pulse.tick = mock.AsyncMock()
+        monkeypatch.setattr(dmn, "DMN_STATE_DIR", tmp_path)
+        monkeypatch.setattr(d, "_write_output", mock.MagicMock())
+        monkeypatch.setattr(d, "_consume_fortress_feedback", mock.MagicMock())
+        aperture_spy = mock.MagicMock()
+        monkeypatch.setattr(d, "_maybe_write_aperture", aperture_spy)
+
+        async def _stop_after_one(_seconds):
+            d._running = False  # exit the while after this iteration
+
+        monkeypatch.setattr(dmn.asyncio, "sleep", _stop_after_one)
+        await d.run()
+        aperture_spy.assert_called_once()
