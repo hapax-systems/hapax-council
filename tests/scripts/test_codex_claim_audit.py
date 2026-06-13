@@ -74,8 +74,22 @@ def _write_claim_cache(cache_dir: Path, role: str, task_id: str) -> Path:
     return f
 
 
-def _gh_stub(tmp_path: Path, state: str = "OPEN") -> Path:
-    """Create a fake gh command that returns a fixed PR state."""
+def _gh_stub(
+    tmp_path: Path,
+    state: str = "OPEN",
+    *,
+    open_pr_branch: str | None = None,
+    open_pr_number: str = "8888",
+) -> Path:
+    """Create a fake gh command.
+
+    - ``pr view <n> --jq .state`` echoes ``state``.
+    - ``pr list --head <branch> --jq '.[0].number // empty'`` echoes
+      ``open_pr_number`` when ``<branch>`` matches ``open_pr_branch`` (an OPEN
+      branch PR), else echoes nothing (no open PR). Exit 0 either way so the
+      branch probe distinguishes "no open PR" from "gh failed".
+    """
+    branch_match = open_pr_branch or ""
     stub = tmp_path / "bin" / "gh"
     stub.parent.mkdir(parents=True, exist_ok=True)
     stub.write_text(
@@ -84,6 +98,17 @@ def _gh_stub(tmp_path: Path, state: str = "OPEN") -> Path:
         # Stub gh for testing
         if [[ "$1" == "pr" && "$2" == "view" ]]; then
             echo '{state}'
+            exit 0
+        fi
+        if [[ "$1" == "pr" && "$2" == "list" ]]; then
+            head=""
+            while [[ $# -gt 0 ]]; do
+                if [[ "$1" == "--head" ]]; then head="$2"; fi
+                shift
+            done
+            if [[ -n "{branch_match}" && "$head" == "{branch_match}" ]]; then
+                echo '{open_pr_number}'
+            fi
             exit 0
         fi
         exit 1
@@ -349,6 +374,93 @@ class TestPROpenClaimProtection:
 
         _run_audit(tmp_path, vault, cache_dir, release=True, gh_state="CLOSED")
         assert not claim_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# CLASS #5 via branch: pr:null tasks whose branch head has an OPEN PR
+# ---------------------------------------------------------------------------
+
+
+class TestBranchHeadRealityCheck:
+    """A pr:null claim whose branch head has an OPEN PR must not be cleared.
+
+    Covers the gh-pr-create -> note-sync race window: the PR exists on GitHub
+    before the note's pr field is populated.
+    """
+
+    def test_branch_head_open_pr_protects_phantom(self, tmp_path: Path) -> None:
+        """pr:null + branch with an OPEN branch PR = protected (not released)."""
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+
+        task_id = "branch-live-pr"
+        note = _write_task_note(
+            vault,
+            task_id,
+            assigned_to="cx-red",
+            pr="null",
+            branch="cx-red/live-branch",
+            status="claimed",
+            claimed_at="2026-06-10T01:00:00Z",  # stale -> phantom-eligible
+        )
+        claim_file = _write_claim_cache(cache_dir, "cx-red", task_id)
+        # gh: pr:null so `pr view` is never hit; `pr list --head cx-red/live-branch`
+        # returns an OPEN PR (#8888).
+        gh = _gh_stub(tmp_path, state="CLOSED", open_pr_branch="cx-red/live-branch")
+
+        result = _run_audit(tmp_path, vault, cache_dir, release=True, gh_stub_path=gh)
+
+        assert claim_file.exists(), "live branch-PR claim must be retained"
+        assert "status: offered" not in note.read_text(encoding="utf-8")
+        assert "PR_OPEN_PROTECTED" in result.stdout
+        assert "cx-red/live-branch" in result.stdout
+
+    def test_branch_head_indeterminate_protects_phantom(self, tmp_path: Path) -> None:
+        """pr:null + branch but gh lookup FAILS = fail-safe retain."""
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+
+        task_id = "branch-gh-down"
+        _write_task_note(
+            vault,
+            task_id,
+            assigned_to="cx-red",
+            pr="null",
+            branch="cx-red/some-branch",
+            status="claimed",
+            claimed_at="2026-06-10T01:00:00Z",
+        )
+        claim_file = _write_claim_cache(cache_dir, "cx-red", task_id)
+        gh = _gh_stub_failing(tmp_path)  # all gh calls fail -> branch probe rc 2
+
+        result = _run_audit(tmp_path, vault, cache_dir, release=True, gh_stub_path=gh)
+
+        assert claim_file.exists(), "indeterminate branch PR state must fail-safe retain"
+        assert "PR_OPEN_PROTECTED" in result.stdout
+
+    def test_branch_head_no_open_pr_releases(self, tmp_path: Path) -> None:
+        """pr:null + branch with NO open PR = released (not over-protected)."""
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+
+        task_id = "branch-dead-pr"
+        note = _write_task_note(
+            vault,
+            task_id,
+            assigned_to="cx-red",
+            pr="null",
+            branch="cx-red/merged-branch",
+            status="claimed",
+            claimed_at="2026-06-10T01:00:00Z",
+        )
+        claim_file = _write_claim_cache(cache_dir, "cx-red", task_id)
+        # gh succeeds but the branch has no OPEN PR (open_pr_branch unset).
+        gh = _gh_stub(tmp_path, state="CLOSED")
+
+        _run_audit(tmp_path, vault, cache_dir, release=True, gh_stub_path=gh)
+
+        assert not claim_file.exists(), "a branch with no open PR must release"
+        assert "status: offered" in note.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

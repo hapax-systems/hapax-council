@@ -18,7 +18,10 @@
 # Changes in v2:
 #   - GitHub PR reality check: before clearing any claim whose task note has a
 #     pr field, check `gh pr view` state. If the PR is OPEN or DRAFT, the claim
-#     is LIVE — never clear it. (Fixes class #5.)
+#     is LIVE — never clear it. When the pr field is null but the task has a
+#     branch, probe the branch head (`gh pr list --head`) — an open branch PR
+#     or an unverifiable lookup both retain the claim (fail-safe). (Fixes class
+#     #5, incl. the gh-pr-create → note-sync race window.)
 #   - Attributed journal logging: every claim-cache mutation emits a structured
 #     journal line via systemd-cat or logger so deletions are forensically
 #     traceable. (Fixes the 2026-06-12T19:00 cache-vanish incident.)
@@ -132,6 +135,30 @@ _gh_pr_is_open() {
   esac
 }
 
+_gh_open_pr_for_branch() {
+  # Branch-head PR reality check (class #5, the pr:null race window between
+  # `gh pr create` and the note's pr field syncing). Probes GitHub for an OPEN
+  # PR whose head ref is $1.
+  #   return 0 + echo <number> : a definite OPEN PR exists for this branch
+  #   return 1                 : gh succeeded and there is NO open PR
+  #   return 2                 : gh unavailable / lookup failed (INDETERMINATE)
+  # Callers treat 0 AND 2 as "do not clear" (fail-safe): an unverifiable branch
+  # must not have its live claim erased.
+  local branch="$1"
+  [[ -n "$branch" && "$branch" != "null" ]] || return 1
+  command -v "$GH_CMD" >/dev/null 2>&1 || return 2
+  local out rc
+  set +e
+  out="$("$GH_CMD" pr list --head "$branch" --state open --repo "$GH_REPO_SLUG" \
+    --json number --jq '.[0].number // empty' 2>/dev/null)"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || return 2   # lookup failed -> indeterminate
+  [ -n "$out" ] || return 1      # gh ok, no open PR for this branch
+  printf '%s' "$out"
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # Helpers (unchanged from v1 unless noted)
 # ---------------------------------------------------------------------------
@@ -240,6 +267,30 @@ _pr_number_for_task() {
     pr_number="$(_fm_value pr "$note")"
     if [ -n "$pr_number" ] && [ "$pr_number" != "null" ]; then
       printf '%s' "$pr_number"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_branch_for_task() {
+  # Resolve a task's branch from its active (then closed) note, for the
+  # branch-head PR reality check when the pr field is null.
+  local task_id="$1"
+  local note branch
+  note="$(_active_note_for "$task_id" 2>/dev/null || true)"
+  if [ -n "$note" ]; then
+    branch="$(_fm_value branch "$note")"
+    if [ -n "$branch" ] && [ "$branch" != "null" ]; then
+      printf '%s' "$branch"
+      return 0
+    fi
+  fi
+  for note in "$VAULT_ROOT/closed/$task_id.md" "$VAULT_ROOT/closed/$task_id-"*.md; do
+    [ -f "$note" ] || continue
+    branch="$(_fm_value branch "$note")"
+    if [ -n "$branch" ] && [ "$branch" != "null" ]; then
+      printf '%s' "$branch"
       return 0
     fi
   done
@@ -422,6 +473,36 @@ _clear_claim_cache_for_release() {
         release_cache_message="    -> KEPT claim cache $(basename "$claim_file") because PR #${pr_number} is OPEN on GitHub\n"
         _journal_attr "PROTECT" "$(basename "$claim_file")" "pr_open pr=#${pr_number} task=${task_id} assigned=${assigned}"
         return 1
+      fi
+
+      # ── BRANCH-HEAD REALITY CHECK (class #5, pr:null race window) ──
+      # When the pr field is null but the task has a branch, the branch head
+      # may already have an OPEN PR (created before the note's pr field synced).
+      # Probe the branch directly; an OPEN PR (rc 0) OR an unverifiable lookup
+      # (rc 2, gh down) both retain the claim — fail-safe, never erase a claim
+      # we cannot positively confirm is dead.
+      if [ -z "$pr_number" ] || [ "$pr_number" = "null" ]; then
+        local branch_for_probe branch_open_pr branch_probe_rc
+        branch_for_probe="$(_branch_for_task "$task_id" 2>/dev/null || true)"
+        if [ -n "$branch_for_probe" ] && [ "$branch_for_probe" != "null" ]; then
+          set +e
+          branch_open_pr="$(_gh_open_pr_for_branch "$branch_for_probe")"
+          branch_probe_rc=$?
+          set -e
+          if [ "$branch_probe_rc" -eq 0 ] || [ "$branch_probe_rc" -eq 2 ]; then
+            pr_protected_count=$((pr_protected_count + 1))
+            if [ "$branch_probe_rc" -eq 0 ]; then
+              pr_protected_report="${pr_protected_report}  PR_OPEN_PROTECTED: ${task_id} assigned=${assigned} branch=${branch_for_probe} pr=#${branch_open_pr} -- claim cache retained (branch head has an OPEN PR)\n"
+              release_cache_message="    -> KEPT claim cache $(basename "$claim_file") because branch ${branch_for_probe} has OPEN PR #${branch_open_pr}\n"
+              _journal_attr "PROTECT" "$(basename "$claim_file")" "branch_open_pr pr=#${branch_open_pr} branch=${branch_for_probe} task=${task_id}"
+            else
+              pr_protected_report="${pr_protected_report}  PR_OPEN_PROTECTED: ${task_id} assigned=${assigned} branch=${branch_for_probe} -- claim cache retained (branch PR state INDETERMINATE; fail-safe)\n"
+              release_cache_message="    -> KEPT claim cache $(basename "$claim_file") because branch ${branch_for_probe} PR state is indeterminate (gh lookup failed; fail-safe)\n"
+              _journal_attr "PROTECT" "$(basename "$claim_file")" "branch_pr_indeterminate branch=${branch_for_probe} task=${task_id} — fail-safe retain"
+            fi
+            return 1
+          fi
+        fi
       fi
 
       if [ "$DRY_RUN" = true ]; then
