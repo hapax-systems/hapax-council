@@ -94,7 +94,17 @@ class TestRunPhase1:
         assert len(call_log) == 6  # investigate + structured score per model
 
     @pytest.mark.asyncio
-    async def test_phase1_cache_points_only_for_capable_families(self) -> None:
+    async def test_phase1_score_prompt_is_dynamic_only_cache_via_system_prompt(self) -> None:
+        # R1b (cctv-prompt-caching-quality-neutral-20260607): the stable rubric
+        # prefix (role + instructions + axes) moved into ``Agent(system_prompt=)``
+        # so it sits at the conversation prefix for provider cache reuse across
+        # every member call. The score USER message is therefore a plain string
+        # carrying ONLY the per-input dynamic content — for ALL families. The
+        # cache_control breakpoint is injected at the LiteLLM gateway for capable
+        # families (R1), and the per-alias cache *policy* stays family-aware in
+        # the verdict receipt (``cache_policy_for_alias``).
+        from agents.deliberative_council.members import cache_policy_for_alias
+
         prompts: list[object] = []
 
         async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
@@ -113,9 +123,19 @@ class TestRunPhase1:
         opus_score_prompt = prompts[1]
         local_score_prompt = prompts[3]
 
-        assert not isinstance(opus_score_prompt, str)
-        assert any(isinstance(part, CachePoint) for part in opus_score_prompt)
-        assert isinstance(local_score_prompt, str)
+        # No per-call CachePoint object any more: the score prompt is a plain
+        # string of dynamic input only, identical in shape across families.
+        for score_prompt in (opus_score_prompt, local_score_prompt):
+            assert isinstance(score_prompt, str)
+            assert "Your Prior Research Findings" in score_prompt
+            assert "ref.md" in score_prompt
+            # The stable rubric axes are NOT duplicated into the user message.
+            assert "Rubric Axes" not in score_prompt
+
+        # Family-aware cache policy is preserved for the receipt: the Anthropic
+        # member advertises a provider cache breakpoint, the local one does not.
+        assert cache_policy_for_alias("opus")["cache_control"] is True
+        assert cache_policy_for_alias("local-fast")["cache_control"] is False
 
     @pytest.mark.asyncio
     async def test_phase1_randomized_axis_order(self) -> None:

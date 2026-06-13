@@ -44,6 +44,7 @@ from .prompts import (
     phase4_revision_prompt,
 )
 from .rubrics import Rubric
+from .tools import tool_memoization_scope
 
 _log = logging.getLogger(__name__)
 
@@ -308,7 +309,20 @@ async def deliberate(
 ) -> CouncilVerdict:
     if config is None:
         config = CouncilConfig()
+    # R4 (cctv-prompt-caching-quality-neutral-20260607): identical read_source /
+    # grep_evidence sub-calls within ONE deliberation short-circuit via a per-run
+    # cache shared across this deliberation's member tasks only (distinct
+    # deliberations stay isolated; callers outside deliberate() run uncached).
+    with tool_memoization_scope():
+        return await _deliberate(inp, mode, rubric, config)
 
+
+async def _deliberate(
+    inp: CouncilInput,
+    mode: CouncilMode,
+    rubric: Rubric,
+    config: CouncilConfig,
+) -> CouncilVerdict:
     if not inp.source_context:
         from agents.deliberative_council.source_context import populate_source_context
 
