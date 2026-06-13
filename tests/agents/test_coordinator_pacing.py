@@ -76,7 +76,7 @@ def _run_tick(state: str, *, n_tasks: int, n_lanes: int) -> int:
         patch.object(
             Coordinator,
             "_dispatch",
-            side_effect=lambda t, lane: bool(dispatched.append((t, lane))) or True,
+            side_effect=lambda t, lane: bool(dispatched.append((t, lane))) or (True, ""),
         ),
         patch.object(Coordinator, "_write_state"),
         patch(

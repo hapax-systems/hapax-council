@@ -298,8 +298,10 @@ def _run_tick(
     with (
         patch.object(Coordinator, "_scan_tasks", return_value=tasks),
         patch.object(Coordinator, "_check_lanes", return_value=lanes),
-        patch.object(Coordinator, "_dispatch", return_value=True),
-        patch.object(Coordinator, "_write_state", side_effect=captured.append),
+        patch.object(Coordinator, "_dispatch", return_value=(True, "")),
+        patch.object(
+            Coordinator, "_write_state", side_effect=lambda state, **_: captured.append(state)
+        ),
         patch(
             "agents.coordinator.core.admission_state",
             return_value=AdmissionDecision(state=admission),

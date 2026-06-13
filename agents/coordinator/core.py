@@ -1,4 +1,11 @@
-"""Core coordinator logic — task queue, lane health, dispatch routing."""
+"""Core coordinator logic — task queue, lane health, dispatch routing.
+
+No-spin law (failure class #9 remediation): the dispatch refusal ledger tracks
+(task_id, lane, reason) triples and enters exponential-backoff cooldown after K
+identical deterministic refusals.  A single ntfy escalation fires at the K
+threshold.  Fleet-wide starvation (offered>0, dispatched=0 for 1h) also triggers
+one escalation.  See agents/coordinator/refusal_ledger.py.
+"""
 
 from __future__ import annotations
 
@@ -14,12 +21,14 @@ from pathlib import Path
 
 import yaml
 
+from agents.coordinator.refusal_ledger import DispatchRefusalLedger
 from shared.dispatch_service_time import (
     AGE_NORM_S,
     QueueLane,
     QueueTask,
     parse_ts,
     plan_dispatches,
+    wsjf_effective,
 )
 from shared.jsonl_append import append_jsonl
 from shared.notify import send_notification
@@ -28,6 +37,14 @@ from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES
 from shared.sdlc_pressure_gate import admission_state
 
 log = logging.getLogger(__name__)
+
+
+def _ntfy_escalate(title: str, body: str) -> None:
+    """Send an ntfy escalation for the no-spin law.  Best-effort; never raises."""
+    try:
+        send_notification(title, body, priority="high", tags=["sdlc", "no-spin"])
+    except Exception:  # noqa: BLE001 — ntfy is best-effort; never block the tick.
+        log.exception("no-spin ntfy escalation failed (continuing)")
 
 
 def pressure_dispatch_budget(
@@ -45,6 +62,11 @@ def pressure_dispatch_budget(
     if state == "paced":
         return (1, base_cooldown * 2.0)
     return (idle_count, base_cooldown)
+
+
+def _queue_task_routable(task: QueueTask, lane: QueueLane) -> bool:
+    platforms = {platform.lower() for platform in task.platform_suitability}
+    return "any" in platforms or lane.platform.lower() in platforms
 
 
 TASKS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
@@ -68,6 +90,11 @@ SESSION_PREFIXES = (
     ("hapax-gemini-", "gemini"),
 )
 DISPATCH_COOLDOWN_S = 120.0
+
+# The methodology dispatcher lives in the primary clone (not this worktree). A
+# module constant so tests can point it at a hermetic fixture instead of relying
+# on the operator's exact ~/projects/hapax-council layout existing.
+METHODOLOGY_DISPATCHER = Path.home() / "projects/hapax-council/scripts/hapax-methodology-dispatch"
 
 # A lane that owns a non-terminal task but has emitted no progress signal for this
 # long (or whose supervising launcher PID is gone) is projected `stalled` and its
@@ -153,6 +180,11 @@ class Coordinator:
         # per-task-lifetime reoffer counter (process-local); caps the
         # offered→claim→stall→offered loop and escalates to `blocked` past the cap.
         self._reoffer_counts: dict[str, int] = {}
+        # No-spin law: refusal ledger tracks (task, lane, reason) triples and
+        # enters cooldown after K identical deterministic refusals.
+        self._refusal_ledger = DispatchRefusalLedger(
+            _escalate_fn=_ntfy_escalate,
+        )
 
     def tick(self) -> None:
         tasks = self._scan_tasks()
@@ -244,12 +276,21 @@ class Coordinator:
             )
             for l in idle_lanes
         ]
+        # Delegate ordering/aging/fairness to the tested plan_dispatches (both the
+        # default lane-outer VOQ planner and the `legacy` revert path), then run a
+        # no-spin repair pass: a (task, lane) pair in refusal cooldown is replanned
+        # to the next eligible task for that lane instead of head-of-line-blocking
+        # it. The repair applies in BOTH scheduler modes — the legacy path no longer
+        # lets a cooled high-WSJF pair freeze a lane other work could use.
         plan = plan_dispatches(
             queue_tasks,
             queue_lanes,
             max_dispatches=max_dispatches,
             age_norm_s=age_norm_s,
             legacy=legacy,
+        )
+        plan, skipped_cooldown = self._repair_cooled_plan(
+            plan, queue_tasks, queue_lanes, age_norm_s=age_norm_s, now_mono=now_mono
         )
         task_by_id = {t.task_id: t for t in offered}
         lane_by_role = {l.role: l for l in idle_lanes}
@@ -258,21 +299,60 @@ class Coordinator:
             lane = lane_by_role.get(role)
             if task is None or lane is None:
                 continue
-            if self._dispatch(task, lane):
+            success, refusal_reason = self._dispatch(task, lane)
+            if success:
                 self._last_dispatch[role] = now_mono
                 dispatches += 1
+                # Success clears refusal state for this task (the external issue resolved).
+                self._refusal_ledger.clear(task_id)
+            else:
+                # Every failed dispatch is recorded — no silent retries.
+                self._refusal_ledger.record_refusal(task_id, role, refusal_reason, now=now_mono)
 
         state.dispatches_this_tick = dispatches
         state.lanes = {role: _lane_to_dict(l) for role, l in lanes.items()}
-        self._write_state(state)
+
+        # No-spin law: fleet-starvation detector (offered>0, dispatched=0 for 1h →
+        # ONE escalation). Count only offered tasks the refusal ledger is NOT
+        # already holding: a cooled pair has its own circuit-breaker escalation, so
+        # counting it here would double-escalate the same root cause. But zeroing
+        # the count whenever ANY single pair is cooled (the prior behavior) let one
+        # cooled pair silently mask genuine starvation of the rest of the fleet —
+        # a task that is offered, undispatched, and NOT cooled must still drive the
+        # starvation horizon. Only when EVERY offered task is cooled does the count
+        # reach 0 (the intentional no-double-escalation case).
+        # Gate on idle capacity: a fleet with NO idle lanes is saturated (busy
+        # working), not starving — counting offered work as starved there would
+        # page the operator for a healthy fleet (executive_function noise). The
+        # 2026-06-12 incident had idle_lanes=1, dispatched=0: capacity present,
+        # dispatch still failing — that is the starvation this detector is for.
+        # Discount only tasks held by an ESCALATED cooldown (deterministic refusal
+        # past K, already paged); a transient cooldown (timeouts, no escalation)
+        # must still drive the horizon, else a task stuck on transient failures is
+        # silently dropped — neither escalated nor counted.
+        cooled_offered = sum(
+            1
+            for t in offered
+            if self._refusal_ledger.any_cooldown_for_task(
+                t.task_id, escalated_only=True, now=now_mono
+            )
+        )
+        starvation_offered = (len(offered) - cooled_offered) if idle_lanes else 0
+        self._refusal_ledger.tick_starvation(starvation_offered, dispatches, now=now_mono)
+
+        # Surface refusal stats in SHM.
+        refusal_stats = self._refusal_ledger.stats()
+        self._write_state(state, refusal_stats=refusal_stats)
 
         log.info(
-            "tick: offered=%d idle_lanes=%d dispatched=%d alive=%d/%d",
+            "tick: offered=%d idle_lanes=%d dispatched=%d alive=%d/%d cooled=%d skipped=%d",
             len(offered),
             state.lanes_idle,
             dispatches,
             state.lanes_alive,
             state.lanes_total,
+            refusal_stats.get("cooled_down", 0),
+            skipped_cooldown,
         )
 
     def _scan_tasks(self) -> list[Task]:
@@ -304,11 +384,69 @@ class Coordinator:
                 return lane
         return None
 
-    def _dispatch(self, task: Task, lane: LaneState) -> bool:
-        dispatcher = Path.home() / "projects/hapax-council/scripts/hapax-methodology-dispatch"
+    def _repair_cooled_plan(
+        self,
+        plan: list[tuple[str, str]],
+        queue_tasks: list[QueueTask],
+        queue_lanes: list[QueueLane],
+        *,
+        age_norm_s: float,
+        now_mono: float,
+    ) -> tuple[list[tuple[str, str]], int]:
+        """No-spin law for the planned dispatches: drop refusal-cooled pairs and
+        replan their freed lane to the best eligible non-cooled task.
+
+        ``plan_dispatches`` is cooldown-blind (it only knows the per-lane dispatch
+        rate-limit, not the refusal ledger). This pass enforces the no-spin
+        invariant on top of whatever plan it produced — in both the default and
+        the ``legacy`` scheduler — so a cooled (task, lane) pair never head-of-line-
+        blocks a lane that another offered task could use.
+
+        Returns ``(repaired_plan, skipped_cooldown)`` where ``skipped_cooldown``
+        counts lanes freed by a cooled pair that had no eligible backfill.
+        """
+
+        def cooled(task_id: str, role: str) -> bool:
+            return self._refusal_ledger.any_cooldown_for_pair(task_id, role, now=now_mono)
+
+        lane_by_role = {lane.role: lane for lane in queue_lanes}
+        planned: set[str] = {task_id for task_id, _ in plan}
+        repaired: list[tuple[str, str]] = []
+        skipped = 0
+        for task_id, role in plan:
+            if not cooled(task_id, role):
+                repaired.append((task_id, role))
+                continue
+            # Cooled: free the lane and try to backfill with the best eligible task
+            # (routable, not already planned, not itself in cooldown on this lane).
+            planned.discard(task_id)
+            lane = lane_by_role.get(role)
+            candidates = [
+                t
+                for t in queue_tasks
+                if t.task_id not in planned
+                and lane is not None
+                and _queue_task_routable(t, lane)
+                and not cooled(t.task_id, role)
+            ]
+            if candidates:
+                best = max(candidates, key=lambda t: wsjf_effective(t.wsjf, t.age_s, age_norm_s))
+                repaired.append((best.task_id, role))
+                planned.add(best.task_id)
+            else:
+                skipped += 1
+        return repaired, skipped
+
+    def _dispatch(self, task: Task, lane: LaneState) -> tuple[bool, str]:
+        """Attempt to dispatch a task to a lane.
+
+        Returns (success, refusal_reason).  On success refusal_reason is empty.
+        On failure refusal_reason is the stderr text (for the refusal ledger).
+        """
+        dispatcher = METHODOLOGY_DISPATCHER
         if not dispatcher.exists():
             log.warning("hapax-methodology-dispatch not found, cannot dispatch to %s", lane.role)
-            return False
+            return False, "dispatcher_not_found"
 
         try:
             result = subprocess.run(
@@ -328,20 +466,26 @@ class Coordinator:
                 capture_output=True,
                 text=True,
             )
-        except (subprocess.TimeoutExpired, OSError) as exc:
+        except subprocess.TimeoutExpired as exc:
+            log.warning("Dispatch to %s timed out: %s", lane.role, exc)
+            return False, f"TimeoutExpired: {exc}"
+        except OSError as exc:
             log.warning("Dispatch to %s failed: %s", lane.role, exc)
-            return False
+            return False, f"OSError: {exc}"
 
         if result.returncode != 0:
+            reason = result.stderr.strip()
+            if not reason:
+                reason = f"dispatch_exit_{result.returncode}"
             log.warning(
                 "Dispatch to %s failed via methodology dispatcher: %s",
                 lane.role,
-                result.stderr.strip(),
+                reason,
             )
-            return False
+            return False, reason
 
         log.info("Dispatched task %s to lane %s", task.task_id, lane.role)
-        return True
+        return True, ""
 
     def _reoffer_stalled(self, lane: LaneState) -> bool:
         """Release a stalled lane's held task back to `offered`/`unassigned`, clear the
@@ -458,7 +602,7 @@ class Coordinator:
             sort_keys=True,
         )
 
-    def _write_state(self, state: CoordinatorState) -> None:
+    def _write_state(self, state: CoordinatorState, *, refusal_stats: dict | None = None) -> None:
         SHM_DIR.mkdir(parents=True, exist_ok=True)
         payload = {
             "timestamp": state.timestamp,
@@ -472,6 +616,8 @@ class Coordinator:
             "reoffers_this_tick": state.reoffers_this_tick,
             "lanes": state.lanes,
         }
+        if refusal_stats:
+            payload["refusal_ledger"] = refusal_stats
         tmp = SHM_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload), encoding="utf-8")
         tmp.rename(SHM_FILE)
