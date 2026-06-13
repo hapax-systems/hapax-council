@@ -176,6 +176,21 @@ def test_gate_rejects_operator_legal_name_in_co_authors(monkeypatch) -> None:
     assert legal.decision == PublicationGateDecision.REJECT
 
 
+def test_gate_rejects_operator_legal_name_in_slug(monkeypatch) -> None:
+    """corporate_boundary: a legal name in the slug — which fans out into public
+    URLs / filenames / event-ids — is a REJECT, including the separator-normalized
+    kebab form (`jane-doe` ~ `Jane Doe`), even when it appears nowhere else."""
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Jane Doe")
+    result = _gate().evaluate(
+        _artifact(slug="jane-doe-research-notes", attribution_block="Oudepode · Hapax")
+    )
+
+    assert result.decision == PublicationGateDecision.REJECT
+    assert not result.passes()
+    legal = next(c for c in result.child_results if c.name == "legal_name")
+    assert legal.decision == PublicationGateDecision.REJECT
+
+
 def test_gate_legal_name_configured_but_clean_passes(monkeypatch) -> None:
     """The live-guard happy path (most common production state once provisioned):
     HAPAX_OPERATOR_NAME is set and the artifact is clean. The guard ran (no

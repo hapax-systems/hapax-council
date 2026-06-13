@@ -33,9 +33,12 @@ and never writes it back to source.
 > **Never author the legal name into an artifact.** The publication
 > hardening gate (`shared/publication_hardening/gate.py`) REJECTs a
 > configured `HAPAX_OPERATOR_NAME` found anywhere in the authored
-> artifact — title, abstract, body, `attribution_block`, **and
-> co-author identity fields** (`name`/`given_names`/`family_names`/
-> `alias`, which publishers render into Zenodo creators / CFF authors).
+> artifact — title, abstract, body, `attribution_block`, **co-author
+> identity fields** (`name`/`given_names`/`family_names`/`alias`, which
+> publishers render into Zenodo creators / CFF authors), **and the
+> `slug` / `embed_image_url` / `source_path` / `approved_by_referent`
+> fields** (which reach public URLs, filenames, and event-ids — matched
+> in separator-normalized form too, so `jane-doe` is caught).
 > Use a canonical referent (`Oudepode` / `The Operator` /
 > `Oudepode The Operator` / `OTO`, from
 > `shared.operator_referent.REFERENTS`) in authored fields. The legal

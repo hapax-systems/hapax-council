@@ -425,9 +425,12 @@ def _artifact_legal_name_surface(artifact: PreprintArtifact) -> str:
     """Every authored surface a publisher can render the operator's identity into.
 
     Superset of ``_artifact_publication_text``: appends each co-author's identity
-    fields (``name`` / ``given_names`` / ``family_names`` / ``alias``). Publishers
-    render co-authors into public metadata — Zenodo ``creators``, OSF, CFF
-    ``authors`` — even when ``attribution_block`` is empty, so a legal name there
+    fields (``name`` / ``given_names`` / ``family_names`` / ``alias``) plus the
+    other authored fields that reach a public surface — ``slug`` (public URLs /
+    filenames / event-ids), ``embed_image_url``, ``source_path``, and
+    ``approved_by_referent`` — each in a separator-normalized form too. Publishers
+    render co-authors into public metadata (Zenodo ``creators``, OSF, CFF
+    ``authors``) even when ``attribution_block`` is empty, so a legal name there
     leaks identically to one in a byline. The default co-authors carry the
     referent (``Oudepode`` / ``The Operator`` / ``OTO``), never a legal name; the
     legal name is injected only at the per-surface formal render, downstream of
@@ -450,6 +453,19 @@ def _artifact_legal_name_surface(artifact: PreprintArtifact) -> str:
             )
             if field
         )
+    # Other authored fields that reach public URLs / filenames / event-ids / audit
+    # records (slug, embed image URL, source path, approval referent). Each also
+    # gets a separator-normalized form so a slug/URL like "jane-doe" matches the
+    # configured "Jane Doe" — slugs and paths replace whitespace with separators.
+    for field in (
+        artifact.slug,
+        artifact.embed_image_url,
+        artifact.source_path,
+        artifact.approved_by_referent,
+    ):
+        if field:
+            parts.append(field)
+            parts.append(re.sub(r"[-_/.]+", " ", field))
     return "\n".join(part for part in parts if part)
 
 
