@@ -857,25 +857,44 @@ class TestLensCharters:
 class TestFamilyOutageDegradation:
     """Postmortem 2026-06-12 failure class #1: walls degrade the gate, never seal it."""
 
-    WALL_2026_06_12 = "You've hit your weekly limit · resets 5pm (America/Chicago)"
+    WALL_2026_06_12 = "You've hit your weekly limit · resets 5pm America/Chicago"
 
     def test_the_20260612_wall_text_is_a_quota_wall(self) -> None:
         rt = _load_review_team_module()
-        assert rt.is_quota_wall(self.WALL_2026_06_12)
+        assert rt.is_quota_wall(self.WALL_2026_06_12, process_failed=True)
+        assert rt.is_quota_wall(
+            "You've hit your session limit · resets 10pm (America/Chicago)",
+            process_failed=True,
+        )
 
     def test_wall_variants_classify_on_process_failure(self) -> None:
         rt = _load_review_team_module()
         assert rt.is_quota_wall("HTTP 429 Too Many Requests", process_failed=True)
         assert rt.is_quota_wall("RESOURCE_EXHAUSTED: Quota exceeded", process_failed=True)
         assert rt.is_quota_wall("rate limit reached for requests", process_failed=True)
+        assert not rt.is_quota_wall("failed while checking line 429", process_failed=True)
 
-    def test_clean_exit_text_matches_exact_sentences_only(self) -> None:
-        # round-5 channel trust: model-influenced text cannot forge a wall
-        # with quota-looking prose — only the literal provider sentences count
+    def test_clean_exit_text_never_counts_as_wall_evidence(self) -> None:
+        # round-6 channel trust: model-influenced stdout cannot forge a wall,
+        # even by printing an exact provider-looking literal.
         rt = _load_review_team_module()
+        assert not rt.is_quota_wall("HTTP 429 Too Many Requests", process_failed=False)
+        assert not rt.is_quota_wall("RESOURCE_EXHAUSTED: Quota exceeded", process_failed=False)
+        assert not rt.is_quota_wall(self.WALL_2026_06_12, process_failed=False)
         assert not rt.is_quota_wall("HTTP 429 error while fetching", process_failed=False)
         assert not rt.is_quota_wall("quota exceeded in the parser fixture", process_failed=False)
-        assert rt.is_quota_wall(self.WALL_2026_06_12, process_failed=False)
+        assert not rt.is_quota_wall(
+            'finding: the fixture quotes "You\'ve hit your weekly limit" in prose',
+            process_failed=False,
+        )
+        assert not rt.is_quota_wall(
+            "You've hit your weekly limit in a quoted fixture, but this is review prose",
+            process_failed=False,
+        )
+        assert not rt.is_quota_wall(
+            "You've hit your weekly limit\nverdict: block",
+            process_failed=False,
+        )
 
     def test_review_prose_is_not_a_wall(self) -> None:
         rt = _load_review_team_module()
@@ -975,6 +994,7 @@ class TestFamilyOutageDegradation:
             note,
             pr_head_sha="a" * 40,
             outage_state_path=self._witness(tmp_path),
+            admission_time="2026-06-11T20:30:00+00:00",
         )
         assert blockers == (), f"degraded dossier must admit, got: {blockers}"
 
@@ -1011,6 +1031,7 @@ class TestFamilyOutageDegradation:
             note,
             pr_head_sha="a" * 40,
             outage_state_path=self._witness(tmp_path),
+            admission_time="2026-06-11T20:30:00+00:00",
         )
         assert any(b.startswith("review_dossier_degraded_family_was_seated:") for b in blockers)
 
@@ -1050,6 +1071,7 @@ class TestFamilyOutageDegradation:
             note,
             pr_head_sha="a" * 40,
             outage_state_path=self._witness(tmp_path),
+            admission_time="2026-06-11T20:30:00+00:00",
         )
         assert blockers == (), f"t2 outage dossier must admit by its own rules, got: {blockers}"
 
@@ -1113,6 +1135,32 @@ class TestFamilyOutageDegradation:
             note,
             pr_head_sha="a" * 40,
             outage_state_path=empty_witness,
+        )
+        assert any(b.startswith("review_dossier_degradation_unwitnessed:") for b in blockers)
+
+    def test_expired_witness_blocks_current_admission(self, tmp_path) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._degraded_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=self._witness(tmp_path),
+            admission_time="2026-06-11T22:01:00+00:00",
+        )
+        assert any(b.startswith("review_dossier_degradation_unwitnessed:") for b in blockers)
+
+    def test_non_mapping_witness_is_a_named_blocker(self, tmp_path) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._degraded_dossier(rt))
+        witness = tmp_path / "family-outage.json"
+        witness.write_text("[]", encoding="utf-8")
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=witness,
+            admission_time="2026-06-11T20:30:00+00:00",
         )
         assert any(b.startswith("review_dossier_degradation_unwitnessed:") for b in blockers)
 

@@ -1009,7 +1009,7 @@ class TestFamilyOutageDegradation:
     The 2026-06-12 scenario (claude walled, gemini+codex live) is the
     permanent fixture the n-tier symmetry principal demands."""
 
-    WALL = "You've hit your weekly limit · resets 5pm (America/Chicago)"
+    WALL = "You've hit your weekly limit · resets 5pm America/Chicago"
 
     def _isolate_state(self, monkeypatch: Any, tmp_path: Path) -> tuple[Path, Path]:
         state = tmp_path / "family-outage.json"
@@ -1018,21 +1018,114 @@ class TestFamilyOutageDegradation:
         monkeypatch.setattr(dispatch, "DEGRADED_MERGES_LEDGER", ledger)
         return state, ledger
 
-    def test_wall_reply_classifies_as_quota_wall(self, monkeypatch: Any, tmp_path: Path) -> None:
+    def test_wall_on_stderr_classifies_as_quota_wall(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
         self._isolate_state(monkeypatch, tmp_path)
-        reviewers = RecordingReviewers(replies={"claude": self.WALL})
+        wall = self.WALL
+
+        class StderrWallRunner(RecordingReviewers):
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.invocations.append((seat.id, seat.family, prompt))
+                if seat.family == "claude":
+                    raise dispatch.ReviewerProcessError(wall, returncode=1)
+                return GOOD_REPLY
+
+        reviewers = StderrWallRunner()
         result, _, _, _ = _review(tmp_path, reviewers=reviewers)
         dossier = result["dossier"]
         claude_seats = [r for r in dossier["reviewers"] if r["family"] == "claude"]
         assert claude_seats, "harness must seat a claude reviewer at t2"
         assert all(r["verdict"] == "quota-wall" for r in claude_seats)
 
+    def test_clean_exit_exact_provider_wall_does_not_forge_quota_wall(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        self._isolate_state(monkeypatch, tmp_path)
+        reviewers = RecordingReviewers(replies={"claude": "HTTP 429 Too Many Requests"})
+        result, _, _, _ = _review(tmp_path, reviewers=reviewers)
+        dossier = result["dossier"]
+        claude_seats = [r for r in dossier["reviewers"] if r["family"] == "claude"]
+        assert claude_seats, "harness must seat a claude reviewer at t2"
+        assert all(r["verdict"] == "invalid-output" for r in claude_seats)
+
+    def test_nonzero_stdout_does_not_forge_quota_wall(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        self._isolate_state(monkeypatch, tmp_path)
+
+        class StdoutWallRunner(RecordingReviewers):
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.invocations.append((seat.id, seat.family, prompt))
+                if seat.family == "claude":
+                    raise dispatch.ReviewerProcessError(
+                        "wrapper validation failed",
+                        returncode=1,
+                        stdout="RESOURCE_EXHAUSTED: model-controlled prose",
+                    )
+                return GOOD_REPLY
+
+        result, _, _, _ = _review(tmp_path, reviewers=StdoutWallRunner())
+        dossier = result["dossier"]
+        claude_seats = [r for r in dossier["reviewers"] if r["family"] == "claude"]
+        assert claude_seats, "harness must seat a claude reviewer at t2"
+        assert all(r["verdict"] == "invalid-output" for r in claude_seats)
+
+    def test_nonzero_stdout_exact_provider_wall_does_not_forge(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        self._isolate_state(monkeypatch, tmp_path)
+
+        class StdoutWallRunner(RecordingReviewers):
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.invocations.append((seat.id, seat.family, prompt))
+                if seat.family == "claude":
+                    raise dispatch.ReviewerProcessError(
+                        "",
+                        returncode=1,
+                        stdout="You've hit your session limit · resets 10pm (America/Chicago)",
+                    )
+                return GOOD_REPLY
+
+        result, _, _, _ = _review(tmp_path, reviewers=StdoutWallRunner())
+        dossier = result["dossier"]
+        claude_seats = [r for r in dossier["reviewers"] if r["family"] == "claude"]
+        assert claude_seats, "harness must seat a claude reviewer at t2"
+        assert all(r["verdict"] == "invalid-output" for r in claude_seats)
+
     def test_walled_round_records_the_family_outage(self, monkeypatch: Any, tmp_path: Path) -> None:
         state, _ = self._isolate_state(monkeypatch, tmp_path)
-        reviewers = RecordingReviewers(replies={"claude": self.WALL})
+        wall = self.WALL
+
+        class StderrWallRunner(RecordingReviewers):
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.invocations.append((seat.id, seat.family, prompt))
+                if seat.family == "claude":
+                    raise dispatch.ReviewerProcessError(wall, returncode=1)
+                return GOOD_REPLY
+
+        reviewers = StderrWallRunner()
         _review(tmp_path, reviewers=reviewers)
         recorded = json.loads(state.read_text(encoding="utf-8"))
         assert "claude" in recorded
+
+    def test_family_outage_update_takes_exclusive_lock(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        lock_calls: list[int] = []
+
+        def fake_flock(fd: int, operation: int) -> None:
+            lock_calls.append(operation)
+
+        monkeypatch.setattr(dispatch.fcntl, "flock", fake_flock)
+        dispatch.update_family_outage(
+            [{"family": "claude", "verdict": "quota-wall"}],
+            "2026-06-12T21:00:00+00:00",
+            state,
+        )
+        assert lock_calls[0] == dispatch.fcntl.LOCK_EX
+        assert lock_calls[-1] == dispatch.fcntl.LOCK_UN
 
     def test_recovered_family_clears_its_expired_outage_entry(
         self, monkeypatch: Any, tmp_path: Path
@@ -1085,6 +1178,61 @@ class TestFamilyOutageDegradation:
         assert len(entries) == 1
         assert entries[0]["pr"] == 42
         assert entries[0]["degraded_family_outage"] == ["claude"]
+        assert entries[0]["degraded_family_outage_witness"] == {"claude": now}
+
+    def test_degraded_ledger_is_idempotent_for_same_head(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, ledger = self._isolate_state(monkeypatch, tmp_path)
+        now = "2026-06-12T21:00:00+00:00"
+        state.write_text(json.dumps({"claude": now}), encoding="utf-8")
+        kwargs = {
+            "now_iso": now,
+            "task_kwargs": {"risk_tier": "T1"},
+            "gh": FakeGh(files=["shared/foo.py", "tests/test_foo.py"]),
+        }
+        _review(tmp_path, **kwargs)
+        _review(tmp_path, **kwargs)
+        entries = [
+            json.loads(line)
+            for line in ledger.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(entries) == 1
+        assert entries[0]["head_sha"] == "c" * 40
+        assert entries[0]["degraded_family_outage_witness"] == {"claude": now}
+
+    def test_degraded_ledger_append_takes_exclusive_lock(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, ledger = self._isolate_state(monkeypatch, tmp_path)
+        now = "2026-06-12T21:00:00+00:00"
+        state.write_text(json.dumps({"claude": now}), encoding="utf-8")
+        calls: list[int] = []
+        real_flock = dispatch.fcntl.flock
+
+        def fake_flock(fd: int, operation: int) -> None:
+            calls.append(operation)
+            real_flock(fd, operation)
+
+        monkeypatch.setattr(dispatch.fcntl, "flock", fake_flock)
+        dispatch.append_degraded_merge_record(
+            task_id="task-a",
+            pr_number=42,
+            head_sha="c" * 40,
+            degraded_families=["claude"],
+            now_iso=now,
+            ledger_path=ledger,
+            outage_state_path=state,
+        )
+        assert calls[0] == dispatch.fcntl.LOCK_EX
+        assert calls[-1] == dispatch.fcntl.LOCK_UN
+        entries = [
+            json.loads(line)
+            for line in ledger.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert entries[0]["degraded_family_outage_witness"] == {"claude": now}
 
     def test_wall_on_stderr_classifies(self) -> None:
         """Round-3/5 findings: real CLI walls arrive on STDERR with rc!=0 —
@@ -1096,7 +1244,7 @@ class TestFamilyOutageDegradation:
             "reviewer_command": [
                 "bash",
                 "-c",
-                'echo "You\'ve hit your weekly limit · resets 5pm (America/Chicago)" >&2; exit 1',
+                'echo "You\'ve hit your weekly limit · resets 5pm America/Chicago" >&2; exit 1',
             ],
             "timeout_seconds": 30,
         }

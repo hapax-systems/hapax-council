@@ -31,6 +31,7 @@ Reviewer CLIs (claude/codex/gemini) are configured in
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import logging
 import os
@@ -87,26 +88,33 @@ DEGRADED_MERGES_LEDGER = Path.home() / ".cache" / "hapax" / "review-team" / "deg
 FAMILY_OUTAGE_TTL_S = review_team.FAMILY_OUTAGE_TTL_S
 
 
-def load_family_outage(now_iso: str, state_path: Path | None = None) -> frozenset[str]:
-    """Families currently out on an observed quota wall (TTL-bounded)."""
+def load_family_outage_witness(now_iso: str, state_path: Path | None = None) -> dict[str, str]:
+    """TTL-live outage witness timestamps by family."""
 
     state_path = state_path or FAMILY_OUTAGE_STATE
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return frozenset()
+        return {}
     if not isinstance(state, dict):
-        return frozenset()
+        return {}
     now = datetime.fromisoformat(now_iso)
-    out: set[str] = set()
+    out: dict[str, str] = {}
     for family, observed in state.items():
+        observed_iso = str(observed)
         try:
-            age = (now - datetime.fromisoformat(str(observed))).total_seconds()
+            age = (now - datetime.fromisoformat(observed_iso)).total_seconds()
         except ValueError:
             continue
         if 0 <= age <= FAMILY_OUTAGE_TTL_S:
-            out.add(str(family))
-    return frozenset(out)
+            out[str(family)] = observed_iso
+    return out
+
+
+def load_family_outage(now_iso: str, state_path: Path | None = None) -> frozenset[str]:
+    """Families currently out on an observed quota wall (TTL-bounded)."""
+
+    return frozenset(load_family_outage_witness(now_iso, state_path))
 
 
 def update_family_outage(
@@ -122,25 +130,98 @@ def update_family_outage(
     """
 
     state_path = state_path or FAMILY_OUTAGE_STATE
-    try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        if not isinstance(state, dict):
-            state = {}
-    except (OSError, json.JSONDecodeError):
-        state = {}
-    by_family: dict[str, list[str]] = {}
-    for r in reviews:
-        by_family.setdefault(str(r.get("family")), []).append(str(r.get("verdict")))
-    for family, verdicts in by_family.items():
-        if all(v == "quota-wall" for v in verdicts):
-            state[family] = now_iso
-        elif any(v in PARSEABLE_VERDICTS for v in verdicts):
-            state.pop(family, None)
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = state_path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, indent=1), encoding="utf-8")
-    os.replace(tmp, state_path)
+    lock_path = state_path.with_name(f"{state_path.name}.lock")
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                if not isinstance(state, dict):
+                    state = {}
+            except (OSError, json.JSONDecodeError):
+                state = {}
+            by_family: dict[str, list[str]] = {}
+            for r in reviews:
+                by_family.setdefault(str(r.get("family")), []).append(str(r.get("verdict")))
+            for family, verdicts in by_family.items():
+                if all(v == "quota-wall" for v in verdicts):
+                    state[family] = now_iso
+                elif any(v in PARSEABLE_VERDICTS for v in verdicts):
+                    state.pop(family, None)
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=state_path.parent,
+                prefix=f"{state_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as tmp:
+                tmp.write(json.dumps(state, indent=1))
+                tmp_path = Path(tmp.name)
+            os.replace(tmp_path, state_path)
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     return load_family_outage(now_iso, state_path)
+
+
+def append_degraded_merge_record(
+    *,
+    task_id: str,
+    pr_number: int,
+    head_sha: str,
+    degraded_families: list[str],
+    now_iso: str,
+    ledger_path: Path | None = None,
+    outage_state_path: Path | None = None,
+) -> None:
+    """Record a degraded accept once per task/PR/head under a file lock."""
+
+    ledger_path = ledger_path or DEGRADED_MERGES_LEDGER
+    outage_witness = load_family_outage_witness(now_iso, outage_state_path)
+    ledger_record = {
+        "ts": now_iso,
+        "task_id": task_id,
+        "pr": pr_number,
+        "head_sha": head_sha,
+        "degraded_family_outage": degraded_families,
+        "degraded_family_outage_witness": {
+            family: outage_witness[family]
+            for family in degraded_families
+            if family in outage_witness
+        },
+    }
+    ledger_key = (task_id, pr_number, head_sha)
+
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = ledger_path.with_name(f"{ledger_path.name}.lock")
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            existing_keys: set[tuple[str, int, str]] = set()
+            try:
+                with ledger_path.open("r", encoding="utf-8") as ledger:
+                    for line in ledger:
+                        if not line.strip():
+                            continue
+                        try:
+                            item = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        existing_keys.add(
+                            (
+                                str(item.get("task_id") or ""),
+                                int(item.get("pr") or 0),
+                                str(item.get("head_sha") or ""),
+                            )
+                        )
+            except OSError:
+                pass
+            if ledger_key not in existing_keys:
+                with ledger_path.open("a", encoding="utf-8") as ledger:
+                    ledger.write(json.dumps(ledger_record, sort_keys=True) + "\n")
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 @dataclass(frozen=True)
@@ -381,12 +462,18 @@ def extract_review(reply: str) -> dict[str, Any] | None:
 
 
 class ReviewerProcessError(RuntimeError):
-    """A reviewer CLI exited nonzero. Carries the merged output so the
-    quota-wall classifier can read what the PROCESS said (channel trust:
-    only this path gets pattern-level wall matching)."""
+    """A reviewer CLI exited nonzero.
 
-    def __init__(self, output: str, *, returncode: int) -> None:
+    Pattern-level quota-wall matching is allowed only over CLI stderr. Stdout
+    can still contain model-produced prose, including adversarial copies of wall
+    strings, so it is kept for excerpts but not trusted as process authority.
+    """
+
+    def __init__(self, stderr: str, *, returncode: int, stdout: str = "") -> None:
+        output = (stderr or stdout).strip()
         super().__init__(f"reviewer exited rc={returncode}: {output[:300]}")
+        self.stdout = stdout
+        self.stderr = stderr
         self.output = output
         self.returncode = returncode
 
@@ -414,10 +501,10 @@ def default_reviewer_runner(seat: review_team.Seat, family_cfg: dict[str, Any], 
             proc.stderr.strip()[:300],
         )
         # a NONZERO exit is the CLI speaking, not the model (round-5 channel
-        # trust): raise so the classifier knows the process failed — pattern-
-        # level wall matching applies only on this path
+        # trust): raise so the classifier can inspect stderr. Stdout stays
+        # model-influenced and must not forge a quota wall.
         raise ReviewerProcessError(
-            (proc.stdout + "\n" + proc.stderr).strip(), returncode=proc.returncode
+            proc.stderr.strip(), returncode=proc.returncode, stdout=proc.stdout
         )
     return proc.stdout
 
@@ -436,17 +523,19 @@ def dispatch_reviews(
         seat = constitution.seats[index]
         process_failed = False
         process_output = ""
+        quota_wall_output = ""
         try:
             reply = reviewer_runner(seat, family_cfgs[seat.family], prompts[index])
         except ReviewerProcessError as exc:
             LOG.warning("reviewer %s (%s) process failed: %s", seat.id, seat.family, exc)
             reply = ""
             process_failed = True
-            process_output = exc.output
+            process_output = "\n".join(part for part in (exc.stdout, exc.stderr) if part).strip()
+            quota_wall_output = exc.stderr
         except Exception as exc:  # noqa: BLE001 — one dead reviewer must not kill the round
             LOG.warning("reviewer %s (%s) failed: %s", seat.id, seat.family, exc)
             reply = ""
-            process_failed = True
+            process_failed = False
             process_output = str(exc)
         parsed = extract_review(reply or "")
         if parsed is None:
@@ -454,12 +543,13 @@ def dispatch_reviews(
             # parse failure — naming it lets the next constitution degrade
             # instead of seal (postmortem 2026-06-12: the claude weekly wall
             # rode as invalid-output for 13h and froze every merge). Channel
-            # trust (round-5): pattern matching only on PROCESS failure;
-            # clean-exit text matches exact provider sentences only.
+            # trust (round-6): pattern matching only on process-failure
+            # diagnostics. Clean-exit stdout is model-controlled, so even an
+            # exact provider-looking literal remains invalid-output.
             if process_failed:
-                walled = review_team.is_quota_wall(process_output, process_failed=True)
+                walled = review_team.is_quota_wall(quota_wall_output, process_failed=True)
             else:
-                walled = review_team.is_quota_wall(reply or "", process_failed=False)
+                walled = False
             if walled:
                 LOG.warning(
                     "reviewer %s (%s) hit a provider quota wall -> verdict quota-wall",
@@ -1051,21 +1141,13 @@ def review_pr(
             # the degraded-merges ledger: every accept earned under an outage
             # is enumerable for post-recovery re-review (postmortem
             # remediation; the degradation rule's receipt half)
-            DEGRADED_MERGES_LEDGER.parent.mkdir(parents=True, exist_ok=True)
-            with DEGRADED_MERGES_LEDGER.open("a", encoding="utf-8") as ledger:
-                ledger.write(
-                    json.dumps(
-                        {
-                            "ts": now_iso,
-                            "task_id": target_task_id,
-                            "pr": pr_number,
-                            "head_sha": pr_info.head_sha,
-                            "degraded_family_outage": dossier["degraded_family_outage"],
-                        },
-                        sort_keys=True,
-                    )
-                    + "\n"
-                )
+            append_degraded_merge_record(
+                task_id=target_task_id,
+                pr_number=pr_number,
+                head_sha=pr_info.head_sha,
+                degraded_families=list(dossier["degraded_family_outage"]),
+                now_iso=now_iso,
+            )
         target_dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
         LOG.info(
             "dossier written: %s (verdict %s)",

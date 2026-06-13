@@ -60,15 +60,17 @@ TEAM_CLASS_RANK = {"t3_docs": 0, "t2_standard": 1, "t1_critical": 2}
 
 #: Provider usage-wall shapes (the 2026-06-12 claude weekly-wall text is the
 #: canonical fixture; the rest cover the codex/gemini families' phrasings).
-_QUOTA_WALL_RE = re.compile(
-    r"(hit your (weekly|usage|session|5-hour) limit"
-    r"|usage limit (reached|exceeded)"
-    r"|rate.?limit(ed)?\s+(reached|exceeded|hit)"
-    r"|too many requests"
-    r"|quota\s+(exceeded|reached|exhausted)"
-    r"|RESOURCE_EXHAUSTED"
-    r"|\b429\b"
-    r"|resets \d{1,2}\s?[ap]m)",
+_QUOTA_WALL_SHAPE_RE = re.compile(
+    r"\A("
+    r"You('ve| have) hit your (weekly|usage|session|5-hour) limit"
+    r"(?:\s+·\s+resets\s+\d{1,2}\s?[ap]m(?:\s+(?:\([A-Za-z/_-]+\)|[A-Za-z/_-]+))?)?"
+    r"|HTTP 429 Too Many Requests"
+    r"|Too Many Requests"
+    r"|RESOURCE_EXHAUSTED(?::\s+Quota (?:exceeded|exhausted))?"
+    r"|rate.?limit\s+(?:reached|exceeded|hit)(?:\s+for\s+\w+)?"
+    r"|usage limit\s+(?:reached|exceeded|hit)"
+    r"|quota\s+(?:reached|exceeded|exhausted|hit)"
+    r")\Z",
     re.IGNORECASE,
 )
 
@@ -78,20 +80,6 @@ _QUOTA_WALL_RE = re.compile(
 #: wall — that would forge a family outage and degrade the next constitution
 #: (round-4 review finding).
 _QUOTA_WALL_MAX_CHARS = 600
-
-#: Channel trust (round-5 review finding): a reviewer process that exited
-#: NONZERO speaks with CLI authority — pattern matching applies. A clean-exit
-#: reply is MODEL-INFLUENCED TEXT: only exact literal provider wall sentences
-#: count, so forging an outage requires controlling the CLI's exit path, not
-#: its prose. Extend this registry when a provider changes its wall copy
-#: (the freshness loop's job).
-QUOTA_WALL_EXACT_SENTENCES = (
-    "You've hit your weekly limit",
-    "You've hit your usage limit",
-    "You have hit your usage limit",
-    "Too Many Requests",
-    "RESOURCE_EXHAUSTED",
-)
 
 #: The dispatcher's family-outage witness state (canonical path; the
 #: dispatcher aliases this). Admission consults it so a forged dossier
@@ -104,19 +92,40 @@ def is_quota_wall(text: str, *, process_failed: bool = False) -> bool:
     """True when reviewer output/error text is a provider usage wall.
 
     Deliberately strict — forging an outage must be harder than hitting one:
-    short text only; PATTERN matching only when the reviewer PROCESS failed
-    (nonzero exit — CLI authority); a clean-exit reply matches only the exact
-    literal provider sentences in :data:`QUOTA_WALL_EXACT_SENTENCES`.
+    only process-failure diagnostics are trusted as provider evidence, short
+    text only, and the whole output must match a known provider wall shape.
+    This rejects model-controlled review stdout that merely mentions quota text.
     """
 
-    if not text:
+    if not process_failed or not text:
         return False
     stripped = text.strip()
     if len(stripped) > _QUOTA_WALL_MAX_CHARS:
         return False
-    if process_failed:
-        return bool(_QUOTA_WALL_RE.search(stripped))
-    return any(sentence in stripped for sentence in QUOTA_WALL_EXACT_SENTENCES)
+    return bool(_QUOTA_WALL_SHAPE_RE.fullmatch(stripped))
+
+
+def _parse_iso_datetime(value: Any) -> datetime:
+    return datetime.fromisoformat(str(value))
+
+
+def _coerce_datetime(value: datetime | str | None, *, reference: datetime) -> datetime:
+    if value is None:
+        return datetime.now(reference.tzinfo) if reference.tzinfo else datetime.now()
+    parsed = value if isinstance(value, datetime) else _parse_iso_datetime(value)
+    if reference.tzinfo and parsed.tzinfo is None:
+        return parsed.replace(tzinfo=reference.tzinfo)
+    if parsed.tzinfo and reference.tzinfo is None:
+        return parsed.replace(tzinfo=None)
+    return parsed
+
+
+def _seconds_between(later: datetime, earlier: datetime) -> float:
+    if later.tzinfo and earlier.tzinfo is None:
+        earlier = earlier.replace(tzinfo=later.tzinfo)
+    elif earlier.tzinfo and later.tzinfo is None:
+        later = later.replace(tzinfo=earlier.tzinfo)
+    return (later - earlier).total_seconds()
 
 
 GATE_KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_GATE_OFF"
@@ -641,6 +650,7 @@ def _dossier_validity_blockers(
     changed_files: Sequence[str] | None = None,
     changed_file_count: int | None = None,
     outage_state_path: Path | None = None,
+    admission_time: datetime | str | None = None,
 ) -> tuple[str, ...]:
     blockers: list[str] = []
     scoped_files = (
@@ -723,13 +733,20 @@ def _dossier_validity_blockers(
         unwitnessed = list(degraded_outage)
         try:
             witness_state = json.loads(Path(witness_path).read_text(encoding="utf-8"))
-            constituted = datetime.fromisoformat(str(dossier.get("constituted_at")))
+            if not isinstance(witness_state, Mapping):
+                raise TypeError("family outage witness is not a mapping")
+            constituted = _parse_iso_datetime(dossier.get("constituted_at"))
+            admitted_at = _coerce_datetime(admission_time, reference=constituted)
             unwitnessed = []
             for fam in degraded_outage:
                 try:
-                    observed = datetime.fromisoformat(str(witness_state.get(fam)))
-                    age_s = (constituted - observed).total_seconds()
-                    if not (0 <= age_s <= FAMILY_OUTAGE_TTL_S):
+                    observed = _parse_iso_datetime(witness_state.get(fam))
+                    constituted_age_s = _seconds_between(constituted, observed)
+                    admission_age_s = _seconds_between(admitted_at, observed)
+                    if not (
+                        0 <= constituted_age_s <= FAMILY_OUTAGE_TTL_S
+                        and 0 <= admission_age_s <= FAMILY_OUTAGE_TTL_S
+                    ):
                         unwitnessed.append(fam)
                 except (TypeError, ValueError):
                     unwitnessed.append(fam)
@@ -879,6 +896,7 @@ def review_dossier_validity_blockers(
     changed_file_count: int | None = None,
     registry: Mapping[str, Any] | None = None,
     outage_state_path: Path | None = None,
+    admission_time: datetime | str | None = None,
 ) -> tuple[str, ...]:
     """Validate a recorded review dossier without honoring any gate killswitch."""
 
@@ -911,6 +929,7 @@ def review_dossier_validity_blockers(
         changed_files=changed_files,
         changed_file_count=changed_file_count,
         outage_state_path=outage_state_path,
+        admission_time=admission_time,
     )
 
 
@@ -924,6 +943,7 @@ def review_team_verdict_blockers(
     changed_file_count: int | None = None,
     registry: Mapping[str, Any] | None = None,
     outage_state_path: Path | None = None,
+    admission_time: datetime | str | None = None,
 ) -> tuple[str, ...]:
     """Admission blockers from the review-team quorum gate (no quorum, no merge).
 
@@ -948,4 +968,5 @@ def review_team_verdict_blockers(
         changed_file_count=changed_file_count,
         registry=registry,
         outage_state_path=outage_state_path,
+        admission_time=admission_time,
     )
