@@ -215,7 +215,7 @@ def resolve_waveform_viz(
     try:
         import json as json_mod
 
-        perc_path = Path("/dev/shm/hapax-daimonion/perception-state.json")
+        perc_path = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
         perc = json_mod.loads(perc_path.read_text())
         energy = float(perc.get("audio_energy_rms", 0.0))
         bars = int(energy * 20) + 5
