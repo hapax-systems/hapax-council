@@ -406,16 +406,17 @@ def _read_scene_classification() -> SceneClassificationState:
 def _read_stimmung() -> tuple[dict, str | None]:
     data = _safe_load_json(_STIMMUNG_STATE) or {}
     stance = data.get("overall_stance")
-    dims = data.get("dimensions") or {}
-    # Stimmung may store dimensions as a dict of {name: {reading: float, ...}}
-    # or {name: float}. Normalize to float.
+    # Live stimmung stores each dimension at the TOP LEVEL as
+    # {name: {value: float, trend, freshness_s, sigma, n}} (no "dimensions"
+    # wrapper; sub-key is "value", not "reading"). A real dimension is ALWAYS a
+    # dict carrying a "value" key — accept only those. Bare top-level scalars are
+    # metadata (e.g. `timestamp`) and `overall_stance` is a str; both must be
+    # skipped so they are not captured as spurious dimensions.
     flat: dict[str, float] = {}
-    for name, value in dims.items():
-        if isinstance(value, (int, float)):
-            flat[name] = float(value)
-        elif isinstance(value, dict) and "reading" in value:
+    for name, value in data.items():
+        if isinstance(value, dict) and "value" in value:
             try:
-                flat[name] = float(value["reading"])
+                flat[name] = float(value["value"])
             except (TypeError, ValueError):
                 pass
     return flat, stance
