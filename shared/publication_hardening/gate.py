@@ -121,7 +121,24 @@ class PublicationHardeningGate:
         entity_child = self._entity_child(text)
         legal_name_child = self._legal_name_child(_artifact_legal_name_surface(artifact))
         codebase_child = self._codebase_child(text, context)
-        review_child, review_report = self._review_child(text, artifact, lint_child)
+
+        if legal_name_child.decision == PublicationGateDecision.REJECT:
+            # corporate_boundary egress: a detected legal name must NOT leave the
+            # trust boundary. Withhold the draft from the external review LLM — the
+            # only egressing child — rather than send a leaked draft out to be
+            # rejected. lint / known_entities / codebase are local and still run.
+            review_child = PublicationGateChildResult(
+                name="review",
+                decision=PublicationGateDecision.REJECT,
+                findings=(
+                    "review skipped: legal-name REJECT withheld the draft from "
+                    "external review (corporate_boundary egress guard)",
+                ),
+            )
+            review_report_fm: dict[str, object] | None = None
+        else:
+            review_child, review_report = self._review_child(text, artifact, lint_child)
+            review_report_fm = review_report.to_frontmatter()
 
         child_results = (
             lint_child,
@@ -150,7 +167,7 @@ class PublicationHardeningGate:
             override=override
             if decision == PublicationGateDecision.OPERATOR_OVERRIDDEN_HOLD
             else None,
-            review_report=review_report.to_frontmatter(),
+            review_report=review_report_fm,
         )
         return _redacted_receipt(result)
 

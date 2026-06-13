@@ -203,15 +203,28 @@ def test_gate_reject_receipt_omits_leaked_name(monkeypatch) -> None:
     assert "Jane Doe" not in str(result.to_frontmatter())
 
 
-def test_gate_redacts_legal_name_from_review_report(monkeypatch) -> None:
-    """Receipt non-re-emission, real path: a reviewer that echoes the artifact text
-    (the production ReviewPass returns claim text) must not leak the legal name into
-    review_report. The receipt-level redaction chokepoint scrubs it — the stubbed
-    sibling in the previous canary never echoed, so this exercises the live vector."""
+def test_gate_legal_name_reject_skips_external_review(monkeypatch) -> None:
+    """corporate_boundary egress: a legal-name REJECT must NOT transmit the leaked
+    draft to the external review LLM. The review pass is never called — the draft is
+    withheld at the trust boundary, not sent out and then rejected."""
     monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Jane Doe")
+    sent: list[str] = []
+
+    class _SpyReview:
+        threshold = 0.7
+
+        def review_text(self, text: str, **kwargs) -> ReviewReport:  # type: ignore[no-untyped-def]
+            sent.append(text)
+            return ReviewReport(
+                reviewer_model="spy",
+                author_model=kwargs.get("author_model"),
+                overall_confidence=0.99,
+                flagged_issues=(),
+            )
+
     gate = PublicationHardeningGate(
         repo_root=Path.cwd(),
-        review_pass=_ReviewPass(confidence=0.99, flagged=("claim echoes Jane Doe",)),
+        review_pass=_SpyReview(),
         lint_runner=lambda _text, _source_path: (),
         entity_checker=lambda _text: (),
         codebase_verifier=lambda _text, _context: CodebaseVerificationReport(
@@ -221,6 +234,9 @@ def test_gate_redacts_legal_name_from_review_report(monkeypatch) -> None:
     result = gate.evaluate(_artifact(attribution_block="Jane Doe (distributor)"))
 
     assert result.decision == PublicationGateDecision.REJECT
+    assert sent == []  # the leaked draft never reached the external reviewer
+    review = next(c for c in result.child_results if c.name == "review")
+    assert review.decision == PublicationGateDecision.REJECT
     assert "Jane Doe" not in str(result.to_frontmatter())
 
 
