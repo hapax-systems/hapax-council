@@ -38,6 +38,9 @@ FORTRESS_ACTIONS_FILE = DMN_STATE_DIR / "fortress-actions.jsonl"
 # Main loop tick rate (fastest possible — individual ticks have their own cadence)
 LOOP_TICK_S = 1.0
 
+# DASEIN aperture re-bind: throttle for the unified cross-aperture snapshot write.
+APERTURE_SNAPSHOT_INTERVAL_S = 10.0
+
 
 class DMNDaemon:
     """Always-on DMN daemon."""
@@ -63,25 +66,33 @@ class DMNDaemon:
             except Exception:
                 log.exception("DMN tick failed")
 
-            # DASEIN aperture re-bind: write the unified cross-aperture snapshot
-            # (~10s) so the broadcast/voice/drift apertures can see "what the rest
-            # of me is doing". The 3 readers (shared/context.py,
-            # drift_detector/system_prompt.py, hapax_daimonion/phenomenal_context.py)
-            # were silently empty — write_aperture_snapshot() had ZERO callers
-            # (cognitive-core audit 2026-06-13: split-by-omission, the one R5 FAIL).
-            now_m = time.monotonic()
-            if now_m - self._last_aperture_s >= 10.0:
-                self._last_aperture_s = now_m
-                try:
-                    from shared.aperture_state import write_aperture_snapshot
-
-                    write_aperture_snapshot()
-                except Exception:
-                    log.warning("aperture snapshot write failed", exc_info=True)
+            self._maybe_write_aperture(time.monotonic())
 
             await asyncio.sleep(LOOP_TICK_S)
 
         log.info("DMN daemon stopped")
+
+    def _maybe_write_aperture(self, now_m: float) -> bool:
+        """DASEIN aperture re-bind: throttled (~10s) write of the unified
+        cross-aperture snapshot so the broadcast/voice/drift apertures can see
+        "what the rest of me is doing". The three readers (shared/context.py,
+        drift_detector/system_prompt.py, hapax_daimonion/phenomenal_context.py)
+        were silently empty — write_aperture_snapshot() had ZERO callers
+        (cognitive-core audit 2026-06-13: split-by-omission, the one R5 FAIL).
+
+        Returns True iff a snapshot was written on this call.
+        """
+        if now_m - self._last_aperture_s < APERTURE_SNAPSHOT_INTERVAL_S:
+            return False
+        self._last_aperture_s = now_m
+        try:
+            from shared.aperture_state import write_aperture_snapshot
+
+            write_aperture_snapshot()
+            return True
+        except Exception:
+            log.warning("aperture snapshot write failed", exc_info=True)
+            return False
 
     def _write_output(self) -> None:
         """Write buffer, impingements, and status to /dev/shm."""

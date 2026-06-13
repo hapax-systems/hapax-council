@@ -408,14 +408,13 @@ def _read_stimmung() -> tuple[dict, str | None]:
     stance = data.get("overall_stance")
     # Live stimmung stores each dimension at the TOP LEVEL as
     # {name: {value: float, trend, freshness_s, sigma, n}} (no "dimensions"
-    # wrapper; sub-key is "value", not "reading"). Normalize to float.
+    # wrapper; sub-key is "value", not "reading"). A real dimension is ALWAYS a
+    # dict carrying a "value" key — accept only those. Bare top-level scalars are
+    # metadata (e.g. `timestamp`) and `overall_stance` is a str; both must be
+    # skipped so they are not captured as spurious dimensions.
     flat: dict[str, float] = {}
     for name, value in data.items():
-        if name == "overall_stance":
-            continue
-        if isinstance(value, (int, float)):
-            flat[name] = float(value)
-        elif isinstance(value, dict) and "value" in value:
+        if isinstance(value, dict) and "value" in value:
             try:
                 flat[name] = float(value["value"])
             except (TypeError, ValueError):
