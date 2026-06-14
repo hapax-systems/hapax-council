@@ -5,8 +5,10 @@
 # podium LiteLLM gateway as the `local-judge` route -> http://192.168.68.50:5001/v1.
 # Deploy + validation: docs/runbooks/local-judge-stack.md.
 Description=Hapax Local Judge — CompassVerifier-7B answer-verification (cost-offload Tier-1)
+# After= only (no Requires=): docker runs as a system service, so a --user unit
+# orders behind it but must not hard-Requires a cross-scope system unit. Matches
+# the canonical docker user units (hapax-stack, hapax-container-cleanup).
 After=docker.service
-Requires=docker.service
 
 [Service]
 Type=simple

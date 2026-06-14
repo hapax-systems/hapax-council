@@ -39,7 +39,7 @@ nvidia-smi --query-gpu=index,name,uuid --format=csv
 docker pull ghcr.io/ggml-org/llama.cpp:server-cuda
 # hand serving to systemd (replaces any manual --restart container):
 docker rm -f hapax-local-judge 2>/dev/null
-cp systemd/hapax-local-judge.service ~/.config/systemd/user/
+cp systemd/units/hapax-local-judge.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now hapax-local-judge
 # verify model loaded on GPU1 and 3090 VRAM unchanged:
