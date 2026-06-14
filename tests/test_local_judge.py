@@ -38,6 +38,17 @@ def test_process_judgment_word_verdicts_not_mischar_extracted():
     assert process_judgment("  correct\n") == "A"
 
 
+def test_process_judgment_word_verdicts_with_punctuation_or_prefix():
+    # the dangerous false-accept case: "INVALID."/prefixed words must NOT fall through
+    # to the char fallback (which would read INVALID->A = CORRECT).
+    assert process_judgment("INVALID.") == "C"
+    assert process_judgment("INCORRECT!") == "B"
+    assert process_judgment('"INVALID"') == "C"
+    assert process_judgment("Verdict: INCORRECT") == "B"
+    assert process_judgment("INVALID - the response is cut off") == "C"
+    assert process_judgment("Correct.") == "A"
+
+
 def test_process_judgment_unparseable_returns_empty():
     assert process_judgment("the answer is fine indeed") == ""
     assert process_judgment("") == ""

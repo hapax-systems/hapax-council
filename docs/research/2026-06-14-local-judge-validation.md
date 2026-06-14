@@ -17,13 +17,26 @@ Adapter: `shared/local_judge.py`. Harness: `scripts/cost-offload/`.
 > omission: the measured κ 0.70 / non-conservative skew (below) means promoting now
 > would trade quality for cost, which the cost-offload invariant forbids.
 >
-> **Closure semantics (no false satisfaction).** Merging this PR closes
-> `cc-task-cost-offload-local-judge-stack` to `done` **only on its re-scoped predicate
-> — the four infra ACs above, all met**. The parent task was explicitly re-scoped
-> (2026-06-14, in its own frontmatter) to the shadow-infra increment; the former AC3
-> and AC6 are *removed from this task* and tracked **open** in the follow-on. So no
-> dashboard reads "Tier-1 realized offload done" — the realized-offload predicate
-> stays visibly open until the follow-on closes it.
+> **Deferred work (recorded here, authoritatively).** The realized-offload criteria
+> are NOT met by this PR and are deferred — this list, in this diff, is the record:
+> 1. **AC3 — council-distribution agreement.** Needs ≥150 items with agreement ≥90% ∧
+>    Cohen's κ ≥0.8, conservative-skewed, accumulated from `shadow_compare` shadow
+>    traffic (no new provider spend). Public-gold proxy already measured here: 83.8% /
+>    κ 0.70 / NOT conservative → a bare repoint fails; realization needs conservative
+>    composition (escalate disagreements to the incumbent).
+> 2. **AC6 — one real gate repointed to `local-judge` at $0 marginal.** Blocked: the
+>    survey found no existing council answer-verification gate (the existing LLM-judges
+>    grade gold-free quality); first fitting consumer is the grounding-fitness Step-6
+>    grader (prospective).
+>
+> **Closure semantics (no false satisfaction).** Merging closes
+> `cc-task-cost-offload-local-judge-stack` to `done` **only on its re-scoped predicate —
+> the four infra ACs above, all met** (the parent's frontmatter was re-scoped 2026-06-14
+> to the shadow-infra increment, removing the two criteria above). Closure validity
+> rests on *this doc + the diff*, not on any external ticket. The deferred work is also
+> operationally ticketed as `cc-task-cost-offload-local-judge-realize` for scheduling,
+> but that ticket is a convenience, not the evidence — so no dashboard can read "Tier-1
+> realized offload done."
 
 ## Setup
 

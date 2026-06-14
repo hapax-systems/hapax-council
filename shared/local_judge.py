@@ -77,9 +77,11 @@ def process_judgment(judgment_str: str) -> str:
     Port of ``process_judgment`` from open-compass/CompassVerifier src/cv_eval.ipynb
     (so verdicts match the published evaluation), hardened for the prompt-permitted
     *word* verdicts: CV_PROMPT tells the model it may reply CORRECT/INCORRECT/INVALID,
-    and the LiteLLM fallback judge (claude-haiku) may follow that wording. The upstream
-    catch-all ``[A-C]`` regex would then misread INVALID->A and CORRECT/INCORRECT->C, so
-    an exact whole-word check runs before the char fallback. Returns "" when nothing
+    and the LiteLLM fallback judge (claude-haiku) may follow that wording — possibly
+    with punctuation or a prefix ("INVALID.", "Verdict: INCORRECT"). The upstream
+    catch-all ``[A-C]`` regex would misread those (INVALID->A, CORRECT/INCORRECT->C),
+    so a whole-word search (``\b`` bounded, INCORRECT before its CORRECT substring,
+    last occurrence wins) runs before the char fallback. Returns "" when nothing
     parseable is found.
     """
     boxed_matches = re.findall(r"boxed{([A-C])}", judgment_str)
@@ -87,11 +89,13 @@ def process_judgment(judgment_str: str) -> str:
         return boxed_matches[-1]
     if judgment_str in _LABELS:
         return judgment_str
-    # prompt-permitted whole-word verdicts (exact, post-strip) — checked before the
-    # char fallback so the letters inside CORRECT/INCORRECT/INVALID aren't mis-extracted
+    # prompt-permitted whole-word verdicts, robust to punctuation/prefix. \b boundaries
+    # stop the [A-C] letters inside the words from being mis-extracted; the alternation
+    # lists INCORRECT first so it can't be shadowed by the CORRECT substring.
     _WORD_LABELS = {"CORRECT": "A", "INCORRECT": "B", "INVALID": "C"}
-    if (word := judgment_str.strip().upper()) in _WORD_LABELS:
-        return _WORD_LABELS[word]
+    word_hits = re.findall(r"\b(INCORRECT|INVALID|CORRECT)\b", judgment_str.upper())
+    if word_hits:
+        return _WORD_LABELS[word_hits[-1]]
     final_judgment_str = judgment_str.split("Final Judgment:")[-1]
     matches = re.findall(r"\(([A-C])\)*", final_judgment_str)
     if matches:
