@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# hapax-aider-lane — drive a cheap/local-model SDLC slice via Aider.
+#
+# Cost-offload Tier-1 (ISAP S5-CAPACITY-ROUTING-COST-OFFLOAD-TIER1, under
+# CASE-CAPACITY-ROUTING-001). Runs on the appendix dev host against the local
+# TabbyAPI (:5000) — local_compute only, NO provider spend. Produces a reviewable
+# git diff that goes through the normal cc-task gate at review/merge time.
+#
+# Harness note: Aider (not OpenCode). OpenCode v1.17.4 `run`/`serve` hangs when
+# headlessly driving a local OpenAI-compatible model (upstream #5674); Aider —
+# built on LiteLLM — drives the local model reliably. The audioop-lts shim is
+# required because Python 3.13 dropped the stdlib `audioop` that aider->pydub needs.
+#
+# Usage: hapax-aider-lane <model_id> "<task message>" [file ...]
+set -euo pipefail
+MODEL="${1:?usage: hapax-aider-lane <model_id> \"<task>\" [file ...]}"; shift
+MSG="${1:?task message required}"; shift
+files=(); for f in "$@"; do files+=(--file "$f"); done
+exec env OPENAI_API_BASE="${HAPAX_TABBY_URL:-http://127.0.0.1:5000/v1}" OPENAI_API_KEY="${HAPAX_TABBY_KEY:-dummy}" \
+  uv run --with aider-chat --with audioop-lts aider \
+    --model "openai/${MODEL}" \
+    --no-auto-commit --yes-always --no-show-model-warnings --map-tokens 0 \
+    "${files[@]}" --message "$MSG"
