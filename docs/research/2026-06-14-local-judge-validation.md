@@ -16,6 +16,14 @@ Adapter: `shared/local_judge.py`. Harness: `scripts/cost-offload/`.
 > follow-on `cc-task-cost-offload-local-judge-realize`. This is deliberate, not an
 > omission: the measured κ 0.70 / non-conservative skew (below) means promoting now
 > would trade quality for cost, which the cost-offload invariant forbids.
+>
+> **Closure semantics (no false satisfaction).** Merging this PR closes
+> `cc-task-cost-offload-local-judge-stack` to `done` **only on its re-scoped predicate
+> — the four infra ACs above, all met**. The parent task was explicitly re-scoped
+> (2026-06-14, in its own frontmatter) to the shadow-infra increment; the former AC3
+> and AC6 are *removed from this task* and tracked **open** in the follow-on. So no
+> dashboard reads "Tier-1 realized offload done" — the realized-offload predicate
+> stays visibly open until the follow-on closes it.
 
 ## Setup
 
