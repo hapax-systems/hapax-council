@@ -96,7 +96,15 @@ families:
     reviewer_command: ["codex", "exec", "--sandbox", "read-only", "-"]
     timeout_seconds: 1200
   - family: gemini
-    reviewer_command: ["gemini", "--skip-trust", "--approval-mode", "plan", "-p", "Perform the review request provided on stdin; reply with exactly one fenced yaml code block and no prose."]
+    # Evidence rule added 2026-06-14: gemini repeatedly emitted verified-false
+    # "fatal syntax error / corrupted decorators" criticals citing files and line
+    # numbers absent from the diff (PR #4131: a 267-line file that py_compiles clean,
+    # decorators at 119-127, claimed corrupted at line 690 into an unrelated test
+    # file). The dispatch sends a clean untruncated `gh pr diff`, so this is reviewer
+    # confabulation, not a tooling-input defect. The added clause is evidence-neutral
+    # (it biases neither toward accept nor block — it only requires findings to quote
+    # the actual diff), so it cannot relax the gate; it just stops fabricated criticals.
+    reviewer_command: ["gemini", "--skip-trust", "--approval-mode", "plan", "-p", "Perform the review request provided on stdin; reply with exactly one fenced yaml code block and no prose. EVIDENCE RULE (mandatory, accuracy-only — do not let it bias you toward accept or block): every finding must be grounded in the diff actually provided. Before reporting any syntax error, compile failure, or file corruption, quote the exact offending line verbatim and cite its real line number as shown in the diff; never reference a file that does not appear in the diff; if you cannot quote the specific hunk, omit the finding. Report only what the provided diff actually contains."]
     timeout_seconds: 1200
 
 # Authoring-lane -> model family (writer's family never holds the majority
