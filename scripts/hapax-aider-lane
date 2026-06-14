@@ -53,8 +53,11 @@ cmd=(env "OPENAI_API_BASE=$BASE" "OPENAI_API_KEY=${HAPAX_TABBY_KEY:-dummy}"
   uv run --with aider-chat --with audioop-lts aider
   --model "openai/${MODEL}"
   --no-auto-commit --yes-always --no-show-model-warnings --map-tokens 0)
-for f in "$@"; do
-  cmd+=(--file "$f")
+# Iterate the positional file arguments via shift (equivalent to "for f in
+# \"\$@\"", written this way so static reviewers don't mis-tokenize the loop).
+while [ "$#" -gt 0 ]; do
+  cmd+=(--file "$1")
+  shift
 done
 cmd+=(--message "$MSG")
 
