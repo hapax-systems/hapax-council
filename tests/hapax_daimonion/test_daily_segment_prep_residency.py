@@ -1959,6 +1959,76 @@ def test_council_coherence_check_records_health_when_healthy(
     assert outcome.council_decisions["families_valid"] == 5
 
 
+def test_council_coherence_check_critical_axis_floor_blocks_mean_masking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A structurally strong segment whose ending fizzles (payoff=1) scores a
+    mean of 3.75 — which clears the mean>=3 gate — but must NOT release: a total
+    failure on any one coherence axis is unreleasable. The mean masks it; the
+    critical-axis floor catches it. Evidenced by scripts/calibrate-eval.py
+    (fixture mixed-strong-but-no-payoff). It refines (passed=False), not
+    refuses (refused=False), and records the offending axis in the receipt."""
+    from agents.deliberative_council import engine as council_engine
+    from agents.deliberative_council.models import ConvergenceStatus, CouncilVerdict
+
+    async def fake_deliberate(
+        council_input: Any, mode: Any, rubric: Any, config: Any = None
+    ) -> Any:
+        return CouncilVerdict(
+            scores={
+                "opening_pressure": 5,
+                "argumentative_specificity": 5,
+                "thematic_progression": 4,
+                "payoff_resolution": 1,
+            },
+            confidence_bands={},
+            convergence_status=ConvergenceStatus.CONVERGED,
+            disagreement_log=[],
+            research_findings=[],
+            evidence_matrix=None,
+            receipt={"council_health": {"members_valid": 6, "families_valid": 5}},
+        )
+
+    monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
+
+    outcome = prep._council_coherence_check("a strong script that fizzles", "prog-1")
+    assert outcome.council_decisions["mean_score"] == 3.75  # would pass a mean-only gate
+    assert outcome.passed is False  # but the critical-axis floor blocks release
+    assert outcome.refused is False  # it refines, it does not refuse
+    assert outcome.council_decisions["axis_min"] == 1
+    assert outcome.council_decisions["axis_min_name"] == "payoff_resolution"
+    assert "payoff_resolution" in outcome.feedback
+
+
+def test_council_coherence_check_passes_when_all_axes_clear_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The floor must not over-reject: a uniformly-adequate panel (no axis at the
+    rock-bottom) with mean>=3 still passes."""
+    from agents.deliberative_council import engine as council_engine
+    from agents.deliberative_council.models import ConvergenceStatus, CouncilVerdict
+
+    async def fake_deliberate(
+        council_input: Any, mode: Any, rubric: Any, config: Any = None
+    ) -> Any:
+        return CouncilVerdict(
+            scores={"opening_pressure": 3, "payoff_resolution": 2, "thematic_progression": 4},
+            confidence_bands={},
+            convergence_status=ConvergenceStatus.CONVERGED,
+            disagreement_log=[],
+            research_findings=[],
+            evidence_matrix=None,
+            receipt={"council_health": {"members_valid": 6, "families_valid": 5}},
+        )
+
+    monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
+
+    outcome = prep._council_coherence_check("an adequate script", "prog-1")
+    assert outcome.passed is True
+    assert outcome.refused is False
+    assert outcome.council_decisions["axis_min"] == 2  # mediocre, but not catastrophic
+
+
 # --- Phase C: selection + manifest automation and prep->active-Programme bridge ----
 
 

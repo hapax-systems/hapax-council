@@ -140,45 +140,57 @@ async def run_phase1(
 
     async def _run_one(alias: str, seed: int) -> PhaseOneResult | None:
         try:
-            research_member = build_member(alias)
-
             source_ctx_block = ""
             if inp.source_context:
                 source_ctx_block = f"\n\n## Source Context\n```\n{inp.source_context}\n```\n"
 
-            investigate_prompt = (
-                "You are a council member. FIRST, investigate the source material "
-                "using your research tools. Do NOT score yet — only gather evidence.\n\n"
-                f"**Source ref:** {inp.source_ref}\n\n**Text:**\n{inp.text}"
-                f"{source_ctx_block}\n\n"
-                "Use tools to verify claims, check sources, and gather evidence. "
-                "Report your findings as a JSON list:\n"
-                '{"research_findings": ["finding 1", "finding 2", ...]}'
-            )
-            try:
-                investigate_raw, tool_calls = await _call_member(
-                    research_member, investigate_prompt, usage_limits=_RESEARCH_LIMITS
-                )
-                findings_text = str(investigate_raw)[:2000]
-            except (UsageLimitExceeded, TimeoutError) as research_err:
-                # A member that exhausts its research budget (over-grounding) or
-                # times out is NOT a failed member. Discarding it dropped
-                # members_valid below the quality floor in the 2026-06-13 seg-prep
-                # incident (5/6 over-grounded -> members_valid=1 -> 0 released). It
-                # still produces a structured score from the rubric + source text;
-                # the source_grounding axis honestly reflects truncated research.
-                # Only a SCORING failure (outer except) discards a member.
-                _log.warning(
-                    "Research budget/timeout for %s (%s); scoring with truncated research",
-                    alias,
-                    type(research_err).__name__,
-                )
+            if not rubric.requires_research:
+                # JUDGMENT rubric (coherence, narrative_quality): the object of
+                # judgment IS inp.text. Skip the claim-verification research pass
+                # entirely — forcing "verify the source material" only burns the
+                # research budget and times out, then forces the score onto
+                # truncated/irrelevant research (the rubric-blind research-pass bug
+                # that floored coherence at ~1.0). Score directly from the text.
                 tool_calls = []
                 findings_text = (
-                    "(research truncated: budget/timeout reached before a findings "
-                    "summary was produced; score from the source text directly and "
-                    "rate source_grounding conservatively)"
+                    "(no external research — this is a judgment rubric; evaluate the "
+                    "supplied text on its own terms, not against external sources)"
                 )
+            else:
+                research_member = build_member(alias)
+                investigate_prompt = (
+                    "You are a council member. FIRST, investigate the source material "
+                    "using your research tools. Do NOT score yet — only gather evidence.\n\n"
+                    f"**Source ref:** {inp.source_ref}\n\n**Text:**\n{inp.text}"
+                    f"{source_ctx_block}\n\n"
+                    "Use tools to verify claims, check sources, and gather evidence. "
+                    "Report your findings as a JSON list:\n"
+                    '{"research_findings": ["finding 1", "finding 2", ...]}'
+                )
+                try:
+                    investigate_raw, tool_calls = await _call_member(
+                        research_member, investigate_prompt, usage_limits=_RESEARCH_LIMITS
+                    )
+                    findings_text = str(investigate_raw)[:2000]
+                except (UsageLimitExceeded, TimeoutError) as research_err:
+                    # A member that exhausts its research budget (over-grounding) or
+                    # times out is NOT a failed member. Discarding it dropped
+                    # members_valid below the quality floor in the 2026-06-13 seg-prep
+                    # incident (5/6 over-grounded -> members_valid=1 -> 0 released). It
+                    # still produces a structured score from the rubric + source text;
+                    # the source_grounding axis honestly reflects truncated research.
+                    # Only a SCORING failure (outer except) discards a member.
+                    _log.warning(
+                        "Research budget/timeout for %s (%s); scoring with truncated research",
+                        alias,
+                        type(research_err).__name__,
+                    )
+                    tool_calls = []
+                    findings_text = (
+                        "(research truncated: budget/timeout reached before a findings "
+                        "summary was produced; score from the source text directly and "
+                        "rate source_grounding conservatively)"
+                    )
 
             score_prompt = phase1_prompt_parts(
                 rubric,
