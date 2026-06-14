@@ -47,4 +47,15 @@ HAPAX_TABBY_URL=http://127.0.0.1:5000/v1 \
 uv run ruff check mathx.py   # -> All checks passed!
 ```
 
-First validated 2026-06-13 (appendix, local Command-R): two edits (`add(a, b) -> int`, `shout(s) -> str`), each a `ruff check`-clean diff at **$0 Anthropic** (`Tokens: ~680 sent`). A non-local `HAPAX_TABBY_URL` is refused (exit 3), so the no-provider-spend guarantee is enforced, not assumed.
+The wrapper test is the **durable, CI-able witness** for the lane's logic (arg
+handling, the endpoint guard, command construction). The end-to-end model run is
+an inherently **manual reproduce** — it needs a loaded local GPU model, so it is
+documented above rather than run in CI. First validated 2026-06-13 (appendix,
+local Command-R): two edits (`add(a, b) -> int`, `shout(s) -> str`), each a
+`ruff check`-clean diff at **$0 Anthropic** (`Tokens: ~680 sent`).
+
+**No-provider-spend enforcement.** The wrapper refuses any `HAPAX_TABBY_URL` whose
+*effective host* is not loopback (`127.0.0.1` / `localhost`) or the appendix host
+(`192.168.68.50`) — matched anchored, so userinfo smuggling
+(`http://127.0.0.1:5000@paid.example/v1`) and host-suffix tricks fail closed
+(exit 3, covered by the test). The guarantee is enforced, not just claimed.

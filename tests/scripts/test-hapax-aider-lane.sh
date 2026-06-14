@@ -27,6 +27,22 @@ HAPAX_AIDER_LANE_DRY_RUN=1 HAPAX_TABBY_URL="https://api.openai.com/v1" \
   "$LANE" m "do x" >/dev/null 2>&1
 check_exit "non-local endpoint refused (exit 3)" 3 $?
 
+# 3b. adversarial bypasses must also fail closed (userinfo smuggling, host-suffix,
+# path-only) — the effective host, not a prefix, must be local.
+for bad in \
+  "http://127.0.0.1:5000@api.openai.com/v1" \
+  "http://127.0.0.1.evil.com/v1" \
+  "http://evil.com/127.0.0.1"; do
+  HAPAX_AIDER_LANE_DRY_RUN=1 HAPAX_TABBY_URL="$bad" "$LANE" m "do x" >/dev/null 2>&1
+  check_exit "guard rejects bypass ($bad)" 3 $?
+done
+
+# 3c. legitimate local endpoints are accepted (dry-run reaches command construction)
+for good in "http://localhost:5000/v1" "http://192.168.68.50:5000/v1"; do
+  HAPAX_AIDER_LANE_DRY_RUN=1 HAPAX_TABBY_URL="$good" "$LANE" m "do x" >/dev/null 2>&1
+  check_exit "guard accepts local ($good)" 0 $?
+done
+
 # 4. command construction (dry-run)
 out="$(HAPAX_AIDER_LANE_DRY_RUN=1 "$LANE" command-r-x "fix the lint" foo.py bar.py 2>/dev/null)"
 has() { # desc pattern

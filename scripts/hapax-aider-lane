@@ -38,16 +38,17 @@ shift
 
 BASE="${HAPAX_TABBY_URL:-http://127.0.0.1:5000/v1}"
 
-# Enforce local-only routing — the "no provider spend" guarantee. A mis-set
-# HAPAX_TABBY_URL pointing at a paid endpoint must fail closed, not silently bill.
-case "$BASE" in
-  http://127.0.0.1:* | http://localhost:* | http://192.168.68.50:*) ;;
-  *)
-    echo "error: HAPAX_TABBY_URL must be a local endpoint (loopback or the appendix LAN);" >&2
-    echo "       refusing to run to avoid provider spend: $BASE" >&2
-    exit 3
-    ;;
-esac
+# Enforce local-only routing — the "no provider spend" guarantee. Match the
+# effective host EXACTLY (anchored), so userinfo smuggling like
+# http://127.0.0.1:5000@paid.example/v1 (whose real host is paid.example) cannot
+# slip past a prefix check. Allowed hosts: loopback (127.0.0.1 / localhost) and
+# the appendix dev host (192.168.68.50), optional :port, optional /path only.
+if ! printf '%s' "$BASE" |
+  grep -qE '^http://(127\.0\.0\.1|localhost|192\.168\.68\.50)(:[0-9]+)?(/[^@]*)?$'; then
+  echo "error: HAPAX_TABBY_URL must be a local endpoint — loopback or the appendix host" >&2
+  echo "       (127.0.0.1 / localhost / 192.168.68.50); refusing to avoid provider spend: $BASE" >&2
+  exit 3
+fi
 
 cmd=(env "OPENAI_API_BASE=$BASE" "OPENAI_API_KEY=${HAPAX_TABBY_KEY:-dummy}"
   uv run --with aider-chat --with audioop-lts aider
