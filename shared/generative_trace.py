@@ -31,7 +31,7 @@ DESIGN NOTE — operativity is the hard type. "Operative vs latent" requires an
 INFLUENCE signal, not just a list of inputs. For recruited SOURCES this is
 directly observable: a source the composer actually CITED (its handle appears in
 the segment's ``cited_handles``) is operative; a recruited-but-uncited source is
-latent. ``derive_source_operativity`` computes this. For non-source inputs
+latent. ``resolve_source_operativity`` computes this. For non-source inputs
 (density signals, profile facts, impingements) influence is self-reported in the
 decision record and is therefore tagged ``operativity_basis="self-report"`` —
 honestly weaker evidence, flagged as such rather than asserted.
@@ -56,6 +56,11 @@ log = logging.getLogger("generative_trace")
 
 SCHEMA_VERSION = 1
 
+# Retention: one trace JSON is written per generative episode. Over a long live
+# run these would grow without bound, so flush() prunes the oldest, keeping the
+# most recent N (0 disables pruning). Tunable via env.
+_TRACE_KEEP = int(os.environ.get("HAPAX_GENERATIVE_TRACE_KEEP", "500"))
+
 Operativity = Literal["operative", "latent", "unknown"]
 
 
@@ -68,7 +73,10 @@ class ProcessStep(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     name: str  # plan | recruit | compose | coherence_check | refine | council | select
-    status: str = "ok"  # ok | failed | skipped | refused
+    # Free string (not a Literal) so a new caller state can never raise into the
+    # fail-safe recording path. Known states callers emit:
+    #   ok | failed | skipped | refused | low | no_change
+    status: str = "ok"
     started_at: float = 0.0
     duration_s: float = 0.0
     llm_calls: int = 0
@@ -281,6 +289,7 @@ class GenerativeEpisodeTrace(BaseModel):
             with tmp:
                 json.dump(payload, tmp, ensure_ascii=False, indent=2)
             os.replace(tmp.name, path)
+            _prune_traces(out_dir)
             return path
         except Exception:
             log.warning("generative_trace: flush failed for %s", self.episode_id, exc_info=True)
@@ -295,6 +304,19 @@ class GenerativeEpisodeTrace(BaseModel):
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
+
+def _prune_traces(out_dir: Path) -> None:
+    """Keep only the most recent ``_TRACE_KEEP`` trace files (0 = unbounded).
+    Best-effort: a prune failure must never break a flush."""
+    if _TRACE_KEEP <= 0:
+        return
+    try:
+        files = sorted(out_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for stale in files[_TRACE_KEEP:]:
+            stale.unlink(missing_ok=True)
+    except Exception:
+        log.debug("generative_trace: prune failed (non-fatal)", exc_info=True)
 
 
 def _summarize_delta(prev: str, cur: str) -> str:

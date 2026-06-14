@@ -1874,7 +1874,12 @@ def _salient_impingement_block(
     for r in ranked:
         content = r.get("content") if isinstance(r.get("content"), dict) else {}
         narrative = str(content.get("narrative", r.get("type", "")))[:120]
-        lines.append(f"  - {r.get('source', '?')} ({r.get('strength', 0):.2f}): {narrative}")
+        # Coerce defensively: a live /dev/shm record may carry a null or string
+        # strength, and a raw {:.2f} on that raises OUTSIDE the read guard,
+        # turning an observability input into a failed segment (codex-1, #4133).
+        raw_strength = r.get("strength")
+        strength = float(raw_strength) if isinstance(raw_strength, int | float) else 0.0
+        lines.append(f"  - {r.get('source', '?')} ({strength:.2f}): {narrative}")
     return "\n".join(lines), ranked
 
 
@@ -2326,6 +2331,20 @@ def prep_segment(
         refined_script = [str(item) for item in refine_result]
         refinement_changed = refined_script != script
         script = refined_script
+    # Swap to the final contract FIRST, so the trace's operativity is computed
+    # against the contract that actually produced the released script. Resolving
+    # before the swap tagged operative/latent against the stale pass-1 contract,
+    # corrupting the core generative-observability evidence for refined outputs
+    # (codex-1, PR #4133).
+    if refinement_contract and (refinement_changed or model_contract is None):
+        model_contract = refinement_contract
+    elif refinement_changed:
+        log.warning(
+            "prep_segment: refinement changed %s without a model-emitted final contract",
+            prog_id,
+        )
+        model_contract = None
+
     # OBSERVABILITY (Type 4 — true iteration): record the refined draft with the
     # feedback that prompted it. delta_from_prev auto-detects a re-roll vs a real
     # revision; responded_to_feedback says whether the pass changed anything at
@@ -2346,7 +2365,7 @@ def prep_segment(
                 status=("ok" if refinement_changed else "no_change"),
                 note=f"changed={refinement_changed}, {len(script)} beats",
             )
-            # Re-resolve operativity against the (possibly new) final contract.
+            # Re-resolve operativity against the now-final (post-swap) contract.
             if isinstance(model_contract, dict):
                 _gt.resolve_source_operativity(
                     [str(h) for h in model_contract.get("cited_handles", [])]
@@ -2354,20 +2373,60 @@ def prep_segment(
         except Exception:
             log.debug("generative_trace: refine record failed", exc_info=True)
 
-    if refinement_contract and (refinement_changed or model_contract is None):
-        model_contract = refinement_contract
-    elif refinement_changed:
-        log.warning(
-            "prep_segment: refinement changed %s without a model-emitted final contract",
-            prog_id,
-        )
-        model_contract = None
     script = _scrub_host_posture(script)
     if role == "tier_list":
         script = _repair_tier_list_placement_phrases(script)
     script = _repair_source_visible_beats(script, [str(item) for item in beats])
     script = _repair_comparison_beats(script, [str(item) for item in beats])
     script = _repair_live_event_payoff(script)
+
+    # Coherence is a RELEASE gate, not just a refinement trigger. If the first
+    # pass failed (low mean OR a critical-axis floor breach), the refined +
+    # repaired script must now CLEAR the gate or the segment does not release.
+    # Without this re-check a no-op refinement (observed: ~2% change on a flat
+    # 35B draft) carried a sub-threshold or critical-axis-failed draft straight
+    # through to later gates and could be saved — so "the floor blocks release"
+    # was not actually implemented (codex-1, PR #4133).
+    if not coherence_outcome.passed:
+        recheck = _council_coherence_check("\n\n".join(script), prog_id)
+        council_decisions["coherence_recheck"] = recheck.council_decisions
+        if _gt is not None:
+            _rc = recheck.council_decisions or {}
+            _gt.record_step(
+                "coherence_recheck",
+                status=("ok" if recheck.passed else "refused" if recheck.refused else "low"),
+                note=f"post-refine mean={_rc.get('mean_score')} min={_rc.get('axis_min')} "
+                f"passed={recheck.passed}",
+            )
+        if not recheck.passed:
+            if _gt is not None:
+                _gt.finish("low_coherence_after_refine")
+            log.warning(
+                "prep_segment: coherence still below gate after refinement for %s "
+                "(mean=%s, axis_min=%s) — no release",
+                prog_id,
+                (recheck.council_decisions or {}).get("mean_score"),
+                (recheck.council_decisions or {}).get("axis_min"),
+            )
+            _emit_council_degradation_signal(
+                prog_id, "coherence_recheck", recheck.council_decisions
+            )
+            _append_council_decisions_ledger(
+                prep_dir, prog_id, council_decisions, terminal_status="low_coherence_no_release"
+            )
+            _write_prep_diagnostic_outcome(
+                prep_dir,
+                prep_session=prep_session,
+                programme_id=prog_id,
+                role=role,
+                topic=topic,
+                segment_beats=list(beats),
+                terminal_status="low_coherence_no_release",
+                terminal_reason="coherence_below_gate_after_refinement",
+                not_loadable_reason="coherence below release gate after refinement",
+                refusal_metadata={"council_decisions": council_decisions},
+            )
+            return None
 
     # Pass 3: Council disconfirmation — adversarially test material claims
     if _prep_deadline_exceeded(

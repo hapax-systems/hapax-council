@@ -30,6 +30,11 @@ DEFAULT_PREP_DIR = Path(
     os.environ.get("HAPAX_SEGMENT_PREP_DIR", str(Path.home() / ".cache" / "hapax" / "segment-prep"))
 )
 
+# Keep in sync with shared/generative_trace.py SCHEMA_VERSION. A trace written by
+# a newer writer may reinterpret fields, so we warn at the read boundary rather
+# than silently misrender it with v1 assumptions.
+EXPECTED_SCHEMA_VERSION = 1
+
 
 def _load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -56,8 +61,18 @@ def render(t: dict) -> str:
     p = out.append
     p(f"╔═ GENERATIVE EPISODE: {t.get('episode_id')}  ({t.get('role')})")
     p(f"║  topic: {t.get('topic', '')[:100]}")
-    p(f"║  outcome: {t.get('outcome')}    schema v{t.get('schema_version')}")
+    sv = t.get("schema_version")
+    warn = (
+        "" if sv == EXPECTED_SCHEMA_VERSION else f"  ⚠ inspector expects v{EXPECTED_SCHEMA_VERSION}"
+    )
+    p(f"║  outcome: {t.get('outcome')}    schema v{sv}{warn}")
     p("╚" + "═" * 70)
+    if sv != EXPECTED_SCHEMA_VERSION:
+        p(
+            f"\n⚠ SCHEMA MISMATCH: trace is v{sv}, this inspector understands "
+            f"v{EXPECTED_SCHEMA_VERSION}. Fields below may be misrendered; "
+            "update scripts/inspect-generative-trace.py to the trace schema."
+        )
 
     # SELF_MODEL — sense of role
     sm = t.get("self_model") or {}
@@ -189,7 +204,14 @@ def main() -> int:
         return 0
     traces = _find_traces(prep_dir)
     if not traces:
-        print(f"no generative traces under {prep_dir}", file=sys.stderr)
+        print(
+            f"no generative traces under {prep_dir}\n"
+            "next: run a segment-prep episode to produce one "
+            "(HAPAX_SEGMENT_PREP_CANARY_SEED=1 uv run python -m "
+            "agents.hapax_daimonion.daily_segment_prep --prep-dir DIR), then "
+            "re-run with --prep-dir DIR; or pass a trace JSON path directly.",
+            file=sys.stderr,
+        )
         return 1
     if args.all:
         print(f"{len(traces)} episode(s) under {prep_dir}:\n")
