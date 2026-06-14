@@ -154,6 +154,13 @@ MODELS: dict[str, str] = {
 EMBEDDING_MODEL: str = "nomic-embed-cpu"
 EXPECTED_EMBED_DIMENSIONS: int = 768
 
+# RAG cross-encoder reranking (cost-offload Tier-1; ISAP
+# S5-CAPACITY-ROUTING-COST-OFFLOAD-TIER1 under CASE-CAPACITY-ROUTING-001).
+# Default OFF — byte-identical retrieval when off. Flip on (HAPAX_RAG_RERANK=1)
+# only after the nDCG@10 validation gate passes.
+RERANK_ENABLED: bool = os.environ.get("HAPAX_RAG_RERANK", "").lower() in ("1", "true", "yes", "on")
+RERANK_MODEL: str = os.environ.get("HAPAX_RERANK_MODEL", "tomaarsen/Qwen3-Reranker-0.6B-seq-cls")
+
 # CLAP (audio-text) embedding dimensions
 CLAP_EMBED_DIMENSIONS: int = 512
 
