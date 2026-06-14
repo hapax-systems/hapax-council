@@ -246,22 +246,74 @@ find_active_note() {
 
 task_is_terminal() {
   # 0 = terminal (stop the respawn loop); 1 = still live (keep the lane up).
+  #
+  # v2 fix (2026-06-12 postmortem): a MISSING claim file is treated as
+  # INDETERMINATE, not terminal.  The old code returned 0 (terminal) whenever
+  # $claimed != $task, which included the missing-file case.  That killed live
+  # lanes (delta, zeta) when their caches vanished mid-run with no journaled
+  # actor.  Now: if the claim file is absent, fall through to note + PR checks
+  # and also consult the session-keyed claim file as a secondary source.
   local task="$1"
   [[ -n "$task" ]] || return 1   # no task binding -> legacy always-on behavior
-  local claimed=""
+
+  local claimed="" claim_source="primary"
   if [[ -s "$CLAIM_FILE" ]]; then
     claimed="$(head -n1 "$CLAIM_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
   fi
-  # cc-close clears the claim file; a re-point means the lane moved on.
-  [[ "$claimed" == "$task" ]] || return 0
+
+  # If primary cache is missing or empty, try session-keyed claim files.
+  # cc-claim writes cc-active-task-<role>-<session_id>, so we glob for all
+  # session-keyed files matching this role and pick the most recently modified.
+  if [[ -z "$claimed" ]]; then
+    local session_claim="" newest_mtime=0
+    for candidate in "$HOME/.cache/hapax/cc-active-task-${ROLE}-"*; do
+      [[ -s "$candidate" ]] || continue
+      local mtime
+      mtime="$(stat -c %Y "$candidate" 2>/dev/null || echo 0)"
+      if (( mtime > newest_mtime )); then
+        newest_mtime="$mtime"
+        session_claim="$candidate"
+      fi
+    done
+    if [[ -n "$session_claim" && -s "$session_claim" ]]; then
+      claimed="$(head -n1 "$session_claim" 2>/dev/null | tr -d '[:space:]' || true)"
+      claim_source="session-keyed:$(basename "$session_claim")"
+    fi
+  fi
+
+  if [[ -z "$claimed" ]]; then
+    # Claim cache MISSING on all sources.  This is INDETERMINATE — do NOT
+    # treat as terminal.  Fall through to note + PR verification.
+    # Log the anomaly for forensic tracing.
+    printf 'hapax-claude-headless[%s]: task_is_terminal: claim cache MISSING for role=%s task=%s — treating as indeterminate (fail-open)\n' "$$" "$ROLE" "$task" >&2
+  elif [[ "$claimed" != "$task" ]]; then
+    # cc-close clears the claim file; a re-point means the lane moved on.
+    # This is a DEFINITIVE terminal signal (the file exists and names a
+    # different task).
+    return 0
+  fi
+  # claimed == task  OR  claimed is missing (indeterminate) — verify via note.
+
   local note=""
   note="$(find_active_note "$task")"
   [[ -n "$note" ]] || return 0   # note left active/ (moved to closed/) -> closed
   local status=""
   status="$(grep -oP '^status:\s*\K\S+' "$note" 2>/dev/null | head -n1 || true)"
   case "$status" in
-    done | completed | closed | withdrawn | superseded) return 0 ;;
+    # Definitively terminal lifecycle states -> the lane's work is over.
+    done | completed | closed | withdrawn | superseded | abandoned) return 0 ;;
+    # Everything else (claimed/in_progress/pr_open/blocked/unknown) is NOT
+    # terminal on status alone: fall through to the assigned + PR-state reality
+    # checks below. A live open-PR lane (status: pr_open) must NEVER be killed
+    # here (class #5: never kill a live open-PR lane); offered/unassigned are
+    # caught by the assigned-mismatch check, and a still-open PR returns live.
+    *) ;;
   esac
+  local note_assigned=""
+  note_assigned="$(grep -oP '^assigned_to:\s*\K\S+' "$note" 2>/dev/null | head -n1 || true)"
+  if [[ -n "$note_assigned" && "$note_assigned" != "$ROLE" ]]; then
+    return 0
+  fi
   # PR merged but the note not yet closed (the dead-lane window): stop now; the
   # merge-watcher closes the note shortly. Fail-open on any gh hiccup.
   local pr=""
