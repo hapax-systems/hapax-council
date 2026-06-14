@@ -28,10 +28,23 @@ The wrapper sets `OPENAI_API_BASE=http://127.0.0.1:5000/v1` (override with `HAPA
 
 The lane produces an ordinary git diff; **existing council governance applies at review/merge** — the work runs under a `cc-claim`'d task in a `/data/cache/hapax/scratch/<slug>` worktree, and the diff must pass the same gate any lane does (`ruff check`, `ruff format --check`, `pytest -q` on touched modules) before it is committed/PR'd. A local-model diff that fails those checks fails closed.
 
-## Validation (2026-06-13, appendix)
+## Validation & recheck
 
-Two end-to-end runs on the local Command-R, $0 Anthropic spend, each producing a diff that passed `ruff check` unmodified:
-- `add(a: int, b: int) -> int` with docstring → ruff clean.
-- `shout(s: str) -> str` via the wrapper script → ruff clean.
+The wrapper's logic (arg validation, the local-only endpoint guard, command construction) is covered by a re-runnable test — **no live model needed**:
 
-Verified: local provider resolves, model round-trips (`Tokens: ~680 sent`), diff applies, gate passes.
+```sh
+bash tests/scripts/test-hapax-aider-lane.sh   # -> ALL PASS
+shellcheck scripts/hapax-aider-lane tests/scripts/test-hapax-aider-lane.sh
+```
+
+The end-to-end lane (local model → gate-passing diff) is reproduced on the appendix dev host:
+
+```sh
+# in a throwaway git repo on appendix:
+HAPAX_TABBY_URL=http://127.0.0.1:5000/v1 \
+  scripts/hapax-aider-lane command-r-08-2024-exl3-4.0bpw \
+  "Add a typed, documented add(a, b) helper; keep it ruff-clean." mathx.py
+uv run ruff check mathx.py   # -> All checks passed!
+```
+
+First validated 2026-06-13 (appendix, local Command-R): two edits (`add(a, b) -> int`, `shout(s) -> str`), each a `ruff check`-clean diff at **$0 Anthropic** (`Tokens: ~680 sent`). A non-local `HAPAX_TABBY_URL` is refused (exit 3), so the no-provider-spend guarantee is enforced, not assumed.
