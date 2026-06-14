@@ -576,6 +576,67 @@ class TestHostReconciliation:
         assert "RECONCILED" in result.stdout
         assert len(calls.read_text(encoding="utf-8").splitlines()) == 1
 
+    def test_local_clear_atomic_against_concurrent_repoint(self, tmp_path: Path) -> None:
+        """A cc-claim re-point during the reconcile window must not be erased.
+
+        Class #5 TOCTOU on the LOCAL clear path: the audit decides task X is
+        releasable, reads the local claim cache, then (slowly) reconciles the
+        remote over ssh. If another session re-points the SAME cache to a
+        different LIVE task Y during that window, a plain read-then-rm would
+        erase Y's live claim. The local clear must capture the claim atomically
+        (rename-aside) so only the private snapshot is ever removed — mirroring
+        the remote compare-and-delete.
+        """
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+
+        task_id = "phantom-toctou-task"
+        _write_task_note(
+            vault,
+            task_id,
+            assigned_to="cx-gold",
+            pr="null",
+            branch="null",
+            status="claimed",
+            claimed_at="2026-06-10T01:00:00Z",
+        )
+        claim_file = _write_claim_cache(cache_dir, "cx-gold", task_id)
+
+        # ssh stub: re-point the LOCAL claim to a different live task mid-reconcile
+        # (the concurrent cc-claim race), THEN run the script's real remote cmd.
+        reconcile_dir = tmp_path / "remote-cache"
+        reconcile_dir.mkdir(parents=True, exist_ok=True)
+        remote_state = reconcile_dir / "cc-active-task-cx-gold"
+        remote_state.write_text(f"{task_id}\n", encoding="utf-8")
+        stub = tmp_path / "bin" / "ssh"
+        stub.parent.mkdir(parents=True, exist_ok=True)
+        stub.write_text(
+            textwrap.dedent(f"""\
+            #!/usr/bin/env bash
+            cmd="${{@: -1}}"
+            printf 'other-live-task\\n' > "{claim_file}"
+            eval "$cmd"
+            """),
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+
+        result = _run_audit(
+            tmp_path,
+            vault,
+            cache_dir,
+            release=True,
+            extra_args=_reconcile_args(remote_state),
+            gh_state="CLOSED",
+        )
+
+        assert claim_file.exists(), (
+            "REGRESSION class #5 TOCTOU: a concurrently re-pointed live claim was "
+            "erased by a read-then-rm local clear (result rc="
+            f"{result.returncode})\nSTDOUT:\n{result.stdout}"
+        )
+        assert claim_file.read_text(encoding="utf-8").strip() == "other-live-task"
+
     def test_reconcile_mismatch_keeps_local_and_note_claimed(self, tmp_path: Path) -> None:
         """A different remote task is a live-claim fork; local release fails closed."""
         vault = _make_vault(tmp_path)

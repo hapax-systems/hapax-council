@@ -507,13 +507,27 @@ _reality_check_protects() {
   return 1
 }
 
+# Restore a rename-aside snapshot WITHOUT clobbering a concurrent fresh write.
+# If a new claim was written to the canonical path while we held the snapshot,
+# that write is newer/live and wins — we discard our stale snapshot. Otherwise
+# the snapshot moves back. (Local mirror of the remote restore in
+# _reconcile_clear_to_host.)
+_restore_local_snapshot() {
+  local snapshot="$1" canonical="$2"
+  if [ -e "$canonical" ]; then
+    rm -f "$snapshot"
+  else
+    mv "$snapshot" "$canonical" 2>/dev/null || rm -f "$snapshot"
+  fi
+}
+
 _clear_claim_cache_for_release() {
   local assigned="$1"
   local task_id="$2"
   local reason="${3:-released}"
   local pr_number="${4:-}"
   release_cache_message=""
-  local claim_file claimed_task
+  local claim_file claimed_task audit_tmp
   claim_file="$CLAIM_CACHE_DIR/cc-active-task-$assigned"
 
   # ── PR + BRANCH-HEAD REALITY CHECK (class #5) — gate ALL clear paths ──
@@ -524,35 +538,56 @@ _clear_claim_cache_for_release() {
     return 1
   fi
 
-  if [ -f "$claim_file" ]; then
-    claimed_task=$(sed -n '1p' "$claim_file" 2>/dev/null || true)
-    if [ "$claimed_task" = "$task_id" ]; then
-      if [ "$DRY_RUN" = true ]; then
+  if [ "$DRY_RUN" = true ]; then
+    if [ -f "$claim_file" ]; then
+      claimed_task=$(sed -n '1p' "$claim_file" 2>/dev/null || true)
+      if [ "$claimed_task" = "$task_id" ]; then
         release_cache_message="    -> [DRY-RUN] WOULD CLEAR stale claim cache $(basename "$claim_file")\n"
         if [ -n "$RECONCILE_HOST" ]; then
           _reconcile_clear_to_host "$assigned" "$task_id" || return 1
         fi
-      else
-        # Reconcile before the local destructive clear. A remote mismatch or ssh
-        # failure leaves the local cache in place so the claim plane fails closed.
-        if [ -n "$RECONCILE_HOST" ]; then
-          if ! _reconcile_clear_to_host "$assigned" "$task_id"; then
-            release_cache_message="    -> KEPT claim cache $(basename "$claim_file") because remote reconciliation failed or found a different live claim\n"
-            release_failure_count=$((release_failure_count + 1))
-            release_failure_report="${release_failure_report}  RELEASE_HELD: $(basename "$claim_file") task=${task_id} assigned=${assigned} reason=reconcile_failed\n"
-            return 1
-          fi
-        fi
-        rm -f "$claim_file"
-        _journal_attr "CLEAR" "$(basename "$claim_file")" "${reason} task=${task_id} assigned=${assigned} pr=${pr_number:-none}"
-        release_cache_message="    -> CLEARED stale claim cache $(basename "$claim_file")\n"
+        return 0
       fi
-      return 0
-    else
       cache_mismatch_count=$((cache_mismatch_count + 1))
       release_cache_message="    -> KEPT claim cache $(basename "$claim_file") because it names ${claimed_task:-<empty>}\n"
       return 1
     fi
+  elif [ -f "$claim_file" ]; then
+    # ── ATOMIC CAPTURE (class #5 TOCTOU) ──
+    # Snapshot the claim by atomic rename BEFORE the (slow) remote reconcile, so
+    # a concurrent cc-claim that re-points this path to a *different* live task
+    # between our read and our delete cannot be erased: we only ever rm the
+    # private snapshot, never the canonical path. A plain read-then-rm here had
+    # the exact TOCTOU the remote path already guards against — mirror it.
+    audit_tmp="$claim_file.audit-claim.$$"
+    if mv -f "$claim_file" "$audit_tmp" 2>/dev/null; then
+      claimed_task=$(sed -n '1p' "$audit_tmp" 2>/dev/null || true)
+      if [ "$claimed_task" != "$task_id" ]; then
+        _restore_local_snapshot "$audit_tmp" "$claim_file"
+        cache_mismatch_count=$((cache_mismatch_count + 1))
+        release_cache_message="    -> KEPT claim cache $(basename "$claim_file") because it names ${claimed_task:-<empty>}\n"
+        return 1
+      fi
+      # Ours. Reconcile the remote first; on failure restore the snapshot so the
+      # claim plane fails closed (a remote mismatch/ssh failure keeps the claim).
+      if [ -n "$RECONCILE_HOST" ]; then
+        if ! _reconcile_clear_to_host "$assigned" "$task_id"; then
+          _restore_local_snapshot "$audit_tmp" "$claim_file"
+          release_cache_message="    -> KEPT claim cache $(basename "$claim_file") because remote reconciliation failed or found a different live claim\n"
+          release_failure_count=$((release_failure_count + 1))
+          release_failure_report="${release_failure_report}  RELEASE_HELD: $(basename "$claim_file") task=${task_id} assigned=${assigned} reason=reconcile_failed\n"
+          return 1
+        fi
+      fi
+      # Remote reconciled (or no reconcile host). Drop only our private snapshot;
+      # a concurrent re-point created a fresh canonical file that we never touch.
+      rm -f "$audit_tmp"
+      _journal_attr "CLEAR" "$(basename "$claim_file")" "${reason} task=${task_id} assigned=${assigned} pr=${pr_number:-none}"
+      release_cache_message="    -> CLEARED stale claim cache $(basename "$claim_file")\n"
+      return 0
+    fi
+    # mv failed → the local cache vanished concurrently; fall through to the
+    # missing-local reconcile path (it fails closed on remote uncertainty).
   fi
   if [ -n "$RECONCILE_HOST" ]; then
     if ! _reconcile_clear_to_host "$assigned" "$task_id"; then
