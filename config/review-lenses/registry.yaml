@@ -101,13 +101,15 @@ families:
     # numbers absent from the diff (PR #4131: a 267-line file that py_compiles clean,
     # decorators at 119-127, claimed corrupted at line 690 into an unrelated test
     # file). The dispatch sends a clean untruncated `gh pr diff`, so this is reviewer
-    # confabulation, not a tooling-input defect. The clause is NARROW: it constrains
+    # confabulation, not a tooling-input defect. The clause is SURGICAL: it constrains
     # ONLY claims of literal textual/syntactic defect (syntax error / compile failure /
-    # corruption) to be quoted from the diff; it explicitly PRESERVES analytical and
-    # cross-file findings AND the mandatory re-emission of prior unresolved criticals
-    # (so it cannot relax the critical-resolution gate — codex-2 review of #4132). It
+    # corruption) to be quoted from the diff, and is otherwise SILENT — it explicitly
+    # defers all other findings AND prior-unresolved-critical handling to the base
+    # review instructions, so it can neither relax the critical-resolution gate by
+    # omission nor deadlock it by forcing re-emission (#4132 reviews: codex-2 r1 flagged
+    # omission, codex-1/codex-2/claude-1 r3 flagged deadlock — silence avoids both). It
     # biases neither toward accept nor block.
-    reviewer_command: ["gemini", "--skip-trust", "--approval-mode", "plan", "-p", "Perform the review request provided on stdin; reply with exactly one fenced yaml code block and no prose. ACCURACY RULE (mandatory; evidence-neutral — never bias toward accept or block, and never suppress a real issue): do not fabricate literal defects. When you assert that a specific line is a syntax error, fails to compile, or is corrupted, you MUST quote that line verbatim with its real line number from the provided diff, and you MUST NOT invent file paths, line numbers, or corruption that are not present in the diff. This constraint applies ONLY to such literal textual/syntactic-defect claims and NEVER overrides your other duties: you MUST still raise analytical, architectural, design, and cross-file findings, and — this takes precedence over the do-not-reference-absent-files clause — you MUST still re-emit every prior unresolved critical you are shown, reproduced exactly as given, even when the file it concerns is not in the current diff."]
+    reviewer_command: ["gemini", "--skip-trust", "--approval-mode", "plan", "-p", "Perform the review request provided on stdin; reply with exactly one fenced yaml code block and no prose. ACCURACY RULE (mandatory; evidence-neutral — never bias toward accept or block): do not fabricate literal defects. When you assert that a specific line is a syntax error, fails to compile, or is corrupted, quote that line verbatim with its real line number from the provided diff; do not invent file paths, line numbers, or corruption that are absent from the diff. This rule is limited strictly to such literal textual/syntactic-defect claims; it changes nothing else about how you review — all other findings, and the standard handling of prior unresolved criticals, proceed exactly as the review instructions specify."]
     timeout_seconds: 1200
 
 # Authoring-lane -> model family (writer's family never holds the majority
