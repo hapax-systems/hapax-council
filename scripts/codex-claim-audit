@@ -603,6 +603,19 @@ _clear_claim_cache_for_release() {
 
 # ---------------------------------------------------------------------------
 # Host reconciliation (class #4 fix)
+#
+# Two-host plane, single authoritative auditor. This audit is driven by the
+# SHARED VAULT NOTES (the claim SSOT under 20-projects/hapax-cc-tasks/), not by
+# any one host's local cache: the sweep iterates every active task note and the
+# local cache, and for each release it clears BOTH the local cache and — via
+# RECONCILE_HOST — the peer replica. Because the vault is the SSOT and is shared,
+# an appendix-origin claim still has a vault note, so the podium auditor sees and
+# reconciles it on the appendix replica; there is no class of "appendix-only"
+# clear that escapes reconciliation. RECONCILE_HOST is therefore the PEER host
+# (podium → appendix today). If the audit is ever ALSO run on the appendix, set
+# its RECONCILE_HOST to the podium peer (never to self): _reconcile_host_is_self
+# no-ops a self-target, so a self-pointing reconcile host would replicate
+# nothing — point it at the peer to keep the plane bidirectional.
 # ---------------------------------------------------------------------------
 
 _reconcile_clear_to_host() {
