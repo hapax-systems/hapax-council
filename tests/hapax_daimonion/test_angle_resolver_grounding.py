@@ -10,6 +10,8 @@ coherence 4.25 (vs 2.0) when composing against clean sources.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from agents.hapax_daimonion import angle_resolver
 
 
@@ -26,3 +28,23 @@ def test_stream_reactions_classified_self_generated() -> None:
     assert not set(angle_resolver._SELF_GENERATED_COLLECTIONS) & set(
         angle_resolver.QDRANT_COLLECTIONS
     )
+
+
+def test_gather_sources_never_queries_self_generated_collection() -> None:
+    # Behavioral pin (not just the constant): the recruiter must never ISSUE a
+    # qdrant query against stream-reactions, so a future code path cannot
+    # reintroduce self-citation while the constant test still passes.
+    queried: list[str] = []
+
+    def _fake_qdrant_search(collection: str, topic: str, limit: int = 5) -> list:
+        queried.append(collection)
+        return []
+
+    with (
+        patch("agents.programme_authors.asset_resolver._qdrant_search", _fake_qdrant_search),
+        patch("agents.programme_authors.asset_resolver._vault_notes_for_topic", lambda *a, **k: []),
+    ):
+        angle_resolver._gather_sources("any topic")
+
+    assert "stream-reactions" not in queried
+    assert queried  # it did query the remaining (grounding) collections

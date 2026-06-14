@@ -1,29 +1,28 @@
 #!/usr/bin/env python3
 """Compose-model bakeoff — which model can compose a segment that clears coherence?
 
-The verified diagnosis (2026-06-14) + the post-src:N canary established that the
-resident Command-R 35B is at its COMPOSITIONAL ceiling: even on real cited
-sources, with a genuine 47%-rewrite refine responding to per-axis feedback, it
-scores coherence mean=2.0 (opening_pressure=2, payoff_resolution=1) — a rhetorical
-deficit independent of source quality. Fixing the coherence gate therefore needs
-a stronger COMPOSER, and there are two paths with very different governance cost:
+A controlled isolation: hold the topic + sources + compose instruction CONSTANT
+and compose with each candidate model, then score every composition with the SAME
+validated coherence council (the eval calibrated to AUC 1.0 in PR #4133). The
+variable under test is compositional capability.
 
-  (B) swap the resident compose model to a stronger LOCAL model (e.g. the
-      Qwen3.6-35B-A3B-abliterated already served on TabbyAPI) — preserves the
-      resident/local architecture, modest governance.
-  (A) outsource compose to a cloud family (opus/gemini) — high governance, a
-      provenance-invariant amendment, and a question about Hapax's broadcast voice.
+RESULT (2026-06-14, receipt ~/.cache/hapax/eval-calibration/bakeoff-001.json):
+this bakeoff FALSIFIED the hypothesis that the resident Command-R 35B is at its
+compositional ceiling. The hypothesis came from the live pipeline, where the 35B
+scores coherence ~2.0; but on this clean task the SAME model scores 4.25 (local
+Qwen3.6 3.75) — both CLEAR the gate. So the model is NOT the ceiling; the binding
+constraint is the live compose CONTEXT, and ultimately TOPIC + TYPE selection (the
+planner generates un-composable internal-minutiae tier-lists). The producer-seam
+(cloud outsourcing) is therefore NOT required.
 
-This bakeoff produces the decision data: hold the topic + sources + compose
-instruction CONSTANT and compose with each candidate model, then score every
-composition with the SAME validated coherence council (the eval calibrated to
-AUC 1.0 in PR #4133). It isolates compositional capability and answers: does a
-local swap clear coherence>=3, or is cloud outsourcing required?
+Cloud composers (opus/gemini) are OFF by default — running them posts the compose
+prompt through LiteLLM (a cloud-egress path), so they are opt-in via --cloud.
 
 Usage:
-    uv run python scripts/compose-model-bakeoff.py
+    uv run python scripts/compose-model-bakeoff.py            # local composers only
+    uv run python scripts/compose-model-bakeoff.py --cloud    # also opus/gemini (cloud egress)
     uv run python scripts/compose-model-bakeoff.py --json PATH
-    uv run python scripts/compose-model-bakeoff.py --only opus,local-qwen36
+    uv run python scripts/compose-model-bakeoff.py --only local-qwen36
 """
 
 from __future__ import annotations
@@ -40,6 +39,10 @@ from shared.config import LITELLM_BASE, LITELLM_KEY
 TABBY_CHAT_URL = "http://localhost:5000/v1/chat/completions"
 LITELLM_CHAT_URL = LITELLM_BASE.rstrip("/") + "/chat/completions"
 
+# Matches the live gate's HAPAX_COHERENCE_CRITICAL_AXIS_FLOOR default: an axis at
+# or below this score is a catastrophic single-dimension failure (no release).
+_CRITICAL_AXIS_FLOOR = 1
+
 
 # ── candidate composers (label -> endpoint + model id) ────────────────────────
 
@@ -52,7 +55,7 @@ class Composer:
     note: str
 
 
-COMPOSERS: list[Composer] = [
+LOCAL_COMPOSERS: list[Composer] = [
     Composer(
         "resident-command-r",
         "tabby",
@@ -65,6 +68,11 @@ COMPOSERS: list[Composer] = [
         "Qwen3.6-35B-A3B-abliterated-exl3-6.0bpw",
         "local swap candidate (path B)",
     ),
+]
+
+# Cloud composers post the compose prompt through LiteLLM — a cloud-egress path —
+# so they are OFF unless the operator opts in with --cloud (fail-closed egress).
+CLOUD_COMPOSERS: list[Composer] = [
     Composer("opus", "litellm", "opus", "cloud outsource candidate (path A)"),
     Composer("gemini-3-pro", "litellm", "gemini-3-pro", "cloud outsource candidate (path A)"),
 ]
@@ -150,9 +158,16 @@ class BakeoffResult:
 
     @property
     def clears_gate(self) -> bool:
-        return (
-            self.mean_score is not None and self.mean_score >= 3.0 and self.convergence != "refused"
-        )
+        # Mirror the LIVE coherence release gate (daily_segment_prep
+        # _council_coherence_check): mean>=3 AND not refused AND no critical-axis
+        # floor breach (any axis <= 1). Without the floor this tool would report a
+        # model as clearing when the live runtime would reject the same segment.
+        if self.mean_score is None or self.convergence == "refused":
+            return False
+        axis_values = [v for v in self.scores.values() if v is not None]
+        if axis_values and min(axis_values) <= _CRITICAL_AXIS_FLOOR:
+            return False
+        return self.mean_score >= 3.0
 
 
 async def _score(script_text: str, label: str) -> tuple[float | None, dict, int | None, str]:
@@ -228,13 +243,20 @@ def render(results: list[BakeoffResult]) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--only", help="comma-separated composer labels to run")
+    ap.add_argument(
+        "--cloud",
+        action="store_true",
+        help="also run cloud composers (opus/gemini) — posts the prompt to LiteLLM (cloud egress)",
+    )
     ap.add_argument("--json", metavar="PATH", help="write a JSON receipt")
     args = ap.parse_args()
 
-    composers = COMPOSERS
+    all_composers = LOCAL_COMPOSERS + (CLOUD_COMPOSERS if args.cloud else [])
+    composers = all_composers
     if args.only:
         wanted = {s.strip() for s in args.only.split(",")}
-        composers = [c for c in COMPOSERS if c.label in wanted]
+        # --only may name a cloud composer; honor it (explicit opt-in to that model).
+        composers = [c for c in LOCAL_COMPOSERS + CLOUD_COMPOSERS if c.label in wanted]
 
     async def _run() -> list[BakeoffResult]:
         out = []
