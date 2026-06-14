@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -58,3 +59,28 @@ def test_guard_flags_missing_control(tmp_path: Path) -> None:
     result = _run(_OK_CONF.replace('"Limit (dB)"      = -1.0\n', ""), tmp_path)
     assert result.returncode == 1
     assert "Limit (dB)" in result.stderr and "MISSING" in result.stderr
+
+
+def test_guard_flags_release_time_drift(tmp_path: Path) -> None:
+    # Release time (s) is the one control with a unit transform
+    # (MASTER_LIMITER_RELEASE_MS / 1000) — pin the ms→s conversion against regression.
+    result = _run(
+        _OK_CONF.replace('"Release time (s)" = 0.05', '"Release time (s)" = 0.5'), tmp_path
+    )
+    assert result.returncode == 1
+    assert "Release time (s)" in result.stderr
+
+
+def test_guard_installed_missing_conf_reports_not_found(tmp_path: Path) -> None:
+    # Directly exercise the --installed branch (the deploy-time failure mode this guard
+    # exists to catch): with HOME pointed at an empty dir, ~/.config/pipewire's
+    # broadcast-master conf is absent → exit 1 + "conf not found" (never a false pass).
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--installed"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "HOME": str(tmp_path)},
+    )
+    assert result.returncode == 1
+    assert "conf not found" in result.stderr

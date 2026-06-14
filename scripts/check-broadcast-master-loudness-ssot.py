@@ -6,8 +6,10 @@ public egress loudness knobs — ``Input gain (dB)`` (the makeup), ``Limit (dB)`
 true-peak ceiling) and ``Release time (s)``. These MUST equal the constants in
 ``shared/audio_loudness.py`` (the SSOT). Nothing else enforces this: the existing
 ``check-audio-conf-consistency.py`` checks node-name/route STRUCTURE, not these VALUES.
-The result was a silent +6-vs-SSOT-16 dB makeup drift in the DEPLOYED conf that put
-the public egress ~10 dB under target for weeks, masked by the LUFS-S silence floor.
+The motivating case: a silent makeup drift in the DEPLOYED conf (``~/.config/pipewire``
+is not git) — the +6-vs-SSOT-16 dB deploy-drift the audio-topology research measured and
+corrected. Underscale on the public egress is easy to miss live (the LUFS-S silence floor
+masks it), which is exactly why a value gate belongs in CI and the deploy-time check.
 
 This is the SSOT↔conf value drift guard. Run it on:
   - the repo conf (CI / pre-commit) to stop the tracked template drifting from the SSOT;
