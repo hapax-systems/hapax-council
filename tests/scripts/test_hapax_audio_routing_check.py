@@ -137,6 +137,8 @@ def _run_with_graph(
     env_overrides: dict[str, str] | None = None,
     default_sink: str = "hapax-pc-loudnorm",
     pw_cli_nodes: tuple[str, ...] = DEFAULT_PW_CLI_NODES,
+    home_files: dict[str, str] | None = None,
+    script_override: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -238,6 +240,10 @@ def _run_with_graph(
 
     home = tmp_path / "home"
     (home / ".config" / "pipewire" / "pipewire.conf.d").mkdir(parents=True, exist_ok=True)
+    for rel_path, content in (home_files or {}).items():
+        dest = home / rel_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(content, encoding="utf-8")
     if install_deny:
         _install_deny_policy(home)
     env = {
@@ -247,7 +253,7 @@ def _run_with_graph(
         **(env_overrides or {}),
     }
     return subprocess.run(
-        [str(SCRIPT)],
+        [str(script_override or SCRIPT)],
         env=env,
         capture_output=True,
         text=True,
@@ -277,6 +283,96 @@ def test_signal_flow_advisory_warns_on_parec_silence_without_failing(tmp_path: P
     assert "Signal-Flow Advisory" in result.stdout
     assert "below" in result.stdout
     assert "RMS=0.00000000" in result.stdout
+
+
+# ── loudness SSOT↔deployed-conf drift invariant (shell-glue wiring) ──
+_DEPLOYED_BM_CONF = ".config/pipewire/pipewire.conf.d/hapax-broadcast-master.conf"
+
+
+def _broadcast_master_conf(makeup: float = 16.0) -> str:
+    # Minimal conf carrying the quoted limiter controls the guard parses. SSOT:
+    # MASTER_INPUT_MAKEUP_DB=16, EGRESS_TRUE_PEAK_DBTP=-1, MASTER_LIMITER_RELEASE_MS/1000=0.05.
+    return (
+        "filter.graph = {\n"
+        "    nodes = [\n"
+        "        { control = {\n"
+        f'            "Input gain (dB)" = {makeup}\n'
+        '            "Limit (dB)"      = -1.0\n'
+        '            "Release time (s)" = 0.05\n'
+        "        } }\n"
+        "    ]\n"
+        "}\n"
+    )
+
+
+def test_loudness_ssot_invariant_skips_when_no_deployed_conf(tmp_path: Path) -> None:
+    # The default fake HOME has no deployed broadcast-master conf (the CI/fresh-host
+    # condition). The invariant must SKIP — never FAIL — so the check still exits 0.
+    result = _run_with_graph(tmp_path, _base_graph())
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "broadcast-master conf not deployed" in result.stdout
+    assert "loudness SSOT drift check skipped" in result.stdout
+
+
+def test_loudness_ssot_invariant_passes_on_ssot_deployed_conf(tmp_path: Path) -> None:
+    result = _run_with_graph(
+        tmp_path,
+        _base_graph(),
+        home_files={_DEPLOYED_BM_CONF: _broadcast_master_conf(makeup=16.0)},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "broadcast-master limiter matches loudness SSOT" in result.stdout
+    assert "broadcast-master conf not deployed" not in result.stdout
+
+
+def test_loudness_ssot_invariant_fails_on_drifted_deployed_conf(tmp_path: Path) -> None:
+    # The actual deploy-time failure mode: a +6 makeup against SSOT 16.
+    result = _run_with_graph(
+        tmp_path,
+        _base_graph(),
+        home_files={_DEPLOYED_BM_CONF: _broadcast_master_conf(makeup=6.0)},
+    )
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "drifted from shared/audio_loudness.py" in result.stdout
+
+
+def test_loudness_ssot_invariant_resolves_helper_through_installed_symlink(tmp_path: Path) -> None:
+    # Invoked via an installed symlink, readlink -f must resolve to the real script so the
+    # guard beside its source is found — not silently skipped. Symlink → real SCRIPT +
+    # deployed SSOT conf → PASS proves resolution works through the symlink.
+    link = tmp_path / "installed-hapax-audio-routing-check"
+    link.symlink_to(SCRIPT)
+    result = _run_with_graph(
+        tmp_path,
+        _base_graph(),
+        home_files={_DEPLOYED_BM_CONF: _broadcast_master_conf(makeup=16.0)},
+        script_override=link,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "broadcast-master limiter matches loudness SSOT" in result.stdout
+    assert "UNVERIFIED" not in result.stdout
+
+
+def test_loudness_ssot_invariant_failclosed_when_guard_missing(tmp_path: Path) -> None:
+    # If the guard helper is genuinely absent (a standalone copy with no helper beside it)
+    # while a conf IS deployed, fail CLOSED (UNVERIFIED) — never a silent no-op, which would
+    # be the exact fail-open class this guard exists to catch.
+    standalone = tmp_path / "standalone-routing-check"
+    shutil.copy(SCRIPT, standalone)
+    standalone.chmod(0o755)
+    result = _run_with_graph(
+        tmp_path,
+        _base_graph(),
+        home_files={_DEPLOYED_BM_CONF: _broadcast_master_conf(makeup=16.0)},
+        script_override=standalone,
+    )
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "UNVERIFIED" in result.stdout
 
 
 def test_music_loudnorm_zero_input_sink_volume_hard_fails(tmp_path: Path) -> None:

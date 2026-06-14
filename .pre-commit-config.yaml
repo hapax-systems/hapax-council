@@ -55,6 +55,12 @@ repos:
         language: system
         files: ^(config/audio-topology\.yaml|config/audio-conf-allowlist\.yaml|config/pipewire/.*\.conf)$
         pass_filenames: false
+      - id: broadcast-master-loudness-ssot
+        name: Broadcast-master limiter ↔ loudness SSOT gate
+        entry: uv run python scripts/check-broadcast-master-loudness-ssot.py
+        language: system
+        files: ^(config/pipewire/hapax-broadcast-master\.conf|shared/audio_loudness\.py|scripts/check-broadcast-master-loudness-ssot\.py)$
+        pass_filenames: false
       - id: audio-conf-names
         name: Audio conf hapax-prefix naming gate (audit E)
         entry: uv run python scripts/check-audio-conf-names.py
