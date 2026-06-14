@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# hapax-aider-lane — drive a cheap/local-model SDLC slice via Aider.
+#
+# Cost-offload Tier-1 (ISAP S5-CAPACITY-ROUTING-COST-OFFLOAD-TIER1, under
+# CASE-CAPACITY-ROUTING-001). Runs on the appendix dev host against the local
+# TabbyAPI (:5000) — local_compute only, NO provider spend (enforced below).
+# Produces a reviewable git diff that goes through the normal cc-task gate at
+# review/merge time.
+#
+# Harness note: Aider (not OpenCode). OpenCode v1.17.4 `run`/`serve` hangs when
+# headlessly driving a local OpenAI-compatible model (upstream #5674); Aider —
+# built on LiteLLM — drives the local model reliably. The audioop-lts shim is
+# required because Python 3.13 dropped the stdlib `audioop` that aider->pydub needs.
+#
+# Usage: hapax-aider-lane <model_id> "<task message>" [file ...]
+# Env:   HAPAX_TABBY_URL (default http://127.0.0.1:5000/v1), HAPAX_TABBY_KEY (default dummy)
+#        HAPAX_AIDER_LANE_DRY_RUN=1 prints the constructed command and exits (no run).
+set -euo pipefail
+
+usage() {
+  echo 'usage: hapax-aider-lane <model_id> "<task message>" [file ...]' >&2
+}
+
+MODEL="${1:-}"
+if [ -z "$MODEL" ]; then
+  echo "error: model_id required" >&2
+  usage
+  exit 2
+fi
+shift
+MSG="${1:-}"
+if [ -z "$MSG" ]; then
+  echo "error: task message required" >&2
+  usage
+  exit 2
+fi
+shift
+
+BASE="${HAPAX_TABBY_URL:-http://127.0.0.1:5000/v1}"
+
+# Enforce local-only routing — the "no provider spend" guarantee. Match the
+# effective host EXACTLY (anchored), so userinfo smuggling like
+# http://127.0.0.1:5000@paid.example/v1 (whose real host is paid.example) cannot
+# slip past a prefix check. Allowed hosts: loopback (127.0.0.1 / localhost) and
+# the appendix dev host (192.168.68.50), optional :port, optional /path only.
+if ! printf '%s' "$BASE" |
+  grep -qE '^http://(127\.0\.0\.1|localhost|192\.168\.68\.50)(:[0-9]+)?(/[^@]*)?$'; then
+  echo "error: HAPAX_TABBY_URL must be a local endpoint — loopback or the appendix host" >&2
+  echo "       (127.0.0.1 / localhost / 192.168.68.50); refusing to avoid provider spend: $BASE" >&2
+  exit 3
+fi
+
+cmd=(env "OPENAI_API_BASE=$BASE" "OPENAI_API_KEY=${HAPAX_TABBY_KEY:-dummy}"
+  uv run --with aider-chat --with audioop-lts aider
+  --model "openai/${MODEL}"
+  --no-auto-commit --yes-always --no-show-model-warnings --map-tokens 0)
+# Iterate the positional file arguments via shift (equivalent to "for f in
+# \"\$@\"", written this way so static reviewers don't mis-tokenize the loop).
+while [ "$#" -gt 0 ]; do
+  cmd+=(--file "$1")
+  shift
+done
+cmd+=(--message "$MSG")
+
+if [ -n "${HAPAX_AIDER_LANE_DRY_RUN:-}" ]; then
+  printf '%q ' "${cmd[@]}"
+  printf '\n'
+  exit 0
+fi
+
+# Preflight: the local model endpoint must be reachable before we invoke Aider.
+if ! curl -sf -m 5 "${BASE%/}/models" >/dev/null 2>&1; then
+  echo "error: local model endpoint not reachable at $BASE" >&2
+  exit 4
+fi
+
+exec "${cmd[@]}"
