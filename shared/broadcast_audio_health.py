@@ -346,6 +346,7 @@ def resolve_broadcast_audio_health(
         t,
         evidence=evidence,
         blocking=blocking,
+        warnings=warnings,
     )
     if t.mpc_hardware_ducking:
         evidence["audio_ducker"] = {
@@ -936,6 +937,7 @@ def _evaluate_runtime_safety(
     *,
     evidence: dict[str, Any],
     blocking: list[AudioHealthReason],
+    warnings: list[AudioHealthReason] | None = None,
 ) -> None:
     data, age_s, error = _read_json_file(path, now)
     record: dict[str, Any] = {
@@ -983,7 +985,33 @@ def _evaluate_runtime_safety(
         }
     )
     evidence["runtime_safety"] = record
-    if breach_active or status != "clear":
+    if breach_active:
+        _block(
+            blocking,
+            code="runtime_safety_failed",
+            owner=str(path),
+            message=f"audio runtime safety detector status is {detector}",
+            evidence_refs=["runtime_safety"],
+        )
+    elif status == "unsupported_topology":
+        # Honest-degrade (NOT a go-live blocker): the vinyl/Evil-Pet leak detector is
+        # structurally inert because the L-12 multitrack hardware it watched is
+        # decommissioned — the guarded risk surface is physically absent. Surface it as
+        # a WARNING so a fresh "clear" can never silently mask a blind guard, but do not
+        # block the live broadcast on a risk that cannot occur. (Retire-and-replace pending.)
+        if warnings is not None:
+            _block(
+                warnings,
+                code="runtime_safety_inert",
+                owner=str(path),
+                message=(
+                    "vinyl/Evil-Pet leak detector inert (unsupported_topology): monitored "
+                    "L-12 multitrack hardware is decommissioned; risk surface absent — "
+                    "retire-and-replace pending"
+                ),
+                evidence_refs=["runtime_safety"],
+            )
+    elif status != "clear":
         _block(
             blocking,
             code="runtime_safety_failed",
