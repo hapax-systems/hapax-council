@@ -123,8 +123,10 @@ class RollingContext:
       narrator-tagged text) from the spoken layer.
     * ``impingements`` — recent narrative-shape events from
       ``/dev/shm/hapax-dmn/impingements.jsonl``.
-    * ``chat_messages`` — anonymised author-hash + sentiment + text from
-      ``YoutubeChatReader.recent_messages``.
+    * ``chat_messages`` — anonymised structural chat (text only) from
+      ``YoutubeChatReader.recent_messages``. Affect/sentiment is deliberately
+      excluded (su-anti-parasocial-001): ranking attends to what was said,
+      never to how it was felt.
 
     All three are optional; if a source is empty the detector still
     runs (the LLM will simply weight remaining signal more strongly).
@@ -214,10 +216,12 @@ def _format_context(context: RollingContext) -> str:
     parts.append(f"CHAT ({len(context.chat_messages)}):")
     if context.chat_messages:
         for msg in context.chat_messages[-40:]:
+            # Anti-parasocial (su-anti-parasocial-001): chat affect/sentiment must
+            # NOT be fed to the clip-ranking LLM — it is a parasocial-attachment
+            # signal, not a structural one. Emit the message text only; ranking
+            # may attend to what was said, never to how it was felt.
             text = msg.get("text", "")
-            sentiment = msg.get("sentiment")
-            tag = f"[{sentiment:+.2f}] " if isinstance(sentiment, (int, float)) else ""
-            parts.append(f"  - {tag}{text}".rstrip())
+            parts.append(f"  - {text}".rstrip())
     else:
         parts.append("  (no chat messages in this window)")
     parts.append("")
@@ -310,19 +314,22 @@ def read_recent_impingements(
 def chat_snapshots_to_dicts(snapshots: list) -> list[dict]:
     """Convert :class:`ChatMessageSnapshot`-shaped objects to plain dicts.
 
-    Accepts anything with ``text`` / ``sentiment`` / ``length`` /
-    ``posted_at_unix`` attributes (or already-dict entries with those
-    keys). Empty input → empty list.
+    Accepts anything with ``text`` / ``length`` / ``posted_at_unix`` attributes
+    (or already-dict entries with those keys). Empty input → empty list.
+
+    Anti-parasocial (su-anti-parasocial-001): the chat ``sentiment`` field is
+    deliberately DROPPED here — affect must never enter the clip-ranking path,
+    even as carried data, so it cannot be re-fed to the ranking LLM later. The
+    strip applies to already-dict inputs too.
     """
     out: list[dict] = []
     for snap in snapshots:
         if isinstance(snap, dict):
-            out.append(snap)
+            out.append({key: value for key, value in snap.items() if key != "sentiment"})
             continue
         out.append(
             {
                 "text": getattr(snap, "text", ""),
-                "sentiment": getattr(snap, "sentiment", None),
                 "length": getattr(snap, "length", None),
                 "posted_at_unix": getattr(snap, "posted_at_unix", None),
             }
