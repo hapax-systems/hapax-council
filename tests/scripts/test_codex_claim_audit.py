@@ -879,11 +879,12 @@ class TestHostReconciliation:
         assert "RECONCILED" in result.stdout
 
     def test_reconcile_to_self_skips_ssh(self, tmp_path: Path) -> None:
-        """When the reconcile target IS this host, never ssh to self.
+        """A self-target with no derivable peer (single-host plane) never sshes.
 
-        The preset auto-enables the unit on both hosts; an unguarded reconcile
-        to self yields a persistent failed unit. The local clear path already
-        owns the local cache, so a self-target reconcile is a no-op.
+        The "never ssh to self" invariant is now structural: peer resolution
+        excludes self, so when the plane has no other host the reconcile target
+        resolves to empty and the path is cleanly skipped. The local clear path
+        still owns the local cache and proceeds.
         """
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
@@ -907,14 +908,142 @@ class TestHostReconciliation:
             vault,
             cache_dir,
             release=True,
-            extra_args=["--reconcile-host=localhost", f"--reconcile-cache-dir={cache_dir}"],
+            extra_args=["--reconcile-host=solo-host", f"--reconcile-cache-dir={cache_dir}"],
+            extra_env={
+                "HAPAX_AUDIT_SELF_HOST": "solo-host",
+                "HAPAX_CLAIM_PLANE_HOSTS": "solo-host",  # single-host plane: no peer
+            },
             gh_state="CLOSED",
         )
 
-        assert not calls.exists()  # ssh never called for a self-target
+        assert not calls.exists()  # ssh never called (no non-self peer)
+        assert "RECONCILED" not in result.stdout
         assert not claim_file.exists()  # local clear still proceeds
-        assert "self" in result.stdout
         assert "status: offered" in note.read_text(encoding="utf-8")
+
+    def test_appendix_self_target_derives_podium_peer(self, tmp_path: Path) -> None:
+        """A self-pointing reconcile target must derive the PEER, not skip.
+
+        Cross-family review consensus (gemini-1 + codex-1 + claude-1): the unit's
+        single hardcoded target means that when the audit runs ON that host
+        (the preset enables it on both), the reconcile no-ops to self and the
+        peer replica is left stale — a single-host reconciler against a two-host
+        plane. The fix derives the peer from the claim-plane topology, so an
+        appendix-side audit reconciles to podium.
+        """
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+
+        task_id = "phantom-peer-appendix"
+        _write_task_note(
+            vault,
+            task_id,
+            assigned_to="cx-gold",
+            pr="null",
+            branch="null",
+            status="claimed",
+            claimed_at="2026-06-10T01:00:00Z",
+        )
+        claim_file = _write_claim_cache(cache_dir, "cx-gold", task_id)
+        _stub, remote_state, _calls = _ssh_stub(tmp_path, assigned="cx-gold", remote_task=task_id)
+
+        result = _run_audit(
+            tmp_path,
+            vault,
+            cache_dir,
+            release=True,
+            extra_args=[
+                "--reconcile-host=hapax-appendix",  # the hardcoded unit value, self here
+                f"--reconcile-cache-dir={remote_state.parent}",
+            ],
+            extra_env={
+                "HAPAX_AUDIT_SELF_HOST": "hapax-appendix",
+                "HAPAX_CLAIM_PLANE_HOSTS": "hapax-podium hapax-appendix",
+            },
+            gh_state="CLOSED",
+        )
+
+        assert result.returncode == 0
+        assert not claim_file.exists()
+        assert "reconciled to hapax-podium" in result.stdout, (
+            "self-target must derive the podium peer, not skip:\n" + result.stdout
+        )
+        assert "RECONCILE_SKIP" not in result.stdout
+        assert not remote_state.exists()  # podium replica actually cleared
+
+    def test_podium_unset_target_derives_appendix_peer(self, tmp_path: Path) -> None:
+        """With no explicit target, a podium audit derives the appendix peer."""
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+
+        task_id = "phantom-peer-podium"
+        _write_task_note(
+            vault,
+            task_id,
+            assigned_to="cx-gold",
+            pr="null",
+            branch="null",
+            status="claimed",
+            claimed_at="2026-06-10T01:00:00Z",
+        )
+        claim_file = _write_claim_cache(cache_dir, "cx-gold", task_id)
+        _stub, remote_state, _calls = _ssh_stub(tmp_path, assigned="cx-gold", remote_task=task_id)
+
+        result = _run_audit(
+            tmp_path,
+            vault,
+            cache_dir,
+            release=True,
+            extra_args=[f"--reconcile-cache-dir={remote_state.parent}"],  # no --reconcile-host
+            extra_env={
+                "HAPAX_AUDIT_SELF_HOST": "hapax-podium",
+                "HAPAX_CLAIM_PLANE_HOSTS": "hapax-podium hapax-appendix",
+            },
+            gh_state="CLOSED",
+        )
+
+        assert result.returncode == 0
+        assert not claim_file.exists()
+        assert "reconciled to hapax-appendix" in result.stdout, result.stdout
+        assert not remote_state.exists()
+
+    def test_explicit_nonself_reconcile_host_overrides_peer(self, tmp_path: Path) -> None:
+        """An explicit non-self reconcile target wins over peer derivation."""
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+
+        task_id = "phantom-explicit-host"
+        _write_task_note(
+            vault,
+            task_id,
+            assigned_to="cx-gold",
+            pr="null",
+            branch="null",
+            status="claimed",
+            claimed_at="2026-06-10T01:00:00Z",
+        )
+        claim_file = _write_claim_cache(cache_dir, "cx-gold", task_id)
+        _stub, remote_state, _calls = _ssh_stub(tmp_path, assigned="cx-gold", remote_task=task_id)
+
+        result = _run_audit(
+            tmp_path,
+            vault,
+            cache_dir,
+            release=True,
+            extra_args=[
+                "--reconcile-host=fake-host",
+                f"--reconcile-cache-dir={remote_state.parent}",
+            ],
+            extra_env={
+                "HAPAX_AUDIT_SELF_HOST": "hapax-podium",
+                "HAPAX_CLAIM_PLANE_HOSTS": "hapax-podium hapax-appendix",
+            },
+            gh_state="CLOSED",
+        )
+
+        assert result.returncode == 0
+        assert not claim_file.exists()
+        assert "reconciled to fake-host" in result.stdout, result.stdout
 
     def test_dry_run_prevents_all_mutations(self, tmp_path: Path) -> None:
         """--dry-run prevents BOTH cache deletion AND task note mutation."""
@@ -1151,16 +1280,19 @@ class TestSystemdUnits:
     def test_service_enables_reconciliation(self) -> None:
         unit = SCRIPT.parent.parent / "systemd" / "units" / "codex-claim-audit.service"
         text = unit.read_text()
-        # HAPAX_RECONCILE_HOST must be set (not commented out)
-        assert "Environment=HAPAX_RECONCILE_HOST=" in text, (
-            "Host reconciliation must be enabled in the scheduled unit"
+        # The scheduled unit opts into reconciliation by declaring the two-host
+        # claim plane (the audit derives the peer per-host — no hardcoded single
+        # target that would silently no-op to self on the host it names).
+        plane_lines = [
+            line
+            for line in text.splitlines()
+            if "HAPAX_CLAIM_PLANE_HOSTS=" in line and not line.strip().startswith("#")
+        ]
+        assert plane_lines, "Host reconciliation must be enabled via HAPAX_CLAIM_PLANE_HOSTS"
+        plane = plane_lines[0]
+        assert "hapax-podium" in plane and "hapax-appendix" in plane, (
+            "the claim plane must name both hosts so each derives the other as peer"
         )
-        # Verify it's not commented out
-        for line in text.splitlines():
-            if "HAPAX_RECONCILE_HOST" in line:
-                assert not line.strip().startswith("#"), (
-                    "HAPAX_RECONCILE_HOST must not be commented out"
-                )
 
     def test_timer_unit_parses(self) -> None:
         unit = SCRIPT.parent.parent / "systemd" / "units" / "codex-claim-audit.timer"

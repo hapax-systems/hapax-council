@@ -16,10 +16,10 @@ ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/codex-claim-audit -
 Environment=GH_REPO=hapax-systems/hapax-council
 Environment=NTFY_URL=https://ntfy.sh
 Environment=NTFY_TOPIC=hapax-ops
-# Reconcile cleared state to the PEER host (class #4 fix). This unit runs on
-# podium (the single authoritative auditor), so the peer is appendix. The audit
-# is vault-note-driven (the shared SSOT), so it reconciles the appendix replica
-# for every active note — appendix-origin claims included. If this unit is ever
-# also installed on appendix, point the reconcile host at hapax-podium there
-# (never at self): a self-target is a no-op and would replicate nothing.
-Environment=HAPAX_RECONCILE_HOST=hapax-appendix
+# Reconcile cleared state to the PEER host (class #4 fix). The preset enables
+# this unit on BOTH hosts, so instead of a single hardcoded target (which would
+# silently no-op to self on the host it names, leaving the peer replica stale)
+# we declare the two-host claim plane and let the audit derive the peer = the
+# plane host that is not the one it runs on. Reconciliation is therefore
+# bidirectional: podium reconciles to appendix, appendix reconciles to podium.
+Environment="HAPAX_CLAIM_PLANE_HOSTS=hapax-podium hapax-appendix"

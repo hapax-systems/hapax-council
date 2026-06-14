@@ -56,6 +56,13 @@ NTFY_URL="${NTFY_URL:-https://ntfy.sh}"
 NTFY_TOPIC="${NTFY_TOPIC:-hapax-ops}"
 RECONCILE_HOST="${HAPAX_RECONCILE_HOST:-}"
 RECONCILE_CACHE_DIR="${HAPAX_RECONCILE_CACHE_DIR:-$HOME/.cache/hapax}"
+# Two-host claim plane (opt-in; empty = reconciliation off). The reconcile target
+# is the PEER (the plane host that is not the one running the audit) so
+# reconciliation is symmetric/bidirectional — the preset enables this unit on
+# BOTH hosts, so a single hardcoded target would silently no-op to self on the
+# host it names, leaving the peer replica stale. The scheduled unit opts in by
+# setting HAPAX_CLAIM_PLANE_HOSTS to the host pair; ad-hoc runs default to off.
+CLAIM_PLANE_HOSTS="${HAPAX_CLAIM_PLANE_HOSTS:-}"
 DRY_RUN=false
 GH_CMD="${HAPAX_GH_CMD:-gh}"  # overridable for testing
 GH_REPO_SLUG="${HAPAX_GH_REPO:-${GH_REPO:-hapax-systems/hapax-council}}"
@@ -218,18 +225,58 @@ _cache_role_matches_note() {
   esac
 }
 
+# This host's short name. HAPAX_AUDIT_SELF_HOST overrides it (peer-derivation
+# tests, and any host whose `hostname` does not match its claim-plane name).
+_self_host_short() {
+  if [ -n "${HAPAX_AUDIT_SELF_HOST:-}" ]; then
+    printf '%s' "${HAPAX_AUDIT_SELF_HOST%%.*}"
+    return 0
+  fi
+  hostname -s 2>/dev/null || hostname 2>/dev/null || printf ''
+}
+
 # Is RECONCILE_HOST this same host? Guards against ssh-to-self (the preset
 # auto-enables the unit on both hosts; an unguarded reconcile to self yields a
 # persistent exit 2 / failed unit on the host it names).
 _reconcile_host_is_self() {
   local target="$1" short fqdn
-  short="$(hostname -s 2>/dev/null || printf '')"
-  fqdn="$(hostname -f 2>/dev/null || hostname 2>/dev/null || printf '')"
+  short="$(_self_host_short)"
+  # The override is authoritative when set: do NOT consult the machine's real
+  # hostname, or a dev box named like a plane host would mis-classify the peer.
+  if [ -n "${HAPAX_AUDIT_SELF_HOST:-}" ]; then
+    fqdn="$HAPAX_AUDIT_SELF_HOST"
+  else
+    fqdn="$(hostname -f 2>/dev/null || hostname 2>/dev/null || printf '')"
+  fi
   case "$target" in
     "$short"|"$fqdn"|localhost|127.0.0.1) return 0 ;;
     *) [ -n "$short" ] && [ "${target%%.*}" = "$short" ] && return 0 ;;
   esac
   return 1
+}
+
+# Resolve the reconcile peer in the two-host claim plane. The target MUST be the
+# OTHER host so reconciliation is bidirectional regardless of which host runs the
+# audit. An explicit, non-self RECONCILE_HOST (env or --reconcile-host) wins as
+# an override; otherwise derive the peer = the first CLAIM_PLANE_HOSTS entry that
+# is not this host. A self-pointing or unset target falls through to peer
+# derivation rather than silently no-op'ing (which would leave the peer replica
+# stale — the exit-predicate "no single-host reconciler against a two-host
+# plane"). Prints the resolved peer (empty when no non-self peer exists, e.g. a
+# genuinely single-host plane).
+_resolve_reconcile_host() {
+  if [ -n "$RECONCILE_HOST" ] && ! _reconcile_host_is_self "$RECONCILE_HOST"; then
+    printf '%s' "$RECONCILE_HOST"
+    return 0
+  fi
+  local h
+  for h in $CLAIM_PLANE_HOSTS; do
+    if [ -n "$h" ] && ! _reconcile_host_is_self "$h"; then
+      printf '%s' "$h"
+      return 0
+    fi
+  done
+  printf ''
 }
 
 _claim_file_for() {
@@ -604,18 +651,19 @@ _clear_claim_cache_for_release() {
 # ---------------------------------------------------------------------------
 # Host reconciliation (class #4 fix)
 #
-# Two-host plane, single authoritative auditor. This audit is driven by the
-# SHARED VAULT NOTES (the claim SSOT under 20-projects/hapax-cc-tasks/), not by
-# any one host's local cache: the sweep iterates every active task note and the
-# local cache, and for each release it clears BOTH the local cache and — via
-# RECONCILE_HOST — the peer replica. Because the vault is the SSOT and is shared,
-# an appendix-origin claim still has a vault note, so the podium auditor sees and
-# reconciles it on the appendix replica; there is no class of "appendix-only"
-# clear that escapes reconciliation. RECONCILE_HOST is therefore the PEER host
-# (podium → appendix today). If the audit is ever ALSO run on the appendix, set
-# its RECONCILE_HOST to the podium peer (never to self): _reconcile_host_is_self
-# no-ops a self-target, so a self-pointing reconcile host would replicate
-# nothing — point it at the peer to keep the plane bidirectional.
+# Two-host plane, vault-note-driven. This audit is driven by the SHARED VAULT
+# NOTES (the claim SSOT under 20-projects/hapax-cc-tasks/), not by any one host's
+# local cache: the sweep iterates every active task note and the local cache, and
+# for each release it clears BOTH the local cache and — via RECONCILE_HOST — the
+# peer replica. Because the vault is the SSOT and is shared, a peer-origin claim
+# still has a vault note, so whichever host runs the audit sees and reconciles it
+# on the other host; there is no class of "peer-only" clear that escapes
+# reconciliation. RECONCILE_HOST is resolved up front to the PEER host
+# (_resolve_reconcile_host derives the CLAIM_PLANE_HOSTS entry that is not self),
+# so reconciliation is bidirectional and correct regardless of which host runs —
+# the preset enables this unit on both. A self-pointing or unset target never
+# silently no-ops to self; it falls through to peer derivation (or off, on a
+# single-host plane).
 # ---------------------------------------------------------------------------
 
 _reconcile_clear_to_host() {
@@ -705,6 +753,11 @@ printf 'CLEARED\n'" 2>/dev/null)"
 # ---------------------------------------------------------------------------
 # Main scan: active task notes
 # ---------------------------------------------------------------------------
+
+# Resolve the reconcile target to the PEER host once, up front. After this,
+# RECONCILE_HOST is either a non-self peer or empty (single-host plane) — never
+# self — so every reconcile path replicates to the other host or cleanly no-ops.
+RECONCILE_HOST="$(_resolve_reconcile_host)"
 
 for note in "$VAULT_ROOT/active/"*.md; do
   [ -f "$note" ] || continue
