@@ -7,6 +7,13 @@ The viewer-count producer owns the direct YouTube Data API call; this
 daemon turns that public metric into the planner/audience perception
 shape consumed by the narrative density layer.
 
+``avg_watch_time_s`` and ``subscriber_delta`` are UNSENSED stubs on the live
+(``youtube_api``) and ``fallback`` paths — the YouTube viewer-count producer
+exposes only the concurrent viewer count, not retention or subscriber deltas.
+Per invariant I2 the open value-leg is DECLARED (each emitted state names the
+stub fields in ``unsensed_fields``), not silently presented as measured. The
+``override`` path declares only the fields the operator did not supply.
+
 Zero external dependencies — stdlib only.
 """
 
@@ -28,6 +35,12 @@ VIEWER_COUNT_FILE = Path("/dev/shm/hapax-compositor/youtube-viewer-count.txt")
 CHAT_RECENT_FILE = Path("/dev/shm/hapax-chat/recent.jsonl")
 
 POLL_INTERVAL_S = 2.0
+
+#: ψ-value fields the audience producer cannot yet sense — the YouTube viewer-count
+#: producer exposes only the concurrent viewer count. Named in each emitted state's
+#: ``unsensed_fields`` so a consumer/auditor never reads them as real measurements
+#: (invariant I2: the open value-leg is declared, not silently closed).
+_UNSENSED_PSI_FIELDS: tuple[str, ...] = ("avg_watch_time_s", "subscriber_delta")
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -122,8 +135,13 @@ def _poll_youtube_api() -> dict[str, Any] | None:
     return {
         "viewer_count": viewer_count,
         "chat_rate_per_min": _read_chat_rate_per_min(),
+        # avg_watch_time_s / subscriber_delta are UNSENSED stubs (declared in
+        # unsensed_fields) — the viewer-count producer exposes neither retention
+        # nor subscriber deltas. Kept as numeric 0 so the density consumer
+        # (information_density_daemon._extract_float) does not break.
         "avg_watch_time_s": 0.0,
         "subscriber_delta": 0,
+        "unsensed_fields": list(_UNSENSED_PSI_FIELDS),
     }
 
 
@@ -138,6 +156,9 @@ def _poll_audience() -> dict[str, Any]:
                 "chat_rate_per_min": override.get("chat_rate_per_min", 0.0),
                 "avg_watch_time_s": override.get("avg_watch_time_s", 0.0),
                 "subscriber_delta": override.get("subscriber_delta", 0),
+                # Only the ψ-value fields the operator did NOT supply are unsensed;
+                # a field present in the override is a real (operator-sensed) value.
+                "unsensed_fields": [f for f in _UNSENSED_PSI_FIELDS if f not in override],
                 "source": "override",
             }
         )
@@ -155,6 +176,7 @@ def _poll_audience() -> dict[str, Any]:
             "chat_rate_per_min": 0.0,
             "avg_watch_time_s": 0.0,
             "subscriber_delta": 0,
+            "unsensed_fields": list(_UNSENSED_PSI_FIELDS),
             "source": "fallback",
         }
     )
