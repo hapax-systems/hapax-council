@@ -240,6 +240,24 @@ def render(results: list[BakeoffResult]) -> str:
     return "\n".join(lines)
 
 
+def select_composers(only: str | None, *, cloud: bool) -> list[Composer]:
+    """Resolve which composers to run. Cloud composers are enabled only with
+    ``cloud=True`` (the --cloud egress opt-in), so ``--only opus`` without --cloud
+    cannot bypass the gate. Raises ValueError on an unknown/disabled label rather
+    than silently selecting zero composers (a falsely-successful empty bakeoff)."""
+    enabled = LOCAL_COMPOSERS + (CLOUD_COMPOSERS if cloud else [])
+    if not only:
+        return enabled
+    wanted = {s.strip() for s in only.split(",") if s.strip()}
+    selected = [c for c in enabled if c.label in wanted]
+    unknown = wanted - {c.label for c in selected}
+    if unknown:
+        cloud_labels = {c.label for c in CLOUD_COMPOSERS}
+        hint = " (cloud composers require --cloud)" if unknown & cloud_labels else ""
+        raise ValueError(f"no enabled composer(s) {sorted(unknown)}{hint}")
+    return selected
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--only", help="comma-separated composer labels to run")
@@ -251,12 +269,10 @@ def main() -> int:
     ap.add_argument("--json", metavar="PATH", help="write a JSON receipt")
     args = ap.parse_args()
 
-    all_composers = LOCAL_COMPOSERS + (CLOUD_COMPOSERS if args.cloud else [])
-    composers = all_composers
-    if args.only:
-        wanted = {s.strip() for s in args.only.split(",")}
-        # --only may name a cloud composer; honor it (explicit opt-in to that model).
-        composers = [c for c in LOCAL_COMPOSERS + CLOUD_COMPOSERS if c.label in wanted]
+    try:
+        composers = select_composers(args.only, cloud=args.cloud)
+    except ValueError as e:
+        ap.error(f"--only: {e}")
 
     async def _run() -> list[BakeoffResult]:
         out = []

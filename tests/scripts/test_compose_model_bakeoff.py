@@ -53,6 +53,37 @@ def test_cloud_composers_off_by_default() -> None:
     assert {c.label for c in bake.CLOUD_COMPOSERS} == {"opus", "gemini-3-pro"}
 
 
+def test_select_composers_local_only_by_default() -> None:
+    sel = bake.select_composers(None, cloud=False)
+    assert {c.label for c in sel} == {c.label for c in bake.LOCAL_COMPOSERS}
+    assert all(c.endpoint == "tabby" for c in sel)
+
+
+def test_select_composers_cloud_opt_in() -> None:
+    sel = bake.select_composers(None, cloud=True)
+    labels = {c.label for c in sel}
+    assert "opus" in labels and "gemini-3-pro" in labels
+
+
+def test_select_composers_only_cannot_bypass_cloud_gate() -> None:
+    # --only opus WITHOUT --cloud must fail closed, not run cloud egress.
+    import pytest
+
+    with pytest.raises(ValueError, match="require --cloud"):
+        bake.select_composers("opus", cloud=False)
+    # with --cloud it resolves
+    sel = bake.select_composers("opus", cloud=True)
+    assert {c.label for c in sel} == {"opus"}
+
+
+def test_select_composers_unknown_label_raises_not_empty() -> None:
+    import pytest
+
+    # A typo must error (a falsely-successful empty bakeoff is worse than a failure).
+    with pytest.raises(ValueError):
+        bake.select_composers("resident-comand-r", cloud=False)  # typo
+
+
 def test_chat_routes_local_to_tabby_without_auth(monkeypatch) -> None:
     captured = {}
 
