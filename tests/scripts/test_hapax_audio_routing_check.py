@@ -138,6 +138,7 @@ def _run_with_graph(
     default_sink: str = "hapax-pc-loudnorm",
     pw_cli_nodes: tuple[str, ...] = DEFAULT_PW_CLI_NODES,
     home_files: dict[str, str] | None = None,
+    script_override: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -252,7 +253,7 @@ def _run_with_graph(
         **(env_overrides or {}),
     }
     return subprocess.run(
-        [str(SCRIPT)],
+        [str(script_override or SCRIPT)],
         env=env,
         capture_output=True,
         text=True,
@@ -336,6 +337,42 @@ def test_loudness_ssot_invariant_fails_on_drifted_deployed_conf(tmp_path: Path) 
 
     assert result.returncode != 0, result.stdout + result.stderr
     assert "drifted from shared/audio_loudness.py" in result.stdout
+
+
+def test_loudness_ssot_invariant_resolves_helper_through_installed_symlink(tmp_path: Path) -> None:
+    # Invoked via an installed symlink, readlink -f must resolve to the real script so the
+    # guard beside its source is found — not silently skipped. Symlink → real SCRIPT +
+    # deployed SSOT conf → PASS proves resolution works through the symlink.
+    link = tmp_path / "installed-hapax-audio-routing-check"
+    link.symlink_to(SCRIPT)
+    result = _run_with_graph(
+        tmp_path,
+        _base_graph(),
+        home_files={_DEPLOYED_BM_CONF: _broadcast_master_conf(makeup=16.0)},
+        script_override=link,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "broadcast-master limiter matches loudness SSOT" in result.stdout
+    assert "UNVERIFIED" not in result.stdout
+
+
+def test_loudness_ssot_invariant_failclosed_when_guard_missing(tmp_path: Path) -> None:
+    # If the guard helper is genuinely absent (a standalone copy with no helper beside it)
+    # while a conf IS deployed, fail CLOSED (UNVERIFIED) — never a silent no-op, which would
+    # be the exact fail-open class this guard exists to catch.
+    standalone = tmp_path / "standalone-routing-check"
+    shutil.copy(SCRIPT, standalone)
+    standalone.chmod(0o755)
+    result = _run_with_graph(
+        tmp_path,
+        _base_graph(),
+        home_files={_DEPLOYED_BM_CONF: _broadcast_master_conf(makeup=16.0)},
+        script_override=standalone,
+    )
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "UNVERIFIED" in result.stdout
 
 
 def test_music_loudnorm_zero_input_sink_volume_hard_fails(tmp_path: Path) -> None:
