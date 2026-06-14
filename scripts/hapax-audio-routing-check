@@ -460,6 +460,21 @@ if systemctl --user is-active hapax-audio-reconciler >/dev/null 2>&1; then
 else
     check "hapax-audio-reconciler active" "reconciler not running — desired-state links unmaintained"
 fi
+
+# ── Egress loudness: deployed limiter controls ↔ loudness SSOT (drift guard) ──
+# Catches deploy-time drift of the broadcast-master makeup/limit/release from
+# shared/audio_loudness.py. This is the failure mode that put egress ~10 dB under
+# target for weeks (a +6 vs SSOT 16 makeup) — ~/.config/pipewire is not git, and the
+# pre-existing audio gates check route STRUCTURE, not these loudness VALUES.
+_loudness_ssot_check="$(dirname "$0")/check-broadcast-master-loudness-ssot.py"
+if [ -f "$_loudness_ssot_check" ] && command -v python3 >/dev/null 2>&1; then
+    if python3 "$_loudness_ssot_check" --installed >/dev/null 2>&1; then
+        check "broadcast-master limiter matches loudness SSOT" "PASS"
+    else
+        check "broadcast-master limiter matches loudness SSOT" \
+            "deployed Input gain/Limit/Release drifted from shared/audio_loudness.py — run scripts/check-broadcast-master-loudness-ssot.py --installed"
+    fi
+fi
 echo ""
 
 # ── Signal-Flow Advisory Check ────────────────────────────────────────────
