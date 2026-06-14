@@ -1,10 +1,11 @@
 """Cross-encoder reranking for RAG retrieval.
 
 Cost-offload Tier-1 (ISAP ``S5-CAPACITY-ROUTING-COST-OFFLOAD-TIER1``, under
-``CASE-CAPACITY-ROUTING-001``). A small Apache-2.0 cross-encoder
-(Qwen3-Reranker-0.6B by default, resident on the appendix 5060 Ti) re-scores the
-over-fetched candidate set before truncation, improving retrieval precision that
-feeds the grounding loop.
+``CASE-CAPACITY-ROUTING-001``). A small MIT BERT cross-encoder
+(``cross-encoder/ms-marco-MiniLM-L-6-v2`` by default) re-scores the over-fetched
+candidate set before truncation, improving retrieval precision that feeds the
+grounding loop. On-corpus eval found it lifts nDCG@10 by +0.17 at 47ms/20-cand;
+a 0.6B generative reranker both degraded quality and blew the latency budget.
 
 Two safety properties make this a reversible, held-quality change:
 
