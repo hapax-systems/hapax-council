@@ -467,7 +467,11 @@ fi
 # target for weeks (a +6 vs SSOT 16 makeup) — ~/.config/pipewire is not git, and the
 # pre-existing audio gates check route STRUCTURE, not these loudness VALUES.
 _loudness_ssot_check="$(dirname "$0")/check-broadcast-master-loudness-ssot.py"
-if [ -f "$_loudness_ssot_check" ] && command -v python3 >/dev/null 2>&1; then
+_loudness_deployed_conf="$HOME/.config/pipewire/pipewire.conf.d/hapax-broadcast-master.conf"
+if [ ! -f "$_loudness_deployed_conf" ]; then
+    # No deployed conf (CI / fresh host) → nothing to drift from; skip, don't fail.
+    echo "  [SKIP] broadcast-master conf not deployed — loudness SSOT drift check skipped"
+elif [ -f "$_loudness_ssot_check" ] && command -v python3 >/dev/null 2>&1; then
     if python3 "$_loudness_ssot_check" --installed >/dev/null 2>&1; then
         check "broadcast-master limiter matches loudness SSOT" "PASS"
     else
