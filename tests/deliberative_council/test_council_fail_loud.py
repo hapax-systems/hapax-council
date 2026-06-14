@@ -37,13 +37,62 @@ from agents.deliberative_council.models import (
     Phase1Output,
     PhaseOneResult,
 )
-from agents.deliberative_council.rubrics import EpistemicQualityRubric
+from agents.deliberative_council.rubrics import CoherenceRubric, EpistemicQualityRubric
 from shared.segment_disconfirmation import apply_council_verdicts
 from shared.segment_narrative_critique import _convert_to_narrative_verdict, _empty_verdict
 
 
 def _result(alias: str, scores: dict[str, int]) -> PhaseOneResult:
     return PhaseOneResult(model_alias=alias, scores=scores, rationale={})
+
+
+def _counting_mock(calls: dict[str, int], score_scores: dict[str, int]):
+    """A _call_member side-effect that counts investigate (output_type=None) vs
+    scoring (output_type set) calls, so the requires_research gate is observable."""
+
+    async def _mock(member, prompt, *, output_type=None, usage_limits=None):
+        if output_type is not None:
+            calls["score"] = calls.get("score", 0) + 1
+            return Phase1Output(scores=score_scores, rationale={}, research_findings=[]), []
+        calls["investigate"] = calls.get("investigate", 0) + 1
+        return "researched the claim", []
+
+    return _mock
+
+
+class TestRequiresResearchGating:
+    """The ``requires_research`` flag gates the Phase-1 investigate pass. Judgment
+    rubrics (CoherenceRubric, requires_research=False) must SKIP research and
+    still score — proving there is no UnboundLocalError on the no-research path
+    where ``research_member`` is never assigned (gemini-1/claude-1, PR #4133)."""
+
+    async def test_judgment_rubric_skips_research_and_still_scores(self) -> None:
+        calls: dict[str, int] = {}
+        mock = _counting_mock(calls, {"opening_pressure": 5})
+        with patch("agents.deliberative_council.engine._call_member", side_effect=mock):
+            config = CouncilConfig(model_aliases=("opus",))
+            results = await run_phase1(
+                CouncilInput(text="a composed segment", source_ref="coherence:p1"),
+                CoherenceRubric(),
+                config,
+            )
+        assert calls.get("investigate", 0) == 0  # research pass SKIPPED
+        assert calls.get("score", 0) == 1  # scoring still ran (no UnboundLocalError)
+        assert len(results) == 1
+
+    async def test_research_rubric_runs_investigate(self) -> None:
+        calls: dict[str, int] = {}
+        mock = _counting_mock(calls, {"epistemic_rigor": 4})
+        with patch("agents.deliberative_council.engine._call_member", side_effect=mock):
+            config = CouncilConfig(model_aliases=("opus",))
+            results = await run_phase1(
+                CouncilInput(text="a claim", source_ref="r.md"),
+                EpistemicQualityRubric(),
+                config,
+            )
+        assert calls.get("investigate", 0) == 1  # research pass RAN
+        assert calls.get("score", 0) == 1
+        assert len(results) == 1
 
 
 def _scoring_mock(score_return):
