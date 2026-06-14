@@ -29,8 +29,17 @@ def test_process_judgment_final_judgment_paren():
     assert process_judgment("Some analysis.\nFinal Judgment: (C)") == "C"
 
 
+def test_process_judgment_word_verdicts_not_mischar_extracted():
+    # CV_PROMPT permits CORRECT/INCORRECT/INVALID; the upstream catch-all [A-C] regex
+    # would misread these (INVALID->A, CORRECT/INCORRECT->C). Whole-word check fixes it.
+    assert process_judgment("CORRECT") == "A"
+    assert process_judgment("INCORRECT") == "B"
+    assert process_judgment("INVALID") == "C"
+    assert process_judgment("  correct\n") == "A"
+
+
 def test_process_judgment_unparseable_returns_empty():
-    assert process_judgment("the answer is correct indeed") == ""
+    assert process_judgment("the answer is fine indeed") == ""
     assert process_judgment("") == ""
 
 

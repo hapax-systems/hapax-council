@@ -74,15 +74,24 @@ _LABELS = ("A", "B", "C")
 def process_judgment(judgment_str: str) -> str:
     """Extract the A/B/C verdict from raw judge output.
 
-    Verbatim port of ``process_judgment`` from open-compass/CompassVerifier
-    src/cv_eval.ipynb so verdicts match the published evaluation. Returns ""
-    when nothing parseable is found.
+    Port of ``process_judgment`` from open-compass/CompassVerifier src/cv_eval.ipynb
+    (so verdicts match the published evaluation), hardened for the prompt-permitted
+    *word* verdicts: CV_PROMPT tells the model it may reply CORRECT/INCORRECT/INVALID,
+    and the LiteLLM fallback judge (claude-haiku) may follow that wording. The upstream
+    catch-all ``[A-C]`` regex would then misread INVALID->A and CORRECT/INCORRECT->C, so
+    an exact whole-word check runs before the char fallback. Returns "" when nothing
+    parseable is found.
     """
     boxed_matches = re.findall(r"boxed{([A-C])}", judgment_str)
     if boxed_matches:
         return boxed_matches[-1]
     if judgment_str in _LABELS:
         return judgment_str
+    # prompt-permitted whole-word verdicts (exact, post-strip) — checked before the
+    # char fallback so the letters inside CORRECT/INCORRECT/INVALID aren't mis-extracted
+    _WORD_LABELS = {"CORRECT": "A", "INCORRECT": "B", "INVALID": "C"}
+    if (word := judgment_str.strip().upper()) in _WORD_LABELS:
+        return _WORD_LABELS[word]
     final_judgment_str = judgment_str.split("Final Judgment:")[-1]
     matches = re.findall(r"\(([A-C])\)*", final_judgment_str)
     if matches:
@@ -174,8 +183,20 @@ class LocalJudge:
                 shadow=self.shadow,
             )
         except Exception as exc:  # noqa: BLE001 — surface, never silently pass/fail-correct
+            # Include the next action so a caller/operator knows where to look: the
+            # judge endpoint, the gateway route, or the API-base env. The verdict is
+            # label="" (unparsed) — callers MUST escalate, never treat it as CORRECT.
+            hint = (
+                "judge call failed — check the hapax-local-judge unit (:5001), the "
+                f"'{self.route}' LiteLLM route, and LITELLM_API_BASE ({self.api_base}); "
+                "escalate this item to the incumbent judge"
+            )
             return JudgeVerdict(
-                label="", raw="", route=self.route, shadow=self.shadow, error=str(exc)[:200]
+                label="",
+                raw="",
+                route=self.route,
+                shadow=self.shadow,
+                error=f"{str(exc)[:160]} | {hint}",
             )
 
 

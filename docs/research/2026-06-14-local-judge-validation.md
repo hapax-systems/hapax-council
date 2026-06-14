@@ -1,10 +1,21 @@
-# Local Judge Validation — CompassVerifier-7B (cost-offload Tier-1)
+# Local Judge Validation — CompassVerifier-7B (cost-offload Tier-1, shadow-infra increment)
 
 **Date:** 2026-06-14 · **Authority:** ISAP `S5-CAPACITY-ROUTING-COST-OFFLOAD-TIER1`
 · task `cc-task-cost-offload-local-judge-stack` · REQ `REQ-20260613-sdlc-cost-offload-program`.
-**Verdict:** served + routed + validated. **Quant is intact; promotion bars are NOT
+**Verdict:** served + routed + quant-validated. **Quant is intact; promotion bars are NOT
 yet met → ship default-OFF / shadow.** Deploy + ops: `docs/runbooks/local-judge-stack.md`.
 Adapter: `shared/local_judge.py`. Harness: `scripts/cost-offload/`.
+
+> **Scope of this increment (this does NOT close the Tier-1 task).** This PR lands
+> AC1/AC2/AC4/AC5 — the judge is served, routed, quant-validated, and fallback-proven.
+> **AC3 (council-distribution agreement) and AC6 (a real gate repointed) remain
+> OUTSTANDING**, so the *realized* marginal cost saving from this diff is **$0 by
+> design**: the judge ships `shadow=True` and offloads nothing until the agreement
+> gate clears on council traffic. Realizing the offload (the conservative pre-screen /
+> escalation composition on a fitting answer-verification gate) is tracked as the
+> follow-on `cc-task-cost-offload-local-judge-realize`. This is deliberate, not an
+> omission: the measured κ 0.70 / non-conservative skew (below) means promoting now
+> would trade quality for cost, which the cost-offload invariant forbids.
 
 ## Setup
 

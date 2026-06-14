@@ -113,8 +113,9 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
 - **No-co-residency guarantee:** the container is pinned to the 5060 Ti UUID; the
   3090 grounding instance (TabbyAPI `:5000`) is independent. Confirm with `nvidia-smi`.
 - **Throughput:** 8 continuous-batch slots × 8192 ctx; ~137 tok/s decode, ~800 tok/s
-  prompt. 12/2817 VerifierBench items exceed an 8192-token slot and are reported as
-  context-skips by the harness (negligible, <0.5%).
+  prompt. 127/2817 (4.5%) VerifierBench items exceed an 8192-token slot and are
+  reported as context-skips by the harness — the longest/pathological inputs; raise
+  `-c`÷`-np` per slot to score them if a full-coverage number is wanted.
 - **Fallback drill:** `docker stop hapax-local-judge`, then a `local-judge` call
   through `:4000` should return a `claude-haiku` answer without a hard error; restart
   with `systemctl --user start hapax-local-judge`.
