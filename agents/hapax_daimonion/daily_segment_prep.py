@@ -2380,13 +2380,13 @@ def prep_segment(
     script = _repair_comparison_beats(script, [str(item) for item in beats])
     script = _repair_live_event_payoff(script)
 
-    # Coherence is a RELEASE gate, not just a refinement trigger. If the first
-    # pass failed (low mean OR a critical-axis floor breach), the refined +
-    # repaired script must now CLEAR the gate or the segment does not release.
-    # Without this re-check a no-op refinement (observed: ~2% change on a flat
-    # 35B draft) carried a sub-threshold or critical-axis-failed draft straight
-    # through to later gates and could be saved — so "the floor blocks release"
-    # was not actually implemented (codex-1, PR #4133).
+    # Early-exit optimization: if the first pass failed (low mean OR critical-axis
+    # floor) and the refine was a no-op, refuse NOW rather than spend the
+    # disconfirmation/narrative councils on a still-incoherent draft. This is NOT
+    # the authoritative release gate (recompose passes below regenerate the
+    # script) — the FINAL coherence gate after all recomposition is. Both exist:
+    # this saves council calls on hopeless drafts; the final gate enforces release
+    # on the artifact that actually ships (codex-1, PR #4133).
     if not coherence_outcome.passed:
         recheck = _council_coherence_check("\n\n".join(script), prog_id)
         council_decisions["coherence_recheck"] = recheck.council_decisions
@@ -2782,6 +2782,54 @@ def prep_segment(
         )
         return None
     script = list(actionability["prepared_script"])
+
+    # FINAL coherence release gate — on the artifact that actually SHIPS. Every
+    # recomposition pass above (disconfirmation/narrative/actionability) fully
+    # regenerates the script via _call_llm, so gating only the early/refined draft
+    # let a recompose-degraded final script ship un-validated. This gate always
+    # runs on the post-recompose script and is the authoritative enforcement of
+    # "coherence (incl. the critical-axis floor) blocks release" (codex-1, #4133).
+    final_coherence = _council_coherence_check("\n\n".join(script), prog_id)
+    council_decisions["coherence_final"] = final_coherence.council_decisions
+    if _gt is not None:
+        _fc = final_coherence.council_decisions or {}
+        _gt.record_step(
+            "coherence_final",
+            status=(
+                "ok" if final_coherence.passed else "refused" if final_coherence.refused else "low"
+            ),
+            note=f"ship mean={_fc.get('mean_score')} min={_fc.get('axis_min')} "
+            f"passed={final_coherence.passed}",
+        )
+    if not final_coherence.passed:
+        if _gt is not None:
+            _gt.finish("low_coherence_final")
+        log.warning(
+            "prep_segment: final coherence gate blocked release for %s (mean=%s, axis_min=%s)",
+            prog_id,
+            (final_coherence.council_decisions or {}).get("mean_score"),
+            (final_coherence.council_decisions or {}).get("axis_min"),
+        )
+        _emit_council_degradation_signal(
+            prog_id, "coherence_final", final_coherence.council_decisions
+        )
+        _append_council_decisions_ledger(
+            prep_dir, prog_id, council_decisions, terminal_status="low_coherence_no_release"
+        )
+        _write_prep_diagnostic_outcome(
+            prep_dir,
+            prep_session=prep_session,
+            programme_id=prog_id,
+            role=role,
+            topic=topic,
+            segment_beats=list(beats),
+            terminal_status="low_coherence_no_release",
+            terminal_reason="final_coherence_below_gate",
+            not_loadable_reason="final coherence below release gate",
+            refusal_metadata={"council_decisions": council_decisions},
+        )
+        return None
+
     layout_responsibility = validate_layout_responsibility(
         actionability["beat_action_intents"],
     )
@@ -3867,6 +3915,10 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
         "families_valid": health.get("families_valid"),
         "failed_members": verdict.receipt.get("failed_members", []),
         "mean_score": round(mean_score, 2) if mean_score is not None else None,
+        # Per-axis scores — the generative trace reads council_decisions["scores"]
+        # to populate the stance assessment (motivated_angle/directedness/etc.);
+        # without it those fields are silently unassessed (codex-1, PR #4133).
+        "scores": dict(scores),
     }
 
     if verdict.convergence_status == ConvergenceStatus.REFUSED or not valid_scores:

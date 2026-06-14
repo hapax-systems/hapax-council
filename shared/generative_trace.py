@@ -346,12 +346,18 @@ def _safe_name(value: str) -> str:
     return "".join(c if c.isalnum() or c in "-_." else "_" for c in str(value))[:120] or "episode"
 
 
-def _consent_value() -> str:
+def _consent_value() -> Any:
     try:
         from shared.governance.consent_label import ConsentLabel
         from shared.labeled_trace import serialize_label
 
-        return serialize_label(ConsentLabel.bottom())
+        # Traces embed actual draft prose + recruited (operator-vault-derived)
+        # source material — sensitive, NOT public. Label fail-CLOSED to the
+        # operator so a downstream consent-aware reader/exporter treats them as
+        # restricted; bottom() (the prior value) is public and would leak them
+        # as unrestricted (codex-1, PR #4133).
+        operator_only = ConsentLabel(frozenset({("operator", frozenset({"operator"}))}))
+        return serialize_label(operator_only)
     except Exception:
         return "unlabeled"
 

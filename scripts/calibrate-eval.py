@@ -479,10 +479,14 @@ def render(results: list[EvalResult]) -> tuple[str, dict[str, Any]]:
             )
         if spreads:
             mid = sum(1 for r in mixed if r.mean_score is not None and 2.0 <= r.mean_score <= 4.0)
-            gradient_ok = max(spreads) >= 2 or mid == len([r for r in mixed if r.mean_score])
+            # "Differentiates axes" requires REAL per-axis spread — a mid-range
+            # mean with every axis equal is saturation, not a gradient, and must
+            # NOT claim gradient_ok (codex-1, PR #4133). Landing mid-range is
+            # reported separately; it is not evidence of a per-axis gradient.
+            gradient_ok = max(spreads) >= 2
             lines.append(
                 f"  -> max axis-spread={max(spreads)} "
-                f"({'differentiates axes' if max(spreads) >= 2 else 'SATURATING — axes move together'}); "
+                f"({'differentiates axes' if gradient_ok else 'SATURATING — axes move together'}); "
                 f"{mid}/{len(mixed)} landed mid-range (2-4)"
             )
         lines.append("")

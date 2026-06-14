@@ -140,10 +140,6 @@ async def run_phase1(
 
     async def _run_one(alias: str, seed: int) -> PhaseOneResult | None:
         try:
-            source_ctx_block = ""
-            if inp.source_context:
-                source_ctx_block = f"\n\n## Source Context\n```\n{inp.source_context}\n```\n"
-
             if not rubric.requires_research:
                 # JUDGMENT rubric (coherence, narrative_quality): the object of
                 # judgment IS inp.text. Skip the claim-verification research pass
@@ -151,12 +147,18 @@ async def run_phase1(
                 # research budget and times out, then forces the score onto
                 # truncated/irrelevant research (the rubric-blind research-pass bug
                 # that floored coherence at ~1.0). Score directly from the text.
+                # (source_context is intentionally NOT surfaced here — the judgment
+                # object is the text itself; building it would be dead work,
+                # codex-1/claude-1 PR #4133.)
                 tool_calls = []
                 findings_text = (
                     "(no external research — this is a judgment rubric; evaluate the "
                     "supplied text on its own terms, not against external sources)"
                 )
             else:
+                source_ctx_block = ""
+                if inp.source_context:
+                    source_ctx_block = f"\n\n## Source Context\n```\n{inp.source_context}\n```\n"
                 research_member = build_member(alias)
                 investigate_prompt = (
                     "You are a council member. FIRST, investigate the source material "
