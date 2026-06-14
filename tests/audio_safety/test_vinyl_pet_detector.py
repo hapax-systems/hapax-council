@@ -22,7 +22,19 @@ from agents.audio_safety.vinyl_pet_detector import (
     process_frame,
     publish_state,
     should_fire,
+    topology_supported,
 )
+
+
+def test_topology_supported_false_on_2ch_broadcast_sum() -> None:
+    # mk5 era: the 2ch broadcast sum cannot carry the L-12 multitrack vinyl/Evil-Pet
+    # channels (AUX5/8/9) — the detector would be structurally blind (always 0.0).
+    assert topology_supported(DetectorConfig(channels=2)) is False
+
+
+def test_topology_supported_true_on_multitrack_tap() -> None:
+    # a tap wide enough for the configured AUX indices (the original L-12 premise).
+    assert topology_supported(DetectorConfig(channels=14)) is True
 
 
 def _interleaved_frame(

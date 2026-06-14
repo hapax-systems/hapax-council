@@ -746,6 +746,31 @@ def test_runtime_safety_source_missing_blocks(tmp_path: Path) -> None:
     assert "runtime_safety_failed" in _codes(health)
 
 
+def test_runtime_safety_unsupported_topology_warns_not_blocks(tmp_path: Path) -> None:
+    # Honest-degrade: when the vinyl/Evil-Pet leak detector reports
+    # "unsupported_topology" (its L-12 multitrack hardware is decommissioned and the
+    # 2ch broadcast sum cannot supply the channels), it must be SURFACED as a warning
+    # — never a silent fresh "clear" — but it must NOT block the live go-live, because
+    # the guarded risk surface is physically absent.
+    paths = _paths(tmp_path)
+    _write_json(paths.audio_ducker_state, _audio_ducker_state())
+    _write_json(
+        paths.audio_safety_state,
+        {"status": "unsupported_topology", "breach_active": False},
+    )
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert "runtime_safety_failed" not in _codes(health)
+    assert "runtime_safety_inert" in {reason.code for reason in health.warnings}
+    assert health.evidence["runtime_safety"]["vinyl_pet_detector"] == "unsupported_topology"
+
+
 def test_audio_ducker_state_missing_blocks(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
