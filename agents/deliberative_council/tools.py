@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -10,6 +12,11 @@ log = logging.getLogger(__name__)
 HAPAX_COUNCIL_DIR = Path(__file__).resolve().parent.parent.parent
 VAULT_DIR = Path.home() / "Documents" / "Personal"
 MAX_READ_CHARS = 4000
+# web_verify spawns a nested Perplexity agent with no internal bound; one slow
+# call consumed most of a member's research budget and produced the TimeoutError
+# cascade (verified diagnosis 2026-06-14). Bound it so a slow provider degrades
+# to "no external evidence", never a starved member.
+_WEB_VERIFY_TIMEOUT_S = float(os.environ.get("HAPAX_COUNCIL_WEB_VERIFY_TIMEOUT_S", "45"))
 
 
 async def read_source(ctx: Any, path: str) -> str:
@@ -76,7 +83,14 @@ async def web_verify(ctx: Any, query: str) -> str:
     from shared.config import get_model
 
     agent = Agent(get_model("web-research"))
-    result = await agent.run(f"Search and summarize evidence for or against: {query}")
+    try:
+        result = await asyncio.wait_for(
+            agent.run(f"Search and summarize evidence for or against: {query}"),
+            timeout=_WEB_VERIFY_TIMEOUT_S,
+        )
+    except TimeoutError:
+        log.warning("web_verify timed out after %.0fs: %s", _WEB_VERIFY_TIMEOUT_S, query[:80])
+        return f"(web_verify timed out after {_WEB_VERIFY_TIMEOUT_S:.0f}s — no external evidence gathered)"
     return str(result.output)[:MAX_READ_CHARS]
 
 

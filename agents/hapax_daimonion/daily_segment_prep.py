@@ -2464,10 +2464,23 @@ def prep_segment(
         claim_map = contract_for_claims.get("claim_map", [])
         sc_map = contract_for_claims.get("source_consequence_map", [])
 
+        # Map each src:N handle to its real ref + recruited snippet so the
+        # disconfirmation council judges against actual source TEXT and resolvable
+        # refs, never an internal handle it cannot dereference (the read_source
+        # "src:0" -> File not found timeout cascade; verified diagnosis 2026-06-14).
+        source_handles = (
+            {
+                f"src:{i}": (p.source_ref, p.snippet or "")
+                for i, p in enumerate(resolved_source_set.packets)
+            }
+            if resolved_source_set is not None
+            else {}
+        )
         council_claims = extract_claims(
             claim_map=claim_map,
             source_consequence_map=sc_map,
             script=script,
+            source_handles=source_handles,
         )
         if council_claims:
             council_verdicts = run_council_disconfirmation(council_claims)
