@@ -466,11 +466,18 @@ def _retrieval_eligible_filter(
     )
 
 
-def _retrieval_points(points: list, max_results: int) -> list:
-    """Drop legacy metadata stubs that predate retrieval_eligible payloads."""
-    return [point for point in points if not is_inventory_payload(point.payload or {})][
-        :max_results
-    ]
+def _retrieval_points(points: list, max_results: int, *, query: str | None = None) -> list:
+    """Drop legacy metadata stubs, optionally rerank, then truncate to max_results.
+
+    When ``query`` is supplied, the inventory-filtered candidates are reranked by
+    the shared cross-encoder (flag-gated default-OFF, fail-open) before truncation.
+    """
+    filtered = [point for point in points if not is_inventory_payload(point.payload or {})]
+    if query is not None:
+        from shared.rerank import rerank
+
+        return rerank(query, filtered, max_results)
+    return filtered[:max_results]
 
 
 async def handle_search_documents(params) -> None:
@@ -507,7 +514,7 @@ async def handle_search_documents(params) -> None:
             limit=max_results * _INVENTORY_OVERFETCH_FACTOR,
             score_threshold=_SCORE_THRESHOLD,
         )
-        points = _retrieval_points(list(results.points), max_results)
+        points = _retrieval_points(list(results.points), max_results, query=query)
 
         if not points:
             await params.result_callback("No relevant documents found.")
@@ -1021,7 +1028,7 @@ async def handle_search_drive(params) -> None:
             limit=max_results * _INVENTORY_OVERFETCH_FACTOR,
             score_threshold=_SCORE_THRESHOLD,
         )
-        points = _retrieval_points(list(results.points), max_results)
+        points = _retrieval_points(list(results.points), max_results, query=query)
 
         if not points:
             await params.result_callback("No Drive documents found.")

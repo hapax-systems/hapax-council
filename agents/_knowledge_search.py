@@ -94,9 +94,11 @@ def search_documents(
 
         points = list(results.points)
         if not include_inventory:
-            points = [pt for pt in points if not is_inventory_payload(pt.payload or {})][:limit]
-        else:
-            points = points[:limit]
+            points = [pt for pt in points if not is_inventory_payload(pt.payload or {})]
+
+        from shared.rerank import rerank
+
+        points = rerank(query, points, limit)
 
         span.set_attribute("rag.result_count", len(points))
         if points:
