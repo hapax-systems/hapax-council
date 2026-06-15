@@ -24,6 +24,7 @@ from . import (  # noqa: F401
     profiles,
     qdrant,
     queues,
+    release_ghost,
     secrets,
     skills,
     sync,
