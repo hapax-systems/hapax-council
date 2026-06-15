@@ -18,7 +18,6 @@ from .aggregation import AxisAggregate, aggregate_scores, should_shortcircuit
 from .members import (
     ToolLevel,
     build_member,
-    cache_control_ttl_for_alias,
     cache_policy_for_aliases,
     model_family,
 )
@@ -37,13 +36,15 @@ from .models import (
     PhaseOneResult,
 )
 from .prompts import (
-    phase1_prompt_parts,
+    RESEARCH_SYSTEM_PROMPT,
+    phase1_system_prompt,
     phase2_alternative_framing_prompt,
     phase3_adversarial_prompt,
     phase3_audience_simulation_prompt,
     phase4_revision_prompt,
 )
 from .rubrics import Rubric
+from .tools import tool_memoization_scope
 
 _log = logging.getLogger(__name__)
 
@@ -117,12 +118,6 @@ async def _call_member(
     return result.output, tool_calls
 
 
-def _append_prompt_suffix(prompt: PromptPayload, suffix: str) -> PromptPayload:
-    if isinstance(prompt, str):
-        return prompt + suffix
-    return (*prompt, suffix)
-
-
 async def run_phase1(
     inp: CouncilInput,
     rubric: Rubric,
@@ -156,18 +151,23 @@ async def run_phase1(
                     "supplied text on its own terms, not against external sources)"
                 )
             else:
+                research_member = build_member(
+                    alias,
+                    system_prompt=RESEARCH_SYSTEM_PROMPT,
+                )
+
                 source_ctx_block = ""
                 if inp.source_context:
                     source_ctx_block = f"\n\n## Source Context\n```\n{inp.source_context}\n```\n"
-                research_member = build_member(alias)
+
+                # Only the per-input dynamic content goes in the user message;
+                # the role identity and tool-usage instructions are now in
+                # system_prompt for prefix-cache reuse.
                 investigate_prompt = (
-                    "You are a council member. FIRST, investigate the source material "
-                    "using your research tools. Do NOT score yet — only gather evidence.\n\n"
+                    f"FIRST, investigate the source material before scoring. "
+                    f"Do NOT score yet — only gather evidence.\n\n"
                     f"**Source ref:** {inp.source_ref}\n\n**Text:**\n{inp.text}"
-                    f"{source_ctx_block}\n\n"
-                    "Use tools to verify claims, check sources, and gather evidence. "
-                    "Report your findings as a JSON list:\n"
-                    '{"research_findings": ["finding 1", "finding 2", ...]}'
+                    f"{source_ctx_block}"
                 )
                 try:
                     investigate_raw, tool_calls = await _call_member(
@@ -194,26 +194,22 @@ async def run_phase1(
                         "rate source_grounding conservatively)"
                     )
 
-            score_prompt = phase1_prompt_parts(
-                rubric,
-                inp.text,
-                inp.source_ref,
-                seed=seed,
-                cache_ttl=cache_control_ttl_for_alias(alias),
+            # Build the score member with the full rubric in system_prompt.
+            # The user message is just the input text + prior research.
+            scoring_sys = phase1_system_prompt(rubric, seed=seed)
+            score_member = build_member(
+                alias,
+                tool_level=ToolLevel.NONE,
+                system_prompt=scoring_sys,
             )
-            score_prompt = _append_prompt_suffix(
-                score_prompt,
-                f"\n\n## Your Prior Research Findings\n{findings_text}\n\n"
+            score_prompt = (
+                f"## Input\n\n**Source ref:** {inp.source_ref}\n\n"
+                f"**Text:**\n{inp.text}\n\n"
+                f"## Your Prior Research Findings\n{findings_text}\n\n"
                 "Score based on your research above. Do NOT re-investigate. "
-                "Respond ONLY with the structured score object (an integer 1-5 per axis).",
+                "Respond ONLY with the structured score object (an integer "
+                f"{rubric.axes[0].min_score}-{rubric.axes[0].max_score} per axis)."
             )
-            # Scoring is a single provider-enforced structured answer with NO
-            # tools (tool_calls_limit=0 + ToolLevel.NONE): the runaway tool-loop
-            # cannot recur, and a non-conforming output makes pydantic-ai raise
-            # (retries=0) instead of degrading to empty scores. NativeOutput ->
-            # response_format json_schema (cloud routes + TabbyAPI/Formatron for
-            # the local-fast Command-R member).
-            score_member = build_member(alias, tool_level=ToolLevel.NONE)
             phase1_output, score_tools = await _call_member(
                 score_member,
                 score_prompt,
@@ -313,7 +309,20 @@ async def deliberate(
 ) -> CouncilVerdict:
     if config is None:
         config = CouncilConfig()
+    # R4 (cctv-prompt-caching-quality-neutral-20260607): identical read_source /
+    # grep_evidence sub-calls within ONE deliberation short-circuit via a per-run
+    # cache shared across this deliberation's member tasks only (distinct
+    # deliberations stay isolated; callers outside deliberate() run uncached).
+    with tool_memoization_scope():
+        return await _deliberate(inp, mode, rubric, config)
 
+
+async def _deliberate(
+    inp: CouncilInput,
+    mode: CouncilMode,
+    rubric: Rubric,
+    config: CouncilConfig,
+) -> CouncilVerdict:
     if not inp.source_context:
         from agents.deliberative_council.source_context import populate_source_context
 
