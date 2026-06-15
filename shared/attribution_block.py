@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Final, TypedDict
 
-from agents.authoring.byline import Byline, BylineVariant, render_byline
+from agents.authoring.byline import Byline, BylineVariant, SurfaceRegister, render_byline
 
 # ── Refusal Brief: non_engagement_clause (beta synthesis 2026-04-25T17:15Z) ─
 #
@@ -150,6 +150,7 @@ def render_attribution_block(
     unsettled_variant: UnsettledContributionVariant,
     non_engagement_form: NonEngagementForm | None = None,
     non_engagement_clause_override: str | None = None,
+    register: SurfaceRegister = SurfaceRegister.FORMAL,
 ) -> AttributionBlock:
     """Render an :class:`AttributionBlock` for the requested variant pair.
 
@@ -176,7 +177,7 @@ def render_attribution_block(
         clause = None
 
     return AttributionBlock(
-        byline_text=render_byline(byline, variant=byline_variant),
+        byline_text=render_byline(byline, variant=byline_variant, register=register),
         unsettled_sentence=UNSETTLED_CONTRIBUTION_VARIANTS[unsettled_variant],
         byline_variant=byline_variant,
         unsettled_variant=unsettled_variant,
