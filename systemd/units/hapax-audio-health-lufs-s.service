@@ -14,6 +14,30 @@ Restart=on-failure
 RestartSec=10
 WatchdogSec=0
 EnvironmentFile=-%h/.config/hapax/audio-health.env
+# P0 incident f3d2b04e (audio_lufs_breach) remediation, 2026-06-15.
+# The hardcoded daemon DEFAULT_BANDS ([-22,-18] at the OBS egress) are a ~6 LU
+# under-shoot of the broadcast loudness SSOT and far too narrow for it: the
+# egress targets EGRESS_TARGET_LUFS_I = -14 LUFS-I with EGRESS_LRA_MAX_LU = 11 LU
+# of legitimate short-term spread (shared/audio_loudness.py). A 4 LU static band
+# on raw 3 s LUFS-S therefore false-positives in BOTH directions on normal
+# program (quiet passages dip below -22; hot passages rise above -18), minting
+# spurious P0 "Audio: LUFS Breach" alerts. Bands re-derived from the SSOT:
+#   LOW  = EGRESS_TARGET_LUFS_I - EGRESS_LRA_MAX_LU = -25.0 (floor of the legit
+#          loudness range; coincides with the silence-suppression floor, so a
+#          genuine "too quiet" condition is owned by the closed-loop integrated
+#          LUFS-I controller, not this short-term monitor).
+#   HIGH = -6.0 (a sustained 3 s LUFS-S above this means the master limiter is
+#          carrying programme — the documented over-makeup failure mode — while
+#          leaving headroom for legitimate hot passages near -9 LUFS-S).
+# broadcast-master is the pre-makeup sum (~16 dB below the egress); its quiet
+# tail leaks just above the silence floor, so LOW is aligned to the floor too.
+# These Environment= lines are the committed authority; they sit AFTER
+# EnvironmentFile= so an operator's audio-health.env can still override ad hoc.
+# Regression: tests/agents/audio_health/test_m2_m3_daemons.py::TestM2EgressBandSSOT
+Environment=HAPAX_AUDIO_HEALTH_LUFS_S_BAND_HAPAX_OBS_BROADCAST_REMAP_LOW=-25.0
+Environment=HAPAX_AUDIO_HEALTH_LUFS_S_BAND_HAPAX_OBS_BROADCAST_REMAP_HIGH=-6.0
+Environment=HAPAX_AUDIO_HEALTH_LUFS_S_BAND_HAPAX_BROADCAST_MASTER_LOW=-25.0
+Environment=HAPAX_AUDIO_HEALTH_LUFS_S_BAND_HAPAX_BROADCAST_MASTER_HIGH=-10.0
 MemoryMax=256M
 
 [Install]
