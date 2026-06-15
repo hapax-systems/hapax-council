@@ -4,8 +4,12 @@ Documentation=file:%h/projects/hapax-council/systemd/README.md
 
 [Service]
 Type=oneshot
-ExecStart=%h/projects/hapax-council/scripts/hapax-worktree-gc.sh --repo %h/projects/hapax-council
-WorkingDirectory=%h/projects/hapax-council
+# Run from the ACTIVATED DEPLOY tree, not the primary worktree: the primary tree is a permanent
+# lane pinned on unmerged WIP, so its on-disk script froze at an old version and reported
+# removable=0 forever (N-tier deploy-skew). The deploy tree is a registered worktree of the same
+# .git (shares object store + sees every worktree/branch) and is always redeployed from main.
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-worktree-gc.sh --repo %h/.cache/hapax/source-activation/worktree
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Nice=10

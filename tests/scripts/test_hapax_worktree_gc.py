@@ -265,8 +265,10 @@ def test_worktree_gc_systemd_timer_is_installable_and_six_hourly() -> None:
     preset = PRESET.read_text(encoding="utf-8")
 
     assert "Type=oneshot" in service
-    assert "scripts/hapax-worktree-gc.sh --repo %h/projects/hapax-council" in service
-    assert "WorkingDirectory=%h/projects/hapax-council" in service
+    assert (
+        "scripts/hapax-worktree-gc.sh --repo %h/.cache/hapax/source-activation/worktree" in service
+    )
+    assert "WorkingDirectory=%h/.cache/hapax/source-activation/worktree" in service
     assert "OnUnitActiveSec=6h" in timer
     assert "Persistent=true" in timer
     assert "WantedBy=timers.target" in timer

@@ -164,7 +164,9 @@ git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || \
     die "not a git worktree: $repo"
 
 if ((fetch_first)); then
-    git -C "$repo" fetch --quiet origin main >/dev/null 2>&1 || true
+    # --prune drops stale remote-tracking refs for branches GitHub auto-deleted on merge
+    # (delete_branch_on_merge), so the mirror backlog self-clears every cycle.
+    git -C "$repo" fetch --prune --quiet origin >/dev/null 2>&1 || true
 fi
 
 if ((dry_run)); then
@@ -397,6 +399,11 @@ process_worktree() {
             git -C "$repo" worktree remove "$path"
             printf 'hapax-worktree-gc: removed %s\n' "$path"
             removed=$((removed + 1))
+            # Delete the now-orphaned LOCAL branch ref. This block requires merged=1 (see the
+            # guard above), so `-d` is merged-only and fail-closes — NEVER -D.
+            if [[ -n "$branch" ]] && git -C "$repo" branch -d "$branch" >/dev/null 2>&1; then
+                printf 'hapax-worktree-gc: deleted merged local branch %s\n' "$branch"
+            fi
         fi
         return 0
     fi
