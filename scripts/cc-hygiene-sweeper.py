@@ -11,7 +11,12 @@ Implements the 8 checks described in §2 and emits:
 * a machine-readable JSON snapshot at
   ``~/.cache/hapax/cc-hygiene-state.json``
 
-Auto-actions are PR2 territory; this script is strictly observational.
+The 8 checks are read-only; the only mutation is the ghost-claimed self-heal
+(``cc_hygiene.actions``, scoped to ``ghost_claimed``): a ``status: claimed`` note
+with no claimer/``claimed_at`` is a definitional violation ``cc-claim`` cannot
+produce, so it is reverted to ``offered`` (reversible, re-validated on disk) to
+stop the violation re-firing every sweep. Disable with ``--no-actions``. The
+other auto-actions (H2 stale-in-progress, H7 offered-stale) remain unwired.
 
 Usage::
 
@@ -428,6 +433,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip the PR5 dashboard renderer (ntfy still runs).",
     )
+    parser.add_argument(
+        "--no-actions",
+        action="store_true",
+        help="Skip the ghost-claimed self-heal auto-action (observational mode).",
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -462,6 +472,26 @@ def main(argv: list[str] | None = None) -> int:
     if not args.no_write:
         append_events(state.events, state.sweep_timestamp, path=args.event_log_path)
         write_state(state, path=args.state_path)
+        # Effect-based self-heal: a ghost-claimed note (status: claimed with no
+        # claimer/claimed_at) is a definitional violation cc-claim cannot produce
+        # (freehand frontmatter edits bypass the atomic claimer). Left alone it
+        # re-fires every sweep -> a notification storm (P0 incident 2026-06-13, 39x).
+        # Reverting it to `offered` (reversible, idempotent, re-validated on disk)
+        # makes the violation stop recurring at source — independent of which
+        # producer created it. Scoped to ghost_claimed only; H2/H7 stay unwired.
+        if not args.no_actions:
+            ghost_events = [e for e in state.events if e.check_id == "ghost_claimed"]
+            if ghost_events:
+                from cc_hygiene.actions import apply_actions
+
+                notes = _load_active_notes(args.vault_root)
+                for result in apply_actions(
+                    ghost_events,
+                    notes,
+                    vault_root=args.vault_root,
+                    now=state.sweep_timestamp,
+                ):
+                    LOG.info("ghost-claim self-heal %s: %s", result.task_id, result.message)
         # PR5 surface A — high-severity ntfy alerts (gated + throttled)
         if not args.no_ntfy:
             try:

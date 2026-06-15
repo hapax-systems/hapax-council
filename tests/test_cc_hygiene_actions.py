@@ -196,6 +196,47 @@ class TestRevertGhostClaim:
         assert second.success is False
         assert "race" in second.message.lower()
 
+    def test_skips_when_claim_completed_between_detect_and_act(self, tmp_path: Path) -> None:
+        """B3 state-erasure guard: a claim legitimately COMPLETED (assigned + a
+        parseable claimed_at) between the sweep snapshot and the action must NOT be
+        clobbered. The revert re-reads the on-disk frontmatter and re-checks the
+        full ghost predicate — not just status==claimed — before mutating."""
+        _, active, _ = _build_vault(tmp_path)
+        path = active / "racey.md"
+        # The sweep snapshotted this note as a ghost...
+        _write_note(
+            path,
+            {
+                "type": "cc-task",
+                "task_id": "racey",
+                "status": "claimed",
+                "assigned_to": "unassigned",
+                "claimed_at": None,
+            },
+        )
+        ghost_snapshot = parse_task_note(path)
+        assert ghost_snapshot is not None
+        # ...but before the action runs, a concurrent writer completed the claim.
+        _write_note(
+            path,
+            {
+                "type": "cc-task",
+                "task_id": "racey",
+                "status": "claimed",
+                "assigned_to": "alpha",
+                "claimed_at": "2026-04-26T05:00:00Z",
+            },
+        )
+        result = actions.revert_ghost_claim(ghost_snapshot)
+        assert result.success is False
+        assert "no longer a ghost" in result.message
+        # The legitimate claim is preserved untouched.
+        preserved = parse_task_note(path)
+        assert preserved is not None
+        assert preserved.status == "claimed"
+        assert preserved.assigned_to == "alpha"
+        assert preserved.claimed_at is not None
+
 
 # ─────────────────── H2 — stale in-progress revert ─────────────────────────
 

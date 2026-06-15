@@ -139,6 +139,27 @@ def revert_ghost_claim(note: TaskNote, *, now: datetime | None = None) -> Action
             message=f"skip: status is {fm.get('status')!r} not 'claimed' (race?)",
             metadata={"observed_status": str(fm.get("status"))},
         )
+    # Re-validate the FULL ghost predicate against the CURRENT on-disk frontmatter,
+    # not the (possibly stale) swept TaskNote. If a concurrent writer completed the
+    # claim between detection and now (an assignee AND a parseable claimed_at), this
+    # is a LEGITIMATE claim — reverting it would erase live work (B3 state-erasing-
+    # reconciler). Mirror check_ghost_claimed so the action only heals what the
+    # check would still flag.
+    from .checks import _parse_dt  # local import: checks imports only .models (no cycle)
+
+    disk_assigned = fm.get("assigned_to")
+    still_ghost = disk_assigned in (None, "unassigned") or _parse_dt(fm.get("claimed_at")) is None
+    if not still_ghost:
+        return ActionResult(
+            action_id="ghost_claimed_revert",
+            task_id=note.task_id,
+            success=False,
+            message="skip: claim completed between detection and action (no longer a ghost)",
+            metadata={
+                "assigned_to": str(disk_assigned),
+                "claimed_at": str(fm.get("claimed_at")),
+            },
+        )
     fm["status"] = "offered"
     fm["assigned_to"] = "unassigned"
     fm["claimed_at"] = None
