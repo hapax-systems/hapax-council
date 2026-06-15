@@ -1238,10 +1238,11 @@ class TestGoGate:
             "title": title,
         }
 
-    def test_clean_python_invalidates_syntax_phantom(self, tmp_path: Path) -> None:
+    def test_clean_python_syntax_claim_is_phantom(self, tmp_path: Path) -> None:
+        # in-range syntax claim on a file that parses clean -> phantom (exercises the ast path)
         rt = _load_review_team_module()
-        self._py(tmp_path, "shared/foo.py", "x = 1\n")
-        f = self._lit("fatal syntax error: corrupted decorators")
+        self._py(tmp_path, "shared/foo.py", "\n".join(f"x{i} = {i}" for i in range(20)) + "\n")
+        f = self._lit("fatal syntax error: corrupted decorators", line=5)
         assert rt.verify_literal_defect_critical(f, tmp_path) is False
 
     def test_real_syntax_error_is_verified(self, tmp_path: Path) -> None:
@@ -1263,15 +1264,60 @@ class TestGoGate:
         f = self._lit("corruption at line 690", file="shared/t.py", line=690)
         assert rt.verify_literal_defect_critical(f, tmp_path) is False
 
-    def test_nonexistent_file_is_phantom(self, tmp_path: Path) -> None:
+    def test_nonexistent_file_is_kept(self, tmp_path: Path) -> None:
+        # conservative: a claim citing a file not in the tree cannot be DISPROVEN -> keep it
         rt = _load_review_team_module()
         f = self._lit("syntax error", file="does/not/exist.py", line=1)
-        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
 
-    def test_missing_file_field_literal_claim_is_phantom(self, tmp_path: Path) -> None:
+    def test_missing_file_field_literal_claim_is_kept(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         f = {"severity": "critical", "lens": "x", "file": "", "line": None, "title": "syntax error"}
-        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_semantic_corrupt_on_clean_python_is_kept(self, tmp_path: Path) -> None:
+        # THE false-negative fix (claude-1's critical on #4136): a SEMANTIC corrupt/malformed
+        # critical on a file that parses clean must NOT be invalidated — not a syntax/compile claim.
+        rt = _load_review_team_module()
+        self._py(tmp_path, "shared/foo.py", "\n".join(f"x{i} = {i}" for i in range(20)) + "\n")
+        f = self._lit("corrupt state handling here is malformed and unsafe")
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_unreadable_file_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        p = tmp_path / "shared" / "blob.py"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"\xff\xfe\x00not-utf8\xff")
+        f = self._lit("syntax error", file="shared/blob.py", line=1)
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_killswitch_disables_gate(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        phantom = self._lit("fatal syntax error at line 690", line=690)
+        reviews = [_review("gemini-1", "gemini", "block", findings=[phantom])]
+        monkeypatch.setenv("HAPAX_REVIEW_GO_GATE_OFF", "1")
+        blocking, phantoms = rt._blocking_criticals(reviews, tmp_path)
+        assert len(blocking) == 1 and phantoms == []
+
+    def test_discover_repo_root_finds_git_dir(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        (tmp_path / ".git").mkdir()
+        sub = tmp_path / "a" / "b"
+        sub.mkdir(parents=True)
+        monkeypatch.chdir(sub)
+        assert rt._discover_repo_root() == tmp_path
+
+    def test_blocking_criticals_uses_cwd_discovery(self, tmp_path: Path, monkeypatch) -> None:
+        # the admission-gate production path: repo_root=None discovers the repo from cwd
+        rt = _load_review_team_module()
+        (tmp_path / ".git").mkdir()
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        phantom = self._lit("fatal syntax error at line 690", line=690)
+        reviews = [_review("gemini-1", "gemini", "block", findings=[phantom])]
+        monkeypatch.chdir(tmp_path)
+        blocking, phantoms = rt._blocking_criticals(reviews, None)
+        assert blocking == [] and len(phantoms) == 1
 
     def test_phantom_literal_critical_does_not_block(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()

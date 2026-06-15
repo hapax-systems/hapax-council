@@ -26,6 +26,7 @@ import fnmatch
 import json
 import os
 import re
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -434,19 +435,34 @@ def _unresolved_criticals(reviews: Sequence[Mapping[str, Any]]) -> list[tuple[st
 # parses clean) while never touching non-literal-defect criticals. Scoped exactly as the prior
 # prompt-only evidence rule (#4132) tried, but enforced by code, not in-model suasion.
 
-_LITERAL_DEFECT_RE = re.compile(
+# Two claim classes. The NARROW syntax/compile set is the ONLY class ast.parse may refute; the
+# BROAD set (adds the polysemous corrupt/malformed/broken terms) only gates the SAFE factual
+# out-of-range line check. So a real semantic "corrupt state handling" critical is never
+# ast-invalidated — it is not a syntax/compile claim.
+_SYNTAX_COMPILE_RE = re.compile(
     r"syntax\s*error|syntaxerror|invalid\s+syntax|fails?\s+to\s+(?:compile|parse)|"
     r"won'?t\s+(?:compile|parse)|does\s*n'?t\s+(?:compile|parse)|cannot\s+be\s+parsed|"
-    r"un(?:parse|parseable|parsable)|compile\s+(?:error|failure)|corrupt|malformed|"
-    r"broken\s+(?:decorator|syntax|indentation)|unterminated|indentation\s+error|"
-    r"missing\s+(?:colon|paren|parenthes|brace|bracket)",
+    r"un(?:parse|parseable|parsable)|compile\s+(?:error|failure)|unterminated|"
+    r"indentation\s+error|missing\s+(?:colon|paren|parenthes|brace|bracket)",
+    re.IGNORECASE,
+)
+_LITERAL_DEFECT_RE = re.compile(
+    _SYNTAX_COMPILE_RE.pattern + r"|corrupt|malformed|broken\s+(?:decorator|syntax|indentation)",
     re.IGNORECASE,
 )
 
+#: Killswitch — set to "1" to disable the go-gate (every critical blocks; the pre-go-gate behaviour).
+_GO_GATE_OFF_ENV = "HAPAX_REVIEW_GO_GATE_OFF"
+
 
 def _is_literal_defect_claim(finding: Mapping[str, Any]) -> bool:
-    """True if the critical asserts a literal textual/syntactic defect (the verifiable class)."""
+    """True if the critical asserts a literal/textual defect (the class the out-of-range check governs)."""
     return bool(_LITERAL_DEFECT_RE.search(str(finding.get("title", ""))))
+
+
+def _is_syntax_compile_claim(finding: Mapping[str, Any]) -> bool:
+    """True if the critical asserts a SYNTAX/COMPILE defect (the only class ast.parse may refute)."""
+    return bool(_SYNTAX_COMPILE_RE.search(str(finding.get("title", ""))))
 
 
 def _discover_repo_root() -> Path | None:
@@ -458,36 +474,39 @@ def _discover_repo_root() -> Path | None:
 
 
 def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) -> bool:
-    """Return True if the critical stands (verified real, or not a literal-defect claim); False if
-    it is a phantom — a literal-defect claim the actual file at ``repo_root`` refutes."""
+    """Return True if the critical STANDS; False ONLY for a definitively-refuted phantom.
+
+    Conservative by construction — it must never suppress a real critical. A critical is invalidated
+    ONLY when (a) it cites a line beyond the file's length, or (b) it is a SYNTAX/COMPILE claim on a
+    Python file that ``ast.parse`` accepts. Every other case KEEPS the critical: not a literal-defect
+    claim, a missing/unreadable file, a non-Python file, or an in-range semantic 'corrupt'/'malformed'
+    claim (which ast cannot refute). Uncertainty never suppresses."""
     if not _is_literal_defect_claim(finding):
         return True
     rel = str(finding.get("file") or "").strip()
     if not rel:
-        return False  # a literal-defect claim with no file to ground it is unverifiable -> phantom
+        return True  # ungrounded — cannot DISPROVE, so keep (conservative)
     path = repo_root / rel
     if not path.is_file():
-        return False  # cites a file absent from the tree
+        return True  # cites a file not in the tree — cannot verify, keep (conservative)
     try:
         source = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        return False
+        return True  # unreadable — cannot verify, keep (conservative)
     line = finding.get("line")
     try:
         line_no = int(line) if line is not None else None
     except (TypeError, ValueError):
         line_no = None
     if line_no is not None and line_no > 0 and line_no > len(source.splitlines()):
-        return False  # cites a line beyond the file (the documented confabulation)
-    if path.suffix == ".py":
+        return False  # cites a line beyond the file — a factual phantom (the documented case)
+    if _is_syntax_compile_claim(finding) and path.suffix == ".py":
         try:
             ast.parse(source)
         except SyntaxError:
-            return True  # the file really does not parse — the claim stands
-        return False  # parses clean — the "syntax error" is a phantom
-    return (
-        True  # grounded in a real, in-range, non-Python file+line; can't disprove without a quote
-    )
+            return True  # really does not parse — the claim stands
+        return False  # parses clean — the syntax/compile claim is a phantom
+    return True  # in-range, non-syntactic (or non-Python) — cannot disprove the content, keep
 
 
 def _blocking_criticals(
@@ -498,6 +517,8 @@ def _blocking_criticals(
     the file at head refutes. ``repo_root=None`` discovers the repo from cwd; if none is found the
     verifier is skipped and every critical blocks (the safe, current behaviour)."""
     criticals = _unresolved_criticals(reviews)
+    if os.environ.get(_GO_GATE_OFF_ENV) == "1":
+        return criticals, []  # killswitch: every critical blocks (pre-go-gate behaviour)
     root = repo_root if repo_root is not None else _discover_repo_root()
     if root is None:
         return criticals, []
@@ -917,7 +938,13 @@ def _dossier_validity_blockers(
         blockers.append(f"review_dossier_team_undersized:{len(reviews)}/{required_size}")
 
     # go-gate: drop literal-defect phantoms (repo discovered from cwd = the PR checkout in CI)
-    criticals, _ = _blocking_criticals(reviews, None)
+    criticals, phantoms = _blocking_criticals(reviews, None)
+    if phantoms:  # receipt: phantom invalidations are auditable in the CI log, never silent
+        print(
+            f"go-gate: invalidated {len(phantoms)} phantom literal-defect critical(s): "
+            + "; ".join(str(f.get("title")) for _, f in phantoms),
+            file=sys.stderr,
+        )
     if criticals and sizing.get("block_on_named_critical", True):
         blockers.append(f"review_dossier_unresolved_critical:{len(criticals)}")
 
