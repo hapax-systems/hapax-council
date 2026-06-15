@@ -1402,3 +1402,44 @@ class TestGoGate:
         # head_sha=None -> same
         blocking2, phantoms2 = rt._blocking_criticals(reviews, tmp_path, head_sha=None)
         assert len(blocking2) == 1 and phantoms2 == []
+
+    def test_admission_gate_drops_phantom_critical(self, tmp_path: Path, monkeypatch) -> None:
+        """v4 integration: the admission gate (_dossier_validity_blockers) must NOT emit
+        review_dossier_unresolved_critical for a syntax-claim phantom that ast.parse refutes.
+        This exercises the go-gate on the admission path (lines 949-960), not just synthesize."""
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        # a phantom syntax critical on a clean file — must be dropped by the go-gate
+        phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
+        reviews = [
+            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("claude-1", "claude", "accept"),
+        ]
+        # Build a dossier that the admission gate will validate
+        reg = rt.load_lens_registry()
+        dossier = rt.synthesize_dossier(
+            task_id="task-admission-test",
+            pr_number=99,
+            head_sha="a" * 40,
+            team_class="t2_standard",
+            registry=reg,
+            reviews=reviews,
+            lenses=ALWAYS_ON_LENSES,
+            constituted_at="2026-06-11T20:00:00+00:00",
+            repo_root=tmp_path,
+        )
+        # The synthesizer should have already dropped the phantom
+        assert dossier["review_team_verdict"] != "blocked"
+        # Now validate via the admission gate path (_dossier_validity_blockers)
+        # which independently calls _blocking_criticals
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir(exist_ok=True)
+        blockers = rt._dossier_validity_blockers(
+            dossier,
+            pr_head_sha="a" * 40,
+            registry=reg,
+        )
+        # The phantom critical must NOT appear as an unresolved-critical blocker
+        critical_blockers = [b for b in blockers if "unresolved_critical" in b]
+        assert critical_blockers == [], f"phantom critical should not block admission: {blockers}"
