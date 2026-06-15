@@ -73,7 +73,9 @@ LOG = logging.getLogger("cc-pr-autoqueue")
 
 DEFAULT_REPO = "hapax-systems/hapax-council"
 DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
-DEFAULT_REPORT_PATH = Path.home() / ".cache" / "hapax" / "orchestration" / "cc-pr-autoqueue-report.json"
+DEFAULT_REPORT_PATH = (
+    Path.home() / ".cache" / "hapax" / "orchestration" / "cc-pr-autoqueue-report.json"
+)
 DEFAULT_ADMISSION_GOVERNOR_PATH = Path.home() / ".cache" / "hapax" / "pr-admission-governor.yaml"
 KILLSWITCH_ENVS = ("HAPAX_CC_PR_AUTOQUEUE_OFF", "HAPAX_CC_HYGIENE_OFF")
 
