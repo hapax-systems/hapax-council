@@ -1088,3 +1088,110 @@ def test_main_runs_clean_on_empty_world(tmp_path: Path) -> None:
     # Empty world still emits the refusal-dormancy info event.
     assert payload["killswitch_active"] is False
     assert any(e["check_id"] == "refusal_dormancy" for e in payload["events"])
+
+
+# ----------------------------------------------------------------------------
+# main() ghost-claim self-heal (effect-based auto-action wiring)
+# ----------------------------------------------------------------------------
+
+
+def _main_args(tmp_path: Path, vault: Path) -> list[str]:
+    """CLI args for a writing sweep with side-effecting surfaces disabled."""
+    return [
+        "--vault-root",
+        str(vault),
+        "--relay-root",
+        str(tmp_path / "relay"),
+        "--repo-root",
+        str(tmp_path),
+        "--state-path",
+        str(tmp_path / "state.json"),
+        "--event-log-path",
+        str(tmp_path / "log.md"),
+        "--no-ntfy",
+        "--no-dashboard",
+    ]
+
+
+def test_main_auto_reverts_ghost_claimed(tmp_path: Path) -> None:
+    """A ghost-claimed note (status: claimed, assigned but claimed_at=null) is
+    self-healed back to `offered` in one sweep — the effect-based repair that
+    stops the violation re-firing (P0 incident 2026-06-13, 39x storm)."""
+    sweeper = _load_sweeper_module()
+    vault = _build_vault(tmp_path)
+    note_path = _write_note(
+        vault / "active",
+        "cc-ghost",
+        status="claimed",
+        assigned_to="epsilon",
+        claimed_at=None,
+    )
+    with patch("cc_hygiene.checks._gh_pr_list", return_value=[]):
+        rc = sweeper.main(_main_args(tmp_path, vault))
+    assert rc == 0
+    healed = parse_task_note(note_path)
+    assert healed is not None
+    assert healed.status == "offered"
+    assert healed.assigned_to == "unassigned"
+    assert healed.claimed_at is None
+
+
+def test_main_ghost_claim_does_not_recur_after_heal(tmp_path: Path) -> None:
+    """Storm-stop canary: sweep 1 detects + heals; sweep 2 finds NO ghost event."""
+    sweeper = _load_sweeper_module()
+    vault = _build_vault(tmp_path)
+    _write_note(
+        vault / "active",
+        "cc-ghost",
+        status="claimed",
+        assigned_to="epsilon",
+        claimed_at=None,
+    )
+    args = _main_args(tmp_path, vault)
+    with patch("cc_hygiene.checks._gh_pr_list", return_value=[]):
+        assert sweeper.main(args) == 0
+        assert sweeper.main(args) == 0
+    payload = json.loads((tmp_path / "state.json").read_text())
+    assert not any(e["check_id"] == "ghost_claimed" for e in payload["events"])
+
+
+def test_main_no_actions_flag_preserves_ghost(tmp_path: Path) -> None:
+    """--no-actions keeps the sweeper observational (no auto-revert) for diagnosis."""
+    sweeper = _load_sweeper_module()
+    vault = _build_vault(tmp_path)
+    note_path = _write_note(
+        vault / "active",
+        "cc-ghost",
+        status="claimed",
+        assigned_to="epsilon",
+        claimed_at=None,
+    )
+    with patch("cc_hygiene.checks._gh_pr_list", return_value=[]):
+        rc = sweeper.main(_main_args(tmp_path, vault) + ["--no-actions"])
+    assert rc == 0
+    same = parse_task_note(note_path)
+    assert same is not None
+    assert same.status == "claimed"
+    assert same.assigned_to == "epsilon"
+
+
+def test_main_does_not_touch_healthy_claim(tmp_path: Path) -> None:
+    """No-op canary (parent-spec watch-list #2): a legitimately claimed task
+    (assigned + claimed_at) is never reverted by the self-heal."""
+    sweeper = _load_sweeper_module()
+    vault = _build_vault(tmp_path)
+    note_path = _write_note(
+        vault / "active",
+        "cc-healthy",
+        status="claimed",
+        assigned_to="alpha",
+        claimed_at=_now(),
+    )
+    with patch("cc_hygiene.checks._gh_pr_list", return_value=[]):
+        rc = sweeper.main(_main_args(tmp_path, vault))
+    assert rc == 0
+    same = parse_task_note(note_path)
+    assert same is not None
+    assert same.status == "claimed"
+    assert same.assigned_to == "alpha"
+    assert same.claimed_at is not None
