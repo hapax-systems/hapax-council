@@ -454,9 +454,13 @@ class ConversationPipeline:
                 target=destination_target,
                 media_role=destination_role,
                 text=text_for_witness,
-                terminal_state="failed",
+                # Chosen abstention is HEALTHY conduct, not a silent failure
+                # (2026-06-11: 23+ watchdog storm on [Silence.] responses).
+                # "inhibited" routes to the refusal witness class (#4065) —
+                # never a drop-streak, never reddens broadcast health.
+                terminal_state="inhibited",
             )
-            budget.note(outcome="llm_silence")
+            budget.note(outcome="llm_abstained")
             budget.emit()
             log.debug("Cascade recruited speech but LLM chose silence")
             return None
