@@ -354,6 +354,44 @@ def test_parse_task_note_collects_secondary_pr_links(tmp_path: Path) -> None:
     assert note.linked_prs == (4091, 4092)
 
 
+def test_orphan_pr_linked_by_closed_task_suppresses(tmp_path: Path) -> None:
+    # Regression for P0 incident orphan_pr:4111 (count 215): a task is
+    # routinely closed (moved to closed/) the moment its PR opens, well before
+    # the PR merges. The orphan check must treat a PR linked by a CLOSED task
+    # as linked, or every such PR is mislabeled an orphan and fires a recurring
+    # 5-min notification storm for the PR's whole open lifetime.
+    now = _now()
+    closed_notes = [TaskNote(path="x", task_id="cc-done", status="done", pr=4111)]
+    fake_prs = [
+        {
+            "number": 4111,
+            "headRefName": "cx-blue/trainyard-b1-admission-feed-20260612",
+            "createdAt": (now - timedelta(hours=4)).isoformat(),
+        }
+    ]
+    with patch("cc_hygiene.checks._gh_pr_list", return_value=fake_prs):
+        events = check_orphan_pr([], tmp_path, closed_notes=closed_notes, now=now)
+    assert events == []
+
+
+def test_orphan_pr_unlinked_still_fires_with_closed_notes(tmp_path: Path) -> None:
+    # The closed-note link set must not suppress a genuinely orphan PR: a PR
+    # that no task (active or closed) links is still a real orphan signal.
+    now = _now()
+    closed_notes = [TaskNote(path="x", task_id="cc-done", status="done", pr=4111)]
+    fake_prs = [
+        {
+            "number": 5555,
+            "headRefName": "alpha/untracked",
+            "createdAt": (now - timedelta(hours=4)).isoformat(),
+        }
+    ]
+    with patch("cc_hygiene.checks._gh_pr_list", return_value=fake_prs):
+        events = check_orphan_pr([], tmp_path, closed_notes=closed_notes, now=now)
+    assert len(events) == 1
+    assert events[0].metadata["pr"] == "5555"
+
+
 def test_orphan_pr_too_young_suppresses(tmp_path: Path) -> None:
     now = _now()
     fake_prs = [
