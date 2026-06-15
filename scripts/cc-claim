@@ -62,6 +62,20 @@ session_id=""
 if declare -F hapax_session_id >/dev/null 2>&1; then
   session_id="$(hapax_session_id 2>/dev/null || true)"
 fi
+# Claim-by-pid unrepresentable (taxonomy-a3-session-identity): only an id with
+# per-session entropy may key a claim. The predicate SSOT is
+# shared/session_identity.py::is_claim_keyable_session_id; a pid-shaped id —
+# the retired `<role>-$$` spawner fallback — degrades to legacy role keying
+# instead of minting an ambiguous key.
+if [[ -n "$session_id" ]] && ! python3 -c '
+import sys
+sys.path.insert(0, sys.argv[2])
+from shared.session_identity import is_claim_keyable_session_id
+sys.exit(0 if is_claim_keyable_session_id(sys.argv[1]) else 1)
+' "$session_id" "$SCRIPT_DIR/.." 2>/dev/null; then
+  echo "cc-claim: session id '$session_id' is not claim-keyable (pid-shaped or malformed) — using legacy role-keyed claim only" >&2
+  session_id=""
+fi
 if [[ -n "$session_id" ]]; then
   session_claim_file="$HOME/.cache/hapax/cc-active-task-$role-$session_id"
 else
@@ -143,7 +157,7 @@ fi
 
 # Verify status/ownership, then either claim offered work or resume owned
 # ready-state work (PR/merge-queue maintenance).
-python3 - "$note_path" "$role" "$task_id" "$SCRIPT_DIR/.." <<'PYEOF'
+python3 - "$note_path" "$role" "$task_id" "$SCRIPT_DIR/.." "$session_id" <<'PYEOF'
 import re
 import sys
 from datetime import datetime, timezone
@@ -155,6 +169,9 @@ path, role, task_id, repo_root = (
     sys.argv[3],
     Path(sys.argv[4]).resolve(),
 )
+# Already validated claim-keyable by the bash caller (empty when not); stamped
+# into the session log so vault forensics join on session_id, never on pid.
+session_id = sys.argv[5] if len(sys.argv) > 5 else ""
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
@@ -537,10 +554,12 @@ if claim_mode == "claim":
     text = re.sub(
         r"^claimed_at:.*$", f"claimed_at: {now}", text, count=1, flags=re.MULTILINE
     )
-    log_line = f"- {now} {role} claimed (cc-claim)\n"
+    session_suffix = f", session={session_id}" if session_id else ""
+    log_line = f"- {now} {role} claimed (cc-claim{session_suffix})\n"
     result_message = f"cc-claim: claimed task '{task_id}' for role '{role}'"
 else:
-    log_line = f"- {now} {role} resumed ready-state task (cc-claim)\n"
+    session_suffix = f", session={session_id}" if session_id else ""
+    log_line = f"- {now} {role} resumed ready-state task (cc-claim{session_suffix})\n"
     result_message = f"cc-claim: resumed task '{task_id}' for role '{role}'"
 
 text = re.sub(
