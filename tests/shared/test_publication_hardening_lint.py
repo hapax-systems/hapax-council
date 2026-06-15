@@ -11,6 +11,7 @@ from shared.publication_hardening.lint import (
     check_heading_hierarchy,
     check_public_claim_overreach,
     lint_file,
+    lint_text,
     run_vale,
 )
 
@@ -95,6 +96,51 @@ class TestPublicClaimOverreach:
         )
 
         assert check_public_claim_overreach(doc) == []
+
+
+class TestPublicationRegister:
+    @pytest.mark.parametrize(
+        "text",
+        (
+            "Welcome back to the broadcast.",
+            "Subscribe for more updates.",
+            "This is an amazing game-changer.",
+            "\U0001f534 Live now.",
+            "We leverage synergies to utilize best practices.",
+        ),
+    )
+    def test_generated_text_flags_informal_or_promotional_register(self, text: str) -> None:
+        findings = lint_text(text)
+
+        assert any(
+            finding.rule == "Hapax.FormalRegister" and finding.level == "error"
+            for finding in findings
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        (
+            "Hapax thinks about the source.",
+            "The system wants a clean archive.",
+            "Your personality sets the tone.",
+            "Hapax's voice carries empathy.",
+        ),
+    )
+    def test_generated_text_flags_personified_system_register(self, text: str) -> None:
+        findings = lint_text(text)
+
+        assert any(
+            finding.rule == "Hapax.NonAnthropomorphicRegister" and finding.level == "error"
+            for finding in findings
+        )
+
+    def test_generated_text_allows_neutral_operational_publication_prose(self) -> None:
+        findings = lint_text(
+            "The artifact proposes a source-bound claim. "
+            "The gate withholds release until evidence is current."
+        )
+
+        assert findings == []
 
 
 class TestValeMissing:

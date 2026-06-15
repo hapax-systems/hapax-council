@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Evaluate audit-critical RAG retrieval against a local golden query suite."""
+"""Evaluate audit-critical RAG retrieval against a local golden query suite.
+
+Optionally wires in claim-to-source faithfulness scoring when a faithfulness
+suite is provided via --faithfulness-suite.  Faithfulness metrics
+(supported_claim_rate, required_claim_recall) are reported per query and in
+aggregate without lowering the retrieval bar.
+"""
 
 from __future__ import annotations
 
@@ -26,6 +32,7 @@ DEFAULT_EMBEDDING_MODEL = "nomic-embed-cpu"
 DEFAULT_EMBEDDING_BASE_MODEL = "nomic-embed-text-v2-moe"
 DEFAULT_EXPECTED_EMBED_DIMENSIONS = 768
 DEFAULT_SUITE = Path("evals/rag/golden_queries.json")
+DEFAULT_FAITHFULNESS_SUITE = Path("evals/rag/answer_faithfulness_v1.json")
 
 
 def load_suite(path: Path) -> dict[str, Any]:
@@ -353,6 +360,60 @@ def query_qdrant(
     return hits[:limit]
 
 
+def _load_faithfulness_module() -> Any:
+    """Lazy-load rag_answer_faithfulness_eval as a sibling script module."""
+    script_path = Path(__file__).resolve().with_name("rag_answer_faithfulness_eval.py")
+    spec = importlib.util.spec_from_file_location("_rag_answer_faithfulness_eval", script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load faithfulness module from {script_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _score_faithfulness(
+    query_reports: list[dict[str, Any]],
+    hits_by_id: Mapping[str, list[dict[str, Any]]],
+    faithfulness_items: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Score faithfulness for queries that have required_claims annotations.
+
+    Returns the aggregate faithfulness summary dict.
+    """
+    faith_mod = _load_faithfulness_module()
+    scored_count = 0
+    for report in query_reports:
+        qid = report["id"]
+        faith_item = faithfulness_items.get(qid)
+        if faith_item is None or not faith_item.get("required_claims"):
+            continue
+        full_hits = hits_by_id.get(qid, [])
+        answer = faith_mod.extractive_answer_generator(faith_item, full_hits)
+        no_relevant = report.get("retrieval_metrics", {}).get("no_relevant_evidence", False)
+        report["answer_metrics"] = faith_mod.score_answer(
+            faith_item,
+            answer,
+            full_hits,
+            no_relevant_evidence=no_relevant,
+        )
+        scored_count += 1
+
+    if scored_count == 0:
+        return {
+            "status": "not_evaluated",
+            "reason": "No queries in the golden suite have required_claims annotations in the faithfulness suite.",
+        }
+    scored_reports = [r for r in query_reports if "answer_metrics" in r]
+    aggregate = faith_mod.aggregate_answer_metrics(scored_reports)
+    return {
+        "status": "evaluated",
+        "queries_scored": scored_count,
+        "queries_total": len(query_reports),
+        **aggregate,
+    }
+
+
 def run_suite(
     suite: Mapping[str, Any],
     *,
@@ -365,6 +426,7 @@ def run_suite(
     exclude_inventory: bool = False,
     client: Any | None = None,
     embedder: Callable[[str], list[float]] | None = None,
+    faithfulness_suite: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     errors: list[str] = []
     if client is None:
@@ -385,7 +447,15 @@ def run_suite(
                 ollama_url=ollama_url,
             )
 
-    query_reports = []
+    # Build faithfulness index keyed by query id.
+    faithfulness_items: dict[str, Mapping[str, Any]] = {}
+    if faithfulness_suite is not None:
+        for item in faithfulness_suite.get("queries", []):
+            if isinstance(item, Mapping) and "id" in item:
+                faithfulness_items[item["id"]] = item
+
+    query_reports: list[dict[str, Any]] = []
+    hits_by_id: dict[str, list[dict[str, Any]]] = {}
     for item in suite["queries"]:
         labels = item.get("expected_sources") or []
         hits: list[dict[str, Any]] = []
@@ -404,6 +474,8 @@ def run_suite(
                 )
             except Exception as exc:
                 query_errors.append(f"{type(exc).__name__}: {exc}")
+        # Keep full hits (with text) for faithfulness scoring before stripping.
+        hits_by_id[item["id"]] = hits
         query_reports.append(
             {
                 "id": item["id"],
@@ -424,6 +496,19 @@ def run_suite(
             }
         )
 
+    # Score faithfulness if a suite was provided.
+    if faithfulness_items:
+        answer_faithfulness = _score_faithfulness(
+            query_reports,
+            hits_by_id,
+            faithfulness_items,
+        )
+    else:
+        answer_faithfulness = {
+            "status": "not_evaluated",
+            "reason": "This suite measures retrieval only. Faithfulness requires grounded answer artifacts and claim-to-source checks. Use --faithfulness-suite to enable.",
+        }
+
     query_error_messages = sorted(
         {error for query_report in query_reports for error in query_report.get("errors", [])}
     )
@@ -439,10 +524,7 @@ def run_suite(
         "exclude_inventory": exclude_inventory,
         "retrieval_summary": aggregate_metrics(query_reports),
         "queries": query_reports,
-        "answer_faithfulness": {
-            "status": "not_evaluated",
-            "reason": "This suite measures retrieval only. Faithfulness requires grounded answer artifacts and claim-to-source checks.",
-        },
+        "answer_faithfulness": answer_faithfulness,
         "errors": [*errors, *query_error_messages],
     }
     return report
@@ -488,18 +570,23 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         if unmatched:
             lines.append(f"- Unmatched source labels: `{len(unmatched)}`")
 
-    lines.extend(
-        [
-            "",
-            "## Answer Faithfulness",
-            "",
-            f"- Status: `{report['answer_faithfulness']['status']}`",
-            f"- Reason: {report['answer_faithfulness']['reason']}",
-            "",
-            "## Query Results",
-            "",
-        ]
-    )
+    af = report["answer_faithfulness"]
+    lines.extend(["", "## Answer Faithfulness", ""])
+    lines.append(f"- Status: `{af['status']}`")
+    if af["status"] == "evaluated":
+        lines.append(f"- Queries scored: `{af.get('queries_scored')}/{af.get('queries_total')}`")
+        lines.append(f"- Mean required-claim recall: `{af.get('mean_required_claim_recall')}`")
+        lines.append(
+            f"- Mean supported-claim rate: `{af.get('mean_supported_required_claim_rate')}`"
+        )
+        lines.append(f"- Mean answer faithfulness: `{af.get('mean_answer_faithfulness')}`")
+        lines.append(f"- Mean contribution score: `{af.get('mean_contribution_score')}`")
+        total_forbidden = af.get("total_forbidden_claim_hits", 0)
+        if total_forbidden:
+            lines.append(f"- Forbidden claim hits: `{total_forbidden}`")
+    elif "reason" in af:
+        lines.append(f"- Reason: {af['reason']}")
+    lines.extend(["", "## Query Results", ""])
     for query in report["queries"]:
         metrics = query["retrieval_metrics"]
         lines.extend(
@@ -516,6 +603,15 @@ def render_markdown(report: Mapping[str, Any]) -> str:
                 f"- No relevant evidence: `{metrics['no_relevant_evidence']}`",
             ]
         )
+        if query.get("answer_metrics"):
+            am = query["answer_metrics"]
+            lines.extend(
+                [
+                    f"- Required-claim recall: `{am.get('required_claim_recall')}`",
+                    f"- Supported-claim rate: `{am.get('supported_required_claim_rate')}`",
+                    f"- Answer faithfulness: `{am.get('answer_faithfulness')}`",
+                ]
+            )
         if query.get("errors"):
             lines.append(f"- Errors: `{'; '.join(query['errors'])}`")
         for hit in query.get("hits", [])[:5]:
@@ -588,6 +684,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip the local Ollama alias/dimension preflight.",
     )
     parser.add_argument("--exclude-inventory", action="store_true")
+    parser.add_argument(
+        "--faithfulness-suite",
+        type=Path,
+        default=None,
+        help=(
+            "Path to an answer-faithfulness suite (JSON with required_claims). "
+            "When provided, queries with matching IDs get faithfulness scoring "
+            "(supported_claim_rate, required_claim_recall) alongside retrieval."
+        ),
+    )
     parser.add_argument("--compare", type=Path, default=None)
     parser.add_argument("--output", type=Path, default=None)
     return parser
@@ -631,6 +737,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         dimensions = health_report["checks"]["embedding_dimensions"]["observed"][0]
         print(f"embedding health: ok model={args.embedding_model} dimensions={dimensions}")
     suite = load_suite(args.suite)
+    faithfulness_suite = None
+    if args.faithfulness_suite is not None:
+        faithfulness_suite = load_suite(args.faithfulness_suite)
     report = run_suite(
         suite,
         collection=args.collection,
@@ -640,6 +749,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         embedding_model=args.embedding_model,
         ollama_url=args.ollama_url,
         exclude_inventory=args.exclude_inventory,
+        faithfulness_suite=faithfulness_suite,
     )
     if args.compare:
         baseline = json.loads(args.compare.read_text(encoding="utf-8"))

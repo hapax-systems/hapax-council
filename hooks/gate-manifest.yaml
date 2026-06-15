@@ -55,6 +55,9 @@ runtimes:
             - branch-switch-guard.sh
         - matcher: "Bash"
           hooks:
+            - unguarded-cd-guard.sh
+        - matcher: "Bash"
+          hooks:
             - canonical-worktree-protect.sh
         - matcher: "Bash"
           hooks:
@@ -150,6 +153,7 @@ runtimes:
           - cc-task-closure-gate.sh
           - conductor-pre.sh
           - branch-switch-guard.sh
+          - unguarded-cd-guard.sh
           - docs-only-pr-warn.sh
         mutation:
           - cc-task-gate.sh
@@ -260,6 +264,7 @@ runtimes:
       - 'astral-sh/ruff-action@v4.0.0'
       - 'uv run python scripts/check-unused-functions.py'
       - 'uv run python scripts/check-new-module-consumers.py'
+      - 'uv run python scripts/check-producer-consumers.py'
       - 'uv run python scripts/check-audio-conf-consistency.py'
       - 'uv run python scripts/verify-aesthetic-library.py'
       - 'uv run python scripts/verify-redaction-transforms.py'

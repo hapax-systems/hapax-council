@@ -165,6 +165,8 @@ def get_cctv_model(model_alias: str) -> CCTVLiteLLMChatModel:
 def build_member(
     model_alias: str,
     tool_level: ToolLevel | None = None,
+    *,
+    system_prompt: str | None = None,
 ) -> Agent[None, str]:
     model_alias = normalize_model_alias(model_alias)
     if tool_level is None:
@@ -183,6 +185,7 @@ def build_member(
     # cc-task cctv-council-perfect-health-faillloud-convergence.
     return Agent(
         get_cctv_model(model_alias),
+        system_prompt=system_prompt or "",
         model_settings=model_settings_for_alias(model_alias),
         tools=tools,  # type: ignore[arg-type]
         retries=0,

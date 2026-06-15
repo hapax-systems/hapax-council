@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -12,6 +14,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from shared.governance.omg_referent import ENV_OPERATOR_LEGAL_NAME
+from shared.operator_referent import REFERENTS
 from shared.preprint_artifact import PreprintArtifact
 from shared.publication_hardening.codebase import (
     CodebaseDecision,
@@ -59,7 +63,7 @@ class PublicationGateContext(PublicationGateModel):
 class PublicationGateChildResult(PublicationGateModel):
     """One child predicate result included in the gate receipt."""
 
-    name: Literal["lint", "known_entities", "codebase", "review"]
+    name: Literal["lint", "known_entities", "legal_name", "codebase", "review"]
     decision: PublicationGateDecision
     findings: tuple[str, ...] = Field(default_factory=tuple)
     evidence_refs: tuple[str, ...] = Field(default_factory=tuple)
@@ -115,10 +119,34 @@ class PublicationHardeningGate:
         context = _publication_gate_context(artifact)
         lint_child = self._lint_child(text, artifact)
         entity_child = self._entity_child(text)
+        legal_name_child = self._legal_name_child(_artifact_legal_name_surface(artifact))
         codebase_child = self._codebase_child(text, context)
-        review_child, review_report = self._review_child(text, artifact, lint_child)
 
-        child_results = (lint_child, entity_child, codebase_child, review_child)
+        if legal_name_child.decision == PublicationGateDecision.REJECT:
+            # corporate_boundary egress: a detected legal name must NOT leave the
+            # trust boundary. Withhold the draft from the external review LLM — the
+            # only egressing child — rather than send a leaked draft out to be
+            # rejected. lint / known_entities / codebase are local and still run.
+            review_child = PublicationGateChildResult(
+                name="review",
+                decision=PublicationGateDecision.REJECT,
+                findings=(
+                    "review skipped: legal-name REJECT withheld the draft from "
+                    "external review (corporate_boundary egress guard)",
+                ),
+            )
+            review_report_fm: dict[str, object] | None = None
+        else:
+            review_child, review_report = self._review_child(text, artifact, lint_child)
+            review_report_fm = review_report.to_frontmatter()
+
+        child_results = (
+            lint_child,
+            entity_child,
+            legal_name_child,
+            codebase_child,
+            review_child,
+        )
         decision = _aggregate_decision(child_results)
         flagged = _flagged_issues(child_results)
         override, override_error = _publication_gate_override(artifact)
@@ -131,7 +159,7 @@ class PublicationHardeningGate:
         elif decision == PublicationGateDecision.REJECT and override is not None:
             flagged = (*flagged, "operator_override_ignored_for_reject")
 
-        return PublicationGateResult(
+        result = PublicationGateResult(
             decision=decision,
             generated_at=datetime.now(UTC).isoformat(),
             child_results=child_results,
@@ -139,8 +167,9 @@ class PublicationHardeningGate:
             override=override
             if decision == PublicationGateDecision.OPERATOR_OVERRIDDEN_HOLD
             else None,
-            review_report=review_report.to_frontmatter(),
+            review_report=review_report_fm,
         )
+        return _redacted_receipt(result)
 
     def _lint_child(
         self,
@@ -176,6 +205,61 @@ class PublicationHardeningGate:
             name="known_entities",
             decision=PublicationGateDecision.REJECT if findings else PublicationGateDecision.PASS,
             findings=tuple(str(finding) for finding in findings),
+        )
+
+    def _legal_name_child(self, text: str) -> PublicationGateChildResult:
+        """REJECT when the operator's personal legal name appears in the text.
+
+        Anchors ``corporate_boundary`` (the operator's personal legal name must
+        never reach a public surface) at the one path every artifact traverses
+        before fan-out. REJECT is non-overridable: a legal-name leak cannot be
+        released by a ``by_referent`` operator override.
+
+        Scans the artifact's full public identity surface — the authored
+        publication text PLUS the co-author and other authored public fields
+        enumerated in :func:`_artifact_legal_name_surface` (co-author identity,
+        slug, embed URL, source path, approval referent) — matched by
+        :func:`_legal_name_pattern`, whose flexible separator class catches the
+        name across slug/URL separators, wrapped whitespace, or adjacent fields.
+        The scan reads the surface unchanged: it does NOT use
+        ``omg_referent.safe_render`` (which renders the
+        ``{operator}`` template token stochastically, with ``segment_id=None``,
+        mutating the scanned text and making the decision non-deterministic — a
+        scanner must read what the author wrote). The operator's legal name is
+        injected only at the per-surface *formal* render, downstream of this gate;
+        it must never appear in the authored artifact.
+
+        When the pattern source ``HAPAX_OPERATOR_NAME`` is unconfigured the scan
+        cannot run; the child PASSES but records a ``legal_name_guard_unconfigured``
+        finding in the gate receipt's ``child_results`` so a disabled guard is
+        visible (advisory, not a decision-affecting flagged issue) rather than
+        silently no-opping.
+        """
+        pattern = os.environ.get(ENV_OPERATOR_LEGAL_NAME, "").strip()
+        if not pattern:
+            return PublicationGateChildResult(
+                name="legal_name",
+                decision=PublicationGateDecision.PASS,
+                findings=(
+                    "legal_name_guard_unconfigured: HAPAX_OPERATOR_NAME unset — "
+                    "provision it (e.g. via `pass`) to arm the corporate_boundary guard",
+                ),
+            )
+        if _legal_name_pattern(pattern).search(text):
+            # Omit the matched substring: the receipt must never re-emit the leak.
+            return PublicationGateChildResult(
+                name="legal_name",
+                decision=PublicationGateDecision.REJECT,
+                findings=(
+                    "operator legal name detected in publication surface — replace "
+                    "it with a canonical referent (The Operator / Oudepode / OTO), "
+                    "or restrict formal legal-name use to the per-surface formal "
+                    "render rather than the authored artifact",
+                ),
+            )
+        return PublicationGateChildResult(
+            name="legal_name",
+            decision=PublicationGateDecision.PASS,
         )
 
     def _codebase_child(
@@ -288,6 +372,15 @@ def _publication_gate_context(artifact: PreprintArtifact) -> PublicationGateCont
     )
 
 
+_AUTHORIZED_OVERRIDE_REFERENTS: frozenset[str] = frozenset(
+    referent.casefold() for referent in REFERENTS
+)
+"""Case-folded referents permitted to author a HOLD override. Sourced from the
+canonical non-formal referent set (``shared.operator_referent.REFERENTS``);
+personal legal names are excluded by construction — an override is a public
+audit record and must not embed the operator's legal identity."""
+
+
 def _publication_gate_override(
     artifact: PreprintArtifact,
 ) -> tuple[PublicationGateOverride | None, str | None]:
@@ -300,6 +393,11 @@ def _publication_gate_override(
     reason = str(raw.get("reason") or "").strip()
     if not by_referent or not reason:
         return None, "operator_override_invalid: referent_and_reason_required"
+    if by_referent.casefold() not in _AUTHORIZED_OVERRIDE_REFERENTS:
+        return None, (
+            "operator_override_invalid: unauthorized_referent — author the override "
+            "with a canonical referent (The Operator / Oudepode / OTO)"
+        )
     normalized = {
         "by_referent": by_referent,
         "reason": reason,
@@ -322,6 +420,93 @@ def _artifact_publication_text(artifact: PreprintArtifact) -> str:
         )
         if part
     )
+
+
+def _artifact_legal_name_surface(artifact: PreprintArtifact) -> str:
+    """Every authored field a publisher can render the operator's identity into.
+
+    Superset of ``_artifact_publication_text``: adds each co-author's identity
+    fields (``name`` / ``given_names`` / ``family_names`` / ``alias``) and the
+    other authored fields that reach a public surface — ``slug`` (public URLs /
+    filenames / event-ids), ``embed_image_url``, ``source_path``, and
+    ``approved_by_referent``. Publishers render co-authors into public metadata
+    (Zenodo ``creators``, OSF, CFF ``authors``) even when ``attribution_block`` is
+    empty, so a legal name there leaks just like a byline. Fields are newline-joined
+    and matched by :func:`_legal_name_pattern`, whose flexible separator class
+    catches the name however it is rendered: split across separators (``jane-doe``),
+    whitespace (a wrapped ``Jane\\nDoe``), or two adjacent fields. The default
+    co-authors carry the referent (``Oudepode`` / ``The Operator`` / ``OTO``),
+    never a legal name; the legal name is injected only at the per-surface formal
+    render, downstream of this gate.
+    """
+    parts: list[str] = [_artifact_publication_text(artifact)]
+    for author in artifact.co_authors:
+        parts.extend(
+            field
+            for field in (author.name, author.given_names, author.family_names, author.alias)
+            if field
+        )
+    parts.extend(
+        field
+        for field in (
+            artifact.slug,
+            artifact.embed_image_url,
+            artifact.source_path,
+            artifact.approved_by_referent,
+        )
+        if field
+    )
+    return "\n".join(part for part in parts if part)
+
+
+def _legal_name_pattern(name: str) -> re.Pattern[str]:
+    """Case-insensitive regex matching the legal name with a flexible separator
+    class between tokens, so detection and redaction both catch the name however a
+    publisher renders it: ``Jane Doe`` (byline), ``jane-doe`` / ``jane_doe`` (slug /
+    URL), ``Jane  Doe`` or a line-wrapped ``Jane\\nDoe`` (prose), or a name split
+    across two adjacent fields. Symmetry is the point — the SAME pattern gates the
+    REJECT and scrubs the receipt, so a detected leak can never survive unredacted.
+    """
+    tokens = [re.escape(token) for token in name.split()]
+    body = r"[-_/.\s]+".join(tokens) if tokens else re.escape(name)
+    return re.compile(body, re.IGNORECASE)
+
+
+_LEGAL_NAME_REDACTION = "[redacted: operator legal name]"
+
+
+def _redact_legal_name(value: object, regex: re.Pattern[str]) -> object:
+    """Recursively replace the configured legal name with a redaction token in
+    every string of a JSON-serializable receipt structure, using the SAME
+    flexible-separator pattern as detection so a detected ``jane-doe`` slug is
+    scrubbed too (not just the literal ``Jane Doe``).
+
+    Mapping keys (field names) are left intact; only values are scrubbed.
+    """
+    if isinstance(value, str):
+        return regex.sub(_LEGAL_NAME_REDACTION, value)
+    if isinstance(value, Mapping):
+        return {key: _redact_legal_name(item, regex) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_legal_name(item, regex) for item in value]
+    return value
+
+
+def _redacted_receipt(result: PublicationGateResult) -> PublicationGateResult:
+    """Final chokepoint: scrub the configured operator legal name from every string
+    in the serialized receipt before it is returned.
+
+    The legal-name child omits the match from its OWN finding, but the same name can
+    still reach the receipt through an operator override ``reason`` or a
+    reviewer-echoed ``review_report`` (the production ``ReviewPass`` returns claim
+    text). Redacting the serialized form closes the re-emission CLASS for every
+    field at once — including fields added later — rather than each instance.
+    """
+    pattern = os.environ.get(ENV_OPERATOR_LEGAL_NAME, "").strip()
+    if not pattern:
+        return result
+    scrubbed = _redact_legal_name(result.model_dump(mode="json"), _legal_name_pattern(pattern))
+    return PublicationGateResult.model_validate(scrubbed)
 
 
 def _artifact_author_model(artifact: PreprintArtifact) -> str | None:

@@ -57,6 +57,12 @@ MIGRATED_UNITS = (
     "hapax-chronicle-quality-exporter.service",
     "hapax-self-federate-rss.service",
     "hapax-omg-weblog-composer.service",
+    "hapax-assets-publisher.service",
+    "hapax-datacite-graph-publish.service",
+    "hapax-datacite-mirror.service",
+    "hapax-datacite-snapshot.service",
+    "hapax-orcid-verifier.service",
+    "hapax-publish-orchestrator.service",
 )
 
 # ── canonical-rooted python -m units intentionally NOT yet migrated. Each is
@@ -103,13 +109,6 @@ KNOWN_CANONICAL_EXCEPTIONS = frozenset(
         "rag-ingest.service",
         # provider-billing-sensitive
         "hapax-money-rails.service",
-        # public publication egress
-        "hapax-assets-publisher.service",
-        "hapax-datacite-graph-publish.service",
-        "hapax-datacite-mirror.service",
-        "hapax-datacite-snapshot.service",
-        "hapax-orcid-verifier.service",
-        "hapax-publish-orchestrator.service",
         # special unit shape (device-conditioned, contract-tested separately)
         "hapax-m8-control.service",
         # uv->direct conversion batch 2 (non-sensitive uv-run units)

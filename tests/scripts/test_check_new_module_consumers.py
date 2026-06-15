@@ -116,3 +116,103 @@ def test_count_consumers() -> None:
         imports_by_file,
     )
     assert count == 2
+
+
+class TestCanaries:
+    """Anti-theses canaries: the gate must demonstrably FIRE on an unconsumed
+    producer and PASS legitimate patterns — through main(), not helpers."""
+
+    def _repo(self, tmp_path, monkeypatch):
+        import check_new_module_consumers as gate
+
+        (tmp_path / "agents").mkdir()
+        (tmp_path / "shared").mkdir()
+        (tmp_path / "config").mkdir()
+        monkeypatch.chdir(tmp_path)
+        return gate
+
+    def test_evasion_canary_unconsumed_module_blocks(self, tmp_path, monkeypatch):
+        gate = self._repo(tmp_path, monkeypatch)
+        rogue = tmp_path / "agents" / "rogue_widget.py"
+        rogue.write_text("def run():\n    pass\n")
+        monkeypatch.setattr(
+            gate, "git_diff_added_files", lambda args: [Path("agents/rogue_widget.py")]
+        )
+        rc = gate.main([])
+        assert rc == 1, "an unconsumed new producer MUST block"
+
+    def test_deadlock_canary_imported_module_passes(self, tmp_path, monkeypatch):
+        gate = self._repo(tmp_path, monkeypatch)
+        (tmp_path / "agents" / "widget.py").write_text("def run():\n    pass\n")
+        (tmp_path / "shared" / "uses.py").write_text("from agents.widget import run\n")
+        monkeypatch.setattr(gate, "git_diff_added_files", lambda args: [Path("agents/widget.py")])
+        assert gate.main([]) == 0
+
+    def test_deadlock_canary_systemd_consumer_passes(self, tmp_path, monkeypatch):
+        gate = self._repo(tmp_path, monkeypatch)
+        (tmp_path / "agents" / "lone_daemon.py").write_text("def run():\n    pass\n")
+        units = tmp_path / "systemd" / "units"
+        units.mkdir(parents=True)
+        (units / "hapax-lone.service").write_text(
+            "[Service]\nExecStart=uv run python -m agents.lone_daemon\n"
+        )
+        monkeypatch.setattr(
+            gate, "git_diff_added_files", lambda args: [Path("agents/lone_daemon.py")]
+        )
+        assert gate.main([]) == 0, "a systemd-consumed daemon is NOT unwired"
+
+    def test_deadlock_canary_allowlist_passes(self, tmp_path, monkeypatch):
+        import json
+
+        gate = self._repo(tmp_path, monkeypatch)
+        (tmp_path / "agents" / "entrypoint.py").write_text("def run():\n    pass\n")
+        (tmp_path / "config" / "new-module-allowlist.json").write_text(
+            json.dumps(["agents.entrypoint"])
+        )
+        monkeypatch.setattr(
+            gate, "git_diff_added_files", lambda args: [Path("agents/entrypoint.py")]
+        )
+        assert gate.main([]) == 0
+
+
+class TestDossierCriticals:
+    """2026-06-12 dossier round: fail-closed diff, executing-mention-only
+    tooling consumers, renamed entrypoints covered."""
+
+    def test_git_diff_failure_blocks_the_gate(self, monkeypatch, tmp_path):
+        import subprocess
+
+        import check_new_module_consumers as gate
+
+        monkeypatch.chdir(tmp_path)
+
+        def broken(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="fatal: bad object")
+
+        monkeypatch.setattr(gate, "run_command", broken)
+        import argparse
+
+        args = argparse.Namespace(staged=False, diff_range=None, base_ref=None)
+        try:
+            gate.git_diff_added_files(args)
+            raise AssertionError("diff failure must raise, never pass")
+        except SystemExit as e:
+            assert e.code == 2
+
+    def test_comment_mention_is_not_a_tooling_consumer(self, tmp_path, monkeypatch):
+        import check_new_module_consumers as gate
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".pre-commit-config.yaml").write_text(
+            "# TODO: maybe wire scripts/foo.py someday\n"
+        )
+        assert gate.tooling_consumer_refs(Path("scripts/foo.py")) == []
+
+    def test_entry_line_mention_is_a_tooling_consumer(self, tmp_path, monkeypatch):
+        import check_new_module_consumers as gate
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".pre-commit-config.yaml").write_text(
+            "      - id: foo\n        entry: python3 scripts/foo.py\n"
+        )
+        assert gate.tooling_consumer_refs(Path("scripts/foo.py")) != []

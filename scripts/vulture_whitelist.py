@@ -4127,6 +4127,14 @@ _platform_session_parse_jsonl_events
 _platform_session_resolve_identity
 _platform_session_run_conformance_fixture
 
+# Ghost-release detector — registered via @check_group("release") decorator
+# and dispatched dynamically through the group registry by health_monitor's
+# runner; same dynamic-registry pattern as check_m8_firmware above
+# (cc-task: audit-w1-logos-gc-guard-20260611, PR #4094 fix round).
+from agents.health_monitor.checks.release_ghost import check_release_ghost  # noqa: E402
+
+check_release_ghost
+
 # Session identity functions — called by hapax-cc-claim/hapax-cc-close
 # (extensionless executables outside vulture's parse set) and by
 # platform session adapters (PR #4097).

@@ -182,6 +182,7 @@ run_pre_shell() {
     cc-task-closure-gate.sh
     conductor-pre.sh
     branch-switch-guard.sh
+    unguarded-cd-guard.sh
     docs-only-pr-warn.sh
   )
   local hook
