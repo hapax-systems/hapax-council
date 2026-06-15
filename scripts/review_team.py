@@ -26,6 +26,7 @@ import fnmatch
 import json
 import os
 import re
+import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -435,10 +436,9 @@ def _unresolved_criticals(reviews: Sequence[Mapping[str, Any]]) -> list[tuple[st
 # parses clean) while never touching non-literal-defect criticals. Scoped exactly as the prior
 # prompt-only evidence rule (#4132) tried, but enforced by code, not in-model suasion.
 
-# Two claim classes. The NARROW syntax/compile set is the ONLY class ast.parse may refute; the
-# BROAD set (adds the polysemous corrupt/malformed/broken terms) only gates the SAFE factual
-# out-of-range line check. So a real semantic "corrupt state handling" critical is never
-# ast-invalidated — it is not a syntax/compile claim.
+# Only the NARROW syntax/compile claim class is verifiable (ast.parse can refute it). Semantic
+# claims ('corrupt state', 'malformed request', off-by-one) are NEVER matched and never invalidated
+# — the go-gate must not suppress a real finding (claude-1, #4136 review v2).
 _SYNTAX_COMPILE_RE = re.compile(
     r"syntax\s*error|syntaxerror|invalid\s+syntax|fails?\s+to\s+(?:compile|parse)|"
     r"won'?t\s+(?:compile|parse)|does\s*n'?t\s+(?:compile|parse)|cannot\s+be\s+parsed|"
@@ -446,22 +446,14 @@ _SYNTAX_COMPILE_RE = re.compile(
     r"indentation\s+error|missing\s+(?:colon|paren|parenthes|brace|bracket)",
     re.IGNORECASE,
 )
-_LITERAL_DEFECT_RE = re.compile(
-    _SYNTAX_COMPILE_RE.pattern + r"|corrupt|malformed|broken\s+(?:decorator|syntax|indentation)",
-    re.IGNORECASE,
-)
 
 #: Killswitch — set to "1" to disable the go-gate (every critical blocks; the pre-go-gate behaviour).
 _GO_GATE_OFF_ENV = "HAPAX_REVIEW_GO_GATE_OFF"
 
 
-def _is_literal_defect_claim(finding: Mapping[str, Any]) -> bool:
-    """True if the critical asserts a literal/textual defect (the class the out-of-range check governs)."""
-    return bool(_LITERAL_DEFECT_RE.search(str(finding.get("title", ""))))
-
-
 def _is_syntax_compile_claim(finding: Mapping[str, Any]) -> bool:
-    """True if the critical asserts a SYNTAX/COMPILE defect (the only class ast.parse may refute)."""
+    """True iff the critical asserts a SYNTAX/COMPILE defect — the ONLY class the verifier may
+    refute. Semantic claims ('corrupt state', off-by-one) are never matched, so never invalidated."""
     return bool(_SYNTAX_COMPILE_RE.search(str(finding.get("title", ""))))
 
 
@@ -473,55 +465,81 @@ def _discover_repo_root() -> Path | None:
     return None
 
 
-def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) -> bool:
-    """Return True if the critical STANDS; False ONLY for a definitively-refuted phantom.
+def _repo_head_matches(repo_root: Path, head_sha: str) -> bool:
+    """True iff ``repo_root``'s git HEAD is ``head_sha`` — i.e. the local checkout IS the reviewed PR
+    at the reviewed commit. Guards against binding the verifier to the wrong checkout (claude-1)."""
+    want = str(head_sha or "").strip().lower()
+    if not want:
+        return False
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    got = out.stdout.strip().lower()
+    return bool(got) and (got == want or got.startswith(want) or want.startswith(got))
 
-    Conservative by construction — it must never suppress a real critical. A critical is invalidated
-    ONLY when (a) it cites a line beyond the file's length, or (b) it is a SYNTAX/COMPILE claim on a
-    Python file that ``ast.parse`` accepts. Every other case KEEPS the critical: not a literal-defect
-    claim, a missing/unreadable file, a non-Python file, or an in-range semantic 'corrupt'/'malformed'
-    claim (which ast cannot refute). Uncertainty never suppresses."""
-    if not _is_literal_defect_claim(finding):
-        return True
+
+def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) -> bool:
+    """Return True if the critical STANDS; False ONLY for a DEFINITIVELY-refuted syntax/compile
+    phantom. A critical is invalidated only when it is a SYNTAX/COMPILE claim AND either (a) cites a
+    line beyond the file, or (b) the cited Python file ``ast.parse``-s clean. Every other case —
+    not a syntax/compile claim (ALL semantic criticals), a missing/unreadable/non-Python file, or an
+    in-range claim that does not parse-refute — KEEPS the critical. Uncertainty never suppresses."""
+    if not _is_syntax_compile_claim(finding):
+        return (
+            True  # not a syntax/compile claim — never invalidate (every semantic critical is safe)
+        )
     rel = str(finding.get("file") or "").strip()
     if not rel:
-        return True  # ungrounded — cannot DISPROVE, so keep (conservative)
+        return True  # ungrounded — cannot DISPROVE, keep
     path = repo_root / rel
     if not path.is_file():
-        return True  # cites a file not in the tree — cannot verify, keep (conservative)
+        return True  # cites a file not in the tree — cannot verify, keep
     try:
         source = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        return True  # unreadable — cannot verify, keep (conservative)
+        return True  # unreadable — cannot verify, keep
     line = finding.get("line")
     try:
         line_no = int(line) if line is not None else None
     except (TypeError, ValueError):
         line_no = None
     if line_no is not None and line_no > 0 and line_no > len(source.splitlines()):
-        return False  # cites a line beyond the file — a factual phantom (the documented case)
-    if _is_syntax_compile_claim(finding) and path.suffix == ".py":
+        return (
+            False  # a syntax/compile claim citing a line beyond the file — the documented phantom
+        )
+    if path.suffix == ".py":
         try:
             ast.parse(source)
         except SyntaxError:
             return True  # really does not parse — the claim stands
         return False  # parses clean — the syntax/compile claim is a phantom
-    return True  # in-range, non-syntactic (or non-Python) — cannot disprove the content, keep
+    return True  # non-Python or in-range, not parse-refuted — keep
 
 
 def _blocking_criticals(
     reviews: Sequence[Mapping[str, Any]],
     repo_root: Path | None,
+    head_sha: str | None = None,
 ) -> tuple[list[tuple[str, dict]], list[tuple[str, dict]]]:
-    """Partition unresolved criticals into (blocking, phantom). Phantoms are literal-defect claims
-    the file at head refutes. ``repo_root=None`` discovers the repo from cwd; if none is found the
-    verifier is skipped and every critical blocks (the safe, current behaviour)."""
+    """Partition unresolved criticals into (blocking, phantom). ``repo_root=None`` discovers the repo
+    from cwd. The verifier runs ONLY when the checkout is confirmed to be the reviewed commit
+    (``head_sha`` matches local HEAD, when given); otherwise — no repo, killswitch, or a wrong/unknown
+    checkout — every critical blocks (the safe, pre-go-gate behaviour)."""
     criticals = _unresolved_criticals(reviews)
     if os.environ.get(_GO_GATE_OFF_ENV) == "1":
         return criticals, []  # killswitch: every critical blocks (pre-go-gate behaviour)
     root = repo_root if repo_root is not None else _discover_repo_root()
     if root is None:
         return criticals, []
+    if head_sha and not _repo_head_matches(root, head_sha):
+        return criticals, []  # wrong/unknown checkout — do not verify against the wrong files
     blocking: list[tuple[str, dict]] = []
     phantom: list[tuple[str, dict]] = []
     for reviewer_id, finding in criticals:
@@ -645,7 +663,7 @@ def synthesize_dossier(
     accepts = _checklist_complete_accepts(reviews, lenses)
     accept_families = {str(r.get("family")) for r in accepts}
     block_reviews = [r for r in reviews if str(r.get("verdict", "")).lower() == "block"]
-    criticals, phantom_criticals = _blocking_criticals(reviews, repo_root)
+    criticals, phantom_criticals = _blocking_criticals(reviews, repo_root, head_sha=head_sha)
     scoped_files = None if changed_files is None else [str(f) for f in changed_files]
     if changed_files is not None and changed_file_count is None:
         changed_file_count = len(scoped_files)
@@ -938,7 +956,9 @@ def _dossier_validity_blockers(
         blockers.append(f"review_dossier_team_undersized:{len(reviews)}/{required_size}")
 
     # go-gate: drop literal-defect phantoms (repo discovered from cwd = the PR checkout in CI)
-    criticals, phantoms = _blocking_criticals(reviews, None)
+    criticals, phantoms = _blocking_criticals(
+        reviews, None, head_sha=str(dossier.get("head_sha") or "")
+    )
     if phantoms:  # receipt: phantom invalidations are auditable in the CI log, never silent
         print(
             f"go-gate: invalidated {len(phantoms)} phantom literal-defect critical(s): "

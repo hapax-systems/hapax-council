@@ -1257,12 +1257,30 @@ class TestGoGate:
         f = self._lit("no regression test covers the new reviewer path")
         assert rt.verify_literal_defect_critical(f, tmp_path) is True
 
-    def test_line_beyond_file_is_phantom(self, tmp_path: Path) -> None:
-        # the documented gemini confabulation: cites a line absent from the file
+    def test_syntax_claim_beyond_file_is_phantom(self, tmp_path: Path) -> None:
+        # the documented gemini confabulation: a SYNTAX claim citing a line absent from the file
         rt = _load_review_team_module()
         self._py(tmp_path, "shared/t.py", "a = 1\nb = 2\n")
-        f = self._lit("corruption at line 690", file="shared/t.py", line=690)
+        f = self._lit("syntax error at line 690", file="shared/t.py", line=690)
         assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
+    def test_semantic_out_of_range_critical_is_kept(self, tmp_path: Path) -> None:
+        # claude-1 v2 fix: a SEMANTIC corrupt/malformed critical with an off (out-of-range) line is a
+        # real finding with a wrong line number — it must NOT be invalidated (only syntax claims are).
+        rt = _load_review_team_module()
+        self._py(tmp_path, "shared/t.py", "a = 1\nb = 2\n")
+        f = self._lit("corruption of shared state", file="shared/t.py", line=690)
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_wrong_checkout_skips_verification(self, tmp_path: Path) -> None:
+        # claude-1 v2 fix: if local HEAD is not the reviewed commit, do NOT verify (keep all)
+        rt = _load_review_team_module()
+        (tmp_path / ".git").mkdir()  # a repo dir with no HEAD -> rev-parse fails -> cannot match
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        phantom = self._lit("fatal syntax error at line 690", line=690)
+        reviews = [_review("gemini-1", "gemini", "block", findings=[phantom])]
+        blocking, phantoms = rt._blocking_criticals(reviews, tmp_path, head_sha="deadbeef" * 5)
+        assert len(blocking) == 1 and phantoms == []
 
     def test_nonexistent_file_is_kept(self, tmp_path: Path) -> None:
         # conservative: a claim citing a file not in the tree cannot be DISPROVEN -> keep it
@@ -1319,8 +1337,11 @@ class TestGoGate:
         blocking, phantoms = rt._blocking_criticals(reviews, None)
         assert blocking == [] and len(phantoms) == 1
 
-    def test_phantom_literal_critical_does_not_block(self, tmp_path: Path) -> None:
+    def test_phantom_literal_critical_does_not_block(self, tmp_path: Path, monkeypatch) -> None:
         rt = _load_review_team_module()
+        # bypass the head_sha checkout-binding (separately covered by test_wrong_checkout); this
+        # test exercises the synthesize verdict path with verification active.
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
         self._py(tmp_path, "shared/foo.py", "x = 1\n")
         phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
         reviews = [
