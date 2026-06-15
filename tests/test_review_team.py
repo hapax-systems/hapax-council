@@ -1216,3 +1216,279 @@ class TestFamilyOutageDegradation:
             outage_state_path=self._witness(tmp_path, families=("claudex",)),
         )
         assert any(b.startswith("review_dossier_degradation_unknown_family:") for b in blockers)
+
+
+class TestGoGate:
+    """The fail-closed literal-defect verifier (the go-gate). A critical claiming a syntax error /
+    compile failure / corruption / a specific broken line is INVALIDATED (does not block quorum)
+    when the actual file at head refutes it — verified deterministically out-of-model (ast.parse for
+    Python; file/line existence otherwise). Non-literal criticals are never touched."""
+
+    def _py(self, root: Path, rel: str, src: str) -> None:
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(src, encoding="utf-8")
+
+    def _lit(self, title: str, file: str = "shared/foo.py", line: int = 10) -> dict:
+        return {
+            "severity": "critical",
+            "lens": "sdlc-gate-compose",
+            "file": file,
+            "line": line,
+            "title": title,
+        }
+
+    def test_clean_python_syntax_claim_is_phantom(self, tmp_path: Path) -> None:
+        # in-range syntax claim on a file that parses clean -> phantom (exercises the ast path)
+        rt = _load_review_team_module()
+        self._py(tmp_path, "shared/foo.py", "\n".join(f"x{i} = {i}" for i in range(20)) + "\n")
+        f = self._lit("fatal syntax error: corrupted decorators", line=5)
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
+    def test_real_syntax_error_is_verified(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "bad.py", "def f(:\n")
+        f = self._lit("syntax error: invalid syntax", file="bad.py", line=1)
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_non_literal_critical_passes_through(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        f = self._lit("no regression test covers the new reviewer path")
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_syntax_claim_beyond_file_is_phantom(self, tmp_path: Path) -> None:
+        # the documented gemini confabulation: a SYNTAX claim citing a line absent from the file
+        rt = _load_review_team_module()
+        self._py(tmp_path, "shared/t.py", "a = 1\nb = 2\n")
+        f = self._lit("syntax error at line 690", file="shared/t.py", line=690)
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
+    def test_semantic_out_of_range_critical_is_kept(self, tmp_path: Path) -> None:
+        # claude-1 v2 fix: a SEMANTIC corrupt/malformed critical with an off (out-of-range) line is a
+        # real finding with a wrong line number — it must NOT be invalidated (only syntax claims are).
+        rt = _load_review_team_module()
+        self._py(tmp_path, "shared/t.py", "a = 1\nb = 2\n")
+        f = self._lit("corruption of shared state", file="shared/t.py", line=690)
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_wrong_checkout_skips_verification(self, tmp_path: Path) -> None:
+        # claude-1 v2 fix: if local HEAD is not the reviewed commit, do NOT verify (keep all)
+        rt = _load_review_team_module()
+        (tmp_path / ".git").mkdir()  # a repo dir with no HEAD -> rev-parse fails -> cannot match
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        phantom = self._lit("fatal syntax error at line 690", line=690)
+        reviews = [_review("gemini-1", "gemini", "block", findings=[phantom])]
+        blocking, phantoms = rt._blocking_criticals(reviews, tmp_path, head_sha="deadbeef" * 5)
+        assert len(blocking) == 1 and phantoms == []
+
+    def test_nonexistent_file_is_kept(self, tmp_path: Path) -> None:
+        # conservative: a claim citing a file not in the tree cannot be DISPROVEN -> keep it
+        rt = _load_review_team_module()
+        f = self._lit("syntax error", file="does/not/exist.py", line=1)
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_missing_file_field_literal_claim_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        f = {"severity": "critical", "lens": "x", "file": "", "line": None, "title": "syntax error"}
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_semantic_corrupt_on_clean_python_is_kept(self, tmp_path: Path) -> None:
+        # THE false-negative fix (claude-1's critical on #4136): a SEMANTIC corrupt/malformed
+        # critical on a file that parses clean must NOT be invalidated — not a syntax/compile claim.
+        rt = _load_review_team_module()
+        self._py(tmp_path, "shared/foo.py", "\n".join(f"x{i} = {i}" for i in range(20)) + "\n")
+        f = self._lit("corrupt state handling here is malformed and unsafe")
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_unreadable_file_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        p = tmp_path / "shared" / "blob.py"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"\xff\xfe\x00not-utf8\xff")
+        f = self._lit("syntax error", file="shared/blob.py", line=1)
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_killswitch_disables_gate(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        phantom = self._lit("fatal syntax error at line 690", line=690)
+        reviews = [_review("gemini-1", "gemini", "block", findings=[phantom])]
+        monkeypatch.setenv("HAPAX_REVIEW_GO_GATE_OFF", "1")
+        blocking, phantoms = rt._blocking_criticals(reviews, tmp_path)
+        assert len(blocking) == 1 and phantoms == []
+
+    def test_discover_repo_root_finds_git_dir(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        (tmp_path / ".git").mkdir()
+        sub = tmp_path / "a" / "b"
+        sub.mkdir(parents=True)
+        monkeypatch.chdir(sub)
+        assert rt._discover_repo_root() == tmp_path
+
+    def test_blocking_criticals_uses_cwd_discovery(self, tmp_path: Path, monkeypatch) -> None:
+        # the admission-gate production path: repo_root=None discovers the repo from cwd
+        # v4: head_sha is now required for verification to fire, so provide one + mock matcher
+        rt = _load_review_team_module()
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        phantom = self._lit("fatal syntax error at line 690", line=690)
+        reviews = [_review("gemini-1", "gemini", "block", findings=[phantom])]
+        monkeypatch.chdir(tmp_path)
+        blocking, phantoms = rt._blocking_criticals(reviews, None, head_sha="a" * 40)
+        assert blocking == [] and len(phantoms) == 1
+
+    def test_phantom_literal_critical_does_not_block(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        # bypass the head_sha checkout-binding (separately covered by test_wrong_checkout); this
+        # test exercises the synthesize verdict path with verification active.
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
+        reviews = [
+            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("claude-1", "claude", "accept"),
+            _review("codex-1", "codex", "accept"),
+        ]
+        d = _synth(rt, reviews, repo_root=tmp_path)
+        assert d["review_team_verdict"] != "blocked"
+        assert any(e["kind"] == "invalidated-phantom-critical" for e in d["escalations"])
+
+    def test_real_literal_critical_still_blocks(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "bad.py", "def f(:\n")
+        real = self._lit("syntax error: invalid syntax", file="bad.py", line=1)
+        reviews = [
+            _review("codex-1", "codex", "block", findings=[real]),
+            _review("claude-1", "claude", "accept"),
+            _review("gemini-1", "gemini", "accept"),
+        ]
+        d = _synth(rt, reviews, repo_root=tmp_path)
+        assert d["review_team_verdict"] == "blocked"
+
+    def test_non_literal_critical_still_blocks(self, tmp_path: Path) -> None:
+        # the verifier must never suppress a non-literal-defect critical
+        rt = _load_review_team_module()
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        nonlit = self._lit("logic error: off-by-one drops the last element")
+        reviews = [
+            _review("codex-1", "codex", "block", findings=[nonlit]),
+            _review("claude-1", "claude", "accept"),
+            _review("gemini-1", "gemini", "accept"),
+        ]
+        d = _synth(rt, reviews, repo_root=tmp_path)
+        assert d["review_team_verdict"] == "blocked"
+
+    def test_eof_syntax_error_kept(self, tmp_path: Path) -> None:
+        """v4 fix: a REAL broken .py with a syntax claim citing a line past EOF must return True
+        (keep). The out-of-range shortcut was removed — ast.parse catches the real error."""
+        rt = _load_review_team_module()
+        # 3-line file that genuinely fails to parse
+        self._py(tmp_path, "broken.py", "def f():\n    pass\ndef g(:\n")
+        f = self._lit("syntax error at line 10", file="broken.py", line=10)
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_empty_head_sha_skips_verification(self, tmp_path: Path) -> None:
+        """v4 fix: when head_sha is empty/None, _blocking_criticals must NOT verify — keep all
+        criticals (the safe pre-go-gate behaviour). Prevents firing against an unverified checkout."""
+        rt = _load_review_team_module()
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        phantom = self._lit("fatal syntax error at line 690", line=690)
+        reviews = [_review("gemini-1", "gemini", "block", findings=[phantom])]
+        # head_sha="" -> should skip verification, keep all as blocking
+        blocking, phantoms = rt._blocking_criticals(reviews, tmp_path, head_sha="")
+        assert len(blocking) == 1 and phantoms == []
+        # head_sha=None -> same
+        blocking2, phantoms2 = rt._blocking_criticals(reviews, tmp_path, head_sha=None)
+        assert len(blocking2) == 1 and phantoms2 == []
+
+    def test_admission_gate_drops_phantom_critical(self, tmp_path: Path, monkeypatch) -> None:
+        """v4 integration: the admission gate (_dossier_validity_blockers) must NOT emit
+        review_dossier_unresolved_critical for a syntax-claim phantom that ast.parse refutes.
+        This exercises the go-gate on the admission path (lines 949-960), not just synthesize."""
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        # a phantom syntax critical on a clean file — must be dropped by the go-gate
+        phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
+        reviews = [
+            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("claude-1", "claude", "accept"),
+        ]
+        # Build a dossier that the admission gate will validate
+        reg = rt.load_lens_registry()
+        dossier = rt.synthesize_dossier(
+            task_id="task-admission-test",
+            pr_number=99,
+            head_sha="a" * 40,
+            team_class="t2_standard",
+            registry=reg,
+            reviews=reviews,
+            lenses=ALWAYS_ON_LENSES,
+            constituted_at="2026-06-11T20:00:00+00:00",
+            repo_root=tmp_path,
+        )
+        # The synthesizer should have already dropped the phantom
+        assert dossier["review_team_verdict"] != "blocked"
+        # Now validate via the admission gate path (_dossier_validity_blockers)
+        # which independently calls _blocking_criticals
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir(exist_ok=True)
+        blockers = rt._dossier_validity_blockers(
+            dossier,
+            pr_head_sha="a" * 40,
+            registry=reg,
+        )
+        # The phantom critical must NOT appear as an unresolved-critical blocker
+        critical_blockers = [b for b in blockers if "unresolved_critical" in b]
+        assert critical_blockers == [], f"phantom critical should not block admission: {blockers}"
+
+    def test_synthesize_dossier_persists_head_sha(self, tmp_path: Path) -> None:
+        """Refutes reviewer claim: 'synthesize_dossier never persists head_sha'.
+        Line 739 of review_team.py unconditionally writes head_sha into the dossier."""
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        dossier = rt.synthesize_dossier(
+            task_id="task-sha-test",
+            pr_number=1,
+            head_sha="abc123def456" * 4,  # 48 chars, arbitrary
+            team_class="t2_standard",
+            registry=reg,
+            reviews=[_review("g-1", "gemini", "accept"), _review("c-1", "claude", "accept")],
+            lenses=ALWAYS_ON_LENSES,
+            constituted_at="2026-06-11T20:00:00+00:00",
+            repo_root=tmp_path,
+        )
+        assert dossier["head_sha"] == "abc123def456" * 4, "synthesize_dossier MUST persist head_sha"
+
+    def test_admission_gate_uses_dossier_head_sha_for_go_gate(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Refutes reviewer claim: 'admission-gate ignores pr_head_sha'.
+        _dossier_validity_blockers passes dossier head_sha to _blocking_criticals (line 950-951)
+        and blocks when head_sha is stale (line 805-806)."""
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        dossier = rt.synthesize_dossier(
+            task_id="task-sha-admission",
+            pr_number=2,
+            head_sha="a" * 40,
+            team_class="t2_standard",
+            registry=reg,
+            reviews=[_review("g-1", "gemini", "accept"), _review("c-1", "claude", "accept")],
+            lenses=ALWAYS_ON_LENSES,
+            constituted_at="2026-06-11T20:00:00+00:00",
+            repo_root=tmp_path,
+        )
+        # With matching pr_head_sha: no stale_head blocker
+        blockers_match = rt._dossier_validity_blockers(dossier, pr_head_sha="a" * 40, registry=reg)
+        stale = [b for b in blockers_match if "stale_head" in b]
+        assert stale == [], f"matching head_sha should not trigger stale_head: {stale}"
+
+        # With mismatched pr_head_sha: MUST emit stale_head blocker
+        blockers_mismatch = rt._dossier_validity_blockers(
+            dossier, pr_head_sha="b" * 40, registry=reg
+        )
+        stale = [b for b in blockers_mismatch if "stale_head" in b]
+        assert len(stale) == 1, f"mismatched head_sha MUST trigger stale_head: {blockers_mismatch}"

@@ -21,10 +21,13 @@ the admission blockers; the dispatcher killswitch is
 
 from __future__ import annotations
 
+import ast
 import fnmatch
 import json
 import os
 import re
+import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -425,6 +428,117 @@ def _unresolved_criticals(reviews: Sequence[Mapping[str, Any]]) -> list[tuple[st
     return out
 
 
+# --- The go-gate: fail-closed literal-defect verifier -------------------------
+# A reviewer's "syntax error / compile failure / corruption at line N" critical is INVALIDATED
+# (does not block quorum) when the actual file at head refutes it — verified deterministically,
+# out-of-model (ast.parse for Python; file/line existence otherwise). This fail-closes against
+# reviewer confabulation (e.g. a phantom "corrupted decorators at line 690" on a 267-line file that
+# parses clean) while never touching non-literal-defect criticals. Scoped exactly as the prior
+# prompt-only evidence rule (#4132) tried, but enforced by code, not in-model suasion.
+
+# Only the NARROW syntax/compile claim class is verifiable (ast.parse can refute it). Semantic
+# claims ('corrupt state', 'malformed request', off-by-one) are NEVER matched and never invalidated
+# — the go-gate must not suppress a real finding (claude-1, #4136 review v2).
+_SYNTAX_COMPILE_RE = re.compile(
+    r"syntax\s*error|syntaxerror|invalid\s+syntax|fails?\s+to\s+(?:compile|parse)|"
+    r"won'?t\s+(?:compile|parse)|does\s*n'?t\s+(?:compile|parse)|cannot\s+be\s+parsed|"
+    r"un(?:parse|parseable|parsable)|compile\s+(?:error|failure)|unterminated|"
+    r"indentation\s+error|missing\s+(?:colon|paren|parenthes|brace|bracket)",
+    re.IGNORECASE,
+)
+
+#: Killswitch — set to "1" to disable the go-gate (every critical blocks; the pre-go-gate behaviour).
+_GO_GATE_OFF_ENV = "HAPAX_REVIEW_GO_GATE_OFF"
+
+
+def _is_syntax_compile_claim(finding: Mapping[str, Any]) -> bool:
+    """True iff the critical asserts a SYNTAX/COMPILE defect — the ONLY class the verifier may
+    refute. Semantic claims ('corrupt state', off-by-one) are never matched, so never invalidated."""
+    return bool(_SYNTAX_COMPILE_RE.search(str(finding.get("title", ""))))
+
+
+def _discover_repo_root() -> Path | None:
+    cur = Path.cwd()
+    for d in (cur, *cur.parents):
+        if (d / ".git").exists():
+            return d
+    return None
+
+
+def _repo_head_matches(repo_root: Path, head_sha: str) -> bool:
+    """True iff ``repo_root``'s git HEAD is ``head_sha`` — i.e. the local checkout IS the reviewed PR
+    at the reviewed commit. Guards against binding the verifier to the wrong checkout (claude-1)."""
+    want = str(head_sha or "").strip().lower()
+    if not want:
+        return False
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    got = out.stdout.strip().lower()
+    return bool(got) and (got == want or got.startswith(want) or want.startswith(got))
+
+
+def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) -> bool:
+    """Return True if the critical STANDS; False ONLY for a DEFINITIVELY-refuted syntax/compile
+    phantom. A critical is invalidated only when it is a SYNTAX/COMPILE claim AND the cited Python
+    file ``ast.parse``-s clean. Every other case — not a syntax/compile claim (ALL semantic
+    criticals), a missing/unreadable/non-Python file — KEEPS the critical. Uncertainty never
+    suppresses."""
+    if not _is_syntax_compile_claim(finding):
+        return (
+            True  # not a syntax/compile claim — never invalidate (every semantic critical is safe)
+        )
+    rel = str(finding.get("file") or "").strip()
+    if not rel:
+        return True  # ungrounded — cannot DISPROVE, keep
+    path = repo_root / rel
+    if not path.is_file():
+        return True  # cites a file not in the tree — cannot verify, keep
+    try:
+        source = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return True  # unreadable — cannot verify, keep
+    if path.suffix != ".py":
+        return True  # cannot verify a non-Python syntax claim — keep (conservative)
+    try:
+        ast.parse(source)
+    except SyntaxError:
+        return True  # really does not parse — the claim stands
+    return False  # parses clean — the syntax/compile claim is a phantom
+
+
+def _blocking_criticals(
+    reviews: Sequence[Mapping[str, Any]],
+    repo_root: Path | None,
+    head_sha: str | None = None,
+) -> tuple[list[tuple[str, dict]], list[tuple[str, dict]]]:
+    """Partition unresolved criticals into (blocking, phantom). ``repo_root=None`` discovers the repo
+    from cwd. The verifier runs ONLY when the checkout is confirmed to be the reviewed commit
+    (``head_sha`` matches local HEAD, when given); otherwise — no repo, killswitch, or a wrong/unknown
+    checkout — every critical blocks (the safe, pre-go-gate behaviour)."""
+    criticals = _unresolved_criticals(reviews)
+    if os.environ.get(_GO_GATE_OFF_ENV) == "1":
+        return criticals, []  # killswitch: every critical blocks (pre-go-gate behaviour)
+    root = repo_root if repo_root is not None else _discover_repo_root()
+    if root is None:
+        return criticals, []
+    if not head_sha or not _repo_head_matches(root, head_sha):
+        return criticals, []  # no commit to bind to, or wrong checkout -> do not verify (keep all)
+    blocking: list[tuple[str, dict]] = []
+    phantom: list[tuple[str, dict]] = []
+    for reviewer_id, finding in criticals:
+        target = blocking if verify_literal_defect_critical(finding, root) else phantom
+        target.append((reviewer_id, finding))
+    return blocking, phantom
+
+
 def _accepting(reviews: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     return [r for r in reviews if str(r.get("verdict", "")).lower() in ACCEPT_VERDICTS]
 
@@ -507,6 +621,7 @@ def synthesize_dossier(
     constitution_writer_family: str | None = None,
     changed_files: Sequence[str] | None = None,
     changed_file_count: int | None = None,
+    repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """Reconcile blind reviews into a dossier (the synthesizer, spec §3/§5).
 
@@ -539,7 +654,7 @@ def synthesize_dossier(
     accepts = _checklist_complete_accepts(reviews, lenses)
     accept_families = {str(r.get("family")) for r in accepts}
     block_reviews = [r for r in reviews if str(r.get("verdict", "")).lower() == "block"]
-    criticals = _unresolved_criticals(reviews)
+    criticals, phantom_criticals = _blocking_criticals(reviews, repo_root, head_sha=head_sha)
     scoped_files = None if changed_files is None else [str(f) for f in changed_files]
     if changed_files is not None and changed_file_count is None:
         changed_file_count = len(scoped_files)
@@ -554,6 +669,18 @@ def synthesize_dossier(
                 "file": finding.get("file"),
                 "line": finding.get("line"),
                 "lens": finding.get("lens"),
+            }
+        )
+    for reviewer_id, finding in phantom_criticals:
+        escalations.append(
+            {
+                "kind": "invalidated-phantom-critical",
+                "reviewer": reviewer_id,
+                "title": finding.get("title"),
+                "file": finding.get("file"),
+                "line": finding.get("line"),
+                "lens": finding.get("lens"),
+                "detail": "literal-defect critical refuted by the file at head (fail-closed go-gate)",
             }
         )
     if accepts and block_reviews:
@@ -819,7 +946,16 @@ def _dossier_validity_blockers(
     if len(reviews) < required_size:
         blockers.append(f"review_dossier_team_undersized:{len(reviews)}/{required_size}")
 
-    criticals = _unresolved_criticals(reviews)
+    # go-gate: drop literal-defect phantoms (repo discovered from cwd = the PR checkout in CI)
+    criticals, phantoms = _blocking_criticals(
+        reviews, None, head_sha=str(dossier.get("head_sha") or "")
+    )
+    if phantoms:  # receipt: phantom invalidations are auditable in the CI log, never silent
+        print(
+            f"go-gate: invalidated {len(phantoms)} phantom literal-defect critical(s): "
+            + "; ".join(str(f.get("title")) for _, f in phantoms),
+            file=sys.stderr,
+        )
     if criticals and sizing.get("block_on_named_critical", True):
         blockers.append(f"review_dossier_unresolved_critical:{len(criticals)}")
 
