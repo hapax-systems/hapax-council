@@ -4126,3 +4126,16 @@ _platform_session_artifact_projection_rows
 _platform_session_parse_jsonl_events
 _platform_session_resolve_identity
 _platform_session_run_conformance_fixture
+
+# Session identity functions — called by hapax-cc-claim/hapax-cc-close
+# (extensionless executables outside vulture's parse set) and by
+# platform session adapters (PR #4097).
+from shared.session_identity import mint_session_id  # noqa: E402
+from shared.session_identity import claim_paths  # noqa: E402
+from shared.session_identity import session_role_marker_path  # noqa: E402
+from shared.session_identity import identity_stamp  # noqa: E402
+
+mint_session_id
+claim_paths
+session_role_marker_path
+identity_stamp
