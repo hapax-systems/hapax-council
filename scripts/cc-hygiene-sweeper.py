@@ -363,7 +363,7 @@ def run_sweep(
     events.extend(check_stale_in_progress(notes, repo_root, now=now))
     events.extend(check_ghost_claimed(notes, now=now))
     events.extend(check_duplicate_claim(relay_payloads, now=now))
-    events.extend(check_orphan_pr(notes, repo_root, now=now))
+    events.extend(check_orphan_pr(notes, repo_root, closed_notes=closed_notes, now=now))
     events.extend(check_relay_yaml_staleness(relay_payloads, now=now))
     events.extend(check_wip_limit(notes, now=now))
     events.extend(check_offered_staleness(notes, now=now))
