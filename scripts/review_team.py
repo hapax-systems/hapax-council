@@ -84,6 +84,20 @@ _QUOTA_WALL_SHAPE_RE = re.compile(
 #: (round-4 review finding).
 _QUOTA_WALL_MAX_CHARS = 600
 
+#: Extended line-by-line wall pattern for CLIs that wrap the wall phrase in
+#: diagnostic chrome (codex v0.139.0 emits ~704 chars of "ERROR: You've hit
+#: your usage limit. Visit <URL> … purchase more credits … try again at …").
+#: Applied ONLY when model_stdout is empty (the anti-forge anchor: a real
+#: wall produces NO review output).
+_QUOTA_WALL_LINE_RE = re.compile(
+    r"(?:ERROR:\s*)?"
+    r"You(?:'ve| have) hit your (?:weekly|usage|session|5-hour) (?:limit|cap)"
+    r"(?:\.\s+Visit\s+\S+)?"
+    r"(?:.*?(?:purchase more credits|upgrade your plan|try again))?"
+    r".*",
+    re.IGNORECASE,
+)
+
 #: The dispatcher's family-outage witness state (canonical path; the
 #: dispatcher aliases this). Admission consults it so a forged dossier
 #: cannot self-certify a degradation (round-4 review finding).
@@ -91,21 +105,46 @@ FAMILY_OUTAGE_STATE = Path.home() / ".cache" / "hapax" / "review-team" / "family
 FAMILY_OUTAGE_TTL_S = 2 * 3600
 
 
-def is_quota_wall(text: str, *, process_failed: bool = False) -> bool:
+def is_quota_wall(
+    text: str,
+    *,
+    process_failed: bool = False,
+    model_stdout: str = "",
+) -> bool:
     """True when reviewer output/error text is a provider usage wall.
 
     Deliberately strict — forging an outage must be harder than hitting one:
     only process-failure diagnostics are trusted as provider evidence, short
     text only, and the whole output must match a known provider wall shape.
     This rejects model-controlled review stdout that merely mentions quota text.
+
+    The ``model_stdout`` anti-forge anchor: a real wall produces NO review
+    output. If the process emitted non-empty stdout (= model-produced prose),
+    the stderr content cannot be trusted as sole wall evidence because the
+    model was active enough to write something.
     """
 
     if not process_failed or not text:
         return False
-    stripped = text.strip()
-    if len(stripped) > _QUOTA_WALL_MAX_CHARS:
+    # Anti-forge anchor (postmortem 2026-06-15): if the reviewer process
+    # emitted review content on stdout, it was running — the stderr text
+    # is supplementary, not sole wall evidence.
+    if model_stdout and model_stdout.strip():
         return False
-    return bool(_QUOTA_WALL_SHAPE_RE.fullmatch(stripped))
+    stripped = text.strip()
+    # Fast path: short, bare wall phrase (the 2026-06-12 claude shape)
+    if len(stripped) <= _QUOTA_WALL_MAX_CHARS and _QUOTA_WALL_SHAPE_RE.fullmatch(stripped):
+        return True
+    # Slow path: CLI chrome wraps the wall phrase (codex v0.139.0 emits
+    # ~704 chars including "ERROR: You've hit your usage limit. Visit …
+    # purchase more credits … try again at <date>"). Scan each line for
+    # a wall-shaped line.  The empty-stdout anchor above prevents a diff-
+    # echoed stderr from forging this.
+    for line in stripped.splitlines():
+        line = line.strip()
+        if line and _QUOTA_WALL_LINE_RE.fullmatch(line):
+            return True
+    return False
 
 
 def _parse_iso_datetime(value: Any) -> datetime:

@@ -915,6 +915,56 @@ class TestFamilyOutageDegradation:
         assert not rt.is_quota_wall("verdict: block\nfindings: the ring index wraps early")
         assert not rt.is_quota_wall("")
 
+    # --- codex v0.139.0 chrome-wrapped wall (postmortem 2026-06-15) ---
+
+    CODEX_V0139_STDERR = (
+        "ERROR: You've hit your usage limit. Visit "
+        "https://platform.openai.com/settings/organization/billing/overview to purchase "
+        "more credits or visit https://platform.openai.com/usage to view your usage. If "
+        "you have questions, please reach out to support@openai.com. You can try again "
+        "at Jun 17 2026, 3:34:47 AM (UTC)."
+    )
+
+    def test_codex_v0139_chrome_wrapped_wall_detected(self) -> None:
+        """The real codex v0.139.0 stderr — 704+ chars, buried in CLI chrome."""
+        rt = _load_review_team_module()
+        # Must detect as wall when process failed and stdout is empty
+        assert rt.is_quota_wall(self.CODEX_V0139_STDERR, process_failed=True, model_stdout="")
+
+    def test_codex_wall_with_nonempty_stdout_rejected(self) -> None:
+        """Anti-forge: if the process emitted review content on stdout, the stderr
+        wall text cannot be trusted (the model was active)."""
+        rt = _load_review_team_module()
+        assert not rt.is_quota_wall(
+            self.CODEX_V0139_STDERR,
+            process_failed=True,
+            model_stdout="```review\nverdict: block\n```",
+        )
+
+    def test_codex_wall_with_whitespace_only_stdout_accepted(self) -> None:
+        """Empty or whitespace-only stdout is still 'empty' — the process produced nothing."""
+        rt = _load_review_team_module()
+        assert rt.is_quota_wall(
+            self.CODEX_V0139_STDERR, process_failed=True, model_stdout="   \n  "
+        )
+
+    def test_codex_wall_multiline_stderr_detected(self) -> None:
+        """Codex may emit the wall phrase on one line plus additional lines of chrome."""
+        rt = _load_review_team_module()
+        multiline = (
+            "codex v0.139.0 (stable)\n"
+            "ERROR: You've hit your usage limit. Visit https://platform.openai.com to "
+            "purchase more credits. You can try again at Jun 17 2026.\n"
+            "For more information, run codex --help."
+        )
+        assert rt.is_quota_wall(multiline, process_failed=True, model_stdout="")
+
+    def test_existing_bare_wall_still_works_with_model_stdout(self) -> None:
+        """Backward compat: bare wall phrases still detected (model_stdout defaults to empty)."""
+        rt = _load_review_team_module()
+        assert rt.is_quota_wall(self.WALL_2026_06_12, process_failed=True)
+        assert rt.is_quota_wall("HTTP 429 Too Many Requests", process_failed=True, model_stdout="")
+
     def test_t1_degrades_on_evidenced_outage(self) -> None:
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()
