@@ -4,6 +4,7 @@ Documentation=file://%h/projects/hapax-council/docs/superpowers/specs/2026-05-30
 ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
 After=hapax-secrets.service
 Before=hapax-darkplaces-v4l2.service
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple

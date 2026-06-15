@@ -1,4 +1,5 @@
 import fcntl
+import json
 import os
 import subprocess
 import textwrap
@@ -19,6 +20,21 @@ def _stub_bin(bin_dir: Path, name: str, body: str) -> None:
 
 def _headless_env(home: Path, bin_dir: Path, pipe_dir: Path) -> dict[str, str]:
     env = os.environ.copy()
+    # Host-independence: a remotely-dispatched test runner (appendix lanes)
+    # carries its OWN dispatch/identity env; scrub it so the launcher under
+    # test sees only what each test sets explicitly.
+    for var in (
+        "HAPAX_DISPATCH_HOST",
+        "HAPAX_DISPATCH_HOST_FALLBACK",
+        "HAPAX_SESSION_ID",
+        "CLAUDE_CODE_SESSION_ID",
+        "HAPAX_AGENT_ROLE",
+        "HAPAX_AGENT_NAME",
+        "CLAUDE_ROLE",
+        "HAPAX_WORKTREE_ROLE",
+        "HAPAX_METHODOLOGY_DISPATCH_TASK",
+    ):
+        env.pop(var, None)
     env["HOME"] = str(home)
     env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
     env["HAPAX_CLAUDE_HEADLESS_ALLOW"] = "1"
@@ -542,3 +558,106 @@ def test_committed_launcher_pins_zombie_reap_fix_markers() -> None:
     # Line-count floor: the regression stripped the launcher to ~190 lines. The
     # full launcher (flock + teardown + out-of-band self-reap) is well over 250.
     assert len(text.splitlines()) >= 250, "launcher appears stripped — regression risk"
+
+
+# ---------------------------------------------------------------------------
+# Session identity through the dispatch boundary (taxonomy-a3-session-identity):
+# the launcher mints HAPAX_SESSION_ID per spawn, but before the fix the G2
+# remote hop dropped every identity var at the SSH boundary — the appendix
+# claude resolved a DIFFERENT session id (CLAUDE_CODE_SESSION_ID), the
+# session-keyed claim file existed only podium-side, and the dispatch proof
+# witnessed the exec by pid alone. The lane then hit cc-claim exit-4 walls
+# (see relay receipts epsilon-claim-rejected.yaml, zeta-claim-rejected.yaml).
+# The identity thread must survive the hop: payload env -> remote exec ->
+# marker + claim materialization on the exec host -> session-stamped proof.
+# ---------------------------------------------------------------------------
+
+
+def test_headless_mint_fallback_is_never_pid_derived() -> None:
+    """Claim-by-pid unrepresentable: the retired `<role>-$$` fallback minted
+    pid-shaped session ids that cc-claim now refuses to key."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert '"$ROLE" "$$"' not in text, "launcher session-id fallback mints pid-shaped ids"
+
+
+def test_headless_preamble_carries_session_identity() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "Session identity: role=$ROLE session_id=$SESSION_UUID" in text
+
+
+def test_appendix_hop_threads_session_identity_end_to_end(tmp_path: Path) -> None:
+    """E2E canary: fake ssh executes the remote command locally (same HOME),
+    so the assertions cover the full chain — launcher mint -> payload env ->
+    remote exec env -> exec-host marker/claim materialization -> proof."""
+    home = tmp_path / "home"
+    workdir = home / "projects" / "hapax-council--beta"
+    workdir.mkdir(parents=True)
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    claim_file = cache / "cc-active-task-beta"
+    claim_file.write_text("task-x\n")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_env = tmp_path / "claude-env.txt"
+    # Simulate the real SSH env boundary: the remote shell never inherits the
+    # launcher's exports, so identity can ONLY arrive via the exec payload.
+    _stub_bin(
+        bin_dir,
+        "ssh",
+        'remote_cmd="${@: -1}"\n'
+        "exec env -u HAPAX_SESSION_ID -u HAPAX_AGENT_INTERFACE -u HAPAX_AGENT_NAME"
+        " -u HAPAX_AGENT_ROLE -u CLAUDE_ROLE -u HAPAX_WORKTREE_ROLE"
+        ' -u HAPAX_METHODOLOGY_DISPATCH_TASK bash -c "$remote_cmd"\n',
+    )
+    _stub_bin(
+        bin_dir,
+        "gh",
+        'if [ "$1" = "auth" ] && [ "$2" = "status" ]; then exit 0; fi\nexit 1\n',
+    )
+    # The "remote" claude dumps its env, then clears the legacy claim so the
+    # respawn loop tears down after one pass.
+    _stub_bin(bin_dir, "claude", f"env > {claude_env}\n: > {claim_file}\nexit 0\n")
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+    # One session id, minted by the launcher, recorded in the role marker.
+    markers = sorted(cache.glob("session-role-*"))
+    assert len(markers) == 1, f"expected exactly one session marker, got {markers}"
+    sid = markers[0].name.removeprefix("session-role-")
+    assert markers[0].read_text().strip() == "beta"
+
+    # The exec-side claude carries the SAME identity the launcher minted.
+    claude_vars = dict(
+        line.split("=", 1) for line in claude_env.read_text().splitlines() if "=" in line
+    )
+    assert claude_vars.get("HAPAX_SESSION_ID") == sid
+    assert claude_vars.get("HAPAX_AGENT_ROLE") == "beta"
+    assert claude_vars.get("CLAUDE_ROLE") == "beta"
+    assert claude_vars.get("HAPAX_METHODOLOGY_DISPATCH_TASK") == "task-x"
+
+    # The session-keyed claim materialized on the exec host (cc-claim was
+    # skipped — the pre-seeded legacy claim matched — so only the remote
+    # materialization path can have written it), single-line format.
+    keyed = cache / f"cc-active-task-beta-{sid}"
+    assert keyed.read_text(encoding="utf-8") == "task-x\n"
+
+    # The dispatch proof witnesses the session, not just the pid.
+    proofs = sorted((cache / "orchestration" / "dispatch-host-proofs").glob("*.json"))
+    assert proofs, "remote exec must write a dispatch proof"
+    proof = json.loads(proofs[-1].read_text(encoding="utf-8"))
+    assert proof["session_id"] == sid
+    assert proof["role"] == "beta"
+    assert proof["task_id"] == "task-x"
+    assert proof["claim_materialized"] is True

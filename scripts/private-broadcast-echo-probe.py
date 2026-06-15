@@ -17,19 +17,34 @@ Run via systemd user timer (every 30s):
 
 Or one-shot for diagnosis:
     uv run scripts/private-broadcast-echo-probe.py
+    # deliberately-sensitive diagnostic override (default is 0.15; 0.05
+    # sits inside the ambient hum band and WILL flag a healthy bus):
     uv run scripts/private-broadcast-echo-probe.py --duration 2 --threshold 0.05
 
 Env / flags:
     --private-target  PipeWire source (default: hapax-private.monitor)
     --broadcast-target PipeWire source (default: hapax-obs-broadcast-remap)
     --duration         seconds to record (default: 1.0)
-    --threshold        |corr| above which we alert (default: 0.05)
+    --threshold        |corr| above which we alert (default: 0.15)
     --textfile-dir     where to write the .prom files (default: /var/lib/node_exporter/textfile_collector)
     --ntfy-topic       ntfy topic on alert (default: audio-private-leak-suspect; empty disables)
     --ntfy-base        ntfy base URL (default: HAPAX_NTFY_BASE_URL or http://localhost:8090)
+    --breach-ticks     consecutive breach ticks before the first ntfy (default: 3)
+    --ntfy-cooldown    seconds between ntfys within one breach episode (default: 900)
+    --state-file       breach-streak state across oneshot ticks (default: ~/.cache/hapax/private-broadcast-echo-probe-state.json)
     --json             emit JSON report to stdout (default: human-readable)
 
-Exit codes:
+Alert design (audit-w4-observability-honesty):
+    The 0.05 threshold sat inside the ambient correlated-hum noise band
+    (clean ticks witnessed at 0.033-0.066), and an unconditional ntfy per
+    30s breach tick produced ~2,000 alerts/day — fatigue that buries real
+    leaks. The Jun 9-10 real-leak band was 0.21-1.00, so 0.15 separates
+    cleanly. ntfy now needs 3 consecutive breach ticks and repeats at most
+    every 15 min per breach episode. The textfile gauge (and the new
+    _collect_ts inertness stamp) is still written on EVERY tick — the
+    durable alert path is the Prometheus rule over the gauge, not ntfy.
+
+Exit codes (unchanged — the timer + OnFailure semantics stay honest):
     0  no leak (correlation below threshold) OR record failed in a tolerated way
     2  leak detected (correlation above threshold)
     3  hard failure (pw-cat missing, cross-correlation math broke)
@@ -51,10 +66,17 @@ from pathlib import Path
 DEFAULT_PRIVATE = "hapax-private.monitor"
 DEFAULT_BROADCAST = "hapax-obs-broadcast-remap"
 DEFAULT_DURATION_S = 1.0
-DEFAULT_THRESHOLD = 0.05
+# 0.05 was inside the ambient noise band (0.02-0.07 floor for 1s@48k
+# correlated hum); real leaks witnessed at 0.21-1.00. See module docstring.
+DEFAULT_THRESHOLD = 0.15
 DEFAULT_TEXTFILE_DIR = "/var/lib/node_exporter/textfile_collector"
 DEFAULT_NTFY_TOPIC = "audio-private-leak-suspect"
+DEFAULT_BREACH_TICKS = 3
+DEFAULT_NTFY_COOLDOWN_S = 900
+DEFAULT_STATE_FILE = Path.home() / ".cache" / "hapax" / "private-broadcast-echo-probe-state.json"
 METRIC_PREFIX = "hapax_private_broadcast_echo"
+
+FRESH_STATE: dict = {"streak": 0, "episode_start": None, "last_ntfy": None}
 
 
 def parse_args() -> argparse.Namespace:
@@ -69,8 +91,76 @@ def parse_args() -> argparse.Namespace:
         "--ntfy-base",
         default=os.environ.get("HAPAX_NTFY_BASE_URL", "http://localhost:8090"),
     )
+    p.add_argument("--breach-ticks", type=int, default=DEFAULT_BREACH_TICKS)
+    p.add_argument("--ntfy-cooldown", type=float, default=DEFAULT_NTFY_COOLDOWN_S)
+    p.add_argument("--state-file", type=Path, default=DEFAULT_STATE_FILE)
     p.add_argument("--json", action="store_true")
     return p.parse_args()
+
+
+def load_state(path: Path) -> dict:
+    """Load breach-streak state; missing or corrupt files degrade to a
+    fresh state (the probe must keep measuring no matter what)."""
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return dict(FRESH_STATE)
+    if not isinstance(raw, dict):
+        return dict(FRESH_STATE)
+    return {**FRESH_STATE, **raw}
+
+
+def save_state(path: Path, state: dict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(state))
+        tmp.rename(path)
+    except OSError:
+        pass  # state is an optimization; never let it break the measurement
+
+
+def decide_alert(
+    state: dict,
+    leaked: bool,
+    now: float,
+    breach_ticks: int = DEFAULT_BREACH_TICKS,
+    cooldown_s: float = DEFAULT_NTFY_COOLDOWN_S,
+) -> tuple[bool, dict]:
+    """Hysteresis + per-episode cooldown for the ntfy path ONLY.
+
+    A breach episode is a run of consecutive over-threshold ticks. The
+    first ntfy needs ``breach_ticks`` consecutive breaches; while the
+    episode persists, repeats are spaced ``cooldown_s`` apart, keyed on
+    the episode (state carries ``episode_start``). A clean tick resets
+    everything. Exit codes and the textfile gauge are deliberately NOT
+    routed through this function — every tick stays visible to
+    Prometheus and to the timer's OnFailure semantics.
+
+    Returns (should_ntfy, new_state).
+    """
+    if not leaked:
+        return False, dict(FRESH_STATE)
+
+    try:
+        streak = int(state.get("streak", 0)) + 1
+    except (TypeError, ValueError):
+        streak = 1
+    episode_start = state.get("episode_start")
+    if not isinstance(episode_start, (int, float)) or streak == 1:
+        episode_start = now
+    last_ntfy = state.get("last_ntfy")
+    if not isinstance(last_ntfy, (int, float)):
+        last_ntfy = None
+
+    should_ntfy = streak >= breach_ticks and (last_ntfy is None or now - last_ntfy >= cooldown_s)
+    if should_ntfy:
+        last_ntfy = now
+    return should_ntfy, {
+        "streak": streak,
+        "episode_start": episode_start,
+        "last_ntfy": last_ntfy,
+    }
 
 
 def record_pair(
@@ -175,14 +265,24 @@ def normalized_peak_xcorr(a: list[int], b: list[int]) -> float:
 
 
 def emit_textfile(
-    textfile_dir: Path, correlation: float, alert_increment: int
+    textfile_dir: Path,
+    correlation: float,
+    alert_increment: int,
+    collect_ts: float | None = None,
 ) -> tuple[bool, str | None]:
-    """Write the Prometheus textfile via tmp+rename. Returns (ok, error_msg)."""
+    """Write the Prometheus textfile via tmp+rename. Returns (ok, error_msg).
+
+    ``collect_ts`` is the probe-inertness stamp: the HapaxEchoProbeStale
+    rule fires when ``time() - collect_ts > 300``, catching the watcher
+    itself dying — written on every tick, leak or not.
+    """
     try:
         textfile_dir.mkdir(parents=True, exist_ok=True)
     except PermissionError as exc:
         return False, f"textfile_dir not writable: {exc}"
 
+    if collect_ts is None:
+        collect_ts = time.time()
     target = textfile_dir / "hapax_private_broadcast_echo.prom"
     body = (
         f"# HELP {METRIC_PREFIX}_correlation Normalized peak cross-correlation between private and broadcast monitors\n"
@@ -191,6 +291,9 @@ def emit_textfile(
         f"# HELP {METRIC_PREFIX}_alert_total Counter of probe ticks where correlation exceeded the leak threshold\n"
         f"# TYPE {METRIC_PREFIX}_alert_total counter\n"
         f"{METRIC_PREFIX}_alert_total {alert_increment}\n"
+        f"# HELP {METRIC_PREFIX}_collect_ts Unix time of the last completed probe tick (staleness/inertness detector)\n"
+        f"# TYPE {METRIC_PREFIX}_collect_ts gauge\n"
+        f"{METRIC_PREFIX}_collect_ts {collect_ts:.0f}\n"
     )
     tmp = target.with_suffix(".prom.tmp")
     try:
@@ -232,6 +335,27 @@ def post_ntfy_alert(
         subprocess.run(cmd, check=True, timeout=5)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         return False, f"ntfy POST failed: {exc}"
+    # A private→broadcast leak is a consent/privacy incident
+    # (interpersonal_transparency axiom), so it MUST create a governed P0
+    # record — not only an ntfy ping. Record alongside the ntfy channel.
+    alert = Path(__file__).resolve().parent / "hapax-alert"
+    if alert.exists():
+        try:
+            subprocess.run(
+                [
+                    str(alert),
+                    "urgent",
+                    "audio private→broadcast leak suspect",
+                    body,
+                    "--tag",
+                    "audio",
+                    "--record-only",
+                ],
+                check=False,
+                timeout=5,
+            )
+        except subprocess.TimeoutExpired:
+            pass
     return True, None
 
 
@@ -265,11 +389,24 @@ def main() -> int:
 
     text_ok, text_err = emit_textfile(args.textfile_dir, correlation, alert_increment)
 
-    ntfy_ok, ntfy_err = (True, "no alert (no leak)")
-    if leaked:
+    state = load_state(args.state_file)
+    should_ntfy, state = decide_alert(
+        state, leaked, time.time(), args.breach_ticks, args.ntfy_cooldown
+    )
+    save_state(args.state_file, state)
+
+    if should_ntfy:
         ntfy_ok, ntfy_err = post_ntfy_alert(
             args.ntfy_base, args.ntfy_topic, correlation, args.threshold
         )
+    elif leaked:
+        ntfy_ok, ntfy_err = (
+            True,
+            f"suppressed (streak {state['streak']}/{args.breach_ticks}"
+            + (", cooldown)" if state["streak"] >= args.breach_ticks else ")"),
+        )
+    else:
+        ntfy_ok, ntfy_err = (True, "no alert (no leak)")
 
     report = {
         "status": "leak" if leaked else "ok",
@@ -278,6 +415,8 @@ def main() -> int:
         "duration_s": args.duration,
         "private_target": args.private_target,
         "broadcast_target": args.broadcast_target,
+        "breach_streak": state["streak"],
+        "episode_start": state["episode_start"],
         "textfile_emit": {"ok": text_ok, "reason": text_err},
         "ntfy_alert": {"ok": ntfy_ok, "reason": ntfy_err},
     }

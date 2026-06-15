@@ -190,6 +190,9 @@ host = [
     "hapax-council[studio]",
     "hapax-council[tui]",
 ]
+rerank = [
+    "sentence-transformers>=5.4.0",
+]
 
 [project.scripts]
 logos = "logos.__main__:main"

@@ -41,6 +41,22 @@ class BylineVariant(Enum):
     V5 = "unsettled_contribution_sentence"
 
 
+class SurfaceRegister(Enum):
+    """Attribution register for a publication surface.
+
+    ``FORMAL`` renders the operator's legal name (academic / repository /
+    legal- or tact-encouraging contexts). ``AESTHETIC`` renders the
+    non-formal referent (``operator_referent`` — Oudepode/OTO) for creative
+    / social surfaces. Per operator preference 2026-06-13: the legal name
+    where formal register fits; the referent in aesthetically-grounded
+    contexts. Exposure is not treated as a hard boundary — this is
+    register/aesthetic selection, not a leak guard.
+    """
+
+    FORMAL = "formal"
+    AESTHETIC = "aesthetic"
+
+
 @dataclass(frozen=True)
 class BylineCoauthor:
     """One co-publisher entry.
@@ -78,54 +94,64 @@ def _find_coauthor(byline: Byline, *, name: str) -> BylineCoauthor | None:
     return None
 
 
-def _v0(byline: Byline) -> str:
+def _operator_name(byline: Byline, register: SurfaceRegister) -> str:
+    """Resolve the operator's display name for the surface register.
+
+    ``AESTHETIC`` surfaces render the non-formal referent
+    (``operator_referent``); ``FORMAL`` surfaces render the legal name.
+    """
+    if register is SurfaceRegister.AESTHETIC:
+        return byline.operator_referent
     return byline.operator_legal_name
 
 
-def _v1(byline: Byline) -> str:
+def _v0(byline: Byline, register: SurfaceRegister) -> str:
+    return _operator_name(byline, register)
+
+
+def _v1(byline: Byline, register: SurfaceRegister) -> str:
     hapax = _find_coauthor(byline, name="Hapax")
     if hapax is None:
-        return byline.operator_legal_name
-    return f"{byline.operator_legal_name}, Hapax"
+        return _operator_name(byline, register)
+    return f"{_operator_name(byline, register)}, Hapax"
 
 
-def _v2(byline: Byline) -> str:
-    parts = [byline.operator_legal_name]
+def _v2(byline: Byline, register: SurfaceRegister) -> str:
+    parts = [_operator_name(byline, register)]
     for name in ("Hapax", "Claude Code"):
         if _find_coauthor(byline, name=name):
             parts.append(name)
     return ", ".join(parts)
 
 
-def _v3(byline: Byline) -> str:
+def _v3(byline: Byline, register: SurfaceRegister) -> str:
     """PROTO precedent — Bandcamp/music register.
 
-    Shape: ``<operator_legal_name> (distributor) · Hapax (performer)``.
-    The 'performer' marker is mandatory per V3 contract; the 'distributor'
-    marker is the operator-of-record-on-account half of the PROTO
-    precedent.
+    Shape: ``<operator> (distributor) · Hapax (performer)``. The 'performer'
+    marker is mandatory per V3 contract; the 'distributor' marker is the
+    operator-of-record-on-account half of the PROTO precedent.
     """
-    return f"{byline.operator_legal_name} (distributor) · Hapax (performer)"
+    return f"{_operator_name(byline, register)} (distributor) · Hapax (performer)"
 
 
-def _v4(byline: Byline) -> str:
+def _v4(byline: Byline, register: SurfaceRegister) -> str:
     """Hapax-canonical with operator-of-record.
 
-    Shape: ``Hapax · operator-of-record: <legal_name>``. Hapax appears
-    first; the operator credit is explicitly framed as 'of-record'
-    rather than co-author."""
-    return f"Hapax · operator-of-record: {byline.operator_legal_name}"
+    Shape: ``Hapax · operator-of-record: <operator>``. Hapax appears first;
+    the operator credit is explicitly framed as 'of-record' rather than
+    co-author."""
+    return f"Hapax · operator-of-record: {_operator_name(byline, register)}"
 
 
-def _v5(byline: Byline) -> str:
+def _v5(byline: Byline, register: SurfaceRegister) -> str:
     """Unsettled-contribution sentence (canonical form, wk1 d1 stub).
 
-    Wk1 d2 will land 5 final phrasings (V5.1-V5.5) and a selection
-    rule per artifact. This stub satisfies the V5 contract test
-    (must contain 'unsettled' / 'indeterminate' / 'co-publication' /
-    'co-authorship') and includes all three attributions.
+    Wk1 d2 will land 5 final phrasings (V5.1-V5.5) and a selection rule per
+    artifact. This stub satisfies the V5 contract test (must contain
+    'unsettled' / 'indeterminate' / 'co-publication' / 'co-authorship') and
+    includes all three attributions.
     """
-    parts = [byline.operator_legal_name]
+    parts = [_operator_name(byline, register)]
     for name in ("Hapax", "Claude Code"):
         if _find_coauthor(byline, name=name):
             parts.append(name)
@@ -147,19 +173,27 @@ _VARIANT_RENDERERS = {
 }
 
 
-def render_byline(byline: Byline, *, variant: BylineVariant) -> str:
-    """Render a byline string for the requested variant.
+def render_byline(
+    byline: Byline,
+    *,
+    variant: BylineVariant,
+    register: SurfaceRegister = SurfaceRegister.FORMAL,
+) -> str:
+    """Render a byline string for the requested variant + surface register.
 
-    Each variant is a pure function of the byline material (no I/O,
-    no env reads). Surface-specific adjustments (line breaks,
-    Markdown, HTML) belong in the per-publisher kit, NOT here.
+    Each variant is a pure function of the byline material (no I/O, no env
+    reads). ``register`` selects the operator's display name: ``FORMAL``
+    (default) renders the legal name; ``AESTHETIC`` renders the non-formal
+    referent. Surface-specific adjustments (line breaks, Markdown, HTML)
+    belong in the per-publisher kit, NOT here.
     """
-    return _VARIANT_RENDERERS[variant](byline)
+    return _VARIANT_RENDERERS[variant](byline, register)
 
 
 __all__ = [
     "Byline",
     "BylineCoauthor",
     "BylineVariant",
+    "SurfaceRegister",
     "render_byline",
 ]

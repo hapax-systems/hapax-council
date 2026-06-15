@@ -265,7 +265,7 @@ class ApperceptionTick:
                             source="performance",
                             text=f"{dim_name}: {value:.2f} (baseline {baseline:.2f}, delta {delta:+.2f})",
                             magnitude=min(abs(delta), 1.0),
-                            metadata={"baseline": baseline, "dimension": dim_name},
+                            metadata={"baseline": baseline, "dimension": dim_name, "delta": delta},
                         )
                     )
 

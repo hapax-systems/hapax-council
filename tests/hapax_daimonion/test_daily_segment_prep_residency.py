@@ -1957,6 +1957,249 @@ def test_council_coherence_check_records_health_when_healthy(
     assert outcome.refused is False
     assert outcome.council_decisions["members_valid"] == 5
     assert outcome.council_decisions["families_valid"] == 5
+    # Per-axis scores are recorded so the generative trace stance fields are
+    # populated, not silently unassessed (codex-1, PR #4133).
+    assert outcome.council_decisions["scores"] == {"a": 4, "b": 4}
+
+
+def test_council_coherence_check_critical_axis_floor_blocks_mean_masking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A structurally strong segment whose ending fizzles (payoff=1) scores a
+    mean of 3.75 — which clears the mean>=3 gate — but must NOT release: a total
+    failure on any one coherence axis is unreleasable. The mean masks it; the
+    critical-axis floor catches it. Evidenced by scripts/calibrate-eval.py
+    (fixture mixed-strong-but-no-payoff). It refines (passed=False), not
+    refuses (refused=False), and records the offending axis in the receipt."""
+    from agents.deliberative_council import engine as council_engine
+    from agents.deliberative_council.models import ConvergenceStatus, CouncilVerdict
+
+    async def fake_deliberate(
+        council_input: Any, mode: Any, rubric: Any, config: Any = None
+    ) -> Any:
+        return CouncilVerdict(
+            scores={
+                "opening_pressure": 5,
+                "argumentative_specificity": 5,
+                "thematic_progression": 4,
+                "payoff_resolution": 1,
+            },
+            confidence_bands={},
+            convergence_status=ConvergenceStatus.CONVERGED,
+            disagreement_log=[],
+            research_findings=[],
+            evidence_matrix=None,
+            receipt={"council_health": {"members_valid": 6, "families_valid": 5}},
+        )
+
+    monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
+
+    outcome = prep._council_coherence_check("a strong script that fizzles", "prog-1")
+    assert outcome.council_decisions["mean_score"] == 3.75  # would pass a mean-only gate
+    assert outcome.passed is False  # but the critical-axis floor blocks release
+    assert outcome.refused is False  # it refines, it does not refuse
+    assert outcome.council_decisions["axis_min"] == 1
+    assert outcome.council_decisions["axis_min_name"] == "payoff_resolution"
+    assert "payoff_resolution" in outcome.feedback
+
+
+def test_council_coherence_check_passes_when_all_axes_clear_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The floor must not over-reject: a uniformly-adequate panel (no axis at the
+    rock-bottom) with mean>=3 still passes."""
+    from agents.deliberative_council import engine as council_engine
+    from agents.deliberative_council.models import ConvergenceStatus, CouncilVerdict
+
+    async def fake_deliberate(
+        council_input: Any, mode: Any, rubric: Any, config: Any = None
+    ) -> Any:
+        return CouncilVerdict(
+            scores={"opening_pressure": 3, "payoff_resolution": 2, "thematic_progression": 4},
+            confidence_bands={},
+            convergence_status=ConvergenceStatus.CONVERGED,
+            disagreement_log=[],
+            research_findings=[],
+            evidence_matrix=None,
+            receipt={"council_health": {"members_valid": 6, "families_valid": 5}},
+        )
+
+    monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
+
+    outcome = prep._council_coherence_check("an adequate script", "prog-1")
+    assert outcome.passed is True
+    assert outcome.refused is False
+    assert outcome.council_decisions["axis_min"] == 2  # mediocre, but not catastrophic
+
+
+def test_prep_segment_blocks_release_when_coherence_fails_after_noop_refine(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Coherence (incl. the critical-axis floor) is a RELEASE gate, not just a
+    refinement trigger. When the first check fails and refinement is a no-op, the
+    post-refine re-check must BLOCK release (return None) — not let a
+    sub-threshold / critical-axis-failed draft proceed to later gates and be
+    saved. Verifies the fix for codex-1's "floor blocks release is not
+    implemented" (PR #4133); the assertion that BOTH checks ran guards against a
+    false pass from an earlier gate."""
+    programme = SimpleNamespace(
+        programme_id="prog-coh",
+        role=SimpleNamespace(value="rant"),
+        content=_ready_content(
+            narrative_beat="A thin claim",
+            segment_beats=["argue the point with a source receipt"],
+            role="rant",
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+    }
+
+    monkeypatch.setattr(prep, "_build_seed", lambda _programme: "seed")
+    monkeypatch.setattr(prep, "_build_full_segment_prompt", lambda _programme, _seed: "prompt")
+    monkeypatch.setattr(
+        prep,
+        "_call_llm",
+        lambda _prompt, **_kwargs: json.dumps(
+            ["According to the receipt, the launch claim changes once the source is visible."]
+        ),
+    )
+    monkeypatch.setattr(prep, "_refine_script", lambda script, _programme, **_kwargs: script)
+    monkeypatch.setattr(prep, "_emit_self_evaluation", lambda *_args, **_kwargs: None)
+
+    coh_calls = {"n": 0}
+
+    def _low(_script: str, _pid: str) -> Any:
+        coh_calls["n"] += 1
+        return prep._CoherenceOutcome(
+            passed=False,
+            refused=False,
+            feedback="Council coherence scores (mean=1.5, min=1):",
+            council_decisions={"check": "coherence", "mean_score": 1.5, "axis_min": 1},
+        )
+
+    monkeypatch.setattr(prep, "_council_coherence_check", _low)
+
+    saved = prep.prep_segment(programme, tmp_path, prep_session=session)
+
+    assert saved is None  # release blocked
+    assert coh_calls["n"] == 2  # initial check + post-refine re-check both ran
+
+
+def test_prep_segment_blocks_release_when_final_coherence_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The FINAL coherence gate validates the artifact that actually SHIPS. A draft
+    that PASSED the early check can still be regenerated by the recomposition
+    passes (disconfirmation/narrative/actionability); the final gate re-validates
+    that post-recompose script and blocks release if it fails. Gating only the
+    early/refined draft let a recompose-degraded final script ship un-validated
+    (codex-1, PR #4133). Asserting both coherence calls ran (early pass + final
+    fail, mid re-check skipped) proves the final gate — not an earlier gate — is
+    what blocked."""
+    import shared.segment_disconfirmation as disc
+    import shared.segment_narrative_critique as narr
+    from agents.deliberative_council.models import (
+        ConvergenceStatus,
+        NarrativeVerdict,
+        NarrativeVerdictStatus,
+    )
+
+    programme = SimpleNamespace(
+        programme_id="prog-final",
+        role=SimpleNamespace(value="rant"),
+        content=_ready_content(
+            narrative_beat="A claim",
+            segment_beats=["argue the point with a source receipt"],
+            role="rant",
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+    }
+
+    monkeypatch.setattr(prep, "_build_seed", lambda _programme: "seed")
+    monkeypatch.setattr(prep, "_build_full_segment_prompt", lambda _programme, _seed: "prompt")
+    monkeypatch.setattr(
+        prep,
+        "_call_llm",
+        lambda _prompt, **_kwargs: json.dumps(
+            ["According to the receipt, the launch claim changes once the source is visible."]
+        ),
+    )
+    monkeypatch.setattr(prep, "_refine_script", lambda script, _programme, **_kwargs: script)
+    monkeypatch.setattr(prep, "_emit_self_evaluation", lambda *_args, **_kwargs: None)
+    # No claims -> disconfirmation skipped; benign narrative verdict -> no recompose.
+    monkeypatch.setattr(disc, "extract_claims", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        narr,
+        "run_narrative_critique",
+        lambda _text, _pid: NarrativeVerdict(
+            scores={},
+            confidence_bands={},
+            convergence_status=ConvergenceStatus.CONVERGED,
+            verdict_status=NarrativeVerdictStatus.BROADCAST_READY,
+            receipt={"mean_score": 4.0},
+        ),
+    )
+    monkeypatch.setattr(
+        prep,
+        "validate_segment_actionability",
+        lambda script, _beats: {
+            "ok": True,
+            "prepared_script": list(script),
+            "beat_action_intents": [],
+            "diagnostic_sanitized_script": list(script),
+            "removed_unsupported_action_lines": [],
+        },
+    )
+
+    coh_calls = {"n": 0}
+
+    def _coh(_script: str, _pid: str) -> Any:
+        coh_calls["n"] += 1
+        passed = coh_calls["n"] == 1  # early PASSES, final FAILS
+        return prep._CoherenceOutcome(
+            passed=passed,
+            refused=False,
+            feedback="" if passed else "Council coherence scores (mean=1.5, min=1):",
+            council_decisions={
+                "check": "coherence",
+                "mean_score": 4.0 if passed else 1.5,
+                "axis_min": 4 if passed else 1,
+                "scores": {},
+            },
+        )
+
+    monkeypatch.setattr(prep, "_council_coherence_check", _coh)
+
+    saved = prep.prep_segment(programme, tmp_path, prep_session=session)
+
+    assert saved is None  # final gate blocked release
+    assert coh_calls["n"] == 2  # early (passed) + final (failed); mid re-check skipped
+
+
+def test_salient_impingement_block_tolerates_malformed_strength() -> None:
+    """A live /dev/shm impingement record may carry a null or string strength. The
+    renderer formats strength with {:.2f}, which raises on a non-numeric value
+    OUTSIDE the read guard — turning an observability input into a failed segment.
+    The renderer must coerce defensively (codex-1, PR #4133)."""
+    records = [
+        {"source": "a", "strength": None, "content": {"narrative": "null strength"}},
+        {"source": "b", "strength": "high", "type": "spike"},
+        {"source": "c", "strength": 0.8, "content": {"narrative": "real strength"}},
+    ]
+    block, ranked = prep._salient_impingement_block(records)
+    assert "SALIENT FIELD" in block
+    assert "0.80" in block  # the numeric record renders
+    assert "0.00" in block  # the malformed ones coerce to 0.0 instead of raising
+    assert len(ranked) == 3
 
 
 # --- Phase C: selection + manifest automation and prep->active-Programme bridge ----

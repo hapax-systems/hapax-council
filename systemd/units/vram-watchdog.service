@@ -1,5 +1,6 @@
 [Unit]
 Description=VRAM Watchdog — prevent GPU memory exhaustion
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot

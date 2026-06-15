@@ -153,6 +153,61 @@ class TestPhase1FailureTransparency:
         # No out-param supplied -> failures still dropped, no recording, no raise.
         assert results == []
 
+    async def test_research_budget_hit_member_still_scores(self) -> None:
+        # GRACEFUL research-cap handling (DASEIN re-rooting): a member that exhausts
+        # the research budget (UsageLimitExceeded) is NOT discarded — it proceeds to
+        # scoring with truncated research and survives into the panel. Discarding
+        # over-grounders collapsed members_valid in the 2026-06-13 seg-prep incident.
+        from pydantic_ai.exceptions import UsageLimitExceeded
+
+        async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
+            if output_type is None:  # research call — exhausts the budget
+                raise UsageLimitExceeded("simulated research budget exhausted")
+            return Phase1Output(scores={"a": 3}, rationale={"a": "ok"}, research_findings=[]), []
+
+        failures: list[MemberFailure] = []
+        with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
+            config = CouncilConfig(model_aliases=("opus", "balanced"))
+            inp = CouncilInput(text="t", source_ref="ref.md")
+            results = await run_phase1(inp, EpistemicQualityRubric(), config, failures_out=failures)
+
+        assert len(results) == 2  # both survive — research-cap is graceful, not a discard
+        assert failures == []
+
+    async def test_research_timeout_member_still_scores(self) -> None:
+        # TimeoutError in the research phase is also graceful (scores anyway).
+        async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
+            if output_type is None:
+                raise TimeoutError("simulated research timeout")
+            return Phase1Output(scores={"a": 3}, rationale={"a": "ok"}, research_findings=[]), []
+
+        failures: list[MemberFailure] = []
+        with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
+            config = CouncilConfig(model_aliases=("opus",))
+            inp = CouncilInput(text="t", source_ref="ref.md")
+            results = await run_phase1(inp, EpistemicQualityRubric(), config, failures_out=failures)
+
+        assert len(results) == 1
+        assert failures == []
+
+    async def test_scoring_failure_still_discards(self) -> None:
+        # The graceful path is research-ONLY; a SCORING failure still discards the
+        # member (no fail-open) — the survivors-only invariant is preserved.
+        async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
+            if output_type is None:
+                return "researched", []
+            raise TimeoutError("scoring failed")
+
+        failures: list[MemberFailure] = []
+        with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
+            config = CouncilConfig(model_aliases=("opus",))
+            inp = CouncilInput(text="t", source_ref="ref.md")
+            results = await run_phase1(inp, EpistemicQualityRubric(), config, failures_out=failures)
+
+        assert results == []
+        assert len(failures) == 1
+        assert "TimeoutError" in failures[0].reason
+
     async def test_deliberate_receipt_names_failed_members(self) -> None:
         # Whole panel fails -> REFUSED verdict (typed "broke", NOT HUNG which
         # means genuine disagreement) whose receipt names every failure, so a
@@ -172,3 +227,27 @@ class TestPhase1FailureTransparency:
         failed = verdict.receipt.get("failed_members", [])
         assert {f["model_alias"] for f in failed} == {"opus", "balanced", "gemini-3-pro"}
         assert all("TimeoutError" in f["reason"] for f in failed)
+
+
+class TestSegPrepGateUnblocks:
+    """Pins for the 2026-06-13 seg-prep GATE-1 unblocks (task
+    seg-prep-gate-code-unblocks-20260613). The live seg-prep journal
+    (2026-06-11 23:39) proved healthy members need 9-11 research tool calls;
+    the prior cap of 8 forced members_valid=1/6 -> 0 segments released."""
+
+    def test_research_budget_covers_observed_member_need(self) -> None:
+        from agents.deliberative_council.engine import _RESEARCH_LIMITS
+
+        # Observed live maximum was 11 (mistral); the budget must clear it.
+        assert _RESEARCH_LIMITS.tool_calls_limit >= 12, (
+            "research tool_calls_limit must cover the observed 11-call member "
+            "need + headroom (seg-prep GATE-1 blocker, 2026-06-11 journal)"
+        )
+        assert _RESEARCH_LIMITS.request_limit >= 8
+
+    def test_appendix_fast_alias_resolves_to_served_route(self) -> None:
+        # The appendix-served grounding route is in VALID_LITELLM_ROUTES; the
+        # MODELS alias must exist so agents can select it explicitly rather
+        # than only via the local-fast proxy fallback.
+        assert MODELS.get("appendix-fast") == "appendix-fast"
+        assert MODELS["appendix-fast"] in VALID_LITELLM_ROUTES

@@ -1,0 +1,77 @@
+# First Prometheus alert rules for the hapax estate
+# (audit-w4-observability-honesty — live /api/v1/rules was {"groups":[]}).
+#
+# Honest scope: there is NO alertmanager in the llm-stack. These rules are
+# evaluated and visible (/api/v1/rules, /api/v1/alerts, the ALERTS metric)
+# — that alone closes W4-PROM-ZERO-RULES. Notification delivery (ntfy
+# bridge) is follow-on work; nothing here claims it.
+#
+# Design rule: every alert must be quiet in the healthy steady state.
+# An alert that fires routinely is alert fatigue, which is what W4 is
+# burning down (cf. the 2,000/day echo-probe ntfy storm).
+
+groups:
+  - name: hapax-observability
+    rules:
+      - alert: HapaxExporterDown
+        expr: up{project="hapax-council"} == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "hapax exporter {{ $labels.job }} ({{ $labels.instance }}) down >10m"
+          description: >-
+            A project=hapax-council scrape target has been unreachable for
+            10 minutes. Parked services must have their scrape job disabled
+            (see prometheus.yml studio-compositor note), so a firing
+            instance of this alert is a real outage, not a stale registry.
+
+      - alert: HapaxPrivateBroadcastEchoLeak
+        expr: hapax_private_broadcast_echo_correlation > 0.15
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "private→broadcast echo correlation {{ $value | printf \"%.3f\" }} >0.15 for 2m"
+          description: >-
+            The echo probe measures what is ACTUALLY on the broadcast bus.
+            Sustained correlation above 0.15 sits above the ambient noise
+            band (witnessed 0.033-0.066) and inside the witnessed real-leak
+            band of the Jun 9-10 incident (0.21-1.00). This is the durable
+            alert path for the privacy invariant — it keeps working even if
+            the probe's own ntfy throttling misbehaves.
+            Runbook: docs/runbooks/audio-incidents.md#private-leak-l12
+
+      - alert: HapaxEchoProbeStale
+        # Two failure shapes, both must fire (review finding, PR #4106):
+        # stale = previously-seen sample stopped advancing (timer dead,
+        # pw-cat wedged); absent = the series never arrived at all
+        # (textfile orphaned, collector flag missing, scrape dropped).
+        # A bare `time() - metric > 300` returns an empty vector — i.e.
+        # silence — in exactly the absent case.
+        expr: >-
+          (time() - hapax_private_broadcast_echo_collect_ts > 300)
+          or absent(hapax_private_broadcast_echo_collect_ts)
+        labels:
+          severity: warning
+        annotations:
+          summary: "echo probe silent or missing for >5m — the privacy watcher itself died"
+          description: >-
+            The probe stamps hapax_private_broadcast_echo_collect_ts on
+            every 30s tick, leak or not. A 5-minute gap — or the series
+            being absent entirely — means the watcher died (timer stopped,
+            pw-cat wedged, textfile orphaned/unscraped) — the audit's
+            universal "who watches the watcher" class. A silent probe is
+            indistinguishable from a clean bus without this rule.
+
+      - alert: HapaxLufsPanicStorm
+        expr: increase(hapax_lufs_panic_cap_triggers_total[15m]) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: "LUFS panic cap triggered >5x in 15m"
+          description: >-
+            The panic cap is a last-resort limiter; occasional triggers are
+            it doing its job. A storm of them means upstream gain structure
+            is broken (router/ducker/loudnorm fight) and the broadcast is
+            being saved by the airbag, repeatedly.

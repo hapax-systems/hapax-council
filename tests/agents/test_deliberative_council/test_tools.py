@@ -90,6 +90,30 @@ class TestWebVerify:
             mock_get_model.assert_called_once_with("web-research")
             assert "Verified" in result
 
+    @pytest.mark.asyncio
+    async def test_times_out_gracefully(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A slow Perplexity provider must degrade to "no external evidence", never
+        # starve the member's research budget into the TimeoutError cascade
+        # (verified diagnosis 2026-06-14).
+        import agents.deliberative_council.tools as tools_mod
+
+        monkeypatch.setattr(tools_mod, "_WEB_VERIFY_TIMEOUT_S", 0.05)
+
+        async def _hang(*_a: object, **_k: object) -> object:
+            import asyncio
+
+            await asyncio.sleep(5)
+            return MagicMock()
+
+        mock_agent = MagicMock()
+        mock_agent.run = _hang
+        with (
+            patch("pydantic_ai.Agent", return_value=mock_agent),
+            patch("shared.config.get_model"),
+        ):
+            result = await web_verify(None, "slow claim")
+        assert "timed out" in result.lower()
+
 
 class TestQdrantLookup:
     @pytest.mark.asyncio

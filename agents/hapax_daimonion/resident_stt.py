@@ -28,9 +28,11 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-# Dedicated executor for STT. Streaming cache state is mutable, so all stream
-# steps and fallback transcriptions are serialized through one worker.
-_stt_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt")
+# Dedicated executors...
+_stt_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt-final")
+_speculative_stt_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt-spec")
+_prosody_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="prosody")
+
 
 DEFAULT_STREAMING_MODEL = "nvidia/nemotron-speech-streaming-en-0.6b"
 DEFAULT_SAMPLE_RATE = 16000
@@ -671,8 +673,9 @@ class ResidentSTT:
         if self._backend is None:
             return ""
         loop = asyncio.get_running_loop()
+        executor = _speculative_stt_executor if _speculative else _stt_executor
         return await loop.run_in_executor(
-            _stt_executor,
+            executor,
             self._transcribe_sync,
             audio_bytes,
             sample_rate,
@@ -751,8 +754,6 @@ def _extract_prosody(
 ) -> None:
     """Extract and publish prosodic features (best-effort, never blocks)."""
     try:
-        from shared.prosody import extract_prosody, write_prosody
-
         features = extract_prosody(audio, sample_rate, word_timestamps)
         write_prosody(features)
     except Exception:

@@ -7,6 +7,68 @@ from pydantic_ai.messages import CachePoint, UserContent
 
 from .rubrics import Rubric
 
+# ── SYSTEM PROMPTS (stable, cacheable prefix) ──────────────────────────────────
+# These are 100% static per rubric and seed.  Moving them into Agent(system_prompt=)
+# means providers that cache from the conversation start (Anthropic, Google, etc.)
+# get automatic prefix cache hits across all member calls using the same rubric.
+# cc-task cctv-prompt-caching-quality-neutral-20260607 R1b.
+
+
+def _format_axes_block(rubric: Rubric, seed: int | None = None) -> str:
+    """Render the rubric axes as a markdown block, optionally shuffled by seed."""
+    import random as _random
+
+    axes = list(rubric.axes)
+    if seed is not None:
+        rng = _random.Random(seed)
+        rng.shuffle(axes)
+
+    def _format_axis(a: object) -> str:
+        lines = [
+            f"- **{a.name}** ({a.min_score}-{a.max_score}): {a.description}",
+            f"  Strong example: {a.strong_example}",
+            f"  Weak example: {a.weak_example}",
+        ]
+        if getattr(a, "floor_example", ""):
+            lines.append(f"  Floor boundary: {a.floor_example}")
+        return "\n".join(lines)
+
+    return "\n".join(_format_axis(a) for a in axes)
+
+
+def phase1_system_prompt(rubric: Rubric, seed: int | None = None) -> str:
+    """Return the stable scoring system prompt for Phase 1 score members.
+
+    Contains the council role identity, rubric instructions, axis definitions,
+    and response-format specification — everything that is identical across all
+    calls using the same rubric.  Moving this into Agent(system_prompt=) ensures
+    it sits at the conversation prefix for maximum cache reuse.
+    """
+    axes = list(rubric.axes)
+    axis_block = _format_axes_block(rubric, seed=seed)
+    return (
+        "You are a member of a deliberative council evaluating text.\n\n"
+        f"{rubric.instructions}\n\n"
+        f"## Rubric Axes\n\n{axis_block}\n\n"
+        "## Scoring Instructions\n\n"
+        f"1. Score each axis {axes[0].min_score}-{axes[0].max_score}.\n"
+        "2. For each score, provide a 1-2 sentence rationale.\n"
+        "3. List any research findings (files checked, evidence found or not found).\n\n"
+        "Respond in JSON:\n"
+        '{"scores": {"axis_name": int, ...}, '
+        '"rationale": {"axis_name": "...", ...}, '
+        '"research_findings": ["..."]}'
+    )
+
+
+RESEARCH_SYSTEM_PROMPT = (
+    "You are a council member. Your role is to investigate source material "
+    "using your research tools and gather evidence before scoring.\n\n"
+    "Use tools to verify claims, check sources, and gather evidence. "
+    "Report your findings as a JSON list:\n"
+    '{"research_findings": ["finding 1", "finding 2", ...]}'
+)
+
 
 def _phase1_prompt_sections(
     rubric: Rubric, text: str, source_ref: str, seed: int | None = None

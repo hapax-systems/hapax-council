@@ -69,3 +69,70 @@ def test_poll_audience_override_is_still_enriched_with_bkt_pressure(tmp_path, mo
     assert state["viewer_count"] == 2
     assert state["concept_mastery"]["zpd_concepts"] == ["intro"]
     assert state["zpd_pressure"] == 1.0
+
+
+def _stub_concept_mastery(monkeypatch) -> None:
+    monkeypatch.setattr(
+        audience_perception,
+        "_concept_mastery_payload",
+        lambda: {
+            "tracked_count": 0,
+            "zpd_concepts": [],
+            "unknown_concepts": [],
+            "zpd_pressure": 0.0,
+            "unknown_pressure": 0.0,
+        },
+    )
+
+
+def test_youtube_path_declares_unsensed_psi_fields(tmp_path, monkeypatch) -> None:
+    """I2: the live YouTube path must DECLARE avg_watch_time_s / subscriber_delta as
+    unsensed stubs (the producer exposes neither), not present them as measured."""
+    viewer_file = tmp_path / "viewer-count.txt"
+    viewer_file.write_text("7", encoding="utf-8")
+    monkeypatch.setattr(audience_perception, "OVERRIDE_FILE", tmp_path / "missing.json")
+    monkeypatch.setattr(audience_perception, "VIEWER_COUNT_FILE", viewer_file)
+    monkeypatch.setattr(audience_perception, "CHAT_RECENT_FILE", tmp_path / "no-chat.jsonl")
+    _stub_concept_mastery(monkeypatch)
+
+    state = audience_perception._poll_audience()
+
+    assert state["source"] == "youtube_api"
+    assert state["unsensed_fields"] == ["avg_watch_time_s", "subscriber_delta"]
+    # declared, NOT closed: the numeric value/type is unchanged for the density consumer
+    assert state["avg_watch_time_s"] == 0.0
+    assert state["subscriber_delta"] == 0
+
+
+def test_fallback_path_declares_unsensed_psi_fields(tmp_path, monkeypatch) -> None:
+    """No override + no viewer sample → the fallback path still declares the ψ stubs."""
+    monkeypatch.setattr(audience_perception, "OVERRIDE_FILE", tmp_path / "missing.json")
+    monkeypatch.setattr(audience_perception, "VIEWER_COUNT_FILE", tmp_path / "no-viewer.txt")
+    _stub_concept_mastery(monkeypatch)
+
+    state = audience_perception._poll_audience()
+
+    assert state["source"] == "fallback"
+    assert state["unsensed_fields"] == ["avg_watch_time_s", "subscriber_delta"]
+
+
+def test_override_declares_unsensed_only_for_fields_operator_omitted(tmp_path, monkeypatch) -> None:
+    """The override path is path-sensitive: a ψ field the operator SUPPLIED is a real
+    sensed value (not unsensed); one the operator omitted is declared unsensed."""
+    _stub_concept_mastery(monkeypatch)
+
+    full = tmp_path / "audience-override.json"
+    full.write_text(
+        json.dumps({"viewer_count": 5, "avg_watch_time_s": 120.0, "subscriber_delta": 3}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(audience_perception, "OVERRIDE_FILE", full)
+    state = audience_perception._poll_audience()
+    assert state["source"] == "override"
+    assert state["unsensed_fields"] == []
+
+    partial = tmp_path / "audience-override-partial.json"
+    partial.write_text(json.dumps({"viewer_count": 5, "avg_watch_time_s": 120.0}), encoding="utf-8")
+    monkeypatch.setattr(audience_perception, "OVERRIDE_FILE", partial)
+    state = audience_perception._poll_audience()
+    assert state["unsensed_fields"] == ["subscriber_delta"]

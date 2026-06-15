@@ -2,6 +2,7 @@
 Description=Live Surface Guard — OBS/HLS/public egress observability and bounded remediation receipts
 After=studio-compositor.service
 ConditionPathExists=%h/.cache/hapax/source-activation/worktree/agents/live_surface_guard
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple

@@ -460,6 +460,32 @@ if systemctl --user is-active hapax-audio-reconciler >/dev/null 2>&1; then
 else
     check "hapax-audio-reconciler active" "reconciler not running — desired-state links unmaintained"
 fi
+
+# ── Egress loudness: deployed limiter controls ↔ loudness SSOT (drift guard) ──
+# Catches deploy-time drift of the broadcast-master makeup/limit/release from
+# shared/audio_loudness.py — the deploy-drift the audio-topology research measured and
+# corrected (~/.config/pipewire is not git, and the pre-existing audio gates check route
+# STRUCTURE, not these loudness VALUES).
+#
+# Resolve the helper via the REAL script path (readlink -f follows an installed symlink),
+# not the symlink dir, so an installed routing-check still finds the guard beside its
+# source. If a conf IS deployed but the guard cannot run, fail CLOSED (UNVERIFIED) — a
+# silent no-op here would be the exact fail-open class this guard exists to catch.
+_loudness_self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+_loudness_ssot_check="$(dirname "$_loudness_self")/check-broadcast-master-loudness-ssot.py"
+_loudness_deployed_conf="$HOME/.config/pipewire/pipewire.conf.d/hapax-broadcast-master.conf"
+if [ ! -f "$_loudness_deployed_conf" ]; then
+    # No deployed conf (CI / fresh host) → nothing to drift from; skip, don't fail.
+    echo "  [SKIP] broadcast-master conf not deployed — loudness SSOT drift check skipped"
+elif [ ! -f "$_loudness_ssot_check" ] || ! command -v python3 >/dev/null 2>&1; then
+    check "broadcast-master limiter matches loudness SSOT" \
+        "guard unavailable (check-broadcast-master-loudness-ssot.py or python3 missing) — a DEPLOYED conf is present but UNVERIFIED (fail-closed, never a silent skip)"
+elif python3 "$_loudness_ssot_check" --installed >/dev/null 2>&1; then
+    check "broadcast-master limiter matches loudness SSOT" "PASS"
+else
+    check "broadcast-master limiter matches loudness SSOT" \
+        "deployed Input gain/Limit/Release drifted from shared/audio_loudness.py — run scripts/check-broadcast-master-loudness-ssot.py --installed"
+fi
 echo ""
 
 # ── Signal-Flow Advisory Check ────────────────────────────────────────────

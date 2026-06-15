@@ -2,6 +2,7 @@
 Description=Studio FX Output — feeds GPU-effected video to /dev/video50
 After=studio-compositor.service
 Wants=studio-compositor.service
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple

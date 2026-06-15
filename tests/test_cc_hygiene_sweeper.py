@@ -315,6 +315,45 @@ def test_orphan_pr_linked_pr_suppresses(tmp_path: Path) -> None:
     assert events == []
 
 
+def test_orphan_pr_secondary_linked_pr_suppresses(tmp_path: Path) -> None:
+    now = _now()
+    notes = [
+        TaskNote(
+            path="x",
+            task_id="cc-A",
+            status="pr_open",
+            pr=4091,
+            linked_prs=(4091, 4092),
+        )
+    ]
+    fake_prs = [
+        {
+            "number": 4092,
+            "headRefName": "alpha/abstention-witness-class-20260611",
+            "createdAt": (now - timedelta(hours=4)).isoformat(),
+        }
+    ]
+    with patch("cc_hygiene.checks._gh_pr_list", return_value=fake_prs):
+        events = check_orphan_pr(notes, tmp_path, now=now)
+    assert events == []
+
+
+def test_parse_task_note_collects_secondary_pr_links(tmp_path: Path) -> None:
+    note_path = _write_note(
+        tmp_path,
+        "cc-A",
+        status="pr_open",
+        pr=4091,
+        pr_secondary=4092,
+    )
+
+    note = parse_task_note(note_path)
+
+    assert note is not None
+    assert note.pr == 4091
+    assert note.linked_prs == (4091, 4092)
+
+
 def test_orphan_pr_too_young_suppresses(tmp_path: Path) -> None:
     now = _now()
     fake_prs = [

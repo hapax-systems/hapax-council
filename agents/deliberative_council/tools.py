@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import logging
+import os
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -10,27 +15,77 @@ log = logging.getLogger(__name__)
 HAPAX_COUNCIL_DIR = Path(__file__).resolve().parent.parent.parent
 VAULT_DIR = Path.home() / "Documents" / "Personal"
 MAX_READ_CHARS = 4000
+# web_verify spawns a nested Perplexity agent with no internal bound; one slow
+# call consumed most of a member's research budget and produced the TimeoutError
+# cascade (verified diagnosis 2026-06-14). Bound it so a slow provider degrades
+# to "no external evidence", never a starved member.
+_WEB_VERIFY_TIMEOUT_S = float(os.environ.get("HAPAX_COUNCIL_WEB_VERIFY_TIMEOUT_S", "45"))
+
+# ── PER-RUN TOOL MEMOIZATION ──────────────────────────────────────────────────
+# cc-task cctv-prompt-caching-quality-neutral-20260607 R4. Across one
+# ``deliberate()`` run the same source file is read and the same pattern grepped
+# many times (every member, every phase). The deterministic read-only tools
+# (read_source / grep_evidence) short-circuit identical sub-calls within a single
+# deliberation via a ContextVar-scoped cache. The cache is entered by
+# ``tool_memoization_scope()`` (engine.deliberate wraps its body); the ContextVar
+# is COPIED into the asyncio.gather member tasks, so all members of one
+# deliberation share one cache while distinct deliberations stay isolated. When
+# no scope is active (default None) the tools run uncached — unchanged behaviour
+# for any caller outside ``deliberate()``.
+_tool_cache: contextvars.ContextVar[dict[tuple[str, ...], str] | None] = contextvars.ContextVar(
+    "cctv_tool_cache", default=None
+)
+
+
+@contextmanager
+def tool_memoization_scope() -> Iterator[None]:
+    """Activate a fresh per-run memoization cache for the duration of the block."""
+    token = _tool_cache.set({})
+    try:
+        yield
+    finally:
+        _tool_cache.reset(token)
+
+
+def _memo_get(key: tuple[str, ...]) -> str | None:
+    cache = _tool_cache.get()
+    return None if cache is None else cache.get(key)
+
+
+def _memo_put(key: tuple[str, ...], value: str) -> str:
+    cache = _tool_cache.get()
+    if cache is not None:
+        cache[key] = value
+    return value
 
 
 async def read_source(ctx: Any, path: str) -> str:
     """Read a source_ref file to verify it exists and check content."""
+    key = ("read_source", path)
+    cached = _memo_get(key)
+    if cached is not None:
+        return cached
     log.info("council_tool call: read_source(%s)", path)
     p = Path(path).expanduser()
     if not p.is_absolute():
         p = HAPAX_COUNCIL_DIR / p
     if not p.exists():
-        return f"File not found: {p}"
+        return _memo_put(key, f"File not found: {p}")
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
         if len(text) > MAX_READ_CHARS:
-            return text[:MAX_READ_CHARS] + f"\n... [{len(text) - MAX_READ_CHARS} more chars]"
-        return text
+            text = text[:MAX_READ_CHARS] + f"\n... [{len(text) - MAX_READ_CHARS} more chars]"
+        return _memo_put(key, text)
     except Exception as e:
-        return f"Error reading {p}: {e}"
+        return _memo_put(key, f"Error reading {p}: {e}")
 
 
 async def grep_evidence(ctx: Any, pattern: str, scope: str) -> str:
     """Search codebase for evidence."""
+    key = ("grep_evidence", pattern, scope)
+    cached = _memo_get(key)
+    if cached is not None:
+        return cached
     log.info("council_tool call: grep_evidence(%s, %s)", pattern, scope)
     search_dir = HAPAX_COUNCIL_DIR / scope
     if not search_dir.is_dir():
@@ -44,9 +99,10 @@ async def grep_evidence(ctx: Any, pattern: str, scope: str) -> str:
         )
         lines = result.stdout.strip().split("\n")[:20]
         if not lines or lines == [""]:
-            return f"No matches for '{pattern}' in {scope}"
-        return "\n".join(lines)
+            return _memo_put(key, f"No matches for '{pattern}' in {scope}")
+        return _memo_put(key, "\n".join(lines))
     except subprocess.TimeoutExpired:
+        # Transient — do NOT memoize so a later identical call can retry.
         return f"Search timed out for '{pattern}' in {scope}"
 
 
@@ -76,7 +132,14 @@ async def web_verify(ctx: Any, query: str) -> str:
     from shared.config import get_model
 
     agent = Agent(get_model("web-research"))
-    result = await agent.run(f"Search and summarize evidence for or against: {query}")
+    try:
+        result = await asyncio.wait_for(
+            agent.run(f"Search and summarize evidence for or against: {query}"),
+            timeout=_WEB_VERIFY_TIMEOUT_S,
+        )
+    except TimeoutError:
+        log.warning("web_verify timed out after %.0fs: %s", _WEB_VERIFY_TIMEOUT_S, query[:80])
+        return f"(web_verify timed out after {_WEB_VERIFY_TIMEOUT_S:.0f}s — no external evidence gathered)"
     return str(result.output)[:MAX_READ_CHARS]
 
 

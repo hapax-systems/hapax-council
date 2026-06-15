@@ -71,8 +71,8 @@ _PERCEPTUAL_IMPINGEMENTS_FILE = Path("/dev/shm/hapax-dmn/impingements.jsonl")
 # ``scripts/measure-preset-variety-baseline.py`` to compute
 # ``per_preset_activation_count`` + ``colorgrade_halftone_ratio``
 # (preset-variety plan Phase 1 / Phase 9). Path mirrors the default
-# the baseline script reads from. Append-only; operator rotates
-# manually if needed (~80 bytes/line × ~5/sec ≈ 35 MB/day).
+# the baseline script reads from. Size-capped by
+# hapax-rotate-dispatch-recruitment-impingements.timer.
 RECRUITMENT_LOG_FILE = Path.home() / "hapax-state" / "affordance" / "recruitment-log.jsonl"
 # Operator-runtime override of recruitment-log writing.
 # Set ``HAPAX_RECRUITMENT_LOG=0`` to disable (default-on).
@@ -82,7 +82,8 @@ RECRUITMENT_LOG_ENV = "HAPAX_RECRUITMENT_LOG"
 # so the dispatch-dropout investigation can distinguish family-filter empty
 # from threshold-miss from consent-veto. See
 # ``docs/research/2026-04-22-dispatch-dropout-investigation.md`` for context.
-# Set ``HAPAX_DISPATCH_TRACE=0`` to disable (default-on).
+# Set ``HAPAX_DISPATCH_TRACE=0`` to disable (default-on). Size-capped by
+# hapax-rotate-dispatch-recruitment-impingements.timer.
 DISPATCH_TRACE_FILE = Path.home() / "hapax-state" / "affordance" / "dispatch-trace.jsonl"
 DISPATCH_TRACE_ENV = "HAPAX_DISPATCH_TRACE"
 # Preset-variety Phase 4: Thompson posterior decay on non-recruitment.

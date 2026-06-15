@@ -268,7 +268,7 @@ class TestHappyPath:
                 "plan prompt",
                 {
                     "chat_url": "http://tabby.test/v1/chat/completions",
-                    "max_tokens": 8192,
+                    "max_tokens": 16384,
                     "temperature": 0.7,
                     "timeout_s": planner_mod._LLM_TIMEOUT_S,
                 },

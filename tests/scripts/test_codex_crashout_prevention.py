@@ -18,6 +18,7 @@ CC_CLAIM = REPO_ROOT / "scripts" / "cc-claim"
 # Gate logic lives in the impl behind the shim (reform FM-6); exec it directly.
 CC_TASK_GATE = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh"
 NO_STALE = REPO_ROOT / "hooks" / "scripts" / "no-stale-branches.sh"
+FINDINGS_EXIT = 10  # codex-claim-audit v2: findings exit code (distinct from crash)
 CLAIM_AUDIT = REPO_ROOT / "scripts" / "codex-claim-audit"
 
 
@@ -75,13 +76,33 @@ def _claim(home: Path, task_id: str, force: bool = False) -> subprocess.Complete
     return subprocess.run(cmd, env=env, text=True, capture_output=True, check=False)
 
 
-def _run_claim_audit(home: Path, *args: str, ps_text: str = "") -> subprocess.CompletedProcess[str]:
+def _run_claim_audit(
+    home: Path,
+    *args: str,
+    ps_text: str = "",
+    gh_state: str = "CLOSED",
+) -> subprocess.CompletedProcess[str]:
     ps_fixture = home / "claim-audit-ps.txt"
     ps_fixture.parent.mkdir(parents=True, exist_ok=True)
     ps_fixture.write_text(ps_text, encoding="utf-8")
+    # Inject a gh stub so _gh_pr_is_open can produce deterministic results.
+    # Default is CLOSED so pre-existing tests (which pre-date the fail-safe gh)
+    # continue to release claims as before.
+    gh_stub = home / "bin" / "gh"
+    gh_stub.parent.mkdir(parents=True, exist_ok=True)
+    gh_stub.write_text(
+        f"#!/usr/bin/env bash\n"
+        f'if [[ "$1" == "pr" && "$2" == "view" ]]; then echo \'{gh_state}\'; exit 0; fi\n'
+        f'if [[ "$1" == "pr" && "$2" == "list" ]]; then echo \'\'; exit 0; fi\n'
+        f"exit 1\n",
+        encoding="utf-8",
+    )
+    gh_stub.chmod(0o755)
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["HAPAX_CLAIM_AUDIT_PS_FIXTURE"] = str(ps_fixture)
+    env["HAPAX_GH_CMD"] = str(gh_stub)
+    env["PATH"] = f"{gh_stub.parent}:{env.get('PATH', '/usr/bin:/bin')}"
     return subprocess.run(
         ["bash", str(CLAIM_AUDIT), *args],
         env=env,
@@ -213,7 +234,7 @@ def test_audit_detects_phantom_claim(tmp_path: Path) -> None:
     )
 
     r = _run_claim_audit(home, "--stale-hours=1")
-    assert r.returncode == 1
+    assert r.returncode == FINDINGS_EXIT
     assert "PHANTOM" in r.stdout
     assert "phantom-task" in r.stdout
 
@@ -276,7 +297,7 @@ def test_audit_reports_quota_blocked_claim_from_receipt(tmp_path: Path) -> None:
 
     r = _run_claim_audit(home, "--stale-hours=999")
 
-    assert r.returncode == 1
+    assert r.returncode == FINDINGS_EXIT
     assert "quota-blocked claim(s) found" in r.stdout
     assert "QUOTA_BLOCKED: quota-held assigned=alpha" in r.stdout
     assert "quota-wall-receipt:" in r.stdout
@@ -314,7 +335,7 @@ def test_audit_release_does_not_release_quota_blocked_without_explicit_flag(
 
     r = _run_claim_audit(home, "--release", "--stale-hours=999")
 
-    assert r.returncode == 1
+    assert r.returncode == FINDINGS_EXIT
     assert "HELD: pass --release-quota-blocked" in r.stdout
     assert claim_file.exists()
     updated = note.read_text(encoding="utf-8")
@@ -415,7 +436,7 @@ def test_audit_reports_quota_blocked_claim_from_dispatch_ledger(tmp_path: Path) 
 
     r = _run_claim_audit(home, "--stale-hours=999")
 
-    assert r.returncode == 1
+    assert r.returncode == FINDINGS_EXIT
     assert "QUOTA_BLOCKED: ledger-held assigned=theta" in r.stdout
     assert "methodology-dispatch:rd-test-quota" in r.stdout
 
@@ -459,7 +480,7 @@ def test_audit_reports_quota_blocked_claim_from_route_decision_ledger(
 
     r = _run_claim_audit(home, "--stale-hours=999")
 
-    assert r.returncode == 1
+    assert r.returncode == FINDINGS_EXIT
     assert "QUOTA_BLOCKED: route-held assigned=alpha" in r.stdout
     assert "route-decisions:rd-route-quota" in r.stdout
 
@@ -491,12 +512,15 @@ def test_audit_preserves_mismatched_claim_cache(tmp_path: Path) -> None:
     )
 
     r = _run_claim_audit(home, "--release", "--stale-hours=1")
-    assert r.returncode == 1
+    assert r.returncode == FINDINGS_EXIT
     assert "KEPT claim cache cc-active-task-codex-stale" in r.stdout
     assert claim_file.read_text(encoding="utf-8") == "different-task\n"
+    # v2: cache clear preflight fails on mismatch → note is NOT released.
+    # The cache names "different-task" but the phantom is "release-me", so
+    # _clear_claim_cache_for_release returns 1 and the note stays claimed.
     updated = note.read_text(encoding="utf-8")
-    assert "status: offered" in updated
-    assert "assigned_to: unassigned" in updated
+    assert "status: claimed" in updated
+    assert "HELD" in r.stdout or "claim release preflight failed" in r.stdout
 
 
 def test_audit_release_clears_already_released_claim_cache(tmp_path: Path) -> None:
@@ -552,7 +576,7 @@ def test_audit_reports_missing_claim_cache_in_read_only_mode(tmp_path: Path) -> 
 
     r = _run_claim_audit(home, "--stale-hours=999")
 
-    assert r.returncode == 1
+    assert r.returncode == FINDINGS_EXIT
     assert "claim coherence issue" in r.stdout
     assert "CACHE_MISSING: missing-cache assigned=alpha" in r.stdout
 
@@ -571,7 +595,7 @@ def test_audit_reports_mismatched_claim_cache_in_read_only_mode(tmp_path: Path) 
 
     r = _run_claim_audit(home, "--stale-hours=999")
 
-    assert r.returncode == 1
+    assert r.returncode == FINDINGS_EXIT
     assert "CACHE_MISMATCH: expected-task assigned=codex-mismatch" in r.stdout
     assert "cache_task=other-task" in r.stdout
 
@@ -593,7 +617,7 @@ def test_audit_reports_stale_resumed_process_for_closed_task(tmp_path: Path) -> 
 
     r = _run_claim_audit(home, "--stale-hours=999", ps_text=ps_text)
 
-    assert r.returncode == 1
+    assert r.returncode == FINDINGS_EXIT
     assert "live process coherence issue" in r.stdout
     assert "PROCESS_TASK_NOT_ACTIVE" in r.stdout
     assert "task_state=closed:done" in r.stdout

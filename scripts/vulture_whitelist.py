@@ -4082,3 +4082,70 @@ from shared.evidence_ledger import (  # noqa: F401, E402
 determination_exchange_packet_to_external_evidence
 synthetic_inbound_observation_packet
 synthetic_outbound_determination_packet
+
+# pydantic @model_validator(mode="after") — invoked by the framework during
+# model construction, never by a static call site (PR #4073).
+from shared.perception_registry import PerceptionPoint  # noqa: E402
+
+PerceptionPoint._geometry_policy
+
+# Platform session contract v1: exported adapter-conformance helpers are invoked
+# by fixture suites and future trainyard adapter runners. Pydantic field validators
+# are framework entrypoints, and the diff-only vulture gate does not count tests.
+from shared.platform_session_contract import (  # noqa: F401, E402
+    ControlMessage as _PlatformSessionControlMessage,
+)
+from shared.platform_session_contract import (  # noqa: F401, E402
+    PlatformSessionEvent as _PlatformSessionEvent,
+)
+from shared.platform_session_contract import (  # noqa: F401, E402
+    adapter_artifacts as _platform_session_adapter_artifacts,
+)
+from shared.platform_session_contract import (  # noqa: F401, E402
+    adapter_contracts as _platform_session_adapter_contracts,
+)
+from shared.platform_session_contract import (  # noqa: F401, E402
+    artifact_projection_rows as _platform_session_artifact_projection_rows,
+)
+from shared.platform_session_contract import (  # noqa: F401, E402
+    parse_jsonl_events as _platform_session_parse_jsonl_events,
+)
+from shared.platform_session_contract import (  # noqa: F401, E402
+    resolve_identity as _platform_session_resolve_identity,
+)
+from shared.platform_session_contract import (  # noqa: F401, E402
+    run_conformance_fixture as _platform_session_run_conformance_fixture,
+)
+
+_PlatformSessionControlMessage._require_timezone
+_PlatformSessionEvent._require_timezone
+_PlatformSessionEvent.to_json_line
+_platform_session_adapter_artifacts
+_platform_session_adapter_contracts
+_platform_session_artifact_projection_rows
+_platform_session_parse_jsonl_events
+_platform_session_resolve_identity
+_platform_session_run_conformance_fixture
+
+# Ghost-release detector — registered via @check_group("release") decorator
+# and dispatched dynamically through the group registry by health_monitor's
+# runner; same dynamic-registry pattern as check_m8_firmware above
+# (cc-task: audit-w1-logos-gc-guard-20260611, PR #4094 fix round).
+from agents.health_monitor.checks.release_ghost import check_release_ghost  # noqa: E402
+
+check_release_ghost
+
+# Session identity functions — called by hapax-cc-claim/hapax-cc-close
+# (extensionless executables outside vulture's parse set) and by
+# platform session adapters (PR #4097).
+from shared.session_identity import (
+    claim_paths,  # noqa: E402
+    identity_stamp,  # noqa: E402
+    mint_session_id,  # noqa: E402
+    session_role_marker_path,  # noqa: E402
+)
+
+mint_session_id
+claim_paths
+session_role_marker_path
+identity_stamp

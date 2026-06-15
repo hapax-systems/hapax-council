@@ -22,6 +22,14 @@ class Rubric(BaseModel):
     version: int = 1
     axes: tuple[RubricAxis, ...]
     instructions: str = ""
+    #: Whether Phase-1 should run the claim-verification research pass (tools:
+    #: grep/read/web-verify) BEFORE scoring. True for rubrics that judge claims
+    #: against sources (epistemic_quality, disconfirmation, intake_hardening).
+    #: A JUDGMENT rubric whose object IS the supplied text — coherence, narrative
+    #: quality — must set this False: forcing it to "verify the source material"
+    #: makes members exhaust the research budget and time out, then score the text
+    #: on truncated/irrelevant research (the rubric-blind research-pass bug).
+    requires_research: bool = True
 
 
 class EpistemicQualityRubric(Rubric):
@@ -135,6 +143,9 @@ class DisconfirmationRubric(Rubric):
 class CoherenceRubric(Rubric):
     name: str = "coherence"
     version: int = 1
+    # Judgment rubric: the object IS the supplied script — score it from a read,
+    # not a claim-verification research crawl that times out (rubric-blind bug).
+    requires_research: bool = False
     instructions: str = (
         "Score the FULL segment script as a composed narrative. "
         "Evaluate whether it works as a broadcast segment that an audience "
@@ -194,6 +205,9 @@ class CoherenceRubric(Rubric):
 class NarrativeQualityRubric(Rubric):
     name: str = "narrative_quality"
     version: int = 1
+    # Judgment rubric: evaluates whether the text WORKS as broadcast speech; the
+    # object is the text itself, so no claim-verification research pass.
+    requires_research: bool = False
     instructions: str = (
         "Score each axis 1-5 through adversarial deliberation. "
         "The narrator is a non-anthropomorphic system with authentic perspective "

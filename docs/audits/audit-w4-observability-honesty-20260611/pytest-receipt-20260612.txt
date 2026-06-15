@@ -1,0 +1,61 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0 -- /home/hapax/projects/hapax-council--epsilon/.venv/bin/python
+cachedir: .pytest_cache
+hypothesis profile 'default'
+benchmark: 5.2.3 (defaults: timer=time.perf_counter disable_gc=False min_rounds=5 min_time=0.000005 max_time=1.0 calibration_precision=10 warmup=False warmup_iterations=100000)
+rootdir: /home/hapax/projects/hapax-council--epsilon
+configfile: pyproject.toml
+plugins: schemathesis-4.13.0, hypothesis-6.151.9, logfire-4.25.0, asyncio-1.3.0, benchmark-5.2.3, cov-7.0.0, anyio-4.12.1
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 48 items
+
+tests/test_s1s2_onfailure_coverage.py::TestFrozenMapIntegrity::test_no_duplicate_entries PASSED [  2%]
+tests/test_s1s2_onfailure_coverage.py::TestFrozenMapIntegrity::test_every_mapped_unit_file_exists PASSED [  4%]
+tests/test_s1s2_onfailure_coverage.py::TestFrozenMapIntegrity::test_exempt_units_are_in_the_map PASSED [  6%]
+tests/test_s1s2_onfailure_coverage.py::TestFrozenMapIntegrity::test_notify_failure_handler_exists PASSED [  8%]
+tests/test_s1s2_onfailure_coverage.py::TestOnFailureCoverage::test_every_s1s2_unit_has_onfailure_or_declared_probe PASSED [ 10%]
+tests/test_s1s2_onfailure_coverage.py::TestOnFailureCoverage::test_onfailure_lines_live_in_unit_section PASSED [ 12%]
+tests/test_private_broadcast_echo_probe.py::TestNormalizedPeakXcorrMath::test_identical_streams_give_high_correlation PASSED [ 14%]
+tests/test_private_broadcast_echo_probe.py::TestNormalizedPeakXcorrMath::test_independent_noise_gives_low_correlation PASSED [ 16%]
+tests/test_private_broadcast_echo_probe.py::TestNormalizedPeakXcorrMath::test_silent_streams_give_zero PASSED [ 18%]
+tests/test_private_broadcast_echo_probe.py::TestNormalizedPeakXcorrMath::test_one_silent_one_active_gives_zero PASSED [ 20%]
+tests/test_private_broadcast_echo_probe.py::TestNormalizedPeakXcorrMath::test_too_short_streams_return_zero PASSED [ 22%]
+tests/test_private_broadcast_echo_probe.py::TestNormalizedPeakXcorrMath::test_lagged_copy_gives_high_correlation PASSED [ 25%]
+tests/test_private_broadcast_echo_probe.py::TestTextfileMetricShape::test_textfile_emits_required_metrics PASSED [ 27%]
+tests/test_private_broadcast_echo_probe.py::TestTextfileMetricShape::test_textfile_emits_collect_timestamp PASSED [ 29%]
+tests/test_private_broadcast_echo_probe.py::TestTextfileMetricShape::test_textfile_alert_counter_increments_on_leak PASSED [ 31%]
+tests/test_private_broadcast_echo_probe.py::TestArgParser::test_defaults_align_with_audit_d_spec PASSED [ 33%]
+tests/test_private_broadcast_echo_probe.py::TestArgParser::test_alert_gating_defaults PASSED [ 35%]
+tests/test_private_broadcast_echo_probe.py::TestAlertGating::test_first_breach_ticks_below_floor_do_not_alert PASSED [ 37%]
+tests/test_private_broadcast_echo_probe.py::TestAlertGating::test_third_consecutive_breach_tick_alerts PASSED [ 39%]
+tests/test_private_broadcast_echo_probe.py::TestAlertGating::test_episode_start_is_first_breach_tick PASSED [ 41%]
+tests/test_private_broadcast_echo_probe.py::TestAlertGating::test_cooldown_suppresses_repeat_ntfy_within_episode PASSED [ 43%]
+tests/test_private_broadcast_echo_probe.py::TestAlertGating::test_ntfy_refires_after_cooldown_if_episode_persists PASSED [ 45%]
+tests/test_private_broadcast_echo_probe.py::TestAlertGating::test_clean_tick_resets_streak_and_episode PASSED [ 47%]
+tests/test_private_broadcast_echo_probe.py::TestAlertGating::test_tolerates_garbage_state_dict PASSED [ 50%]
+tests/test_private_broadcast_echo_probe.py::TestMainWiring::test_leak_tick_exits_2_even_while_ntfy_suppressed PASSED [ 52%]
+tests/test_private_broadcast_echo_probe.py::TestMainWiring::test_clean_tick_exits_0_and_still_writes_gauge PASSED [ 54%]
+tests/test_private_broadcast_echo_probe.py::TestMainWiring::test_ntfy_fires_only_on_third_consecutive_leak_tick PASSED [ 56%]
+tests/test_private_broadcast_echo_probe.py::TestStatePersistence::test_missing_state_file_loads_fresh PASSED [ 58%]
+tests/test_private_broadcast_echo_probe.py::TestStatePersistence::test_corrupt_state_file_loads_fresh PASSED [ 60%]
+tests/test_private_broadcast_echo_probe.py::TestStatePersistence::test_roundtrip PASSED [ 62%]
+tests/test_album_identifier_polarity.py::TestCoverSaveGateBehavior::test_no_album_ticks_log_info_exactly_once PASSED [ 64%]
+tests/test_album_identifier_polarity.py::TestCoverSaveGateBehavior::test_album_present_allows_save_and_rearms_latch PASSED [ 66%]
+tests/test_album_identifier_polarity.py::TestCoverSaveGateBehavior::test_initial_empty_dict_state_still_saves PASSED [ 68%]
+tests/test_album_identifier_polarity.py::TestReleaseRootContract::test_exec_paths_use_release_root PASSED [ 70%]
+tests/test_album_identifier_polarity.py::TestReleaseRootContract::test_runtime_source_check_guards_start PASSED [ 72%]
+tests/test_album_identifier_polarity.py::TestNoAlbumPolarityFixed::test_no_album_state_is_not_raised_as_exception PASSED [ 75%]
+tests/test_album_identifier_polarity.py::TestNoAlbumPolarityFixed::test_transition_latch_exists PASSED [ 77%]
+tests/test_album_identifier_polarity.py::TestNoAlbumPolarityFixed::test_no_album_logging_is_info_not_error PASSED [ 79%]
+tests/test_album_identifier_polarity.py::TestNoAlbumPolarityFixed::test_main_routes_save_through_the_gate PASSED [ 81%]
+tests/test_prometheus_observability_config.py::TestScrapeConfig::test_config_parses_and_loads_rule_files PASSED [ 83%]
+tests/test_prometheus_observability_config.py::TestScrapeConfig::test_live_exporters_are_scraped PASSED [ 85%]
+tests/test_prometheus_observability_config.py::TestScrapeConfig::test_litellm_scrape_authenticates_via_credentials_file PASSED [ 87%]
+tests/test_prometheus_observability_config.py::TestScrapeConfig::test_no_inline_secrets_anywhere PASSED [ 89%]
+tests/test_prometheus_observability_config.py::TestAlertRules::test_at_least_three_alert_rules PASSED [ 91%]
+tests/test_prometheus_observability_config.py::TestAlertRules::test_every_rule_has_expr_and_summary PASSED [ 93%]
+tests/test_prometheus_observability_config.py::TestAlertRules::test_echo_leak_rule_matches_probe_calibration PASSED [ 95%]
+tests/test_prometheus_observability_config.py::TestAlertRules::test_probe_staleness_rule_exists PASSED [ 97%]
+tests/test_prometheus_observability_config.py::TestAlertRules::test_probe_staleness_rule_covers_absent_series PASSED [100%]
+
+============================== 48 passed in 2.95s ==============================

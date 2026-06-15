@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# hapax-alert — the ONE governed emitter for technical system alerts.
+#
+# Class-closure for the "raw high-priority alert sources bypass P0 intake"
+# finding (PR #4109 review): standalone system-health producers
+# (disk/backup/vram/audio/v4l2/usb watchdogs) historically called
+# `notify-send -u critical` / raw `ntfy` directly, so their high/urgent
+# alerts never created governed incident records. Routing through this
+# wrapper makes every technical system alert flow through
+# shared.p0_incident_intake (record_notification) AND still reach the
+# desktop — the intake CLI does both. Fallback to bare notify-send only if
+# the governed path is unavailable, so an intake outage degrades to a
+# visible desktop alert rather than silence (fail-visible, never silent).
+#
+# Usage: hapax-alert <priority> <title> <message> [--tag TAG]
+#   priority ∈ {urgent, high, default, low, min}
+# A canary (tests/scripts/test_alert_routing.py) fails any high-priority
+# producer that emits raw instead of through here.
+set -euo pipefail
+
+PRIORITY="${1:?usage: hapax-alert <priority> <title> <message> [--tag TAG]}"
+TITLE="${2:?title required}"
+MESSAGE="${3:?message required}"
+shift 3 || true
+
+# --record-only: caller already owns a visible channel (e.g. ntfy), so only
+# the governed incident RECORD is wanted — no desktop notify, no desktop
+# fallback. Used by ntfy producers to gain a governed record without losing
+# or doubling their existing alert.
+TAG="system"
+RECORD_ONLY=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --tag) TAG="${2:-system}"; shift 2 ;;
+    --record-only) RECORD_ONLY=1; shift ;;
+    *) shift ;;
+  esac
+done
+
+INTAKE="$(dirname "$(readlink -f "$0")")/hapax-p0-incident-intake"
+
+# high/urgent are technical incidents → governed record (the intake CLI also
+# emits the desktop notify, unless --record-only). default/low/min are advisory
+# → desktop only, no incident record (the intake CLI accepts only high|urgent).
+case "$PRIORITY" in
+  urgent | high)
+    EXTRA=(--technical)
+    [ "$RECORD_ONLY" = "1" ] && EXTRA+=(--no-desktop)
+    if [ -x "$INTAKE" ]; then
+      # Capture the intake CLI's stderr (its repair guidance) instead of
+      # discarding it, so a failure carries a next action (executive_function).
+      if intake_err="$("$INTAKE" notification \
+           --title "$TITLE" \
+           --message "$MESSAGE" \
+           --priority "$PRIORITY" \
+           --tag "$TAG" \
+           "${EXTRA[@]}" 2>&1 >/dev/null)"; then
+        exit 0
+      fi
+      logger -t hapax-alert "p0 intake FAILED for '${TITLE}': ${intake_err:-<no stderr>} — next action: rerun '${INTAKE} notification --title ... --priority ${PRIORITY}' and inspect ~/.cache/hapax/p0-incident-intake/state.json + events.jsonl" 2>/dev/null || true
+    else
+      logger -t hapax-alert "p0 intake unavailable (missing/not-executable: ${INTAKE}) for '${TITLE}' — next action: deploy scripts/hapax-p0-incident-intake to that path" 2>/dev/null || true
+    fi
+    ;;
+esac
+
+# Reached here = advisory priority OR the governed path was unavailable.
+# record-only callers own their channel; never double or lose it with a
+# fallback. Everyone else degrades to a visible desktop alert — never silence.
+if [ "$RECORD_ONLY" != "1" ] && command -v notify-send >/dev/null 2>&1; then
+  urgency="normal"
+  case "$PRIORITY" in urgent | high) urgency="critical" ;; esac
+  notify-send -u "$urgency" "$TITLE" "$MESSAGE" >/dev/null 2>&1 || true
+fi
+exit 0

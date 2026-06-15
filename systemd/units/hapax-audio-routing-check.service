@@ -1,6 +1,7 @@
 [Unit]
 Description=Hapax audio routing invariant check
 After=pipewire.service
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot

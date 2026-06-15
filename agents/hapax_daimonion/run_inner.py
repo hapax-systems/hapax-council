@@ -342,9 +342,11 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         daemon._cpal_runner.presynthesize_signals()
         log.info("CPAL signal cache presynthesized")
         try:
-            daemon._bridge_engine.presynthesize_all(daemon.tts)
-            daemon._bridges_presynthesized = True
-            log.info("Bridge phrases presynthesized (background)")
+            # False means a concurrent run (pipeline-start retry) owns the
+            # work — leave the flag to that thread instead of duplicating.
+            if daemon._bridge_engine.presynthesize_all(daemon.tts):
+                daemon._bridges_presynthesized = True
+                log.info("Bridge phrases presynthesized (background)")
         except Exception:
             log.warning("Bridge presynthesis failed (will retry on first session)")
 

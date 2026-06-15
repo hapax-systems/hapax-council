@@ -153,6 +153,8 @@ if [ "$awk_exit" -eq 2 ] && command -v curl >/dev/null 2>&1; then
     -H "Tags: warning,sound" \
     -d "$body" \
     "${NTFY_BASE%/}/${NTFY_TOPIC}" 2>/dev/null || true
+  # Governed incident record alongside the ntfy channel.
+  "$(dirname "$(readlink -f "$0")")/hapax-alert" high "USB isoc bandwidth saturated" "$body" --tag usb --record-only
 fi
 
 exit "$awk_exit"

@@ -1,0 +1,33 @@
+[Unit]
+# Local answer-verification judge — CompassVerifier-7B (GGUF Q5_K_M) served via
+# llama.cpp server-cuda. Cost-offload Tier-1 (ISAP S5-CAPACITY-ROUTING-COST-OFFLOAD-TIER1).
+# INSTALL TARGET: appendix (hapax-appendix), the SDLC rig. Reached cross-rig by the
+# podium LiteLLM gateway as the `local-judge` route -> http://192.168.68.50:5001/v1.
+# Deploy + validation: docs/runbooks/local-judge-stack.md.
+Description=Hapax Local Judge — CompassVerifier-7B answer-verification (cost-offload Tier-1)
+# After= only (no Requires=): docker runs as a system service, so a --user unit
+# orders behind it but must not hard-Requires a cross-scope system unit. Matches
+# the canonical docker user units (hapax-stack, hapax-container-cleanup).
+After=docker.service
+
+[Service]
+Type=simple
+# Pin to GPU1 (5060 Ti, sm_120 Blackwell) BY UUID so the GPU0 3090 grounding
+# instance is never co-resided on (no-co-residency regression, AC1). Regenerate
+# the UUID on the target host with: nvidia-smi --query-gpu=index,name,uuid --format=csv
+Environment=JUDGE_GPU_UUID=GPU-347222d9-00af-5a94-a365-c57c09dfddcd
+Environment=JUDGE_MODEL=/models/CompassVerifier-7B.Q5_K_M.gguf
+ExecStartPre=-/usr/bin/docker rm -f hapax-local-judge
+ExecStart=/usr/bin/docker run --rm --name hapax-local-judge \
+    --gpus device=${JUDGE_GPU_UUID} \
+    -v %h/models/compassverifier-7b:/models:ro \
+    -p 5001:5001 \
+    ghcr.io/ggml-org/llama.cpp:server-cuda \
+    -m ${JUDGE_MODEL} -a compassverifier-7b \
+    -c 65536 -np 8 -cb -ngl 99 --host 0.0.0.0 --port 5001
+ExecStop=/usr/bin/docker stop hapax-local-judge
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

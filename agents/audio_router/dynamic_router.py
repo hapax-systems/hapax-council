@@ -62,11 +62,32 @@ VOICE_STATE_FILE: Path = Path("/dev/shm/hapax-compositor/voice-state.json")
 # without needing MIDI bus introspection.
 ROUTER_STATE_FILE: Path = Path("/dev/shm/hapax-audio-router/state.json")
 
-# Stimmung file's `stance` field uses the same vocabulary as the router
-# state — but a missing/malformed file falls back to NOMINAL so the
-# router still emits a sensible default rather than blocking on
-# perception.
+# A missing/malformed/unknown stance falls back to NOMINAL so the router
+# still emits a sensible default rather than blocking on perception.
 _STANCE_FALLBACK: Stance = "NOMINAL"
+
+# The router's broadcast-stance vocabulary (vocal-elaboration tiers).
+_ROUTER_STANCES: frozenset[str] = frozenset(
+    {"NOMINAL", "ENGAGED", "SEEKING", "ANT", "FORTRESS", "CONSTRAINED"}
+)
+
+# The stimmung producer's Stance enum (shared/stimmung.py) is a DIFFERENT
+# vocabulary: nominal/seeking/cautious/degraded/critical. Map it explicitly
+# onto the router vocabulary so the self-state severity stances are not
+# silently dropped to NOMINAL by the whitelist (the live producer never emits
+# ENGAGED/ANT/FORTRESS/CONSTRAINED — those are router-native). Severity maps to
+# CONSTRAINED (the "pulled back" broadcast stance). It deliberately does NOT
+# map critical -> FORTRESS: FORTRESS additionally carries privacy/livestream
+# lockdown semantics (policy §6 UC7), so whether a critical SELF-state should
+# drive the broadcast fully clean is a live-broadcast-experience decision left
+# to the operator, not auto-triggered here. Router-native values pass through.
+_STIMMUNG_TO_ROUTER_STANCE: dict[str, str] = {
+    "NOMINAL": "NOMINAL",
+    "SEEKING": "SEEKING",
+    "CAUTIOUS": "CONSTRAINED",
+    "DEGRADED": "CONSTRAINED",
+    "CRITICAL": "CONSTRAINED",
+}
 
 
 def read_stimmung_state(path: Path | None = None) -> StimmungState:
@@ -89,13 +110,19 @@ def read_stimmung_state(path: Path | None = None) -> StimmungState:
         log.debug("stimmung read failed — using defaults", exc_info=True)
         return StimmungState()
 
-    stance = data.get("stance") or _STANCE_FALLBACK
-    if stance not in {"NOMINAL", "ENGAGED", "SEEKING", "ANT", "FORTRESS", "CONSTRAINED"}:
+    raw_stance = (data.get("overall_stance") or "").strip().upper()
+    # Map stimmung→router vocabulary; router-native values pass through unchanged.
+    stance = _STIMMUNG_TO_ROUTER_STANCE.get(raw_stance, raw_stance)
+    if stance not in _ROUTER_STANCES:
         stance = _STANCE_FALLBACK
 
     def _f(key: str, default: float = 0.5) -> float:
         try:
-            value = float(data.get(key, default))
+            raw = data.get(key, default)
+            # Live stimmung dims are {value, trend, freshness_s, ...} dicts.
+            if isinstance(raw, dict):
+                raw = raw.get("value", default)
+            value = float(raw)
             return max(0.0, min(1.0, value))
         except (TypeError, ValueError):
             return default

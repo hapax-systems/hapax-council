@@ -83,7 +83,12 @@ export HAPAX_WORKTREE_ROLE="$ROLE"
 # so honoring an inherited HAPAX_SESSION_ID would let two same-role re-dispatched
 # lanes share a claim key (defeats FM-2 / AC1). Computed once, before the restart
 # loop below, so it stays stable across in-launcher restarts of this same lane.
-SESSION_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$ROLE" "$$")"
+# The fallback chain is NEVER pid-derived (claim-by-pid unrepresentable,
+# taxonomy-a3-session-identity): the retired `<role>-$$` shape minted ids that
+# pid recycling makes ambiguous and that cc-claim now refuses to key. The
+# last-resort mint is alpha-infixed so it stays claim-keyable
+# (shared/session_identity.py::is_claim_keyable_session_id).
+SESSION_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null || printf 'sid%sx%s%s' "$(date +%s%N)" "$RANDOM" "$RANDOM")"
 export HAPAX_SESSION_ID="$SESSION_UUID"
 # Per-session identity marker (WM-independent): record THIS session's role keyed by
 # the session id so agent-role.sh / hapax-whoami resolve identity without a
@@ -182,9 +187,17 @@ if [[ -z "$INITIAL_MSG" ]]; then
   echo "hapax-claude-headless: governed initial message required" >&2
   exit 5
 fi
+# Session-keyed claim FIRST (review #4097-1): the legacy role-keyed file is
+# shared by every session of this role — reading it alone defeats the
+# isolation this PR exists to provide. A fresh launcher has a fresh
+# SESSION_UUID, so its session file cannot exist yet; any hit on the legacy
+# file is informational fallback for --task-less relaunches only.
+SESSION_CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$ROLE-$SESSION_UUID"
 CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$ROLE"
 CLAIMED_TASK=""
-if [[ -s "$CLAIM_FILE" ]]; then
+if [[ -s "$SESSION_CLAIM_FILE" ]]; then
+  CLAIMED_TASK="$(head -n1 "$SESSION_CLAIM_FILE" | tr -d '[:space:]')"
+elif [[ -s "$CLAIM_FILE" ]]; then
   CLAIMED_TASK="$(head -n1 "$CLAIM_FILE" | tr -d '[:space:]')"
 fi
 if [[ -z "$CLAUDE_TASK" && -n "$CLAIMED_TASK" ]]; then
@@ -211,6 +224,8 @@ SDLC_PREAMBLE="SDLC DISCIPLINE (MANDATORY):
 4. Use only the AuthorityCase and parent spec named in this dispatch.
 5. Do not create, select, or claim other work from the task pool.
 6. When the task is complete or blocked, report status and idle.
+
+Session identity: role=$ROLE session_id=$SESSION_UUID. Include this session_id in any relay receipt or witness artifact you write.
 
 DISPATCH:
 "
@@ -246,22 +261,74 @@ find_active_note() {
 
 task_is_terminal() {
   # 0 = terminal (stop the respawn loop); 1 = still live (keep the lane up).
+  #
+  # v2 fix (2026-06-12 postmortem): a MISSING claim file is treated as
+  # INDETERMINATE, not terminal.  The old code returned 0 (terminal) whenever
+  # $claimed != $task, which included the missing-file case.  That killed live
+  # lanes (delta, zeta) when their caches vanished mid-run with no journaled
+  # actor.  Now: if the claim file is absent, fall through to note + PR checks
+  # and also consult the session-keyed claim file as a secondary source.
   local task="$1"
   [[ -n "$task" ]] || return 1   # no task binding -> legacy always-on behavior
-  local claimed=""
+
+  local claimed="" claim_source="primary"
   if [[ -s "$CLAIM_FILE" ]]; then
     claimed="$(head -n1 "$CLAIM_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
   fi
-  # cc-close clears the claim file; a re-point means the lane moved on.
-  [[ "$claimed" == "$task" ]] || return 0
+
+  # If primary cache is missing or empty, try session-keyed claim files.
+  # cc-claim writes cc-active-task-<role>-<session_id>, so we glob for all
+  # session-keyed files matching this role and pick the most recently modified.
+  if [[ -z "$claimed" ]]; then
+    local session_claim="" newest_mtime=0
+    for candidate in "$HOME/.cache/hapax/cc-active-task-${ROLE}-"*; do
+      [[ -s "$candidate" ]] || continue
+      local mtime
+      mtime="$(stat -c %Y "$candidate" 2>/dev/null || echo 0)"
+      if (( mtime > newest_mtime )); then
+        newest_mtime="$mtime"
+        session_claim="$candidate"
+      fi
+    done
+    if [[ -n "$session_claim" && -s "$session_claim" ]]; then
+      claimed="$(head -n1 "$session_claim" 2>/dev/null | tr -d '[:space:]' || true)"
+      claim_source="session-keyed:$(basename "$session_claim")"
+    fi
+  fi
+
+  if [[ -z "$claimed" ]]; then
+    # Claim cache MISSING on all sources.  This is INDETERMINATE — do NOT
+    # treat as terminal.  Fall through to note + PR verification.
+    # Log the anomaly for forensic tracing.
+    printf 'hapax-claude-headless[%s]: task_is_terminal: claim cache MISSING for role=%s task=%s — treating as indeterminate (fail-open)\n' "$$" "$ROLE" "$task" >&2
+  elif [[ "$claimed" != "$task" ]]; then
+    # cc-close clears the claim file; a re-point means the lane moved on.
+    # This is a DEFINITIVE terminal signal (the file exists and names a
+    # different task).
+    return 0
+  fi
+  # claimed == task  OR  claimed is missing (indeterminate) — verify via note.
+
   local note=""
   note="$(find_active_note "$task")"
   [[ -n "$note" ]] || return 0   # note left active/ (moved to closed/) -> closed
   local status=""
   status="$(grep -oP '^status:\s*\K\S+' "$note" 2>/dev/null | head -n1 || true)"
   case "$status" in
-    done | completed | closed | withdrawn | superseded) return 0 ;;
+    # Definitively terminal lifecycle states -> the lane's work is over.
+    done | completed | closed | withdrawn | superseded | abandoned) return 0 ;;
+    # Everything else (claimed/in_progress/pr_open/blocked/unknown) is NOT
+    # terminal on status alone: fall through to the assigned + PR-state reality
+    # checks below. A live open-PR lane (status: pr_open) must NEVER be killed
+    # here (class #5: never kill a live open-PR lane); offered/unassigned are
+    # caught by the assigned-mismatch check, and a still-open PR returns live.
+    *) ;;
   esac
+  local note_assigned=""
+  note_assigned="$(grep -oP '^assigned_to:\s*\K\S+' "$note" 2>/dev/null | head -n1 || true)"
+  if [[ -n "$note_assigned" && "$note_assigned" != "$ROLE" ]]; then
+    return 0
+  fi
   # PR merged but the note not yet closed (the dead-lane window): stop now; the
   # merge-watcher closes the note shortly. Fail-open on any gh hiccup.
   local pr=""
@@ -322,6 +389,26 @@ elif kind == "exec":
         "requested_host": sys.argv[4],
         "argv": sys.argv[6:],
     }
+    # Session identity must survive the SSH boundary (taxonomy-a3-session-
+    # identity): without these the exec-host claude resolves a DIFFERENT
+    # session id (CLAUDE_CODE_SESSION_ID fallback), the session-keyed claim
+    # exists only launcher-side, and the lane hits cc-claim exit-4 walls (the
+    # recurring appendix-remote-dispatch claim gap). Pulled from the
+    # launcher's own exports — the identity it minted for THIS spawn.
+    import os
+
+    identity_keys = (
+        "HAPAX_SESSION_ID",
+        "HAPAX_AGENT_INTERFACE",
+        "HAPAX_AGENT_NAME",
+        "HAPAX_AGENT_ROLE",
+        "CLAUDE_ROLE",
+        "HAPAX_WORKTREE_ROLE",
+        "HAPAX_METHODOLOGY_DISPATCH_TASK",
+    )
+    payload["env"].update(
+        {k: os.environ[k] for k in identity_keys if os.environ.get(k)}
+    )
 else:
     raise SystemExit(f"unknown remote payload kind: {kind}")
 print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode())
@@ -334,9 +421,32 @@ try:
     cgroup=open("/proc/self/cgroup",encoding="utf-8").read()
 except OSError:
     pass
+# Exec-host identity materialization (taxonomy-a3-session-identity): the
+# session-keyed claim + role marker must exist on the host where the lane
+# RUNS, or the gate falls back to a stale legacy file and cc-claim re-binding
+# walls the lane (the recurring appendix claim gap). Best-effort: a failure is
+# recorded in the proof, never allowed to kill the dispatch.
+sid=os.environ.get("HAPAX_SESSION_ID",""); role=os.environ.get("HAPAX_AGENT_ROLE",""); task=os.environ.get("HAPAX_METHODOLOGY_DISPATCH_TASK",""); keyable=False; materialized=False
+try:
+    sys.path.insert(0, p["workdir"])
+    from shared.session_identity import is_claim_keyable_session_id
+    keyable=is_claim_keyable_session_id(sid)
+except Exception:
+    keyable=bool(sid) and "/" not in sid and not sid.isdigit() and not sid.rsplit("-",1)[-1].isdigit()
+try:
+    if keyable and role:
+        cache=os.path.join(os.path.expanduser("~"),".cache","hapax")
+        os.makedirs(cache,exist_ok=True)
+        open(os.path.join(cache,"session-role-"+sid),"w",encoding="utf-8").write(role+"\n")
+        if task:
+            open(os.path.join(cache,"cc-active-task-"+role),"w",encoding="utf-8").write(task+"\n")
+            open(os.path.join(cache,"cc-active-task-"+role+"-"+sid),"w",encoding="utf-8").write(task+"\n")
+            materialized=True
+except Exception:
+    pass
 if proof:
     os.makedirs(os.path.dirname(proof), exist_ok=True)
-    data={"schema_version":1,"event":"dispatch_remote_exec","platform":"claude-headless","requested_host":p.get("requested_host"),"actual_host":socket.gethostname(),"pid":os.getpid(),"cgroup":cgroup,"workdir":p.get("workdir"),"logos_base_url":os.environ.get("LOGOS_BASE_URL"),"argv0":p["argv"][0] if p.get("argv") else None,"argc":len(p.get("argv",[]))}; open(proof,"w",encoding="utf-8").write(json.dumps(data,sort_keys=True)+"\n")
+    data={"schema_version":1,"event":"dispatch_remote_exec","platform":"claude-headless","requested_host":p.get("requested_host"),"actual_host":socket.gethostname(),"pid":os.getpid(),"cgroup":cgroup,"workdir":p.get("workdir"),"logos_base_url":os.environ.get("LOGOS_BASE_URL"),"argv0":p["argv"][0] if p.get("argv") else None,"argc":len(p.get("argv",[])),"session_id":sid or None,"role":role or None,"task_id":task or None,"claim_materialized":materialized}; open(proof,"w",encoding="utf-8").write(json.dumps(data,sort_keys=True)+"\n")
 argv=p["argv"]; os.execvp(argv[0], argv)'
 
 RESTART_COUNT=0

@@ -187,6 +187,65 @@ class TestLifecycle:
         assert asyncio.run(_go()) is True
 
 
+# ── Overrun streak telemetry ─────────────────────────────────────────
+
+
+class TestOverrunTelemetry:
+    """Drop streaks must be quantified: the old single 'queue full'
+    warning gave no count or duration, making soak evidence ambiguous
+    (audit SS3 'mic integrity' row)."""
+
+    def test_streak_start_logs_once(self, caplog: pytest.LogCaptureFixture) -> None:
+        s = AudioInputStream(source_name="test-source", queue_maxsize=2)
+        with caplog.at_level("WARNING", logger="agents.hapax_daimonion.audio_input"):
+            s._enqueue_frame(b"a")
+            s._enqueue_frame(b"b")
+            s._enqueue_frame(b"c")  # dropped — streak start
+            s._enqueue_frame(b"d")  # dropped — same streak, no extra log
+        full_warnings = [r for r in caplog.records if "queue full" in r.getMessage()]
+        assert len(full_warnings) == 1
+
+    def test_recovery_logs_dropped_count_and_audio_seconds(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        s = AudioInputStream(source_name="test-source", frame_ms=30, queue_maxsize=2)
+        s._enqueue_frame(b"a")
+        s._enqueue_frame(b"b")
+        s._enqueue_frame(b"c")  # dropped
+        s._enqueue_frame(b"d")  # dropped
+        s._queue.get_nowait()
+        with caplog.at_level("WARNING", logger="agents.hapax_daimonion.audio_input"):
+            s._enqueue_frame(b"e")  # fits — streak ends
+        recovery = [r.getMessage() for r in caplog.records if "recovered" in r.getMessage()]
+        assert len(recovery) == 1
+        assert "dropped 2 frames" in recovery[0]
+        assert "0.1s of audio" in recovery[0]  # 2 × 30ms rounded
+
+    def test_total_dropped_accumulates_across_streaks(self) -> None:
+        s = AudioInputStream(source_name="test-source", queue_maxsize=1)
+        s._enqueue_frame(b"a")
+        s._enqueue_frame(b"b")  # dropped (streak 1)
+        s._queue.get_nowait()
+        s._enqueue_frame(b"c")  # recovery
+        s._enqueue_frame(b"d")  # dropped (streak 2)
+        assert s.total_dropped_frames == 2
+
+    def test_stop_closes_open_streak(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A streak open at stop() must be logged + reset there, not
+        carried into the next stream where its duration would span the
+        dead period."""
+        s = AudioInputStream(source_name="test-source", queue_maxsize=1)
+        s._enqueue_frame(b"a")
+        s._enqueue_frame(b"b")  # dropped — streak open
+        with caplog.at_level("WARNING", logger="agents.hapax_daimonion.audio_input"):
+            s.stop()
+        closed = [r.getMessage() for r in caplog.records if "stream stopped" in r.getMessage()]
+        assert len(closed) == 1
+        assert "dropped 1 frames" in closed[0]
+        assert s._drop_count == 0
+        assert s.total_dropped_frames == 1  # cumulative survives stop
+
+
 # ── Source name override ─────────────────────────────────────────────
 
 
@@ -202,3 +261,45 @@ class TestSourceOverride:
         monkeypatch.setenv("HAPAX_AEC_ACTIVE", "1")
         s = AudioInputStream(source_name=None)
         assert s._source_name == "echo_cancel_capture"
+
+
+# ── Registry-derived stt.ear priority (voice-p2-perception-registry) ────
+
+
+class TestSttSourcePriority:
+    def test_derived_from_registry_respeaker_first(self) -> None:
+        from agents.hapax_daimonion import audio_input as ai_mod
+
+        priority = ai_mod.stt_source_priority()
+        assert priority[0].startswith("alsa_input.usb-Seeed_Studio_reSpeaker_XVF3800")
+        assert "echo_cancel_capture" in priority
+        assert any("Yeti" in s for s in priority)
+
+    def test_falls_back_to_legacy_constants_without_registry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.hapax_daimonion import audio_input as ai_mod
+
+        monkeypatch.setattr(ai_mod, "load_default_registry", lambda: None)
+        assert ai_mod.stt_source_priority() == ai_mod._LEGACY_SOURCE_PRIORITY
+
+    def test_falls_back_when_subscription_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from agents.hapax_daimonion import audio_input as ai_mod
+        from shared.perception_registry import PerceptionRegistry
+
+        empty = PerceptionRegistry(schema_version=1)
+        monkeypatch.setattr(ai_mod, "load_default_registry", lambda: empty)
+        assert ai_mod.stt_source_priority() == ai_mod._LEGACY_SOURCE_PRIORITY
+
+    def test_module_default_matches_function(self) -> None:
+        from agents.hapax_daimonion import audio_input as ai_mod
+
+        assert ai_mod.stt_source_priority() == ai_mod.DEFAULT_SOURCE_PRIORITY
+
+
+class TestConfigDefaultFromRegistry:
+    def test_config_default_is_registry_priority(self) -> None:
+        from agents.hapax_daimonion import audio_input as ai_mod
+        from agents.hapax_daimonion.config import DaimonionConfig
+
+        assert DaimonionConfig().audio_input_source == ai_mod.stt_source_priority()

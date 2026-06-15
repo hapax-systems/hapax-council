@@ -5,10 +5,11 @@ set -euo pipefail
 USE_PCT=$(df --output=pcent / | tail -1 | tr -d " %")
 AVAIL=$(df -h --output=avail / | tail -1 | tr -d " ")
 
+_alert="$(dirname "$(readlink -f "$0")")/hapax-alert"
 if [ "$USE_PCT" -gt 95 ]; then
-    notify-send -u critical "Disk CRITICAL" "Root at ${USE_PCT}% (${AVAIL} free) — immediate action needed" 2>/dev/null || true
+    "$_alert" high "Disk CRITICAL" "Root at ${USE_PCT}% (${AVAIL} free) — immediate action needed" --tag disk
     logger -t disk-space "CRITICAL: root at ${USE_PCT}% (${AVAIL} free)"
 elif [ "$USE_PCT" -gt 85 ]; then
-    notify-send -u normal "Disk Warning" "Root at ${USE_PCT}% (${AVAIL} free)" 2>/dev/null || true
+    "$_alert" default "Disk Warning" "Root at ${USE_PCT}% (${AVAIL} free)" --tag disk
     logger -t disk-space "WARNING: root at ${USE_PCT}% (${AVAIL} free)"
 fi

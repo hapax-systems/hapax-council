@@ -25,7 +25,7 @@ class SensorConfig:
     stimmung_state: Path = Path("/dev/shm/hapax-stimmung/state.json")
     fortress_state: Path = Path("/dev/shm/hapax-df/state.json")
     watch_dir: Path = Path.home() / "hapax-state" / "watch"
-    voice_perception: Path = Path("/dev/shm/hapax-daimonion/perception-state.json")
+    voice_perception: Path = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
     visual_frame: Path = Path("/dev/shm/hapax-visual/frame.jpg")
     imagination_current: Path = Path("/dev/shm/hapax-imagination/current.json")
     stale_threshold_s: float = 30.0

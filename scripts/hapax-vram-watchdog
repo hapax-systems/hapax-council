@@ -98,5 +98,5 @@ for m in d.get('models', []):
         capture_output=True)
 " 2>/dev/null
 
-    notify-send -u critical "VRAM Emergency" "GPU at ${PCT}% (${FREE}MiB free) — models unloaded" 2>/dev/null || true
+    "$(dirname "$(readlink -f "$0")")/hapax-alert" high "VRAM Emergency" "GPU at ${PCT}% (${FREE}MiB free) — models unloaded" --tag vram
 fi

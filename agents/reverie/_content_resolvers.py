@@ -215,12 +215,18 @@ def resolve_waveform_viz(
     try:
         import json as json_mod
 
-        perc_path = Path("/dev/shm/hapax-daimonion/perception-state.json")
+        perc_path = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
         perc = json_mod.loads(perc_path.read_text())
         energy = float(perc.get("audio_energy_rms", 0.0))
         bars = int(energy * 20) + 5
-        viz = "▁▂▃▄▅▆▇█"
-        waveform = "".join(viz[min(int(energy * 8 + i * 0.5) % 9, 8)] for i in range(bars))
+        viz = "▁▂▃▄▅▆▇█"  # 8 glyphs → valid indices 0..7
+        # Clamp to the last valid index. The prior `min(_, 8)` allowed viz[8]
+        # (out of range) so a valid full-energy reading (energy>=1.0 → 8%9==8)
+        # raised IndexError and the whole waveform silently failed — exposed once
+        # the canonical perception path started returning real live energy.
+        waveform = "".join(
+            viz[min(int(energy * 8 + i * 0.5) % 9, len(viz) - 1)] for i in range(bars)
+        )
         return _inject_recalled_text(
             "waveform_viz",
             f"Audio: {waveform}",

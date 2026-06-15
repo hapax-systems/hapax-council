@@ -87,6 +87,20 @@ def is_simultaneous_activity(vinyl_rms: float, evilpet_rms: float, threshold: fl
     return vinyl_rms >= threshold and evilpet_rms >= threshold
 
 
+def topology_supported(config: DetectorConfig) -> bool:
+    """Whether the configured target can actually supply the vinyl/Evil-Pet channels.
+
+    The detector's premise is an L-12 MULTITRACK tap with separate strips for the
+    Korg Handytraxx vinyl (AUX8/9) and the Evil Pet return (AUX5). On the mk5-era
+    2-channel broadcast SUM, those channel indices do not exist — the hardware
+    workflow it guards is physically gone. Return False when the configured AUX
+    indices exceed the capture width: ``channel_rms`` would then return 0.0
+    unconditionally and the detector would be STRUCTURALLY BLIND (a sensor that
+    always reads clear — worse than none, because it confers false confidence).
+    """
+    return max(config.aux_evilpet, config.aux_vinyl_l, config.aux_vinyl_r) < config.channels
+
+
 def should_fire(window: deque[bool], dwell_frames: int) -> bool:
     """Trigger condition: the entire dwell window is True.
 
@@ -346,6 +360,34 @@ def run(config: DetectorConfig | None = None) -> int:
 
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
+
+    if not topology_supported(cfg):
+        # Honest-degrade: the vinyl/Evil-Pet multitrack workflow this guard watches
+        # (L-12 AUX5/8/9) is physically gone; on the 2ch mk5 broadcast sum the channel
+        # reads are unconditionally 0.0. Reporting "clear" here would be a silent,
+        # fresh-looking FAIL-OPEN on a broadcast-safety surface. Publish an honest
+        # non-"clear" status instead and never run the false-clear capture loop.
+        log.warning(
+            "vinyl-pet detector INERT (unsupported_topology): target=%s is %dch but the "
+            "vinyl/Evil-Pet channels (AUX %d/%d/%d) need a multitrack tap — the L-12 "
+            "hardware workflow is decommissioned. Publishing status=unsupported_topology "
+            "(NOT clear); risk surface is physically absent. Retire-and-replace pending.",
+            cfg.target,
+            cfg.channels,
+            cfg.aux_evilpet,
+            cfg.aux_vinyl_l,
+            cfg.aux_vinyl_r,
+        )
+        heartbeat_s = min(5.0, cfg.cooldown_s)
+        while not stop["requested"]:
+            publish_state(
+                config=cfg,
+                status="unsupported_topology",
+                breach_active=False,
+                now=time.time(),
+            )
+            time.sleep(heartbeat_s)
+        return 0
 
     proc = spawn_pw_cat(cfg)
     try:

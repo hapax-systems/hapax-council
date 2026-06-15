@@ -2,6 +2,7 @@
 Description=Hapax governed PR auto-queue reconciler
 Documentation=file://%h/projects/hapax-council/docs/research/2026-05-17-ci-merge-queue-required-check-audit.md
 After=hapax-secrets.service
+OnFailure=notify-failure@%n.service
 
 [Service]
 # Storm open-PR threshold raised to 20: this ~10-lane workspace

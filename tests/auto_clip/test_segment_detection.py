@@ -192,6 +192,9 @@ def test_detect_renders_window_and_signal_counts_into_prompt():
     assert "lattice contracts" in fake.last_prompt
     assert "CHAT (2)" in fake.last_prompt
     assert "this is hypnotic" in fake.last_prompt
+    # Anti-parasocial: the chat sentiment tag must NEVER reach the ranking prompt.
+    assert "[+0.6" not in fake.last_prompt
+    assert "[+0.00]" not in fake.last_prompt
 
 
 def test_detect_handles_empty_window_gracefully():
@@ -246,15 +249,18 @@ def test_read_recent_impingements_missing_file_returns_empty(tmp_path: Path):
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_chat_snapshots_to_dicts_passes_dicts_through():
+def test_chat_snapshots_to_dicts_passes_dicts_through_stripping_sentiment():
+    # Anti-parasocial: already-dict inputs pass through, but the forbidden
+    # sentiment field is stripped so affect never enters the clip path.
     raw = [{"text": "hi", "sentiment": 0.4, "length": 2, "posted_at_unix": 100.0}]
-    assert chat_snapshots_to_dicts(raw) == raw
+    assert chat_snapshots_to_dicts(raw) == [{"text": "hi", "length": 2, "posted_at_unix": 100.0}]
 
 
-def test_chat_snapshots_to_dicts_extracts_attrs():
+def test_chat_snapshots_to_dicts_extracts_attrs_without_sentiment():
     snap = SimpleNamespace(text="hello", sentiment=0.2, length=5, posted_at_unix=42.0)
     out = chat_snapshots_to_dicts([snap])
-    assert out == [{"text": "hello", "sentiment": 0.2, "length": 5, "posted_at_unix": 42.0}]
+    assert out == [{"text": "hello", "length": 5, "posted_at_unix": 42.0}]
+    assert "sentiment" not in out[0]
 
 
 # ──────────────────────────────────────────────────────────────────────

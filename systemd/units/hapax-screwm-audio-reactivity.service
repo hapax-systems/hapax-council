@@ -3,6 +3,7 @@ Description=Hapax screwm-native audio-reactivity producer (unified-reactivity.js
 After=hapax-reverie.service
 PartOf=hapax-visual-stack.target hapax-darkplaces-v4l2.service
 ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple

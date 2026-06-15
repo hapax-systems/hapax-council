@@ -645,12 +645,11 @@ class VisualLayerAggregator:
         from .stimmung_methods import (
             update_stimmung_sources,
             write_stimmung,
-            write_temporal_bands,
         )
 
         update_stimmung_sources(self)  # calls update_biometrics internally
         write_stimmung(self)
-        write_temporal_bands(self)
+        # write_temporal_bands moved to _state_tick_loop (3s cadence; round-2 audit)
 
     # ── Content scheduling ───────────────────────────────────────────────────
 
@@ -1257,8 +1256,34 @@ class VisualLayerAggregator:
             except Exception:
                 log.debug("Cross-resonance bridge failed", exc_info=True)
 
+            self._emit_temporal_bands()
+
             tick_interval = self._adaptive_tick_interval(state)
             await asyncio.sleep(tick_interval)
+
+    def _emit_temporal_bands(self) -> bool:
+        """Write temporal bands from the perception ring, swallowing failures so
+        the fast loop never dies on a producer error.
+
+        Temporal bands now ride this perception/state tick instead of the prior
+        15s health-poll. The tick is adaptive, bounded [0.5, 5.0]s (0.5-1.5s when
+        active, 3s base, up to 5s under degraded/critical), so the impression is
+        at most ~5s stale (usually <=3s) vs the prior fixed 15s — the round-2
+        adequacy audit's primary temporal deficit (every voice turn read a
+        15s-stale impression). Coupling to this loop is correct: the bands
+        summarize the perception ring that poll_perception() refreshes here, so
+        writing faster than the loop would only re-publish stale data. A
+        guaranteed fixed-3s producer independent of load is the deferred round-2
+        item 8. Returns True iff bands were written this call.
+        """
+        try:
+            from .stimmung_methods import write_temporal_bands
+
+            write_temporal_bands(self)
+            return True
+        except Exception:
+            log.debug("temporal bands write failed", exc_info=True)
+            return False
 
     async def _api_poll_loop(self) -> None:
         """Slow API loop: health/GPU at 15s, slow endpoints at 60s, ambient at 45s."""

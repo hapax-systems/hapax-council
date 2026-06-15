@@ -7,7 +7,8 @@ the operator finishes speaking.
 
 Key behaviors:
 - Gates on interval (1.2s between calls) and minimum speech (1.0s)
-- Uses the shared ResidentSTT (single-threaded executor — serializes with final STT)
+- Uses the shared ResidentSTT on its dedicated speculative executor, so
+  partials never queue ahead of utterance-final transcription
 - Sets _pending flag during call so cognitive loop skips if already in-flight
 - Returns None if skipped, else partial transcript
 """

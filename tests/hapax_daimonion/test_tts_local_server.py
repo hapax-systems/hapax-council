@@ -144,5 +144,6 @@ async def test_deadline_error_returns_empty_pcm(socket_path: Path) -> None:
     assert stub.calls == [("too slow", "conversation")]
     assert client.last_server_liveness is not None
     assert client.last_server_liveness["status"] == "error"
+    assert client.last_server_liveness["error_type"] == "DeadlineExceeded"
     assert "deadline" in client.last_server_liveness["error"]
     assert fatal_exit_codes == [124]

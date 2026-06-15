@@ -78,6 +78,72 @@ class TestExtractClaims:
         inputs = extract_claims(claim_map=claim_map, source_consequence_map=[])
         assert len(inputs) == 1
 
+    def test_resolves_src_handles_to_real_refs_and_surfaces_context(self) -> None:
+        # src:N handles are Hapax-internal and the council cannot dereference them
+        # (read_source("src:0") -> File not found -> research-timeout cascade).
+        # extract_claims must resolve them to real refs AND surface the recruited
+        # source TEXT as source_context (verified diagnosis 2026-06-14).
+        claim_map = [
+            {
+                "claim_id": "claim:seg1:001",
+                "claim_text": "the launch claim changes once the source is visible",
+                "grounds": ["src:0", "src:1"],
+                "source_consequence": "ranking changes",
+            },
+        ]
+        source_handles = {
+            "src:0": ("qdrant:documents:launch-receipts.md", "Receipt body A."),
+            "src:1": ("qdrant:documents:source-policy.md", "Policy body B."),
+        }
+        inputs = extract_claims(
+            claim_map=claim_map,
+            source_consequence_map=[],
+            source_handles=source_handles,
+        )
+        assert len(inputs) == 1
+        inp = inputs[0]
+        # primary ground resolved to the real ref (not the bare handle)
+        assert inp.source_ref == "qdrant:documents:launch-receipts.md"
+        assert "src:0" not in inp.source_ref
+        # the actual source TEXT is surfaced so the council judges real material
+        assert "Receipt body A." in inp.source_context
+        assert "Policy body B." in inp.source_context
+        # all_grounds are resolved too — no handle leaks into the council
+        assert inp.metadata["all_grounds"] == [
+            "qdrant:documents:launch-receipts.md",
+            "qdrant:documents:source-policy.md",
+        ]
+
+    def test_unmapped_handle_passes_through_without_context(self) -> None:
+        claim_map = [
+            {
+                "claim_id": "claim:seg1:001",
+                "claim_text": "a claim citing an unknown handle",
+                "grounds": ["src:99"],
+                "source_consequence": "scope changes",
+            },
+        ]
+        inputs = extract_claims(
+            claim_map=claim_map, source_consequence_map=[], source_handles={"src:0": ("r", "t")}
+        )
+        assert len(inputs) == 1
+        assert inputs[0].source_ref == "src:99"  # unchanged when unmapped
+        assert inputs[0].source_context == ""  # no snippet available
+
+    def test_backward_compatible_without_source_handles(self) -> None:
+        claim_map = [
+            {
+                "claim_id": "claim:seg1:001",
+                "claim_text": "a grounded claim",
+                "grounds": ["source:real/path.md"],
+                "source_consequence": "scope changes",
+            },
+        ]
+        inputs = extract_claims(claim_map=claim_map, source_consequence_map=[])
+        assert inputs[0].source_ref == "source:real/path.md"
+        assert inputs[0].source_context == ""
+        assert inputs[0].metadata["all_grounds"] == ["source:real/path.md"]
+
     def test_metadata_includes_consequence_kind(self) -> None:
         claim_map = [
             {

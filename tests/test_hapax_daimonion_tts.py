@@ -13,6 +13,7 @@ import os
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 
 from agents.hapax_daimonion.tts import (
     TTS_BACKEND_ENV,
@@ -292,3 +293,72 @@ def test_server_down_falls_back_to_in_process(monkeypatch, tmp_path):
     out = mgr.synthesize("hello world")
     assert calls.get("local"), "in-process fallback was not invoked"
     assert out == b"\x01\x02"
+
+
+def test_server_deadline_error_returns_empty_with_warning(monkeypatch, caplog):
+    """A server-owned deadline is terminal for that utterance.
+
+    Falling back after the TTS engine has exceeded the caller's deadline would
+    speak too late; the client must make the abandoned utterance visible.
+    """
+    from agents.hapax_daimonion import tts as tts_mod
+
+    mgr = tts_mod.TTSManager.__new__(tts_mod.TTSManager)
+    mgr._transport = "server"
+    mgr._backend = "kokoro"
+    mgr._last_synthesis_backend = None
+    mgr._last_server_liveness = None
+
+    def _server_deadline(*_args, **_kwargs) -> bytes:
+        mgr._last_server_liveness = {
+            "status": "error",
+            "error_type": "DeadlineExceeded",
+            "error": "deadline exceeded during synthesis",
+        }
+        return b""
+
+    monkeypatch.setattr(mgr, "_synthesize_via_server", _server_deadline, raising=False)
+    monkeypatch.setattr(
+        mgr,
+        "_synthesize_kokoro",
+        lambda *_args, **_kwargs: pytest.fail("deadline path must not fall back locally"),
+        raising=False,
+    )
+
+    with caplog.at_level("WARNING", logger="agents.hapax_daimonion.tts"):
+        out = mgr.synthesize("hello world", "conversation")
+
+    assert out == b""
+    assert any("deadline skipped utterance" in rec.message for rec in caplog.records)
+
+
+def test_server_error_text_deadline_without_deadline_type_falls_back(monkeypatch):
+    """Only structured server deadline errors suppress the local fallback."""
+    from agents.hapax_daimonion import tts as tts_mod
+
+    mgr = tts_mod.TTSManager.__new__(tts_mod.TTSManager)
+    mgr._transport = "server"
+    mgr._backend = "kokoro"
+    mgr._last_synthesis_backend = None
+    calls = {}
+
+    def _server_error(*_args, **_kwargs) -> bytes:
+        mgr._last_server_liveness = {
+            "status": "error",
+            "error_type": "ValueError",
+            "error": "deadline_s must be a positive number",
+        }
+        return b""
+
+    monkeypatch.setattr(mgr, "_synthesize_via_server", _server_error, raising=False)
+    monkeypatch.setattr(
+        mgr,
+        "_synthesize_kokoro",
+        lambda text, **k: (calls.setdefault("local", True), b"\x03\x04")[1],
+        raising=False,
+    )
+
+    out = mgr.synthesize("hello world", "conversation")
+
+    assert calls.get("local"), "non-terminal server errors must still fall back locally"
+    assert out == b"\x03\x04"

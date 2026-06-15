@@ -3,6 +3,7 @@ Description=Hapax /dev/video42 compositor egress format guard
 Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/hapax-v4l2-video42-format-guard
 Before=studio-compositor.service hapax-v4l2-bridge.service hapax-obs-livestream.service
 ConditionPathExists=/dev/video42
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot

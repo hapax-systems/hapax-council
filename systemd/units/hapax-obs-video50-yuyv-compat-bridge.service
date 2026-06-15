@@ -7,6 +7,7 @@ ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
 ConditionPathExists=/tmp/.X11-unix/X82
 ConditionPathExists=/dev/video50
 ConditionPathExists=/usr/bin/ffmpeg
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple

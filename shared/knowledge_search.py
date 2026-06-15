@@ -112,9 +112,15 @@ def search_documents(
 
         points = list(results.points)
         if not include_inventory:
-            points = [pt for pt in points if not is_inventory_payload(pt.payload or {})][:limit]
-        else:
-            points = points[:limit]
+            points = [pt for pt in points if not is_inventory_payload(pt.payload or {})]
+
+        # Cross-encoder rerank of the (inventory-filtered) over-fetched candidate
+        # set before truncation. Flag-gated default-OFF and fail-open, so this is
+        # byte-identical (points[:limit]) until the validation gate flips it on.
+        from shared.rerank import rerank
+
+        span.set_attribute("rag.candidate_count", len(points))
+        points = rerank(query, points, limit)
 
         span.set_attribute("rag.result_count", len(points))
         if points:

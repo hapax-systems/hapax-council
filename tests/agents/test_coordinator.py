@@ -268,10 +268,10 @@ class TestDispatch:
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         with (
-            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
             patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
         ):
-            assert Coordinator()._dispatch(task, lane) is True
+            assert Coordinator()._dispatch(task, lane) == (True, "")
 
         assert calls == [
             [

@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from agents.hapax_daimonion.turn_budget import PREP_LLM_TIMEOUT_S
+from shared import generative_trace as gentrace
 from shared.hermeneutic_spiral import (
     compute_hermeneutic_delta,
     persist_source_consequences,
@@ -130,6 +131,24 @@ PREP_BUDGET_S = float(os.environ.get("HAPAX_SEGMENT_PREP_BUDGET_S", "6600"))  # 
 # segment for iterative refinement.  Each segment gets an initial
 # composition pass PLUS a critic/rewrite pass.
 MAX_SEGMENTS = int(os.environ.get("HAPAX_SEGMENT_PREP_MAX", "4"))
+
+# CLEAN-MEASURE (default OFF): skip the post-hoc string-repair organs — the
+# _scrub_host_posture substitution (a verified mangler: 'we delve'->'The analysis
+# delve') and the _repair_* template injectors (canned gate-satisfaction text).
+# These contaminate every reading of the composer's TRUE output (personage +
+# coherence DVs); they are the measurement confounds the DASEIN synthesis flagged.
+# ON for the next-try / attentional-purity experiment; OFF = production unchanged.
+_CLEAN_MEASURE = os.environ.get("HAPAX_SEGMENT_PREP_CLEAN_MEASURE", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+# A coherence axis at or below this score (1 = the rubric's pure weak_example) is
+# a catastrophic single-dimension failure that the mean averages away — see
+# _council_coherence_check. Tunable; 1 blocks only total collapse on an axis.
+_COHERENCE_CRITICAL_AXIS_FLOOR = int(os.environ.get("HAPAX_COHERENCE_CRITICAL_AXIS_FLOOR", "1"))
 
 # Plan-time informed-authorship budgets. Recruitment + thesis authoring run
 # BEFORE planning, so they are bounded and measured — a slate-wide recruit or a
@@ -1038,6 +1057,8 @@ def _format_actionability_violations(actionability: dict[str, Any]) -> str:
 
 def _scrub_host_posture(script: list[str]) -> list[str]:
     """Best-effort rewrite of common host-posture violations."""
+    if _CLEAN_MEASURE:
+        return script
     out: list[str] = []
     for beat in script:
         cleaned = _HOST_STOCK_RE.sub("", beat)
@@ -1238,65 +1259,6 @@ def _build_seed(programme: Any) -> str:
         return getattr(content, "narrative_beat", "") or ""
 
 
-def _build_refinement_prompt(script: list[str], programme: Any) -> str:
-    """Build a critic/rewrite prompt for iterative refinement.
-
-    Takes the initial draft and asks the LLM to evaluate each beat
-    and rewrite any that are thin, rushed, or don't earn their
-    conclusions.
-    """
-    role = getattr(getattr(programme, "role", None), "value", "rant")
-    content = getattr(programme, "content", None)
-    narrative_beat = getattr(content, "narrative_beat", "") or "" if content else ""
-    beats = getattr(content, "segment_beats", []) or [] if content else []
-
-    beat_review = ""
-    for i, (direction, text) in enumerate(zip(beats, script, strict=False)):
-        chars = len(text)
-        beat_review += f"\n--- Beat {i + 1} ({chars} chars) ---\n"
-        beat_review += f"Direction: {direction}\n"
-        beat_review += f"Draft: {text}\n"
-
-    return (
-        f"You are a broadcast editor reviewing a {role.upper().replace('_', ' ')} "
-        f"segment script for a research livestream.\n\n"
-        f"Topic: {narrative_beat}\n\n"
-        "== REVIEW CRITERIA ==\n"
-        "For each beat, evaluate:\n"
-        "1. LENGTH: Is it at least 800 characters? Beats under 600 chars are THIN.\n"
-        "2. SPECIFICITY: Does it name sources WITH context, or just name-drop?\n"
-        "3. ARC: Does it earn the next beat, or just stop and start a new topic?\n"
-        "4. RHETORIC: Does it vary sentence length? Use direct address? Callbacks?\n"
-        "5. ENERGY: Does the beat breathe, or does it rush through its material?\n"
-        "6. DEPTH: Could a Wikipedia article make this same point? If yes, it's too shallow.\n"
-        "7. STAGE DIRECTIONS: Does the beat contain meta-instructions like 'We pivot',\n"
-        "   'We close', 'Recap the chart', 'Invite chat'? These are FATAL — rewrite as\n"
-        "   actual spoken prose for the segment.\n"
-        "8. RESPONSIBLE ACTIONABILITY: Does every beat contain a validator-recognized\n"
-        "   visible/doable trigger: source citation, role visual hook, or chat trigger?\n"
-        "   Spoken-only hook, criteria, recap, breathe, or close beats are FATAL.\n"
-        "9. REPETITION: Is the same phrase or paragraph copy-pasted across beats?\n"
-        "   Any repeated text block is a FATAL error — each beat must be unique.\n\n"
-        "== THE DRAFT ==\n"
-        f"{beat_review}\n\n"
-        "== YOUR TASK ==\n"
-        "Rewrite the ENTIRE script. For beats that are strong, keep them largely "
-        "intact but polish transitions. For beats that are thin, rushed, or shallow, "
-        "SUBSTANTIALLY expand them — add argument, add evidence, add rhetorical "
-        "texture. Every beat in the output MUST be at least 800 characters.\n\n"
-        "Return a JSON object with `prepared_script` and `segment_prep_contract`. "
-        "The contract must be newly authored for the rewritten final script; do "
-        "not reuse a draft contract if any claim, action, layout need, or source "
-        "consequence changed. The contract must use canonical keys like "
-        "`claim_id`, `claim_text`, `grounds`, `claim_ids`, `changed_field`, "
-        "`action_id`, `beat_id`, `kind`, `layout_need_id`, `source_packet_refs`, "
-        "and non-empty `readback_obligations` plus `loop_cards`. The final spoken "
-        "beat must explicitly resolve the opening pressure with a payoff phrase "
-        "such as `therefore`, `so the final decision`, `return to`, or `resolve`. "
-        "Output ONLY the JSON object. No preamble, no markdown fences."
-    )
-
-
 _TIER_SKIP_DIRECTION_RE = re.compile(
     r"\b(?:hook|intro|open|opener|criteria|rubric|close|closing|recap|wrap|chat)\b",
     re.IGNORECASE,
@@ -1417,6 +1379,8 @@ def _with_tier_list_placement_gate(
 
 def _repair_tier_list_placement_phrases(script: list[str]) -> list[str]:
     """Make pronoun tier placements explicit enough for runtime actionability."""
+    if _CLEAN_MEASURE:
+        return script
 
     repaired: list[str] = []
     known_placements: dict[str, str] = {}
@@ -1503,6 +1467,8 @@ def _has_transforming_trigger(beat: str) -> bool:
 
 def _repair_source_visible_beats(script: list[str], segment_beats: list[str]) -> list[str]:
     """Append a real source-citation trigger when a beat would be spoken-only."""
+    if _CLEAN_MEASURE:
+        return script
 
     repaired: list[str] = []
     last_ref = ""
@@ -1524,6 +1490,8 @@ def _repair_source_visible_beats(script: list[str], segment_beats: list[str]) ->
 
 def _repair_comparison_beats(script: list[str], segment_beats: list[str]) -> list[str]:
     """Make source-planned comparison beats explicit in the spoken script."""
+    if _CLEAN_MEASURE:
+        return script
 
     repaired: list[str] = []
     for index, beat in enumerate(script):
@@ -1543,6 +1511,8 @@ def _repair_comparison_beats(script: list[str], segment_beats: list[str]) -> lis
 
 def _repair_live_event_payoff(script: list[str]) -> list[str]:
     """Make the final beat's payoff legible to the live-event gate."""
+    if _CLEAN_MEASURE:
+        return script
 
     if not script:
         return script
@@ -1557,48 +1527,94 @@ def _repair_live_event_payoff(script: list[str]) -> list[str]:
     return repaired
 
 
+def _build_refine_seed(seed: str, script: list[str], feedback: str) -> str:
+    """Compose the refine seed: the original grounded seed (recruited source menu,
+    angle) + the prior draft + the council's verbatim feedback, framed as a
+    revision task. Routed through the SAME _build_full_segment_prompt the compose
+    and recompose/repair paths use, so the output is a normal-sized parseable
+    script+contract (closing the contract-overload truncation) AND the feedback
+    actually reaches the model (closing the seed-blind no-op)."""
+    draft_block = "\n".join(f"--- prior beat {i + 1} ---\n{t}" for i, t in enumerate(script))
+    parts = [seed] if seed else []
+    parts.append(
+        "## REVISION TASK\n"
+        "The PRIOR DRAFT below was composed and then judged by the coherence council. "
+        "Recompose the segment so it DIRECTLY addresses the council feedback — do NOT "
+        "restate the prior draft verbatim; fix the named weaknesses (e.g. a flat opening "
+        "becomes a real tension; an unresolved close gets a payoff). Keep what already "
+        "works; substantially rewrite what the feedback faults."
+    )
+    if feedback.strip():
+        parts.append(f"## COUNCIL FEEDBACK (you MUST address these axes)\n{feedback.strip()}")
+    parts.append(f"## PRIOR DRAFT (revise — do not copy)\n{draft_block}")
+    return "\n\n".join(parts)
+
+
 def _refine_script(
     script: list[str],
     programme: Any,
     *,
+    seed: str = "",
+    feedback: str = "",
     prep_session: dict[str, Any] | None = None,
     programme_id: str = "",
 ) -> tuple[list[str], dict[str, Any] | None, bool]:
-    """Iterative refinement pass — critic + rewrite.
+    """Iterative refinement pass — a TRUE revision that responds to council feedback.
 
-    Sends the initial draft to the LLM with a broadcast-editor persona
-    that evaluates each beat on specificity, arc, length, and rhetoric,
-    then rewrites weak beats. Returns the improved script, the model-emitted
-    contract for that script, and whether refinement changed the script.
+    Recomposes through ``_build_full_segment_prompt`` (the working compose path)
+    with the prior draft + the council's coherence feedback folded into the seed.
+    Retries once on an unparseable/short response, and on terminal failure
+    SURFACES the failure (trace step ``refine`` status=failed + warning) instead of
+    silently keeping the original. Returns (script, contract, changed).
     """
-    prompt = _build_refinement_prompt(script, programme)
-    try:
-        raw = _call_llm(
-            prompt,
-            prep_session=prep_session,
-            phase="refine",
-            programme_id=programme_id,
-        )
-        refined, refined_contract = _parse_segment_generation(raw)
-        if refined and len(refined) >= len(script):
-            refined = refined[: len(script)]
-            # Log improvement stats
-            old_avg = sum(len(b) for b in script) / max(len(script), 1)
-            new_avg = sum(len(b) for b in refined) / max(len(refined), 1)
-            log.info(
-                "refinement: avg chars/beat %.0f → %.0f (%.0f%% change)",
-                old_avg,
-                new_avg,
-                ((new_avg - old_avg) / max(old_avg, 1)) * 100,
+    refine_seed = _build_refine_seed(seed, script, feedback)
+    prompt = _build_full_segment_prompt(programme, refine_seed)
+    _gt = gentrace.current()
+    last_n = 0
+    for attempt in (1, 2):
+        try:
+            raw = _call_llm(
+                prompt,
+                prep_session=prep_session,
+                phase="refine",
+                programme_id=programme_id,
             )
-            return refined, refined_contract, refined != script
-        log.warning(
-            "refinement: got %d beats (expected %d), keeping original",
-            len(refined) if refined else 0,
-            len(script),
+            refined, refined_contract = _parse_segment_generation(raw)
+            last_n = len(refined) if refined else 0
+            if refined and len(refined) >= len(script):
+                refined = refined[: len(script)]
+                old_avg = sum(len(b) for b in script) / max(len(script), 1)
+                new_avg = sum(len(b) for b in refined) / max(len(refined), 1)
+                log.info(
+                    "refinement: avg chars/beat %.0f → %.0f (%.0f%% change, attempt %d)",
+                    old_avg,
+                    new_avg,
+                    ((new_avg - old_avg) / max(old_avg, 1)) * 100,
+                    attempt,
+                )
+                return refined, refined_contract, refined != script
+            log.warning(
+                "refinement: attempt %d got %d beats (expected %d)",
+                attempt,
+                last_n,
+                len(script),
+            )
+        except Exception:
+            log.warning("refinement: attempt %d LLM call failed", attempt, exc_info=True)
+    # Terminal failure — SURFACE it (no silent keep-original). The downstream
+    # disconfirmation council still gates release on the un-refined draft.
+    log.warning(
+        "refinement: FAILED after 2 attempts for %s (last=%d beats) — proceeding with "
+        "un-refined draft; council feedback left unaddressed",
+        programme_id,
+        last_n,
+    )
+    if _gt is not None:
+        _gt.record_step(
+            "refine",
+            status="failed",
+            note=f"unparseable/short after 2 attempts (last={last_n} beats)",
         )
-    except Exception:
-        log.warning("refinement: LLM call failed, keeping original", exc_info=True)
     return script, None, False
 
 
@@ -1803,6 +1819,87 @@ def _refuse_no_resolved_sources(
     )
 
 
+_DMN_IMPINGEMENTS_FILE = Path("/dev/shm/hapax-dmn/impingements.jsonl")
+
+
+def _read_recent_impingements(*, since: float = 0.0, limit: int = 40) -> list[dict[str, Any]]:
+    """Tail-read the DMN impingement bus and return recent records (timestamp >=
+    ``since``). The bus is large + append-only, so only the tail is read. This is
+    the snapshot read used both to FEED the composer (B fix) and to RECORD what
+    arose (Type-5 observability); the LOOP's exactly-once cursor consume is a
+    separate, later concern."""
+    out: list[dict[str, Any]] = []
+    try:
+        if not _DMN_IMPINGEMENTS_FILE.exists():
+            return out
+        with _DMN_IMPINGEMENTS_FILE.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - 32_768))
+            tail = fh.read().decode("utf-8", errors="ignore")
+        for line in tail.splitlines()[-limit:]:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            ts = rec.get("timestamp", 0.0)
+            if not isinstance(ts, int | float) or ts < since:
+                continue
+            out.append(rec)
+    except Exception:
+        log.debug("impingement read failed", exc_info=True)
+    return out
+
+
+def _salient_impingement_block(
+    records: list[dict[str, Any]], *, k: int = 5
+) -> tuple[str, list[dict]]:
+    """Compress the impingement field into a COMPACT, FORMAL salient digest for the
+    compose seed — top-k by strength. Deliberately compressed: a raw dump of the
+    whole field would be non-DASEIN context that dilutes the grounding; this is a
+    small DASEIN-native signal. Returns (block_text, the_top_k_records)."""
+    ranked = sorted(
+        records,
+        key=lambda r: (
+            (r.get("strength") or 0.0) if isinstance(r.get("strength"), int | float) else 0.0
+        ),
+        reverse=True,
+    )[:k]
+    if not ranked:
+        return "", []
+    lines = ["== SALIENT FIELD (what is impinging on you now — let it inflect, do not derail) =="]
+    for r in ranked:
+        content = r.get("content") if isinstance(r.get("content"), dict) else {}
+        narrative = str(content.get("narrative", r.get("type", "")))[:120]
+        # Coerce defensively: a live /dev/shm record may carry a null or string
+        # strength, and a raw {:.2f} on that raises OUTSIDE the read guard,
+        # turning an observability input into a failed segment (codex-1, #4133).
+        raw_strength = r.get("strength")
+        strength = float(raw_strength) if isinstance(raw_strength, int | float) else 0.0
+        lines.append(f"  - {r.get('source', '?')} ({strength:.2f}): {narrative}")
+    return "\n".join(lines), ranked
+
+
+def _capture_episode_impingements(trace: Any, *, since: float) -> None:
+    """OBSERVABILITY (Type 5 — impingement): record the DMN impingements that
+    AROSE during this episode's window (timestamp >= ``since``)."""
+    if trace is None:
+        return
+    for rec in _read_recent_impingements(since=since):
+        content = rec.get("content") if isinstance(rec.get("content"), dict) else {}
+        trace.record_impingement(
+            source=str(rec.get("source", "?")),
+            text=str(content.get("narrative", rec.get("type", "")))[:200],
+            magnitude=rec.get("strength"),
+            arose_at=float(rec.get("timestamp", 0.0) or 0.0),
+            influenced=None,  # whether it MOVED the output is the next influence-tracing layer
+            influence_note="arose during episode",
+        )
+
+
 def prep_segment(
     programme: Any,
     prep_dir: Path,
@@ -1963,6 +2060,35 @@ def prep_segment(
     # before — recruitment confirmed it resolves to real sources.
     topic = topic_str
 
+    # OBSERVABILITY (Type 2 — provenance): record what was recruited. Operativity
+    # (operative vs latent) is resolved after composition from cited_handles.
+    _gt = gentrace.current()
+    if _gt is not None:
+        try:
+            _gt.record_recruitment(
+                [
+                    {
+                        "handle": f"src:{i}",
+                        "kind": "source",
+                        "topic": topic_str,
+                        "summary": f"{p.source_ref}: {(p.snippet or '')[:140]}",
+                    }
+                    for i, p in enumerate(resolved_source_set.packets)
+                ]
+            )
+            # Type 7 — self-model: the role/goal/standpoint Hapax holds for this episode.
+            _gt.set_self_model(
+                role=role,
+                goal=topic_str,
+                standpoint="operational system with consultation receipts (non-anthropomorphic)",
+                role_source="planner.narrative_beat",
+            )
+            _gt.record_step(
+                "recruit", note=f"{len(resolved_source_set.packets)} sources for '{topic_str[:60]}'"
+            )
+        except Exception:
+            log.debug("generative_trace: recruitment record failed", exc_info=True)
+
     # Pass 0.5: advisory angle prose (best-effort; NOT load-bearing — the citable
     # surface is the recruited set above, not this thesis/tension hint).
     angle_ctx = ""
@@ -1982,6 +2108,32 @@ def prep_segment(
         seed = f"{seed}\n\n{angle_ctx}" if seed else angle_ctx
     source_menu = _format_recruited_source_menu(resolved_source_set)
     seed = f"{seed}\n\n{source_menu}" if seed else source_menu
+
+    # B FIX — end the composer's impingement deafness. Fold a COMPRESSED salient
+    # digest of the live DMN impingement field into the seed so compose AND refine
+    # (refine inherits this seed) hear what is impinging on Hapax during prep,
+    # instead of the field arising and reaching nothing. Compressed/formal on
+    # purpose: a raw dump would be the non-DASEIN intrusion that dilutes grounding.
+    _salient_block, _salient_recs = _salient_impingement_block(_read_recent_impingements())
+    if _salient_block:
+        seed = f"{seed}\n\n{_salient_block}"
+        _gt = gentrace.current()
+        if _gt is not None:
+            _gt.record_step(
+                "impingement_feed",
+                note=f"fed top-{len(_salient_recs)} salient impingements into compose+refine seed",
+            )
+            for r in _salient_recs:
+                _content = r.get("content") if isinstance(r.get("content"), dict) else {}
+                _gt.record_impingement(
+                    source=str(r.get("source", "?")),
+                    text=str(_content.get("narrative", r.get("type", "")))[:200],
+                    magnitude=r.get("strength"),
+                    arose_at=float(r.get("timestamp", 0.0) or 0.0),
+                    influenced=True,  # reached the composer via the seed (the B channel)
+                    influence_note="fed into compose+refine seed",
+                )
+
     prompt = _build_full_segment_prompt(programme, seed)
     source_hashes = _source_hashes(programme, seed=seed, prompt=prompt)
     source_hashes["resolved_source_provenance_sha256"] = source_provenance_sha256(
@@ -2049,6 +2201,27 @@ def prep_segment(
         avg_chars,
     )
 
+    # OBSERVABILITY (Type 4 — iteration): the actual pass-1 draft (the thing the
+    # pipeline otherwise discards). (Type 2 — operativity): which recruited
+    # sources the composer actually CITED = operative; recruited-but-uncited =
+    # latent. cited_handles come from the model-authored contract.
+    _gt = gentrace.current()
+    if _gt is not None:
+        try:
+            _gt.record_draft(1, "compose", "\n\n".join(script), beats=len(script))
+            _cited = (
+                (model_contract or {}).get("cited_handles", [])
+                if isinstance(model_contract, dict)
+                else []
+            )
+            _gt.resolve_source_operativity([str(h) for h in _cited])
+            _gt.record_step(
+                "compose",
+                note=f"pass 1: {len(script)} beats, {avg_chars:.0f} chars/beat, cited {len(_cited)}",
+            )
+        except Exception:
+            log.debug("generative_trace: compose record failed", exc_info=True)
+
     # Pass 1.5: Council coherence check. A degraded / unavailable / REFUSED
     # council is a TERMINAL no-release (fail-LOUD) — never a soft feedback inject
     # (the prior fail-open let a down council wave the segment through). A HEALTHY
@@ -2069,7 +2242,51 @@ def prep_segment(
         return None
     coherence_outcome = _council_coherence_check("\n\n".join(script), prog_id)
     council_decisions["coherence"] = coherence_outcome.council_decisions
+    # OBSERVABILITY (Type 6 — stance): the council's coherence judgment IS a stance
+    # signal on the draft (opening_pressure ~ motivated angle; thematic_progression
+    # ~ directedness). Capture mean + per-axis + the verbatim feedback so we can
+    # read whether the draft argues with force or is stumbling — and whether the
+    # score reflects content or (per the over-research finding) truncated research.
+    _gt = gentrace.current()
+    if _gt is not None:
+        try:
+            _cd = coherence_outcome.council_decisions or {}
+            _mean = _cd.get("mean_score")
+            _axis = _cd.get("scores") if isinstance(_cd.get("scores"), dict) else {}
+
+            def _norm(v: Any) -> float | None:
+                return round(float(v) / 5.0, 3) if isinstance(v, int | float) else None
+
+            _gt.record_stance(
+                {
+                    "assessed_pass": 1,
+                    "assessor": "council",
+                    "motivated_angle": _norm(_axis.get("opening_pressure")),
+                    "argumentative_force": _norm(
+                        _axis.get("source_grounding") or _axis.get("specificity")
+                    ),
+                    "directedness": _norm(_axis.get("thematic_progression")),
+                    "evidence": {k: str(v) for k, v in list(_axis.items())[:8]},
+                    "summary": (coherence_outcome.feedback or "")[:600]
+                    or f"coherence mean={_mean}",
+                }
+            )
+            _gt.record_step(
+                "coherence_check",
+                status=(
+                    "refused"
+                    if coherence_outcome.refused
+                    else "ok"
+                    if coherence_outcome.passed
+                    else "low"
+                ),
+                note=f"mean={_mean} passed={coherence_outcome.passed} refused={coherence_outcome.refused}",
+            )
+        except Exception:
+            log.debug("generative_trace: coherence stance record failed", exc_info=True)
     if coherence_outcome.refused:
+        if _gt is not None:
+            _gt.finish("council_refused")
         log.warning("prep_segment: council coherence REFUSED for %s — no release", prog_id)
         _emit_council_degradation_signal(prog_id, "coherence", coherence_outcome.council_decisions)
         _append_council_decisions_ledger(
@@ -2100,6 +2317,8 @@ def prep_segment(
     refine_result = _refine_script(
         script,
         programme,
+        seed=seed,
+        feedback=(coherence_outcome.feedback or "") if not coherence_outcome.passed else "",
         prep_session=prep_session,
         programme_id=prog_id,
     )
@@ -2112,6 +2331,11 @@ def prep_segment(
         refined_script = [str(item) for item in refine_result]
         refinement_changed = refined_script != script
         script = refined_script
+    # Swap to the final contract FIRST, so the trace's operativity is computed
+    # against the contract that actually produced the released script. Resolving
+    # before the swap tagged operative/latent against the stale pass-1 contract,
+    # corrupting the core generative-observability evidence for refined outputs
+    # (codex-1, PR #4133).
     if refinement_contract and (refinement_changed or model_contract is None):
         model_contract = refinement_contract
     elif refinement_changed:
@@ -2120,12 +2344,89 @@ def prep_segment(
             prog_id,
         )
         model_contract = None
+
+    # OBSERVABILITY (Type 4 — true iteration): record the refined draft with the
+    # feedback that prompted it. delta_from_prev auto-detects a re-roll vs a real
+    # revision; responded_to_feedback says whether the pass changed anything at
+    # all. This is how "are they TRUE iterations?" becomes answerable.
+    _gt = gentrace.current()
+    if _gt is not None:
+        try:
+            _gt.record_draft(
+                2,
+                "refine",
+                "\n\n".join(script),
+                beats=len(script),
+                feedback_in=(coherence_outcome.feedback or "")[:1200],
+                responded_to_feedback=bool(refinement_changed),
+            )
+            _gt.record_step(
+                "refine",
+                status=("ok" if refinement_changed else "no_change"),
+                note=f"changed={refinement_changed}, {len(script)} beats",
+            )
+            # Re-resolve operativity against the now-final (post-swap) contract.
+            if isinstance(model_contract, dict):
+                _gt.resolve_source_operativity(
+                    [str(h) for h in model_contract.get("cited_handles", [])]
+                )
+        except Exception:
+            log.debug("generative_trace: refine record failed", exc_info=True)
+
     script = _scrub_host_posture(script)
     if role == "tier_list":
         script = _repair_tier_list_placement_phrases(script)
     script = _repair_source_visible_beats(script, [str(item) for item in beats])
     script = _repair_comparison_beats(script, [str(item) for item in beats])
     script = _repair_live_event_payoff(script)
+
+    # Early-exit optimization: if the first pass failed (low mean OR critical-axis
+    # floor) and the refine was a no-op, refuse NOW rather than spend the
+    # disconfirmation/narrative councils on a still-incoherent draft. This is NOT
+    # the authoritative release gate (recompose passes below regenerate the
+    # script) — the FINAL coherence gate after all recomposition is. Both exist:
+    # this saves council calls on hopeless drafts; the final gate enforces release
+    # on the artifact that actually ships (codex-1, PR #4133).
+    if not coherence_outcome.passed:
+        recheck = _council_coherence_check("\n\n".join(script), prog_id)
+        council_decisions["coherence_recheck"] = recheck.council_decisions
+        if _gt is not None:
+            _rc = recheck.council_decisions or {}
+            _gt.record_step(
+                "coherence_recheck",
+                status=("ok" if recheck.passed else "refused" if recheck.refused else "low"),
+                note=f"post-refine mean={_rc.get('mean_score')} min={_rc.get('axis_min')} "
+                f"passed={recheck.passed}",
+            )
+        if not recheck.passed:
+            if _gt is not None:
+                _gt.finish("low_coherence_after_refine")
+            log.warning(
+                "prep_segment: coherence still below gate after refinement for %s "
+                "(mean=%s, axis_min=%s) — no release",
+                prog_id,
+                (recheck.council_decisions or {}).get("mean_score"),
+                (recheck.council_decisions or {}).get("axis_min"),
+            )
+            _emit_council_degradation_signal(
+                prog_id, "coherence_recheck", recheck.council_decisions
+            )
+            _append_council_decisions_ledger(
+                prep_dir, prog_id, council_decisions, terminal_status="low_coherence_no_release"
+            )
+            _write_prep_diagnostic_outcome(
+                prep_dir,
+                prep_session=prep_session,
+                programme_id=prog_id,
+                role=role,
+                topic=topic,
+                segment_beats=list(beats),
+                terminal_status="low_coherence_no_release",
+                terminal_reason="coherence_below_gate_after_refinement",
+                not_loadable_reason="coherence below release gate after refinement",
+                refusal_metadata={"council_decisions": council_decisions},
+            )
+            return None
 
     # Pass 3: Council disconfirmation — adversarially test material claims
     if _prep_deadline_exceeded(
@@ -2163,10 +2464,23 @@ def prep_segment(
         claim_map = contract_for_claims.get("claim_map", [])
         sc_map = contract_for_claims.get("source_consequence_map", [])
 
+        # Map each src:N handle to its real ref + recruited snippet so the
+        # disconfirmation council judges against actual source TEXT and resolvable
+        # refs, never an internal handle it cannot dereference (the read_source
+        # "src:0" -> File not found timeout cascade; verified diagnosis 2026-06-14).
+        source_handles = (
+            {
+                f"src:{i}": (p.source_ref, p.snippet or "")
+                for i, p in enumerate(resolved_source_set.packets)
+            }
+            if resolved_source_set is not None
+            else {}
+        )
         council_claims = extract_claims(
             claim_map=claim_map,
             source_consequence_map=sc_map,
             script=script,
+            source_handles=source_handles,
         )
         if council_claims:
             council_verdicts = run_council_disconfirmation(council_claims)
@@ -2481,6 +2795,54 @@ def prep_segment(
         )
         return None
     script = list(actionability["prepared_script"])
+
+    # FINAL coherence release gate — on the artifact that actually SHIPS. Every
+    # recomposition pass above (disconfirmation/narrative/actionability) fully
+    # regenerates the script via _call_llm, so gating only the early/refined draft
+    # let a recompose-degraded final script ship un-validated. This gate always
+    # runs on the post-recompose script and is the authoritative enforcement of
+    # "coherence (incl. the critical-axis floor) blocks release" (codex-1, #4133).
+    final_coherence = _council_coherence_check("\n\n".join(script), prog_id)
+    council_decisions["coherence_final"] = final_coherence.council_decisions
+    if _gt is not None:
+        _fc = final_coherence.council_decisions or {}
+        _gt.record_step(
+            "coherence_final",
+            status=(
+                "ok" if final_coherence.passed else "refused" if final_coherence.refused else "low"
+            ),
+            note=f"ship mean={_fc.get('mean_score')} min={_fc.get('axis_min')} "
+            f"passed={final_coherence.passed}",
+        )
+    if not final_coherence.passed:
+        if _gt is not None:
+            _gt.finish("low_coherence_final")
+        log.warning(
+            "prep_segment: final coherence gate blocked release for %s (mean=%s, axis_min=%s)",
+            prog_id,
+            (final_coherence.council_decisions or {}).get("mean_score"),
+            (final_coherence.council_decisions or {}).get("axis_min"),
+        )
+        _emit_council_degradation_signal(
+            prog_id, "coherence_final", final_coherence.council_decisions
+        )
+        _append_council_decisions_ledger(
+            prep_dir, prog_id, council_decisions, terminal_status="low_coherence_no_release"
+        )
+        _write_prep_diagnostic_outcome(
+            prep_dir,
+            prep_session=prep_session,
+            programme_id=prog_id,
+            role=role,
+            topic=topic,
+            segment_beats=list(beats),
+            terminal_status="low_coherence_no_release",
+            terminal_reason="final_coherence_below_gate",
+            not_loadable_reason="final coherence below release gate",
+            refusal_metadata={"council_decisions": council_decisions},
+        )
+        return None
+
     layout_responsibility = validate_layout_responsibility(
         actionability["beat_action_intents"],
     )
@@ -3210,6 +3572,18 @@ def run_prep(
             saved_count=len(saved),
             segmented_count=len(segmented),
         )
+        # Generative-agency observability: one episode trace per segment, made
+        # ambient so recruitment/compose/coherence/refine record without
+        # threading the trace through every signature. Flushed in finally.
+        try:
+            gentrace.begin_episode(
+                episode_id=str(prog_id),
+                programme_id=str(prog_id),
+                role=getattr(getattr(prog, "role", None), "value", "unknown"),
+                topic=(getattr(getattr(prog, "content", None), "narrative_beat", "") or ""),
+            )
+        except Exception:
+            log.debug("generative_trace: begin_episode failed (non-fatal)", exc_info=True)
         try:
             # AC 3a: pass the absolute prep deadline so prep_segment can fail
             # LOUD mid-segment instead of overrunning the budget unbounded.
@@ -3230,6 +3604,14 @@ def run_prep(
             )
             log.warning("daily_segment_prep: segment %s failed, continuing", prog_id, exc_info=True)
             path = None
+        finally:
+            try:
+                _ep = gentrace.current()
+                if _ep is not None:
+                    _capture_episode_impingements(_ep, since=_ep.created_at)
+                gentrace.end_episode(today, outcome=("released" if path else "refuted"))
+            except Exception:
+                log.debug("generative_trace: end_episode failed (non-fatal)", exc_info=True)
         if path:
             saved.append(path)
             _update_prep_status(
@@ -3546,6 +3928,10 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
         "families_valid": health.get("families_valid"),
         "failed_members": verdict.receipt.get("failed_members", []),
         "mean_score": round(mean_score, 2) if mean_score is not None else None,
+        # Per-axis scores — the generative trace reads council_decisions["scores"]
+        # to populate the stance assessment (motivated_angle/directedness/etc.);
+        # without it those fields are silently unassessed (codex-1, PR #4133).
+        "scores": dict(scores),
     }
 
     if verdict.convergence_status == ConvergenceStatus.REFUSED or not valid_scores:
@@ -3560,7 +3946,19 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
             passed=False, feedback="", refused=True, council_decisions=decision
         )
 
-    feedback_lines = [f"Council coherence scores (mean={mean_score:.1f}):"]
+    # Critical-axis floor: the mean can MASK a catastrophic single-axis failure
+    # — a structurally strong segment whose ending completely fizzles scores e.g.
+    # opening=5/specificity=5/progression=4/payoff=1 → mean 3.75, which clears a
+    # mean-only gate while being unreleasable. Verified by the eval-calibration
+    # harness (scripts/calibrate-eval.py, fixture mixed-strong-but-no-payoff:
+    # mean 3.75, payoff_resolution=1). A segment that totally fails ANY one
+    # coherence dimension must refine, not release, regardless of mean.
+    axis_min = min(valid_scores)
+    floor_axis = min(scores.items(), key=lambda kv: (kv[1] is None, kv[1]))[0]
+    decision["axis_min"] = axis_min
+    decision["axis_min_name"] = floor_axis
+
+    feedback_lines = [f"Council coherence scores (mean={mean_score:.1f}, min={axis_min}):"]
     for axis, score in scores.items():
         feedback_lines.append(f"  - {axis}: {score}")
     for note in verdict.disagreement_log[:3]:
@@ -3574,7 +3972,23 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
         return _CoherenceOutcome(
             passed=False, feedback=feedback, refused=False, council_decisions=decision
         )
-    log.info("_council_coherence_check: passed (mean=%.1f) for %s", mean_score, programme_id)
+    if axis_min <= _COHERENCE_CRITICAL_AXIS_FLOOR:
+        log.warning(
+            "_council_coherence_check: critical-axis failure (%s=%d, mean=%.1f masks it) for %s",
+            floor_axis,
+            axis_min,
+            mean_score,
+            programme_id,
+        )
+        return _CoherenceOutcome(
+            passed=False, feedback=feedback, refused=False, council_decisions=decision
+        )
+    log.info(
+        "_council_coherence_check: passed (mean=%.1f, min=%d) for %s",
+        mean_score,
+        axis_min,
+        programme_id,
+    )
     return _CoherenceOutcome(
         passed=True, feedback=feedback, refused=False, council_decisions=decision
     )

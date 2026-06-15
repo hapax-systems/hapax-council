@@ -5,6 +5,7 @@ Description=Hapax CNS drift self-perception (audit-only re-perceivable surface â
 After=hapax-secrets.service
 Wants=hapax-secrets.service
 ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple

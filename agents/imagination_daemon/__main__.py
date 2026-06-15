@@ -71,7 +71,7 @@ def _read_stimmung_stance() -> str:
     """Read current stimmung stance for cadence modulation."""
     try:
         data = json.loads(STIMMUNG_PATH.read_text(encoding="utf-8"))
-        return data.get("stance", "nominal")
+        return data.get("overall_stance", "nominal")
     except (OSError, json.JSONDecodeError):
         return "nominal"
 

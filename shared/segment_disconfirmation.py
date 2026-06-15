@@ -42,7 +42,34 @@ def extract_claims(
     source_consequence_map: Sequence[Mapping[str, Any]],
     script: Sequence[str] | None = None,
     max_script_claims: int = 3,
+    source_handles: Mapping[str, tuple[str, str]] | None = None,
 ) -> list[CouncilInput]:
+    """Build council inputs from claims.
+
+    ``source_handles`` maps a Hapax-internal source handle (``src:N``) to its
+    ``(real_source_ref, snippet)``. Claim ``grounds`` carry these handles, which
+    the council CANNOT dereference — ``read_source("src:0")`` resolves to a
+    non-existent path and starves the research budget into a TimeoutError cascade
+    (verified diagnosis 2026-06-14). So resolve handles to their real refs AND
+    surface the actual recruited source TEXT as ``source_context`` so each member
+    judges against real material directly instead of failing to fetch a handle.
+    """
+    handles = source_handles or {}
+
+    def _resolve_ref(ground: str) -> str:
+        entry = handles.get(ground)
+        return entry[0] if entry and entry[0] else ground
+
+    def _context_for(grounds: Sequence[str]) -> str:
+        chunks: list[str] = []
+        seen_refs: set[str] = set()
+        for g in grounds:
+            entry = handles.get(g)
+            if entry and entry[1] and entry[0] not in seen_refs:
+                seen_refs.add(entry[0])
+                chunks.append(f"[{entry[0]}]\n{entry[1]}")
+        return "\n\n".join(chunks)
+
     consequence_by_claim: dict[str, str] = {}
     for entry in source_consequence_map:
         kind = entry.get("consequence_kind", "")
@@ -70,12 +97,13 @@ def extract_claims(
         inputs.append(
             CouncilInput(
                 text=claim_text,
-                source_ref=primary_ground,
+                source_ref=_resolve_ref(primary_ground) or primary_ground,
+                source_context=_context_for(grounds),
                 metadata={
                     "claim_id": claim_id,
                     "source_consequence": source_consequence,
                     "consequence_kind": consequence_by_claim.get(claim_id, ""),
-                    "all_grounds": list(grounds),
+                    "all_grounds": [_resolve_ref(g) for g in grounds],
                 },
             )
         )

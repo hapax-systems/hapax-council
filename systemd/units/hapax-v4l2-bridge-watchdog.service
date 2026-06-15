@@ -2,6 +2,7 @@
 Description=Hapax V4L2 bridge egress watchdog
 After=studio-compositor.service hapax-v4l2-bridge.service
 ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-v4l2-bridge-watchdog
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot

@@ -156,6 +156,8 @@ ntfy_page() {
     -H "Tags: warning,sound,audio-incident" \
     -d "$body" \
     "${NTFY_BASE%/}/${NTFY_TOPIC}" 2>/dev/null || true
+  # Governed incident record alongside the ntfy channel.
+  "$(dirname "$(readlink -f "$0")")/hapax-alert" urgent "$title" "$body" --tag audio --record-only
 }
 
 # ── Pre-flight: snapshot + baseline verify ─────────────────────────
