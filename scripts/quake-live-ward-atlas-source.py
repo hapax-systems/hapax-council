@@ -885,6 +885,53 @@ def _atlas_idle_surface_from_backend(
     return None
 
 
+def _audit_readback(observed: dict[str, Any]) -> dict[str, Any]:
+    """DarkPlaces-mode ward readback the visibility audit can consume directly,
+    from the producer's own per-ward visibility classification instead of cropping
+    an OBS frame against the (wrong-coordinate-space) 2D compositor layout. Reports
+    the PRE-lift classification (honest weak-frame signal, post-#3988). RT-2."""
+    wards: list[dict[str, Any]] = []
+    visible = 0
+    considered = 0
+    suspects: list[str] = []
+    for ward_id in WARD_IDS:
+        ward = observed.get(ward_id)
+        if not isinstance(ward, dict):
+            continue
+        if ward_id in DIRECT_TEXTURE_WARDS:
+            continue  # engine-blitted direct textures: not atlas-considered content
+        considered += 1
+        pre = ward.get("pre_readability_visibility") or {}
+        classification = str(
+            (pre.get("classification") if ward.get("readability_lift") else None)
+            or ward.get("visibility_classification")
+            or ward.get("status")
+            or "unknown"
+        )
+        is_visible = classification == "visible"
+        if is_visible:
+            visible += 1
+        else:
+            suspects.append(ward_id)
+        wards.append(
+            {
+                "ward_id": ward_id,
+                "classification": classification,
+                "visible": is_visible,
+                "mean_luma": ward.get("mean_luma"),
+                "luma_std": ward.get("luma_std"),
+            }
+        )
+    return {
+        "mode": "darkplaces",
+        "ward_ids": list(WARD_IDS),
+        "considered": considered,
+        "visible": visible,
+        "suspect_wards": suspects,
+        "wards": wards,
+    }
+
+
 def render_atlas(
     *,
     output: Path,
@@ -1068,6 +1115,7 @@ def render_atlas(
             "wards": observed,
             "visibility_thresholds": _visibility_thresholds(),
             "visibility_summary": visibility_summary,
+            "audit_readback": _audit_readback(observed),
             "gpu_drift": True,
             "gpu_drift_raw_output": str(gpu_drift_raw_output),
             "gpu_drift_final_output": str(output),
@@ -1114,6 +1162,7 @@ def render_atlas(
         "wards": observed,
         "visibility_thresholds": _visibility_thresholds(),
         "visibility_summary": visibility_summary,
+        "audit_readback": _audit_readback(observed),
         "drift_renderer": "quake-media-drift-v1",
         "drift_enabled": bool(getattr(drift_renderer, "enabled", False))
         if drift_renderer is not None

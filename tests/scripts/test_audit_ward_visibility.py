@@ -249,3 +249,79 @@ def _write_snapshot(tmp_path: Path) -> Path:
     path = tmp_path / "snapshot.jpg"
     image.save(path)
     return path
+
+
+def test_audit_ward_visibility_consumes_darkplaces_readback(tmp_path: Path) -> None:
+    import time
+
+    meta = tmp_path / "quake-live-ward-atlas.raw.json"
+    meta.write_text(
+        json.dumps(
+            {
+                "observed_at": time.time(),
+                "audit_readback": {
+                    "mode": "darkplaces",
+                    "ward_ids": ["w_vis", "w_weak"],
+                    "considered": 2,
+                    "visible": 1,
+                    "suspect_wards": ["w_weak"],
+                    "wards": [
+                        {"ward_id": "w_vis", "classification": "visible", "visible": True},
+                        {"ward_id": "w_weak", "classification": "weak-rendered", "visible": False},
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [str(SCRIPT), "--darkplaces-meta", str(meta), "--min-visible-wards", "2", "--json"],
+        text=True,
+        capture_output=True,
+        check=False,
+        cwd=REPO_ROOT,
+    )
+    payload = json.loads(result.stdout)
+    assert payload["assignment_source"] == "darkplaces-readback"
+    assert payload["considered_wards"] == 2
+    assert payload["visible_wards"] == 1
+    assert payload["verdict_counts"] == {"visible": 1, "weak-rendered": 1}
+    assert payload["suspect_wards"] == ["w_weak"]
+    assert payload["ok"] is False  # min_visible_wards=2 but only 1 visible
+    assert result.returncode == 10
+
+
+def test_audit_ward_visibility_ignores_stale_darkplaces_readback(tmp_path: Path) -> None:
+    stale = tmp_path / "stale.raw.json"
+    stale.write_text(
+        json.dumps(
+            {
+                "observed_at": 1.0,
+                "audit_readback": {
+                    "mode": "darkplaces",
+                    "ward_ids": [],
+                    "considered": 0,
+                    "visible": 0,
+                    "wards": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            str(SCRIPT),
+            "--darkplaces-meta",
+            str(stale),
+            "--device",
+            "/dev/nonexistent-video-xyz",
+            "--no-rtmp-fallback",
+            "--json",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        cwd=REPO_ROOT,
+    )
+    # stale readback ignored -> falls back to capture (which fails on a bogus device)
+    assert result.returncode == 2
