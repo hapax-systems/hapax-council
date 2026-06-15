@@ -1443,3 +1443,52 @@ class TestGoGate:
         # The phantom critical must NOT appear as an unresolved-critical blocker
         critical_blockers = [b for b in blockers if "unresolved_critical" in b]
         assert critical_blockers == [], f"phantom critical should not block admission: {blockers}"
+
+    def test_synthesize_dossier_persists_head_sha(self, tmp_path: Path) -> None:
+        """Refutes reviewer claim: 'synthesize_dossier never persists head_sha'.
+        Line 739 of review_team.py unconditionally writes head_sha into the dossier."""
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        dossier = rt.synthesize_dossier(
+            task_id="task-sha-test",
+            pr_number=1,
+            head_sha="abc123def456" * 4,  # 48 chars, arbitrary
+            team_class="t2_standard",
+            registry=reg,
+            reviews=[_review("g-1", "gemini", "accept"), _review("c-1", "claude", "accept")],
+            lenses=ALWAYS_ON_LENSES,
+            constituted_at="2026-06-11T20:00:00+00:00",
+            repo_root=tmp_path,
+        )
+        assert dossier["head_sha"] == "abc123def456" * 4, "synthesize_dossier MUST persist head_sha"
+
+    def test_admission_gate_uses_dossier_head_sha_for_go_gate(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Refutes reviewer claim: 'admission-gate ignores pr_head_sha'.
+        _dossier_validity_blockers passes dossier head_sha to _blocking_criticals (line 950-951)
+        and blocks when head_sha is stale (line 805-806)."""
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        dossier = rt.synthesize_dossier(
+            task_id="task-sha-admission",
+            pr_number=2,
+            head_sha="a" * 40,
+            team_class="t2_standard",
+            registry=reg,
+            reviews=[_review("g-1", "gemini", "accept"), _review("c-1", "claude", "accept")],
+            lenses=ALWAYS_ON_LENSES,
+            constituted_at="2026-06-11T20:00:00+00:00",
+            repo_root=tmp_path,
+        )
+        # With matching pr_head_sha: no stale_head blocker
+        blockers_match = rt._dossier_validity_blockers(dossier, pr_head_sha="a" * 40, registry=reg)
+        stale = [b for b in blockers_match if "stale_head" in b]
+        assert stale == [], f"matching head_sha should not trigger stale_head: {stale}"
+
+        # With mismatched pr_head_sha: MUST emit stale_head blocker
+        blockers_mismatch = rt._dossier_validity_blockers(
+            dossier, pr_head_sha="b" * 40, registry=reg
+        )
+        stale = [b for b in blockers_mismatch if "stale_head" in b]
+        assert len(stale) == 1, f"mismatched head_sha MUST trigger stale_head: {blockers_mismatch}"
