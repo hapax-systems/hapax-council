@@ -1328,13 +1328,15 @@ class TestGoGate:
 
     def test_blocking_criticals_uses_cwd_discovery(self, tmp_path: Path, monkeypatch) -> None:
         # the admission-gate production path: repo_root=None discovers the repo from cwd
+        # v4: head_sha is now required for verification to fire, so provide one + mock matcher
         rt = _load_review_team_module()
         (tmp_path / ".git").mkdir()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
         self._py(tmp_path, "shared/foo.py", "x = 1\n")
         phantom = self._lit("fatal syntax error at line 690", line=690)
         reviews = [_review("gemini-1", "gemini", "block", findings=[phantom])]
         monkeypatch.chdir(tmp_path)
-        blocking, phantoms = rt._blocking_criticals(reviews, None)
+        blocking, phantoms = rt._blocking_criticals(reviews, None, head_sha="a" * 40)
         assert blocking == [] and len(phantoms) == 1
 
     def test_phantom_literal_critical_does_not_block(self, tmp_path: Path, monkeypatch) -> None:
@@ -1377,3 +1379,26 @@ class TestGoGate:
         ]
         d = _synth(rt, reviews, repo_root=tmp_path)
         assert d["review_team_verdict"] == "blocked"
+
+    def test_eof_syntax_error_kept(self, tmp_path: Path) -> None:
+        """v4 fix: a REAL broken .py with a syntax claim citing a line past EOF must return True
+        (keep). The out-of-range shortcut was removed — ast.parse catches the real error."""
+        rt = _load_review_team_module()
+        # 3-line file that genuinely fails to parse
+        self._py(tmp_path, "broken.py", "def f():\n    pass\ndef g(:\n")
+        f = self._lit("syntax error at line 10", file="broken.py", line=10)
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_empty_head_sha_skips_verification(self, tmp_path: Path) -> None:
+        """v4 fix: when head_sha is empty/None, _blocking_criticals must NOT verify — keep all
+        criticals (the safe pre-go-gate behaviour). Prevents firing against an unverified checkout."""
+        rt = _load_review_team_module()
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        phantom = self._lit("fatal syntax error at line 690", line=690)
+        reviews = [_review("gemini-1", "gemini", "block", findings=[phantom])]
+        # head_sha="" -> should skip verification, keep all as blocking
+        blocking, phantoms = rt._blocking_criticals(reviews, tmp_path, head_sha="")
+        assert len(blocking) == 1 and phantoms == []
+        # head_sha=None -> same
+        blocking2, phantoms2 = rt._blocking_criticals(reviews, tmp_path, head_sha=None)
+        assert len(blocking2) == 1 and phantoms2 == []

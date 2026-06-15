@@ -487,10 +487,10 @@ def _repo_head_matches(repo_root: Path, head_sha: str) -> bool:
 
 def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) -> bool:
     """Return True if the critical STANDS; False ONLY for a DEFINITIVELY-refuted syntax/compile
-    phantom. A critical is invalidated only when it is a SYNTAX/COMPILE claim AND either (a) cites a
-    line beyond the file, or (b) the cited Python file ``ast.parse``-s clean. Every other case —
-    not a syntax/compile claim (ALL semantic criticals), a missing/unreadable/non-Python file, or an
-    in-range claim that does not parse-refute — KEEPS the critical. Uncertainty never suppresses."""
+    phantom. A critical is invalidated only when it is a SYNTAX/COMPILE claim AND the cited Python
+    file ``ast.parse``-s clean. Every other case — not a syntax/compile claim (ALL semantic
+    criticals), a missing/unreadable/non-Python file — KEEPS the critical. Uncertainty never
+    suppresses."""
     if not _is_syntax_compile_claim(finding):
         return (
             True  # not a syntax/compile claim — never invalidate (every semantic critical is safe)
@@ -505,22 +505,13 @@ def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) 
         source = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return True  # unreadable — cannot verify, keep
-    line = finding.get("line")
+    if path.suffix != ".py":
+        return True  # cannot verify a non-Python syntax claim — keep (conservative)
     try:
-        line_no = int(line) if line is not None else None
-    except (TypeError, ValueError):
-        line_no = None
-    if line_no is not None and line_no > 0 and line_no > len(source.splitlines()):
-        return (
-            False  # a syntax/compile claim citing a line beyond the file — the documented phantom
-        )
-    if path.suffix == ".py":
-        try:
-            ast.parse(source)
-        except SyntaxError:
-            return True  # really does not parse — the claim stands
-        return False  # parses clean — the syntax/compile claim is a phantom
-    return True  # non-Python or in-range, not parse-refuted — keep
+        ast.parse(source)
+    except SyntaxError:
+        return True  # really does not parse — the claim stands
+    return False  # parses clean — the syntax/compile claim is a phantom
 
 
 def _blocking_criticals(
@@ -538,8 +529,8 @@ def _blocking_criticals(
     root = repo_root if repo_root is not None else _discover_repo_root()
     if root is None:
         return criticals, []
-    if head_sha and not _repo_head_matches(root, head_sha):
-        return criticals, []  # wrong/unknown checkout — do not verify against the wrong files
+    if not head_sha or not _repo_head_matches(root, head_sha):
+        return criticals, []  # no commit to bind to, or wrong checkout -> do not verify (keep all)
     blocking: list[tuple[str, dict]] = []
     phantom: list[tuple[str, dict]] = []
     for reviewer_id, finding in criticals:
