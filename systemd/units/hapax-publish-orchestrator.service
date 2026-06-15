@@ -1,12 +1,12 @@
 [Unit]
 Description=hapax — approval-gated publish orchestrator
-Documentation=file:///home/hapax/projects/hapax-council/agents/publish_orchestrator/orchestrator.py
+Documentation=file://%h/.cache/hapax/source-activation/worktree/agents/publish_orchestrator/orchestrator.py
 After=hapax-secrets.service
 Requires=hapax-secrets.service
 
 [Service]
 Type=simple
-WorkingDirectory=/home/hapax/projects/hapax-council
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 # 2026-04-26 Phase-3 fanout activation: surface adapters (bluesky, IA, OSF,
 # PhilArchive, Zenodo refusal-deposit) read HAPAX_*_TOKEN / HAPAX_*_KEY /
 # HAPAX_BLUESKY_* env vars from hapax-secrets.service via
@@ -16,7 +16,8 @@ WorkingDirectory=/home/hapax/projects/hapax-council
 # optional — service still starts on hosts where hapax-secrets isn't
 # materialised yet (CI runners, fresh VMs).
 EnvironmentFile=-/run/user/1000/hapax-secrets.env
-ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.publish_orchestrator
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.publish_orchestrator
 Restart=on-failure
 RestartSec=5s
 StandardOutput=journal
