@@ -524,6 +524,7 @@ def dispatch_reviews(
         process_failed = False
         process_output = ""
         quota_wall_output = ""
+        quota_wall_stdout = ""
         try:
             reply = reviewer_runner(seat, family_cfgs[seat.family], prompts[index])
         except ReviewerProcessError as exc:
@@ -532,6 +533,7 @@ def dispatch_reviews(
             process_failed = True
             process_output = "\n".join(part for part in (exc.stdout, exc.stderr) if part).strip()
             quota_wall_output = exc.stderr
+            quota_wall_stdout = exc.stdout
         except Exception as exc:  # noqa: BLE001 — one dead reviewer must not kill the round
             LOG.warning("reviewer %s (%s) failed: %s", seat.id, seat.family, exc)
             reply = ""
@@ -547,7 +549,9 @@ def dispatch_reviews(
             # diagnostics. Clean-exit stdout is model-controlled, so even an
             # exact provider-looking literal remains invalid-output.
             if process_failed:
-                walled = review_team.is_quota_wall(quota_wall_output, process_failed=True)
+                walled = review_team.is_quota_wall(
+                    quota_wall_output, process_failed=True, model_stdout=quota_wall_stdout
+                )
             else:
                 walled = False
             if walled:
