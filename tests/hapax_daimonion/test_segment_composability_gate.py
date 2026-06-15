@@ -1,6 +1,7 @@
 """Unit tests for the S2 topic+type composability gate (deterministic verdict + fail-open)."""
 
 import json
+import os
 from unittest import mock
 
 from agents.hapax_daimonion.segment_composability_gate import assess_composability
@@ -73,3 +74,24 @@ def test_fail_open_on_error() -> None:
 def test_empty_beats_defers_to_upstream_skip() -> None:
     r = assess_composability("rant", "t", [])
     assert r.accept is True
+
+
+def test_incomplete_response_fails_open() -> None:
+    # A 200-OK from a misrouted/weak model that returns valid JSON but OMITS the structural decision
+    # fields must FAIL OPEN (accept, errored) — never mass-reject a batch on a bad gateway route.
+    signals = {"opening_hook": "something", "score": 5}  # no arc_or_list / test1 / test2
+    with mock.patch("urllib.request.urlopen", _urlopen_returning(signals)):
+        r = assess_composability("rant", "t", ["b1", "b2"])
+    assert r.accept is True
+    assert r.errored is True
+
+
+def test_killswitch_disables_gate_without_network() -> None:
+    # HAPAX_COMPOSABILITY_GATE=off hard-disables the gate (accept, errored) and makes NO gateway call.
+    urlopen = mock.Mock(side_effect=AssertionError("gate must not call the gateway when disabled"))
+    with mock.patch.dict(os.environ, {"HAPAX_COMPOSABILITY_GATE": "off"}):
+        with mock.patch("urllib.request.urlopen", urlopen):
+            r = assess_composability("tier_list", "a tier list", ["b1", "b2", "b3"])
+    assert r.accept is True
+    assert r.errored is True
+    urlopen.assert_not_called()

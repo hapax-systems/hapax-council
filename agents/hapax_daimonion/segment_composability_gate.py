@@ -43,6 +43,11 @@ def _default_gate_model() -> str:
 
 GATE_MODEL = os.environ.get("HAPAX_COMPOSABILITY_GATE_MODEL") or _default_gate_model()
 REJECT_BELOW = 3.0  # mirror the live coherence floor; <3 = un-composable
+_GATE_OFF_VALUES = {"off", "0", "false", "no", "disabled"}
+# The structural decision keys a real gate response MUST carry. A 200-OK that omits any of them is a
+# degraded/misrouted model (the fields would silently default to False -> mass reject); treat as
+# un-assessable and FAIL OPEN rather than reject a whole batch on a bad gateway route.
+_REQUIRED_DECISION_KEYS = ("arc_or_list", "test1_resolves_specific_hook", "test2_reorder_breaks_it")
 
 _PROMPT = """You are a STRICT STRUCTURAL composability gate for a spoken-word broadcast segment. You do NOT
 judge the topic's importance or taste — only whether this plan can form a BUILDING NARRATIVE ARC. Be
@@ -85,7 +90,15 @@ def assess_composability(
     """Return ACCEPT iff (arc AND resolves-specific-hook AND reorder-breaks-it AND score>=floor).
 
     FAIL-OPEN: any error (network/model/parse) returns accept=True, errored=True — never blocks compose.
+    An incomplete gateway response (HTTP 200 but missing the structural decision fields — the shape a
+    misrouted/weak model produces) also fails OPEN, so a gateway misroute can never silently mass-reject a
+    whole batch. The operator may hard-disable the gate with ``HAPAX_COMPOSABILITY_GATE=off`` (the repo's
+    standard ``*_GATE_OFF`` killswitch pattern) if it ever misbehaves on air.
     """
+    if os.environ.get("HAPAX_COMPOSABILITY_GATE", "").strip().lower() in _GATE_OFF_VALUES:
+        return CompositionGateResult(
+            True, "gate disabled via HAPAX_COMPOSABILITY_GATE", errored=True
+        )
     if not beats:
         return CompositionGateResult(True, "no beats — defer to the upstream no-beats skip")
     url, key = _gateway()
@@ -108,6 +121,20 @@ def assess_composability(
     except Exception as exc:  # noqa: BLE001 — fail-open on any gate failure
         log.warning("composability gate could not run (fail-open accept): %s", exc)
         return CompositionGateResult(True, f"gate unavailable (fail-open): {exc}", errored=True)
+
+    missing = [k for k in _REQUIRED_DECISION_KEYS if k not in parsed]
+    if missing:
+        log.warning(
+            "composability gate response missing structural fields %s (fail-open accept): %s",
+            missing,
+            parsed,
+        )
+        return CompositionGateResult(
+            True,
+            f"gate response incomplete (fail-open): missing {missing}",
+            signals=parsed,
+            errored=True,
+        )
 
     shape = str(parsed.get("arc_or_list", "")).lower()
     resolves = bool(parsed.get("test1_resolves_specific_hook"))
