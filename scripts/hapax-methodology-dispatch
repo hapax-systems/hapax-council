@@ -1079,6 +1079,10 @@ def _sliced_call(args: list[str], env: dict[str, str] | None = None) -> int:
         for key, value in base_env.items()
         if key.startswith(("HAPAX_", "CLAUDE_")) and os.environ.get(key) != value
     }
+    # FIX (alpha 2026-06-15): the systemd-run SDLC slice does not inherit the caller's PATH, so the
+    # launched lane (hapax-claude-headless) failed `command -v claude` (exit 4). Pass PATH through.
+    if base_env.get("PATH"):
+        explicit_env["PATH"] = base_env["PATH"]
     explicit_env["HAPAX_SDLC_SLICE_ATTACHED"] = "1"
     wrapped = sdlc_slice_wrap(args, setenv=explicit_env)
     if wrapped != list(args):
@@ -1280,6 +1284,50 @@ def optional_env_path(name: str) -> Path | None:
 def dispatch_message_id(cli_value: str | None) -> str | None:
     value = (cli_value or os.environ.get("HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID", "")).strip()
     return value or None
+
+
+# Binding states that warrant minting a fresh durable dispatch binding (no usable binding exists).
+_MINTABLE_BINDING_REASONS = frozenset(
+    {
+        "durable_mq_authority_binding_missing",
+        "durable_mq_dispatch_stale",
+        "durable_mq_dispatch_expired",
+        "durable_mq_freshness_unknown",
+    }
+)
+
+
+def _mint_dispatch_binding(task_id: str, lane: str, task_fields: dict[str, Any]) -> str | None:
+    """Mint the durable dispatch binding (relay_mq 'dispatch' message) for a validated, dispatch-ready
+    task when none exists.
+
+    #3793 ("atomically bind dispatch launches") added the binding REQUIREMENT but wired no producer —
+    bindings had been minted per-assignment by a flow that stopped ~2026-06-13, freezing all automated
+    dispatch (offered=N, dispatched=0). Authority is gated UPSTREAM by task validation (authority_case +
+    parent_spec + validate-task); this binding is the idempotency/audit record the atomic launch
+    consumes. Returns the message_id, or None when the task lacks an authority_case (caller leaves it
+    blocked with the true reason — minting cannot manufacture authority)."""
+    authority_case = strip_scalar(str(task_fields.get("authority_case", "")))
+    if is_nullish(authority_case):
+        return None
+    authority_item = strip_scalar(str(task_fields.get("authority_item", ""))) or task_id
+    recipient = lane.strip().lower().replace("_", "-")
+
+    from shared.relay_mq import send_message
+    from shared.relay_mq_envelope import Envelope
+
+    env = Envelope(
+        sender="methodology-dispatch",
+        message_type="dispatch",
+        subject=task_id,
+        authority_case=authority_case,
+        authority_item=authority_item,
+        recipients_spec=recipient,
+        payload=json.dumps(
+            {"minted_by": "methodology-dispatch", "task_id": task_id, "lane": recipient}
+        ),
+    )
+    return send_message(_relay_mq_db_path(), env)
 
 
 def coord_event_log_from_env() -> CoordEventLog:
@@ -1894,19 +1942,38 @@ def main(argv: list[str] | None = None) -> int:
 
     assert route is not None
     mq_message_id = dispatch_message_id(args.mq_message_id)
-    if args.launch and route.mutable and not validation.exempt_read_only and mq_message_id is None:
-        durable_binding = DurableDispatchBinding(
-            False,
-            True,
-            "strict_mq_message_id_required",
-        )
-    else:
-        durable_binding = check_durable_dispatch_binding(
-            task_id=args.task,
-            lane=args.lane,
-            validation=validation,
-            message_id=mq_message_id,
-        )
+    # FIX (alpha 2026-06-15): #3793's strict short-circuit hard-failed when no explicit
+    # --mq-message-id was passed, but the coordinator (the only automated caller) never passes one,
+    # so ALL automated dispatch was blocked. check_durable_dispatch_binding is the real governance
+    # check: it looks up the durable dispatch binding by authority_case+lane+task_id and RETURNS its
+    # message_id (no CLI arg needed). Always run it — the durable binding is still REQUIRED.
+    durable_binding = check_durable_dispatch_binding(
+        task_id=args.task,
+        lane=args.lane,
+        validation=validation,
+        message_id=mq_message_id,
+    )
+    # PRODUCER (alpha 2026-06-15): mint the durable dispatch binding for a validated, dispatch-ready
+    # task when none exists (the missing #3793 producer; see _mint_dispatch_binding).
+    if (
+        args.launch
+        and route.mutable
+        and not validation.exempt_read_only
+        and mq_message_id is None
+        and not durable_binding.ok
+        and durable_binding.reason in _MINTABLE_BINDING_REASONS
+        and validation.task is not None
+    ):
+        minted_id = _mint_dispatch_binding(args.task, args.lane, validation.task.fields)
+        if minted_id is not None:
+            durable_binding = check_durable_dispatch_binding(
+                task_id=args.task,
+                lane=args.lane,
+                validation=validation,
+                message_id=minted_id,
+            )
+    if durable_binding.ok and mq_message_id is None:
+        mq_message_id = durable_binding.message_id
     if not durable_binding.ok and args.launch:
         reason = f"durable MQ authority binding required: {durable_binding.reason}"
         blocked = Validation(

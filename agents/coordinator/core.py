@@ -244,14 +244,20 @@ class Coordinator:
             offered_tasks=len(offered),
             claimed_tasks=sum(1 for t in tasks if t.status in ("claimed", "in_progress")),
             lanes_alive=sum(1 for l in lanes.values() if l.alive),
-            lanes_idle=sum(1 for l in lanes.values() if l.idle and l.alive),
             lanes_total=len(lanes),
             task_status_counts=_task_status_counts(tasks),
             task_flow_counts=_task_flow_counts(tasks),
         )
 
         dispatches = 0
-        idle_lanes = [l for l in lanes.values() if l.alive and l.idle and l.claimed_task is None]
+        # DISPATCH-SPAWN (alpha 2026-06-15): a slot is dispatchable when it has NO live launcher PID
+        # and NO active claim -- NOT when a process is already 'alive' (see _is_dispatchable). The
+        # old `l.alive` gate deadlocked a cold fleet.
+        idle_lanes = [l for l in lanes.values() if _is_dispatchable(l)]
+        # The SHM/log capacity signal must reflect the SAME dispatchable predicate the loop uses --
+        # the old `idle and alive` count contradicted a cold-fleet dispatch (it would log
+        # idle_lanes=0 alongside dispatched>0).
+        state.lanes_idle = len(idle_lanes)
 
         # L3: pace the dispatch loop under CPU pressure. 'closed' dispatches
         # nothing this tick (tasks stay offered — queued, not dropped); 'paced'
@@ -1079,7 +1085,7 @@ def _stringify_task(value: object) -> str | None:
     if value is None:
         return None
     if isinstance(value, dict):
-        for key in ("task_id", "surface", "id", "name"):
+        for key in ("task_id", "id", "name"):  # B1: not "surface" (free-text desc, not a task id)
             nested = value.get(key)
             if nested:
                 return str(nested)
@@ -1405,6 +1411,23 @@ def _lane_launcher_process_present(lane: LaneState) -> bool:
     if _launcher_pid_present(lane.role, platform=lane.platform):
         return True
     return lane.platform == "claude" and _live_headless_launcher(lane.role) is not None
+
+
+def _is_dispatchable(lane: LaneState) -> bool:
+    """A slot is dispatchable when it holds NO active claim AND has NO OBSERVABLE live worker -- NOT
+    when a process is merely 'alive'. The old `l.alive and l.idle` gate deadlocked a cold fleet:
+    nothing spawns launchers, so `alive` stays 0, so the idle pool stays empty, so nothing ever
+    dispatches. Liveness here is the SAME `_lane_launcher_process_present` check `_dispatch_landed`
+    uses: `lane.pid` live (covers a codex lane's bare `CODEX_PID_DIR/<lane>.pid`), the launcher
+    pidfile (platform-resolved via `lane.platform`), or a live headless launcher.
+
+    This is the dispatch-SIDE gate over the lane state the coordinator can observe; it is NOT the
+    sole guard against a duplicate launch. If a genuinely-live lane briefly slips past it (a
+    transient discovery gap where `lane.pid` is unpopulated), the downstream atomic launch is the
+    backstop: `run_atomic_dispatch_launch` (shared/coord_dispatch.py) consumes the durable dispatch
+    binding once and replays the terminal result, so the SAME binding cannot drive two launches.
+    Recheck that backstop there before trusting this comment."""
+    return lane.claimed_task is None and not _lane_launcher_process_present(lane)
 
 
 def _lane_owner_present(lane: LaneState) -> bool:
