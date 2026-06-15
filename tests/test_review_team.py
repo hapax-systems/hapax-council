@@ -66,6 +66,26 @@ class TestLensRegistry:
         ]
         assert missing == []
 
+    def test_voice_doctrine_consent_egress_is_scoped_to_audio_not_eval_plane(self) -> None:
+        # Class-closure canary (2026-06-15): the voice-doctrine consent-egress item must stay scoped to
+        # AUDIO/VOICE broadcast egress, NOT general data / LLM-eval-gateway egress. The over-broad phrasing
+        # "anything leaving the machine" caused all 4 review families to mis-fire consent-egress as a
+        # critical on PR #4143 — an eval-plane LLM classification call (LiteLLM 'balanced' route) that the
+        # deliberative council already makes ungated. General/LLM/publication egress is owned by the
+        # security / consent-provenance / trust-boundary lenses. Guard against regression to the broad text.
+        charter = (LENS_DIR / "voice-doctrine.md").read_text(encoding="utf-8")
+        consent_line = next(
+            (ln for ln in charter.splitlines() if ln.startswith("- [ ] consent-egress:")), ""
+        )
+        assert consent_line, "voice-doctrine must keep a consent-egress checklist item"
+        low = consent_line.lower()
+        assert "audio" in low, consent_line  # positively scoped to audio/voice egress
+        assert "na for non-audio" in low, consent_line  # explicit out-of-scope disclaimer
+        assert any(lens in low for lens in ("security", "consent-provenance", "trust-boundary")), (
+            consent_line
+        )  # hands general egress to the correct lenses
+        assert "anything leaving the machine" not in low, consent_line  # regression guard
+
     def test_sizing_matches_ratified_spec(self) -> None:
         sizing = _registry()["sizing"]
         assert sizing["t3_docs"]["team_size"] == 2
