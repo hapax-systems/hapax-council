@@ -1251,6 +1251,53 @@ def test_prep_segment_records_substance_feedback_on_no_candidate(
     ]
 
 
+def test_prep_segment_uncomposable_gate_reject_writes_diagnostic_and_feedback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """S2 gate reject path (end-to-end through prep_segment): when assess_composability returns
+    accept=False, prep_segment must honestly refuse (return None), write the terminal diagnostic with
+    terminal_reason='uncomposable_topic_type', and record planner substance feedback so the next batch
+    re-authors. Overrides the autouse accept-default fixture (later monkeypatch wins)."""
+    import agents.hapax_daimonion.segment_composability_gate as gate
+
+    programme = SimpleNamespace(
+        programme_id="prog-uncomposable",
+        role=SimpleNamespace(value="tier_list"),
+        content=_ready_content(
+            narrative_beat="Ranking governance enforcement failures",
+            segment_beats=["least severe", "more severe", "most severe"],
+            role="tier_list",
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+    }
+
+    reason = "un-composable parallel_list (resolves_specific_hook=False, reorder_breaks_it=False)"
+    monkeypatch.setattr(
+        gate,
+        "assess_composability",
+        lambda *_a, **_k: gate.CompositionGateResult(False, reason),
+    )
+
+    saved = prep.prep_segment(programme, tmp_path, prep_session=session)
+
+    assert saved is None
+    assert session["planner_substance_feedback"] == [f"[prog-uncomposable] {reason}"]
+    ledger_row = json.loads(
+        (tmp_path / prep.PREP_DIAGNOSTIC_LEDGER_FILENAME).read_text(encoding="utf-8")
+    )
+    assert ledger_row["terminal_status"] == "no_candidate"
+    assert ledger_row["terminal_reason"] == "uncomposable_topic_type"
+    assert ledger_row["loadable"] is False
+    dossier = json.loads(Path(ledger_row["dossier_ref"]).read_text(encoding="utf-8"))
+    assert dossier["no_candidate_metadata"]["candidate_source"] == "segment_composability_gate"
+    assert dossier["no_candidate_metadata"]["candidate_count"] == 0
+
+
 def test_prep_segment_no_beats_writes_non_loadable_diagnostic_dossier(
     tmp_path: Path,
 ) -> None:

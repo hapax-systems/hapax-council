@@ -1980,7 +1980,12 @@ def prep_segment(
     # and never blocks a legitimate compose.
     from agents.hapax_daimonion.segment_composability_gate import assess_composability
 
-    _composability = assess_composability(role, topic, list(beats))
+    # Bound the gate's gateway call by the remaining prep budget so it cannot block ~60s near deadline
+    # exhaustion (mirrors the deadline discipline the council passes guard with _prep_deadline_exceeded).
+    _gate_timeout = 60.0
+    if deadline_monotonic is not None:
+        _gate_timeout = max(5.0, min(60.0, deadline_monotonic - time.monotonic()))
+    _composability = assess_composability(role, topic, list(beats), timeout=_gate_timeout)
     if not _composability.accept:
         log.info(
             "prep_segment: %s un-composable topic+type, skipping: %s",

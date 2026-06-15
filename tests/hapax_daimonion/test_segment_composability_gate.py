@@ -4,6 +4,8 @@ import json
 import os
 from unittest import mock
 
+import pytest
+
 from agents.hapax_daimonion.segment_composability_gate import assess_composability
 
 
@@ -95,3 +97,78 @@ def test_killswitch_disables_gate_without_network() -> None:
     assert r.accept is True
     assert r.errored is True
     urlopen.assert_not_called()
+
+
+def test_string_false_signals_are_rejected_not_coerced_true() -> None:
+    # JSON-schema drift: a model that returns the STRING "false" for the structural tests must NOT be
+    # read as pass (bool("false") is True). An arc whose tests are string-"false" must REJECT.
+    signals = {
+        "arc_or_list": "arc",
+        "test1_resolves_specific_hook": "false",
+        "test2_reorder_breaks_it": "false",
+        "score": 5,
+        "opening_hook": "x",
+    }
+    with mock.patch("urllib.request.urlopen", _urlopen_returning(signals)):
+        r = assess_composability("rant", "t", ["b1", "b2"])
+    assert r.accept is False
+
+
+def test_string_score_below_floor_rejects() -> None:
+    # A numeric-string score below REJECT_BELOW is coerced and still rejects.
+    signals = {
+        "arc_or_list": "arc",
+        "test1_resolves_specific_hook": True,
+        "test2_reorder_breaks_it": True,
+        "score": "2",
+    }
+    with mock.patch("urllib.request.urlopen", _urlopen_returning(signals)):
+        r = assess_composability("rant", "t", ["b1", "b2"])
+    assert r.accept is False
+
+
+def test_missing_or_nonnumeric_score_does_not_reject_an_arc() -> None:
+    # The score floor only TIGHTENS: a valid structural arc with score omitted (or non-numeric) still
+    # accepts — the three structural signals are load-bearing, not the optional score.
+    for score in ({}, {"score": "not-a-number"}):
+        signals = {
+            "arc_or_list": "arc",
+            "test1_resolves_specific_hook": True,
+            "test2_reorder_breaks_it": True,
+            **score,
+        }
+        with mock.patch("urllib.request.urlopen", _urlopen_returning(signals)):
+            r = assess_composability("rant", "t", ["b1", "b2"])
+        assert r.accept is True, f"arc with score={score} should accept"
+
+
+@pytest.mark.llm
+def test_anchor_classification_live() -> None:
+    """Reproduce the 2x2 anchor classification against the REAL gateway model (excluded from CI by the
+    ``llm`` marker; run with ``-m llm``). Pins the load-bearing claim that the live predictor separates a
+    building arc from a tier-list — the deterministic reducer is covered by the mocked tests above."""
+    arc = assess_composability(
+        "rant",
+        "A launch that looked like a triumph was actually the failure that doomed the product",
+        [
+            "open on the triumphant launch everyone remembers",
+            "reveal the single decision made that day that planted the failure",
+            "trace how that decision compounded until it killed the product",
+            "land on why the 'triumph' was the failure all along",
+        ],
+    )
+    tier = assess_composability(
+        "tier_list",
+        "Ranking governance enforcement failures from least to most severe",
+        [
+            "the least severe failure category",
+            "a moderately severe failure category",
+            "another moderately severe category",
+            "the most severe failure category",
+        ],
+    )
+    # Fail-open means a gateway outage yields accept+errored on both; only assert discrimination when the
+    # live gate actually ran (not errored).
+    if not arc.errored and not tier.errored:
+        assert arc.accept is True
+        assert tier.accept is False
