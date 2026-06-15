@@ -23,7 +23,16 @@ from shared.source_packet import ResolvedSourceSet, SourcePacket, build_resolved
 
 log = logging.getLogger(__name__)
 
-QDRANT_COLLECTIONS = ("documents", "operator-episodes", "stream-reactions", "studio-moments")
+# Grounding-source collections. "stream-reactions" is EXCLUDED: it is Hapax's OWN
+# prior live-stream generations, so recruiting it as a "source" is both circular
+# (grounding a claim on your own output) and STYLE-CONTAMINATING — the composer
+# mimics the slop it is shown as exemplar "sources". Verified 2026-06-14: the live
+# 35B regressed into the stream-reactions phrasing ("Let's delve into the intricate
+# web..."), yet the SAME model scores coherence 4.25 (vs 2.0 live) when composing
+# against clean sources (scripts/compose-model-bakeoff.py). Self-generated content
+# may inform angle elsewhere, but never serves as a grounding source here.
+QDRANT_COLLECTIONS = ("documents", "operator-episodes", "studio-moments")
+_SELF_GENERATED_COLLECTIONS = ("stream-reactions",)
 VAULT_ROOTS = ("30-areas", "20-projects", "50-resources")
 MIN_SOURCES_FOR_ANGLE = 3
 

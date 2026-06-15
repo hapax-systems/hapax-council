@@ -4131,3 +4131,11 @@ _platform_session_run_conformance_fixture
 from shared.rails_event_log import fold_once  # noqa: E402
 
 fold_once
+
+# Ghost-release detector — registered via @check_group("release") decorator
+# and dispatched dynamically through the group registry by health_monitor's
+# runner; same dynamic-registry pattern as check_m8_firmware above
+# (cc-task: audit-w1-logos-gc-guard-20260611, PR #4094 fix round).
+from agents.health_monitor.checks.release_ghost import check_release_ghost  # noqa: E402
+
+check_release_ghost

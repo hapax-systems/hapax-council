@@ -1,0 +1,60 @@
+[
+  {
+    "label": "resident-command-r",
+    "model_id": "command-r-08-2024-exl3-5.0bpw",
+    "endpoint": "tabby",
+    "mean_score": 4.25,
+    "scores": {
+      "argumentative_specificity": 5,
+      "opening_pressure": 4,
+      "payoff_resolution": 4,
+      "thematic_progression": 4
+    },
+    "members_valid": 6,
+    "convergence": "converged",
+    "clears_gate": true,
+    "composed_chars": 1383,
+    "error": null
+  },
+  {
+    "label": "local-qwen36",
+    "model_id": "Qwen3.6-35B-A3B-abliterated-exl3-6.0bpw",
+    "endpoint": "tabby",
+    "mean_score": 3.75,
+    "scores": {
+      "argumentative_specificity": 4,
+      "opening_pressure": 4,
+      "payoff_resolution": 3,
+      "thematic_progression": 4
+    },
+    "members_valid": 6,
+    "convergence": "converged",
+    "clears_gate": true,
+    "composed_chars": 1685,
+    "error": null
+  },
+  {
+    "label": "opus",
+    "model_id": "opus",
+    "endpoint": "litellm",
+    "mean_score": null,
+    "scores": {},
+    "members_valid": null,
+    "convergence": "error",
+    "clears_gate": false,
+    "composed_chars": 0,
+    "error": "HTTPError: HTTP Error 400: Bad Request"
+  },
+  {
+    "label": "gemini-3-pro",
+    "model_id": "gemini-3-pro",
+    "endpoint": "litellm",
+    "mean_score": null,
+    "scores": {},
+    "members_valid": null,
+    "convergence": "error",
+    "clears_gate": false,
+    "composed_chars": 0,
+    "error": "HTTPError: HTTP Error 400: Bad Request"
+  }
+]

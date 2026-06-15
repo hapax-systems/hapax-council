@@ -1,0 +1,4 @@
+{
+  "description": "Governed exit for scripts/check-producer-consumers.py (consumer-existence gate, UNWIRED-WORK/A1). Every entry MUST carry a non-empty 'reason' naming who or what consumes the producer out-of-tree, or why it is intentionally consumer-less. Patterns are fnmatch globs matched against the producer key (collection:<name>, agent:<module>, surface:<slug>) or the producer file path.",
+  "entries": []
+}
