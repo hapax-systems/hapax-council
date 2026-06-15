@@ -21,6 +21,7 @@ the admission blockers; the dispatcher killswitch is
 
 from __future__ import annotations
 
+import ast
 import fnmatch
 import json
 import os
@@ -425,6 +426,89 @@ def _unresolved_criticals(reviews: Sequence[Mapping[str, Any]]) -> list[tuple[st
     return out
 
 
+# --- The go-gate: fail-closed literal-defect verifier -------------------------
+# A reviewer's "syntax error / compile failure / corruption at line N" critical is INVALIDATED
+# (does not block quorum) when the actual file at head refutes it — verified deterministically,
+# out-of-model (ast.parse for Python; file/line existence otherwise). This fail-closes against
+# reviewer confabulation (e.g. a phantom "corrupted decorators at line 690" on a 267-line file that
+# parses clean) while never touching non-literal-defect criticals. Scoped exactly as the prior
+# prompt-only evidence rule (#4132) tried, but enforced by code, not in-model suasion.
+
+_LITERAL_DEFECT_RE = re.compile(
+    r"syntax\s*error|syntaxerror|invalid\s+syntax|fails?\s+to\s+(?:compile|parse)|"
+    r"won'?t\s+(?:compile|parse)|does\s*n'?t\s+(?:compile|parse)|cannot\s+be\s+parsed|"
+    r"un(?:parse|parseable|parsable)|compile\s+(?:error|failure)|corrupt|malformed|"
+    r"broken\s+(?:decorator|syntax|indentation)|unterminated|indentation\s+error|"
+    r"missing\s+(?:colon|paren|parenthes|brace|bracket)",
+    re.IGNORECASE,
+)
+
+
+def _is_literal_defect_claim(finding: Mapping[str, Any]) -> bool:
+    """True if the critical asserts a literal textual/syntactic defect (the verifiable class)."""
+    return bool(_LITERAL_DEFECT_RE.search(str(finding.get("title", ""))))
+
+
+def _discover_repo_root() -> Path | None:
+    cur = Path.cwd()
+    for d in (cur, *cur.parents):
+        if (d / ".git").exists():
+            return d
+    return None
+
+
+def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) -> bool:
+    """Return True if the critical stands (verified real, or not a literal-defect claim); False if
+    it is a phantom — a literal-defect claim the actual file at ``repo_root`` refutes."""
+    if not _is_literal_defect_claim(finding):
+        return True
+    rel = str(finding.get("file") or "").strip()
+    if not rel:
+        return False  # a literal-defect claim with no file to ground it is unverifiable -> phantom
+    path = repo_root / rel
+    if not path.is_file():
+        return False  # cites a file absent from the tree
+    try:
+        source = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    line = finding.get("line")
+    try:
+        line_no = int(line) if line is not None else None
+    except (TypeError, ValueError):
+        line_no = None
+    if line_no is not None and line_no > 0 and line_no > len(source.splitlines()):
+        return False  # cites a line beyond the file (the documented confabulation)
+    if path.suffix == ".py":
+        try:
+            ast.parse(source)
+        except SyntaxError:
+            return True  # the file really does not parse — the claim stands
+        return False  # parses clean — the "syntax error" is a phantom
+    return (
+        True  # grounded in a real, in-range, non-Python file+line; can't disprove without a quote
+    )
+
+
+def _blocking_criticals(
+    reviews: Sequence[Mapping[str, Any]],
+    repo_root: Path | None,
+) -> tuple[list[tuple[str, dict]], list[tuple[str, dict]]]:
+    """Partition unresolved criticals into (blocking, phantom). Phantoms are literal-defect claims
+    the file at head refutes. ``repo_root=None`` discovers the repo from cwd; if none is found the
+    verifier is skipped and every critical blocks (the safe, current behaviour)."""
+    criticals = _unresolved_criticals(reviews)
+    root = repo_root if repo_root is not None else _discover_repo_root()
+    if root is None:
+        return criticals, []
+    blocking: list[tuple[str, dict]] = []
+    phantom: list[tuple[str, dict]] = []
+    for reviewer_id, finding in criticals:
+        target = blocking if verify_literal_defect_critical(finding, root) else phantom
+        target.append((reviewer_id, finding))
+    return blocking, phantom
+
+
 def _accepting(reviews: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     return [r for r in reviews if str(r.get("verdict", "")).lower() in ACCEPT_VERDICTS]
 
@@ -507,6 +591,7 @@ def synthesize_dossier(
     constitution_writer_family: str | None = None,
     changed_files: Sequence[str] | None = None,
     changed_file_count: int | None = None,
+    repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """Reconcile blind reviews into a dossier (the synthesizer, spec §3/§5).
 
@@ -539,7 +624,7 @@ def synthesize_dossier(
     accepts = _checklist_complete_accepts(reviews, lenses)
     accept_families = {str(r.get("family")) for r in accepts}
     block_reviews = [r for r in reviews if str(r.get("verdict", "")).lower() == "block"]
-    criticals = _unresolved_criticals(reviews)
+    criticals, phantom_criticals = _blocking_criticals(reviews, repo_root)
     scoped_files = None if changed_files is None else [str(f) for f in changed_files]
     if changed_files is not None and changed_file_count is None:
         changed_file_count = len(scoped_files)
@@ -554,6 +639,18 @@ def synthesize_dossier(
                 "file": finding.get("file"),
                 "line": finding.get("line"),
                 "lens": finding.get("lens"),
+            }
+        )
+    for reviewer_id, finding in phantom_criticals:
+        escalations.append(
+            {
+                "kind": "invalidated-phantom-critical",
+                "reviewer": reviewer_id,
+                "title": finding.get("title"),
+                "file": finding.get("file"),
+                "line": finding.get("line"),
+                "lens": finding.get("lens"),
+                "detail": "literal-defect critical refuted by the file at head (fail-closed go-gate)",
             }
         )
     if accepts and block_reviews:
@@ -819,7 +916,8 @@ def _dossier_validity_blockers(
     if len(reviews) < required_size:
         blockers.append(f"review_dossier_team_undersized:{len(reviews)}/{required_size}")
 
-    criticals = _unresolved_criticals(reviews)
+    # go-gate: drop literal-defect phantoms (repo discovered from cwd = the PR checkout in CI)
+    criticals, _ = _blocking_criticals(reviews, None)
     if criticals and sizing.get("block_on_named_critical", True):
         blockers.append(f"review_dossier_unresolved_critical:{len(criticals)}")
 

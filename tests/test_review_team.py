@@ -1216,3 +1216,97 @@ class TestFamilyOutageDegradation:
             outage_state_path=self._witness(tmp_path, families=("claudex",)),
         )
         assert any(b.startswith("review_dossier_degradation_unknown_family:") for b in blockers)
+
+
+class TestGoGate:
+    """The fail-closed literal-defect verifier (the go-gate). A critical claiming a syntax error /
+    compile failure / corruption / a specific broken line is INVALIDATED (does not block quorum)
+    when the actual file at head refutes it — verified deterministically out-of-model (ast.parse for
+    Python; file/line existence otherwise). Non-literal criticals are never touched."""
+
+    def _py(self, root: Path, rel: str, src: str) -> None:
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(src, encoding="utf-8")
+
+    def _lit(self, title: str, file: str = "shared/foo.py", line: int = 10) -> dict:
+        return {
+            "severity": "critical",
+            "lens": "sdlc-gate-compose",
+            "file": file,
+            "line": line,
+            "title": title,
+        }
+
+    def test_clean_python_invalidates_syntax_phantom(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        f = self._lit("fatal syntax error: corrupted decorators")
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
+    def test_real_syntax_error_is_verified(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "bad.py", "def f(:\n")
+        f = self._lit("syntax error: invalid syntax", file="bad.py", line=1)
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_non_literal_critical_passes_through(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        f = self._lit("no regression test covers the new reviewer path")
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_line_beyond_file_is_phantom(self, tmp_path: Path) -> None:
+        # the documented gemini confabulation: cites a line absent from the file
+        rt = _load_review_team_module()
+        self._py(tmp_path, "shared/t.py", "a = 1\nb = 2\n")
+        f = self._lit("corruption at line 690", file="shared/t.py", line=690)
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
+    def test_nonexistent_file_is_phantom(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        f = self._lit("syntax error", file="does/not/exist.py", line=1)
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
+    def test_missing_file_field_literal_claim_is_phantom(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        f = {"severity": "critical", "lens": "x", "file": "", "line": None, "title": "syntax error"}
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
+    def test_phantom_literal_critical_does_not_block(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
+        reviews = [
+            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("claude-1", "claude", "accept"),
+            _review("codex-1", "codex", "accept"),
+        ]
+        d = _synth(rt, reviews, repo_root=tmp_path)
+        assert d["review_team_verdict"] != "blocked"
+        assert any(e["kind"] == "invalidated-phantom-critical" for e in d["escalations"])
+
+    def test_real_literal_critical_still_blocks(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "bad.py", "def f(:\n")
+        real = self._lit("syntax error: invalid syntax", file="bad.py", line=1)
+        reviews = [
+            _review("codex-1", "codex", "block", findings=[real]),
+            _review("claude-1", "claude", "accept"),
+            _review("gemini-1", "gemini", "accept"),
+        ]
+        d = _synth(rt, reviews, repo_root=tmp_path)
+        assert d["review_team_verdict"] == "blocked"
+
+    def test_non_literal_critical_still_blocks(self, tmp_path: Path) -> None:
+        # the verifier must never suppress a non-literal-defect critical
+        rt = _load_review_team_module()
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        nonlit = self._lit("logic error: off-by-one drops the last element")
+        reviews = [
+            _review("codex-1", "codex", "block", findings=[nonlit]),
+            _review("claude-1", "claude", "accept"),
+            _review("gemini-1", "gemini", "accept"),
+        ]
+        d = _synth(rt, reviews, repo_root=tmp_path)
+        assert d["review_team_verdict"] == "blocked"
