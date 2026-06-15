@@ -234,7 +234,7 @@ the operator's interactive checkout:
 
 | Timer | Script | Purpose |
 |-------|--------|---------|
-| `hapax-cc-hygiene.timer` | `scripts/cc-hygiene-sweeper.py` | Read-only cc-task vault diagnostics. |
+| `hapax-cc-hygiene.timer` | `scripts/cc-hygiene-sweeper.py` | cc-task vault diagnostics: 8 read-only checks **plus** the `ghost_claimed` self-heal, which mutates notes by default (reverts a no-claimer `claimed` note to `offered`). Disable the mutation with `--no-actions`; disable the whole sweep with `HAPAX_CC_HYGIENE_OFF=1`. |
 | `hapax-cc-pr-autoqueue.timer` | `scripts/cc-pr-autoqueue.py --apply` | Governed PR auto-queue/auto-merge arming for task-linked PRs. |
 | `hapax-cc-pr-merge-watcher.timer` | `scripts/cc-pr-merge-watcher.py` | Auto-close active cc-tasks after linked PRs merge. |
 

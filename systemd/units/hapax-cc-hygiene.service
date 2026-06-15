@@ -1,5 +1,5 @@
 [Unit]
-Description=Hapax CC-task hygiene sweeper (read-only diagnostic, 8 checks)
+Description=Hapax CC-task hygiene sweeper (8 checks + ghost_claimed self-heal; mutates vault by default, --no-actions to disable)
 Documentation=file://%h/projects/hapax-council/docs/research/2026-04-26-task-list-hygiene-operator-visibility.md
 After=hapax-secrets.service
 OnFailure=notify-failure@%n.service

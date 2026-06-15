@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""cc-hygiene-sweeper — read-only diagnostic daemon for vault cc-tasks.
+"""cc-hygiene-sweeper — diagnostic daemon for vault cc-tasks (read-only checks
++ the ghost-claimed self-heal mutation; see below).
 
 PR1 of the task-list-hygiene plan
 (`docs/research/2026-04-26-task-list-hygiene-operator-visibility.md`).
