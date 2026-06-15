@@ -66,6 +66,17 @@ def _gate(
     )
 
 
+def _gate_without_lint_stub() -> PublicationHardeningGate:
+    return PublicationHardeningGate(
+        repo_root=Path.cwd(),
+        review_pass=_ReviewPass(),
+        entity_checker=lambda _text: (),
+        codebase_verifier=lambda _text, _context: CodebaseVerificationReport(
+            decision=CodebaseDecision.PASS
+        ),
+    )
+
+
 def test_gate_passes_when_all_child_reports_pass() -> None:
     result = _gate().evaluate(_artifact())
 
@@ -100,6 +111,24 @@ def test_deterministic_reject_dominates_review_pass() -> None:
 
     assert result.decision == PublicationGateDecision.REJECT
     assert not result.passes()
+
+
+def test_generated_body_personification_rejects_without_source_path() -> None:
+    result = _gate_without_lint_stub().evaluate(_artifact(body_md="Hapax thinks about the source."))
+
+    lint_child = next(child for child in result.child_results if child.name == "lint")
+    assert result.decision == PublicationGateDecision.REJECT
+    assert lint_child.decision == PublicationGateDecision.REJECT
+    assert any("Hapax.NonAnthropomorphicRegister" in finding for finding in lint_child.findings)
+
+
+def test_generated_body_creator_register_rejects_without_source_path() -> None:
+    result = _gate_without_lint_stub().evaluate(_artifact(body_md="Welcome back to the broadcast."))
+
+    lint_child = next(child for child in result.child_results if child.name == "lint")
+    assert result.decision == PublicationGateDecision.REJECT
+    assert lint_child.decision == PublicationGateDecision.REJECT
+    assert any("Hapax.FormalRegister" in finding for finding in lint_child.findings)
 
 
 def test_codebase_hold_can_be_operator_overridden() -> None:
