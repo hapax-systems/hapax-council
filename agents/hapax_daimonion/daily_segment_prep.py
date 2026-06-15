@@ -1972,6 +1972,40 @@ def prep_segment(
         )
         return None
 
+    # S2 topic+type composability gate (alpha 2026-06-15): reject un-composable PARALLEL-LIST plans
+    # (tier-list/catalogue/abstract-of-abstracts) BEFORE the expensive compose. The S1 2x2 isolated
+    # topic+type composability as the DOMINANT binding constraint (un-composable ~= -2 pts and a clean
+    # prompt cannot rescue it). Mirrors the no_segment_beats skip + feeds the planner-substance-feedback
+    # loop so the next batch re-authors a composable angle. FAIL-OPEN: a gate error returns accept=True
+    # and never blocks a legitimate compose.
+    from agents.hapax_daimonion.segment_composability_gate import assess_composability
+
+    _composability = assess_composability(role, topic, list(beats))
+    if not _composability.accept:
+        log.info(
+            "prep_segment: %s un-composable topic+type, skipping: %s",
+            prog_id,
+            _composability.reason,
+        )
+        _write_prep_diagnostic_outcome(
+            prep_dir,
+            prep_session=prep_session,
+            programme_id=prog_id,
+            role=role,
+            topic=topic,
+            segment_beats=list(beats),
+            terminal_status="no_candidate",
+            terminal_reason="uncomposable_topic_type",
+            not_loadable_reason=f"un-composable topic+type: {_composability.reason}",
+            no_candidate_metadata={
+                "candidate_source": "segment_composability_gate",
+                "candidate_count": 0,
+                "role": role,
+            },
+        )
+        _record_substance_feedback(prep_session, prog_id, _composability.reason)
+        return None
+
     source_readiness = programme_source_readiness(programme)
     if source_readiness.get("ok") is not True:
         log.warning(
