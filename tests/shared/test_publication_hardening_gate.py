@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
+from shared.co_author_model import OUDEPODE
 from shared.preprint_artifact import PreprintArtifact
 from shared.publication_hardening.codebase import (
     CodebaseDecision,
@@ -72,6 +74,7 @@ def test_gate_passes_when_all_child_reports_pass() -> None:
     assert {child.name for child in result.child_results} == {
         "lint",
         "known_entities",
+        "legal_name",
         "codebase",
         "review",
     }
@@ -127,6 +130,184 @@ def test_reject_cannot_be_operator_overridden() -> None:
     assert not result.passes()
     assert result.override is None
     assert "operator_override_ignored_for_reject" in result.flagged_issues
+
+
+def test_gate_rejects_operator_legal_name_in_attribution(monkeypatch) -> None:
+    """corporate_boundary: a personal legal name in the artifact text is a
+    non-overridable REJECT at the aggregate gate, independent of publisher."""
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Real Person")
+    result = _gate().evaluate(
+        _artifact(attribution_block="Real Person (distributor) · Hapax (performer)")
+    )
+
+    assert result.decision == PublicationGateDecision.REJECT
+    assert not result.passes()
+    assert any(child.name == "legal_name" for child in result.child_results)
+
+
+def test_gate_legal_name_guard_warns_when_unconfigured(monkeypatch) -> None:
+    """Unset HAPAX_OPERATOR_NAME = the guard is a no-op; the gate must surface
+    this as an explicit finding, never silently disable the guard."""
+    monkeypatch.delenv("HAPAX_OPERATOR_NAME", raising=False)
+    result = _gate().evaluate(_artifact(attribution_block="Real Person, Hapax"))
+
+    legal = next(c for c in result.child_results if c.name == "legal_name")
+    assert any("unconfigured" in finding for finding in legal.findings)
+    # advisory, not a decision-affecting flagged issue
+    assert not any("unconfigured" in issue for issue in result.flagged_issues)
+    assert result.decision == PublicationGateDecision.PASS
+
+
+def test_gate_rejects_operator_legal_name_in_co_authors(monkeypatch) -> None:
+    """corporate_boundary: a legal name in a co-author's identity fields — which
+    publishers render into public metadata (Zenodo creators, CFF authors) — is a
+    REJECT, even when it never appears in the authored body or byline. This is the
+    co_authors coverage gap (gate scanned only _artifact_publication_text)."""
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Jane Doe")
+    artifact = _artifact(
+        attribution_block="Oudepode (distributor) · Hapax (performer)",
+        co_authors=[replace(OUDEPODE, given_names="Jane", family_names="Doe")],
+    )
+    result = _gate().evaluate(artifact)
+
+    assert result.decision == PublicationGateDecision.REJECT
+    assert not result.passes()
+    legal = next(c for c in result.child_results if c.name == "legal_name")
+    assert legal.decision == PublicationGateDecision.REJECT
+
+
+def test_gate_rejects_operator_legal_name_in_slug(monkeypatch) -> None:
+    """corporate_boundary: a legal name in the slug — which fans out into public
+    URLs / filenames / event-ids — is a REJECT, including the separator-normalized
+    kebab form (`jane-doe` ~ `Jane Doe`), even when it appears nowhere else."""
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Jane Doe")
+    result = _gate().evaluate(
+        _artifact(slug="jane-doe-research-notes", attribution_block="Oudepode · Hapax")
+    )
+
+    assert result.decision == PublicationGateDecision.REJECT
+    assert not result.passes()
+    legal = next(c for c in result.child_results if c.name == "legal_name")
+    assert legal.decision == PublicationGateDecision.REJECT
+
+
+def test_gate_legal_name_configured_but_clean_passes(monkeypatch) -> None:
+    """The live-guard happy path (most common production state once provisioned):
+    HAPAX_OPERATOR_NAME is set and the artifact is clean. The guard ran (no
+    'unconfigured' finding) and PASSED — distinct from the unset-env no-op."""
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Jane Doe")
+    result = _gate().evaluate(_artifact(attribution_block="Oudepode · Hapax"))
+
+    legal = next(c for c in result.child_results if c.name == "legal_name")
+    assert legal.decision == PublicationGateDecision.PASS
+    assert not any("unconfigured" in finding for finding in legal.findings)
+    assert result.decision == PublicationGateDecision.PASS
+
+
+def test_gate_reject_receipt_omits_leaked_name(monkeypatch) -> None:
+    """Non-re-emission invariant: a rejected receipt must never echo the matched
+    legal name — not in any child finding, not in the serialized frontmatter.
+    A privacy guard that leaks the name into its own audit record is self-defeating."""
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Jane Doe")
+    result = _gate().evaluate(
+        _artifact(attribution_block="Jane Doe (distributor) · Hapax (performer)")
+    )
+
+    assert result.decision == PublicationGateDecision.REJECT
+    assert all("Jane Doe" not in finding for c in result.child_results for finding in c.findings)
+    assert "Jane Doe" not in str(result.to_frontmatter())
+
+
+def test_gate_legal_name_reject_skips_external_review(monkeypatch) -> None:
+    """corporate_boundary egress: a legal-name REJECT must NOT transmit the leaked
+    draft to the external review LLM. The review pass is never called — the draft is
+    withheld at the trust boundary, not sent out and then rejected."""
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Jane Doe")
+    sent: list[str] = []
+
+    class _SpyReview:
+        threshold = 0.7
+
+        def review_text(self, text: str, **kwargs) -> ReviewReport:  # type: ignore[no-untyped-def]
+            sent.append(text)
+            return ReviewReport(
+                reviewer_model="spy",
+                author_model=kwargs.get("author_model"),
+                overall_confidence=0.99,
+                flagged_issues=(),
+            )
+
+    gate = PublicationHardeningGate(
+        repo_root=Path.cwd(),
+        review_pass=_SpyReview(),
+        lint_runner=lambda _text, _source_path: (),
+        entity_checker=lambda _text: (),
+        codebase_verifier=lambda _text, _context: CodebaseVerificationReport(
+            decision=CodebaseDecision.PASS
+        ),
+    )
+    result = gate.evaluate(_artifact(attribution_block="Jane Doe (distributor)"))
+
+    assert result.decision == PublicationGateDecision.REJECT
+    assert sent == []  # the leaked draft never reached the external reviewer
+    review = next(c for c in result.child_results if c.name == "review")
+    assert review.decision == PublicationGateDecision.REJECT
+    assert "Jane Doe" not in str(result.to_frontmatter())
+
+
+def test_gate_redacts_legal_name_from_override_reason(monkeypatch) -> None:
+    """An authorized HOLD override whose free-text reason contains the legal name
+    must not serialize it into the receipt. The override still applies (the artifact
+    text is clean, so the legal-name child PASSes); only the leaked name is redacted."""
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Jane Doe")
+    artifact = _artifact(
+        publication_gate_override={"by_referent": "Oudepode", "reason": "cleared by Jane Doe"},
+    )
+    result = _gate(review_confidence=0.2).evaluate(artifact)
+
+    assert result.decision == PublicationGateDecision.OPERATOR_OVERRIDDEN_HOLD
+    assert result.passes()
+    assert result.override is not None
+    assert "Jane Doe" not in str(result.to_frontmatter())
+
+
+def test_gate_redacts_normalized_legal_name_from_override_reason(monkeypatch) -> None:
+    """Detection and redaction share one flexible-separator pattern: a
+    separator-normalized legal name (`jane-doe`) in an override reason is scrubbed
+    from the receipt, not just the literal `Jane Doe` form (the round-5 asymmetry)."""
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Jane Doe")
+    artifact = _artifact(
+        publication_gate_override={"by_referent": "Oudepode", "reason": "see ticket jane-doe-42"},
+    )
+    result = _gate(review_confidence=0.2).evaluate(artifact)
+
+    assert result.decision == PublicationGateDecision.OPERATOR_OVERRIDDEN_HOLD
+    assert "jane-doe" not in str(result.to_frontmatter())
+
+
+def test_gate_override_rejects_unauthorized_referent() -> None:
+    """A HOLD override authored by a non-ratified referent is invalid: the
+    HOLD stands and the receipt flags the unauthorized referent."""
+    artifact = _artifact(
+        publication_gate_override={"by_referent": "Real Person", "reason": "ship it"},
+    )
+    result = _gate(review_confidence=0.2).evaluate(artifact)
+
+    assert result.decision == PublicationGateDecision.HOLD
+    assert result.override is None
+    assert any("unauthorized_referent" in issue for issue in result.flagged_issues)
+
+
+def test_gate_override_accepts_case_insensitive_referent() -> None:
+    """A valid non-formal referent in any casing authors a HOLD override."""
+    artifact = _artifact(
+        publication_gate_override={"by_referent": "oudepode", "reason": "receipts checked"},
+    )
+    result = _gate(codebase_decision=CodebaseDecision.HOLD).evaluate(artifact)
+
+    assert result.decision == PublicationGateDecision.OPERATOR_OVERRIDDEN_HOLD
+    assert result.passes()
+    assert result.override is not None
 
 
 def test_gate_context_is_passed_to_codebase_verifier() -> None:
