@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from enum import StrEnum
@@ -184,35 +185,55 @@ class BridgeEngine:
 
     def __init__(self) -> None:
         self._cache: dict[str, bytes] = {}
+        self._presynth_lock = threading.Lock()
 
-    def presynthesize_all(self, tts_manager: object) -> None:
+    def presynthesize_all(self, tts_manager: object) -> bool:
         """Pre-synthesize all bridge phrases at startup.
 
-        Sequential — avoids API request contention.
-        ~25 phrases. Runs during startup alongside other init.
+        Sequential — avoids API request contention. Idempotent and
+        race-safe: already-cached phrases are skipped, and when another
+        thread is mid-run the call returns ``False`` immediately instead
+        of duplicating the full ~80s CPU synthesis (the startup
+        background thread and the pipeline-start retry used to race).
+
+        Returns ``True`` when every phrase was attempted (cache is as
+        complete as this TTS allows), ``False`` when skipped because a
+        concurrent run owns the work.
         """
         synthesize = getattr(tts_manager, "synthesize", None)
         if synthesize is None:
             log.warning("TTS manager has no synthesize method, skipping presynthesis")
-            return
+            return False
 
-        t0 = time.monotonic()
-        for phrase in ALL_PHRASES:
-            try:
-                pcm = synthesize(phrase, "conversation")
-                if pcm:
-                    self._cache[phrase] = pcm
-            except Exception:
-                log.debug("Failed to presynthesize: %s", phrase, exc_info=True)
-            time.sleep(0.01)  # brief yield between local Kokoro synth calls
+        if not self._presynth_lock.acquire(blocking=False):
+            log.info("Bridge presynthesis already in progress — skipping duplicate run")
+            return False
+        try:
+            t0 = time.monotonic()
+            synthesized = 0
+            for phrase in ALL_PHRASES:
+                if phrase in self._cache:
+                    continue
+                try:
+                    pcm = synthesize(phrase, "conversation")
+                    if pcm:
+                        self._cache[phrase] = pcm
+                        synthesized += 1
+                except Exception:
+                    log.debug("Failed to presynthesize: %s", phrase, exc_info=True)
+                time.sleep(0.01)  # brief yield between local Kokoro synth calls
 
-        elapsed = time.monotonic() - t0
-        log.info(
-            "Pre-synthesized %d/%d bridge phrases in %.1fs",
-            len(self._cache),
-            len(ALL_PHRASES),
-            elapsed,
-        )
+            elapsed = time.monotonic() - t0
+            log.info(
+                "Pre-synthesized %d bridge phrases (%d/%d cached) in %.1fs",
+                synthesized,
+                len(self._cache),
+                len(ALL_PHRASES),
+                elapsed,
+            )
+            return True
+        finally:
+            self._presynth_lock.release()
 
     def select(self, ctx: BridgeContext) -> tuple[str, bytes | None]:
         """Select a bridge phrase for the given context.

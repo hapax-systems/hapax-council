@@ -11,6 +11,7 @@ import asyncio
 import logging
 import os
 import subprocess
+import time
 from collections.abc import Callable
 
 from shared.perception_registry import load_default_registry
@@ -175,6 +176,8 @@ class AudioInputStream:
         self._active = False
         self._reader_task: asyncio.Task | None = None
         self._drop_count: int = 0
+        self._drop_streak_started: float = 0.0
+        self._total_dropped: int = 0
 
     @property
     def frame_samples(self) -> int:
@@ -187,6 +190,11 @@ class AudioInputStream:
     @property
     def is_active(self) -> bool:
         return self._active
+
+    @property
+    def total_dropped_frames(self) -> int:
+        """Cumulative frames dropped to queue overrun since start."""
+        return self._total_dropped
 
     def start(self) -> None:
         if self._active:
@@ -207,6 +215,9 @@ class AudioInputStream:
 
     def stop(self) -> None:
         self._active = False
+        # Close any open drop streak here — carrying it into the next
+        # stream would inflate its duration with the dead period.
+        self._close_drop_streak("stream stopped")
         if self._reader_task is not None:
             self._reader_task.cancel()
             self._reader_task = None
@@ -245,13 +256,7 @@ class AudioInputStream:
 
                 while self._active and self._process.returncode is None:
                     data = await self._process.stdout.readexactly(self.frame_bytes)
-                    try:
-                        self._queue.put_nowait(data)
-                        self._drop_count = 0
-                    except asyncio.QueueFull:
-                        self._drop_count += 1
-                        if self._drop_count == 1:
-                            log.warning("Audio frame queue full — dropping frames")
+                    self._enqueue_frame(data)
 
             except asyncio.IncompleteReadError:
                 log.warning("pw-cat stream ended unexpectedly")
@@ -274,6 +279,41 @@ class AudioInputStream:
                 await asyncio.wait_for(self._process.wait(), timeout=3.0)
             except (TimeoutError, ProcessLookupError):
                 pass
+
+    def _enqueue_frame(self, data: bytes) -> None:
+        """Queue a frame; quantify drop streaks for soak evidence.
+
+        One warning at streak start (unchanged), plus a recovery line
+        with dropped-frame count, lost audio seconds, and streak
+        duration — a bare "queue full" said nothing about how much
+        speech was shredded (audit SS3 mic-integrity row).
+        """
+        try:
+            self._queue.put_nowait(data)
+        except asyncio.QueueFull:
+            if self._drop_count == 0:
+                self._drop_streak_started = time.monotonic()
+                log.warning("Audio frame queue full — dropping frames")
+            self._drop_count += 1
+            self._total_dropped += 1
+            return
+        self._close_drop_streak("recovered")
+
+    def _close_drop_streak(self, reason: str) -> None:
+        """Log and reset an open drop streak (recovery or stream stop)."""
+        if not self._drop_count:
+            return
+        streak_s = time.monotonic() - self._drop_streak_started
+        log.warning(
+            "Audio frame queue %s — dropped %d frames (%.1fs of audio) "
+            "over %.1fs (total dropped: %d)",
+            reason,
+            self._drop_count,
+            self._drop_count * self._frame_ms / 1000.0,
+            streak_s,
+            self.total_dropped_frames,
+        )
+        self._drop_count = 0
 
     async def get_frame(self, timeout: float = 1.0) -> bytes | None:
         """Await the next audio frame from the queue."""

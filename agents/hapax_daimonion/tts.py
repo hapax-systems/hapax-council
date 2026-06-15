@@ -37,6 +37,7 @@ import logging
 import os
 import socket
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,18 @@ TTS_REQUEST_DEADLINE_ENV = "HAPAX_TTS_REQUEST_DEADLINE_S"
 TTS_STREAM_PROTOCOL = "hapax.tts.pcm-stream.v1"
 _DEFAULT_TTS_REQUEST_DEADLINE_S = 30.0
 _TTS_CLIENT_TIMEOUT_OVERHEAD_S = 2.0
+_TERMINAL_TTS_SERVER_ERROR_TYPES = frozenset({"DeadlineExceeded", "DeadlineExpired"})
+
+# The daimonion unit caps OMP_NUM_THREADS=2 for the whole process, which
+# throttled CPU Kokoro to RTF 0.10-0.135 (audit SS7-P0). The TTS path
+# raises its own torch intraop pool at preload; 4 of the podium 7700X's
+# 16 hardware threads roughly doubles synthesis throughput without
+# starving the compositor/OBS. This is a mitigation, not isolation: any
+# torch CPU work in-process shares the pool. True isolation is the
+# Phase 1 TTS server extraction onto the 5060 Ti (separate process,
+# own thread budget) — when that lands, this knob goes with it.
+TTS_TORCH_THREADS_ENV = "HAPAX_TTS_TORCH_THREADS"
+_DEFAULT_TTS_TORCH_THREADS = 4
 
 _VOICE_SAMPLE_PATH = Path(__file__).resolve().parent.parent.parent / "profiles" / "voice-sample.wav"
 _CHATTERBOX_DEVICE = os.environ.get("HAPAX_CHATTERBOX_DEVICE", "cuda:0")
@@ -117,6 +130,12 @@ class _SocketBuffer:
                 raise EOFError("tts server closed mid-frame")
             out.extend(chunk)
         return bytes(out)
+
+
+@dataclass(frozen=True)
+class _ServerSynthesisResult:
+    pcm: bytes
+    liveness: dict[str, Any] | None
 
 
 def select_tier(use_case: str) -> str:
@@ -214,6 +233,63 @@ def priority_class_for_use_case(use_case: str) -> str:
     return "hosting"
 
 
+def resolve_tts_torch_threads() -> int:
+    """Resolve the TTS torch intraop thread count from the environment.
+
+    Unset/empty resolves to the default; invalid or non-positive values
+    warn and resolve to the default rather than dying silently.
+    """
+    raw = os.environ.get(TTS_TORCH_THREADS_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_TTS_TORCH_THREADS
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning(
+            "%s=%r is not an integer — using %d",
+            TTS_TORCH_THREADS_ENV,
+            raw,
+            _DEFAULT_TTS_TORCH_THREADS,
+        )
+        return _DEFAULT_TTS_TORCH_THREADS
+    if value < 1:
+        log.warning(
+            "%s=%d must be >= 1 — using %d",
+            TTS_TORCH_THREADS_ENV,
+            value,
+            _DEFAULT_TTS_TORCH_THREADS,
+        )
+        return _DEFAULT_TTS_TORCH_THREADS
+    return value
+
+
+def _apply_tts_thread_cap() -> None:
+    """Raise the torch intraop pool above the unit's process-wide OMP cap.
+
+    Must run before the first parallel torch op (i.e. at preload, before
+    model load) — once the intraop pool spins up, set_num_threads is a
+    no-op on some backends. Best-effort: a failure leaves synthesis at
+    the unit cap, slower but correct.
+    """
+    threads = resolve_tts_torch_threads()
+    try:
+        import torch
+
+        torch.set_num_threads(threads)
+        log.info(
+            "TTS torch intraop threads set to %d (unit OMP cap: %s)",
+            threads,
+            os.environ.get("OMP_NUM_THREADS", "unset"),
+        )
+    except Exception:
+        log.warning(
+            "TTS torch thread-cap raise failed (non-fatal); check torch import/runtime "
+            "state and %s",
+            TTS_TORCH_THREADS_ENV,
+            exc_info=True,
+        )
+
+
 def _arc_prosody(
     arc_position: float | None,
     *,
@@ -304,6 +380,7 @@ class TTSManager:
             else:
                 log.warning("TTS server not reachable at %s", self._server_socket_path)
             return
+        _apply_tts_thread_cap()
         if self._backend == "kokoro":
             self._get_kokoro()
             log.info("Kokoro TTS ready (voice=%s, selected primary)", self._voice_id)
@@ -354,7 +431,7 @@ class TTSManager:
         lexicon = _speech_lexicon_apply(redaction.text)
 
         if self._transport == "server":
-            pcm = self._synthesize_via_server(
+            server_result = self._synthesize_via_server(
                 lexicon.text,
                 use_case=use_case,
                 speed=speed,
@@ -362,8 +439,24 @@ class TTSManager:
                 role=role,
                 arc_position=arc_position,
             )
+            if isinstance(server_result, _ServerSynthesisResult):
+                pcm = server_result.pcm
+                server_liveness = server_result.liveness or {}
+            else:
+                # Compatibility for focused tests that monkeypatch the private
+                # method; production returns _ServerSynthesisResult.
+                pcm = server_result
+                server_liveness = getattr(self, "_last_server_liveness", None) or {}
             if pcm:
                 return pcm
+            server_error_type = server_liveness.get("error_type")
+            if server_error_type in _TERMINAL_TTS_SERVER_ERROR_TYPES:
+                log.warning(
+                    "TTS server deadline skipped utterance without local fallback [%s]: %s",
+                    use_case,
+                    server_liveness.get("error"),
+                )
+                return b""
             # Server down/empty must NOT silence the voice (review finding,
             # 2026-06-11): fall back to in-process synthesis. The local path
             # below carries its own Chatterbox->Kokoro fallback chain.
@@ -482,7 +575,7 @@ class TTSManager:
         interview_mode: bool,
         role: str | None,
         arc_position: float | None,
-    ) -> bytes:
+    ) -> _ServerSynthesisResult:
         request_id = f"tts-{time.time_ns()}"
         priority = priority_class_for_use_case(use_case)
         started = time.monotonic()
@@ -512,14 +605,15 @@ class TTSManager:
                 reader = _SocketBuffer(sock)
                 header = json.loads(reader.read_line().decode("utf-8"))
                 if header.get("status") != "ok":
-                    self._record_server_error(
+                    liveness = self._record_server_error(
                         request_id=request_id,
                         started=started,
                         status=str(header.get("status") or "error"),
                         error=str(header.get("error") or "server error"),
+                        error_type=str(header.get("error_type") or "Error"),
                         priority=priority,
                     )
-                    return b""
+                    return _ServerSynthesisResult(b"", liveness)
 
                 chunks: list[bytes] = []
                 pcm_len = 0
@@ -550,19 +644,20 @@ class TTSManager:
             ValueError,
             json.JSONDecodeError,
         ) as exc:
-            self._record_server_error(
+            liveness = self._record_server_error(
                 request_id=request_id,
                 started=started,
                 status="error",
                 error=str(exc),
+                error_type=type(exc).__name__,
                 priority=priority,
             )
             log.warning("TTS server synthesis failed: %s", exc)
-            return b""
+            return _ServerSynthesisResult(b"", liveness)
 
         backend = header.get("backend")
         self._last_synthesis_backend = str(backend) if backend else None
-        self._last_server_liveness = {
+        liveness = {
             "mode": "server",
             "status": "ok",
             "socket_path": str(self._server_socket_path),
@@ -576,7 +671,8 @@ class TTSManager:
             "pcm_bytes": pcm_len,
             "error": None,
         }
-        return b"".join(chunks)
+        self._last_server_liveness = liveness
+        return _ServerSynthesisResult(b"".join(chunks), liveness)
 
     def _record_server_error(
         self,
@@ -585,10 +681,11 @@ class TTSManager:
         started: float,
         status: str,
         error: str,
+        error_type: str,
         priority: str,
-    ) -> None:
+    ) -> dict[str, Any]:
         self._last_synthesis_backend = None
-        self._last_server_liveness = {
+        liveness = {
             "mode": "server",
             "status": status,
             "socket_path": str(self._server_socket_path),
@@ -596,4 +693,7 @@ class TTSManager:
             "priority": priority,
             "round_trip_ms": round((time.monotonic() - started) * 1000),
             "error": error,
+            "error_type": error_type,
         }
+        self._last_server_liveness = liveness
+        return liveness
