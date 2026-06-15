@@ -132,6 +132,27 @@ def _recruited_sources_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(angle_resolver, "recruit_source_set", _recruit)
 
 
+@pytest.fixture(autouse=True)
+def _composability_gate_accepts_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default the S2 topic+type composability gate to ACCEPT for prep tests.
+
+    prep_segment now runs a pre-compose STRUCTURAL composability gate (a capable-
+    model gateway call) before the expensive compose. These tests exercise the
+    downstream deterministic / coherence gauntlet, not the gate, so an ACCEPT
+    default lets them reach their actual concern (and keeps them hermetic — no
+    live gateway call). The gate's own behavior is pinned in
+    test_segment_composability_gate.py. Tests that patch assess_composability
+    themselves override this (later monkeypatch wins).
+    """
+    import agents.hapax_daimonion.segment_composability_gate as gate
+
+    monkeypatch.setattr(
+        gate,
+        "assess_composability",
+        lambda *_a, **_k: gate.CompositionGateResult(True, "test-default-accept"),
+    )
+
+
 def test_prep_model_is_command_r_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HAPAX_SEGMENT_PREP_MODEL", raising=False)
     assert prep._prep_model() == prep.RESIDENT_PREP_MODEL
