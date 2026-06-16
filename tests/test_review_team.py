@@ -93,6 +93,10 @@ class TestLensRegistry:
         )
         assert consent_line, "voice-doctrine must keep a consent-egress checklist item"
         low = consent_line.lower()
+        # the AUDIO/broadcast half is retained — this lens's core duty (codex-1: pin both behaviors, not
+        # just the eval-plane criterion, so deleting the TTS/broadcast gate language fails this test).
+        assert "broadcast consent gates" in low, consent_line
+        assert "tts" in low, consent_line
         # the eval-plane PASS criterion is present...
         assert "eval-plane" in low and "passes" in low, consent_line
         assert "balanced" in low, consent_line
