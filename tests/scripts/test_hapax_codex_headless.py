@@ -63,7 +63,7 @@ exit 0
     env["HAPAX_DISPATCH_HOST"] = "appendix"
 
     result = subprocess.run(
-        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "cx-amber", "governed prompt"],
         capture_output=True,
         text=True,
         env=env,
@@ -136,7 +136,6 @@ exit 0
                 "--task",
                 "task-x",
                 "--no-claim",
-                "--force",
                 "cx-amber",
                 "governed prompt",
             ],
@@ -149,6 +148,9 @@ exit 0
         cache.chmod(0o755)
 
     assert result.returncode == 23
+    assert "next_action=inspect the dispatch proof" in (log_dir / "output.jsonl").read_text(
+        encoding="utf-8"
+    )
     assert not codex_called.exists()
     proofs = list(proof_dir.glob("*cx-amber-task-x-headless-remote.json"))
     assert len(proofs) == 1
@@ -189,7 +191,7 @@ exit 0
     env["HAPAX_SESSION_ID"] = sid
 
     result = subprocess.run(
-        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        [str(SCRIPT), "--task", "task-x", "cx-amber", "governed prompt"],
         capture_output=True,
         text=True,
         env=env,
@@ -198,3 +200,75 @@ exit 0
 
     assert result.returncode == 0, result.stderr
     assert args_file.exists()
+
+
+def test_codex_headless_reoffers_own_claim_on_api_quota_exit(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-cx-amber").write_text("task-x\n", encoding="utf-8")
+    sid = "session-quota-wall"
+    (cache / f"cc-active-task-cx-amber-{sid}").write_text("task-x\n", encoding="utf-8")
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+    task_root = tmp_path / "tasks"
+    task_root.mkdir()
+    task_note = task_root / "task-x.md"
+    task_note.write_text(
+        """---
+title: API wall
+status: in_progress
+assigned_to: cx-amber
+claimed_at: 2026-06-16T12:00:00Z
+updated_at: 2026-06-16T12:00:00Z
+---
+
+Body.
+""",
+        encoding="utf-8",
+    )
+
+    bin_dir = tmp_path / "bin"
+    stdin_file = tmp_path / "codex-stdin.txt"
+    _write_executable(
+        bin_dir / "codex",
+        f"""if IFS= read -r line; then
+  printf '%s\\n' "$line" > {stdin_file}
+  exit 9
+fi
+echo 'Error: API rate limit exceeded' >&2
+exit 1
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_CC_TASK_ROOT"] = str(task_root)
+    env["HAPAX_SESSION_ID"] = sid
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "cx-amber", "governed prompt"],
+        input="operator choice that must not reach codex\n",
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 1
+    assert not stdin_file.exists()
+    note = task_note.read_text(encoding="utf-8")
+    assert "status: offered" in note
+    assert "assigned_to: unassigned" in note
+    assert "claimed_at: null" in note
+    assert "hit an API/quota limit" in note
+    assert not (cache / "cc-active-task-cx-amber").exists()
+    assert not (cache / f"cc-active-task-cx-amber-{sid}").exists()
+    assert "status: quota_wall_reoffered" in (
+        cache / "relay" / "cx-amber.yaml"
+    ).read_text(encoding="utf-8")

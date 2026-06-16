@@ -1,0 +1,291 @@
+#!/usr/bin/env bash
+# hapax-resume - resume an operator-visible Claude role without inventing windows.
+#
+# Default behavior is intentionally conservative:
+#   - attach an existing tmux-backed role from the current terminal;
+#   - relaunch a dead role inside tmux and attach from the current terminal;
+#   - never open a GUI terminal from a non-tty agent/timer unless the caller
+#     explicitly sets HAPAX_RESUME_ALLOW_WINDOW=1.
+
+set -euo pipefail
+
+ROLES="alpha beta gamma delta epsilon zeta eta theta dev dev2 dev3"
+STATE_DIR="${HAPAX_RESUME_STATE_DIR:-$HOME/.cache/hapax}"
+ALLOW_WINDOW="${HAPAX_RESUME_ALLOW_WINDOW:-${HAPAX_DEV_ALLOW_WINDOW:-0}}"
+SHOW_HEADLESS="${HAPAX_RESUME_SHOW_HEADLESS:-0}"
+DRY=0
+ROLE=""
+
+usage() {
+  cat <<'EOF'
+hapax-resume - resume an operator-visible Claude session.
+
+usage:
+  hapax-resume                 list attachable/resumable roles
+  hapax-resume <role>          attach live tmux role, or relaunch into tmux
+  hapax-resume --dry-run <role>
+
+Window policy:
+  Non-tty callers do not open GUI terminals by default. Set
+  HAPAX_RESUME_ALLOW_WINDOW=1 only in an explicit operator launcher/keybind.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run|-n) DRY=1; shift ;;
+    --list|-l) ROLE=""; shift ;;
+    --help|-h) usage; exit 0 ;;
+    *) ROLE="$1"; shift ;;
+  esac
+done
+
+slug_of() { printf '%s' "$1" | sed 's![/.]!-!g'; }
+
+canonical_worktree() {
+  local role="$1" root="$HOME/projects"
+  case "$role" in
+    alpha) echo "$root/hapax-council" ;;
+    dev*)  echo "$PWD" ;;
+    *)     echo "$root/hapax-council--$role" ;;
+  esac
+}
+
+state_file() { echo "$STATE_DIR/resume-state-$1"; }
+
+resolve() {
+  local role="$1" cwd mode="hapax-claude" args=""
+  cwd="$(canonical_worktree "$role")"
+  if [ -f "$(state_file "$role")" ]; then
+    # shellcheck disable=SC1090
+    . "$(state_file "$role")"
+    cwd="${CWD:-$cwd}"
+    mode="${MODE:-$mode}"
+    args="${ARGS:-}"
+  fi
+  printf '%s|%s|%s' "$cwd" "$mode" "$args"
+}
+
+last_activity() {
+  local cwd="$1" dir newest
+  dir="$HOME/.claude/projects/$(slug_of "$cwd")"
+  newest="$(ls -t "$dir"/*.jsonl 2>/dev/null | head -1 || true)"
+  [ -n "$newest" ] && date -d "@$(stat -c %Y "$newest")" '+%m-%d %H:%M' || echo "never"
+}
+
+env_field() {
+  local pid="$1" pattern="$2"
+  tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | sed -n "$pattern" | head -1
+}
+
+is_headless_pid() {
+  local pid="$1" cmd fd1
+  [ -n "$(env_field "$pid" 's/^HAPAX_CLAUDE_HEADLESS_WORKDIR=//p')" ] && return 0
+  cmd="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+  case "$cmd" in
+    *" -p --input-format stream-json"*) return 0 ;;
+  esac
+  fd1="$(readlink "/proc/$pid/fd/1" 2>/dev/null || true)"
+  case "$fd1" in
+    *"/claude-headless/"*"output.jsonl"*) return 0 ;;
+  esac
+  return 1
+}
+
+# Emits: pid|role|tmux_session_or_-|cwd|kind|tty|task
+live_sessions() {
+  local pane_map pid role tty_raw tty session cwd kind task
+  pane_map="$(tmux list-panes -a -F '#{pane_tty}|#{session_name}' 2>/dev/null || true)"
+  for pid in $(pgrep -x claude 2>/dev/null); do
+    [ -r "/proc/$pid/environ" ] || continue
+    role="$(env_field "$pid" 's/^\(CLAUDE_ROLE\|HAPAX_AGENT_ROLE\)=//p')"
+    [ -n "$role" ] || continue
+    tty_raw="$(ps -o tty= -p "$pid" | tr -d ' ')"
+    if [ -n "$tty_raw" ] && [ "$tty_raw" != "?" ]; then
+      tty="/dev/$tty_raw"
+      session="$(printf '%s\n' "$pane_map" | awk -F'|' -v t="$tty" '$1==t{print $2; exit}')"
+    else
+      tty="-"
+      session=""
+    fi
+    cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+    task="$(env_field "$pid" 's/^HAPAX_METHODOLOGY_DISPATCH_TASK=//p')"
+    if [ -n "$session" ]; then
+      kind="tmux"
+    elif is_headless_pid "$pid"; then
+      kind="headless"
+    else
+      kind="raw"
+    fi
+    printf '%s|%s|%s|%s|%s|%s|%s\n' "$pid" "$role" "${session:--}" "$cwd" "$kind" "$tty" "$task"
+  done
+}
+
+attach_tmux() {
+  local session="$1"
+  if [ "$DRY" -eq 1 ]; then
+    echo "DRY: would attach tmux session '$session'"
+    return 0
+  fi
+  if [ -n "${TMUX:-}" ]; then
+    exec tmux switch-client -t "$session"
+  fi
+  if [ -t 0 ]; then
+    exec tmux attach -t "$session"
+  fi
+
+  local dev="" fd t
+  for fd in 2 1 0; do
+    t="$(readlink "/proc/self/fd/$fd" 2>/dev/null || true)"
+    case "$t" in /dev/pts/*|/dev/tty[0-9]*) dev="$t"; break ;; esac
+  done
+  if [ -z "$dev" ]; then
+    t="$(ps -o tty= -p $$ | tr -d ' ')"
+    [ -n "$t" ] && [ "$t" != "?" ] && dev="/dev/$t"
+  fi
+  if [ -n "$dev" ] && [ -r "$dev" ] && [ -w "$dev" ]; then
+    exec tmux attach -t "$session" <"$dev" >"$dev" 2>&1
+  fi
+
+  if [ "$ALLOW_WINDOW" = "1" ] && command -v foot >/dev/null 2>&1 && [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    exec setsid -f foot -T "claude:$session" -a "$session" tmux attach -t "$session"
+  fi
+  echo "hapax-resume: no terminal available; refusing to open a GUI window without HAPAX_RESUME_ALLOW_WINDOW=1" >&2
+  echo "hapax-resume: attach manually with: tmux attach -t $session" >&2
+  exit 3
+}
+
+print_list() {
+  local found=0 headless=0 raw=0 pid role session cwd kind tty task
+  echo "-- attachable tmux-backed Claude sessions --"
+  while IFS='|' read -r pid role session cwd kind tty task; do
+    [ -n "$pid" ] || continue
+    [ "$kind" = "tmux" ] || continue
+    found=1
+    echo "  $role (pid $pid, cwd $cwd) -> hapax-resume $role   [attaches tmux '$session']"
+  done < <(live_sessions)
+  [ "$found" -eq 0 ] && echo "  (none)"
+
+  echo
+  echo "-- operator raw Claude processes (visible terminal, not tmux-attachable) --"
+  while IFS='|' read -r pid role session cwd kind tty task; do
+    [ -n "$pid" ] || continue
+    case "$kind" in
+      raw)
+        raw=1
+        echo "  $role (pid $pid, cwd $cwd, tty $tty) -> use that terminal; hapax-resume cannot attach raw tty"
+        ;;
+      headless)
+        headless=$((headless + 1))
+        ;;
+    esac
+  done < <(live_sessions)
+  [ "$raw" -eq 0 ] && echo "  (none)"
+
+  if [ "$SHOW_HEADLESS" = "1" ]; then
+    echo
+    echo "-- headless Claude workers (not visible/resumable here) --"
+    local shown=0
+    while IFS='|' read -r pid role session cwd kind tty task; do
+      [ -n "$pid" ] || continue
+      [ "$kind" = "headless" ] || continue
+      shown=1
+      echo "  $role (pid $pid, cwd $cwd, task ${task:-unknown})"
+    done < <(live_sessions)
+    [ "$shown" -eq 0 ] && echo "  (none)"
+  elif [ "$headless" -gt 0 ]; then
+    echo
+    echo "-- hidden headless Claude workers --"
+    echo "  $headless running; set HAPAX_RESUME_SHOW_HEADLESS=1 to audit them"
+  fi
+
+  echo
+  echo "-- resumable roles (claude --continue in remembered cwd) --"
+  local r act mode args
+  for r in $ROLES; do
+    IFS='|' read -r cwd mode args <<<"$(resolve "$r")"
+    [ -d "$cwd" ] || continue
+    act="$(last_activity "$cwd")"
+    [ "$act" = "never" ] && continue
+    printf '  %-8s last activity %s  cwd %s\n' "$r" "$act" "$cwd"
+  done
+  echo
+  echo "usage: hapax-resume <role>     (remote: ssh -t hapax-podium hapax-resume <role>)"
+}
+
+if [ -z "$ROLE" ]; then
+  print_list
+  exit 0
+fi
+
+case " $ROLES " in *" $ROLE "*) ;; *) echo "hapax-resume: unknown role '$ROLE'" >&2; exit 2 ;; esac
+
+mapfile -t LIVE < <(live_sessions)
+
+# Prefer attachable tmux-backed roles. Headless workers for the same role must
+# never block attaching the visible-capable tmux session.
+for line in "${LIVE[@]}"; do
+  IFS='|' read -r pid role session cwd kind tty task <<<"$line"
+  [ "$role" = "$ROLE" ] || continue
+  [ "$kind" = "tmux" ] || continue
+  echo "hapax-resume: $ROLE is alive (pid $pid) in tmux '$session' - attaching"
+  attach_tmux "$session"
+  exit 0
+done
+
+if tmux has-session -t "hapax-claude-$ROLE" 2>/dev/null; then
+  echo "hapax-resume: attaching existing tmux session hapax-claude-$ROLE"
+  attach_tmux "hapax-claude-$ROLE"
+  exit 0
+fi
+
+for line in "${LIVE[@]}"; do
+  IFS='|' read -r pid role session cwd kind tty task <<<"$line"
+  [ "$role" = "$ROLE" ] || continue
+  if [ "$kind" = "raw" ]; then
+    echo "hapax-resume: $ROLE is alive (pid $pid) outside tmux on $tty - use that terminal; cannot attach raw tty" >&2
+    exit 3
+  fi
+done
+
+for line in "${LIVE[@]}"; do
+  IFS='|' read -r pid role session cwd kind tty task <<<"$line"
+  [ "$role" = "$ROLE" ] || continue
+  if [ "$kind" = "headless" ]; then
+    echo "hapax-resume: $ROLE is running headless (pid $pid, task ${task:-unknown}); not launching a duplicate visible session" >&2
+    exit 3
+  fi
+done
+
+IFS='|' read -r CWD MODE ARGS <<<"$(resolve "$ROLE")"
+[ -d "$CWD" ] || { echo "hapax-resume: cwd missing: $CWD" >&2; exit 3; }
+
+EXTRA=""
+case "$ROLE" in
+  alpha|dev*) ;;
+  *)
+    if [ ! -s "$STATE_DIR/cc-active-task-$ROLE" ]; then
+      EXTRA="--readonly"
+    fi
+    ;;
+esac
+
+SESSION="hapax-claude-$ROLE"
+if [ "$MODE" = "bare" ]; then
+  CMD="cd $(printf '%q' "$CWD") && env HAPAX_AGENT_INTERFACE=claude HAPAX_AGENT_NAME=$ROLE CLAUDE_ROLE=$ROLE HAPAX_AGENT_ROLE=$ROLE HAPAX_WORKTREE_ROLE=$ROLE claude --continue $ARGS"
+else
+  CMD="hapax-claude --role $ROLE --cd $(printf '%q' "$CWD") --terminal none $EXTRA -- --continue $ARGS"
+fi
+
+if [ "$DRY" -eq 1 ]; then
+  echo "DRY: would run in tmux session '$SESSION':"
+  echo "  $CMD"
+  exit 0
+fi
+
+mkdir -p "$STATE_DIR"
+printf 'CWD=%q\nMODE=%q\nARGS=%q\n' "$CWD" "$MODE" "$ARGS" >"$(state_file "$ROLE")"
+
+tmux new-session -d -s "$SESSION" -c "$CWD" "bash -lc $(printf '%q' "$CMD")"
+echo "hapax-resume: relaunched $ROLE (resuming most recent conversation in $CWD)"
+attach_tmux "$SESSION"

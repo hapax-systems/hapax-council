@@ -30,6 +30,23 @@ def _dispatcher_module() -> ModuleType:
     return module
 
 
+def test_headless_route_contracts_do_not_advertise_interactive_terminals() -> None:
+    dispatcher = _dispatcher_module()
+    offenders = []
+    for key, route in dispatcher.PLATFORM_PATHS.items():
+        _platform, mode, _profile = key
+        if mode != "headless":
+            continue
+        launcher = route.launcher
+        if "--terminal tmux" in launcher or "--terminal foot" in launcher:
+            offenders.append(f"{route.platform}.{route.mode}.{route.profile}: {launcher}")
+
+    assert offenders == []
+    assert (
+        "hapax-codex-headless" in dispatcher.PLATFORM_PATHS[("codex", "headless", "full")].launcher
+    )
+
+
 def _fresh_registry(tmp_path: Path) -> Path:
     payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
     checked_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -1006,7 +1023,7 @@ def test_launches_codex_headless_through_codex_launcher(tmp_path: Path) -> None:
     fake_launcher.parent.mkdir(parents=True, exist_ok=True)
     fake_launcher.write_text(
         f"""#!/usr/bin/env bash
-printf '%s\\n' "$HAPAX_DISPATCH_HOST" > {launcher_env}
+printf 'host=%s\\nworkdir=%s\\n' "$HAPAX_DISPATCH_HOST" "$HAPAX_CODEX_HEADLESS_WORKDIR" > {launcher_env}
 printf '%s\\n' "$@" > {launcher_args}
 """,
         encoding="utf-8",
@@ -1031,11 +1048,12 @@ printf '%s\\n' "$@" > {launcher_args}
     )
 
     assert result.returncode == 0, result.stderr
-    # hapax-codex-headless takes `--task <id> --force <lane> <prompt>`; the prompt
+    # hapax-codex-headless takes `--task <id> <lane> <prompt>`; the prompt
     # is passed inline (multi-line), so assert the flag prefix then the prompt
     # body in the raw recorded args.
     recorded = launcher_args.read_text(encoding="utf-8")
-    assert recorded.startswith("--task\ngoverned-build\n--force\ncx-green\n")
+    assert recorded.startswith("--task\ngoverned-build\ncx-green\n")
+    assert "\n--force\n" not in recorded
     assert "SDLC GOVERNED DISPATCH." in recorded
     assert "Task: governed-build" in recorded
     assert "AuthorityCase: CASE-TEST-001" in recorded
@@ -1058,7 +1076,11 @@ printf '%s\\n' "$@" > {launcher_args}
     assert receipt["coord_dispatch_replayed"] is False
     assert receipt["coord_dispatch_cleanup_state"] == "processed"
     assert receipt["dispatch_host"] == "appendix"
-    assert launcher_env.read_text(encoding="utf-8").strip() == "appendix"
+    launcher_env_lines = launcher_env.read_text(encoding="utf-8").splitlines()
+    assert launcher_env_lines == [
+        "host=appendix",
+        f"workdir={tmp_path / 'worktree'}",
+    ]
 
 
 def test_launch_idempotency_replays_without_second_launcher_call(tmp_path: Path) -> None:
@@ -1636,6 +1658,45 @@ printf '%s\\n' "$@" > {launcher_args}
     assert "quality_floor_not_satisfied" in result.stderr
 
 
+def test_vibe_headless_launch_uses_noninteractive_terminal(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    dispatcher = _dispatcher_module()
+    launcher_args = tmp_path / "vibe-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-vibe"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+    monkeypatch.setenv("HAPAX_METHODOLOGY_VIBE_LAUNCHER", str(fake_launcher))
+
+    rc = dispatcher.launch_vibe_headless(
+        "bounded-build",
+        "vbe-1",
+        "Do the governed bounded work.",
+        dispatcher.Validation(ok=True, reason="eligible"),
+    )
+
+    assert rc == 0
+    args = launcher_args.read_text(encoding="utf-8").splitlines()
+    assert args[:6] == [
+        "--session",
+        "vbe-1",
+        "--terminal",
+        "none",
+        "--task",
+        "bounded-build",
+    ]
+    assert "--prompt" in args
+    assert "tmux" not in args
+    assert "foot" not in args
+
+
 def test_gemini_read_only_quota_fallback_maps_to_flash(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     _task(
@@ -1679,9 +1740,12 @@ printf '%s\\n' "$@" > {launcher_args}
 
     assert result.returncode == 0, result.stderr
     args = launcher_args.read_text(encoding="utf-8").splitlines()
+    assert args[:6] == ["--role", "iota", "--terminal", "none", "--force", "--"]
     assert "--model" in args
     assert "gemini-3-flash-preview" in args
     assert "-p" in args
+    assert "tmux" not in args
+    assert "foot" not in args
     receipt = json.loads(
         (tmp_path / "ledger" / "methodology-dispatch.jsonl")
         .read_text(encoding="utf-8")
@@ -1768,8 +1832,11 @@ printf '%s\n' "$@" > {launcher_args}
     assert result.returncode == 0, result.stderr
     assert launcher_env.read_text(encoding="utf-8").strip() == "auto_edit"
     args = launcher_args.read_text(encoding="utf-8").splitlines()
+    assert args[:6] == ["--role", "iota", "--terminal", "none", "--force", "--"]
     assert "--model" not in args
     assert "-p" in args
+    assert "tmux" not in args
+    assert "foot" not in args
 
 
 def test_lists_platform_profile_paths(tmp_path: Path) -> None:

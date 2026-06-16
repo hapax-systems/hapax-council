@@ -14,7 +14,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from shared.p0_incident_intake import TECHNICAL_TITLE_PATTERNS, record_notification
+from shared.p0_incident_intake import classify_notification, record_notification
+
+HAPAX_NOTIFICATION_APP_NAMES = {"hapax system", "llm stack"}
 
 
 def _path_arg(value: str) -> Path:
@@ -190,16 +192,7 @@ def _dismiss_existing_consumed_notifications(title: str, task_id: str | None) ->
     if task_id is None:
         return
     marker = f"SDLC intake: {task_id}"
-    title = title.strip()
-    technical_apps = {"Hapax System", "LLM Stack", "notify-send"}
-
-    def _matches(notification: dict) -> bool:
-        app_name = str(notification.get("app_name") or notification.get("app-name") or "")
-        summary = str(notification.get("summary") or notification.get("title") or "").strip()
-        body = str(notification.get("body") or "")
-        return marker in body or (summary == title and app_name in technical_apps)
-
-    _dismiss_mako_notifications(_matches)
+    _dismiss_mako_notifications(lambda notification: marker in str(notification.get("body") or ""))
 
 
 def _dismiss_mako_notifications(predicate) -> int:
@@ -258,32 +251,100 @@ def _drain_desktop(args: argparse.Namespace) -> int:
     if not isinstance(incidents, dict):
         incidents = {}
     task_ids: set[str] = set()
-    titles: set[str] = set()
+    fingerprints = {
+        str(fingerprint).strip() for fingerprint in incidents if str(fingerprint).strip()
+    }
     for record in incidents.values():
         if not isinstance(record, dict):
             continue
         task_id = str(record.get("task_id") or "").strip()
-        title = str(record.get("last_title") or "").strip()
         if task_id:
             task_ids.add(task_id)
-        if title:
-            titles.add(title)
-    technical_apps = {"Hapax System", "LLM Stack", "notify-send"}
-    technical_prefixes = tuple(prefix for prefix, _kind in TECHNICAL_TITLE_PATTERNS)
+        fingerprint = str(record.get("fingerprint") or "").strip()
+        if fingerprint:
+            fingerprints.add(fingerprint)
 
     def _matches(notification: dict) -> bool:
-        app_name = str(notification.get("app_name") or notification.get("app-name") or "")
-        summary = str(notification.get("summary") or notification.get("title") or "").strip()
         body = str(notification.get("body") or "")
         if any(f"SDLC intake: {task_id}" in body for task_id in task_ids):
             return True
-        if app_name not in technical_apps:
+        if not _is_hapax_notification(notification):
             return False
-        return summary in titles or any(summary.startswith(prefix) for prefix in technical_prefixes)
+        summary = str(notification.get("summary") or "")
+        classification = classify_notification(
+            summary,
+            body,
+            priority=_notification_priority(notification, default=args.priority),
+            tags=_notification_tags(notification, default=args.tag),
+        )
+        if not classification.technical:
+            return False
+        if classification.fingerprint in fingerprints:
+            return True
+        try:
+            result = record_notification(
+                summary,
+                body,
+                priority=_notification_priority(notification, default=args.priority),
+                tags=_notification_tags(notification, default=args.tag),
+                technical=True,
+                task_root=args.task_root,
+                state_path=args.state_path,
+                ledger_path=args.ledger_path,
+            )
+        except Exception:
+            return False
+        if not result.technical or result.task_id is None or result.fingerprint is None:
+            return False
+        fingerprints.add(result.fingerprint)
+        task_ids.add(result.task_id)
+        return True
 
     dismissed = _dismiss_mako_notifications(_matches)
     print(f"desktop drain: dismissed {dismissed} consumed P0 intake notification(s)")
     return 0
+
+
+def _is_hapax_notification(notification: dict) -> bool:
+    app_name = (
+        str(
+            notification.get("app_name")
+            or notification.get("app-name")
+            or notification.get("application_name")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+    desktop_entry = (
+        str(notification.get("desktop_entry") or notification.get("desktop-entry") or "")
+        .strip()
+        .lower()
+    )
+    return (
+        app_name in HAPAX_NOTIFICATION_APP_NAMES
+        or app_name.startswith("hapax ")
+        or desktop_entry.startswith("org.hapax")
+    )
+
+
+def _notification_priority(notification: dict, *, default: str) -> str:
+    urgency = str(notification.get("urgency") or "").strip().lower()
+    if urgency in {"critical", "2"}:
+        return "urgent"
+    if urgency in {"normal", "1"}:
+        return "high"
+    return default
+
+
+def _notification_tags(notification: dict, *, default: list[str]) -> list[str]:
+    tags = notification.get("tags")
+    if isinstance(tags, list):
+        return [str(tag) for tag in tags]
+    category = str(notification.get("category") or "").strip()
+    if category:
+        return [*default, category]
+    return list(default)
 
 
 def _parser() -> argparse.ArgumentParser:

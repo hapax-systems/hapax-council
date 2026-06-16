@@ -159,17 +159,59 @@ class TestFreeDetection:
 
 
 class TestCollisionGuard:
-    def test_explicit_busy_name_refused_with_attach_hint(self, tmp_path: Path) -> None:
+    def test_explicit_busy_tmux_name_attaches_existing(self, tmp_path: Path) -> None:
         r = run_dev(
             "claude",
             "dev",
+            "--dry-run",
             claim_dir=tmp_path / "c",
             workdir=tmp_path,
             live_tmux="hapax-claude-dev",
         )
+        assert r.returncode == 0, r.stderr
+        assert _field(r.stdout, "action") == "attach-existing"
+        assert _field(r.stdout, "attach") == "tmux attach -t hapax-claude-dev"
+
+    def test_explicit_busy_tmux_with_matching_task_attaches_existing(self, tmp_path: Path) -> None:
+        claim = tmp_path / "c"
+        claim.mkdir()
+        (claim / "cc-active-task-cx-blue").write_text("TASK-123\n")
+        r = run_dev(
+            "--runtime",
+            "codex",
+            "--role",
+            "cx-blue",
+            "--task",
+            "TASK-123",
+            "--window",
+            "--dry-run",
+            claim_dir=claim,
+            workdir=tmp_path,
+            live_tmux="hapax-codex-cx-blue",
+            extra_env={"HAPAX_DEV_ALLOW_WINDOW": "1"},
+        )
+        assert r.returncode == 0, r.stderr
+        assert _field(r.stdout, "visibility") == "window"
+        assert _field(r.stdout, "action") == "attach-existing"
+
+    def test_explicit_busy_tmux_with_different_task_refused(self, tmp_path: Path) -> None:
+        claim = tmp_path / "c"
+        claim.mkdir()
+        (claim / "cc-active-task-cx-blue").write_text("TASK-123\n")
+        r = run_dev(
+            "--runtime",
+            "codex",
+            "--role",
+            "cx-blue",
+            "--task",
+            "OTHER-TASK",
+            "--dry-run",
+            claim_dir=claim,
+            workdir=tmp_path,
+            live_tmux="hapax-codex-cx-blue",
+        )
         assert r.returncode == 3
-        assert "already live" in r.stderr
-        assert "tmux attach -t hapax-claude-dev" in r.stderr
+        assert "already live on task 'TASK-123'" in r.stderr
 
     def test_explicit_busy_greek_refused_via_claim(self, tmp_path: Path) -> None:
         # AC: an operator session must not collide with a running reform lane.
@@ -222,6 +264,59 @@ class TestExplicitNames:
 
 
 class TestCodexAndAgy:
+    def test_option_interface_codex_role_task(self, tmp_path: Path) -> None:
+        r = run_dev(
+            "--runtime",
+            "codex",
+            "--role",
+            "cx-crit",
+            "--task",
+            "TASK-123",
+            "--dry-run",
+            claim_dir=tmp_path / "c",
+            workdir=tmp_path,
+        )
+        assert r.returncode == 0, r.stderr
+        assert _field(r.stdout, "platform") == "codex"
+        assert _field(r.stdout, "identity") == "cx-crit"
+        assert _field(r.stdout, "task") == "TASK-123"
+        spawn = _field(r.stdout, "spawn")
+        assert spawn.startswith(f"hapax-codex --session cx-crit --terminal tmux --cd {tmp_path}")
+        assert spawn.endswith("--task TASK-123")
+
+    def test_option_interface_runtime_can_follow_role(self, tmp_path: Path) -> None:
+        r = run_dev(
+            "--role",
+            "cx-crit",
+            "--runtime",
+            "codex",
+            "--dry-run",
+            claim_dir=tmp_path / "c",
+            workdir=tmp_path,
+        )
+        assert r.returncode == 0, r.stderr
+        assert _field(r.stdout, "platform") == "codex"
+        assert _field(r.stdout, "identity") == "cx-crit"
+
+    def test_explicit_task_resumes_claim_without_tmux(self, tmp_path: Path) -> None:
+        claim = tmp_path / "c"
+        claim.mkdir()
+        (claim / "cc-active-task-cx-crit").write_text("TASK-123\n")
+        r = run_dev(
+            "--runtime",
+            "codex",
+            "--role",
+            "cx-crit",
+            "--task",
+            "TASK-123",
+            "--dry-run",
+            claim_dir=claim,
+            workdir=tmp_path,
+        )
+        assert r.returncode == 0, r.stderr
+        assert _field(r.stdout, "identity") == "cx-crit"
+        assert _field(r.stdout, "task") == "TASK-123"
+
     def test_codex_auto_and_passthrough(self, tmp_path: Path) -> None:
         r = run_dev(
             "codex",
@@ -240,7 +335,14 @@ class TestCodexAndAgy:
         assert spawn.endswith("--task FOO bar")
 
     def test_codex_window_uses_foot(self, tmp_path: Path) -> None:
-        r = run_dev("codex", "--window", "--dry-run", claim_dir=tmp_path / "c", workdir=tmp_path)
+        r = run_dev(
+            "codex",
+            "--window",
+            "--dry-run",
+            claim_dir=tmp_path / "c",
+            workdir=tmp_path,
+            extra_env={"HAPAX_DEV_ALLOW_WINDOW": "1"},
+        )
         assert _field(r.stdout, "visibility") == "window"
         assert "--terminal foot" in _field(r.stdout, "spawn")
 
@@ -259,7 +361,14 @@ class TestCodexAndAgy:
     def test_agy_window_opens_own_window(self, tmp_path: Path) -> None:
         # agy spawner has no foot path → hapax-dev opens the window itself, so
         # the spawner is still asked for a plain tmux session.
-        r = run_dev("agy", "--window", "--dry-run", claim_dir=tmp_path / "c", workdir=tmp_path)
+        r = run_dev(
+            "agy",
+            "--window",
+            "--dry-run",
+            claim_dir=tmp_path / "c",
+            workdir=tmp_path,
+            extra_env={"HAPAX_DEV_ALLOW_WINDOW": "1"},
+        )
         assert _field(r.stdout, "visibility") == "window"
         assert "--terminal tmux" in _field(r.stdout, "spawn")
 
@@ -287,6 +396,17 @@ class TestVisibility:
             workdir=tmp_path,
         )
         assert r.returncode == 2
+
+    def test_noninteractive_window_rejected_without_operator_allow(self, tmp_path: Path) -> None:
+        r = run_dev(
+            "codex",
+            "--window",
+            "--dry-run",
+            claim_dir=tmp_path / "c",
+            workdir=tmp_path,
+        )
+        assert r.returncode == 2
+        assert "--window is operator-attended only" in r.stderr
 
     def test_cd_nonexistent_rejected(self, tmp_path: Path) -> None:
         r = run_dev(

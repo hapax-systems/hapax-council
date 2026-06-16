@@ -31,6 +31,7 @@ from typing import Any
 
 import yaml
 
+from .claims import fresh_matching_claim_lease
 from .models import HygieneEvent, TaskNote
 
 LOG = logging.getLogger("cc-hygiene-actions")
@@ -158,6 +159,19 @@ def revert_ghost_claim(note: TaskNote, *, now: datetime | None = None) -> Action
             metadata={
                 "assigned_to": str(disk_assigned),
                 "claimed_at": str(fm.get("claimed_at")),
+            },
+        )
+    disk_task_id = str(fm.get("task_id") or note.task_id)
+    live_lease = fresh_matching_claim_lease(str(disk_assigned or ""), disk_task_id, now=now)
+    if live_lease is not None:
+        return ActionResult(
+            action_id="ghost_claimed_revert",
+            task_id=note.task_id,
+            success=False,
+            message="skip: fresh matching claim lease exists (live session evidence)",
+            metadata={
+                "assigned_to": str(disk_assigned),
+                "claim_file": str(live_lease),
             },
         )
     fm["status"] = "offered"

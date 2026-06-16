@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1041,6 +1042,76 @@ def test_load_relay_payloads_skips_retired_relays(tmp_path: Path) -> None:
     assert "cx-blue" in payloads
 
 
+def test_reap_dead_lanes_preserves_fresh_claim_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    _write_relay(relay, "cx-crit", {"session": "cx-crit", "updated": _now().isoformat()})
+    claim_cache = tmp_path / "claim-cache"
+    claim_cache.mkdir()
+    (claim_cache / "cc-active-task-cx-crit").write_text("TASK-123\n", encoding="utf-8")
+    monkeypatch.setenv("HAPAX_CLAIM_CACHE_DIR", str(claim_cache))
+
+    with (
+        patch.object(sweeper, "_lane_has_live_process", return_value=False),
+        patch("subprocess.run") as run,
+    ):
+        reaped = sweeper.reap_dead_lanes(relay)
+
+    assert reaped == []
+    run.assert_not_called()
+
+
+def test_lane_has_live_process_accepts_tmux_session_name() -> None:
+    sweeper = _load_sweeper_module()
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["tmux", "list-panes", "-a"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                "hapax-claude-beta\t/home/hapax/projects/hapax-council--beta\tfish\t123\n",
+                "",
+            )
+        return subprocess.CompletedProcess(cmd, 1, "", "")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        assert sweeper._lane_has_live_process("beta") is True
+
+
+def test_lane_has_live_process_accepts_tmux_worktree_path() -> None:
+    sweeper = _load_sweeper_module()
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["tmux", "list-panes", "-a"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                "manual-window\t/home/hapax/.claude/worktrees/hapax-council--gamma\tfish\t456\n",
+                "",
+            )
+        return subprocess.CompletedProcess(cmd, 1, "", "")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        assert sweeper._lane_has_live_process("gamma") is True
+
+
+def test_reap_dead_lanes_preserves_visible_tmux_lane(tmp_path: Path) -> None:
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    _write_relay(relay, "beta", {"session": "beta", "updated": _now().isoformat()})
+
+    with (
+        patch.object(sweeper, "_lane_has_visible_tmux_session", return_value=True),
+        patch("subprocess.run") as run,
+    ):
+        reaped = sweeper.reap_dead_lanes(relay)
+
+    assert reaped == []
+    run.assert_not_called()
+
+
 # ----------------------------------------------------------------------------
 # end-to-end: run_sweep + killswitch
 # ----------------------------------------------------------------------------
@@ -1172,6 +1243,40 @@ def test_main_auto_reverts_ghost_claimed(tmp_path: Path) -> None:
     assert healed.status == "offered"
     assert healed.assigned_to == "unassigned"
     assert healed.claimed_at is None
+
+
+def test_main_preserves_ghost_shape_with_fresh_matching_claim_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A null-claimed note with a fresh matching lease is live work evidence.
+
+    Visible operator lanes can transiently lack a launcher pid while still
+    holding the role's claim cache; hygiene must not revert that note to
+    offered/unassigned underneath the session.
+    """
+    sweeper = _load_sweeper_module()
+    vault = _build_vault(tmp_path)
+    note_path = _write_note(
+        vault / "active",
+        "cc-live-lease",
+        status="claimed",
+        assigned_to="epsilon",
+        claimed_at=None,
+    )
+    claim_cache = tmp_path / "claim-cache"
+    claim_cache.mkdir()
+    (claim_cache / "cc-active-task-epsilon").write_text("cc-live-lease\n", encoding="utf-8")
+    monkeypatch.setenv("HAPAX_CLAIM_CACHE_DIR", str(claim_cache))
+
+    with patch("cc_hygiene.checks._gh_pr_list", return_value=[]):
+        rc = sweeper.main(_main_args(tmp_path, vault))
+
+    assert rc == 0
+    preserved = parse_task_note(note_path)
+    assert preserved is not None
+    assert preserved.status == "claimed"
+    assert preserved.assigned_to == "epsilon"
+    assert preserved.claimed_at is None
 
 
 def test_main_ghost_claim_does_not_recur_after_heal(tmp_path: Path) -> None:

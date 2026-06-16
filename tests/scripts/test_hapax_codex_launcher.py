@@ -47,6 +47,7 @@ printf 'TAVILY_API_KEY=%s\\n' "${{TAVILY_API_KEY:-}}" >> {env_file}
     env.pop("CODEX_ROLE", None)
     env.pop("CODEX_SESSION_NAME", None)
     env.pop("CODEX_SESSION", None)
+    env.pop("HAPAX_CODEX_TERMINAL", None)
     env.pop("HAPAX_AGENT_NAME", None)
     env.pop("HAPAX_AGENT_ROLE", None)
     env.pop("HAPAX_PARENT_AGENT_INTERFACE", None)
@@ -871,7 +872,7 @@ printf '%s\\n' "$@" > {foot_args}
     )
 
     assert result.returncode == 4
-    assert "ready-state task is assigned to 'unassigned', not 'cx-blue'" in result.stderr
+    assert "resumable task is assigned to 'unassigned', not 'cx-blue'" in result.stderr
     assert not foot_args.exists()
     assert not list((tmp_path / "cache" / "hapax" / "codex-spawns").glob("*cx-blue-demo-task.md"))
 

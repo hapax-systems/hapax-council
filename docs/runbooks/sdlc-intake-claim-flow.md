@@ -55,6 +55,24 @@ should document root cause, remediation/refusal, verification evidence,
 recurrence prevention, and follow-up tasks. A flow that drains notifications but
 forgets its own prior failures is not healthy flow.
 
+Recheck incident memory and recurrence behavior with:
+
+```bash
+uv run pytest tests/test_p0_incident_intake.py -q
+jq -r 'select(.event == "p0_incident_intake") | [.task_id, .status, .recurrence_of_task_id] | @tsv' \
+  ~/.cache/hapax/p0-incident-intake/events.jsonl | tail -20
+```
+
+Successful technical/P0 intake consumes desktop notification echoes by default.
+To temporarily restore a visible desktop confirmation while debugging, set
+`HAPAX_NOTIFY_DESKTOP_AFTER_P0_INTAKE=1` or
+`HAPAX_P0_INTAKE_DESKTOP_CONFIRM=1`, then re-run the intake path and drain check:
+
+```bash
+scripts/hapax-p0-incident-intake drain-desktop
+makoctl list -j | jq length
+```
+
 ## Runtime Gates
 
 These user units are part of the governed intake drain and must be installed.

@@ -5,9 +5,8 @@
 # (`--role` vs `--session`, which lane is free, `--terminal tmux`, identity
 # export). One command:
 #
-#   hapax-dev claude            # visible claude session, auto non-conflicting identity
-#   hapax-dev codex             # visible codex session
-#   hapax-dev agy               # visible agy (Antigravity CLI) session
+#   hapax-dev --runtime claude --role alpha --task TASK
+#   hapax-dev --runtime codex --role cx-crit --task TASK
 #
 # ...and all the right things happen: a FRESH unique HAPAX_SESSION_ID and a
 # free interactive identity distinct from the headless reform fleet, dispatched
@@ -23,7 +22,8 @@
 # construction, (c) guarantees a fresh session id, and (d) handles visibility.
 #
 # Subcommands:
-#   hapax-dev <platform> [name] [flags] [-- spawner-args]
+#   hapax-dev --runtime <platform> --role <name> [flags] [-- spawner-args]
+#   hapax-dev <platform> [name] [flags] [-- spawner-args]  # compatibility
 #   hapax-dev ls | list           table of live sessions + free pool slots
 #   hapax-dev attach <name>       attach to an existing session
 #   hapax-dev help                usage + the live/free table
@@ -39,6 +39,7 @@ TMUX_BIN="${HAPAX_DEV_TMUX:-tmux}"
 HEARTBEAT_MAX_AGE="${HAPAX_DEV_HEARTBEAT_MAX_AGE:-900}"   # seconds
 DEFAULT_WORKDIR="${HAPAX_DEV_WORKDIR:-$PWD}"
 DRY_RUN="${HAPAX_DEV_DRY_RUN:-0}"
+ALLOW_WINDOW="${HAPAX_DEV_ALLOW_WINDOW:-0}"
 # Test hook: when SET (even to an empty string) a space-separated list of tmux
 # session names is treated as the complete set of live sessions, bypassing the
 # real tmux server entirely. Empty therefore means "nothing live".
@@ -142,8 +143,13 @@ identity_is_live() {
 }
 
 claimed_task_for() {
-  local name="$1" cf="$CLAIM_DIR/cc-active-task-$1"
-  [ -s "$cf" ] && head -n1 "$cf" | tr -d '[:space:]' || true
+  local name="$1" cf
+  for cf in "$CLAIM_DIR/cc-active-task-$name" "$CLAIM_DIR/cc-active-task-$name-"*; do
+    [ -s "$cf" ] || continue
+    head -n1 "$cf" | tr -d '[:space:]'
+    return 0
+  done
+  return 0
 }
 
 # Lowest-index free pool slot, or empty if the whole pool is busy.
@@ -165,6 +171,7 @@ usage() {
 $PROG — one front door for visible operator sessions across runtimes.
 
 usage:
+  $PROG --runtime <claude|codex|agy> --role <name> [flags] [-- spawner-args]
   $PROG <platform> [name] [flags] [-- spawner-args]
   $PROG ls | list
   $PROG attach <name>
@@ -176,16 +183,21 @@ platforms:
   agy (= antigrav)  interactive pool: $AGY_POOL
 
 flags:
+  --runtime NAME    runtime/platform: claude, codex, or agy
+  --role NAME       lane identity/role/session name
+  --task TASK_ID    governed cc-task to claim/resume before work
   --window          open a new terminal window attached to the session
   --detach          spawn but do not attach; print the attach command
   --cd DIR          workdir for the session (default: \$PWD = $DEFAULT_WORKDIR)
   --dry-run         print the resolution plan; do not spawn or attach
+  --force           pass through to the spawner and bypass local collision guard
   --                forward all remaining args verbatim to the spawner
 
 behavior:
   - name omitted  → the lowest free pool slot is auto-selected (never a busy lane).
   - name given    → honored as-is; a greek claude role is allowed only when named.
   - collision     → refused (no second session); the attach command is printed.
+  - --window       → operator-attended only; non-interactive agents/timers are refused.
   - every launch  → a FRESH unique HAPAX_SESSION_ID + the resolved identity.
 EOF
 }
@@ -250,19 +262,59 @@ cmd_attach() {
   exec "$TMUX_BIN" attach -t "$session"
 }
 
+open_tmux_window() {
+  local platform="$1" name="$2" workdir="$3" tmux_session="$4" app_id foot_bin
+  case "$platform" in
+    claude) app_id="hapax-claude-$name" ;;
+    codex) app_id="hapax-codex-$name" ;;
+    agy) app_id="hapax-antigrav-$name" ;;
+    *) app_id="hapax-$name" ;;
+  esac
+  foot_bin="$(command -v footclient || command -v foot || true)"
+  [ -n "$foot_bin" ] || die "footclient/foot not found for --window" 10
+  setsid -f "$foot_bin" -N -a "$app_id" -T "$name" -D "$workdir" \
+    "$TMUX_BIN" attach -t "$tmux_session" >/dev/null 2>&1
+}
+
+window_request_allowed() {
+  # GUI windows are an operator-attended surface. Agents and timers may restore
+  # claims or print attach commands, but must not pop terminals onto the user's
+  # compositor. A user shell can pass by TTY; wrappers may opt in explicitly.
+  [ "$ALLOW_WINDOW" = "1" ] && return 0
+  [ -n "${HAPAX_AGENT_ROLE:-}" ] && return 1
+  [ -t 0 ] && [ -t 1 ]
+}
+
 # ── Launch ──────────────────────────────────────────────────────────────────
 cmd_launch() {
   local platform_kw="$1"; shift
   local platform
   platform="$(normalize_platform "$platform_kw")" || die "unknown platform '$platform_kw' (claude|codex|agy)" 2
 
-  local name="" window=0 detach=0 workdir="$DEFAULT_WORKDIR"
+  local name="" task_id="" window=0 detach=0 force=0 workdir="$DEFAULT_WORKDIR"
   local passthrough=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --window)  window=1; shift ;;
       --detach)  detach=1; shift ;;
+      --force)   force=1; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
+      --role|--session|--name)
+        name="${2:-}"
+        shift 2
+        ;;
+      --role=*|--session=*|--name=*)
+        name="${1#*=}"
+        shift
+        ;;
+      --task)
+        task_id="${2:-}"
+        shift 2
+        ;;
+      --task=*)
+        task_id="${1#--task=}"
+        shift
+        ;;
       --cd)      workdir="${2:-}"; shift 2 ;;
       --cd=*)    workdir="${1#--cd=}"; shift ;;
       --)        shift; passthrough+=("$@"); break ;;
@@ -274,6 +326,9 @@ cmd_launch() {
   done
 
   [ "$window" -eq 1 ] && [ "$detach" -eq 1 ] && die "--window and --detach are mutually exclusive" 2
+  if [ "$window" -eq 1 ] && ! window_request_allowed; then
+    die "--window is operator-attended only; run from an interactive operator terminal or set HAPAX_DEV_ALLOW_WINDOW=1 in an explicit launcher" 2
+  fi
 
   local desc bin prefix idflag pool hbsub
   desc="$(platform_descriptor "$platform")"
@@ -290,17 +345,51 @@ cmd_launch() {
   fi
 
   local tmux_session="$prefix-$name"
+  local claimed_task="" tmux_live=0
+  claimed_task="$(claimed_task_for "$name")"
+  tmux_session_live "$tmux_session" && tmux_live=1
 
   # Collision guard — refuse a second session by construction.
-  if identity_is_live "$prefix" "$name" "$hbsub"; then
-    echo "$PROG: '$name' is already live — not launching a second $platform session." >&2
-    if tmux_session_live "$tmux_session"; then
-      echo "  attach with: $TMUX_BIN attach -t $tmux_session" >&2
+  if identity_is_live "$prefix" "$name" "$hbsub" && [ "$force" -ne 1 ]; then
+    if [ "$tmux_live" -eq 1 ]; then
+      if [ -n "$task_id" ] && [ -n "$claimed_task" ] && [ "$claimed_task" != "$task_id" ]; then
+        echo "$PROG: '$name' is already live on task '$claimed_task', not requested task '$task_id'." >&2
+        echo "  attach with: $TMUX_BIN attach -t $tmux_session" >&2
+        exit 3
+      fi
+      [ -d "$workdir" ] || die "--cd '$workdir' is not a directory" 2
+      local visibility="attach"
+      if [ "$detach" -eq 1 ]; then visibility="detach"; elif [ "$window" -eq 1 ]; then visibility="window"; fi
+      if [ "$DRY_RUN" = "1" ]; then
+        echo "platform:    $platform"
+        echo "identity:    $name"
+        [ -n "$task_id" ] && echo "task:        $task_id"
+        [ -n "$claimed_task" ] && echo "claim:       $claimed_task"
+        echo "tmux:        $tmux_session"
+        echo "workdir:     $workdir"
+        echo "visibility:  $visibility"
+        echo "action:      attach-existing"
+        echo "attach:      $TMUX_BIN attach -t $tmux_session"
+        return 0
+      fi
+      if [ "$detach" -eq 1 ]; then
+        echo "$PROG: $platform '$name' is already live."
+        echo "  attach with: $TMUX_BIN attach -t $tmux_session"
+        return 0
+      fi
+      if [ "$window" -eq 1 ]; then
+        open_tmux_window "$platform" "$name" "$workdir" "$tmux_session"
+        echo "$PROG: opened existing $platform '$name' in a new window."
+        return 0
+      fi
+      exec "$TMUX_BIN" attach -t "$tmux_session"
+    elif [ -n "$task_id" ] && [ "$claimed_task" = "$task_id" ]; then
+      : # Resume a live claim into a visible lane for the same explicit task.
     else
-      local t; t="$(claimed_task_for "$name")"
-      echo "  it holds an active claim/heartbeat${t:+ (task: $t)} — pick another name." >&2
-    fi
+    echo "$PROG: '$name' is already live — not launching a second $platform session." >&2
+    echo "  it holds an active claim/heartbeat${claimed_task:+ (task: $claimed_task)} — pass --task $claimed_task to resume that work visibly, or pick another name." >&2
     exit 3
+    fi
   fi
 
   [ -d "$workdir" ] || die "--cd '$workdir' is not a directory" 2
@@ -318,6 +407,8 @@ cmd_launch() {
   fi
 
   local spawn_cmd=("$bin" "$idflag" "$name" --terminal "$term_mode" --cd "$workdir")
+  [ "$force" -eq 1 ] && spawn_cmd+=(--force)
+  [ -n "$task_id" ] && spawn_cmd+=(--task "$task_id")
   [ "${#passthrough[@]}" -gt 0 ] && spawn_cmd+=("${passthrough[@]}")
 
   local visibility="attach"
@@ -327,6 +418,7 @@ cmd_launch() {
     echo "platform:    $platform"
     echo "identity:    $name"
     echo "session_id:  $session_id"
+    [ -n "$task_id" ] && echo "task:        $task_id"
     echo "tmux:        $tmux_session"
     echo "workdir:     $workdir"
     echo "visibility:  $visibility"
@@ -349,11 +441,7 @@ cmd_launch() {
 
   if [ "$agy_window" -eq 1 ]; then
     # agy spawner has no native window path — open one over the tmux session.
-    local foot_bin
-    foot_bin="$(command -v footclient || command -v foot || true)"
-    [ -n "$foot_bin" ] || die "footclient/foot not found for --window" 10
-    setsid -f "$foot_bin" --app-id "hapax-antigrav-$name" --title "$name" \
-      "$TMUX_BIN" attach -t "$tmux_session" >/dev/null 2>&1
+    open_tmux_window "$platform" "$name" "$workdir" "$tmux_session"
     echo "$PROG: opened agy '$name' in a new window."
     return 0
   fi
@@ -368,6 +456,32 @@ cmd_launch() {
   exec "$TMUX_BIN" attach -t "$tmux_session"
 }
 
+cmd_launch_from_options() {
+  local runtime="" rest=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --runtime|--platform|--agent|--engine)
+        runtime="${2:-}"
+        shift 2
+        ;;
+      --runtime=*|--platform=*|--agent=*|--engine=*)
+        runtime="${1#*=}"
+        shift
+        ;;
+      --)
+        rest+=("$@")
+        break
+        ;;
+      *)
+        rest+=("$1")
+        shift
+        ;;
+    esac
+  done
+  [ -n "$runtime" ] || die "missing --runtime <claude|codex|agy>" 2
+  cmd_launch "$runtime" "${rest[@]}"
+}
+
 # ── Dispatch ────────────────────────────────────────────────────────────────
 main() {
   local cmd="${1:-help}"
@@ -375,6 +489,9 @@ main() {
     help|-h|--help) usage ;;
     ls|list)        shift || true; cmd_ls ;;
     attach)         shift; cmd_attach "$@" ;;
+    --runtime|--runtime=*|--platform|--platform=*|--agent|--agent=*|--engine|--engine=*|--role|--role=*|--task|--task=*|--window|--detach|--cd|--cd=*|--dry-run|--force)
+      cmd_launch_from_options "$@"
+      ;;
     claude|codex|agy|antigrav) cmd_launch "$@" ;;
     *) usage >&2; die "unknown command or platform '$cmd'" 2 ;;
   esac

@@ -142,17 +142,17 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "codex",
         "headless",
         "full",
-        "scripts/hapax-codex --session <lane> --terminal tmux --task <task>",
-        "Codex full-capability tmux lane with methodology bootstrap",
+        "scripts/hapax-codex-headless --task <task> <lane> <governed-prompt>",
+        "Codex exec headless lane with methodology bootstrap",
         True,
-        "Default Codex SOP: GPT-5.5 xhigh from the Codex launcher.",
+        "Default Codex SOP: GPT-5.5 xhigh from the Codex headless launcher.",
     ),
     ("codex", "headless", "spark"): PlatformPath(
         "codex",
         "headless",
         "spark",
-        'scripts/hapax-codex --session <lane> --terminal tmux --task <task> -- -c model="gpt-5.3-codex-spark"',
-        "Codex Spark quota-wall tmux lane with methodology bootstrap",
+        'scripts/hapax-codex-headless --task <task> <lane> <governed-prompt> -- -c model="gpt-5.3-codex-spark"',
+        "Codex Spark quota-wall headless lane with methodology bootstrap",
         True,
         "Use only when full Codex quota is blocked and Spark is quality-equivalent for the bounded task.",
     ),
@@ -160,8 +160,8 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "vibe",
         "headless",
         "full",
-        "~/.local/bin/hapax-vibe --session <lane> --terminal tmux --task <task> --prompt <governed-prompt>",
-        "Mistral Vibe headless tmux one-shot lane",
+        "~/.local/bin/hapax-vibe --session <lane> --terminal none --task <task> --prompt <governed-prompt>",
+        "Mistral Vibe noninteractive one-shot lane",
         True,
         "JR+ bounded worker path; task fit must exclude governance-critical or off-limits work.",
     ),
@@ -169,8 +169,8 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "gemini",
         "headless",
         "full",
-        "scripts/hapax-gemini --role <lane> --terminal tmux -- -p <governed-prompt>",
-        "Gemini Pro plan-mode read-only headless sidecar",
+        "scripts/hapax-gemini --role <lane> --terminal none -- -p <governed-prompt>",
+        "Gemini Pro plan-mode read-only noninteractive sidecar",
         False,
         "Read-only/plan-mode only; mutation tasks must route elsewhere.",
     ),
@@ -178,8 +178,8 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "gemini",
         "headless",
         "worker",
-        "HAPAX_GEMINI_APPROVAL_MODE=auto_edit scripts/hapax-gemini --role <lane> --terminal tmux -- -p <governed-prompt>",
-        "Gemini governed auto-edit worker lane",
+        "HAPAX_GEMINI_APPROVAL_MODE=auto_edit scripts/hapax-gemini --role <lane> --terminal none -- -p <governed-prompt>",
+        "Gemini governed auto-edit noninteractive worker lane",
         True,
         "Full-worker wrapper profile; route only when task fit, policy firewall, and review gates allow it.",
     ),
@@ -187,8 +187,8 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "gemini",
         "headless",
         "flash",
-        "scripts/hapax-gemini --role <lane> --terminal tmux -- --model gemini-3-flash-preview -p <governed-prompt>",
-        "Gemini Flash read-only quota/fallback headless sidecar",
+        "scripts/hapax-gemini --role <lane> --terminal none -- --model gemini-3-flash-preview -p <governed-prompt>",
+        "Gemini Flash read-only quota/fallback noninteractive sidecar",
         False,
         "Spark analogue for quality-equivalent read-only research/review/extraction; mutation tasks must route elsewhere.",
     ),
@@ -196,8 +196,8 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "gemini",
         "headless",
         "lite",
-        "scripts/hapax-gemini --role <lane> --terminal tmux -- --model gemini-3.1-flash-lite-preview -p <governed-prompt>",
-        "Gemini Flash-Lite read-only lowest-cost headless sidecar",
+        "scripts/hapax-gemini --role <lane> --terminal none -- --model gemini-3.1-flash-lite-preview -p <governed-prompt>",
+        "Gemini Flash-Lite read-only lowest-cost noninteractive sidecar",
         False,
         "Use only for quality-equivalent low-risk extraction/currentness packets; mutation tasks must route elsewhere.",
     ),
@@ -1336,7 +1336,7 @@ def launch_codex_headless(
     status = ""
     if validation.task is not None:
         status = strip_scalar(str(validation.task.fields.get("status", "")))
-    args = [str(launcher), "--task", task_id, "--force"]
+    args = [str(launcher), "--task", task_id]
     if status in {"claimed", "in_progress"}:
         args.append("--no-claim")
     args.extend([lane, prompt])
@@ -1353,6 +1353,7 @@ def launch_codex_headless(
     env = os.environ.copy()
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("codex", "headless")
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(lane_worktree(lane, "codex"))
     return _sliced_call(args, env)
 
 
@@ -1375,7 +1376,7 @@ def launch_vibe_headless(task_id: str, lane: str, prompt: str, validation: Valid
         "--session",
         lane,
         "--terminal",
-        "tmux",
+        "none",
         "--task",
         task_id,
         "--prompt",
@@ -1400,7 +1401,7 @@ def launch_gemini_headless(lane: str, prompt: str, route: PlatformPath) -> int:
         print(f"Gemini launcher not found: {launcher}", file=sys.stderr)
         return 8
 
-    args = [str(launcher), "--role", lane, "--terminal", "tmux", "--force", "--"]
+    args = [str(launcher), "--role", lane, "--terminal", "none", "--force", "--"]
     if route.profile == "flash":
         args.extend(["--model", "gemini-3-flash-preview"])
     elif route.profile == "lite":

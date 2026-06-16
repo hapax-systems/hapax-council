@@ -655,14 +655,22 @@ def test_cli_dismiss_existing_intake_notifications_uses_mako_marker(monkeypatch)
 def test_cli_drain_desktop_dismisses_consumed_intake_notifications(tmp_path, monkeypatch, capsys):
     cli = _load_cli_module()
     state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+    task_root = tmp_path / "tasks"
     state_path.write_text(
         json.dumps(
             {
                 "incidents": {
-                    "f1": {
+                    "systemd_service_failed:demo.service": {
+                        "fingerprint": "systemd_service_failed:demo.service",
                         "task_id": "p0-incident-demo",
                         "last_title": "Service Failed: demo.service",
-                    }
+                    },
+                    "sdlc_dispatch_refusal:p0-incident-demo": {
+                        "fingerprint": "sdlc_dispatch_refusal:p0-incident-demo",
+                        "task_id": "p0-incident-refusal",
+                        "last_title": "SDLC: dispatch refusal circuit breaker",
+                    },
                 }
             }
         ),
@@ -692,6 +700,12 @@ def test_cli_drain_desktop_dismisses_consumed_intake_notifications(tmp_path, mon
                             "body": "Task p0-incident-demo refused 3x",
                         },
                         {"id": 24, "summary": "Service Failed: demo.service", "body": "user"},
+                        {
+                            "id": 26,
+                            "app_name": "LLM Stack",
+                            "summary": "Stack Failed",
+                            "body": "101/123 healthy, 17 degraded, 5 failed",
+                        },
                         {"id": 25, "app_name": "Hapax System", "summary": "Other", "body": ""},
                     ]
                 ),
@@ -701,12 +715,26 @@ def test_cli_drain_desktop_dismisses_consumed_intake_notifications(tmp_path, mon
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
-    rc = cli.main(["drain-desktop", "--state-path", str(state_path)])
+    rc = cli.main(
+        [
+            "drain-desktop",
+            "--task-root",
+            str(task_root),
+            "--state-path",
+            str(state_path),
+            "--ledger-path",
+            str(ledger_path),
+        ]
+    )
 
     assert rc == 0
     assert [call[0] for call in calls[1:]] == [
         ["makoctl", "dismiss", "--no-history", "-n", "21"],
         ["makoctl", "dismiss", "--no-history", "-n", "22"],
         ["makoctl", "dismiss", "--no-history", "-n", "23"],
+        ["makoctl", "dismiss", "--no-history", "-n", "26"],
     ]
-    assert "dismissed 3 consumed P0 intake" in capsys.readouterr().out
+    assert "dismissed 4 consumed P0 intake" in capsys.readouterr().out
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert "health_stack_failed:stack-failed" in state["incidents"]
+    assert list((task_root / "active").glob("p0-incident-health-stack-failed-*.md"))

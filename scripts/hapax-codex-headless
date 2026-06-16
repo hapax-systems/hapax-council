@@ -152,7 +152,7 @@ if materialization_required and not materialized:
     if proof:
         os.makedirs(os.path.dirname(proof), exist_ok=True)
         data={"schema_version":1,"event":"dispatch_remote_exec","platform":"codex-headless","session":p.get("session"),"task_id":p.get("task_id"),"requested_host":p.get("requested_host"),"actual_host":socket.gethostname(),"pid":os.getpid(),"cgroup":cgroup,"workdir":p.get("workdir"),"logos_base_url":os.environ.get("LOGOS_BASE_URL"),"argv0":p["argv"][0] if p.get("argv") else None,"argc":len(p.get("argv",[])),"session_id":sid or None,"role":role or None,"claim_materialized":materialized,"claim_materialization_required":materialization_required,"claim_materialization_error":materialize_error or "not_keyable_or_not_written"}; open(proof,"w",encoding="utf-8").write(json.dumps(data,sort_keys=True)+"\n")
-    print("hapax-codex-headless: remote claim materialization failed: "+(materialize_error or "not_keyable_or_not_written"), file=sys.stderr)
+    print("hapax-codex-headless: remote claim materialization failed: "+(materialize_error or "not_keyable_or_not_written")+"; next_action=inspect the dispatch proof, session-role marker, and cc-active-task cache writability on the exec host, then rerun governed dispatch", file=sys.stderr)
     sys.exit(23)
 if proof:
     os.makedirs(os.path.dirname(proof), exist_ok=True)
@@ -236,12 +236,11 @@ if ! headless_allowed; then
   exit 77
 fi
 
-# Worktree selection mirrors hapax-codex's codex-native default.
+# Worktree selection mirrors hapax-codex's codex-native default. Governed
+# headless dispatch must fail closed; falling back to the primary checkout would
+# make the lane mutate outside the worktree named by the dispatch packet.
 WORKDIR="${HAPAX_CODEX_HEADLESS_WORKDIR:-$HOME/projects/hapax-council--$SESSION}"
-if [[ ! -d "$WORKDIR" ]]; then
-  WORKDIR="$COUNCIL_DIR"
-fi
-[[ -d "$WORKDIR" ]] || { echo "hapax-codex-headless: worktree not found: $WORKDIR" >&2; exit 3; }
+[[ -d "$WORKDIR" ]] || { echo "hapax-codex-headless: governed worktree not found: $WORKDIR" >&2; exit 3; }
 WORKDIR="$(cd "$WORKDIR" && pwd)"
 
 HOOK="$COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh"
@@ -256,9 +255,9 @@ if [[ -n "$DISPATCH_HOST_REQUESTED" ]]; then
   else
     PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64)"
     PREFLIGHT_COMMAND="$(remote_python_command "$PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
-    if ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
+    if ssh -n -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
         -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST_REQUESTED" \
-        "$PREFLIGHT_COMMAND" 2>/dev/null; then
+        "$PREFLIGHT_COMMAND" </dev/null 2>/dev/null; then
       DISPATCH_HOST="$DISPATCH_HOST_REQUESTED"
       echo "hapax-codex-headless: dispatch -> $DISPATCH_HOST (codex exec on appendix)" >&2
     elif [[ "${HAPAX_DISPATCH_HOST_FALLBACK:-}" == "local" ]]; then
@@ -355,9 +354,10 @@ DISPATCH_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-remote.json"
 DISPATCH_LOCAL_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-local.json"
 
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
+CLEANUP_REASON="clean exit (codex headless)"
 cleanup() {
   rm -f "$PID_FILE"
-  [[ -x "$RELAY_RETIRE" ]] && "$RELAY_RETIRE" "$SESSION" --reason "clean exit (codex headless)" 2>/dev/null || true
+  [[ -x "$RELAY_RETIRE" ]] && "$RELAY_RETIRE" "$SESSION" --reason "$CLEANUP_REASON" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -405,6 +405,190 @@ payload = {
 }
 with open(proof_file, "w", encoding="utf-8") as fh:
     fh.write(json.dumps(payload, sort_keys=True) + "\n")
+PYEOF
+}
+
+codex_headless_quota_wall_detected() {
+  [[ -f "$LOG_FILE" ]] || return 1
+  tail -n "${HAPAX_CODEX_HEADLESS_QUOTA_SCAN_LINES:-240}" "$LOG_FILE" 2>/dev/null \
+    | LC_ALL=C grep -Eiq '(^|[^[:alpha:]])(429|rate[ -]?limit|too many requests|quota|usage limit|api limit|insufficient_quota|billing hard limit|resource exhausted)([^[:alpha:]]|$)'
+}
+
+release_quota_wall_claim() {
+  python3 - "$HOME" "$SESSION" "$CODEX_TASK" <<'PYEOF'
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+home = Path(sys.argv[1])
+session = sys.argv[2]
+task_id = sys.argv[3]
+task_root = Path(
+    os.environ.get(
+        "HAPAX_CC_TASK_ROOT",
+        str(home / "Documents/Personal/20-projects/hapax-cc-tasks/active"),
+    )
+).expanduser()
+cache_dir = home / ".cache" / "hapax"
+now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def clean_scalar(value: str) -> str:
+    value = value.strip()
+    if value in {"", "null", "~"}:
+        return ""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def task_note_path() -> Path | None:
+    exact = task_root / f"{task_id}.md"
+    if exact.is_file():
+        return exact
+    try:
+        candidates = sorted(path for path in task_root.iterdir() if path.suffix == ".md")
+    except OSError:
+        return None
+    for path in candidates:
+        if path.stem == task_id or path.stem.startswith(f"{task_id}-"):
+            return path
+    return None
+
+
+def parse_frontmatter(lines: list[str]) -> tuple[int, dict[str, str]] | None:
+    if not lines or lines[0].strip() != "---":
+        return None
+    end_index = None
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            end_index = index
+            break
+    if end_index is None:
+        return None
+    fields: dict[str, str] = {}
+    for line in lines[1:end_index]:
+        match = re.match(r"^([A-Za-z0-9_]+):\s*(.*?)\s*(?:#.*)?$", line)
+        if match:
+            fields[match.group(1)] = clean_scalar(match.group(2))
+    return end_index, fields
+
+
+path = task_note_path()
+if path is None:
+    print(f"hapax-codex-headless: quota wall detected but task note not found: {task_id}", file=sys.stderr)
+    sys.exit(2)
+
+try:
+    text = path.read_text(encoding="utf-8")
+except OSError as exc:
+    print(f"hapax-codex-headless: quota wall task note unreadable: {path}: {exc}", file=sys.stderr)
+    sys.exit(2)
+
+lines = text.splitlines(keepends=True)
+parsed = parse_frontmatter(lines)
+if parsed is None:
+    print(f"hapax-codex-headless: quota wall task note has no parseable frontmatter: {path}", file=sys.stderr)
+    sys.exit(2)
+
+end_index, fields = parsed
+if fields.get("status") not in {"claimed", "in_progress"} or fields.get("assigned_to") != session:
+    print(
+        "hapax-codex-headless: quota wall detected but task ownership changed; "
+        f"status={fields.get('status')!r} assigned_to={fields.get('assigned_to')!r}",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
+def set_or_insert(key: str, value: str) -> None:
+    global end_index
+    pattern = re.compile(rf"^{re.escape(key)}\s*:")
+    for index in range(1, end_index):
+        if pattern.match(lines[index]):
+            lines[index] = f"{key}: {value}\n"
+            return
+    lines.insert(end_index, f"{key}: {value}\n")
+    end_index += 1
+
+
+set_or_insert("status", "offered")
+set_or_insert("assigned_to", "unassigned")
+set_or_insert("claimed_at", "null")
+set_or_insert("updated_at", now)
+
+new_text = "".join(lines)
+if not new_text.endswith("\n"):
+    new_text += "\n"
+if "\n## Session log" not in new_text:
+    new_text += "\n## Session log\n"
+new_text += (
+    f"- {now}: Codex headless lane `{session}` hit an API/quota limit; "
+    "claim released and task re-offered for SDLC dispatch.\n"
+)
+
+try:
+    path.write_text(new_text, encoding="utf-8")
+except OSError as exc:
+    print(f"hapax-codex-headless: quota wall task re-offer failed: {path}: {exc}", file=sys.stderr)
+    sys.exit(2)
+
+for claim_path in [cache_dir / f"cc-active-task-{session}", *cache_dir.glob(f"cc-active-task-{session}-*")]:
+    try:
+        if claim_path.is_file() and claim_path.read_text(encoding="utf-8").strip() == task_id:
+            claim_path.unlink()
+    except OSError:
+        pass
+
+relay_dir = cache_dir / "relay"
+try:
+    relay_dir.mkdir(parents=True, exist_ok=True)
+    (relay_dir / f"{session}.yaml").write_text(
+        "\n".join(
+            [
+                f"role: {session}",
+                "platform: codex",
+                "status: quota_wall_reoffered",
+                "current_claim: null",
+                f"last_quota_wall_task: {task_id}",
+                f"updated_at: {now}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+except OSError:
+    pass
+
+ledger_path = Path(
+    os.environ.get("HAPAX_AUTHORITY_CASE_LEDGER", str(cache_dir / "authority-case-ledger.jsonl"))
+).expanduser()
+try:
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    with ledger_path.open("a", encoding="utf-8") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "ts": now,
+                    "event": "codex_headless_quota_reoffer",
+                    "task_id": task_id,
+                    "lane": session,
+                    "task_note": str(path),
+                    "status": "offered",
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+except OSError:
+    pass
+
+print(f"hapax-codex-headless: quota wall released {session} claim and re-offered {task_id}", file=sys.stderr)
 PYEOF
 }
 
@@ -466,11 +650,11 @@ cd "$WORKDIR"
 if [[ -n "$DISPATCH_HOST" ]]; then
   REMOTE_EXEC_PAYLOAD="$(remote_exec_payload_b64 "$DISPATCH_PROOF_FILE" codex "${CODEX_ARGS[@]}")"
   REMOTE_EXEC_COMMAND="$(remote_python_command "$REMOTE_EXEC_PAYLOAD" "$REMOTE_EXEC_PY")"
-  ssh -o BatchMode=yes -o RequestTTY=no -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
+  ssh -n -o BatchMode=yes -o RequestTTY=no -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
     -o ControlPath=none -i "$HOME/.ssh/id_ed25519" "$DISPATCH_HOST" "$REMOTE_EXEC_COMMAND" \
-    >>"$LOG_FILE" 2>&1 &
+    </dev/null >>"$LOG_FILE" 2>&1 &
 else
-  "$CODEX_BIN" "${CODEX_ARGS[@]}" >>"$LOG_FILE" 2>&1 &
+  "$CODEX_BIN" "${CODEX_ARGS[@]}" </dev/null >>"$LOG_FILE" 2>&1 &
 fi
 CODEX_PID=$!
 echo "$CODEX_PID" >"$PID_FILE"
@@ -485,4 +669,11 @@ else
   EXIT_CODE=$?
 fi
 echo "hapax-codex-headless: $SESSION exited (code=$EXIT_CODE)"
+if [[ "$EXIT_CODE" -ne 0 ]] && codex_headless_quota_wall_detected; then
+  if release_quota_wall_claim; then
+    CLEANUP_REASON="quota wall reoffered (codex headless)"
+  else
+    echo "hapax-codex-headless: quota wall detected but claim was not released; leaving active task for hygiene" >&2
+  fi
+fi
 exit "$EXIT_CODE"

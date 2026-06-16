@@ -491,12 +491,19 @@ preflight_claimable_task() {
     exit 3
   fi
 
-  python3 - "$vault_root" "$task_id" "$session" <<'PYEOF'
+  python3 - "$vault_root" "$task_id" "$session" "$COUNCIL_DIR" <<'PYEOF'
 import re
 import sys
 from pathlib import Path
 
-vault_root, task_id, session = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+vault_root, task_id, session, repo_root = Path(sys.argv[1]), sys.argv[2], sys.argv[3], Path(sys.argv[4])
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+try:
+    from shared.sdlc_lifecycle import TASK_CLAIMABLE_STATUSES, TASK_RESUMABLE_STATUSES
+except Exception:
+    TASK_CLAIMABLE_STATUSES = {"offered"}
+    TASK_RESUMABLE_STATUSES = {"claimed", "in_progress", "pr_open", "merge_queue"}
 active_root = vault_root / "active"
 note_path = None
 
@@ -524,7 +531,7 @@ assigned_match = re.search(r"^assigned_to:[ \t]*(.*)$", text, flags=re.MULTILINE
 assigned = assigned_match.group(1).strip().strip('"').strip("'") if assigned_match else "unassigned"
 nullish = {"", "null", "none", "~", "[]"}
 
-if status == "offered":
+if status in TASK_CLAIMABLE_STATUSES:
     if assigned != "unassigned" and assigned.lower() not in nullish:
         print(
             f"hapax-codex: refusing to spawn task '{task_id}' - already assigned to "
@@ -532,11 +539,11 @@ if status == "offered":
             file=sys.stderr,
         )
         sys.exit(4)
-elif status in {"pr_open", "merge_queue"}:
+elif status in TASK_RESUMABLE_STATUSES:
     if assigned != session:
         printable_assigned = assigned or "unassigned"
         print(
-            f"hapax-codex: refusing to spawn task '{task_id}' - ready-state task is "
+            f"hapax-codex: refusing to spawn task '{task_id}' - resumable task is "
             f"assigned to '{printable_assigned}', not '{session}'",
             file=sys.stderr,
         )
@@ -545,7 +552,7 @@ else:
     printable = status or "missing"
     print(
         f"hapax-codex: refusing to spawn task '{task_id}' - current status is "
-        f"'{printable}', not 'offered' or an assigned ready state",
+        f"'{printable}', not 'offered' or an assigned mutable/resumable state",
         file=sys.stderr,
     )
     sys.exit(4)

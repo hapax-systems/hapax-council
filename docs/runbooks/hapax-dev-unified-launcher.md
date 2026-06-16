@@ -6,9 +6,15 @@ launch particulars (`--role` vs `--session`, which lane is free, `--terminal
 tmux`, identity export):
 
 ```bash
-hapax-dev claude      # visible claude session, auto non-conflicting identity
-hapax-dev codex       # visible codex session
-hapax-dev agy         # visible agy (Antigravity CLI) session
+hapax-dev --runtime claude --role alpha --task <cc-task-id>
+hapax-dev --runtime codex --role cx-crit --task <cc-task-id>
+```
+
+The old subcommand spelling still works for compatibility:
+
+```bash
+hapax-dev claude
+hapax-dev codex
 ```
 
 …and all the right things happen: a **fresh, unique `HAPAX_SESSION_ID`** plus a
@@ -47,30 +53,43 @@ the tmux spawn, and the runtime exec all stay in `hapax-claude` /
   still correctly seen as busy.
 - **Explicit name** is honored as-is. A *free* greek claude role may be used
   **only** when named explicitly (`hapax-dev claude zeta`).
-- **Collisions are refused**: if the resolved name is already live, no second
-  session is launched — the `tmux attach …` command is printed and the exit code
-  is non-zero.
+- **Live tmux sessions are resumed**: if the resolved name already has a tmux
+  session, no second worker is launched. The default attaches in the current
+  terminal; `--detach` prints the attach command. `--window` is
+  operator-attended only: it opens a terminal attached to the existing tmux
+  session only from an interactive operator terminal, or when an explicit
+  launcher sets `HAPAX_DEV_ALLOW_WINDOW=1`.
+- **Mismatched claims are refused**: if the resolved name is live on a different
+  claimed task than the explicit `--task`, the wrapper exits non-zero and prints
+  the attach command instead of redirecting that lane.
 
 ## Commands & flags
 
 ```text
+hapax-dev --runtime <claude|codex|agy> --role <name> [flags] [-- spawner-args]
 hapax-dev <platform> [name] [flags] [-- spawner-args]
 hapax-dev ls | list            table of live sessions + free pool slots
 hapax-dev attach <name>        attach to an existing session
 hapax-dev help                 usage + the live/free table
 
 flags:
-  --window      open a new terminal window attached to the session
+  --runtime    platform/runtime: claude, codex, or agy
+  --role       explicit lane identity; maps to Claude --role or Codex --session
+  --task       governed cc-task to claim/resume before work
+  --window      open a new terminal window attached to the session (operator-attended only)
   --detach      spawn but do not attach; print the attach command
   --cd DIR      workdir for the session (default: $PWD)
   --dry-run     print the resolution plan; do not spawn or attach
+  --force       pass through to the spawner and bypass local collision guard
   --            forward all remaining args verbatim to the spawner
 ```
 
 - **Visibility default** is *attach in the current terminal* — launching is
   operator-initiated, so attaching is wanted, and no unsolicited GUI window is
-  opened. Use `--window` for a new terminal window; `--detach` to start without
-  attaching.
+  opened. Use `--window` from your own interactive terminal for a new terminal
+  window; non-interactive agents, timers, and repair scripts are refused unless
+  an explicit launcher sets `HAPAX_DEV_ALLOW_WINDOW=1`. Use `--detach` to start
+  without attaching.
 - **Pass-through**: everything after `--` reaches the underlying spawner, e.g.
   `hapax-dev claude audio -- --task my-task "kick off prompt"`.
 - **Workdir**: defaults to the current directory. Note that `codex` and `agy`
@@ -84,10 +103,12 @@ flags:
 ### Examples
 
 ```bash
-hapax-dev claude                     # lowest free dev slot, attach here
-hapax-dev claude dev3 --detach       # named slot, leave detached
-hapax-dev codex --window             # new color, in a new window
-hapax-dev agy -- --no-claim          # forward a spawner flag
+hapax-dev --runtime claude --role alpha --task task-id
+hapax-dev --runtime codex --role cx-crit --task task-id --window
+hapax-dev --runtime codex --role cx-blue --task task-id --window  # operator terminal only; reopens existing lane if tmux exists
+hapax-dev claude                     # compatibility: lowest free dev slot
+hapax-dev codex --window             # compatibility: new color in a new window
+hapax-dev agy -- --no-claim          # compatibility: forward a spawner flag
 hapax-dev ls                         # what's live, what's free
 hapax-dev attach dev                 # re-attach to a running dev session
 ```

@@ -155,8 +155,9 @@ if ! command -v python3 &>/dev/null; then
   exit 3
 fi
 
-# Verify status/ownership, then either claim offered work or resume owned
-# ready-state work (PR/merge-queue maintenance).
+# Verify status/ownership, then either claim offered work or reattach/resume
+# owned mutable work (active implementation, PR review, or merge-queue
+# maintenance).
 python3 - "$note_path" "$role" "$task_id" "$SCRIPT_DIR/.." "$session_id" <<'PYEOF'
 import re
 import sys
@@ -201,8 +202,9 @@ def _is_claimable_assignee(value: str) -> bool:
     return stripped == "unassigned" or stripped.lower() in _YAML_NULLS
 
 
-# Canonical SSOT: a lane may resume an owned task in any merge-ready state, not
-# just pr_open/merge_queue (shared/sdlc_lifecycle.py TASK_RESUMABLE_STATUSES).
+# Canonical SSOT: a lane may resume an owned task in any mutable state, not just
+# pr_open/merge_queue. This reattaches a lost claim pointer for claimed or
+# in_progress work without allowing cross-lane takeover.
 READY_STATUSES = TASK_RESUMABLE_STATUSES
 
 
@@ -223,7 +225,7 @@ if status in TASK_CLAIMABLE_STATUSES:
 elif status in READY_STATUSES:
     if _is_claimable_assignee(assigned_raw):
         print(
-            f"cc-claim: refusing to resume '{task_id}' — ready-state task is not assigned to '{role}'",
+            f"cc-claim: refusing to resume '{task_id}' — task is not assigned to '{role}'",
             file=sys.stderr,
         )
         sys.exit(4)
@@ -246,7 +248,7 @@ else:
         detail = " (" + "; ".join(detail_parts) + ")"
     print(
         f"cc-claim: refusing to claim '{task_id}' — current status is '{status}'{detail}, "
-        "not 'offered' or an assigned ready state",
+        "not 'offered' or an assigned mutable/resumable state",
         file=sys.stderr,
     )
     sys.exit(4)
@@ -559,7 +561,7 @@ if claim_mode == "claim":
     result_message = f"cc-claim: claimed task '{task_id}' for role '{role}'"
 else:
     session_suffix = f", session={session_id}" if session_id else ""
-    log_line = f"- {now} {role} resumed ready-state task (cc-claim{session_suffix})\n"
+    log_line = f"- {now} {role} resumed owned task (cc-claim{session_suffix})\n"
     result_message = f"cc-claim: resumed task '{task_id}' for role '{role}'"
 
 text = re.sub(

@@ -117,13 +117,32 @@ def parse_unit_file(path: Path, *, critical_units: frozenset[str] = CRITICAL_UNI
     )
 
 
+def parse_dropin_file(path: Path, *, critical_units: frozenset[str] = CRITICAL_UNITS) -> UnitSpec:
+    unit_name = path.parent.name.removesuffix(".d")
+    return UnitSpec(
+        name=f"{unit_name}.d/{path.name}",
+        path=str(path),
+        kind="dropin",
+        installable=False,
+        critical=unit_name in critical_units,
+    )
+
+
 def repo_unit_specs(unit_dir: Path) -> list[UnitSpec]:
+    unit_files = [
+        parse_unit_file(path)
+        for path in unit_dir.iterdir()
+        if path.is_file() and path.suffix in {".service", ".timer"}
+    ]
+    dropins = [
+        parse_dropin_file(path)
+        for directory in unit_dir.glob("*.d")
+        if directory.is_dir() and directory.name.removesuffix(".d").endswith((".service", ".timer"))
+        for path in directory.iterdir()
+        if path.is_file() and path.suffix == ".conf"
+    ]
     return sorted(
-        [
-            parse_unit_file(path)
-            for path in unit_dir.iterdir()
-            if path.is_file() and path.suffix in {".service", ".timer"}
-        ],
+        [*unit_files, *dropins],
         key=lambda spec: spec.name,
     )
 
@@ -223,6 +242,8 @@ def classify_unit_findings(specs: list[UnitSpec], runtime: dict[str, RuntimeUnit
     findings: list[Finding] = []
     spec_names = {spec.name for spec in specs}
     for spec in specs:
+        if spec.kind == "dropin":
+            continue
         row = runtime.get(spec.name)
         severity = "critical" if spec.critical else "warning"
         companion_timer = spec.name.removesuffix(".service") + ".timer"
@@ -269,7 +290,7 @@ def classify_unit_findings(specs: list[UnitSpec], runtime: dict[str, RuntimeUnit
                     detail=f"unit-file state is {row.file_state or 'unknown'}",
                 )
             )
-        if spec.critical and row.active_state not in GOOD_ACTIVE_STATES:
+        if spec.critical and not timer_driven and row.active_state not in GOOD_ACTIVE_STATES:
             findings.append(
                 Finding(
                     severity="critical",
@@ -341,6 +362,42 @@ def classify_unit_content_findings(
     return findings
 
 
+def classify_dropin_content_findings(
+    specs: list[UnitSpec],
+    *,
+    unit_text_loader: Callable[[str], str | None] = cat_runtime_unit,
+) -> list[Finding]:
+    findings: list[Finding] = []
+    for spec in specs:
+        if spec.kind != "dropin":
+            continue
+        dropin_path = Path(spec.path)
+        unit_name = dropin_path.parent.name.removesuffix(".d")
+        severity = "critical" if spec.critical else "warning"
+        runtime_text = unit_text_loader(unit_name)
+        if runtime_text is None:
+            findings.append(
+                Finding(
+                    severity=severity,
+                    kind="dropin_content_unreadable",
+                    subject=spec.name,
+                    detail=f"systemctl --user cat could not read {unit_name}",
+                )
+            )
+            continue
+        dropin_text = dropin_path.read_text(encoding="utf-8").strip()
+        if dropin_text and dropin_text not in runtime_text:
+            findings.append(
+                Finding(
+                    severity=severity,
+                    kind="dropin_content_drift",
+                    subject=spec.name,
+                    detail=f"installed {unit_name} text is missing canonical drop-in {dropin_path}",
+                )
+            )
+    return findings
+
+
 def classify_artifact_findings(cache_root: Path, now: datetime) -> list[Finding]:
     findings: list[Finding] = []
     for label, relative_path, ttl_seconds in CRITICAL_ARTIFACTS:
@@ -396,6 +453,7 @@ def build_payload(unit_dir: Path, cache_root: Path) -> dict[str, object]:
     runtime = collect_runtime_units()
     findings = classify_unit_findings(specs, runtime)
     findings.extend(classify_unit_content_findings(unit_dir, runtime))
+    findings.extend(classify_dropin_content_findings(specs))
     findings.extend(classify_artifact_findings(cache_root, now))
     findings = sorted(
         findings, key=lambda item: (item.severity != "critical", item.kind, item.subject)

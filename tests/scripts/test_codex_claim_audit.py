@@ -1145,6 +1145,37 @@ class TestSessionKeyedLeaseProtection:
         assert "CLEARED stale claim cache" in result.stdout
 
 
+class TestFreshLiveLeaseProtection:
+    def test_null_claimed_at_with_fresh_matching_lease_not_released(self, tmp_path: Path) -> None:
+        """A fresh matching claim cache is live evidence even if claimed_at is null.
+
+        This protects visible/manual Codex lanes while their launcher/session
+        metadata is incomplete: the audit must not revert the note to offered
+        simply because the frontmatter timestamp is missing.
+        """
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+
+        task_id = "visible-live-lease"
+        note = _write_task_note(
+            vault,
+            task_id,
+            assigned_to="cx-crit",
+            pr="null",
+            branch="null",
+            status="claimed",
+            claimed_at="null",
+        )
+        claim_file = _write_claim_cache(cache_dir, "cx-crit", task_id)
+
+        result = _run_audit(tmp_path, vault, cache_dir, release=True, gh_state="CLOSED")
+
+        assert result.returncode in (0, 10), result.stderr
+        assert claim_file.exists()
+        assert "status: offered" not in note.read_text(encoding="utf-8")
+        assert "PHANTOM" not in result.stdout
+
+
 # ---------------------------------------------------------------------------
 # Journal attribution
 # ---------------------------------------------------------------------------

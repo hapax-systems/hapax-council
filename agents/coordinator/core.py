@@ -100,12 +100,16 @@ REOFFER_LEDGER = Path(
 
 FALLBACK_LANE_ROLES = ("alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta")
 LANE_ROLES = FALLBACK_LANE_ROLES
-DEFAULT_P0_DRAIN_LANES = "cx-red:codex,cx-p0:codex,cx-crit:codex"
+DEFAULT_P0_DRAIN_LANES = "cx-p0:codex,cx-crit:codex"
 SESSION_PREFIXES = (
     ("hapax-claude-", "claude"),
     ("hapax-codex-", "codex"),
     ("hapax-gemini-", "gemini"),
 )
+HEADLESS_LAUNCHER_NAMES = {
+    "claude": "hapax-claude-headless",
+    "codex": "hapax-codex-headless",
+}
 DISPATCH_COOLDOWN_S = 120.0
 DISPATCH_TIMEOUT_S = _positive_env_float("HAPAX_COORDINATOR_DISPATCH_TIMEOUT_S", 30.0)
 DISPATCH_TIMEOUT_LANDING_GRACE_S = _positive_env_float(
@@ -769,7 +773,7 @@ class Coordinator:
                 "task_id": task_id,
                 "to_stage": to_stage,
                 "reason": "launcher_pid_gone"
-                if not _launcher_pid_present(lane.role)
+                if not _lane_launcher_process_present(lane)
                 else "output_stale",
                 "output_age_s": round(lane.output_age_s, 1)
                 if lane.output_age_s != float("inf")
@@ -1110,6 +1114,12 @@ def _p0_drain_lane_states(existing_lanes: dict[str, LaneState]) -> list[LaneStat
             continue
         if _lane_has_active_claim(descriptor.role, descriptor.session):
             continue
+        relay, relay_mtime = _load_freshest_relay(descriptor.role, descriptor.session)
+        relay_fresh = (
+            relay_mtime is not None and time.time() - relay_mtime <= ORPHAN_CLAIM_REOFFER_GRACE_S
+        )
+        if relay_fresh and _claim_from_relay(relay):
+            continue
         worktree = _lane_worktree(descriptor.role, descriptor.platform)
         if not (worktree / "scripts" / "cc-claim").is_file():
             continue
@@ -1321,12 +1331,15 @@ def _prepare_dispatch_message(task: Task, lane: LaneState) -> str | None:
     )
 
 
-def _headless_launcher_matches(argv: list[str], role: str) -> bool:
-    return any(Path(arg).name == "hapax-claude-headless" for arg in argv) and role in argv
+def _headless_launcher_matches(argv: list[str], role: str, platform: str = "claude") -> bool:
+    launcher_name = HEADLESS_LAUNCHER_NAMES.get(platform)
+    if launcher_name is None:
+        return False
+    return any(Path(arg).name == launcher_name for arg in argv) and role in argv
 
 
-def _headless_task_from_argv(argv: list[str], role: str) -> str | None:
-    if not _headless_launcher_matches(argv, role):
+def _headless_task_from_argv(argv: list[str], role: str, platform: str = "claude") -> str | None:
+    if not _headless_launcher_matches(argv, role, platform):
         return None
     task: str | None = None
     i = 0
@@ -1362,7 +1375,11 @@ def _pid_dir_for_platform(platform: str) -> Path:
     return CODEX_PID_DIR if platform == "codex" else PID_DIR
 
 
-def _live_headless_launcher(role: str) -> tuple[int, str | None] | None:
+def _pid_dirs_for_liveness_probe() -> tuple[Path, ...]:
+    return (PID_DIR, CODEX_PID_DIR)
+
+
+def _live_headless_launcher(role: str, platform: str = "claude") -> tuple[int, str | None] | None:
     """Return a live lane launcher even when its pidfile/fifo was lost.
 
     The dispatch-blocking failure mode is a bash wrapper that still holds the
@@ -1370,15 +1387,15 @@ def _live_headless_launcher(role: str) -> tuple[int, str | None] | None:
     causes every dispatch attempt to hit the same lock and never reach pickup.
     """
 
-    pidfile = PID_DIR / f"{role}.launcher.pid"
+    pidfile = _pid_dir_for_platform(platform) / f"{role}.launcher.pid"
     try:
         pid = int(pidfile.read_text().strip())
     except (OSError, ValueError):
         pid = 0
     if pid > 0 and _pid_is_live(pid):
         argv = _read_proc_cmdline(pid)
-        if _headless_launcher_matches(argv, role):
-            return pid, _headless_task_from_argv(argv, role)
+        if _headless_launcher_matches(argv, role, platform):
+            return pid, _headless_task_from_argv(argv, role, platform)
 
     proc_root = Path("/proc")
     try:
@@ -1390,8 +1407,8 @@ def _live_headless_launcher(role: str) -> tuple[int, str | None] | None:
         argv = _read_proc_cmdline(pid)
         if not argv:
             continue
-        if _headless_launcher_matches(argv, role) and _pid_is_live(pid):
-            task = _headless_task_from_argv(argv, role)
+        if _headless_launcher_matches(argv, role, platform) and _pid_is_live(pid):
+            task = _headless_task_from_argv(argv, role, platform)
             return pid, task
     return None
 
@@ -1426,8 +1443,8 @@ def _check_lane(lane: str | LaneDescriptor) -> LaneState:
         except (ValueError, OSError):
             pass
 
-    if descriptor.platform == "claude":
-        launcher = _live_headless_launcher(descriptor.role)
+    if descriptor.platform in HEADLESS_LAUNCHER_NAMES:
+        launcher = _live_headless_launcher(descriptor.role, descriptor.platform)
         if launcher is not None:
             launcher_pid, launcher_task = launcher
             state.alive = True
@@ -1462,6 +1479,11 @@ def _check_lane(lane: str | LaneDescriptor) -> LaneState:
             state.idle = False
             break
 
+    if _role_pidfile_live_any_platform(descriptor.role):
+        state.alive = True
+        if not state.claimed_task:
+            state.idle = False
+
     # freshest progress signal: cc-active-task mtime ∪ relay mtime (relay alone is
     # unreliable per grounding — its mtime can run tens of minutes stale on a live lane).
     progress_mtimes: list[float] = []
@@ -1492,12 +1514,36 @@ def _launcher_pid_present(role: str, *, platform: str = "claude") -> bool:
     return True
 
 
+def _role_pidfile_live_any_platform(role: str) -> bool:
+    """Return true if any runtime pidfile proves this role already has an owner.
+
+    Lane discovery can see a role through tmux/relay before seeing a pidfile, and
+    the first descriptor wins. Dispatch-time liveness must therefore be
+    platform-independent: a live Codex pidfile for ``cx-red`` must keep a
+    shadowed Claude descriptor from relaunching over it. Stale pidfiles are only
+    ignored; they never re-wedge a cold fleet.
+    """
+
+    for pid_dir in _pid_dirs_for_liveness_probe():
+        for suffix in (".pid", ".launcher.pid"):
+            try:
+                pid = int((pid_dir / f"{role}{suffix}").read_text().strip())
+            except (OSError, ValueError):
+                continue
+            if pid > 0 and _pid_is_live(pid):
+                return True
+    return False
+
+
 def _lane_launcher_process_present(lane: LaneState) -> bool:
     if lane.pid is not None and _pid_is_live(lane.pid):
         return True
-    if _launcher_pid_present(lane.role, platform=lane.platform):
+    if _role_pidfile_live_any_platform(lane.role):
         return True
-    return lane.platform == "claude" and _live_headless_launcher(lane.role) is not None
+    return (
+        lane.platform in HEADLESS_LAUNCHER_NAMES
+        and _live_headless_launcher(lane.role, lane.platform) is not None
+    )
 
 
 def _lane_owner_present(lane: LaneState) -> bool:

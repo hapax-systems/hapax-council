@@ -1309,6 +1309,11 @@ cctv_intake_verdict: ready_to_plan
         assert frontmatter["docs_mutation_authorized"] is True
         assert frontmatter["runtime_mutation_authorized"] is False
         assert frontmatter["remediates_request_id"] == "REQ-llm"
+        assert "scripts/request-decompose" in frontmatter["mutation_scope_refs"]
+        assert not any(
+            str(ref).startswith(("/home/", "~/projects/"))
+            for ref in frontmatter["mutation_scope_refs"]
+        )
 
     def test_scan_writes_write_conflict_remediation_task(self, tmp_path, monkeypatch):
         script = _load_request_decompose_module()

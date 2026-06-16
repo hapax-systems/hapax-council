@@ -279,7 +279,7 @@ def _record_decomposition_remediation(
         "request-decompose:failing-intake-flow",
     ]
     if mutation_surface == "source":
-        mutation_scope_refs.append(str(ROOT / "scripts/request-decompose"))
+        mutation_scope_refs.append("scripts/request-decompose")
     title_actions = {
         "admission_blocked": "Repair request decomposition admission",
         "llm_failed": "Repair request decomposition generation",

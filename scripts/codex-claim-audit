@@ -80,6 +80,7 @@ for arg in "$@"; do
 done
 
 stale_threshold=$((STALE_HOURS * 3600))
+CLAIM_LEASE_TTL_SECS="${HAPAX_CLAIM_LEASE_TTL_SECS:-$stale_threshold}"
 now_epoch=$(date +%s)
 phantom_count=0
 cache_mismatch_count=0
@@ -287,6 +288,27 @@ _claim_file_task() {
   local claim_file="$1"
   [ -f "$claim_file" ] || return 0
   sed -n '1p' "$claim_file" 2>/dev/null | tr -d '[:space:]' || true
+}
+
+_claim_file_fresh() {
+  local claim_file="$1" mtime
+  [ -f "$claim_file" ] || return 1
+  mtime="$(stat -c %Y "$claim_file" 2>/dev/null || echo 0)"
+  [ "$mtime" -gt 0 ] || return 1
+  [ $((now_epoch - mtime)) -le "$CLAIM_LEASE_TTL_SECS" ]
+}
+
+_fresh_matching_claim_lease_for_role_task() {
+  local assigned="$1" task_id="$2" claim_file claimed_task
+  [ -n "$assigned" ] || return 1
+  for claim_file in "$CLAIM_CACHE_DIR/cc-active-task-$assigned" "$CLAIM_CACHE_DIR/cc-active-task-$assigned-"*; do
+    [ -f "$claim_file" ] || continue
+    claimed_task="$(_claim_file_task "$claim_file")"
+    [ "$claimed_task" = "$task_id" ] || continue
+    _claim_file_fresh "$claim_file" || continue
+    return 0
+  done
+  return 1
 }
 
 _active_note_for() {
@@ -777,12 +799,12 @@ for note in "$VAULT_ROOT/active/"*.md; do
   if ! _is_unassigned_role "$assigned"; then
     claim_file="$(_claim_file_for "$assigned")"
     claimed_task="$(_claim_file_task "$claim_file")"
-    if [ ! -f "$claim_file" ]; then
+    if _fresh_matching_claim_lease_for_role_task "$assigned" "$task_id"; then
+      claim_matches=true
+    elif [ ! -f "$claim_file" ]; then
       _record_coherence "CACHE_MISSING: ${task_id} assigned=${assigned} status=${status} expected=$(basename "$claim_file")"
     elif [ "$claimed_task" != "$task_id" ]; then
       _record_coherence "CACHE_MISMATCH: ${task_id} assigned=${assigned} status=${status} cache=$(basename "$claim_file") cache_task=${claimed_task:-<empty>}"
-    else
-      claim_matches=true
     fi
 
     quota_evidence="$(_quota_evidence_for "$assigned" "$task_id" 2>/dev/null || true)"
@@ -821,6 +843,11 @@ for note in "$VAULT_ROOT/active/"*.md; do
 
   _is_codexish_role "$assigned" || continue
 
+  if { [ -z "$claimed_at" ] || [ "$claimed_at" = "null" ]; } \
+    && _fresh_matching_claim_lease_for_role_task "$assigned" "$task_id"; then
+    continue
+  fi
+
   if [ -n "$claimed_at" ] && [ "$claimed_at" != "null" ]; then
     claimed_epoch=$(date -d "$claimed_at" +%s 2>/dev/null || echo 0)
     age=$((now_epoch - claimed_epoch))
@@ -830,9 +857,6 @@ for note in "$VAULT_ROOT/active/"*.md; do
 
   has_pr=false
   [ "$pr" != "null" ] && [ -n "$pr" ] && has_pr=true
-
-  has_branch=false
-  [ "$branch" != "null" ] && [ -n "$branch" ] && has_branch=true
 
   if [ "$age" -ge "$stale_threshold" ] && [ "$has_pr" = false ]; then
     phantom_count=$((phantom_count + 1))

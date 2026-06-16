@@ -19,6 +19,8 @@ from shared.sdlc_lifecycle import (
     STAGE_RE,
     TASK_CLAIMABLE_STATUSES,
     TASK_DISPATCHABLE_STATUSES,
+    TASK_MUTABLE_STATUSES,
+    TASK_RESUMABLE_STATUSES,
     acceptance_receipt_blockers,
     acceptance_receipt_path,
     active_blocked_task_blockers,
@@ -112,6 +114,12 @@ class TestTaskDispatchableStatuses:
         assert frozenset({"offered", "claimed", "in_progress"}) not in set_literals, (
             "dispatch still hardcodes the dispatchable-status set literal"
         )
+
+
+class TestTaskResumableStatuses:
+    def test_resumable_statuses_match_owned_mutable_work(self) -> None:
+        assert TASK_RESUMABLE_STATUSES == TASK_MUTABLE_STATUSES
+        assert {"claimed", "in_progress", "pr_open", "merge_queue"} <= TASK_RESUMABLE_STATUSES
 
 
 class TestBlockedEvidenceLifecycle:

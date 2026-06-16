@@ -90,12 +90,16 @@ def _write_task(
     return path
 
 
-def _claim(home: Path, task_id: str) -> subprocess.CompletedProcess[str]:
+def _claim(home: Path, task_id: str, *, force: bool = False) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = "cx-test"
+    args = ["bash", str(SCRIPT)]
+    if force:
+        args.append("--force")
+    args.append(task_id)
     return subprocess.run(
-        ["bash", str(SCRIPT), task_id],
+        args,
         env=env,
         text=True,
         capture_output=True,
@@ -422,7 +426,7 @@ def test_pr_open_assigned_to_same_role_resumes_without_status_change(
     assert "status: pr_open" in text
     assert "assigned_to: cx-test" in text
     assert "claimed_at: null" in text
-    assert "resumed ready-state task (cc-claim" in text  # tolerate session=<sid> suffix
+    assert "resumed owned task (cc-claim" in text  # tolerate session=<sid> suffix
     assert (home / ".cache" / "hapax" / "cc-active-task-cx-test").read_text(
         encoding="utf-8"
     ).strip() == "review-fix"
@@ -449,7 +453,7 @@ def test_ready_state_resume_uses_existing_session_log_heading_case(
     assert result.returncode == 0, result.stderr
     text = note.read_text(encoding="utf-8")
     assert "## Session Log\n- " in text
-    assert "resumed ready-state task (cc-claim" in text  # tolerate session=<sid> suffix
+    assert "resumed owned task (cc-claim" in text  # tolerate session=<sid> suffix
     assert "## Session log" not in text
 
 
@@ -472,7 +476,7 @@ def test_merge_queue_assigned_to_same_role_resumes_without_status_change(
     assert "status: merge_queue" in text
     assert "assigned_to: cx-test" in text
     assert "claimed_at: null" in text
-    assert "resumed ready-state task (cc-claim" in text  # tolerate session=<sid> suffix
+    assert "resumed owned task (cc-claim" in text  # tolerate session=<sid> suffix
     assert (home / ".cache" / "hapax" / "cc-active-task-cx-test").read_text(
         encoding="utf-8"
     ).strip() == "queue-followup"
@@ -491,7 +495,7 @@ def test_pr_open_unassigned_blocks_resume(tmp_path: Path) -> None:
     result = _claim(home, "unowned-review")
 
     assert result.returncode == 4
-    assert "ready-state task is not assigned to 'cx-test'" in result.stderr
+    assert "task is not assigned to 'cx-test'" in result.stderr
     assert "status: pr_open" in note.read_text(encoding="utf-8")
     assert not (home / ".cache" / "hapax" / "cc-active-task-cx-test").exists()
 
@@ -511,6 +515,50 @@ def test_merge_queue_different_assignee_blocks_resume(tmp_path: Path) -> None:
     assert result.returncode == 4
     assert "assigned to 'cx-other', not 'cx-test'" in result.stderr
     assert "status: merge_queue" in note.read_text(encoding="utf-8")
+    assert not (home / ".cache" / "hapax" / "cc-active-task-cx-test").exists()
+
+
+def test_in_progress_assigned_to_same_role_reattaches_claim_pointer(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(
+        home,
+        "active",
+        "reattach-work",
+        status="in_progress",
+        assigned_to="cx-test",
+    )
+
+    result = _claim(home, "reattach-work", force=True)
+
+    assert result.returncode == 0, result.stderr
+    text = note.read_text(encoding="utf-8")
+    assert "status: in_progress" in text
+    assert "assigned_to: cx-test" in text
+    assert "resumed owned task (cc-claim" in text
+    assert (home / ".cache" / "hapax" / "cc-active-task-cx-test").read_text(
+        encoding="utf-8"
+    ).strip() == "reattach-work"
+
+
+def test_in_progress_assigned_to_other_role_still_blocks_reattach(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(
+        home,
+        "active",
+        "other-work",
+        status="in_progress",
+        assigned_to="cx-other",
+    )
+
+    result = _claim(home, "other-work", force=True)
+
+    assert result.returncode == 4
+    assert "assigned to 'cx-other', not 'cx-test'" in result.stderr
+    assert "status: in_progress" in note.read_text(encoding="utf-8")
     assert not (home / ".cache" / "hapax" / "cc-active-task-cx-test").exists()
 
 

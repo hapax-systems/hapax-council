@@ -1149,6 +1149,85 @@ def _resolved_candidates(raw):
 
 target_candidates = _resolved_candidates(target_raw)
 
+_WORKTREE_ANCHORS = ("/projects/", "/scratch/")
+
+
+def _worktree_name(path_text):
+    p = os.path.expanduser(str(path_text).strip())
+    if not p.startswith("/"):
+        return None
+    anchor, alen = -1, 0
+    for marker in _WORKTREE_ANCHORS:
+        i = p.find(marker)
+        if i != -1 and (anchor == -1 or i < anchor):
+            anchor, alen = i, len(marker)
+    if anchor == -1:
+        return None
+    tail = p[anchor + alen :]
+    return tail.split("/", 1)[0] if tail else None
+
+
+def _repo_family_name():
+    if not repo_top:
+        return None
+    name = Path(repo_top).name
+    return name.split("--", 1)[0] if name else None
+
+
+def _in_repo_family(path_text):
+    family = _repo_family_name()
+    tree = _worktree_name(path_text)
+    if not family or not tree:
+        return False
+    return tree == family or tree.startswith(f"{family}--")
+
+
+def _allow_worktree_forms(scope_text, target_text):
+    scope = str(scope_text).strip()
+    if not _in_repo_family(target_text):
+        return False
+    return not scope.startswith("/") or _in_repo_family(scope)
+
+
+def _scope_forms(path_text, *, include_worktree_forms=False):
+    p = os.path.expanduser(str(path_text).strip())
+    while p.startswith("./"):
+        p = p[2:]
+    if not p:
+        return ()
+    if not p.startswith("/"):
+        return (p,)
+    forms = [p]
+    vault = os.path.expanduser("~/Documents/Personal/")
+    if p.startswith(vault):
+        forms.append(p[len(vault) :])
+    if not include_worktree_forms:
+        return tuple(dict.fromkeys(forms))
+    anchor, alen = -1, 0
+    for marker in _WORKTREE_ANCHORS:
+        i = p.find(marker)
+        if i != -1 and (anchor == -1 or i < anchor):
+            anchor, alen = i, len(marker)
+    if anchor != -1:
+        tail = p[anchor + alen :]
+        slash = tail.find("/")
+        rest = tail[slash + 1 :] if slash != -1 else ""
+        forms.extend(f for f in (tail, rest) if f)
+    return tuple(dict.fromkeys(forms))
+
+
+def _forms_allow(scope_text, target_text, *, scope_is_dir):
+    include_worktree_forms = _allow_worktree_forms(scope_text, target_text)
+    for rn in _scope_forms(scope_text, include_worktree_forms=include_worktree_forms):
+        normalized = rn.rstrip("/")
+        prefix = normalized + "/"
+        for target in _scope_forms(target_text, include_worktree_forms=include_worktree_forms):
+            if target == rn or target == normalized:
+                return True
+            if scope_is_dir and target.startswith(prefix):
+                return True
+    return False
+
 allowed = False
 for raw in scope_blob.split("\x1f"):
     item = raw.strip()
@@ -1171,6 +1250,13 @@ for raw in scope_blob.split("\x1f"):
                     break
                 except ValueError:
                     pass
+            if _forms_allow(
+                item,
+                str(target_resolved),
+                scope_is_dir=dir_suffix or scope_resolved.is_dir(),
+            ):
+                allowed = True
+                break
         if allowed:
             break
     if allowed:

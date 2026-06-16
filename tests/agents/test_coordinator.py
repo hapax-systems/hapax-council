@@ -24,6 +24,7 @@ from agents.coordinator.core import (
     _dispatch_landed,
     _effective_platform_suitability,
     _headless_task_from_argv,
+    _lane_launcher_process_present,
     _lane_to_dict,
     _live_headless_launcher,
     _p0_drain_lane_states,
@@ -330,8 +331,14 @@ task_id: none
         )
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
 
         with (
+            patch("agents.coordinator.core.PID_DIR", pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", cache_dir),
             patch("pathlib.Path.home", return_value=tmp_path),
@@ -360,8 +367,14 @@ task_id: p0-claim-blocked
         )
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
 
         with (
+            patch("agents.coordinator.core.PID_DIR", pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", cache_dir),
             patch("pathlib.Path.home", return_value=tmp_path),
@@ -421,8 +434,14 @@ task_id: p0-resolved-incident
         )
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
 
         with (
+            patch("agents.coordinator.core.PID_DIR", pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", cache_dir),
             patch("pathlib.Path.home", return_value=tmp_path),
@@ -452,8 +471,14 @@ task_id: null
         )
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
 
         with (
+            patch("agents.coordinator.core.PID_DIR", pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", cache_dir),
             patch("pathlib.Path.home", return_value=tmp_path),
@@ -483,8 +508,14 @@ task_id: p0-active-incident
         )
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
 
         with (
+            patch("agents.coordinator.core.PID_DIR", pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", cache_dir),
             patch("pathlib.Path.home", return_value=tmp_path),
@@ -525,8 +556,14 @@ retired_reason: clean exit
         now = time.time()
         os.utime(peer_status, (now - 3600, now - 3600))
         os.utime(role_status, (now, now))
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
 
         with (
+            patch("agents.coordinator.core.PID_DIR", pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
             patch("agents.coordinator.core.CACHE_DIR", cache_dir),
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core._live_headless_launcher", return_value=None),
@@ -633,6 +670,29 @@ retired_reason: clean exit
         assert state.claimed_task == "p0-live-task"
         assert state.idle is False
 
+    def test_pidfile_free_codex_headless_launcher_marks_lane_busy(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.CODEX_PID_DIR", tmp_path / "codex-pids"),
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch(
+                "agents.coordinator.core._live_headless_launcher",
+                return_value=(12345, "p0-codex-live-task"),
+            ),
+        ):
+            state = _check_lane(LaneDescriptor(role="cx-blue", session="", platform="codex"))
+
+        assert state.alive is True
+        assert state.pid == 12345
+        assert state.pid_source == "proc"
+        assert state.claimed_task == "p0-codex-live-task"
+        assert state.idle is False
+
     def test_live_headless_launcher_discovers_real_pidfile_free_process(self, tmp_path: Path):
         role = "ut-proc-lane"
         task_id = "p0-proc-discovery-task"
@@ -655,6 +715,41 @@ retired_reason: clean exit
             with patch("agents.coordinator.core.PID_DIR", tmp_path / "pid"):
                 while time.time() < deadline:
                     found = _live_headless_launcher(role)
+                    if found is not None:
+                        break
+                    time.sleep(0.05)
+
+            assert found == (proc.pid, task_id)
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+
+    def test_live_headless_launcher_discovers_codex_process(self, tmp_path: Path):
+        role = "cx-ut-proc-lane"
+        task_id = "p0-codex-proc-discovery-task"
+        proc = subprocess.Popen(
+            [
+                "bash",
+                "-c",
+                (
+                    "exec -a hapax-codex-headless "
+                    "bash -c 'while true; do sleep 1; done' _ --task \"$1\" \"$2\""
+                ),
+                "_",
+                task_id,
+                role,
+            ]
+        )
+        try:
+            found: tuple[int, str | None] | None = None
+            deadline = time.time() + 5
+            with patch("agents.coordinator.core.CODEX_PID_DIR", tmp_path / "codex-pid"):
+                while time.time() < deadline:
+                    found = _live_headless_launcher(role, "codex")
                     if found is not None:
                         break
                     time.sleep(0.05)
@@ -811,6 +906,149 @@ retired_reason: clean exit
         assert lanes[role].claimed_task == task_id
         assert lanes[role].idle is False
 
+    def test_shadowed_live_codex_pidfile_marks_lane_occupied(self, tmp_path: Path):
+        role = "cx-red"
+        claude_pid_dir = tmp_path / "claude-pids"
+        claude_pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
+        (codex_pid_dir / f"{role}.launcher.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        completed = subprocess.CompletedProcess(
+            args=["tmux"],
+            returncode=0,
+            stdout=f"hapax-claude-{role}\n",
+            stderr="",
+        )
+
+        with (
+            patch("agents.coordinator.core.PID_DIR", claude_pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.subprocess.run", return_value=completed),
+        ):
+            lanes = Coordinator()._check_lanes()
+            lane = lanes[role]
+            assert _lane_launcher_process_present(lane) is True
+
+        assert lane.platform == "claude"
+        assert lane.alive is True
+        assert lane.idle is False
+        assert lane.claimed_task is None
+
+    def test_tick_does_not_dispatch_over_shadowed_live_codex_pidfile(self, tmp_path: Path):
+        role = "cx-red"
+        claude_pid_dir = tmp_path / "claude-pids"
+        claude_pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
+        (codex_pid_dir / f"{role}.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        task = Task(
+            task_id="normal-work",
+            title="Normal",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("claude", "codex"),
+            quality_floor="deterministic_ok",
+            path=tmp_path / "normal-work.md",
+        )
+        completed = subprocess.CompletedProcess(
+            args=["tmux"],
+            returncode=0,
+            stdout=f"hapax-claude-{role}\n",
+            stderr="",
+        )
+        dispatched: list[tuple[str, str]] = []
+
+        def fake_dispatch(task: Task, lane: LaneState) -> tuple[bool, str]:
+            dispatched.append((task.task_id, lane.role))
+            return True, ""
+
+        with (
+            patch("agents.coordinator.core.PID_DIR", claude_pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.subprocess.run", return_value=completed),
+            patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_dispatch", side_effect=fake_dispatch),
+            patch.object(Coordinator, "_write_state"),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=SimpleNamespace(state="open"),
+            ),
+            patch("agents.coordinator.core.converge_action_cap", return_value=6),
+        ):
+            Coordinator().tick()
+
+        assert dispatched == []
+
+    def test_stale_cross_platform_pidfile_does_not_wedge_dispatch(self, tmp_path: Path):
+        role = "cx-red"
+        claude_pid_dir = tmp_path / "claude-pids"
+        claude_pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
+        (codex_pid_dir / f"{role}.pid").write_text("2147483647\n", encoding="utf-8")
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        task = Task(
+            task_id="normal-work",
+            title="Normal",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("claude", "codex"),
+            quality_floor="deterministic_ok",
+            path=tmp_path / "normal-work.md",
+        )
+        completed = subprocess.CompletedProcess(
+            args=["tmux"],
+            returncode=0,
+            stdout=f"hapax-claude-{role}\n",
+            stderr="",
+        )
+        dispatched: list[tuple[str, str]] = []
+
+        def fake_dispatch(task: Task, lane: LaneState) -> tuple[bool, str]:
+            dispatched.append((task.task_id, lane.role))
+            return True, ""
+
+        with (
+            patch("agents.coordinator.core.PID_DIR", claude_pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.subprocess.run", return_value=completed),
+            patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_dispatch", side_effect=fake_dispatch),
+            patch.object(Coordinator, "_write_state"),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=SimpleNamespace(state="open"),
+            ),
+            patch("agents.coordinator.core.converge_action_cap", return_value=6),
+        ):
+            lanes = Coordinator()._check_lanes()
+            assert lanes[role].idle is True
+            assert _lane_launcher_process_present(lanes[role]) is False
+            Coordinator().tick()
+
+        assert dispatched == [("normal-work", role)]
+
 
 class TestCoordinatorState:
     def test_write_state(self, tmp_path: Path):
@@ -866,6 +1104,23 @@ class TestP0DrainLanes:
         assert lanes[0].p0_drain is True
         assert lanes[0].pid_source == "p0-drain-startable"
 
+    def test_default_drain_lanes_exclude_protected_cx_red(self, tmp_path: Path):
+        self._worktree(tmp_path, "cx-red")
+        self._worktree(tmp_path, "cx-p0")
+        self._worktree(tmp_path, "cx-crit")
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch.dict(os.environ, {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path)}, clear=False),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+        ):
+            lanes = _p0_drain_lane_states({})
+
+        assert [lane.role for lane in lanes] == ["cx-p0", "cx-crit"]
+        assert all(lane.platform == "codex" for lane in lanes)
+        assert all(lane.p0_drain for lane in lanes)
+
     def test_configured_drain_lane_skips_existing_claim(self, tmp_path: Path):
         self._worktree(tmp_path)
         cache_dir = tmp_path / "cache"
@@ -881,6 +1136,29 @@ class TestP0DrainLanes:
                 },
             ),
             patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+        ):
+            assert _p0_drain_lane_states({}) == []
+
+    def test_configured_drain_lane_skips_fresh_relay_claim(self, tmp_path: Path):
+        self._worktree(tmp_path)
+        cache_dir = tmp_path / "cache"
+        relay_dir = cache_dir / "relay"
+        relay_dir.mkdir(parents=True)
+        (relay_dir / "cx-p0.yaml").write_text(
+            "status: in_progress\ncurrent_claim: already-working\n",
+            encoding="utf-8",
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "HAPAX_COORDINATOR_P0_DRAIN_LANES": "cx-p0:codex",
+                    "HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path),
+                },
+            ),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
         ):
             assert _p0_drain_lane_states({}) == []
 

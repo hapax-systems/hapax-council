@@ -81,8 +81,11 @@ TASK_MUTABLE_STATUSES = (
 #: ready states). cc-pr-autoqueue adds the fulfilling-closed states separately.
 TASK_MERGE_READY_STATUSES = frozenset({"pr_open", "merge_queue"}) | TASK_READY_FAMILY_STATUSES
 
-#: A lane may RESUME (re-claim) an owned task in these states — not a fresh claim.
-TASK_RESUMABLE_STATUSES = TASK_MERGE_READY_STATUSES
+#: A lane may RESUME (re-claim) an owned task in these states — not a fresh
+#: claim. This must include active mutable work because claim-pointer leases can
+#: be reaped while the task note remains ``claimed``/``in_progress``; the owner
+#: needs a deterministic reattach path without moving through PR states.
+TASK_RESUMABLE_STATUSES = TASK_MUTABLE_STATUSES
 
 BLOCKED_DEPENDENCY_REASON_PREFIX = "waiting_for_closure_valid_dependencies:"
 BLOCKED_WITNESS_FIELDS = ("blocked_witness", "blocked_witness_path")

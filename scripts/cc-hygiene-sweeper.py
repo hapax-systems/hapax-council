@@ -58,6 +58,7 @@ from cc_hygiene.checks import (
     check_wip_limit,
     parse_task_note,
 )
+from cc_hygiene.claims import fresh_matching_claim_lease
 from cc_hygiene.dashboard import (
     DEFAULT_DASHBOARD_PATH,
     DEFAULT_VAULT_ACTIVE,
@@ -104,17 +105,84 @@ _AGENT_PGREP_PATTERN = (
 )
 
 _WORKTREE_ROOT = Path.home() / "projects"
+_CLAUDE_WORKTREE_ROOT = Path.home() / ".claude" / "worktrees"
+
+
+def _role_worktree_paths(role: str) -> set[str]:
+    paths = {
+        str(_WORKTREE_ROOT / f"hapax-council--{role}"),
+        str(_WORKTREE_ROOT / f"hapax-council--{role}-omg"),
+        str(_CLAUDE_WORKTREE_ROOT / f"hapax-council--{role}"),
+    }
+    if role == "alpha":
+        paths.add(str(_WORKTREE_ROOT / "hapax-council"))
+    return paths
+
+
+def _path_in_worktree(path: str, worktrees: set[str]) -> bool:
+    normalized = path.rstrip("/")
+    for worktree in worktrees:
+        root = worktree.rstrip("/")
+        if normalized == root or normalized.startswith(f"{root}/"):
+            return True
+    return False
+
+
+def _lane_has_visible_tmux_session(role: str) -> bool:
+    """Return true when tmux exposes a visible pane for ``role``.
+
+    Visible lanes may sit at an interactive shell whose process lacks the role
+    env vars that the headless process probe expects. Tmux's pane metadata is
+    the operator-visible truth for those sessions.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "tmux",
+                "list-panes",
+                "-a",
+                "-F",
+                "#{session_name}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired:
+        return True
+    except FileNotFoundError:
+        return False
+    if result.returncode != 0:
+        return False
+
+    session_names = {
+        role,
+        f"hapax-{role}",
+        f"hapax-claude-{role}",
+        f"hapax-codex-{role}",
+    }
+    role_worktrees = _role_worktree_paths(role)
+    for line in result.stdout.splitlines():
+        session, pane_cwd, *_rest = (line.split("\t") + ["", "", "", ""])[:4]
+        if session in session_names:
+            return True
+        if pane_cwd and _path_in_worktree(pane_cwd, role_worktrees):
+            return True
+    return False
 
 
 def _lane_has_live_process(role: str) -> bool:
-    """Check if any claude/codex process is running for this lane role.
+    """Check if any visible pane or claude/codex process is running for this lane role.
 
     Detection strategy (ordered by reliability):
-    1. Process env vars (CLAUDE_ROLE, HAPAX_AGENT_ROLE, CODEX_ROLE) match role
-    2. Process cwd is inside the role's canonical worktree
-    3. For alpha only: process cwd is the workspace root (bare sessions)
+    1. Tmux visible-pane metadata names the role/session or role worktree.
+    2. Process env vars (CLAUDE_ROLE, HAPAX_AGENT_ROLE, CODEX_ROLE) match role.
+    3. Process cwd is inside the role's canonical worktree.
+    4. For alpha only: process cwd is the workspace root (bare sessions).
     Fails open: if pgrep fails or /proc is unreadable, assume alive.
     """
+    if _lane_has_visible_tmux_session(role):
+        return True
     try:
         result = subprocess.run(
             ["pgrep", "-af", _AGENT_PGREP_PATTERN],
@@ -127,13 +195,7 @@ def _lane_has_live_process(role: str) -> bool:
     if result.returncode != 0:
         return False
 
-    alpha_worktree = str(_WORKTREE_ROOT / "hapax-council")
-    role_worktrees = {
-        str(_WORKTREE_ROOT / f"hapax-council--{role}"),
-        str(_WORKTREE_ROOT / f"hapax-council--{role}-omg"),
-    }
-    if role == "alpha":
-        role_worktrees.add(alpha_worktree)
+    role_worktrees = _role_worktree_paths(role)
 
     role_env_vars = (b"CLAUDE_ROLE=", b"HAPAX_AGENT_NAME=", b"HAPAX_AGENT_ROLE=", b"CODEX_ROLE=")
 
@@ -163,7 +225,7 @@ def _lane_has_live_process(role: str) -> bool:
             cwd = os.readlink(f"/proc/{pid}/cwd")
         except OSError:
             continue
-        if cwd in role_worktrees:
+        if _path_in_worktree(cwd, role_worktrees):
             return True
         if role == "alpha" and cwd == str(_WORKTREE_ROOT):
             return True
@@ -188,6 +250,8 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
                 continue
             payload = _read_relay_yaml(yaml_path)
             if payload is None or _relay_payload_is_retired(payload):
+                continue
+            if fresh_matching_claim_lease(role) is not None:
                 continue
             if _lane_has_live_process(role):
                 continue
@@ -215,6 +279,8 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
         if payload is None or _relay_payload_is_retired(payload):
             continue
         if payload.get("session") != session:
+            continue
+        if fresh_matching_claim_lease(session) is not None:
             continue
         if _lane_has_live_process(session):
             continue

@@ -60,6 +60,65 @@ def test_governed_intake_drain_timers_are_critical_units(tmp_path: Path) -> None
         assert parsed.critical is True
 
 
+def test_repo_unit_specs_include_dropin_conf_files(tmp_path: Path) -> None:
+    service = tmp_path / "hapax-v4l2-bridge.service"
+    service.write_text("[Service]\nExecStart=/bin/true\n", encoding="utf-8")
+    dropin_dir = tmp_path / "hapax-v4l2-bridge.service.d"
+    dropin_dir.mkdir()
+    (dropin_dir / "darkplaces-runtime-gate.conf").write_text(
+        "[Unit]\nConditionPathExists=!%h/.config/hapax/enable-darkplaces-runtime\n",
+        encoding="utf-8",
+    )
+
+    specs = audit.repo_unit_specs(tmp_path)
+
+    assert [spec.name for spec in specs] == [
+        "hapax-v4l2-bridge.service",
+        "hapax-v4l2-bridge.service.d/darkplaces-runtime-gate.conf",
+    ]
+    assert specs[1].kind == "dropin"
+
+
+def test_dropin_content_drift_is_reported(tmp_path: Path) -> None:
+    dropin_dir = tmp_path / "hapax-v4l2-bridge.service.d"
+    dropin_dir.mkdir()
+    dropin = dropin_dir / "darkplaces-runtime-gate.conf"
+    dropin.write_text(
+        "[Unit]\nConditionPathExists=!%h/.config/hapax/enable-darkplaces-runtime\n",
+        encoding="utf-8",
+    )
+    spec = audit.parse_dropin_file(dropin)
+
+    findings = audit.classify_dropin_content_findings(
+        [spec],
+        unit_text_loader=lambda _unit: "[Service]\nExecStart=/bin/true\n",
+    )
+
+    assert [(f.severity, f.kind, f.subject) for f in findings] == [
+        (
+            "warning",
+            "dropin_content_drift",
+            "hapax-v4l2-bridge.service.d/darkplaces-runtime-gate.conf",
+        )
+    ]
+
+
+def test_dropin_content_present_passes(tmp_path: Path) -> None:
+    dropin_dir = tmp_path / "hapax-v4l2-bridge.service.d"
+    dropin_dir.mkdir()
+    dropin = dropin_dir / "darkplaces-runtime-gate.conf"
+    text = "[Unit]\nConditionPathExists=!%h/.config/hapax/enable-darkplaces-runtime\n"
+    dropin.write_text(text, encoding="utf-8")
+    spec = audit.parse_dropin_file(dropin)
+
+    findings = audit.classify_dropin_content_findings(
+        [spec],
+        unit_text_loader=lambda _unit: f"# {dropin}\n{text}",
+    )
+
+    assert findings == []
+
+
 def test_missing_critical_unit_is_critical(tmp_path: Path) -> None:
     unit = tmp_path / "hapax-operator-current-state.timer"
     unit.write_text("[Install]\nWantedBy=timers.target\n", encoding="utf-8")
@@ -136,6 +195,32 @@ def test_timer_driven_service_disabled_is_not_a_finding(tmp_path: Path) -> None:
         ),
         "example.timer": audit.RuntimeUnit(
             name="example.timer",
+            file_state="enabled",
+            active_state="active",
+            sub_state="waiting",
+        ),
+    }
+
+    assert audit.classify_unit_findings(specs, runtime) == []
+
+
+def test_critical_timer_driven_oneshot_service_inactive_is_not_a_finding(tmp_path: Path) -> None:
+    service = tmp_path / "hapax-request-decompose.service"
+    timer = tmp_path / "hapax-request-decompose.timer"
+    service.write_text("[Service]\nType=oneshot\nExecStart=/bin/true\n", encoding="utf-8")
+    timer.write_text(
+        "[Timer]\nOnUnitActiveSec=300\n\n[Install]\nWantedBy=timers.target\n", encoding="utf-8"
+    )
+    specs = [audit.parse_unit_file(service), audit.parse_unit_file(timer)]
+    runtime = {
+        "hapax-request-decompose.service": audit.RuntimeUnit(
+            name="hapax-request-decompose.service",
+            file_state="static",
+            active_state="inactive",
+            sub_state="dead",
+        ),
+        "hapax-request-decompose.timer": audit.RuntimeUnit(
+            name="hapax-request-decompose.timer",
             file_state="enabled",
             active_state="active",
             sub_state="waiting",

@@ -280,6 +280,18 @@ def test_risky_auto_approval_routes_cannot_be_unrestricted_authoritative() -> No
         PlatformCapabilityRoute.model_validate(payload)
 
 
+def test_headless_registry_routes_do_not_advertise_interactive_terminals() -> None:
+    registry = load_platform_capability_registry()
+    offenders = [
+        f"{route.route_id}: {route.launcher}"
+        for route in registry.routes
+        if route.mode.value == "headless"
+        and ("--terminal tmux" in route.launcher or "--terminal foot" in route.launcher)
+    ]
+
+    assert offenders == []
+
+
 def test_unknown_privacy_posture_is_visible_and_non_permissive() -> None:
     payload = _payload()
     route = _route_payload(payload, "vibe.headless.full")
@@ -341,7 +353,7 @@ def test_supply_vector_projects_dimensional_scores_and_tool_state() -> None:
     assert supply.route.lane_id == "cx-green"
     assert supply.route.approval_posture.value == "no_ask_hooks_enforced"
     assert supply.route.worker_tier.value == "full_worker"
-    assert supply.route.sanctioned_wrapper == "scripts/hapax-codex"
+    assert supply.route.sanctioned_wrapper == "scripts/hapax-codex-headless"
     assert supply.capability_scores.source_editing.score == 5
     assert any(tool.tool_id == "local_shell" for tool in supply.tool_state)
     assert "source" in supply.authority.supported_mutation_surfaces

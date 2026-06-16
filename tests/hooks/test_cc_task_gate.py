@@ -1846,6 +1846,52 @@ class TestVaultScopeAnchoringAndOwnNote:
         )
         assert result.returncode == 0, f"repo-toplevel-anchored scope denied: {result.stderr}"
 
+    def test_primary_worktree_absolute_ref_matches_same_file_in_sibling_worktree(
+        self, tmp_path: Path
+    ) -> None:
+        # Legacy request-decompose remediation tasks wrote absolute refs to the
+        # primary tree. A sibling worktree editing the same repo-relative file
+        # must not be stranded by that stale absolute path shape.
+        _, note = _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        note.write_text(
+            note.read_text().replace(
+                "mutation_scope_refs:\n  - /tmp/x",
+                "mutation_scope_refs:\n"
+                "  - /home/hapax/projects/hapax-council/scripts/request-decompose",
+            )
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+        target = "/home/hapax/projects/hapax-council--cx-red/scripts/request-decompose"
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": target}},
+            home=tmp_path,
+            cwd=REPO_ROOT / "docs",
+        )
+        assert result.returncode == 0, f"worktree-normalized scope denied: {result.stderr}"
+
+    def test_primary_worktree_absolute_ref_does_not_match_unrelated_repo_tail(
+        self, tmp_path: Path
+    ) -> None:
+        # Worktree normalization exists only for the same repo family. A matching
+        # repo-relative tail in another project must stay outside the declared scope.
+        _, note = _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        note.write_text(
+            note.read_text().replace(
+                "mutation_scope_refs:\n  - /tmp/x",
+                "mutation_scope_refs:\n"
+                "  - /home/hapax/projects/hapax-council/scripts/request-decompose",
+            )
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+        target = "/home/hapax/projects/other-repo/scripts/request-decompose"
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": target}},
+            home=tmp_path,
+            cwd=REPO_ROOT / "docs",
+        )
+        assert result.returncode == 2
+        assert "mutation_scope_refs" in result.stderr
+
     def test_out_of_scope_vault_target_still_denied(self, tmp_path: Path) -> None:
         # No over-broadening: a vault target under NO ref (and not the own note) denies.
         vault_root, note = _make_vault(tmp_path, status="in_progress", assigned="alpha")
