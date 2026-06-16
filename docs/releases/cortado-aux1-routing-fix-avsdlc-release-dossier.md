@@ -23,27 +23,73 @@ The SSOT generator (registry `hw_source.position: AUX1`) becomes the sole writer
 
 ## Evidence (witnesses)
 
-- **audio_witness** — `~/.cache/hapax/relay/audits/2026-06-16-cortado-aux1-fix-witness.md`:
-  `contact_mic` loopback bound to `capture_AUX1`; NOT broadcast-reachable;
-  `hapax-audio-routing-check` ALL INVARIANTS PASSED before+after.
+> **Which witness proves what.** This fix moves a *perceptual* node's capture port; it does **not**
+> touch any node in the broadcast chain. So the witness that *proves the fix* is the **capture
+> binding** (`contact_mic`: AUX0→AUX1) below — NOT the routing-check. The routing-check is the
+> **no-regression** witness: it is GREEN before *and* after precisely because the change is orthogonal
+> to every broadcast invariant. Both are given as separate, literal, reproducible blocks.
 
-  Routing-check output reproduced in-PR (before AND after the change were both GREEN —
-  the contact mic is perceptual/quarantine so it never touched the broadcast invariants;
-  the change only moved `contact_mic`'s capture from AUX0→AUX1):
+### 1. Fix witness — `contact_mic` capture binding (BEFORE → AFTER) — *this proves the fix*
 
-  ```
-  === Hapax Audio Routing Invariant Check (mk5 + S-4 topology) ===
-    ✓ loudnorm-playback → mk5 OUT AUX2/3 (dry voice → S-4)
-    ✓ mk5 IN AUX2/3 → voice-wet-capture (S-4 return)
-    ✓ mk5 IN AUX0 → mic-rode-capture (Rode)
-    ✓ input.loopback.sink.role.broadcast not muted
-    ✓ hapax-voice-wet-capture not muted / hapax-mic-rode-capture not muted
-    Chain 11: Retired-Hardware Guard — ✓ no L-12/MPC node feeds livestream-tap
-    Signal flow: ALL critical nodes have nonzero RMS ✓
-  === Result ===  ALL INVARIANTS PASSED
-  ```
-  (Note: a transient 5-violation window appeared DURING the pipewire restart — broadcast/OBS
-  links re-establishing — and self-healed via `hapax-audio-reconciler`; steady-state is GREEN.)
+**BEFORE** — governed read-only recheck `~/.cache/hapax/relay/audits/2026-06-04-cortado-mkii-ultralite-line2-live-link-recheck.md`
+(2026-06-04T22:37Z, host hapax-podium), verbatim finding:
+
+```
+Live `pw-link -l` shows both `contact_mic` loopback inputs
+(`input.loopback-1724-29:input_1` and `input.loopback-1724-33:input_1`) fed
+from mk5 `capture_AUX0`, not `capture_AUX1`.
+```
+⟹ the perceptual contact mic was capturing **mk5 IN1 = the Rode = the operator's broadcast voice** (the eavesdrop).
+
+**AFTER** — literal `pw-link -lo` on hapax-podium (2026-06-16, post-fix), verbatim:
+
+```
+alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0:capture_AUX0
+  |-> input.loopback-2486244-32:input_1          # mk5 IN1 (Rode) → mixer_master legacy loopback only
+alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0:capture_AUX1
+  |-> input.loopback-2486244-31:input_AUX1       # mk5 IN2 (Cortado) → the contact_mic loopback
+```
+⟹ the `contact_mic` loopback now consumes **`capture_AUX1` = mk5 IN2 = the Cortado**; `capture_AUX0`
+(the Rode) no longer feeds it. The eavesdrop is closed. (Re-derive: `pw-link -lo | grep -A1 capture_AUX1`.)
+
+### 2. No-regression witness — `hapax-audio-routing-check` (steady state, AFTER)
+
+Full literal output (ANSI-stripped), `bash scripts/hapax-audio-routing-check` on hapax-podium, 2026-06-16, exit 0:
+
+```
+=== Hapax Audio Routing Invariant Check (mk5 + S-4 topology) ===
+Chain 3: Operator Rode Mic (mk5 IN 1 → livestream)
+  ✓ mk5 IN AUX0 → mic-rode-capture (Rode)
+  ✓ mic-rode-playback → livestream-tap
+Chain 5: Livestream Tap Input Allowlist
+  ✓ livestream-tap has only authorized inputs
+Chain 7: Broadcast Boundary Guard (private/PC/notification fenced)
+  Boundary: non-broadcast lanes are fenced ✓
+Chain 11: Retired-Hardware Guard (no L-12 / MPC into broadcast)
+  ✓ no L-12/MPC node feeds livestream-tap
+Chain 12: Mute State Guard
+  ✓ input.loopback.sink.role.broadcast not muted
+  ✓ hapax-mic-rode-capture not muted
+=== Signal-Flow Advisory ===
+  [OK]   Livestream tap: RMS=0.03488803 (-29.15 dBFS) via hapax-livestream-tap.monitor
+  [OK]   Broadcast master: RMS=0.04356821 (-27.22 dBFS) via hapax-broadcast-master
+  [OK]   OBS broadcast remap: RMS=0.06642699 (-23.55 dBFS) via hapax-obs-broadcast-remap
+=== Result ===
+ALL INVARIANTS PASSED          # all 13 chains pass; full unabridged run via the recheck command above
+```
+
+**Before-state of the routing-check:** GREEN, identically. The 2026-06-04 recheck (above) records that the
+broadcast chain was already conformant pre-change, and this change adds/removes **no broadcast-chain link**
+— it only re-points the perceptual `contact_mic` loopback's capture port (a node absent from all 13 chains).
+A `contact_mic`-on-AUX0 vs -on-AUX1 state is therefore invisible to the routing-check by construction; the
+binding block (§1) is the discriminating witness, not this one. (Re-derive after: `bash scripts/hapax-audio-routing-check`.)
+
+**Pipewire-restart transient (honest scope):** applying the live fix required a full `systemctl --user restart
+pipewire`, which momentarily drops and re-establishes the OBS/broadcast links — an artifact of *any* pipewire
+restart, orthogonal to this perceptual-input change — reconciled by the (above-GREEN) `hapax-audio-reconciler`.
+That sub-second window was observed but not captured to file; the steady-state proof is the GREEN run above. No
+revert was needed (steady state converged GREEN); rollback steps are in *Risk / rollback* below.
+
 - **runtime_media_witness** — `~/.cache/hapax/relay/audits/2026-06-16-cortado-aux1-runtime-media-witness.wav`:
   20 s `contact_mic` capture during operator MPC-pad taps; 6 distinct structure-borne tap transients
   (~6.0/7.3/9.0/10.8/12.7/14.3 s, peak −31.5 dB) ⟹ the source is the Cortado (input 2), not the Rode.
@@ -94,6 +140,20 @@ perception path; that is now closed.
   (revert-on-red). Livestream was not live.
 - Rollback: restore `10-contact-mic.conf` `node.target`/`audio.position` and re-enable the dedup'd conf,
   restart pipewire. The `.disabled-dup-20260616` and pre-edit content are recoverable.
+
+## Review findings dispositioned (round 3, head `13d1beaaf` → this commit)
+
+The round-3 team (head `13d1beaaf`) was **unanimous** on one critical: the routing-check witness
+must be **separate, literal BEFORE and AFTER blocks in the PR**, plus the transient-RED handled
+verifiably. Root cause of the recurring miss: a **lens mismatch** — the dossier led with the
+routing-check, but the routing-check is *orthogonal* to this perceptual-input fix (it validates the
+broadcast chain; `contact_mic` is not in it), so a routing-check before/after can only ever show
+GREEN→GREEN and never demonstrates the fix. Resolved by reframing the Evidence section:
+
+| Finding (round 3) | Disposition |
+|-------------------|-------------|
+| Before/after routing-check not in the PR as separate blocks (audio-routing-witness, critical ×4, unanimous) | **Fixed by reframing.** Evidence §1 is now the **fix witness** — the literal `contact_mic` capture binding BEFORE (`capture_AUX0`, 2026-06-04 governed recheck) → AFTER (`capture_AUX1`, literal `pw-link -lo` 2026-06-16), the artifact that actually discriminates the fix. Evidence §2 is the routing-check as the **no-regression** witness with its full literal ANSI-stripped output + an explicit statement of why it is GREEN→GREEN by orthogonality. |
+| Transient 5-violation RED window has no output / no revert / unverifiable (audio-routing-witness, critical) | **Fixed by honesty.** Removed the unsubstantiated "5 violations" count. Evidence §2 now states plainly: a full pipewire restart transiently drops/re-adds OBS links (true of *any* restart, orthogonal to this change), reconciled by `hapax-audio-reconciler`; the sub-second window was observed but **not captured to file**; no revert was needed (steady state converged GREEN, shown literally). |
 
 ## Review findings dispositioned (round 2, head `fcec36e4b` → this commit)
 
