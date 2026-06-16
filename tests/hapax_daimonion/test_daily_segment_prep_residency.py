@@ -2100,6 +2100,52 @@ def test_council_coherence_check_passes_when_all_axes_clear_floor(
     assert outcome.council_decisions["axis_min"] == 2  # mediocre, but not catastrophic
 
 
+def test_council_coherence_check_criterion_is_config_sourced_ratchets_the_bar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """G1 (changing-criterion SCED): the host-gate quality bar is the
+    config-sourced C_k criterion (``HAPAX_COHERENCE_CRITERION``), not a hardcoded
+    3.0. Ratcheting C_k UP must tighten the gate with no code change: a healthy
+    council whose mean (3.0) clears the default criterion is REFINED
+    (passed=False, refused=False — a recoverable quality miss, NOT a fail-loud
+    refusal) once the criterion is raised above its mean. This is the movable
+    threshold the experiment ratchets across phases; the FAIL-LOUD refused path
+    and the absolute critical-axis floor are deliberately left unaffected."""
+    from agents.deliberative_council import engine as council_engine
+    from agents.deliberative_council.models import ConvergenceStatus, CouncilVerdict
+
+    async def fake_deliberate(
+        council_input: Any, mode: Any, rubric: Any, config: Any = None
+    ) -> Any:
+        # mean 3.0, every axis clears the absolute floor — so only the criterion
+        # can decide this case (isolating C_k's effect from the axis floor).
+        return CouncilVerdict(
+            scores={"opening_pressure": 3, "payoff_resolution": 2, "thematic_progression": 4},
+            confidence_bands={},
+            convergence_status=ConvergenceStatus.CONVERGED,
+            disagreement_log=[],
+            research_findings=[],
+            evidence_matrix=None,
+            receipt={"council_health": {"members_valid": 6, "families_valid": 5}},
+        )
+
+    monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
+
+    # Default criterion (3.0): the mean-3.0 council passes (no regression).
+    monkeypatch.setattr(prep, "_COHERENCE_CRITERION", 3.0)
+    baseline = prep._council_coherence_check("an adequate script", "prog-1")
+    assert baseline.passed is True
+    assert baseline.refused is False
+
+    # Ratchet C_k up to 3.5: the SAME council now misses the bar and refines —
+    # without touching the code or the absolute axis floor.
+    monkeypatch.setattr(prep, "_COHERENCE_CRITERION", 3.5)
+    tightened = prep._council_coherence_check("an adequate script", "prog-1")
+    assert tightened.passed is False
+    assert tightened.refused is False  # a recoverable quality miss, not a refusal
+    assert tightened.council_decisions["mean_score"] == 3.0
+
+
 def test_prep_segment_blocks_release_when_coherence_fails_after_noop_refine(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

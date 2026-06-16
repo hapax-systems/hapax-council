@@ -150,6 +150,15 @@ _CLEAN_MEASURE = os.environ.get("HAPAX_SEGMENT_PREP_CLEAN_MEASURE", "").strip().
 # _council_coherence_check. Tunable; 1 blocks only total collapse on an axis.
 _COHERENCE_CRITICAL_AXIS_FLOOR = int(os.environ.get("HAPAX_COHERENCE_CRITICAL_AXIS_FLOOR", "1"))
 
+# The host-gate coherence criterion C_k (G1 of the changing-criterion SCED — see
+# ~/UNIFIED-EXPERIMENTAL-PLAN-2026-06-15.md). The experiment FIXES the ruler (the council rubric) and
+# RATCHETS this threshold across phases; making it config-sourced is the first data-spine item — the
+# criterion cannot move while it is hardcoded. DEFAULT 3.0 == the current live behavior (no regression):
+# until the SCED phase-controller sets it, the gate behaves exactly as the prior `mean_score < 3.0` wall.
+# The ABSOLUTE FLOOR (safety gates + the critical-axis floor above + the NDCVB dissociated@r honesty floor)
+# rides BELOW C_k — nothing hosts below the floor regardless of the criterion.
+_COHERENCE_CRITERION = float(os.environ.get("HAPAX_COHERENCE_CRITERION", "3.0"))
+
 # Plan-time informed-authorship budgets. Recruitment + thesis authoring run
 # BEFORE planning, so they are bounded and measured — a slate-wide recruit or a
 # thesis-per-candidate sweep must not blow PREP_BUDGET_S.
@@ -3901,8 +3910,9 @@ class _CoherenceOutcome:
     council cannot certify coherence, so the segment must NOT be released (the
     caller writes a terminal ``council_degraded_refused_no_release`` diagnostic
     and produces no candidate). ``passed`` is the quality verdict for a HEALTHY
-    council (mean >= 3.0); ``passed=False`` with feedback is a recoverable quality
-    miss that feeds refinement. ``council_decisions`` is the receipt fragment
+    council (mean >= the C_k criterion); ``passed=False`` with feedback is a recoverable quality
+    miss that feeds refinement. The quality threshold is the config-sourced C_k criterion
+    (``HAPAX_COHERENCE_CRITERION``, default 3.0). ``council_decisions`` is the receipt fragment
     recorded into the prep manifest + the council-decisions ledger.
     """
 
@@ -3919,8 +3929,8 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
     must treat that as a terminal no-release, NOT a soft feedback injection. The
     prior implementation returned ``(True, "")`` on a down council (fail-OPEN),
     letting an unavailable council wave a segment through — that is the bug this
-    fixes. A healthy council with mean < 3.0 yields ``passed=False`` with
-    axis-level feedback (a genuine, recoverable quality gate).
+    fixes. A healthy council with mean below the C_k criterion yields ``passed=False``
+    with axis-level feedback (a genuine, recoverable quality gate).
     """
     import asyncio
 
@@ -4004,9 +4014,12 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
         feedback_lines.append(f"  Council note: {note[:200]}")
     feedback = "\n".join(feedback_lines)
 
-    if mean_score < 3.0:
+    if mean_score < _COHERENCE_CRITERION:
         log.warning(
-            "_council_coherence_check: low coherence (mean=%.1f) for %s", mean_score, programme_id
+            "_council_coherence_check: coherence %.1f below criterion %.1f for %s",
+            mean_score,
+            _COHERENCE_CRITERION,
+            programme_id,
         )
         return _CoherenceOutcome(
             passed=False, feedback=feedback, refused=False, council_decisions=decision
