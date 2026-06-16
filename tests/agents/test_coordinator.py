@@ -73,6 +73,28 @@ wsjf: {value}
             assert task is not None
             assert task.wsjf == 0.0
 
+    def test_nullable_string_frontmatter_fields_get_stable_defaults(self, tmp_path: Path):
+        task_file = tmp_path / "nullable-fields.md"
+        task_file.write_text(
+            """---
+title: null
+status: offered
+assigned_to: null
+effort_class: null
+quality_floor: null
+---
+""",
+            encoding="utf-8",
+        )
+
+        task = _parse_task(task_file)
+
+        assert task is not None
+        assert task.title == "nullable-fields"
+        assert task.assigned_to == "unassigned"
+        assert task.effort_class == "standard"
+        assert task.quality_floor == "deterministic_ok"
+
     def test_invalid_yaml(self, tmp_path: Path):
         task_file = tmp_path / "bad.md"
         task_file.write_text("no frontmatter here")

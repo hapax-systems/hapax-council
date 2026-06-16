@@ -690,13 +690,13 @@ def _parse_task(path: Path) -> Task | None:
     platforms = _effective_platform_suitability(platforms, meta)
     return Task(
         task_id=path.stem,
-        title=meta.get("title", path.stem),
+        title=_frontmatter_text(meta.get("title")) or path.stem,
         status=status,
-        assigned_to=meta.get("assigned_to", "unassigned"),
+        assigned_to=_frontmatter_text(meta.get("assigned_to")) or "unassigned",
         wsjf=_frontmatter_float(meta.get("wsjf")),
-        effort_class=meta.get("effort_class", "standard"),
+        effort_class=_frontmatter_text(meta.get("effort_class")) or "standard",
         platform_suitability=tuple(platforms),
-        quality_floor=meta.get("quality_floor", "deterministic_ok"),
+        quality_floor=_frontmatter_text(meta.get("quality_floor")) or "deterministic_ok",
         path=path,
         created_at=_created_at_epoch(meta.get("created_at") or meta.get("updated_at")),
         authority_case=_frontmatter_text(meta.get("authority_case")),
