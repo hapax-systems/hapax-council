@@ -314,6 +314,8 @@ current_claim: relay-task
     def test_role_status_retired_beats_stale_peer_active_without_claim(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
         relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
         peer_status = relay_dir / "peer-status-epsilon.yaml"
         peer_status.write_text(
             """session: epsilon
@@ -336,7 +338,9 @@ retired_reason: clean exit
         os.utime(role_status, (now, now))
 
         with (
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core._live_headless_launcher", return_value=None),
             patch("pathlib.Path.home", return_value=tmp_path),
         ):
             state = _check_lane(
@@ -499,6 +503,7 @@ retired_reason: clean exit
         with (
             patch("agents.coordinator.core.PID_DIR", pid_dir),
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core._live_headless_launcher", return_value=None),
             patch("pathlib.Path.home", return_value=tmp_path),
             patch("agents.coordinator.core.subprocess.run", return_value=completed),
         ):
