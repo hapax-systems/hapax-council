@@ -151,18 +151,18 @@ def _wait_reads(calls: Path, name: str, *, timeout: float = 8.0) -> str:
     return text
 
 
-def _spawn_pidfile_free_launcher(env: dict[str, str], lane: str, task_id: str) -> subprocess.Popen:
+def _spawn_pidfile_free_launcher(
+    env: dict[str, str], lane: str, task_id: str, *, exe_name: str = "hapax-claude-headless"
+) -> subprocess.Popen:
     return subprocess.Popen(
         [
             "bash",
             "-c",
-            (
-                "exec -a hapax-claude-headless "
-                'python3 -c \'import time; time.sleep(60)\' --task "$1" "$2"'
-            ),
+            ('exec -a "$3" python3 -c \'import time; time.sleep(60)\' --task "$1" "$2"'),
             "_",
             task_id,
             lane,
+            exe_name,
         ],
         env=env,
     )
@@ -230,6 +230,32 @@ def test_supervisor_ignores_pidfile_free_launcher_from_different_home(tmp_path: 
     foreign_home.mkdir()
     foreign_env["HOME"] = str(foreign_home)
     proc = _spawn_pidfile_free_launcher(foreign_env, "delta", "live-task")
+    try:
+        time.sleep(0.2)
+        result = _run(env)
+
+        assert result.returncode == 0, result.stderr
+        assert "live-task delta" in _wait_reads(calls, "claude-headless.txt")
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_supervisor_ignores_substring_headless_process(tmp_path: Path) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_CLAUDE_LANES="delta",
+        HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS="1",
+    )
+    _make_worktree(env, "delta")
+    _write_claim(env, "delta", "live-task", status="in_progress")
+    proc = _spawn_pidfile_free_launcher(
+        env, "delta", "live-task", exe_name="not-hapax-claude-headless"
+    )
     try:
         time.sleep(0.2)
         result = _run(env)

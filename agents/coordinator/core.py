@@ -680,8 +680,8 @@ def _parse_task(path: Path) -> Task | None:
         return None
     if not isinstance(meta, dict):
         return None
-    status = meta.get("status", "")
-    if status not in ("offered", "claimed", "in_progress"):
+    status = str(meta.get("status", "")).strip().lower()
+    if status in TASK_TERMINAL_STATUSES:
         return None
     platforms = meta.get("platform_suitability", ["any"])
     if isinstance(platforms, str):
@@ -967,10 +967,12 @@ def _prepare_dispatch_message(task: Task, lane: LaneState) -> str | None:
     )
 
 
+def _headless_launcher_matches(argv: list[str], role: str) -> bool:
+    return any(Path(arg).name == "hapax-claude-headless" for arg in argv) and role in argv
+
+
 def _headless_task_from_argv(argv: list[str], role: str) -> str | None:
-    if not any("hapax-claude-headless" in arg for arg in argv):
-        return None
-    if role not in argv:
+    if not _headless_launcher_matches(argv, role):
         return None
     task: str | None = None
     i = 0
@@ -1016,7 +1018,9 @@ def _live_headless_launcher(role: str) -> tuple[int, str | None] | None:
     except (OSError, ValueError):
         pid = 0
     if pid > 0 and _pid_is_live(pid):
-        return pid, _headless_task_from_argv(_read_proc_cmdline(pid), role)
+        argv = _read_proc_cmdline(pid)
+        if _headless_launcher_matches(argv, role):
+            return pid, _headless_task_from_argv(argv, role)
 
     proc_root = Path("/proc")
     try:
@@ -1028,8 +1032,8 @@ def _live_headless_launcher(role: str) -> tuple[int, str | None] | None:
         argv = _read_proc_cmdline(pid)
         if not argv:
             continue
-        task = _headless_task_from_argv(argv, role)
-        if task is not None and _pid_is_live(pid):
+        if _headless_launcher_matches(argv, role) and _pid_is_live(pid):
+            task = _headless_task_from_argv(argv, role)
             return pid, task
     return None
 

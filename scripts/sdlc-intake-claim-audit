@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -19,6 +20,9 @@ DEFAULT_COORDINATOR_STATE = Path("/dev/shm/hapax-coordinator/state.json")
 DEFAULT_CLAIM_GRACE_SECONDS = 300
 FLOW_STATUS_KEYS = ("offered", "claimed", "in_progress", "blocked", "pr_open")
 UNOWNED_VALUES = {"", "null", "none", "~", "unassigned"}
+UUID_SUFFIX_RE = re.compile(
+    r"-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 
 @dataclass(frozen=True)
@@ -112,7 +116,7 @@ def claim_role(path: Path) -> str:
     prefix = "cc-active-task-"
     if not name.startswith(prefix):
         return ""
-    return name[len(prefix) :].split("-", 1)[0]
+    return UUID_SUFFIX_RE.sub("", name[len(prefix) :])
 
 
 def claim_signals(
@@ -195,6 +199,17 @@ def build_report(
             "stale_claim": len(stale_claims),
             "claim_grace": len(claim_grace),
             "silent_stranded_p0_or_remediation": len(silent_stranded),
+        },
+        "definitions": {
+            "no_owner": "Visible backlog or active work in offered/claimed/in_progress with no assigned lane.",
+            "silent_stranded_p0_or_remediation": (
+                "P0/remediation work in claimed/in_progress with no assigned lane; offered is "
+                "counted as visible queue backlog, and blocked is counted as a durable blocker."
+            ),
+            "stale_claim": (
+                "Claim signals older than claim_grace_seconds that point to no active task or to "
+                "an active blocked/unassigned task."
+            ),
         },
         "silent_stranded_p0_or_remediation": [asdict(task) for task in silent_stranded],
         "no_owner_tasks": [asdict(task) for task in no_owner],

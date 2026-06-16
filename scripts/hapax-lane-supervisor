@@ -709,7 +709,7 @@ for entry in sorted(Path("/proc").iterdir(), key=lambda path: int(path.name) if 
     argv = read_parts(entry / "cmdline")
     if not argv:
         continue
-    if not any("hapax-claude-headless" in arg for arg in argv):
+    if not any(Path(arg).name == "hapax-claude-headless" for arg in argv):
         continue
     if lane not in argv:
         continue

@@ -113,6 +113,16 @@ def test_claim_file_may_reference_note_stem_alias(tmp_path: Path) -> None:
     assert report["counts"]["claim_grace"] == 0
 
 
+def test_claim_role_preserves_hyphenated_lane_names(tmp_path: Path) -> None:
+    audit = _audit_module()
+
+    assert audit.claim_role(tmp_path / "cc-active-task-cx-red") == "cx-red"
+    assert (
+        audit.claim_role(tmp_path / "cc-active-task-cx-red-9b6ba5ca-513c-41aa-9900-d3026b42aad1")
+        == "cx-red"
+    )
+
+
 def test_cli_writes_report(tmp_path: Path) -> None:
     tasks = tmp_path / "tasks"
     cache = tmp_path / "cache"

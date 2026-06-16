@@ -71,6 +71,36 @@ Done.
         )
         assert _parse_task(task_file) is None
 
+    def test_blocked_and_pr_open_tasks_remain_visible_for_flow_counts(self, tmp_path: Path):
+        blocked = tmp_path / "blocked.md"
+        blocked.write_text(
+            """---
+title: "Blocked"
+status: blocked
+assigned_to: unassigned
+---
+""",
+            encoding="utf-8",
+        )
+        pr_open = tmp_path / "pr-open.md"
+        pr_open.write_text(
+            """---
+title: "PR"
+status: pr_open
+assigned_to: cx-red
+---
+""",
+            encoding="utf-8",
+        )
+
+        blocked_task = _parse_task(blocked)
+        pr_open_task = _parse_task(pr_open)
+
+        assert blocked_task is not None
+        assert pr_open_task is not None
+        assert blocked_task.status == "blocked"
+        assert pr_open_task.status == "pr_open"
+
     def test_route_constraints_narrow_platform_suitability(self):
         platforms = _effective_platform_suitability(
             ["any"],
@@ -265,6 +295,13 @@ current_claim: relay-task
 
         assert _headless_task_from_argv(argv, "delta") == "p0-task"
         assert _headless_task_from_argv(argv, "epsilon") is None
+        assert (
+            _headless_task_from_argv(
+                ["bash", "not-hapax-claude-headless", "--task", "p0-task", "delta"],
+                "delta",
+            )
+            is None
+        )
 
     def test_pidfile_free_headless_launcher_marks_lane_busy(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
@@ -323,6 +360,15 @@ current_claim: relay-task
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=5)
+
+    def test_live_headless_launcher_rejects_pidfile_reused_by_foreign_process(self, tmp_path: Path):
+        role = "ut-foreign-pid-lane"
+        pid_dir = tmp_path / "pid"
+        pid_dir.mkdir()
+        (pid_dir / f"{role}.launcher.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+        with patch("agents.coordinator.core.PID_DIR", pid_dir):
+            assert _live_headless_launcher(role) is None
 
     def test_dynamic_tmux_discovery_includes_alpha_and_codex(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
