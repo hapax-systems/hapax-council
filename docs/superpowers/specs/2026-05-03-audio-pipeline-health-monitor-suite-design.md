@@ -269,12 +269,22 @@ land the suite-status meta-monitor + Grafana dashboard skeleton.
 - `hapax_audio_health_lufs_s_band_breach_count{stage,direction}` — counter of breaches above / below band per stage.
 - `hapax_audio_health_lufs_s_in_band{stage}` — 1.0 if current value in band, 0.0 if out.
 
-**Thresholds (env-overridable, defaults per stage):**
+**Thresholds (env-overridable; operative bands shipped via the unit `Environment=`):**
 
-| Stage | Band (LUFS-S) | Rationale |
+| Stage | Operative band (LUFS-S) | Derivation |
 |---|---|---|
-| `hapax-broadcast-master` | [-23, -16] | Pre-loudnorm; broad band ok |
-| `hapax-obs-broadcast-remap` | [-22, -18] | Post-loudnorm; tight band; YouTube target -14 LUFS-I → -18 to -20 LUFS-S typical |
+| `hapax-broadcast-master` | [-25, -10] | Pre-makeup sum; LOW at the silence floor, HIGH a hand-chosen over-makeup alert ceiling |
+| `hapax-obs-broadcast-remap` | [-25, -6] | LOW = `EGRESS_TARGET_LUFS_I − EGRESS_LRA_MAX_LU` (SSOT, `shared/audio_loudness.py`); HIGH = -6 alert ceiling (limiter carrying programme) |
+
+> **P0 incident f3d2b04e (`audio_lufs_breach`), 2026-06-15.** The original hardcoded
+> `DEFAULT_BANDS` (`hapax-broadcast-master` [-23, -16], `hapax-obs-broadcast-remap`
+> [-22, -18]) undershoot the broadcast loudness SSOT by ~6 LU and are far too narrow:
+> the egress targets `EGRESS_TARGET_LUFS_I = -14` LUFS-I with `EGRESS_LRA_MAX_LU = 11`
+> LU of legitimate short-term spread, so a 4 LU static band false-positives in both
+> directions on normal program and minted spurious P0 alerts. The operative bands
+> above are re-derived from the SSOT and shipped via the unit's `Environment=`
+> directives — **do not restore the narrow defaults.** Regression:
+> `tests/agents/audio_health/test_m2_m3_daemons.py::TestM2EgressBandSSOT`.
 
 **Hysteresis:** breach must sustain ≥3s before ntfy (avoids brief track-change excursions).
 
@@ -553,8 +563,8 @@ HAPAX_AUDIO_HEALTH_SERVICE_CORRELATION_ENABLED=1 # M10
 HAPAX_AUDIO_HEALTH_L12_USB_ENABLED=1            # M11
 
 # Threshold overrides (per-monitor sections in §3 list the canonical knob names)
-HAPAX_AUDIO_HEALTH_LUFS_S_BAND_OBS_LOW=-22
-HAPAX_AUDIO_HEALTH_LUFS_S_BAND_OBS_HIGH=-18
+HAPAX_AUDIO_HEALTH_LUFS_S_BAND_HAPAX_OBS_BROADCAST_REMAP_LOW=-25
+HAPAX_AUDIO_HEALTH_LUFS_S_BAND_HAPAX_OBS_BROADCAST_REMAP_HIGH=-6
 HAPAX_AUDIO_HEALTH_INTER_STAGE_CORR_THRESHOLD=0.7
 # ... etc
 ```
