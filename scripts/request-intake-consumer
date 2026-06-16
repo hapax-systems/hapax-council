@@ -34,6 +34,8 @@ MODE="list"
 WRITE_RECEIPT=0
 WRITE_STATE=0
 WRITE_PLANNING_FEED=0
+planning_attention_count=0
+planning_attention_known=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -194,7 +196,7 @@ cctv_intake_blocker_for_note() {
 }
 
 build_task_index() {
-  declare -gA _ti_offered _ti_claimed _ti_done _ti_last_activity
+  declare -gA _ti_offered _ti_claimed _ti_done _ti_remediation _ti_last_activity
   for td in "$TASKS_DIR/active" "$TASKS_DIR/closed"; do
     [[ -d "$td" ]] || continue
     local is_closed=0
@@ -204,6 +206,17 @@ build_task_index() {
       local ts tu
       ts="$(frontmatter_value status "$tn" | compact_value)"
       tu="$(frontmatter_value updated_at "$tn" | compact_value)"
+      local remediates_request_id
+      remediates_request_id="$(frontmatter_value remediates_request_id "$tn" | compact_value)"
+      if [[ -n "$remediates_request_id" && "$td" == *"/active" ]]; then
+        case "$ts" in
+          done|closed|complete|withdrawn|superseded) ;;
+          *)
+            _ti_remediation["$remediates_request_id"]=$(( ${_ti_remediation["$remediates_request_id"]:-0} + 1 ))
+            ;;
+        esac
+      fi
+      [[ -n "$remediates_request_id" ]] && continue
 
       local -A seen_refs=()
       local field tp req_key
@@ -445,12 +458,24 @@ for claim in sorted(claims_dir.glob("cc-active-task-*")):
         active_claims.add(text)
 
 task_index: dict[str, dict[str, int]] = {}
+remediation_index: dict[str, int] = {}
 for task_dir in (tasks_dir / "active", tasks_dir / "closed"):
     for task_path in sorted(task_dir.glob("*.md")):
         data = parse_frontmatter(task_path)
+        status = scalar(data, "status")
+        remediates_request_id = scalar(data, "remediates_request_id")
+        if (
+            task_dir.name == "active"
+            and remediates_request_id
+            and status not in {"done", "closed", "complete", "withdrawn", "superseded"}
+        ):
+            remediation_index[remediates_request_id] = (
+                remediation_index.get(remediates_request_id, 0) + 1
+            )
+        if remediates_request_id:
+            continue
         for key in request_keys_for_task(data):
             value = task_index.setdefault(key, {"offered": 0, "claimed": 0, "done": 0})
-            status = scalar(data, "status")
             if status in {"claimed", "in_progress"}:
                 value["claimed"] += 1
             elif status == "offered":
@@ -476,6 +501,7 @@ for request_path in sorted(requests_dir.glob("*.md")):
     planning_case = scalar(data, "planning_case")
     intake_owner = scalar(data, "intake_owner")
     counts = task_index.get(request_path.name, {"offered": 0, "claimed": 0, "done": 0})
+    active_remediations = remediation_index.get(request_id, 0)
     intake_blocker = cctv_intake_blocker(data)
     if status == "fulfilled":
         coverage = "fulfilled"
@@ -507,7 +533,12 @@ for request_path in sorted(requests_dir.glob("*.md")):
     elif coverage == "task_complete_only" and hours >= thresholds["stale_completion"]:
         staleness = "stale_completion"
 
-    if staleness or coverage in {"untracked", "needs_cctv_hardening"}:
+    if staleness or coverage in {
+        "untracked",
+        "needs_cctv_hardening",
+        "assigned_only",
+        "case_linked",
+    }:
         action_by_coverage = {
             "untracked": "needs triage and intake assignment",
             "needs_cctv_hardening": "needs CCTV intake admission",
@@ -535,6 +566,7 @@ for request_path in sorted(requests_dir.glob("*.md")):
                 "age_hours": hours,
                 "staleness": staleness,
                 "cctv_intake_blocker": intake_blocker,
+                "active_remediation_tasks": active_remediations,
             }
         )
 
@@ -669,6 +701,12 @@ write_state() {
   local generated_at
   generated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   mkdir -p "$(dirname "$STATE_PATH")"
+  local workflow_attention_json="null"
+  local combined_attention_json="null"
+  if [[ "$planning_attention_known" -eq 1 ]]; then
+    workflow_attention_json="$planning_attention_count"
+    combined_attention_json=$((total + planning_attention_count))
+  fi
   cat > "$STATE_PATH" <<STATE
 {
   "generated_at": "$generated_at",
@@ -677,7 +715,10 @@ write_state() {
   "unread_count": $unread_count,
   "stale_count": $stale_count,
   "malformed_count": $malformed_count,
-  "total_attention_count": $total
+  "total_attention_count": $total,
+  "read_attention_count": $total,
+  "workflow_attention_count": $workflow_attention_json,
+  "combined_attention_count": $combined_attention_json
 }
 STATE
 }
@@ -687,6 +728,8 @@ write_planning_feed() {
   generated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   now_epoch=$(date +%s)
   mkdir -p "$(dirname "$PLANNING_FEED_PATH")"
+  planning_attention_count=0
+  planning_attention_known=1
 
   local total_requests=0
   local c_untracked=0 c_assigned_only=0 c_case_linked=0 c_needs_cctv_hardening=0
@@ -721,6 +764,7 @@ write_planning_feed() {
     local offered=${_ti_offered["$req_basename"]:-0}
     local claimed=${_ti_claimed["$req_basename"]:-0}
     local done_count=${_ti_done["$req_basename"]:-0}
+    local active_remediation=${_ti_remediation["$req_id"]:-0}
     local last_activity="${_ti_last_activity["$req_basename"]:-}"
 
     local active_tasks=$((offered + claimed))
@@ -789,9 +833,9 @@ write_planning_feed() {
     [[ $first_req -eq 0 ]] && comma=","
     first_req=0
     requests_json="${requests_json}${comma}
-    {\"request_id\":\"${req_id}\",\"title\":\"${jtitle}\",\"status\":\"${pf_status}\",\"coverage\":\"${coverage}\",\"planning_case\":\"${planning_case}\",\"cctv_intake_blocker\":${cctv_blocker_json},\"active_tasks\":${active_tasks},\"closed_tasks\":${done_count},\"total_tasks\":${total_tasks},\"last_task_activity\":${last_json},\"staleness\":${staleness_json}}"
+    {\"request_id\":\"${req_id}\",\"title\":\"${jtitle}\",\"status\":\"${pf_status}\",\"coverage\":\"${coverage}\",\"planning_case\":\"${planning_case}\",\"cctv_intake_blocker\":${cctv_blocker_json},\"active_tasks\":${active_tasks},\"closed_tasks\":${done_count},\"total_tasks\":${total_tasks},\"active_remediation_tasks\":${active_remediation},\"last_task_activity\":${last_json},\"staleness\":${staleness_json}}"
 
-    if [[ -n "$staleness_flag" || "$coverage" == "untracked" || "$coverage" == "needs_cctv_hardening" ]]; then
+    if [[ -n "$staleness_flag" || "$coverage" == "untracked" || "$coverage" == "needs_cctv_hardening" || "$coverage" == "assigned_only" || "$coverage" == "case_linked" ]]; then
       local action=""
       case "$coverage" in
         untracked) action="needs triage and intake assignment" ;;
@@ -802,11 +846,13 @@ write_planning_feed() {
         task_complete_only) action="all tasks complete, request not yet fulfilled" ;;
         *) action="needs review" ;;
       esac
+      [[ $active_remediation -gt 0 ]] && action="${action}; decompose remediation task active"
       comma=""
       [[ $first_attn -eq 0 ]] && comma=","
       first_attn=0
+      planning_attention_count=$((planning_attention_count + 1))
       attention_json="${attention_json}${comma}
-    {\"request_id\":\"${req_id}\",\"coverage\":\"${coverage}\",\"staleness\":${staleness_json},\"age_hours\":${age_hours},\"action\":\"${action}\",\"cctv_intake_blocker\":${cctv_blocker_json}}"
+    {\"request_id\":\"${req_id}\",\"coverage\":\"${coverage}\",\"staleness\":${staleness_json},\"age_hours\":${age_hours},\"action\":\"${action}\",\"cctv_intake_blocker\":${cctv_blocker_json},\"active_remediation_tasks\":${active_remediation}}"
     fi
   done
 
@@ -924,12 +970,13 @@ done
 
 total=$((unread_count + stale_count))
 
-if [[ "$WRITE_STATE" -eq 1 ]]; then
-  write_state
-fi
-
 if [[ "$WRITE_PLANNING_FEED" -eq 1 ]]; then
   write_planning_feed
+fi
+
+if [[ "$WRITE_STATE" -eq 1 ]]; then
+  # write_state reports workflow attention counts calculated by write_planning_feed.
+  write_state
 fi
 
 if [[ "$MODE" == "preamble" ]]; then
