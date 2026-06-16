@@ -586,14 +586,17 @@ class TestDispatch:
         )
         lane = LaneState(role="cx-red", platform="codex", alive=True, idle=True)
         calls: list[list[str]] = []
+        run_kwargs: list[dict[str, object]] = []
 
-        def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
             calls.append(cmd)
+            run_kwargs.append(kwargs)
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         with (
             patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
             patch("agents.coordinator.core._prepare_dispatch_message", return_value="mq-test-1"),
+            patch("agents.coordinator.core.DISPATCH_TIMEOUT_S", 42.0),
             patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
         ):
             assert Coordinator()._dispatch(task, lane) == (True, "")
@@ -614,6 +617,36 @@ class TestDispatch:
                 "mq-test-1",
             ]
         ]
+        assert run_kwargs[0]["timeout"] == 42.0
+
+    def test_dispatch_timeout_with_live_pickup_counts_success(self, tmp_path: Path):
+        dispatcher = tmp_path / "hapax-methodology-dispatch"
+        dispatcher.write_text("#!/bin/sh\nsleep 60\n", encoding="utf-8")
+        dispatcher.chmod(0o755)
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("claude",),
+            quality_floor="deterministic_ok",
+            path=tmp_path / "t1.md",
+        )
+        lane = LaneState(role="delta", platform="claude", alive=True, idle=True)
+
+        def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+        with (
+            patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
+            patch("agents.coordinator.core.DISPATCH_TIMEOUT_S", 30.0),
+            patch("agents.coordinator.core.DISPATCH_TIMEOUT_LANDING_GRACE_S", 0.0),
+            patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
+            patch("agents.coordinator.core._dispatch_landed", return_value=True),
+        ):
+            assert Coordinator()._dispatch(task, lane) == (True, "")
 
     def test_dispatch_reports_mq_prepare_failure_with_next_action(self, tmp_path: Path):
         dispatcher = tmp_path / "hapax-methodology-dispatch"

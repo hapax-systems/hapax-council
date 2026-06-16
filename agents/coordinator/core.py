@@ -45,6 +45,14 @@ from shared.sdlc_pressure_gate import admission_state
 log = logging.getLogger(__name__)
 
 
+def _positive_env_float(name: str, default: float) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
 def _ntfy_escalate(title: str, body: str) -> None:
     """Send an ntfy escalation for the no-spin law.  Best-effort; never raises."""
     try:
@@ -97,6 +105,10 @@ SESSION_PREFIXES = (
     ("hapax-gemini-", "gemini"),
 )
 DISPATCH_COOLDOWN_S = 120.0
+DISPATCH_TIMEOUT_S = _positive_env_float("HAPAX_COORDINATOR_DISPATCH_TIMEOUT_S", 30.0)
+DISPATCH_TIMEOUT_LANDING_GRACE_S = _positive_env_float(
+    "HAPAX_COORDINATOR_DISPATCH_TIMEOUT_LANDING_GRACE_S", 5.0
+)
 COORDINATOR_DISPATCH_MODE = "headless"
 COORDINATOR_DISPATCH_PROFILE = "full"
 SUPPORTED_DISPATCH_PLATFORMS = ("claude", "codex", "gemini", "vibe", "antigrav", "api")
@@ -502,11 +514,23 @@ class Coordinator:
         try:
             result = subprocess.run(
                 cmd,
-                timeout=10,
+                timeout=DISPATCH_TIMEOUT_S,
                 capture_output=True,
                 text=True,
             )
         except subprocess.TimeoutExpired as exc:
+            deadline = time.monotonic() + DISPATCH_TIMEOUT_LANDING_GRACE_S
+            while True:
+                if _dispatch_landed(task, lane):
+                    log.info(
+                        "Dispatch to %s exceeded %.0fs but lane pickup evidence is live",
+                        lane.role,
+                        DISPATCH_TIMEOUT_S,
+                    )
+                    return True, ""
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.5)
             log.warning("Dispatch to %s timed out: %s", lane.role, exc)
             return False, f"TimeoutExpired: {exc}"
         except OSError as exc:
@@ -1148,6 +1172,14 @@ def _lane_launcher_process_present(lane: LaneState) -> bool:
     if _launcher_pid_present(lane.role):
         return True
     return lane.platform == "claude" and _live_headless_launcher(lane.role) is not None
+
+
+def _dispatch_landed(task: Task, lane: LaneState) -> bool:
+    observed = _check_lane(
+        LaneDescriptor(role=lane.role, session=lane.session, platform=lane.platform)
+    )
+    aliases = {task.task_id, task.path.stem}
+    return observed.claimed_task in aliases and _lane_launcher_process_present(observed)
 
 
 def _load_dispatch_cache() -> dict | None:
