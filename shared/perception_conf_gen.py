@@ -124,7 +124,10 @@ def generated_contact_mic_conf_text(
         raise PerceptualBroadcastReachError(
             f"point {point_name!r} is exposure=quarantine but hw_source.node_target "
             f"{src.node_target!r} is broadcast-reachable — refusing to generate a conf "
-            "that would route a perceptual sensor toward broadcast."
+            "that would route a perceptual sensor toward broadcast. "
+            "Next: point hw_source.node_target at a capture device (e.g. the mk5 "
+            "pro-input), OR — only if egress is genuinely intended and authorized "
+            "by an AuthorityCase — set exposure='broadcast' on the registry point."
         )
     node_name = point.pipewire_node or point_name
     body = _loopback_module(

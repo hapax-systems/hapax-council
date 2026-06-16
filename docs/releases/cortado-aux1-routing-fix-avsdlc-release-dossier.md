@@ -50,10 +50,37 @@ The SSOT generator (registry `hw_source.position: AUX1`) becomes the sole writer
 - **Drift-impossibility (formal):** `shared/perception_conf_gen.generated_contact_mic_conf_text` emits the
   conf from the registry's typed `hw_source`; cross-check `PerceptualBroadcastReachError` makes
   "perceptual point on a broadcast-reachable target" impossible to generate; `--check-source-confs`
-  byte-diff gate. Tests: 26 pass (incl. lowercase-AUX normalization guard + ValueError branches);
-  ruff + pyright clean. The lowercase-`aux` regression is now impossible to express (HwSource
+  byte-diff gate. Tests (diff-verifiable): `tests/shared/test_perception_conf_gen.py` — **7 pass**
+  (the `--write-source-confs`/`--check-source-confs` CLI write→check round-trip + drift-detection, the
+  lowercase-AUX normalization guard, the broadcast-reach refusal, and the missing-source/missing-point
+  ValueError branches); the broader audio suite (`tests/audio_graph/`, `tests/shared/test_audio_*`) stays
+  green; ruff + pyright clean. The lowercase-`aux` regression is now impossible to express (HwSource
   normalizes the position to uppercase). The deployed conf is now the SSOT-generated
   `hapax-contact-mic.conf` (the transitional `10-contact-mic.conf` hand-edit was retired).
+
+## Recheck commands (reproducible)
+
+The routing-check + binding evidence above is not a one-time paste — re-derive it on any host with the
+live graph up. All four are read-only and fail-closed (non-zero on violation):
+
+```bash
+# 1. Audio routing invariants (the before/after GREEN above) — exits non-zero on any violation.
+bash scripts/hapax-audio-routing-check
+
+# 2. contact_mic binds to mk5 capture_AUX1 (= input 2 = Cortado), NOT capture_AUX0 (= input 1 = Rode).
+pw-link -l | grep -A1 'contact_mic'     # expect: ...:capture_AUX1 -> contact_mic:input_MONO
+
+# 3. Deployed/in-tree conf is byte-identical to the registry-generated SSOT (drift gate).
+uv run python scripts/generate-pipewire-audio-confs.py --check-source-confs && echo "SSOT in sync"
+
+# 4. The formal guards (CLI branches, lowercase-AUX normalization, broadcast-reach refusal).
+uv run pytest tests/shared/test_perception_conf_gen.py -q
+```
+
+Items 3 and 4 are host-independent (pure file/registry reads, run in CI as
+`audio-graph-validate`); items 1 and 2 require the live PipeWire graph (the runtime witness this PR's
+diff cannot itself contain — an audio egress fix's proof is the live graph, captured in the witness
+artifacts under `~/.cache/hapax/relay/audits/`).
 
 ## Privacy
 
@@ -67,6 +94,19 @@ perception path; that is now closed.
   (revert-on-red). Livestream was not live.
 - Rollback: restore `10-contact-mic.conf` `node.target`/`audio.position` and re-enable the dedup'd conf,
   restart pipewire. The `.disabled-dup-20260616` and pre-edit content are recoverable.
+
+## Review findings dispositioned (round 2, head `fcec36e4b` → this commit)
+
+| Finding (lens) | Disposition |
+|----------------|-------------|
+| Routing-check is pasted text, not a reproducible witness (audio-routing-witness, critical ×2) | **Fixed.** Added the *Recheck commands (reproducible)* section above — four read-only, fail-closed commands that re-derive the routing-check, the AUX1 binding, the byte-diff gate, and the formal guards. The runtime legs (1, 2) are inherently the live graph (an egress fix's proof is the live graph, not the diff); items 3, 4 run in CI. |
+| `--write/--check-source-confs` CLI branch has no test (tests-cover-the-diff, major ×2) | **Fixed.** Added `test_cli_write_source_confs_then_check_roundtrip` + `test_cli_check_source_confs_detects_drift` — both CLI branches incl. the stale-`SystemExit`. |
+| Audio topology SSOT omits the Cortado IN2 mapping (doc-claims-recheck, major) | **Fixed.** Added the `IN 2 → capture_AUX1 → Cortado (perceptual/quarantine)` row to `docs/audio-topology-reference.md` §2 (it was only in `config/audio-topology.yaml`). |
+| Dossier test-count claims contradict the diff (doc-claims-recheck, major) | **Fixed.** Replaced "26 pass" with the diff-verifiable `tests/shared/test_perception_conf_gen.py — 7 pass` + the enumerated cases. |
+| Witness lacks durable recheck commands (doc-claims-recheck, major) | **Fixed** by the *Recheck commands* section. |
+| `PerceptualBroadcastReachError` message lacks a next action (doc-claims-recheck, minor) | **Fixed.** Message now states the two next actions (re-point the source, or set `exposure='broadcast'` only under an AuthorityCase). |
+| Broadcast-reach check ignores the mk5 source position (exit-predicate-adequacy, major) | **Won't-fix (sound as-is), explained.** `position` is a channel *within* a target; it cannot make a non-broadcast capture device broadcast-reachable. The fail-closed predicate is over `node_target` ∈ broadcast spine, which is the reachability-determining field. A position-aware check would add no coverage for the quarantine⇒not-broadcast invariant. |
+| Generated conf embeds a retired L-12 `node.target` via the verbatim legacy block (exit-predicate-adequacy / audio-routing-witness, minor ×2) | **Tracked follow-up (intentional).** `mixer_master` is preserved verbatim because it is live-consumed (ducker/reactivity/compositor); its `node.target` falls through harmlessly at runtime and it is NOT a perceptual point, so the broadcast-reach guard correctly does not apply. Its correct mk5-era source is an open design question (no mk5 post-fader master mix) — see the follow-ups below + memory `mixer-master-live-load-bearing`. |
 
 ## Open follow-ups (tracked in REQ-20260616)
 
