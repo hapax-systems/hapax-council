@@ -43,12 +43,21 @@ from shared.jsonl_append import append_jsonl_lines
 from shared.policy_decide import ToolCall, policy_decide
 from shared.policy_decision import Decision, FailMode, Verdict
 from shared.policy_floor import evaluate_floor
-from shared.sdlc_lifecycle import stage_token as _stage_token
+from shared.sdlc_lifecycle import (
+    TASK_TERMINAL_STATUSES,
+    frontmatter_from_text,
+    is_active_blocked_with_evidence,
+)
+from shared.sdlc_lifecycle import (
+    stage_token as _stage_token,
+)
 
 #: Authority-case stage-transition ledger this monitor reads (the trace input).
 DEFAULT_AUTHORITY_LEDGER = Path(os.path.expanduser("~/.cache/hapax/authority-case-ledger.jsonl"))
 #: Advisory findings ledger this monitor writes (violations only).
 DEFAULT_INVARIANT_LEDGER = Path(os.path.expanduser("~/.cache/hapax/sdlc-invariant-findings.jsonl"))
+#: Canonical cc-task vault; Obsidian task notes are the operational work-state surface.
+DEFAULT_VAULT_TASKS = Path(os.path.expanduser("~/Documents/Personal/20-projects/hapax-cc-tasks"))
 #: The auto-mint writes signed grant FILES the daemon-independent shim reads
 #: directly off disk (a pure file read, no RPC). Their directory and signing key
 #: MUST resolve identically to ``hooks/scripts/escape-grant.sh`` and
@@ -134,6 +143,10 @@ SDLC_LADDER = Ladder(
 #: permits only a terminal stage to lack a successor). S11 stays terminal here too,
 #: so a fully proof-closed task is live as well.
 LIVENESS_TERMINAL = frozenset({"S7", "S11"})
+#: Operational terminal task statuses. INV-2 consumes stage transitions, but the
+#: cc-task note is the work-state surface; a closed/done task whose historical stage
+#: never advanced to S7 must not page forever as stale S6.
+LIVENESS_TERMINAL_STATUSES = TASK_TERMINAL_STATUSES
 
 
 @dataclass(frozen=True)
@@ -200,10 +213,13 @@ def check_inv2_liveness(
     ``stale_after_s`` (no progress) — i.e. effectively stuck. "Terminal" here is the
     OPERATIONAL ``LIVENESS_TERMINAL`` ({S7 release, S11}), not the proof-plane ladder
     terminal: a released task (``S7_RELEASE`` → token ``S7``) is done, not stuck.
+    When records carry cc-task vault metadata, a terminal task status is also live,
+    and an active blocked task with a recorded blocker+witness is acknowledged
+    blocked work, not an unbounded liveness failure.
     """
     violations: list[str] = []
     try:
-        latest: dict[str, tuple[str, float]] = {}
+        latest: dict[str, tuple[str, float, dict[str, object]]] = {}
         for record in trace:
             task_id = str(record.get("task_id", "")).strip()
             if not task_id:
@@ -213,8 +229,13 @@ def check_inv2_liveness(
             except (TypeError, ValueError):
                 ts = 0.0
             if task_id not in latest or ts >= latest[task_id][1]:
-                latest[task_id] = (str(record.get("to_stage", "")).strip(), ts)
-        for task_id, (stage, ts) in latest.items():
+                latest[task_id] = (str(record.get("to_stage", "")).strip(), ts, dict(record))
+        for task_id, (stage, ts, record) in latest.items():
+            status = _record_task_status(record)
+            if status in LIVENESS_TERMINAL_STATUSES:
+                continue
+            if _record_is_evidenced_block(record):
+                continue
             if stage not in ladder.stages:
                 violations.append(f"{task_id}:unknown_stage:{stage or '<blank>'}")
             elif stage in LIVENESS_TERMINAL:
@@ -229,6 +250,28 @@ def check_inv2_liveness(
         not violations,
         tuple(violations),
         "re-dispatch or escape the stuck task; verify it can still advance",
+    )
+
+
+def _record_task_status(record: Mapping[str, object]) -> str:
+    """Return normalized cc-task status metadata carried with a liveness record."""
+
+    raw = record.get("task_status")
+    if raw is None:
+        raw = record.get("status")
+    return str(raw or "").strip().lower()
+
+
+def _record_is_evidenced_block(record: Mapping[str, object]) -> bool:
+    """Whether a liveness record is an explicitly witnessed active block."""
+
+    return is_active_blocked_with_evidence(
+        {
+            "status": _record_task_status(record),
+            "blocked_reason": str(record.get("blocked_reason") or "").strip(),
+            "blocked_witness": str(record.get("blocked_witness") or "").strip(),
+            "blocked_witness_path": str(record.get("blocked_witness_path") or "").strip(),
+        }
     )
 
 
@@ -501,9 +544,10 @@ def run_evaluator(
 # --- Advisory CLI: monitor the live ledger ------------------------------------
 
 
-def _load_ledger_trace(path: Path) -> list[dict[str, object]]:
+def _load_ledger_trace(path: Path, *, vault_tasks: Path | None = None) -> list[dict[str, object]]:
     """Parse the authority-case-ledger into INV-2 trace records. Best-effort."""
     trace: list[dict[str, object]] = []
+    task_metadata = _load_vault_task_liveness_metadata(vault_tasks) if vault_tasks else {}
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
@@ -531,14 +575,44 @@ def _load_ledger_trace(path: Path) -> list[dict[str, object]]:
             ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00")).timestamp()
         except (TypeError, ValueError):
             ts = 0.0
-        trace.append(
-            {
-                "task_id": str(record.get("case_id") or record.get("task_id") or ""),
-                "to_stage": _stage_token(to_stage_raw),
-                "timestamp": ts,
-            }
-        )
+        task_id = str(record.get("case_id") or record.get("task_id") or "")
+        trace_record: dict[str, object] = {
+            "task_id": task_id,
+            "to_stage": _stage_token(to_stage_raw),
+            "timestamp": ts,
+        }
+        trace_record.update(task_metadata.get(task_id, {}))
+        trace.append(trace_record)
     return trace
+
+
+def _load_vault_task_liveness_metadata(vault_tasks: Path) -> dict[str, dict[str, str]]:
+    """Read status/blocker metadata from cc-task notes for INV-2 interpretation."""
+
+    metadata: dict[str, dict[str, str]] = {}
+    for subdir in ("active", "closed"):
+        directory = vault_tasks / subdir
+        if not directory.is_dir():
+            continue
+        for note in directory.glob("*.md"):
+            try:
+                frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+            except OSError:
+                continue
+            task_id = str(frontmatter.get("task_id") or "").strip()
+            if not task_id:
+                continue
+            status = str(frontmatter.get("status") or "").strip().lower()
+            if not status and subdir == "closed":
+                status = "closed"
+            row = {
+                "task_status": status,
+                "blocked_reason": str(frontmatter.get("blocked_reason") or "").strip(),
+                "blocked_witness": str(frontmatter.get("blocked_witness") or "").strip(),
+                "blocked_witness_path": str(frontmatter.get("blocked_witness_path") or "").strip(),
+            }
+            metadata[task_id] = {key: value for key, value in row.items() if value}
+    return metadata
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -554,6 +628,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sdlc_invariants")
     parser.add_argument("--ledger", default=str(DEFAULT_AUTHORITY_LEDGER))
     parser.add_argument("--findings", default=str(DEFAULT_INVARIANT_LEDGER))
+    parser.add_argument("--vault-tasks", default=str(DEFAULT_VAULT_TASKS))
     parser.add_argument("--stale-after-s", dest="stale_after_s", type=float, default=86400.0)
     parser.add_argument(
         "--mint-escapes",
@@ -577,7 +652,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    trace = _load_ledger_trace(Path(args.ledger))
+    trace = _load_ledger_trace(Path(args.ledger), vault_tasks=Path(args.vault_tasks))
     key = load_or_create_grant_key(args.key_file) if args.mint_escapes else b""
     report = run_evaluator(
         trace=trace,
