@@ -87,6 +87,7 @@ TASKS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
 CACHE_DIR = Path.home() / ".cache/hapax"
 RELAY_DIR = CACHE_DIR / "relay"
 PID_DIR = Path(f"/run/user/{os.getuid()}/hapax-claude")
+CODEX_PID_DIR = Path(f"/run/user/{os.getuid()}/hapax-codex")
 SHM_DIR = Path("/dev/shm/hapax-coordinator")
 SHM_FILE = SHM_DIR / "state.json"
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1019,18 +1020,22 @@ def _discover_lanes() -> list[LaneDescriptor]:
             if descriptor is not None:
                 lanes_by_role[descriptor.role] = descriptor
 
-    try:
-        pid_paths = list(PID_DIR.glob("*.pid"))
-    except OSError:
-        pid_paths = []
-    for path in pid_paths:
-        name = path.name
-        if name.endswith(".launcher.pid"):
-            role = name.removesuffix(".launcher.pid")
-        else:
-            role = name.removesuffix(".pid")
-        if role:
-            lanes_by_role.setdefault(role, LaneDescriptor(role=role, session="", platform="claude"))
+    for pid_dir, platform in ((PID_DIR, "claude"), (CODEX_PID_DIR, "codex")):
+        try:
+            pid_paths = list(pid_dir.glob("*.pid"))
+        except OSError:
+            pid_paths = []
+        for path in pid_paths:
+            name = path.name
+            if name.endswith(".launcher.pid"):
+                role = name.removesuffix(".launcher.pid")
+            else:
+                role = name.removesuffix(".pid")
+            if role:
+                lanes_by_role.setdefault(
+                    role,
+                    LaneDescriptor(role=role, session="", platform=platform),
+                )
 
     return sorted(lanes_by_role.values(), key=lambda lane: lane.role)
 
@@ -1199,6 +1204,10 @@ def _pid_is_live(pid: int) -> bool:
     return True
 
 
+def _pid_dir_for_platform(platform: str) -> Path:
+    return CODEX_PID_DIR if platform == "codex" else PID_DIR
+
+
 def _live_headless_launcher(role: str) -> tuple[int, str | None] | None:
     """Return a live lane launcher even when its pidfile/fifo was lost.
 
@@ -1246,7 +1255,7 @@ def _check_lane(lane: str | LaneDescriptor) -> LaneState:
         alive=bool(descriptor.session),
     )
 
-    pidfile = PID_DIR / f"{descriptor.role}.pid"
+    pidfile = _pid_dir_for_platform(descriptor.platform) / f"{descriptor.role}.pid"
     if pidfile.exists():
         try:
             pid = int(pidfile.read_text().strip())
@@ -1310,11 +1319,11 @@ def _check_lane(lane: str | LaneDescriptor) -> LaneState:
     return state
 
 
-def _launcher_pid_present(role: str) -> bool:
+def _launcher_pid_present(role: str, *, platform: str = "claude") -> bool:
     """True iff the supervising launcher PID for this lane is alive. Uses os.kill(pid, 0) —
     a liveness probe only (signal 0 delivers nothing); NEVER os.killpg or a real signal."""
     try:
-        pid = int((PID_DIR / f"{role}.launcher.pid").read_text().strip())
+        pid = int((_pid_dir_for_platform(platform) / f"{role}.launcher.pid").read_text().strip())
     except (OSError, ValueError):
         return False
     try:
@@ -1327,7 +1336,7 @@ def _launcher_pid_present(role: str) -> bool:
 def _lane_launcher_process_present(lane: LaneState) -> bool:
     if lane.pid is not None and _pid_is_live(lane.pid):
         return True
-    if _launcher_pid_present(lane.role):
+    if _launcher_pid_present(lane.role, platform=lane.platform):
         return True
     return lane.platform == "claude" and _live_headless_launcher(lane.role) is not None
 

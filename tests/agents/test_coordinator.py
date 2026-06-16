@@ -20,6 +20,7 @@ from agents.coordinator.core import (
     _active_task_candidates,
     _check_lane,
     _discover_lanes,
+    _dispatch_landed,
     _effective_platform_suitability,
     _headless_task_from_argv,
     _lane_to_dict,
@@ -493,6 +494,8 @@ retired_reason: clean exit
         relay_dir.mkdir()
         pid_dir = tmp_path / "pids"
         pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
         completed = subprocess.CompletedProcess(
             args=["tmux"],
             returncode=0,
@@ -502,6 +505,7 @@ retired_reason: clean exit
 
         with (
             patch("agents.coordinator.core.PID_DIR", pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core._live_headless_launcher", return_value=None),
             patch("pathlib.Path.home", return_value=tmp_path),
@@ -532,6 +536,8 @@ retired_reason: clean exit
         pid_dir = tmp_path / "pids"
         pid_dir.mkdir()
         (pid_dir / "gamma.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
         completed = subprocess.CompletedProcess(
             args=["tmux"],
             returncode=0,
@@ -546,6 +552,7 @@ retired_reason: clean exit
 
         with (
             patch("agents.coordinator.core.PID_DIR", pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", cache_dir),
             patch("agents.coordinator.core.subprocess.run", return_value=completed),
@@ -559,6 +566,62 @@ retired_reason: clean exit
         assert lanes["gamma"].alive is True
         assert lanes["gamma"].pid == os.getpid()
         assert lanes["gamma"].pid_source == "pidfile"
+
+    def test_codex_pid_backed_headless_lane_is_discovered_and_counts_as_landed(
+        self, tmp_path: Path
+    ):
+        role = "cx-blue"
+        task_id = "p0-codex-live-task"
+        claude_pid_dir = tmp_path / "claude-pids"
+        claude_pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
+        (codex_pid_dir / f"{role}.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        (cache_dir / f"cc-active-task-{role}").write_text(f"{task_id}\n", encoding="utf-8")
+
+        completed = subprocess.CompletedProcess(
+            args=["tmux"],
+            returncode=0,
+            stdout="hapax-claude-beta\n",
+            stderr="",
+        )
+
+        with (
+            patch("agents.coordinator.core.PID_DIR", claude_pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.subprocess.run", return_value=completed),
+        ):
+            descriptors = _discover_lanes()
+            lanes = Coordinator()._check_lanes()
+            task = Task(
+                task_id=task_id,
+                title="codex live pickup",
+                status="offered",
+                assigned_to="unassigned",
+                wsjf=10.0,
+                effort_class="standard",
+                platform_suitability=("codex",),
+                quality_floor="deterministic_ok",
+                path=tmp_path / f"{task_id}.md",
+            )
+
+            assert _dispatch_landed(task, lanes[role]) is True
+
+        descriptor = next(lane for lane in descriptors if lane.role == role)
+        assert descriptor.session == ""
+        assert descriptor.platform == "codex"
+        assert lanes[role].alive is True
+        assert lanes[role].pid == os.getpid()
+        assert lanes[role].pid_source == "pidfile"
+        assert lanes[role].claimed_task == task_id
+        assert lanes[role].idle is False
 
 
 class TestCoordinatorState:
