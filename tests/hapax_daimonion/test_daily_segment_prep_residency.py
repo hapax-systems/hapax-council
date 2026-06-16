@@ -1298,6 +1298,97 @@ def test_prep_segment_uncomposable_gate_reject_writes_diagnostic_and_feedback(
     assert dossier["no_candidate_metadata"]["candidate_count"] == 0
 
 
+def test_prep_segment_skips_gate_when_deadline_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Deadline-skip path: when the prep budget is already exhausted, prep_segment must SKIP the optional
+    composability gate entirely (fail-open) rather than spend a blocking gateway call. Spies on the gate to
+    prove it is never invoked once deadline_monotonic is in the past."""
+    import time
+
+    import agents.hapax_daimonion.segment_composability_gate as gate
+
+    calls = {"n": 0}
+
+    def _spy(*_a: object, **_k: object) -> gate.CompositionGateResult:
+        calls["n"] += 1
+        return gate.CompositionGateResult(False, "would reject if called")
+
+    monkeypatch.setattr(gate, "assess_composability", _spy)
+
+    programme = SimpleNamespace(
+        programme_id="prog-deadline",
+        role=SimpleNamespace(value="rant"),
+        content=_ready_content(
+            narrative_beat="A paradox stated up front",
+            segment_beats=["open the paradox", "build it", "resolve it"],
+            role="rant",
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+    }
+
+    prep.prep_segment(
+        programme,
+        tmp_path,
+        prep_session=session,
+        deadline_monotonic=time.monotonic() - 100.0,  # budget already blown
+    )
+
+    assert calls["n"] == 0, (
+        "gate must be SKIPPED (not a blocking call) when the prep budget is exhausted"
+    )
+
+
+def test_prep_segment_gate_runs_after_source_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Execution order: the gate runs AFTER source-readiness, so a plan that source-readiness refuses never
+    pays the gateway call. The gate is patched to REJECT (which would write uncomposable_topic_type if it
+    ran), but source-readiness fails first, so the terminal reason must be source_readiness_failed."""
+    import agents.hapax_daimonion.segment_composability_gate as gate
+
+    monkeypatch.setattr(
+        gate,
+        "assess_composability",
+        lambda *_a, **_k: gate.CompositionGateResult(False, "would reject if reached"),
+    )
+    monkeypatch.setattr(
+        prep,
+        "programme_source_readiness",
+        lambda _programme: {"ok": False, "violations": [{"reason": "no recruited source"}]},
+    )
+
+    programme = SimpleNamespace(
+        programme_id="prog-order",
+        role=SimpleNamespace(value="rant"),
+        content=_ready_content(
+            narrative_beat="A paradox stated up front",
+            segment_beats=["open the paradox", "build it", "resolve it"],
+            role="rant",
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+    }
+
+    saved = prep.prep_segment(programme, tmp_path, prep_session=session)
+
+    assert saved is None
+    ledger_row = json.loads(
+        (tmp_path / prep.PREP_DIAGNOSTIC_LEDGER_FILENAME).read_text(encoding="utf-8")
+    )
+    # source-readiness ran FIRST — not the gate (which would have said uncomposable_topic_type).
+    assert ledger_row["terminal_reason"] == "source_readiness_failed"
+
+
 def test_prep_segment_no_beats_writes_non_loadable_diagnostic_dossier(
     tmp_path: Path,
 ) -> None:
