@@ -1230,6 +1230,30 @@ Body.
         assert reparsed is not None
         assert reparsed.status == "claimed"
 
+    def test_live_codex_tmux_pickup_without_launcher_is_not_reoffered(self, tmp_path: Path):
+        path = self._task_note(tmp_path, assigned_to="cx-red")
+        task = _parse_task(path)
+        assert task is not None
+        lanes = {
+            "cx-red": LaneState(
+                role="cx-red",
+                session="hapax-codex-cx-red",
+                platform="codex",
+                alive=True,
+                idle=False,
+                claimed_task=task.task_id,
+                output_age_s=0.0,
+            )
+        }
+
+        with patch("agents.coordinator.core._lane_launcher_process_present", return_value=False):
+            count = Coordinator()._reoffer_orphaned_claims([task], lanes, now_wall=time.time())
+
+        assert count == 0
+        reparsed = _parse_task(path)
+        assert reparsed is not None
+        assert reparsed.status == "claimed"
+
     def test_recent_claimed_p0_stays_in_grace(self, tmp_path: Path):
         path = self._task_note(tmp_path)
         task = _parse_task(path)

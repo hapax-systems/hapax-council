@@ -158,6 +158,36 @@ def test_project_stalled_pidfile_free_live_launcher_stays_busy() -> None:
             )
 
 
+def test_project_stalled_live_tmux_session_stays_busy_without_launcher_pid() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        with _isolated(tmp):
+            lane = _lane(role="cx-red", claim="ut-task-20260602", output_age_s=0.0)
+            lane.session = "hapax-codex-cx-red"
+            lane.platform = "codex"
+
+            assert (
+                project_stalled(lane, non_terminal_task_ids=frozenset({lane.claimed_task})) is False
+            )
+
+
+def test_project_stalled_live_tmux_session_with_stale_output_stalls() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        with _isolated(tmp):
+            lane = _lane(
+                role="cx-red",
+                claim="ut-task-20260602",
+                output_age_s=STALL_OUTPUT_GRACE_S + 1.0,
+            )
+            lane.session = "hapax-codex-cx-red"
+            lane.platform = "codex"
+
+            assert (
+                project_stalled(lane, non_terminal_task_ids=frozenset({lane.claimed_task})) is True
+            )
+
+
 def test_project_stalled_no_claim_or_terminal_claim() -> None:
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)

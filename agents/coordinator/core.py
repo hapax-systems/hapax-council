@@ -907,7 +907,7 @@ def _task_has_live_pickup(task: Task, lanes: dict[str, LaneState]) -> bool:
     if lane is None or not lane.alive:
         return False
     aliases = {task.task_id, task.path.stem}
-    return lane.claimed_task in aliases and _lane_launcher_process_present(lane)
+    return lane.claimed_task in aliases and _lane_owner_present(lane)
 
 
 def _is_unowned(task: Task) -> bool:
@@ -1407,6 +1407,12 @@ def _lane_launcher_process_present(lane: LaneState) -> bool:
     return lane.platform == "claude" and _live_headless_launcher(lane.role) is not None
 
 
+def _lane_owner_present(lane: LaneState) -> bool:
+    if lane.session:
+        return True
+    return _lane_launcher_process_present(lane)
+
+
 def _dispatch_landed(task: Task, lane: LaneState) -> bool:
     observed = _check_lane(
         LaneDescriptor(role=lane.role, session=lane.session, platform=lane.platform)
@@ -1472,7 +1478,7 @@ def project_stalled(
     claim = lane.claimed_task
     if not claim or claim not in non_terminal_task_ids:
         return False  # idle, or the claim is already terminal → not stalled
-    if not _lane_launcher_process_present(lane):
+    if not _lane_owner_present(lane):
         return True  # owner process gone, task still non-terminal
     if lane.platform == "claude" and lane.pid_source == "proc":
         return False  # pidfile-free launcher is live; supervisor owns any later reap.
