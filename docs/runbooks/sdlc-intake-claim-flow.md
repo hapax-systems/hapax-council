@@ -8,6 +8,7 @@ work.
 
 ```bash
 scripts/sdlc-intake-claim-audit \
+  --require-no-silent-stranding \
   --output ~/.cache/hapax/intake-claim-audit.json
 jq '.counts' ~/.cache/hapax/intake-claim-audit.json
 ```

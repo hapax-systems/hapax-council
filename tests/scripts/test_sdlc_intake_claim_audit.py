@@ -338,3 +338,42 @@ def test_cli_writes_report(tmp_path: Path) -> None:
     report = json.loads(out.read_text(encoding="utf-8"))
     assert report["counts"]["claimed"] == 1
     assert report["counts"]["active_total"] == 1
+    assert report["assertion_failures"] == []
+
+
+def test_cli_require_no_silent_stranding_fails_on_stranded_p0(tmp_path: Path) -> None:
+    tasks = tmp_path / "tasks"
+    cache = tmp_path / "cache"
+    out = tmp_path / "report.json"
+    tasks.mkdir()
+    cache.mkdir()
+    _task(
+        tasks,
+        "claimed-p0",
+        "task_id: claimed-p0\nstatus: claimed\nassigned_to: alpha\npriority: p0\n",
+    )
+
+    result = subprocess.run(
+        [
+            str(SCRIPT),
+            "--tasks-dir",
+            str(tasks),
+            "--cache-dir",
+            str(cache),
+            "--output",
+            str(out),
+            "--require-no-silent-stranding",
+        ],
+        check=False,
+    )
+
+    assert result.returncode == 2
+    report = json.loads(out.read_text(encoding="utf-8"))
+    assert report["counts"]["silent_stranded_p0_or_remediation"] == 1
+    assert report["assertion_failures"] == [
+        {
+            "predicate": "silent_stranded_p0_or_remediation == 0",
+            "observed": 1,
+            "reason": "active P0/remediation work lacks live pickup evidence",
+        }
+    ]

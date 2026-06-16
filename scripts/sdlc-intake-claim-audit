@@ -579,6 +579,24 @@ def build_report(
     }
 
 
+def assertion_failures(
+    report: dict[str, Any], *, require_no_silent_stranding: bool = False
+) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    counts = report.get("counts") if isinstance(report.get("counts"), dict) else {}
+    if require_no_silent_stranding:
+        count = int(counts.get("silent_stranded_p0_or_remediation") or 0)
+        if count:
+            failures.append(
+                {
+                    "predicate": "silent_stranded_p0_or_remediation == 0",
+                    "observed": count,
+                    "reason": "active P0/remediation work lacks live pickup evidence",
+                }
+            )
+    return failures
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tasks-dir", type=Path, default=DEFAULT_TASKS_DIR)
@@ -590,6 +608,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--coordinator-state-max-age-seconds",
         type=int,
         default=DEFAULT_COORDINATOR_STATE_MAX_AGE_SECONDS,
+    )
+    parser.add_argument(
+        "--require-no-silent-stranding",
+        action="store_true",
+        help=(
+            "Exit 2 when active P0/remediation work is claimed or in-progress "
+            "without live pickup evidence."
+        ),
     )
     parser.add_argument("--output", type=Path)
     return parser
@@ -605,13 +631,17 @@ def main(argv: list[str] | None = None) -> int:
         claim_grace_seconds=args.claim_grace_seconds,
         coordinator_state_max_age_seconds=args.coordinator_state_max_age_seconds,
     )
+    failures = assertion_failures(
+        report, require_no_silent_stranding=args.require_no_silent_stranding
+    )
+    report["assertion_failures"] = failures
     text = json.dumps(report, indent=2, sort_keys=True)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(text + "\n", encoding="utf-8")
     else:
         print(text)
-    return 0
+    return 2 if failures else 0
 
 
 if __name__ == "__main__":
