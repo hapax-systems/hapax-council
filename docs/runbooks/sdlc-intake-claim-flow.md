@@ -15,9 +15,9 @@ jq '.counts' ~/.cache/hapax/intake-claim-audit.json
 
 The audit follows active cc-tasks through visible intake states and governed lane
 pickup evidence. A task is considered picked up only when it has fresh
-coordinator lane evidence or an exact live `hapax-claude-headless` launcher for
-the assigned lane. Claim files alone are routing hints, not proof of lane
-ownership.
+coordinator lane evidence, a live tmux/session owner for the assigned lane, or
+an exact live `hapax-claude-headless` launcher. Claim files alone are routing
+hints, not proof of lane ownership.
 
 ## Count Meanings
 
@@ -30,6 +30,12 @@ offer/claim/lane-pickup flow is not landing them.
 `claimed` or `in_progress` without live pickup evidence. Non-zero means the work
 is no longer just visible queue backlog; it is assigned or claimed without a
 current lane owner.
+
+`offered_not_picked_up` items in `undrained_*` buckets are visible queue backlog,
+not silent orphaning. They are pressure and capacity signals. The hard fail-fast
+predicate for this runbook is `--require-no-silent-stranding`, which fails only
+when active P0/remediation work has left visible queue backlog and is
+claimed/in-progress without live owner evidence.
 
 `stale_claim` counts old claim files that point to no active task, or to an active
 blocked/unassigned task. Treat these as cleanup or routing repair inputs unless a

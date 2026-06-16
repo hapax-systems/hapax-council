@@ -94,6 +94,70 @@ exit 0
     assert (cache / f"cc-active-task-cx-amber-{sid}").read_text(encoding="utf-8") == "task-x\n"
 
 
+def test_codex_headless_remote_claim_materialization_failure_is_fatal(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    log_dir = cache / "codex-headless" / "cx-amber"
+    log_dir.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+    proof_dir = tmp_path / "proofs"
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(
+        bin_dir / "ssh",
+        """remote_cmd="${@: -1}"
+exec bash -c "$remote_cmd"
+""",
+    )
+    _write_executable(
+        bin_dir / "codex",
+        f"""touch {codex_called}
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_PROOF_DIR"] = str(proof_dir)
+
+    cache.chmod(0o555)
+    try:
+        result = subprocess.run(
+            [
+                str(SCRIPT),
+                "--task",
+                "task-x",
+                "--no-claim",
+                "--force",
+                "cx-amber",
+                "governed prompt",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        )
+    finally:
+        cache.chmod(0o755)
+
+    assert result.returncode == 23
+    assert not codex_called.exists()
+    proofs = list(proof_dir.glob("*cx-amber-task-x-headless-remote.json"))
+    assert len(proofs) == 1
+    proof = json.loads(proofs[0].read_text(encoding="utf-8"))
+    assert proof["claim_materialization_required"] is True
+    assert proof["claim_materialized"] is False
+    assert proof["claim_materialization_error"].startswith("PermissionError:")
+
+
 def test_codex_headless_prefers_session_keyed_claim_over_stale_legacy(
     tmp_path: Path,
 ) -> None:

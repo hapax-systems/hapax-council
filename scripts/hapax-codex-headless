@@ -129,7 +129,7 @@ except OSError:
 # Exec-host identity materialization mirrors hapax-claude-headless: the
 # session-keyed claim must exist where codex exec runs, or the worker can fall
 # back to stale legacy lane state and reject the governed dispatch.
-sid=os.environ.get("HAPAX_SESSION_ID",""); role=os.environ.get("HAPAX_AGENT_ROLE",""); task=os.environ.get("HAPAX_METHODOLOGY_DISPATCH_TASK",""); keyable=False; materialized=False
+sid=os.environ.get("HAPAX_SESSION_ID",""); role=os.environ.get("HAPAX_AGENT_ROLE",""); task=os.environ.get("HAPAX_METHODOLOGY_DISPATCH_TASK",""); keyable=False; materialized=False; materialize_error=""
 try:
     sys.path.insert(0, p["workdir"])
     from shared.session_identity import is_claim_keyable_session_id
@@ -145,11 +145,18 @@ try:
             open(os.path.join(cache,"cc-active-task-"+role),"w",encoding="utf-8").write(task+"\n")
             open(os.path.join(cache,"cc-active-task-"+role+"-"+sid),"w",encoding="utf-8").write(task+"\n")
             materialized=True
-except Exception:
-    pass
+except Exception as exc:
+    materialize_error=exc.__class__.__name__+":"+str(exc)
+materialization_required=bool(task and role)
+if materialization_required and not materialized:
+    if proof:
+        os.makedirs(os.path.dirname(proof), exist_ok=True)
+        data={"schema_version":1,"event":"dispatch_remote_exec","platform":"codex-headless","session":p.get("session"),"task_id":p.get("task_id"),"requested_host":p.get("requested_host"),"actual_host":socket.gethostname(),"pid":os.getpid(),"cgroup":cgroup,"workdir":p.get("workdir"),"logos_base_url":os.environ.get("LOGOS_BASE_URL"),"argv0":p["argv"][0] if p.get("argv") else None,"argc":len(p.get("argv",[])),"session_id":sid or None,"role":role or None,"claim_materialized":materialized,"claim_materialization_required":materialization_required,"claim_materialization_error":materialize_error or "not_keyable_or_not_written"}; open(proof,"w",encoding="utf-8").write(json.dumps(data,sort_keys=True)+"\n")
+    print("hapax-codex-headless: remote claim materialization failed: "+(materialize_error or "not_keyable_or_not_written"), file=sys.stderr)
+    sys.exit(23)
 if proof:
     os.makedirs(os.path.dirname(proof), exist_ok=True)
-    data={"schema_version":1,"event":"dispatch_remote_exec","platform":"codex-headless","session":p.get("session"),"task_id":p.get("task_id"),"requested_host":p.get("requested_host"),"actual_host":socket.gethostname(),"pid":os.getpid(),"cgroup":cgroup,"workdir":p.get("workdir"),"logos_base_url":os.environ.get("LOGOS_BASE_URL"),"argv0":p["argv"][0] if p.get("argv") else None,"argc":len(p.get("argv",[])),"session_id":sid or None,"role":role or None,"claim_materialized":materialized}; open(proof,"w",encoding="utf-8").write(json.dumps(data,sort_keys=True)+"\n")
+    data={"schema_version":1,"event":"dispatch_remote_exec","platform":"codex-headless","session":p.get("session"),"task_id":p.get("task_id"),"requested_host":p.get("requested_host"),"actual_host":socket.gethostname(),"pid":os.getpid(),"cgroup":cgroup,"workdir":p.get("workdir"),"logos_base_url":os.environ.get("LOGOS_BASE_URL"),"argv0":p["argv"][0] if p.get("argv") else None,"argc":len(p.get("argv",[])),"session_id":sid or None,"role":role or None,"claim_materialized":materialized,"claim_materialization_required":materialization_required,"claim_materialization_error":materialize_error or None}; open(proof,"w",encoding="utf-8").write(json.dumps(data,sort_keys=True)+"\n")
 argv=p["argv"]; os.execvp(argv[0], argv)'
 
 usage() {

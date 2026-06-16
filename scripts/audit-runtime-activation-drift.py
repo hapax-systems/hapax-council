@@ -37,8 +37,10 @@ CRITICAL_UNITS = frozenset(
         "hapax-coord.service",
         "hapax-coordinator.service",
         "hapax-operator-current-state.timer",
+        "hapax-cc-task-offer-ready.service",
         "hapax-cc-task-offer-ready.timer",
         "hapax-relay-to-cc-tasks.timer",
+        "hapax-request-decompose.service",
         "hapax-request-decompose.timer",
         "hapax-request-intake-consumer.timer",
         "hapax-security-signal-intake.timer",
@@ -223,13 +225,20 @@ def classify_unit_findings(specs: list[UnitSpec], runtime: dict[str, RuntimeUnit
     for spec in specs:
         row = runtime.get(spec.name)
         severity = "critical" if spec.critical else "warning"
-        if spec.installable and row is None:
+        companion_timer = spec.name.removesuffix(".service") + ".timer"
+        timer_paired_service = spec.kind == "service" and companion_timer in spec_names
+        if (spec.installable or timer_paired_service) and row is None:
+            detail_prefix = (
+                "timer-paired repo service"
+                if timer_paired_service and not spec.installable
+                else "installable repo unit"
+            )
             findings.append(
                 Finding(
                     severity=severity,
                     kind="unit_missing",
                     subject=spec.name,
-                    detail=f"installable repo unit absent from user manager ({spec.path})",
+                    detail=f"{detail_prefix} absent from user manager ({spec.path})",
                 )
             )
             continue
@@ -244,7 +253,6 @@ def classify_unit_findings(specs: list[UnitSpec], runtime: dict[str, RuntimeUnit
                     detail=f"runtime state is {row.active_state or 'unknown'}/{row.sub_state or 'unknown'}",
                 )
             )
-        companion_timer = spec.name.removesuffix(".service") + ".timer"
         companion_timer_state = runtime.get(companion_timer)
         timer_driven = (
             spec.kind == "service"

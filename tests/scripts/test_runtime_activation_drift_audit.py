@@ -41,11 +41,19 @@ def test_hapax_coordinator_service_is_critical_unit(tmp_path: Path) -> None:
 
 
 def test_governed_intake_drain_timers_are_critical_units(tmp_path: Path) -> None:
-    for name in ("hapax-request-decompose.timer", "hapax-cc-task-offer-ready.timer"):
+    for name in (
+        "hapax-request-decompose.service",
+        "hapax-request-decompose.timer",
+        "hapax-cc-task-offer-ready.service",
+        "hapax-cc-task-offer-ready.timer",
+    ):
         unit = tmp_path / name
-        unit.write_text(
-            "[Timer]\nOnUnitActiveSec=300\n\n[Install]\nWantedBy=timers.target\n", encoding="utf-8"
+        text = (
+            "[Service]\nType=oneshot\nExecStart=/bin/true\n"
+            if name.endswith(".service")
+            else "[Timer]\nOnUnitActiveSec=300\n\n[Install]\nWantedBy=timers.target\n"
         )
+        unit.write_text(text, encoding="utf-8")
 
         parsed = audit.parse_unit_file(unit)
 
@@ -61,6 +69,35 @@ def test_missing_critical_unit_is_critical(tmp_path: Path) -> None:
 
     assert [(f.severity, f.kind, f.subject) for f in findings] == [
         ("critical", "unit_missing", "hapax-operator-current-state.timer")
+    ]
+
+
+def test_missing_timer_paired_service_is_reported_even_when_not_installable(tmp_path: Path) -> None:
+    service = tmp_path / "hapax-request-decompose.service"
+    timer = tmp_path / "hapax-request-decompose.timer"
+    service.write_text("[Service]\nType=oneshot\nExecStart=/bin/true\n", encoding="utf-8")
+    timer.write_text(
+        "[Timer]\nOnUnitActiveSec=300\n\n[Install]\nWantedBy=timers.target\n", encoding="utf-8"
+    )
+    specs = [audit.parse_unit_file(service), audit.parse_unit_file(timer)]
+    runtime = {
+        "hapax-request-decompose.timer": audit.RuntimeUnit(
+            name="hapax-request-decompose.timer",
+            file_state="enabled",
+            active_state="active",
+            sub_state="waiting",
+        )
+    }
+
+    findings = audit.classify_unit_findings(specs, runtime)
+
+    assert [(f.severity, f.kind, f.subject, f.detail) for f in findings] == [
+        (
+            "critical",
+            "unit_missing",
+            "hapax-request-decompose.service",
+            f"timer-paired repo service absent from user manager ({service})",
+        )
     ]
 
 
