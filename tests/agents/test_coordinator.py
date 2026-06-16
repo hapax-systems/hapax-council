@@ -707,6 +707,122 @@ class TestDispatch:
         assert "--mq-message-id" not in calls[0]
 
 
+class TestOrphanClaimRecovery:
+    def _task_note(
+        self,
+        tmp_path: Path,
+        *,
+        name: str = "p0-orphan",
+        assigned_to: str = "alpha",
+        claimed_at: str = "2000-01-01T00:00:00Z",
+    ) -> Path:
+        path = tmp_path / f"{name}.md"
+        path.write_text(
+            f"""---
+title: "P0 orphan"
+status: claimed
+assigned_to: {assigned_to}
+priority: p0
+claimed_at: {claimed_at}
+updated_at: {claimed_at}
+---
+
+Body.
+""",
+            encoding="utf-8",
+        )
+        return path
+
+    def test_stale_claimed_p0_without_live_pickup_reoffers(self, tmp_path: Path):
+        path = self._task_note(tmp_path)
+        task = _parse_task(path)
+        assert task is not None
+        ledger = tmp_path / "authority-case-ledger.jsonl"
+
+        with patch("agents.coordinator.core.REOFFER_LEDGER", ledger):
+            count = Coordinator()._reoffer_orphaned_claims([task], {}, now_wall=time.time())
+
+        assert count == 1
+        reparsed = _parse_task(path)
+        assert reparsed is not None
+        assert reparsed.status == "offered"
+        assert reparsed.assigned_to == "unassigned"
+        assert "orphan_claim_reoffer" in ledger.read_text(encoding="utf-8")
+
+    def test_orphan_reoffer_preserves_lane_claim_for_different_live_task(self, tmp_path: Path):
+        path = self._task_note(tmp_path, assigned_to="delta")
+        task = _parse_task(path)
+        assert task is not None
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        active_claim = cache_dir / "cc-active-task-delta"
+        active_claim.write_text("different-task\n", encoding="utf-8")
+        ledger = tmp_path / "authority-case-ledger.jsonl"
+        lanes = {
+            "delta": LaneState(
+                role="delta",
+                platform="claude",
+                alive=True,
+                idle=False,
+                claimed_task="different-task",
+            )
+        }
+
+        with (
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.REOFFER_LEDGER", ledger),
+        ):
+            count = Coordinator()._reoffer_orphaned_claims([task], lanes, now_wall=time.time())
+
+        assert count == 1
+        assert active_claim.read_text(encoding="utf-8") == "different-task\n"
+
+    def test_live_lane_pickup_is_not_reoffered(self, tmp_path: Path):
+        path = self._task_note(tmp_path, assigned_to="delta")
+        task = _parse_task(path)
+        assert task is not None
+        lanes = {
+            "delta": LaneState(
+                role="delta",
+                platform="claude",
+                alive=True,
+                idle=False,
+                claimed_task=task.task_id,
+            )
+        }
+
+        with patch("agents.coordinator.core._lane_launcher_process_present", return_value=True):
+            count = Coordinator()._reoffer_orphaned_claims([task], lanes, now_wall=time.time())
+
+        assert count == 0
+        reparsed = _parse_task(path)
+        assert reparsed is not None
+        assert reparsed.status == "claimed"
+
+    def test_recent_claimed_p0_stays_in_grace(self, tmp_path: Path):
+        path = self._task_note(tmp_path)
+        task = _parse_task(path)
+        assert task is not None
+        recent = Task(
+            task_id=task.task_id,
+            title=task.title,
+            status=task.status,
+            assigned_to=task.assigned_to,
+            wsjf=task.wsjf,
+            effort_class=task.effort_class,
+            platform_suitability=task.platform_suitability,
+            quality_floor=task.quality_floor,
+            path=task.path,
+            claimed_at=1000.0,
+            priority="p0",
+        )
+
+        count = Coordinator()._reoffer_orphaned_claims([recent], {}, now_wall=1001.0)
+
+        assert count == 0
+        assert _parse_task(path).status == "claimed"  # type: ignore[union-attr]
+
+
 class TestScanTasks:
     def test_scan_empty_dir(self, tmp_path: Path):
         coordinator = Coordinator()

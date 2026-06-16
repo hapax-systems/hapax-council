@@ -109,6 +109,10 @@ DISPATCH_TIMEOUT_S = _positive_env_float("HAPAX_COORDINATOR_DISPATCH_TIMEOUT_S",
 DISPATCH_TIMEOUT_LANDING_GRACE_S = _positive_env_float(
     "HAPAX_COORDINATOR_DISPATCH_TIMEOUT_LANDING_GRACE_S", 5.0
 )
+ORPHAN_CLAIM_REOFFER_GRACE_S = _positive_env_float(
+    "HAPAX_COORDINATOR_ORPHAN_CLAIM_REOFFER_GRACE_S", 300.0
+)
+MAX_ORPHAN_CLAIM_REOFFERS_PER_TICK = 5
 COORDINATOR_DISPATCH_MODE = "headless"
 COORDINATOR_DISPATCH_PROFILE = "full"
 SUPPORTED_DISPATCH_PLATFORMS = ("claude", "codex", "gemini", "vibe", "antigrav", "api")
@@ -155,9 +159,13 @@ class Task:
     quality_floor: str
     path: Path
     created_at: float | None = None  # epoch; drives WSJF aging (None -> no aging)
+    claimed_at: float | None = None
     authority_case: str | None = None
     authority_item: str | None = None
     parent_spec: str | None = None
+    priority: str = ""
+    kind: str = ""
+    tags: tuple[str, ...] = ()
 
 
 @dataclass
@@ -221,6 +229,14 @@ class Coordinator:
     def tick(self) -> None:
         tasks = self._scan_tasks()
         lanes = self._check_lanes()
+        admission = admission_state()
+        orphan_reoffers = (
+            0
+            if admission.state == "closed"
+            else self._reoffer_orphaned_claims(tasks, lanes, now_wall=time.time())
+        )
+        if orphan_reoffers:
+            tasks = self._scan_tasks()
         offered = [t for t in tasks if t.status == "offered"]
         state = CoordinatorState(
             timestamp=time.time(),
@@ -239,7 +255,6 @@ class Coordinator:
         # L3: pace the dispatch loop under CPU pressure. 'closed' dispatches
         # nothing this tick (tasks stay offered — queued, not dropped); 'paced'
         # caps throughput and stretches the cooldown so the fleet drains slowly.
-        admission = admission_state()
         _, cooldown_s = pressure_dispatch_budget(
             admission.state, len(idle_lanes), DISPATCH_COOLDOWN_S
         )
@@ -284,7 +299,7 @@ class Coordinator:
                 break
             if lane.stalled and lane.claimed_task and self._reoffer_stalled(lane):
                 reoffered += 1
-        state.reoffers_this_tick = reoffered
+        state.reoffers_this_tick = orphan_reoffers + reoffered
 
         # bb-dispatch-scheduler: per-lineage virtual queues + WSJF aging. Iterate idle
         # lanes (lane-outer) so a busy/cooled lineage can never head-of-line-block a
@@ -519,8 +534,9 @@ class Coordinator:
                 text=True,
             )
         except subprocess.TimeoutExpired as exc:
-            deadline = time.monotonic() + DISPATCH_TIMEOUT_LANDING_GRACE_S
-            while True:
+            step_s = 0.5
+            attempts = max(1, math.ceil(DISPATCH_TIMEOUT_LANDING_GRACE_S / step_s) + 1)
+            for attempt in range(attempts):
                 if _dispatch_landed(task, lane):
                     log.info(
                         "Dispatch to %s exceeded %.0fs but lane pickup evidence is live",
@@ -528,9 +544,8 @@ class Coordinator:
                         DISPATCH_TIMEOUT_S,
                     )
                     return True, ""
-                if time.monotonic() >= deadline:
-                    break
-                time.sleep(0.5)
+                if attempt < attempts - 1:
+                    time.sleep(min(step_s, DISPATCH_TIMEOUT_LANDING_GRACE_S))
             log.warning("Dispatch to %s timed out: %s", lane.role, exc)
             return False, f"TimeoutExpired: {exc}"
         except OSError as exc:
@@ -640,6 +655,84 @@ class Coordinator:
             except OSError:
                 pass
 
+    def _clear_claim_signal_for_task(self, role: str, session: str, aliases: set[str]) -> None:
+        """Remove only claim files that still point at the orphaned task.
+
+        If the lane has already claimed different work, its active lease is live
+        evidence and must not be erased while repairing the old task note.
+        """
+        for signal in _active_task_candidates(role, session):
+            try:
+                claimed = signal.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if claimed not in aliases:
+                continue
+            try:
+                signal.unlink()
+            except OSError:
+                pass
+
+    def _reoffer_orphaned_claims(
+        self, tasks: Sequence[Task], lanes: dict[str, LaneState], *, now_wall: float
+    ) -> int:
+        reoffered = 0
+        for task in tasks:
+            if reoffered >= MAX_ORPHAN_CLAIM_REOFFERS_PER_TICK:
+                break
+            if task.status != "claimed" or not _is_p0_or_remediation_task(task):
+                continue
+            if _task_claim_age_s(task, now_wall=now_wall) < ORPHAN_CLAIM_REOFFER_GRACE_S:
+                continue
+            if _task_has_live_pickup(task, lanes):
+                continue
+            if self._reoffer_orphaned_claim(task, lanes):
+                reoffered += 1
+        return reoffered
+
+    def _reoffer_orphaned_claim(self, task: Task, lanes: dict[str, LaneState]) -> bool:
+        current = _parse_task(task.path)
+        if current is None or current.status != "claimed":
+            return False
+        lane = lanes.get(current.assigned_to) or LaneState(role=current.assigned_to)
+        if _task_has_live_pickup(current, {current.assigned_to: lane}):
+            return False
+        try:
+            text = task.path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        new = re.sub(
+            r"^status:\s*['\"]?claimed['\"]?\s*$",
+            "status: offered",
+            text,
+            count=1,
+            flags=re.M,
+        )
+        new = re.sub(r"^assigned_to: .*$", "assigned_to: unassigned", new, count=1, flags=re.M)
+        new = re.sub(r"^claimed_at: .*$", "claimed_at: null", new, count=1, flags=re.M)
+        new = re.sub(r"^updated_at: .*$", f"updated_at: {now}", new, count=1, flags=re.M)
+        if new == text:
+            return False
+        _atomic_write(task.path, new)
+        self._clear_claim_signal_for_task(
+            current.assigned_to,
+            lane.session,
+            {current.task_id, current.path.stem},
+        )
+        self._emit_reoffer_ledger(
+            lane,
+            current.task_id,
+            kind="orphan_claim_reoffer",
+            to_stage="offered",
+        )
+        log.warning(
+            "orphan-claim reoffer: %s assigned_to=%s had no live pickup -> offered",
+            current.task_id,
+            current.assigned_to,
+        )
+        return True
+
     def _emit_reoffer_ledger(
         self, lane: LaneState, task_id: str, *, kind: str, to_stage: str
     ) -> None:
@@ -723,9 +816,13 @@ def _parse_task(path: Path) -> Task | None:
         quality_floor=_frontmatter_text(meta.get("quality_floor")) or "deterministic_ok",
         path=path,
         created_at=_created_at_epoch(meta.get("created_at") or meta.get("updated_at")),
+        claimed_at=_created_at_epoch(meta.get("claimed_at")),
         authority_case=_frontmatter_text(meta.get("authority_case")),
         authority_item=_frontmatter_text(meta.get("authority_item") or meta.get("slice_id")),
         parent_spec=_frontmatter_text(meta.get("parent_spec")),
+        priority=(_frontmatter_text(meta.get("priority")) or "").lower(),
+        kind=(_frontmatter_text(meta.get("kind")) or "").lower(),
+        tags=_frontmatter_tags(meta.get("tags")),
     )
 
 
@@ -750,6 +847,21 @@ def _frontmatter_float(value: object, default: float = 0.0) -> float:
     return parsed if math.isfinite(parsed) else default
 
 
+def _frontmatter_tags(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        raw = [value]
+    elif isinstance(value, list):
+        raw = value
+    else:
+        return ()
+    tags: list[str] = []
+    for item in raw:
+        tag = str(item).strip().lower()
+        if tag:
+            tags.append(tag)
+    return tuple(tags)
+
+
 FLOW_STATUS_KEYS = ("offered", "claimed", "in_progress", "blocked", "pr_open")
 
 
@@ -759,8 +871,40 @@ def _task_status_counts(tasks: Sequence[Task]) -> dict[str, int]:
 
 
 def _is_remediation_task(task: Task) -> bool:
-    haystack = " ".join((task.task_id, task.title, task.effort_class, task.quality_floor)).lower()
+    haystack = " ".join(
+        (
+            task.task_id,
+            task.title,
+            task.effort_class,
+            task.quality_floor,
+            task.kind,
+            " ".join(task.tags),
+        )
+    ).lower()
     return "remediation" in haystack or "admission-blocked" in haystack
+
+
+def _is_p0_or_remediation_task(task: Task) -> bool:
+    return task.priority == "p0" or _is_remediation_task(task)
+
+
+def _task_claim_age_s(task: Task, *, now_wall: float) -> float:
+    if task.claimed_at is not None:
+        return max(0.0, now_wall - task.claimed_at)
+    try:
+        return max(0.0, now_wall - task.path.stat().st_mtime)
+    except OSError:
+        return float("inf")
+
+
+def _task_has_live_pickup(task: Task, lanes: dict[str, LaneState]) -> bool:
+    if task.assigned_to.strip().lower() in {"", "null", "none", "~", "unassigned"}:
+        return False
+    lane = lanes.get(task.assigned_to)
+    if lane is None or not lane.alive:
+        return False
+    aliases = {task.task_id, task.path.stem}
+    return lane.claimed_task in aliases and _lane_launcher_process_present(lane)
 
 
 def _is_unowned(task: Task) -> bool:
