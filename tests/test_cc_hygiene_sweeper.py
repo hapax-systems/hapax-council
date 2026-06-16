@@ -994,6 +994,83 @@ def test_run_sweep_finds_ghost_claimed(tmp_path: Path) -> None:
     assert len(ghost_events) == 1
 
 
+def test_main_auto_reverts_ghost_claimed_by_default(tmp_path: Path) -> None:
+    sweeper = _load_sweeper_module()
+    main = sweeper.main
+
+    vault = _build_vault(tmp_path)
+    note_path = _write_note(
+        vault / "active",
+        "cc-ghost",
+        status="claimed",
+        assigned_to="alpha",
+        claimed_at=None,
+    )
+    state_path = tmp_path / "state.json"
+    log_path = tmp_path / "log.md"
+    rc = main(
+        [
+            "--state-path",
+            str(state_path),
+            "--event-log-path",
+            str(log_path),
+            "--vault-root",
+            str(vault),
+            "--relay-root",
+            str(tmp_path / "relay"),
+            "--repo-root",
+            str(tmp_path),
+            "--no-ntfy",
+            "--no-dashboard",
+        ]
+    )
+    assert rc == 0
+    note = parse_task_note(note_path)
+    assert note is not None
+    assert note.status == "offered"
+    assert note.assigned_to == "unassigned"
+    assert note.claimed_at is None
+    assert "auto-reverted-from-ghost-claim" in note_path.read_text(encoding="utf-8")
+    second = sweeper.run_sweep(vault_root=vault, relay_root=tmp_path / "relay", repo_root=tmp_path)
+    assert [e for e in second.events if e.check_id == "ghost_claimed"] == []
+
+
+def test_main_no_actions_leaves_ghost_claimed_for_diagnostics(tmp_path: Path) -> None:
+    main = _load_sweeper_module().main
+
+    vault = _build_vault(tmp_path)
+    note_path = _write_note(
+        vault / "active",
+        "cc-ghost",
+        status="claimed",
+        assigned_to="alpha",
+        claimed_at=None,
+    )
+    rc = main(
+        [
+            "--state-path",
+            str(tmp_path / "state.json"),
+            "--event-log-path",
+            str(tmp_path / "log.md"),
+            "--vault-root",
+            str(vault),
+            "--relay-root",
+            str(tmp_path / "relay"),
+            "--repo-root",
+            str(tmp_path),
+            "--no-ntfy",
+            "--no-dashboard",
+            "--no-actions",
+        ]
+    )
+    assert rc == 0
+    note = parse_task_note(note_path)
+    assert note is not None
+    assert note.status == "claimed"
+    assert note.assigned_to == "alpha"
+    assert note.claimed_at is None
+
+
 def test_main_killswitch_writes_no_events(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     main = _load_sweeper_module().main
 

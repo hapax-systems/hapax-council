@@ -174,6 +174,32 @@ class TestRevertGhostClaim:
         assert result.success is False
         assert "not 'claimed'" in result.message
 
+    def test_skips_when_on_disk_claim_is_no_longer_ghost(self, tmp_path: Path) -> None:
+        """Race-safety: a valid claim made after detection must not be cleared."""
+        _, active, _ = _build_vault(tmp_path)
+        path = active / "claimed.md"
+        _write_note(
+            path,
+            {
+                "type": "cc-task",
+                "task_id": "claimed",
+                "status": "claimed",
+                "assigned_to": "alpha",
+                "claimed_at": "2026-04-26T05:00:00Z",
+            },
+        )
+        stale_note = TaskNote(
+            path=str(path), task_id="claimed", status="claimed", assigned_to="unassigned"
+        )
+        result = actions.revert_ghost_claim(stale_note)
+        assert result.success is False
+        assert "no longer ghost-claimed" in result.message
+        repaired = parse_task_note(path)
+        assert repaired is not None
+        assert repaired.status == "claimed"
+        assert repaired.assigned_to == "alpha"
+        assert repaired.claimed_at == datetime(2026, 4, 26, 5, 0, tzinfo=UTC)
+
     def test_skips_when_file_missing(self, tmp_path: Path) -> None:
         _, active, _ = _build_vault(tmp_path)
         stale_note = TaskNote(

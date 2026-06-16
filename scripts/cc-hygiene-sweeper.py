@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""cc-hygiene-sweeper — read-only diagnostic daemon for vault cc-tasks.
+"""cc-hygiene-sweeper — diagnostic daemon + scoped repair for vault cc-tasks.
 
 PR1 of the task-list-hygiene plan
 (`docs/research/2026-04-26-task-list-hygiene-operator-visibility.md`).
@@ -10,8 +10,10 @@ Implements the 8 checks described in §2 and emits:
   into an ``archive/`` sibling; see ``cc_hygiene.events``)
 * a machine-readable JSON snapshot at
   ``~/.cache/hapax/cc-hygiene-state.json``
+* an effect-based auto-revert for ``ghost_claimed`` violations, unless
+  ``--no-actions`` is passed
 
-Auto-actions are PR2 territory; this script is strictly observational.
+Other hygiene actions remain library-only until explicitly wired.
 
 Usage::
 
@@ -39,6 +41,7 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+from cc_hygiene.actions import apply_actions
 from cc_hygiene.checks import (
     KNOWN_ROLES,
     check_duplicate_claim,
@@ -77,6 +80,7 @@ DEFAULT_RELAY_ROOT = Path.home() / ".cache" / "hapax" / "relay"
 DEFAULT_REPO_ROOT = Path.home() / "projects" / "hapax-council"
 
 KILLSWITCH_ENV = "HAPAX_CC_HYGIENE_OFF"
+AUTO_ACTION_CHECK_IDS = frozenset({"ghost_claimed"})
 
 
 def _relay_payload_is_retired(payload: dict[str, Any]) -> bool:
@@ -428,6 +432,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip the PR5 dashboard renderer (ntfy still runs).",
     )
+    parser.add_argument(
+        "--no-actions",
+        action="store_true",
+        help="Skip scoped auto-actions; detected task notes are left untouched.",
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -459,6 +468,21 @@ def main(argv: list[str] | None = None) -> int:
         len(state.events),
         state.sweep_duration_ms,
     )
+    if not args.no_write and not args.no_actions:
+        action_events = [event for event in state.events if event.check_id in AUTO_ACTION_CHECK_IDS]
+        if action_events:
+            try:
+                action_results = apply_actions(
+                    action_events,
+                    _load_active_notes(args.vault_root),
+                    vault_root=args.vault_root,
+                    now=state.sweep_timestamp,
+                )
+                for result in action_results:
+                    log = LOG.info if result.success else LOG.warning
+                    log("%s %s: %s", result.action_id, result.task_id, result.message)
+            except Exception:  # noqa: BLE001
+                LOG.exception("auto-actions raised; continuing")
     if not args.no_write:
         append_events(state.events, state.sweep_timestamp, path=args.event_log_path)
         write_state(state, path=args.state_path)

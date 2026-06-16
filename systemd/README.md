@@ -234,7 +234,7 @@ the operator's interactive checkout:
 
 | Timer | Script | Purpose |
 |-------|--------|---------|
-| `hapax-cc-hygiene.timer` | `scripts/cc-hygiene-sweeper.py` | Read-only cc-task vault diagnostics. |
+| `hapax-cc-hygiene.timer` | `scripts/cc-hygiene-sweeper.py` | CC-task vault diagnostics plus scoped ghost-claim auto-revert. |
 | `hapax-cc-pr-autoqueue.timer` | `scripts/cc-pr-autoqueue.py --apply` | Governed PR auto-queue/auto-merge arming for task-linked PRs. |
 | `hapax-cc-pr-merge-watcher.timer` | `scripts/cc-pr-merge-watcher.py` | Auto-close active cc-tasks after linked PRs merge. |
 

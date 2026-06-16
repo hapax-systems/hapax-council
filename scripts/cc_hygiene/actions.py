@@ -139,6 +139,19 @@ def revert_ghost_claim(note: TaskNote, *, now: datetime | None = None) -> Action
             message=f"skip: status is {fm.get('status')!r} not 'claimed' (race?)",
             metadata={"observed_status": str(fm.get("status"))},
         )
+    assigned_to = fm.get("assigned_to")
+    ghost = assigned_to in (None, "unassigned") or fm.get("claimed_at") is None
+    if not ghost:
+        return ActionResult(
+            action_id="ghost_claimed_revert",
+            task_id=note.task_id,
+            success=False,
+            message="skip: on-disk claim is no longer ghost-claimed (race?)",
+            metadata={
+                "observed_assigned_to": str(assigned_to),
+                "observed_claimed_at": str(fm.get("claimed_at")),
+            },
+        )
     fm["status"] = "offered"
     fm["assigned_to"] = "unassigned"
     fm["claimed_at"] = None
