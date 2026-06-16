@@ -286,10 +286,17 @@ done
 # + reflog recovery (90d). A never-pushed local branch has no tracking config, so it
 # can never match (it is judged by ancestry alone).
 branch_remote_deleted() {
-    local repo="$1" name="$2"
+    local repo="$1" name="$2" remote merge_ref
     [[ -n "$name" && "$name" != detached:* ]] || return 1
-    # (1) was pushed/tracked to origin (else it is a local-only branch, never merged)
-    git -C "$repo" config --get "branch.${name}.remote" >/dev/null 2>&1 || return 1
+    # (1) was pushed AS origin/<name>: upstream remote is origin AND its merge ref is
+    # refs/heads/<name>. A branch that merely TRACKS a different ref (e.g.
+    # `git checkout -b x origin/main` → remote=origin, merge=refs/heads/main) has no
+    # origin/x ref at all; treating that absence as "deleted" would force-delete live
+    # unmerged work. The merge-ref guard closes that data-loss false-positive.
+    remote="$(git -C "$repo" config --get "branch.${name}.remote" 2>/dev/null)" || return 1
+    [[ "$remote" == "origin" ]] || return 1
+    merge_ref="$(git -C "$repo" config --get "branch.${name}.merge" 2>/dev/null)" || return 1
+    [[ "$merge_ref" == "refs/heads/${name}" ]] || return 1
     # (2) remote counterpart gone (auto-deleted on merge + pruned this run)
     ! git -C "$repo" rev-parse --verify --quiet "refs/remotes/origin/${name}" >/dev/null 2>&1
 }

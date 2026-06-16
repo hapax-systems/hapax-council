@@ -442,6 +442,30 @@ def test_local_only_branch_not_reaped(tmp_path: Path) -> None:
     assert _git(repo, "branch", "--list", "localonly").strip().endswith("localonly")
 
 
+def test_branch_tracking_other_ref_not_reaped(tmp_path: Path) -> None:
+    """DATA-LOSS guard (gemini-2): a branch that tracks origin/main (e.g.
+    `git checkout -b x origin/main`) has remote=origin but merge=refs/heads/main and
+    NO origin/x ref. Without the merge-ref guard the absent origin/x would be read as
+    "deleted" and the branch force-deleted with `-D`, destroying live unmerged work.
+    It must NOT be reaped."""
+    repo, _bare = _make_repo_with_remote(tmp_path)
+    now = int(time.time())
+    wt = tmp_path / "hapax-council--tracksmain"
+    _git(repo, "branch", "tracksmain", "main")
+    _git(repo, "worktree", "add", str(wt), "tracksmain")
+    _commit(wt, "f.txt", "real unmerged work\n", "tracks origin/main, never pushed as itself")
+    # the dangerous config: tracks origin/main, not origin/tracksmain
+    _git(repo, "config", "branch.tracksmain.remote", "origin")
+    _git(repo, "config", "branch.tracksmain.merge", "refs/heads/main")
+    _age_path(wt, now=now, seconds_old=49 * 3600)
+
+    result = _run_gc(repo, now, _curl_env(tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert wt.exists()  # NOT reaped — its upstream is origin/main, not its own ref
+    assert _git(repo, "branch", "--list", "tracksmain").strip().endswith("tracksmain")
+
+
 def test_fetch_prune_drops_stale_remote_tracking_ref(tmp_path: Path) -> None:
     """The fetch was widened to ``git fetch --prune`` so a branch GitHub auto-deleted
     on merge clears its stale ``origin/<branch>`` mirror each cycle. Verifies the
