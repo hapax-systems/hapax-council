@@ -271,32 +271,27 @@ for k in ("active_source_path", "active_source_head", "candidate_source_path"):
     break
 done
 
-# branch_squash_merged <repo> <bare-branch-name>
-# True (0) iff a LOCAL branch was SQUASH/REBASE-merged on GitHub. Squash merges do
-# NOT make the branch an ancestor of base, so ancestry detection (and `git branch
-# -d`, which also checks ancestry) silently MISSES every squash-merged branch — the
-# council's default merge method — and they accumulate forever. Detection is gated
-# to FAIL SAFE: (1) the branch must have tracked origin (it was pushed for a PR),
-# AND (2) its origin counterpart must be GONE (delete_branch_on_merge pruned it on
-# merge), AND (3) `gh` must AUTHORITATIVELY report a MERGED PR for the head branch.
-# (1)+(2) are the cheap git-only precondition so the `gh` lookup is paid only for
-# branches that already lost their remote; (3) is the only false-positive-free
-# signal (a closed-but-unmerged PR whose remote was deleted by hand clears (1)+(2)
-# but fails (3)). Returns false (1) — degrading to the ancestry path, never to a
-# wrong delete — whenever `gh` is unavailable/unauthenticated or reports no merge.
-branch_squash_merged() {
-    local repo="$1" name="$2" merged_pr
+# branch_remote_deleted <repo> <bare-branch-name>
+# True (0) iff a LOCAL branch was SQUASH/REBASE-merged on GitHub, detected GIT-ONLY
+# (no `gh`: the deploy systemd unit carries no GH_TOKEN, so a gh-gated arm would
+# fail-closed and never reap in production — the env this must work in). Squash
+# merges do NOT make the branch an ancestor of base, so ancestry detection misses
+# them — the council's default merge method — and they accumulate forever. The
+# git-only signal is GitHub's own `delete_branch_on_merge=true`: on MERGE (and only
+# on merge — a closed-without-merge PR is NOT auto-deleted) GitHub deletes the remote
+# branch, which `fetch --prune` then drops. So a local branch that (1) still tracks
+# origin (it was pushed for a PR) AND (2) has lost its `origin/<name>` ref was
+# auto-deleted on merge. Residual false-positive: an operator MANUALLY deleting the
+# remote of a closed-unmerged branch — narrow, and gated behind clean + age + no-live
+# + reflog recovery (90d). A never-pushed local branch has no tracking config, so it
+# can never match (it is judged by ancestry alone).
+branch_remote_deleted() {
+    local repo="$1" name="$2"
     [[ -n "$name" && "$name" != detached:* ]] || return 1
     # (1) was pushed/tracked to origin (else it is a local-only branch, never merged)
     git -C "$repo" config --get "branch.${name}.remote" >/dev/null 2>&1 || return 1
     # (2) remote counterpart gone (auto-deleted on merge + pruned this run)
-    ! git -C "$repo" rev-parse --verify --quiet "refs/remotes/origin/${name}" >/dev/null 2>&1 \
-        || return 1
-    # (3) authoritative: GitHub reports a MERGED PR for this head branch
-    command -v gh >/dev/null 2>&1 || return 1
-    merged_pr="$( (cd "$repo" && gh pr list --head "$name" --state merged --limit 1 \
-        --json number --jq '.[0].number') 2>/dev/null || true )"
-    [[ -n "$merged_pr" ]]
+    ! git -C "$repo" rev-parse --verify --quiet "refs/remotes/origin/${name}" >/dev/null 2>&1
 }
 
 process_worktree() {
@@ -304,7 +299,7 @@ process_worktree() {
     local branch="$branch_ref"
     local head="$head_sha"
     local locked="$locked_reason"
-    local real_path mtime age status branch_label merged merged_via_squash clean remove_note
+    local real_path mtime age status branch_label merged clean remove_note
 
     [[ -n "$path" ]] || return 0
     scanned=$((scanned + 1))
@@ -394,17 +389,19 @@ process_worktree() {
         clean=1
     fi
 
-    # A branch is "merged" if its commits are in base (merge-commit / fast-forward,
-    # via ancestry) OR if it was squash/rebase-merged (ancestry MISSES those; see
-    # branch_squash_merged). Without the squash arm the GC never reaps the council's
-    # squash-merged worktrees — they all fall through to the unmerged-alert path.
+    # A branch is "merged" (its work is in base) if EITHER its commits are ancestors
+    # of base_ref (merge-commit / fast-forward merges) OR it was squash/rebase-merged
+    # and GitHub auto-deleted + we pruned its remote (branch_remote_deleted; ancestry
+    # MISSES squash merges, the council's default — without this arm the GC never
+    # reaps squash-merged worktrees, which all fall through to the unmerged-alert
+    # path). Both signals are evaluated against base_ref / the remote, NOT against the
+    # local HEAD — important because the deploy GC runs from a detached activation
+    # worktree whose HEAD lags base_ref.
     merged=0
-    merged_via_squash=0
     if git -C "$repo" merge-base --is-ancestor "$branch" "$base_ref" >/dev/null 2>&1; then
         merged=1
-    elif branch_squash_merged "$repo" "$branch_label"; then
+    elif branch_remote_deleted "$repo" "$branch_label"; then
         merged=1
-        merged_via_squash=1
     fi
 
     if ((age >= clean_age_seconds && clean && merged)); then
@@ -435,28 +432,24 @@ process_worktree() {
             git -C "$repo" worktree remove "$path"
             printf 'hapax-worktree-gc: removed %s\n' "$path"
             removed=$((removed + 1))
-            # Delete the now-orphaned LOCAL branch ref. This block requires merged=1 (see the
-            # guard above), so `-d` is merged-only and fail-closes — NEVER -D. Use the BARE branch
-            # name (branch_label): $branch is the full `refs/heads/<name>` ref from `worktree list
-            # --porcelain`, but `git branch -d` takes a local branch name — passing the ref targets a
-            # non-existent branch, so the delete silently failed and the ref was never reaped.
-            # merged=1 is guaranteed here. For ancestry-merged branches `-d` is the
-            # safe choice (git re-confirms the merge). For SQUASH/rebase-merged
-            # branches `-d` REFUSES (the tip is not an ancestor), so a branch that
-            # branch_squash_merged AUTHORITATIVELY confirmed (gh merged PR) needs
-            # `-D` — not a blind force-delete. Use the BARE name (branch_label);
-            # $branch is the full refs/heads/<name> ref. Never swallow silently.
-            local del_flag="-d"
-            if ((merged_via_squash)); then
-                del_flag="-D"
-            fi
+            # Delete the now-orphaned LOCAL branch ref with `-D`, NOT `-d`. merged=1 is
+            # guaranteed here, and the merged predicate was evaluated AUTHORITATIVELY
+            # against base_ref / the remote. `git branch -d` instead re-checks ancestry
+            # against the branch's upstream or the CURRENT HEAD — and the deploy GC runs
+            # from a detached activation worktree whose HEAD lags base_ref, so `-d`
+            # wrongly REFUSES an already-merged branch (and refuses every squash-merged
+            # branch, which is never an ancestor of anything). So `-d` is the bug, not
+            # the safety: the authoritative predicate is the gate; `-D` just executes
+            # its verdict. Use the BARE name (branch_label) — $branch is the full
+            # refs/heads/<name> ref, which `git branch` would not match. Worktree-remove
+            # must precede the delete (git refuses to delete a checked-out branch); if
+            # the `-D` then fails, WARN loudly — never swallow.
             if [[ -n "$branch_label" ]]; then
-                if git -C "$repo" branch "$del_flag" "$branch_label" >/dev/null 2>&1; then
-                    printf 'hapax-worktree-gc: deleted merged local branch %s (%s)\n' \
-                        "$branch_label" "$del_flag"
+                if git -C "$repo" branch -D "$branch_label" >/dev/null 2>&1; then
+                    printf 'hapax-worktree-gc: deleted merged local branch %s\n' "$branch_label"
                 else
-                    printf 'hapax-worktree-gc: WARN could not delete merged local branch %s (%s)\n' \
-                        "$branch_label" "$del_flag" >&2
+                    printf 'hapax-worktree-gc: WARN could not delete merged local branch %s\n' \
+                        "$branch_label" >&2
                 fi
             fi
         fi

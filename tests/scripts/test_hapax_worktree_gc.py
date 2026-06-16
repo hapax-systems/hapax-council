@@ -342,51 +342,53 @@ def test_deletes_merged_local_branch_ref_after_worktree_removal(tmp_path: Path) 
     assert "deleted merged local branch merged-feature" in result.stdout
 
 
-def _stub_bin(tmp_path: Path, *, gh_merged_pr: str | None) -> dict[str, str]:
-    """A PATH with stub ``curl`` (ntfy) and ``gh``. ``gh pr list ... --state merged``
-    echoes ``gh_merged_pr`` (empty/None ⇒ no merged PR)."""
+def _curl_env(tmp_path: Path) -> dict[str, str]:
+    """A PATH with a no-op ``curl`` so the ntfy alert path does not hit the network.
+    (No ``gh`` stub — squash detection is GIT-ONLY; the deploy unit has no GH_TOKEN.)"""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     (bin_dir / "curl").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     (bin_dir / "curl").chmod(0o755)
-    merged = gh_merged_pr or ""
-    (bin_dir / "gh").write_text(
-        "#!/usr/bin/env bash\n"
-        'case "$*" in\n'
-        f'  *"pr list"*"--state merged"*) printf "%s" "{merged}" ;;\n'
-        "  *) ;;\n"
-        "esac\n"
-        "exit 0\n",
-        encoding="utf-8",
-    )
-    (bin_dir / "gh").chmod(0o755)
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     return env
 
 
-def _add_squash_merged_branch(repo: Path, tmp_path: Path, now: int) -> Path:
-    """A worktree whose branch has a commit NOT in main (so ancestry MISSES it) and
-    looks squash-merged: it tracked origin but its origin ref is gone (pruned)."""
-    wt = tmp_path / "hapax-council--squashed"
-    _git(repo, "branch", "squashed", "main")
-    _git(repo, "worktree", "add", str(wt), "squashed")
+def _make_repo_with_remote(tmp_path: Path) -> tuple[Path, Path]:
+    bare = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)], check=True)
+    repo = _make_repo(tmp_path)
+    _git(repo, "remote", "add", "origin", str(bare))
+    _git(repo, "push", "origin", "main")
+    _git(repo, "fetch", "origin")
+    return repo, bare
+
+
+def _add_remote_deleted_branch(
+    repo: Path, bare: Path, tmp_path: Path, now: int, name: str = "squashed"
+) -> Path:
+    """A REAL squash-merge signature: a branch pushed to origin (so it tracks), with a
+    commit NOT in main (ancestry MISSES it), whose remote ref GitHub auto-deleted on
+    merge — simulated by deleting it from the bare remote + pruning locally."""
+    wt = tmp_path / f"hapax-council--{name}"
+    _git(repo, "branch", name, "main")
+    _git(repo, "worktree", "add", str(wt), name)
     _commit(wt, "feature.txt", "squashed away\n", "work that was squash-merged")
-    # tracked origin, but no refs/remotes/origin/squashed (auto-deleted + pruned on merge)
-    _git(repo, "config", "branch.squashed.remote", "origin")
-    _git(repo, "config", "branch.squashed.merge", "refs/heads/squashed")
+    _git(wt, "push", "-u", "origin", name)  # real tracking + real origin/<name>
+    subprocess.run(["git", "-C", str(bare), "branch", "-D", name], check=True)  # auto-delete
+    _git(repo, "fetch", "--prune", "origin")  # origin/<name> pruned; tracking config remains
     _age_path(wt, now=now, seconds_old=49 * 3600)
     return wt
 
 
-def test_squash_merged_branch_is_reaped_when_gh_confirms_merge(tmp_path: Path) -> None:
+def test_squash_merged_branch_is_reaped_via_remote_delete_signal(tmp_path: Path) -> None:
     """The council squash-merges, so ancestry-detection + ``git branch -d`` silently
-    miss every merged branch. A branch that tracked origin, lost its remote ref, and
-    has an authoritative merged PR is reaped with ``-D``."""
-    repo = _make_repo(tmp_path)
+    miss every merged branch. A branch whose remote was auto-deleted on merge (tracked
+    origin + origin ref pruned) is detected git-only and reaped with ``-D``."""
+    repo, bare = _make_repo_with_remote(tmp_path)
     now = int(time.time())
-    wt = _add_squash_merged_branch(repo, tmp_path, now)
-    # sanity: ancestry MUST miss it (else we'd not be exercising the squash arm)
+    wt = _add_remote_deleted_branch(repo, bare, tmp_path, now)
+    # sanity: ancestry MUST miss it (else we'd not be exercising the remote-delete arm)
     assert (
         subprocess.run(
             ["git", "-C", str(repo), "merge-base", "--is-ancestor", "squashed", "main"],
@@ -395,28 +397,49 @@ def test_squash_merged_branch_is_reaped_when_gh_confirms_merge(tmp_path: Path) -
         != 0
     )
 
-    result = _run_gc(repo, now, _stub_bin(tmp_path, gh_merged_pr="999"))
+    result = _run_gc(repo, now, _curl_env(tmp_path))
 
     assert result.returncode == 0, result.stderr
     assert not wt.exists()  # squash-merged worktree reaped
     assert _git(repo, "branch", "--list", "squashed") == ""  # local branch ref reaped
-    assert "deleted merged local branch squashed (-D)" in result.stdout
+    assert "deleted merged local branch squashed" in result.stdout
 
 
-def test_squash_branch_not_reaped_when_gh_reports_no_merge(tmp_path: Path) -> None:
-    """Safety: a branch that lost its remote ref but has NO merged PR (e.g. a closed
-    PR whose remote was deleted by hand) is NOT force-deleted — it is treated as
-    unmerged and alerted, never reaped."""
-    repo = _make_repo(tmp_path)
+def test_branch_with_live_remote_not_reaped(tmp_path: Path) -> None:
+    """Safety: a non-ancestor branch whose origin ref STILL EXISTS (not merged/deleted)
+    is NOT reaped — the remote-delete signal requires the origin ref to be gone."""
+    repo, _bare = _make_repo_with_remote(tmp_path)
     now = int(time.time())
-    wt = _add_squash_merged_branch(repo, tmp_path, now)
+    wt = tmp_path / "hapax-council--live"
+    _git(repo, "branch", "live", "main")
+    _git(repo, "worktree", "add", str(wt), "live")
+    _commit(wt, "f.txt", "wip\n", "unmerged wip")
+    _git(wt, "push", "-u", "origin", "live")  # origin/live EXISTS (not deleted)
+    _age_path(wt, now=now, seconds_old=49 * 3600)
 
-    result = _run_gc(repo, now, _stub_bin(tmp_path, gh_merged_pr=None))
+    result = _run_gc(repo, now, _curl_env(tmp_path))
 
     assert result.returncode == 0, result.stderr
-    assert wt.exists()  # NOT reaped (unconfirmed)
-    assert _git(repo, "branch", "--list", "squashed").strip().endswith("squashed")
-    assert "deleted merged local branch squashed" not in result.stdout
+    assert wt.exists()  # NOT reaped — remote still present
+    assert _git(repo, "branch", "--list", "live").strip().endswith("live")
+
+
+def test_local_only_branch_not_reaped(tmp_path: Path) -> None:
+    """Safety: a never-pushed local branch has no tracking config, so the remote-delete
+    signal can never match — it is judged by ancestry alone and survives."""
+    repo, _bare = _make_repo_with_remote(tmp_path)
+    now = int(time.time())
+    wt = tmp_path / "hapax-council--localonly"
+    _git(repo, "branch", "localonly", "main")
+    _git(repo, "worktree", "add", str(wt), "localonly")
+    _commit(wt, "f.txt", "local\n", "never pushed")
+    _age_path(wt, now=now, seconds_old=49 * 3600)
+
+    result = _run_gc(repo, now, _curl_env(tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert wt.exists()  # NOT reaped — no tracking config, not an ancestor
+    assert _git(repo, "branch", "--list", "localonly").strip().endswith("localonly")
 
 
 def test_fetch_prune_drops_stale_remote_tracking_ref(tmp_path: Path) -> None:
@@ -435,7 +458,7 @@ def test_fetch_prune_drops_stale_remote_tracking_ref(tmp_path: Path) -> None:
     # GitHub "auto-deletes on merge": drop the branch from the remote.
     subprocess.run(["git", "-C", str(bare), "branch", "-D", "feature"], check=True)
 
-    env = _stub_bin(tmp_path, gh_merged_pr=None)
+    env = _curl_env(tmp_path)
     # run GC WITHOUT --no-fetch so the fetch --prune path executes
     result = subprocess.run(
         [
