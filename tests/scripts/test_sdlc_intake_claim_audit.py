@@ -246,6 +246,41 @@ def test_offered_notification_p0_counts_as_undrained_not_silent(tmp_path: Path) 
     assert report["undrained_p0_incident_intake"][0]["reason"] == "offered_not_picked_up"
 
 
+def test_failed_decompose_remediation_has_first_class_undrained_path(tmp_path: Path) -> None:
+    audit = _audit_module()
+    tasks = tmp_path / "tasks"
+    cache = tmp_path / "cache"
+    pid_dir = tmp_path / "pids"
+    tasks.mkdir()
+    cache.mkdir()
+    pid_dir.mkdir()
+    _task(
+        tasks,
+        "request-decompose-admission-blocked-req-x-abcd1234",
+        (
+            "task_id: request-decompose-admission-blocked-req-x-abcd1234\n"
+            "title: Repair request decomposition admission\n"
+            "status: offered\nassigned_to: unassigned\npriority: p1\n"
+            "kind: recovery_triage\n"
+            "parent_request: REQ-X.md\n"
+            "decompose_failure_class: admission_blocked\n"
+            "decompose_failure_reasons: [missing_cctv_intake_receipt]\n"
+            "tags: [request-decompose-remediation, auto-remediation]\n"
+        ),
+    )
+
+    report = audit.build_report(tasks, cache, tmp_path / "missing-state.json", pid_dir)
+
+    assert report["counts"]["decompose_remediation"] == 1
+    assert report["decompose_remediation_by_status"] == {"offered": 1}
+    assert report["counts"]["undrained_decompose_remediation"] == 1
+    item = report["undrained_decompose_remediation"][0]
+    assert item["task_id"] == "request-decompose-admission-blocked-req-x-abcd1234"
+    assert item["parent_request"] == "REQ-X.md"
+    assert item["decompose_failure_class"] == "admission_blocked"
+    assert item["reason"] == "offered_not_picked_up"
+
+
 def test_claim_file_may_reference_note_stem_alias(tmp_path: Path) -> None:
     audit = _audit_module()
     tasks = tmp_path / "tasks"

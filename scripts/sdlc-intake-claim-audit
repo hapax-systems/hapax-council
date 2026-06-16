@@ -38,6 +38,9 @@ class TaskRecord:
     priority: str
     kind: str
     tags: tuple[str, ...]
+    parent_request: str = ""
+    decompose_failure_class: str = ""
+    decompose_failure_reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -98,6 +101,9 @@ def load_tasks(tasks_dir: Path) -> list[TaskRecord]:
                 priority=_scalar(fm.get("priority")).lower(),
                 kind=_scalar(fm.get("kind")).lower(),
                 tags=_tags(fm.get("tags")),
+                parent_request=_scalar(fm.get("parent_request")),
+                decompose_failure_class=_scalar(fm.get("decompose_failure_class")).lower(),
+                decompose_failure_reasons=_tags(fm.get("decompose_failure_reasons")),
             )
         )
     return records
@@ -106,6 +112,14 @@ def load_tasks(tasks_dir: Path) -> list[TaskRecord]:
 def is_remediation(task: TaskRecord) -> bool:
     haystack = " ".join((task.task_id, task.title, task.kind, " ".join(task.tags))).lower()
     return "remediation" in haystack or "admission-blocked" in haystack
+
+
+def is_decompose_remediation(task: TaskRecord) -> bool:
+    return (
+        bool(task.decompose_failure_class)
+        or "request-decompose-remediation" in task.tags
+        or task.task_id.startswith("request-decompose-")
+    )
 
 
 def is_p0_or_remediation(task: TaskRecord) -> bool:
@@ -423,6 +437,45 @@ def undrained_p0_incident_items(
     return undrained
 
 
+def undrained_decompose_remediation_items(
+    tasks: list[TaskRecord],
+    *,
+    coordinator_state: dict[str, Any] | None,
+    coordinator_state_fresh: bool,
+    claim_records: list[ClaimRecord],
+    lane_pid_dir: Path,
+) -> list[dict[str, Any]]:
+    undrained: list[dict[str, Any]] = []
+    for task in tasks:
+        if task.status not in {"offered", "claimed", "in_progress"} or not is_decompose_remediation(
+            task
+        ):
+            continue
+        if task.status == "offered":
+            record = asdict(task)
+            record["reason"] = "offered_not_picked_up"
+            record["pickup_evidence"] = []
+            undrained.append(record)
+            continue
+        picked_up, evidence = pickup_evidence(
+            task,
+            coordinator_state=coordinator_state,
+            coordinator_state_fresh=coordinator_state_fresh,
+            claim_records=claim_records,
+            lane_pid_dir=lane_pid_dir,
+        )
+        if not picked_up:
+            record = asdict(task)
+            record["reason"] = (
+                "missing_assigned_lane"
+                if task.assigned_to in UNOWNED_VALUES
+                else "assigned_lane_not_live"
+            )
+            record["pickup_evidence"] = evidence
+            undrained.append(record)
+    return undrained
+
+
 def build_report(
     tasks_dir: Path,
     cache_dir: Path,
@@ -439,6 +492,7 @@ def build_report(
     status_counter = Counter(task.status for task in tasks)
     status_counts = {status: int(status_counter.get(status, 0)) for status in FLOW_STATUS_KEYS}
     remediation = [task for task in tasks if is_remediation(task)]
+    decompose_remediation = [task for task in tasks if is_decompose_remediation(task)]
     p0_or_remediation = [task for task in tasks if is_p0_or_remediation(task)]
     no_owner = [task for task in tasks if is_no_owner(task)]
     claim_records = read_claim_records(cache_dir)
@@ -459,9 +513,17 @@ def build_report(
         claim_records=claim_records,
         lane_pid_dir=lane_pid_dir,
     )
+    undrained_decompose = undrained_decompose_remediation_items(
+        tasks,
+        coordinator_state=coordinator_state,
+        coordinator_state_fresh=bool(coordinator_state_status["fresh"]),
+        claim_records=claim_records,
+        lane_pid_dir=lane_pid_dir,
+    )
     stale_claims, claim_grace = claim_signals(
         claim_records, tasks_by_id, grace_seconds=claim_grace_seconds
     )
+    decompose_status_counter = Counter(task.status for task in decompose_remediation)
     return {
         "observed_at": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "tasks_dir": str(tasks_dir),
@@ -470,12 +532,18 @@ def build_report(
             "active_total": len(tasks),
             **status_counts,
             "remediation": len(remediation),
+            "decompose_remediation": len(decompose_remediation),
             "p0_or_remediation": len(p0_or_remediation),
             "no_owner": len(no_owner),
             "stale_claim": len(stale_claims),
             "claim_grace": len(claim_grace),
             "silent_stranded_p0_or_remediation": len(silent_stranded),
             "undrained_p0_incident_intake": len(undrained_incidents),
+            "undrained_decompose_remediation": len(undrained_decompose),
+        },
+        "decompose_remediation_by_status": {
+            status: int(decompose_status_counter.get(status, 0))
+            for status in sorted(decompose_status_counter)
         },
         "definitions": {
             "no_owner": "Visible backlog or active work in offered/claimed/in_progress with no assigned lane.",
@@ -489,6 +557,10 @@ def build_report(
                 "Notification-fed P0 incident-intake work in offered/claimed/in_progress that has "
                 "not reached a live governed lane owner."
             ),
+            "undrained_decompose_remediation": (
+                "Failed request decomposition remediation items in offered/claimed/in_progress that "
+                "have not reached a live governed lane owner."
+            ),
             "stale_claim": (
                 "Claim signals older than claim_grace_seconds that point to no active task or to "
                 "an active blocked/unassigned task."
@@ -496,6 +568,8 @@ def build_report(
         },
         "silent_stranded_p0_or_remediation": silent_stranded,
         "undrained_p0_incident_intake": undrained_incidents,
+        "undrained_decompose_remediation": undrained_decompose,
+        "decompose_remediation_items": [asdict(task) for task in decompose_remediation],
         "no_owner_tasks": [asdict(task) for task in no_owner],
         "stale_claims": stale_claims,
         "claim_grace": claim_grace,
