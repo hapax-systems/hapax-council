@@ -33,6 +33,7 @@ DEFAULT_PARENT_SPEC = (
 )
 DEFAULT_AUTHORITY_CASE = "CASE-SYSTEM-INTEGRITY-20260611"
 DEFAULT_VAULT_NAME = "Personal"
+LATEST_ALERT_BLOCK_RE = re.compile(r"(?s)## Latest Alert\n\n.*?\n## Evidence\n")
 
 TECHNICAL_TITLE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("Service Failed:", "systemd_service_failed"),
@@ -381,12 +382,7 @@ def _update_existing_task(
     text = _set_frontmatter_scalar(text, "incident_count", str(record["count"]))
     text = _set_frontmatter_scalar(text, "last_incident_fingerprint", record["fingerprint"])
     latest_block = _render_latest_alert(record, title=title, message=message)
-    text = re.sub(
-        r"(?s)## Latest Alert\n\n.*?\n## Evidence\n",
-        latest_block + "\n## Evidence\n",
-        text,
-        count=1,
-    )
+    text = _replace_latest_alert(text, latest_block)
     log_line = (
         f"- {_iso(now)} p0-incident-intake updated from `{_clip(title, 96)}` "
         f"(count={record['count']})."
@@ -544,3 +540,13 @@ def _render_latest_alert(record: dict[str, Any], *, title: str, message: str) ->
 {latest}
 ```
 """
+
+
+def _replace_latest_alert(text: str, latest_block: str) -> str:
+    replacement = f"{latest_block.rstrip()}\n\n## Evidence\n"
+    updated, count = LATEST_ALERT_BLOCK_RE.subn(lambda _: replacement, text, count=1)
+    if count:
+        return updated
+    if "## Evidence\n" in text:
+        return text.replace("## Evidence\n", replacement, 1)
+    return f"{text.rstrip()}\n\n{latest_block.rstrip()}\n"

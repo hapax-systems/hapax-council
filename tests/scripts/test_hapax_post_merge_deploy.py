@@ -75,6 +75,39 @@ def _repo_with_linear_commit(tmp_path: Path, files: dict[str, str]) -> tuple[Pat
     return repo, _git(repo, "rev-parse", "HEAD")
 
 
+def _repo_with_intake_units_then_preset_commit(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "trace-test@example.test")
+    _git(repo, "config", "user.name", "Trace Test")
+    timer_body = (
+        "[Unit]\n"
+        "Description=Governed intake timer\n"
+        "\n"
+        "[Timer]\n"
+        "OnUnitActiveSec=60\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"
+    )
+    units = repo / "systemd" / "units"
+    units.mkdir(parents=True)
+    (units / "hapax-request-decompose.timer").write_text(timer_body, encoding="utf-8")
+    (units / "hapax-cc-task-offer-ready.timer").write_text(timer_body, encoding="utf-8")
+    _git(repo, "add", "systemd/units")
+    _git(repo, "commit", "-m", "base intake timer units")
+    preset = repo / "systemd" / "user-preset.d" / "hapax.preset"
+    preset.parent.mkdir(parents=True)
+    preset.write_text(
+        "enable hapax-request-decompose.timer\nenable hapax-cc-task-offer-ready.timer\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "systemd/user-preset.d/hapax.preset")
+    _git(repo, "commit", "-m", "preset intake timers")
+    return repo, _git(repo, "rev-parse", "HEAD")
+
+
 def _repo_with_quake_asset_commit(tmp_path: Path) -> tuple[Path, str]:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -334,6 +367,41 @@ def test_user_scoped_units_still_deploy_to_user_dir(tmp_path: Path) -> None:
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
     assert record["deploy_groups"]["systemd_units"] == [unit_path]
     assert record["deploy_groups"]["systemd_system_units"] == []
+
+
+def test_preset_only_deploy_installs_and_starts_governed_intake_timers(
+    tmp_path: Path,
+) -> None:
+    repo, sha = _repo_with_intake_units_then_preset_commit(tmp_path)
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    user_units = home / ".config" / "systemd" / "user"
+    assert (user_units / "hapax-request-decompose.timer").is_file()
+    assert (user_units / "hapax-cc-task-offer-ready.timer").is_file()
+    calls = systemctl_calls.read_text(encoding="utf-8")
+    assert "--user daemon-reload" in calls
+    assert "--user enable --now hapax-request-decompose.timer" in calls
+    assert "--user enable --now hapax-cc-task-offer-ready.timer" in calls
+    assert "preset-activated governed intake timer" in result.stdout
 
 
 def test_quake_asset_changes_install_and_restart_active_darkplaces(tmp_path: Path) -> None:

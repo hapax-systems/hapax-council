@@ -506,6 +506,11 @@ GATE_CLOSURE=()
 SYSTEMD_UNCLASSIFIED=()
 AUDIO_SAFE_RESTARTS=()
 DID_ANYTHING=0
+GOVERNED_INTAKE_PRESET_UNITS=(
+    hapax-request-decompose.timer
+    hapax-cc-task-offer-ready.timer
+)
+GOVERNED_INTAKE_PRESET_ENABLE=()
 
 unit_install_scope() {
     local f="$1"
@@ -998,10 +1003,43 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
     DID_ANYTHING=1
 fi
 
+preset_enables_unit_at_sha() {
+    local unit="$1" preset
+    for preset in "${USER_PRESETS[@]}"; do
+        git cat-file -e "$SHA:$preset" 2>/dev/null || continue
+        if git show "$SHA:$preset" | grep -Eq "^[[:space:]]*enable[[:space:]]+$unit([[:space:]]|$)"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+install_governed_intake_preset_units() {
+    local unit rel dest
+    GOVERNED_INTAKE_PRESET_ENABLE=()
+    for unit in "${GOVERNED_INTAKE_PRESET_UNITS[@]}"; do
+        preset_enables_unit_at_sha "$unit" || continue
+        rel="systemd/units/$unit"
+        if ! git cat-file -e "$SHA:$rel" 2>/dev/null; then
+            echo "  warning: preset enables $unit but $rel is absent at $SHA; cannot activate" >&2
+            continue
+        fi
+        dest="$SYSTEMD_USER_DIR/$unit"
+        if [ -L "$dest" ]; then
+            rm -f "$dest"
+        fi
+        git show "$SHA:$rel" > "$dest"
+        echo "  '$rel' -> '$dest' (preset-activated governed intake timer)"
+        cleanup_known_stale_user_dropins_for_unit "$unit"
+        GOVERNED_INTAKE_PRESET_ENABLE+=("$unit")
+    done
+}
+
 # --- systemd user presets ---
 if [ "${#USER_PRESETS[@]}" -gt 0 ]; then
     echo "systemd user presets changed (${#USER_PRESETS[@]}):"
     mkdir -p "$SYSTEMD_USER_PRESET_DIR"
+    mkdir -p "$SYSTEMD_USER_DIR"
     for f in "${USER_PRESETS[@]}"; do
         base="$(basename "$f")"
         dest="$SYSTEMD_USER_PRESET_DIR/$base"
@@ -1012,7 +1050,12 @@ if [ "${#USER_PRESETS[@]}" -gt 0 ]; then
             rm -fv "$dest" || true
         fi
     done
+    install_governed_intake_preset_units
     systemctl --user daemon-reload
+    for unit in "${GOVERNED_INTAKE_PRESET_ENABLE[@]}"; do
+        echo "enable+starting $unit (governed intake preset)"
+        systemctl --user enable --now "$unit"
+    done
     DID_ANYTHING=1
 fi
 
