@@ -339,7 +339,7 @@ guard() {
   clear_streak "$lane" no-worktree
 
   case "$kind" in
-    claude)   reap_guard "$lane"; if claude_alive "$lane"; then progress_guard "$lane"; return 0; fi ;;
+    claude)   reap_guard "$lane"; if launcher_alive "$lane" || claude_alive "$lane"; then progress_guard "$lane"; return 0; fi ;;
     codex)    tmux_session_alive "hapax-codex-$lane" && return 0 ;;
     antigrav) tmux_session_alive "hapax-antigrav-$lane" && return 0 ;;
   esac

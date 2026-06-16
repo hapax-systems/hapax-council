@@ -106,6 +106,54 @@ Done.
 
         assert platforms == ()
 
+    def test_required_non_full_profile_is_not_coordinator_routable(self):
+        platforms = _effective_platform_suitability(
+            ["claude"],
+            {
+                "route_metadata_schema": 1,
+                "quality_floor": "deterministic_ok",
+                "authority_level": "authoritative",
+                "mutation_surface": "source",
+                "mutation_scope_refs": [],
+                "route_constraints": {"required_profile": "spark"},
+            },
+        )
+
+        assert platforms == ()
+
+    def test_route_constraints_subtract_prohibited_platforms(self):
+        platforms = _effective_platform_suitability(
+            ["any"],
+            {
+                "route_metadata_schema": 1,
+                "quality_floor": "deterministic_ok",
+                "authority_level": "authoritative",
+                "mutation_surface": "source",
+                "mutation_scope_refs": [],
+                "route_constraints": {
+                    "allowed_platforms": ["claude", "codex"],
+                    "prohibited_platforms": ["claude"],
+                },
+            },
+        )
+
+        assert platforms == ("codex",)
+
+    def test_route_constraints_intersect_explicit_platforms_with_allowed(self):
+        platforms = _effective_platform_suitability(
+            ["claude", "codex"],
+            {
+                "route_metadata_schema": 1,
+                "quality_floor": "deterministic_ok",
+                "authority_level": "authoritative",
+                "mutation_surface": "source",
+                "mutation_scope_refs": [],
+                "route_constraints": {"allowed_platforms": ["claude"]},
+            },
+        )
+
+        assert platforms == ("claude",)
+
 
 class TestLaneState:
     def test_dead_lane(self, tmp_path: Path):

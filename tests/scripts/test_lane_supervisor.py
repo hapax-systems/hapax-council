@@ -151,6 +151,23 @@ def _wait_reads(calls: Path, name: str, *, timeout: float = 8.0) -> str:
     return text
 
 
+def _spawn_pidfile_free_launcher(env: dict[str, str], lane: str, task_id: str) -> subprocess.Popen:
+    return subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            (
+                "exec -a hapax-claude-headless "
+                'python3 -c \'import time; time.sleep(60)\' --task "$1" "$2"'
+            ),
+            "_",
+            task_id,
+            lane,
+        ],
+        env=env,
+    )
+
+
 # ─── core fix: dead lanes ALWAYS respawn, even with no task ────────────────────
 
 
@@ -172,6 +189,60 @@ def test_supervisor_respawns_dead_claude_lane_with_no_task(tmp_path: Path) -> No
     # "DEAD with no active task — not restarting"; the supervisor must not).
     assert "not restarting" not in result.stdout
     assert "respawning read-only" in result.stdout
+
+
+def test_supervisor_does_not_respawn_over_pidfile_free_launcher(tmp_path: Path) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_CLAUDE_LANES="delta",
+        HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS="1",
+        HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S="3600",
+    )
+    _make_worktree(env, "delta")
+    _write_claim(env, "delta", "live-task", status="in_progress")
+    proc = _spawn_pidfile_free_launcher(env, "delta", "live-task")
+    try:
+        time.sleep(0.2)
+        result = _run(env)
+
+        assert result.returncode == 0, result.stderr
+        assert _reads(calls, "claude-headless.txt") == ""
+        assert _reads(calls, "claude.txt") == ""
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_supervisor_ignores_pidfile_free_launcher_from_different_home(tmp_path: Path) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_CLAUDE_LANES="delta",
+        HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS="1",
+    )
+    _make_worktree(env, "delta")
+    _write_claim(env, "delta", "live-task", status="in_progress")
+    foreign_env = dict(env)
+    foreign_home = tmp_path / "foreign-home"
+    foreign_home.mkdir()
+    foreign_env["HOME"] = str(foreign_home)
+    proc = _spawn_pidfile_free_launcher(foreign_env, "delta", "live-task")
+    try:
+        time.sleep(0.2)
+        result = _run(env)
+
+        assert result.returncode == 0, result.stderr
+        assert "live-task delta" in _wait_reads(calls, "claude-headless.txt")
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
 
 
 def test_supervisor_appendix_only_suppresses_dead_claude_lane_with_no_task(
