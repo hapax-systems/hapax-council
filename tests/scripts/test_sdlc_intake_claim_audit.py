@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import ModuleType
 
@@ -183,6 +184,42 @@ def test_stale_coordinator_lane_claim_does_not_satisfy_pickup(tmp_path: Path) ->
     assert stranded["pickup_evidence"] == [
         {"kind": "stale_coordinator_lane_claim", "role": "gamma"}
     ]
+
+
+def test_live_headless_launcher_satisfies_pickup_without_coordinator_state(
+    tmp_path: Path,
+) -> None:
+    audit = _audit_module()
+    tasks = tmp_path / "tasks"
+    cache = tmp_path / "cache"
+    pid_dir = tmp_path / "pids"
+    tasks.mkdir()
+    cache.mkdir()
+    pid_dir.mkdir()
+    _task(
+        tasks,
+        "assigned-p0",
+        "task_id: assigned-p0\nstatus: in_progress\nassigned_to: ut-audit-live\npriority: p0\n",
+    )
+    proc = subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            "exec -a hapax-claude-headless python3 -c 'import time; time.sleep(60)' --task assigned-p0 ut-audit-live",
+        ]
+    )
+    try:
+        time.sleep(0.2)
+        report = audit.build_report(tasks, cache, tmp_path / "missing-state.json", pid_dir)
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
+    assert report["counts"]["silent_stranded_p0_or_remediation"] == 0
 
 
 def test_offered_notification_p0_counts_as_undrained_not_silent(tmp_path: Path) -> None:

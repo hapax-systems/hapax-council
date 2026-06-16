@@ -253,13 +253,13 @@ class Coordinator:
         # before the dispatch loop so a just-freed lane re-enters the pool next tick.
         # The stall grace is now the MEASURED tau(lineage) when the cache is present
         # (one timeout, not three divergent fixed numbers); 900s fallback when blind.
-        non_terminal_ids = frozenset(
-            t.task_id for t in tasks if t.status not in TASK_TERMINAL_STATUSES
+        reofferable_claim_ids = frozenset(
+            t.task_id for t in tasks if t.status in {"claimed", "in_progress"}
         )
         for lane in lanes.values():
             lane.stalled = project_stalled(
                 lane,
-                non_terminal_task_ids=non_terminal_ids,
+                non_terminal_task_ids=reofferable_claim_ids,
                 output_grace_s=_stall_grace_for(lane.role, cache),
             )
         state.lanes_stalled = sum(1 for lane in lanes.values() if lane.stalled)

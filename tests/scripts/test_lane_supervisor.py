@@ -128,6 +128,25 @@ def _write_claim(env: dict[str, str], lane: str, task_id: str, *, status: str = 
     )
 
 
+def _write_offered_p0_incident(env: dict[str, str], task_id: str) -> None:
+    active = Path(env["HAPAX_SUPERVISOR_VAULT_ROOT"]) / "active"
+    active.mkdir(parents=True, exist_ok=True)
+    (active / f"{task_id}.md").write_text(
+        (
+            "---\n"
+            f"task_id: {task_id}\n"
+            f'title: "P0 incident {task_id}"\n'
+            "status: offered\n"
+            "assigned_to: unassigned\n"
+            "priority: p0\n"
+            "kind: recovery_triage\n"
+            "tags: [incident-intake, technical-alert]\n"
+            "---\n"
+        ),
+        encoding="utf-8",
+    )
+
+
 def _write_session_claim(
     env: dict[str, str], lane: str, task_id: str, *, status: str = "claimed"
 ) -> None:
@@ -327,6 +346,24 @@ def test_supervisor_appendix_only_suppresses_dead_claude_lane_with_no_task(
     assert _reads(calls, "claude.txt") == ""
     assert "appendix-only local-dev maintenance" in result.stdout
     assert "suppresses idle-await respawn" in result.stdout
+
+
+def test_supervisor_appendix_only_allows_idle_lane_for_offered_p0_incident(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_CLAUDE_LANES="delta",
+        HAPAX_LOCAL_DEV_MAINTENANCE_MODE="appendix-only",
+    )
+    _make_worktree(env, "delta")
+    _write_offered_p0_incident(env, "p0-incident-notification-drain")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert "--role delta --terminal tmux --readonly" in _wait_reads(calls, "claude.txt")
+    assert "P0 incident backlog exists" in result.stdout
 
 
 def test_supervisor_respawns_dead_claude_lane_with_claimed_task(tmp_path: Path) -> None:

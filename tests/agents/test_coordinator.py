@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import subprocess
+import sys
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -471,6 +472,24 @@ class TestPickLane:
 
 
 class TestDispatch:
+    def test_methodology_dispatcher_honors_environment_override(self, tmp_path: Path):
+        override = tmp_path / "hapax-methodology-dispatch"
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from agents.coordinator.core import METHODOLOGY_DISPATCHER; print(METHODOLOGY_DISPATCHER)",
+            ],
+            cwd=Path(__file__).resolve().parents[2],
+            env={**os.environ, "HAPAX_METHODOLOGY_DISPATCHER": str(override)},
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+
+        assert result.stdout.strip() == str(override)
+
     def test_prepare_dispatch_message_writes_strict_mq_binding(self, tmp_path: Path):
         task = Task(
             task_id="t1",

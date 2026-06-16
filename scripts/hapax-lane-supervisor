@@ -137,6 +137,56 @@ if [ "$LOCAL_DEV_MAINTENANCE_MODE" = "appendix-only" ]; then
   log "appendix-only local-dev maintenance: unclaimed idle-await respawns disabled; active claimed-task resumes preserved"
 fi
 
+p0_intake_backlog_present() {
+  [ "${HAPAX_SUPERVISOR_P0_IDLE_RESPAWN:-1}" = "1" ] || return 1
+  python3 - "$VAULT_ROOT/active" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+active = Path(sys.argv[1])
+if not active.is_dir():
+    sys.exit(1)
+
+
+def field(frontmatter: str, key: str) -> str:
+    match = re.search(rf"(?im)^{re.escape(key)}:\s*(.*)$", frontmatter)
+    return match.group(1).strip().strip("\"'") if match else ""
+
+
+for path in sorted(active.glob("*.md")):
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        continue
+    if not text.startswith("---"):
+        continue
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        continue
+    frontmatter = parts[1]
+    if field(frontmatter, "status").lower() != "offered":
+        continue
+    if field(frontmatter, "priority").lower() != "p0":
+        continue
+    haystack = " ".join(
+        (
+            path.stem,
+            field(frontmatter, "title"),
+            field(frontmatter, "kind"),
+            field(frontmatter, "tags"),
+        )
+    ).lower()
+    if (
+        "p0-incident" in path.stem.lower()
+        or "incident-intake" in haystack
+        or "technical-alert" in haystack
+    ):
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
 # ── liveness ──────────────────────────────────────────────────────────────────
 
 claude_alive() {
@@ -360,8 +410,12 @@ guard() {
   fi
 
   if [ "$LOCAL_DEV_MAINTENANCE_MODE" = "appendix-only" ] && [ -z "$task_id" ]; then
-    log "$lane ($kind): DEAD with no active task — appendix-only local-dev maintenance suppresses idle-await respawn"
-    return 0
+    if p0_intake_backlog_present; then
+      log "$lane ($kind): DEAD with no active task but P0 incident backlog exists — allowing idle-await respawn"
+    else
+      log "$lane ($kind): DEAD with no active task — appendix-only local-dev maintenance suppresses idle-await respawn"
+      return 0
+    fi
   fi
 
   if [ "$DRY_RUN" = "1" ]; then

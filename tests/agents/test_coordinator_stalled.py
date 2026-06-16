@@ -363,6 +363,28 @@ def test_tick_reoffers_are_bounded_per_tick() -> None:
             assert state.reoffers_this_tick == 1
 
 
+def test_tick_does_not_reoffer_blocked_or_pr_open_lane_claims() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        with _isolated(tmp):
+            lanes = {
+                "ut_blocked": _lane(
+                    role="ut_blocked", claim="ut-blocked-20260602", output_age_s=99999.0
+                ),
+                "ut_pr": _lane(role="ut_pr", claim="ut-pr-20260602", output_age_s=99999.0),
+            }
+            tasks = [
+                _offered_task("ut-blocked-20260602", status="blocked"),
+                _offered_task("ut-pr-20260602", status="pr_open"),
+            ]
+            with patch.object(Coordinator, "_reoffer_stalled") as spy:
+                state, _ = _run_tick(lanes, tasks, "open")
+
+            spy.assert_not_called()
+            assert state.lanes_stalled == 0
+            assert state.reoffers_this_tick == 0
+
+
 # ── concrete safety acceptance + SHM surface ──────────────────────────────────
 
 

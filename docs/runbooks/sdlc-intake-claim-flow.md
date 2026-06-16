@@ -36,16 +36,19 @@ fresh lane launcher also proves ownership.
 
 ## Runtime Gates
 
-These user units are part of the governed intake drain and must be installed and
-active:
+These user units are part of the governed intake drain and must be installed.
+Timers and long-running services must be active; oneshot services may be
+inactive between timer firings:
 
 ```bash
 systemctl --user status \
-  notify-failure@.service \
   hapax-request-decompose.timer \
+  hapax-request-decompose.service \
   hapax-cc-task-offer-ready.timer \
+  hapax-cc-task-offer-ready.service \
   hapax-coordinator.service \
   hapax-lane-supervisor.timer
+systemctl --user cat notify-failure@.service
 ```
 
 If a timer is missing after a merge that changed `systemd/user-preset.d/hapax.preset`,
