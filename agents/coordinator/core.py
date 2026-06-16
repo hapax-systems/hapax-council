@@ -97,7 +97,7 @@ REOFFER_LEDGER = Path(
     os.environ.get("HAPAX_AUTHORITY_CASE_LEDGER", str(CACHE_DIR / "authority-case-ledger.jsonl"))
 ).expanduser()
 
-FALLBACK_LANE_ROLES = ("alpha", "beta", "gamma", "delta", "epsilon", "zeta")
+FALLBACK_LANE_ROLES = ("alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta")
 LANE_ROLES = FALLBACK_LANE_ROLES
 SESSION_PREFIXES = (
     ("hapax-claude-", "claude"),
@@ -999,6 +999,10 @@ def _lane_from_tmux_session(session: str) -> LaneDescriptor | None:
 
 
 def _discover_lanes() -> list[LaneDescriptor]:
+    lanes_by_role: dict[str, LaneDescriptor] = {
+        role: LaneDescriptor(role=role, session="", platform="claude")
+        for role in FALLBACK_LANE_ROLES
+    }
     try:
         proc = subprocess.run(
             ["tmux", "list-sessions", "-F", "#{session_name}"],
@@ -1008,19 +1012,27 @@ def _discover_lanes() -> list[LaneDescriptor]:
             check=False,
         )
     except (subprocess.TimeoutExpired, OSError):
-        return []
-    if proc.returncode != 0:
-        return []
+        proc = None
+    if proc is not None and proc.returncode == 0:
+        for line in proc.stdout.splitlines():
+            descriptor = _lane_from_tmux_session(line.strip())
+            if descriptor is not None:
+                lanes_by_role[descriptor.role] = descriptor
 
-    lanes: list[LaneDescriptor] = []
-    seen: set[str] = set()
-    for line in proc.stdout.splitlines():
-        descriptor = _lane_from_tmux_session(line.strip())
-        if descriptor is None or descriptor.role in seen:
-            continue
-        seen.add(descriptor.role)
-        lanes.append(descriptor)
-    return sorted(lanes, key=lambda lane: lane.role)
+    try:
+        pid_paths = list(PID_DIR.glob("*.pid"))
+    except OSError:
+        pid_paths = []
+    for path in pid_paths:
+        name = path.name
+        if name.endswith(".launcher.pid"):
+            role = name.removesuffix(".launcher.pid")
+        else:
+            role = name.removesuffix(".pid")
+        if role:
+            lanes_by_role.setdefault(role, LaneDescriptor(role=role, session="", platform="claude"))
+
+    return sorted(lanes_by_role.values(), key=lambda lane: lane.role)
 
 
 def _relay_candidates(role: str, session: str = "") -> list[Path]:

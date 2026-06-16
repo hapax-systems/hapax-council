@@ -19,6 +19,7 @@ from agents.coordinator.core import (
     Task,
     _active_task_candidates,
     _check_lane,
+    _discover_lanes,
     _effective_platform_suitability,
     _headless_task_from_argv,
     _lane_to_dict,
@@ -412,9 +413,11 @@ current_claim: relay-task
         with patch("agents.coordinator.core.PID_DIR", pid_dir):
             assert _live_headless_launcher(role) is None
 
-    def test_dynamic_tmux_discovery_includes_alpha_and_codex(self, tmp_path: Path):
+    def test_dynamic_tmux_discovery_includes_fallback_greek_and_codex(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
         relay_dir.mkdir()
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
         completed = subprocess.CompletedProcess(
             args=["tmux"],
             returncode=0,
@@ -423,17 +426,63 @@ current_claim: relay-task
         )
 
         with (
+            patch("agents.coordinator.core.PID_DIR", pid_dir),
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("pathlib.Path.home", return_value=tmp_path),
             patch("agents.coordinator.core.subprocess.run", return_value=completed),
         ):
             lanes = Coordinator()._check_lanes()
 
-        assert set(lanes) == {"alpha", "cx-red"}
+        assert {
+            "alpha",
+            "beta",
+            "gamma",
+            "delta",
+            "epsilon",
+            "zeta",
+            "eta",
+            "theta",
+            "cx-red",
+        } <= set(lanes)
         assert lanes["alpha"].alive is True
+        assert lanes["beta"].alive is False
         assert lanes["alpha"].platform == "claude"
         assert lanes["cx-red"].alive is True
         assert lanes["cx-red"].platform == "codex"
+
+    def test_pid_backed_headless_lane_is_discovered_with_existing_tmux_sessions(
+        self, tmp_path: Path
+    ):
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
+        (pid_dir / "gamma.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+        completed = subprocess.CompletedProcess(
+            args=["tmux"],
+            returncode=0,
+            stdout="hapax-claude-beta\nhapax-claude-delta\n",
+            stderr="",
+        )
+
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.PID_DIR", pid_dir),
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.subprocess.run", return_value=completed),
+        ):
+            descriptors = _discover_lanes()
+            lanes = Coordinator()._check_lanes()
+
+        gamma = next(lane for lane in descriptors if lane.role == "gamma")
+        assert gamma.session == ""
+        assert gamma.platform == "claude"
+        assert lanes["gamma"].alive is True
+        assert lanes["gamma"].pid == os.getpid()
+        assert lanes["gamma"].pid_source == "pidfile"
 
 
 class TestCoordinatorState:
