@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import sys
 import tempfile
 from importlib.machinery import SourceFileLoader
@@ -544,6 +545,43 @@ parent_request: REQ-long.md
 
         assert script._find_undecomposed_requests() == []
 
+    def test_scan_matches_task_parent_request_absolute_path(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        requests = tmp_path / "requests" / "active"
+        tasks = tmp_path / "tasks"
+        requests.mkdir(parents=True)
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+
+        request = requests / "REQ-path-parent.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-path-parent
+status: accepted_for_planning
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+        (tasks / "active" / "linked-by-path.md").write_text(
+            f"""---
+type: cc-task
+task_id: linked-by-path
+status: offered
+parent_request: {request}
+---
+
+# Task
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(script, "REQUESTS_DIR", requests)
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+
+        assert script._find_undecomposed_requests() == []
+
     def test_decomposition_admission_allows_ready_cctv_request(self, tmp_path):
         script = _load_request_decompose_module()
         request_data = self._request_data(
@@ -602,8 +640,11 @@ parent_request: REQ-long.md
 
         assert "missing_authority_case" in script._decomposition_admission_blockers(request_data)
 
-    def test_single_request_blocks_before_llm_without_cctv(self, tmp_path, monkeypatch):
+    def test_single_request_blocks_before_llm_without_cctv(self, tmp_path, monkeypatch, caplog):
         script = _load_request_decompose_module()
+        tasks = tmp_path / "tasks"
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
         request = tmp_path / "REQ-blocked.md"
         request.write_text(
             """---
@@ -621,10 +662,15 @@ planning_case: CASE-TEST-001
         def fail_if_called(_request_data):
             raise AssertionError("LLM should not run before CCTV admission")
 
+        caplog.set_level(logging.ERROR, logger="request_decompose_script")
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
         monkeypatch.setattr(script, "_decompose_with_llm", fail_if_called)
         monkeypatch.setattr(sys, "argv", ["request-decompose", str(request), "--dry-run"])
 
         assert script.main() == 1
+        assert not list((tasks / "active").glob("request-decompose-*.md"))
+        assert "rerun without --dry-run" in caplog.text
+        assert "cc-claim" not in caplog.text
 
     def test_scan_blocks_before_llm_without_cctv(self, tmp_path, monkeypatch):
         script = _load_request_decompose_module()
@@ -633,10 +679,10 @@ planning_case: CASE-TEST-001
         requests.mkdir(parents=True)
         (tasks / "active").mkdir(parents=True)
         (tasks / "closed").mkdir(parents=True)
-        (requests / "REQ-blocked.md").write_text(
+        (requests / "REQ-001-blocked.md").write_text(
             """---
 type: hapax-request
-request_id: REQ-blocked
+request_id: REQ-001-blocked
 status: accepted_for_planning
 planning_case: CASE-TEST-001
 ---
@@ -655,6 +701,7 @@ planning_case: CASE-TEST-001
         monkeypatch.setattr(sys, "argv", ["request-decompose", "--scan", "--dry-run"])
 
         assert script.main() == 0
+        assert not list((tasks / "active").glob("request-decompose-*.md"))
 
     def test_decomposition_uses_real_authority_case_without_fallback(self, tmp_path, monkeypatch):
         script = _load_request_decompose_module()
@@ -801,7 +848,654 @@ downstream_tasks:
 """,
             encoding="utf-8",
         )
+        (tasks / "active" / "already-linked.md").write_text(
+            """---
+type: cc-task
+task_id: already-linked
+status: offered
+---
+
+# Task
+""",
+            encoding="utf-8",
+        )
         monkeypatch.setattr(script, "REQUESTS_DIR", requests)
         monkeypatch.setattr(script, "TASKS_DIR", tasks)
 
         assert script._find_undecomposed_requests() == []
+
+    def test_scan_does_not_skip_stale_downstream_tasks(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        requests = tmp_path / "requests" / "active"
+        tasks = tmp_path / "tasks"
+        requests.mkdir(parents=True)
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+
+        request = requests / "REQ-stale-link.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-stale-link
+status: accepted_for_planning
+downstream_tasks:
+  - missing-task
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(script, "REQUESTS_DIR", requests)
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+
+        assert script._find_undecomposed_requests() == [request]
+
+    def test_task_parent_reference_keys_include_md_stem(self):
+        script = _load_request_decompose_module()
+
+        assert "REQ-parent" in script._task_parent_reference_keys("REQ-parent.md")
+
+    def test_scan_does_not_treat_remediation_task_as_downstream_task(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        requests = tmp_path / "requests" / "active"
+        tasks = tmp_path / "tasks"
+        requests.mkdir(parents=True)
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+
+        request = requests / "REQ-remediation-link.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-remediation-link
+status: accepted_for_planning
+downstream_tasks:
+  - request-decompose-admission-blocked-REQ-remediation-link
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+        (
+            tasks / "active" / "request-decompose-admission-blocked-REQ-remediation-link.md"
+        ).write_text(
+            """---
+type: cc-task
+task_id: request-decompose-admission-blocked-REQ-remediation-link
+status: offered
+remediates_request_id: REQ-remediation-link
+---
+
+# Task
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(script, "REQUESTS_DIR", requests)
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+
+        assert script._find_undecomposed_requests() == [request]
+
+    def test_scan_limit_counts_admitted_attempts_not_blocked_prefix(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        requests = tmp_path / "requests" / "active"
+        tasks = tmp_path / "tasks"
+        requests.mkdir(parents=True)
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+        (requests / "REQ-001-blocked.md").write_text(
+            """---
+type: hapax-request
+request_id: REQ-001-blocked
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+        (requests / "REQ-002-admitted.md").write_text(
+            """---
+type: hapax-request
+request_id: REQ-002-admitted
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+cctv_intake_receipt: receipt://REQ-002-admitted
+cctv_intake_verdict: ready_to_plan
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+        (requests / "REQ-003-admitted.md").write_text(
+            """---
+type: hapax-request
+request_id: REQ-003-admitted
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+cctv_intake_receipt: receipt://REQ-003-admitted
+cctv_intake_verdict: ready_to_plan
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+        calls: list[str] = []
+
+        def fake_decompose(request_data):
+            calls.append(request_data["filename"])
+            return RequestDecomposition(
+                request_id="REQ-002-admitted",
+                request_path=request_data["path"],
+                tasks=[
+                    TaskSpec(
+                        task_id="admitted-task",
+                        title="Admitted task",
+                        parent_request=request_data["filename"],
+                        authority_case="CASE-TEST-001",
+                        acceptance_criteria=["Done"],
+                    )
+                ],
+            )
+
+        monkeypatch.setattr(script, "REQUESTS_DIR", requests)
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+        monkeypatch.setattr(script, "_decompose_with_llm", fake_decompose)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["request-decompose", "--scan", "--limit", "1"],
+        )
+
+        assert script.main() == 0
+        assert calls == ["REQ-002-admitted.md"]
+        assert "REQ-003-admitted.md" not in calls
+        [remediation_task] = list(
+            (tasks / "active").glob("request-decompose-admission-blocked-*.md")
+        )
+        frontmatter, _body = parse_frontmatter(remediation_task)
+        assert frontmatter["remediates_request_id"] == "REQ-001-blocked"
+
+    def test_scan_limit_still_remediates_blocked_after_cap_filled(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        requests = tmp_path / "requests" / "active"
+        tasks = tmp_path / "tasks"
+        requests.mkdir(parents=True)
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+        (requests / "REQ-001-admitted.md").write_text(
+            """---
+type: hapax-request
+request_id: REQ-001-admitted
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+cctv_intake_receipt: receipt://REQ-001-admitted
+cctv_intake_verdict: ready_to_plan
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+        (requests / "REQ-002-blocked.md").write_text(
+            """---
+type: hapax-request
+request_id: REQ-002-blocked
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+        (requests / "REQ-003-admitted.md").write_text(
+            """---
+type: hapax-request
+request_id: REQ-003-admitted
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+cctv_intake_receipt: receipt://REQ-003-admitted
+cctv_intake_verdict: ready_to_plan
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+        calls: list[str] = []
+
+        def fake_decompose(request_data):
+            calls.append(request_data["filename"])
+            request_id = request_data["frontmatter"]["request_id"]
+            return RequestDecomposition(
+                request_id=request_id,
+                request_path=request_data["path"],
+                tasks=[
+                    TaskSpec(
+                        task_id=f"{request_id}-task",
+                        title="Admitted task",
+                        parent_request=request_data["filename"],
+                        authority_case="CASE-TEST-001",
+                        acceptance_criteria=["Done"],
+                    )
+                ],
+            )
+
+        monkeypatch.setattr(script, "REQUESTS_DIR", requests)
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+        monkeypatch.setattr(script, "_decompose_with_llm", fake_decompose)
+        monkeypatch.setattr(sys, "argv", ["request-decompose", "--scan", "--limit", "1"])
+
+        assert script.main() == 0
+
+        assert calls == ["REQ-001-admitted.md"]
+        [remediation_task] = list(
+            (tasks / "active").glob("request-decompose-admission-blocked-*.md")
+        )
+        frontmatter, _body = parse_frontmatter(remediation_task)
+        assert frontmatter["remediates_request_id"] == "REQ-002-blocked"
+
+    def test_scan_writes_idempotent_admission_remediation_task(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        requests = tmp_path / "requests" / "active"
+        tasks = tmp_path / "tasks"
+        requests.mkdir(parents=True)
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+        request = requests / "REQ-blocked.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-blocked
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+priority_hint: p0
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+
+        def fail_if_called(_request_data):
+            raise AssertionError("LLM should not run before admission")
+
+        monkeypatch.setattr(script, "REQUESTS_DIR", requests)
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+        monkeypatch.setattr(script, "_decompose_with_llm", fail_if_called)
+        monkeypatch.setattr(sys, "argv", ["request-decompose", "--scan"])
+
+        assert script.main() == 0
+
+        remediation_tasks = list(
+            (tasks / "active").glob("request-decompose-admission-blocked-*.md")
+        )
+        assert len(remediation_tasks) == 1
+        original_text = remediation_tasks[0].read_text(encoding="utf-8")
+
+        assert script.main() == 0
+        assert remediation_tasks[0].read_text(encoding="utf-8") == original_text
+
+        frontmatter, body = parse_frontmatter(remediation_tasks[0])
+        assert frontmatter["status"] == "offered"
+        assert frontmatter["priority"] == "p0"
+        assert frontmatter["implementation_authorized"] is True
+        assert frontmatter["source_mutation_authorized"] is False
+        assert frontmatter["docs_mutation_authorized"] is True
+        assert frontmatter["runtime_mutation_authorized"] is False
+        assert frontmatter["parent_request"] == "REQ-blocked.md"
+        assert frontmatter["remediates_request_id"] == "REQ-blocked"
+        assert frontmatter["decompose_failure_class"] == "admission_blocked"
+        assert "missing_cctv_intake_receipt" in frontmatter["decompose_failure_reasons"]
+        assert "not treated as fulfillment" in body
+        assert script._find_undecomposed_requests() == [request]
+
+    def test_remediation_task_uses_lineage_env_overrides(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        requests = tmp_path / "requests" / "active"
+        tasks = tmp_path / "tasks"
+        requests.mkdir(parents=True)
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+        (requests / "REQ-env.md").write_text(
+            """---
+type: hapax-request
+request_id: REQ-env
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(script, "REQUESTS_DIR", requests)
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+        monkeypatch.setattr(script, "_decompose_with_llm", lambda _request_data: None)
+        monkeypatch.setenv("HAPAX_REQUEST_DECOMPOSE_REMEDIATION_PARENT_REQUEST", "REQ-parent")
+        monkeypatch.setenv("HAPAX_REQUEST_DECOMPOSE_REMEDIATION_PARENT_SPEC", "SPEC-parent")
+        monkeypatch.setenv("HAPAX_REQUEST_DECOMPOSE_REMEDIATION_AUTHORITY_CASE", "CASE-ENV-001")
+        monkeypatch.setattr(sys, "argv", ["request-decompose", "--scan"])
+
+        assert script.main() == 0
+
+        [remediation_task] = list(
+            (tasks / "active").glob("request-decompose-admission-blocked-*.md")
+        )
+        frontmatter, _body = parse_frontmatter(remediation_task)
+        assert frontmatter["parent_request"] == "REQ-parent"
+        assert frontmatter["parent_spec"] == "SPEC-parent"
+        assert frontmatter["authority_case"] == "CASE-ENV-001"
+
+    def test_closed_remediation_does_not_suppress_active_remediation(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        requests = tmp_path / "requests" / "active"
+        tasks = tmp_path / "tasks"
+        requests.mkdir(parents=True)
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+        (requests / "REQ-blocked.md").write_text(
+            """---
+type: hapax-request
+request_id: REQ-blocked
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(script, "REQUESTS_DIR", requests)
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+        monkeypatch.setattr(script, "_decompose_with_llm", lambda _request_data: None)
+        monkeypatch.setattr(sys, "argv", ["request-decompose", "--scan"])
+
+        assert script.main() == 0
+        [active_remediation] = list(
+            (tasks / "active").glob("request-decompose-admission-blocked-*.md")
+        )
+        closed_remediation = tasks / "closed" / active_remediation.name
+        active_remediation.rename(closed_remediation)
+
+        assert script.main() == 0
+
+        assert closed_remediation.exists()
+        assert (tasks / "active" / closed_remediation.name).exists()
+
+    def test_terminal_active_remediation_is_reopened(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        requests = tmp_path / "requests" / "active"
+        tasks = tmp_path / "tasks"
+        requests.mkdir(parents=True)
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+        (requests / "REQ-blocked.md").write_text(
+            """---
+type: hapax-request
+request_id: REQ-blocked
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(script, "REQUESTS_DIR", requests)
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+        monkeypatch.setattr(script, "_decompose_with_llm", lambda _request_data: None)
+        monkeypatch.setattr(sys, "argv", ["request-decompose", "--scan"])
+
+        assert script.main() == 0
+        [active_remediation] = list(
+            (tasks / "active").glob("request-decompose-admission-blocked-*.md")
+        )
+        text = active_remediation.read_text(encoding="utf-8")
+        active_remediation.write_text(
+            text.replace("status: offered\n", "status: done\n"),
+            encoding="utf-8",
+        )
+
+        assert script.main() == 0
+
+        frontmatter, _body = parse_frontmatter(active_remediation)
+        assert frontmatter["status"] == "offered"
+        assert frontmatter["remediates_request_id"] == "REQ-blocked"
+
+    def test_scan_writes_llm_failure_remediation_task(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        requests = tmp_path / "requests" / "active"
+        tasks = tmp_path / "tasks"
+        requests.mkdir(parents=True)
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+        (requests / "REQ-llm.md").write_text(
+            """---
+type: hapax-request
+request_id: REQ-llm
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+cctv_intake_receipt: receipt://REQ-llm
+cctv_intake_verdict: ready_to_plan
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(script, "REQUESTS_DIR", requests)
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+        monkeypatch.setattr(script, "_decompose_with_llm", lambda _request_data: None)
+        monkeypatch.setattr(sys, "argv", ["request-decompose", "--scan"])
+
+        assert script.main() == 0
+
+        [remediation_task] = list((tasks / "active").glob("request-decompose-llm-failed-*.md"))
+        frontmatter, _body = parse_frontmatter(remediation_task)
+        assert frontmatter["decompose_failure_class"] == "llm_failed"
+        assert frontmatter["mutation_surface"] == "source"
+        assert frontmatter["implementation_authorized"] is True
+        assert frontmatter["source_mutation_authorized"] is True
+        assert frontmatter["docs_mutation_authorized"] is True
+        assert frontmatter["runtime_mutation_authorized"] is False
+        assert frontmatter["remediates_request_id"] == "REQ-llm"
+
+    def test_scan_writes_write_conflict_remediation_task(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        requests = tmp_path / "requests" / "active"
+        tasks = tmp_path / "tasks"
+        requests.mkdir(parents=True)
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+        (requests / "REQ-conflict.md").write_text(
+            """---
+type: hapax-request
+request_id: REQ-conflict
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+cctv_intake_receipt: receipt://REQ-conflict
+cctv_intake_verdict: ready_to_plan
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+
+        def fake_decompose(request_data):
+            return RequestDecomposition(
+                request_id="REQ-conflict",
+                request_path=request_data["path"],
+                tasks=[
+                    TaskSpec(
+                        task_id="conflicting-task",
+                        title="Conflicting task",
+                        parent_request=request_data["filename"],
+                        authority_case="CASE-TEST-001",
+                        acceptance_criteria=["Done"],
+                    )
+                ],
+            )
+
+        def fail_write(_decomp, _tasks_dir):
+            raise FileExistsError("task already exists: conflicting-task")
+
+        monkeypatch.setattr(script, "REQUESTS_DIR", requests)
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+        monkeypatch.setattr(script, "_decompose_with_llm", fake_decompose)
+        monkeypatch.setattr(script, "write_decomposition", fail_write)
+        monkeypatch.setattr(sys, "argv", ["request-decompose", "--scan"])
+
+        assert script.main() == 0
+
+        [remediation_task] = list((tasks / "active").glob("request-decompose-write-conflict-*.md"))
+        frontmatter, _body = parse_frontmatter(remediation_task)
+        assert (
+            frontmatter["title"] == "Repair request decomposition write conflict for REQ-conflict"
+        )
+        assert frontmatter["decompose_failure_class"] == "write_conflict"
+        assert frontmatter["mutation_surface"] == "vault_docs"
+        assert frontmatter["implementation_authorized"] is True
+        assert frontmatter["source_mutation_authorized"] is False
+        assert frontmatter["docs_mutation_authorized"] is True
+        assert frontmatter["runtime_mutation_authorized"] is False
+        assert frontmatter["remediates_request_id"] == "REQ-conflict"
+        assert any(
+            str(reason).startswith("task_write_conflict:")
+            for reason in frontmatter["decompose_failure_reasons"]
+        )
+
+    def test_single_request_writes_admission_remediation_task(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        tasks = tmp_path / "tasks"
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+        request = tmp_path / "REQ-single-blocked.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-single-blocked
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+
+        def fail_if_called(_request_data):
+            raise AssertionError("LLM should not run before admission")
+
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+        monkeypatch.setattr(script, "_decompose_with_llm", fail_if_called)
+        monkeypatch.setattr(sys, "argv", ["request-decompose", str(request)])
+
+        assert script.main() == 1
+
+        [remediation_task] = list(
+            (tasks / "active").glob("request-decompose-admission-blocked-*.md")
+        )
+        frontmatter, _body = parse_frontmatter(remediation_task)
+        assert frontmatter["remediates_request_id"] == "REQ-single-blocked"
+        assert frontmatter["decompose_failure_class"] == "admission_blocked"
+
+    def test_single_request_writes_llm_failure_remediation_task(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        tasks = tmp_path / "tasks"
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+        request = tmp_path / "REQ-single-llm.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-single-llm
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+cctv_intake_receipt: receipt://REQ-single-llm
+cctv_intake_verdict: ready_to_plan
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+        monkeypatch.setattr(script, "_decompose_with_llm", lambda _request_data: None)
+        monkeypatch.setattr(sys, "argv", ["request-decompose", str(request)])
+
+        assert script.main() == 1
+
+        [remediation_task] = list((tasks / "active").glob("request-decompose-llm-failed-*.md"))
+        frontmatter, _body = parse_frontmatter(remediation_task)
+        assert frontmatter["remediates_request_id"] == "REQ-single-llm"
+        assert frontmatter["decompose_failure_class"] == "llm_failed"
+
+    def test_single_request_writes_write_conflict_remediation_task(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        tasks = tmp_path / "tasks"
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+        request = tmp_path / "REQ-single-conflict.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-single-conflict
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+cctv_intake_receipt: receipt://REQ-single-conflict
+cctv_intake_verdict: ready_to_plan
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+        (tasks / "active" / "conflicting-task.md").write_text(
+            """---
+type: cc-task
+task_id: conflicting-task
+status: offered
+---
+
+# Task
+""",
+            encoding="utf-8",
+        )
+
+        def fake_decompose(request_data):
+            return RequestDecomposition(
+                request_id="REQ-single-conflict",
+                request_path=request_data["path"],
+                tasks=[
+                    TaskSpec(
+                        task_id="conflicting-task",
+                        title="Conflicting task",
+                        parent_request=request_data["filename"],
+                        authority_case="CASE-TEST-001",
+                        acceptance_criteria=["Done"],
+                    )
+                ],
+            )
+
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+        monkeypatch.setattr(script, "_decompose_with_llm", fake_decompose)
+        monkeypatch.setattr(sys, "argv", ["request-decompose", str(request)])
+
+        assert script.main() == 1
+
+        [remediation_task] = list((tasks / "active").glob("request-decompose-write-conflict-*.md"))
+        frontmatter, _body = parse_frontmatter(remediation_task)
+        assert frontmatter["remediates_request_id"] == "REQ-single-conflict"
+        assert frontmatter["decompose_failure_class"] == "write_conflict"
