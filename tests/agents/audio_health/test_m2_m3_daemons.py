@@ -18,6 +18,7 @@ import pytest
 from agents.audio_health.classifier import classify, measure_pcm
 from agents.audio_health.m1_dimensions import compute_spectral_flatness
 from agents.audio_health.m2_lufs_s_daemon import (
+    DEFAULT_BANDS,
     LufsBand,
     M2DaemonConfig,
     StageState,
@@ -40,6 +41,21 @@ from agents.audio_health.m3_crest_flatness_daemon import (
     _probe_stage as m3_probe_stage,
 )
 from agents.audio_health.probes import ProbeResult
+from shared.audio_loudness import EGRESS_LRA_MAX_LU, EGRESS_TARGET_LUFS_I
+
+
+def _parse_unit_environment(unit_text: str) -> dict[str, str]:
+    """Extract ``Environment=KEY=VALUE`` pairs from a systemd unit body."""
+    env: dict[str, str] = {}
+    prefix = "Environment="
+    for raw in unit_text.splitlines():
+        line = raw.strip()
+        if not line.startswith(prefix):
+            continue
+        key, _, value = line[len(prefix) :].partition("=")
+        if key:
+            env[key.strip()] = value.strip()
+    return env
 
 
 def _probe_result(stage: str, samples: np.ndarray) -> ProbeResult:
@@ -199,6 +215,131 @@ class TestM2RawSampleContract:
         payload = json.loads(cfg.snapshot_path.read_text(encoding="utf-8"))
         assert payload["stages"]["stage-a"]["analyzer_error"] == state.last_error
         assert payload["stages"]["stage-a"]["analyzer_error_count"] == 1
+
+
+class TestM2EgressBandSSOT:
+    """Regression for P0 incident f3d2b04e (audio_lufs_breach).
+
+    The OBS egress short-term LUFS band must encompass the broadcast loudness
+    envelope declared in ``shared/audio_loudness.py`` (``EGRESS_TARGET_LUFS_I``
+    with ``EGRESS_LRA_MAX_LU`` of legitimate spread). The shipped
+    ``DEFAULT_BANDS`` undershoot that envelope and minted spurious P0 breaches
+    on normal program dynamics; the corrected band is deployed via the unit's
+    ``Environment=`` directives and asserted here against the SSOT.
+    """
+
+    # SSOT-derived obs-broadcast-remap band (mirrors the unit Environment=).
+    REMEDIATION_LOW = -25.0
+    REMEDIATION_HIGH = -6.0
+    # broadcast-master (pre-makeup sum) band (mirrors the unit Environment=).
+    REMEDIATION_MASTER_LOW = -25.0
+    REMEDIATION_MASTER_HIGH = -10.0
+
+    def test_default_egress_band_is_too_tight_for_ssot(self) -> None:
+        # Documents the root cause: the shipped default cannot contain the
+        # legitimate short-term range of a -14 LUFS-I / 11 LU-LRA egress.
+        default_low, default_high = DEFAULT_BANDS["hapax-obs-broadcast-remap"]
+        assert (default_low, default_high) == (-22.0, -18.0)
+        legit_floor = EGRESS_TARGET_LUFS_I - EGRESS_LRA_MAX_LU  # -25.0
+        assert not (default_low <= legit_floor <= default_high)
+        # The incident's measured breaches sit inside the legit loudness range
+        # yet below the default floor -> false positives.
+        for lufs in (-23.4, -22.7):
+            assert legit_floor <= lufs <= EGRESS_TARGET_LUFS_I
+            assert not (default_low <= lufs <= default_high)
+        # And the egress legitimately runs hot toward the target, breaching the
+        # default ceiling in the other direction.
+        assert not (default_low <= -15.34 <= default_high)
+
+    def test_remediation_band_encompasses_ssot_envelope(self) -> None:
+        low, high = self.REMEDIATION_LOW, self.REMEDIATION_HIGH
+        assert low <= EGRESS_TARGET_LUFS_I - EGRESS_LRA_MAX_LU
+        assert high >= EGRESS_TARGET_LUFS_I
+        # GREEN: the full legitimate short-term span stays in band (no breach),
+        # including the incident's breaches and the live hot reading.
+        for lufs in (-25.0, -23.4, -22.7, -20.0, -17.51, -15.34, -14.0, -9.0):
+            assert low <= lufs <= high, f"{lufs} LUFS-S should be in band"
+        # RED: a sustained gross over-level (limiter carrying programme) breaches.
+        assert not (low <= -3.0 <= high)
+
+    def test_from_env_applies_remediation_band(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "HAPAX_AUDIO_HEALTH_LUFS_S_BAND_HAPAX_OBS_BROADCAST_REMAP_LOW": str(
+                    self.REMEDIATION_LOW
+                ),
+                "HAPAX_AUDIO_HEALTH_LUFS_S_BAND_HAPAX_OBS_BROADCAST_REMAP_HIGH": str(
+                    self.REMEDIATION_HIGH
+                ),
+                "HAPAX_AUDIO_HEALTH_LUFS_S_BAND_HAPAX_BROADCAST_MASTER_LOW": str(
+                    self.REMEDIATION_MASTER_LOW
+                ),
+                "HAPAX_AUDIO_HEALTH_LUFS_S_BAND_HAPAX_BROADCAST_MASTER_HIGH": str(
+                    self.REMEDIATION_MASTER_HIGH
+                ),
+            },
+        ):
+            cfg = M2DaemonConfig.from_env()
+        obs = cfg.bands["hapax-obs-broadcast-remap"]
+        assert (obs.low, obs.high) == (self.REMEDIATION_LOW, self.REMEDIATION_HIGH)
+        # Both deployed override stages must round-trip through from_env(), not
+        # just the obs egress — P0 f3d2b04e ships a broadcast-master band too.
+        master = cfg.bands["hapax-broadcast-master"]
+        assert (master.low, master.high) == (
+            self.REMEDIATION_MASTER_LOW,
+            self.REMEDIATION_MASTER_HIGH,
+        )
+
+    def test_unit_environment_pins_egress_band_to_ssot(self) -> None:
+        # The committed systemd unit must carry the SSOT-aligned override so the
+        # fix survives a fresh deploy, not just a runtime env file.
+        repo_root = Path(__file__).resolve().parents[3]
+        unit = repo_root / "systemd/units/hapax-audio-health-lufs-s.service"
+        env = _parse_unit_environment(unit.read_text(encoding="utf-8"))
+        low = float(env["HAPAX_AUDIO_HEALTH_LUFS_S_BAND_HAPAX_OBS_BROADCAST_REMAP_LOW"])
+        high = float(env["HAPAX_AUDIO_HEALTH_LUFS_S_BAND_HAPAX_OBS_BROADCAST_REMAP_HIGH"])
+        assert low <= EGRESS_TARGET_LUFS_I - EGRESS_LRA_MAX_LU
+        assert high >= EGRESS_TARGET_LUFS_I
+        # The committed band must relieve the incident's measured breaches.
+        for lufs in (-23.4, -22.7):
+            assert low <= lufs <= high
+
+    def test_unit_environment_pins_broadcast_master_band(self) -> None:
+        # The diff also re-bands hapax-broadcast-master; that override ships in the
+        # committed unit and must be pinned too — not just obs-broadcast-remap. A
+        # typo in the two HAPAX_BROADCAST_MASTER lines must fail a test (review
+        # finding: broadcast-master rebanding was otherwise unexercised).
+        repo_root = Path(__file__).resolve().parents[3]
+        unit = repo_root / "systemd/units/hapax-audio-health-lufs-s.service"
+        env = _parse_unit_environment(unit.read_text(encoding="utf-8"))
+        low = float(env["HAPAX_AUDIO_HEALTH_LUFS_S_BAND_HAPAX_BROADCAST_MASTER_LOW"])
+        high = float(env["HAPAX_AUDIO_HEALTH_LUFS_S_BAND_HAPAX_BROADCAST_MASTER_HIGH"])
+        assert (low, high) == (self.REMEDIATION_MASTER_LOW, self.REMEDIATION_MASTER_HIGH)
+        # The committed master band must widen the too-tight default in both
+        # directions (restoring the narrow default must fail this test).
+        default_low, default_high = DEFAULT_BANDS["hapax-broadcast-master"]
+        assert low <= default_low
+        assert high >= default_high
+
+    def test_unit_environmentfile_overrides_committed_defaults(self) -> None:
+        # P0 f3d2b04e critical fix: the operator's EnvironmentFile= must be able to
+        # override the committed Environment= band defaults. systemd applies
+        # EnvironmentFile= after Environment=, and we additionally place the
+        # EnvironmentFile= directive after every Environment= line so the operator
+        # file wins under the intuitive last-wins reading too. Pin that order — an
+        # inverted unit (EnvironmentFile before Environment) must fail here.
+        repo_root = Path(__file__).resolve().parents[3]
+        unit = repo_root / "systemd/units/hapax-audio-health-lufs-s.service"
+        lines = unit.read_text(encoding="utf-8").splitlines()
+        env_idxs = [i for i, ln in enumerate(lines) if ln.strip().startswith("Environment=")]
+        file_idxs = [i for i, ln in enumerate(lines) if ln.strip().startswith("EnvironmentFile=")]
+        assert env_idxs, "expected committed Environment= band defaults"
+        assert file_idxs, "expected an operator EnvironmentFile= override hook"
+        assert min(file_idxs) > max(env_idxs), (
+            "EnvironmentFile= must follow all Environment= defaults so an operator "
+            "override wins (inverted order lets hardcoded defaults clobber overrides)"
+        )
 
 
 # ── M3 Tests ────────────────────────────────────────────────────────────
