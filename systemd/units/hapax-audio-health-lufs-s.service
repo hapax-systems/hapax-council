@@ -3,12 +3,12 @@ Description=Hapax audio health M2 — LUFS-S rolling loudness monitor
 After=pipewire.service pipewire-pulse.service
 Requires=pipewire-pulse.service
 PartOf=hapax-audio-health.target
-ConditionPathExists=%h/.cache/hapax/rebuild/worktree/pyproject.toml
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/pyproject.toml
 
 [Service]
 Type=simple
 NotifyAccess=all
-WorkingDirectory=%h/.cache/hapax/rebuild/worktree
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 ExecStart=%h/.local/bin/uv run python -m agents.audio_health.m2_lufs_s_daemon
 Restart=on-failure
 RestartSec=10

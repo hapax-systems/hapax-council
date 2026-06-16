@@ -283,8 +283,8 @@ land the suite-status meta-monitor + Grafana dashboard skeleton.
 > LU of legitimate short-term spread, so a 4 LU static band false-positives in both
 > directions on normal program and minted spurious P0 alerts. The operative bands
 > above are re-derived from the SSOT and shipped via the unit's `Environment=`
-> directives — **do not restore the narrow defaults.** Regression:
-> `tests/agents/audio_health/test_m2_m3_daemons.py::TestM2EgressBandSSOT`.
+> directives — **do not restore the narrow defaults.** Recheck (regression):
+> `uv run pytest tests/agents/audio_health/test_m2_m3_daemons.py::TestM2EgressBandSSOT -q`.
 
 **Hysteresis:** breach must sustain ≥3s before ntfy (avoids brief track-change excursions).
 
