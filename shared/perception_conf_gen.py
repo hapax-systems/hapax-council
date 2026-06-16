@@ -114,12 +114,24 @@ def generated_contact_mic_conf_text(
     """
     point = registry.points.get(point_name)
     if point is None:
-        raise ValueError(f"registry has no point {point_name!r}")
+        raise ValueError(
+            f"registry has no point {point_name!r}. "
+            f"Next: add a point named {point_name!r} to config/perception-registry.yaml, "
+            "or pass point_name= matching an existing registry point."
+        )
     src = point.hw_source
     if src is None:
-        raise ValueError(f"point {point_name!r} has no hw_source; cannot generate its conf")
+        raise ValueError(
+            f"point {point_name!r} has no hw_source; cannot generate its conf. "
+            "Next: add an hw_source: {node_target: <alsa capture device>, position: <AUXn>} "
+            f"block to the {point_name!r} point in config/perception-registry.yaml."
+        )
     if not src.node_target:
-        raise ValueError(f"point {point_name!r} hw_source.node_target is empty")
+        raise ValueError(
+            f"point {point_name!r} hw_source.node_target is empty. "
+            "Next: set hw_source.node_target to the capture device node name "
+            "(e.g. alsa_input.usb-MOTU_UltraLite-mk5_...pro-input-0)."
+        )
     if point.exposure == ExposureDomain.QUARANTINE and _is_broadcast_reachable(src.node_target):
         raise PerceptualBroadcastReachError(
             f"point {point_name!r} is exposure=quarantine but hw_source.node_target "

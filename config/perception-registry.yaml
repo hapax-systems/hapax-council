@@ -119,10 +119,12 @@ points:
       Zeppelin Design Labs Cortado MkIII contact mic (desk vibration).
       LIVE on MOTU mk5 line-in 2 = pro-input capture_AUX1 (operator-confirmed
       2026-06-15). Perceptual/quarantine — NEVER broadcast-reachable. The
-      contact_mic virtual node is currently built by an L-12-era conf
-      (config/pipewire/hapax-contact-mic.conf) that drifted to capture_AUX0
-      (the Rode) = an eavesdrop class; fixed correct-by-construction by the
-      Phase-1 generator (REQ-20260616-perception-audio-ssot-program).
+      contact_mic virtual node is generated correct-by-construction from this
+      point's hw_source by the Phase-1 SSOT generator
+      (scripts/generate-pipewire-audio-confs.py -> config/pipewire/hapax-contact-mic.conf,
+      byte-diff-gated). The prior L-12-era hand-edit that drifted to capture_AUX0
+      (the Rode = an eavesdrop class) is retired
+      (REQ-20260616-perception-audio-ssot-program Phase 1).
     pipewire_node: contact_mic
     hw_source:
       node_target: alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0

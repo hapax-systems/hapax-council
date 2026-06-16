@@ -31,6 +31,12 @@ from shared.perception_registry import load_default_registry
 CONTACT_MIC_CONF_PATH = (
     Path(__file__).resolve().parent.parent / "config" / "pipewire" / "hapax-contact-mic.conf"
 )
+# The DEPLOYED copy pipewire actually loads (a host/runtime artifact; absent in CI).
+# --check-deployed-source-confs verifies it equals the registry-generated text, so a
+# hand-edit to the live conf (the original eavesdrop cause) cannot silently survive.
+DEPLOYED_CONTACT_MIC_CONF_PATH = (
+    Path.home() / ".config" / "pipewire" / "pipewire.conf.d" / "hapax-contact-mic.conf"
+)
 
 
 def main() -> int:
@@ -51,6 +57,7 @@ def main() -> int:
     )
     parser.add_argument("--write-source-confs", action="store_true")
     parser.add_argument("--check-source-confs", action="store_true")
+    parser.add_argument("--check-deployed-source-confs", action="store_true")
     args = parser.parse_args()
 
     policy = load_audio_routing_policy(args.policy)
@@ -132,7 +139,7 @@ def main() -> int:
                     "--write-wireplumber-deny-policy"
                 )
 
-    if args.write_source_confs or args.check_source_confs:
+    if args.write_source_confs or args.check_source_confs or args.check_deployed_source_confs:
         # Pipewire SOURCE confs generated from the perception registry's typed
         # hw_source — the contact-mic conf was the eavesdrop class (hand-typed
         # node.target drifted to the retired L-12). The generator is the sole
@@ -150,6 +157,20 @@ def main() -> int:
                     f"{CONTACT_MIC_CONF_PATH} differs from the registry-generated text; "
                     "rerun scripts/generate-pipewire-audio-confs.py --write-source-confs"
                 )
+        if args.check_deployed_source_confs:
+            # Runtime drift guard for the DEPLOYED copy pipewire actually loads
+            # (host artifact; not run in CI). A hand-edit to the live conf — the
+            # original eavesdrop cause — fails this check.
+            if (
+                not DEPLOYED_CONTACT_MIC_CONF_PATH.exists()
+                or DEPLOYED_CONTACT_MIC_CONF_PATH.read_text(encoding="utf-8") != contact_mic_text
+            ):
+                raise SystemExit(
+                    f"DEPLOYED {DEPLOYED_CONTACT_MIC_CONF_PATH} differs from the "
+                    "registry-generated text (or is absent); redeploy: "
+                    "scripts/generate-pipewire-audio-confs.py --write-source-confs && "
+                    "install the conf to ~/.config/pipewire/pipewire.conf.d/ and reload the loopback."
+                )
 
     if not args.write_manifest and not args.check:
         if (
@@ -160,6 +181,7 @@ def main() -> int:
             or args.check_wireplumber_deny_policy
             or args.write_source_confs
             or args.check_source_confs
+            or args.check_deployed_source_confs
         ):
             return 0
         print(manifest_text, end="")

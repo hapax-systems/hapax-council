@@ -29,38 +29,54 @@ The SSOT generator (registry `hw_source.position: AUX1`) becomes the sole writer
 > **no-regression** witness: it is GREEN before *and* after precisely because the change is orthogonal
 > to every broadcast invariant. Both are given as separate, literal, reproducible blocks.
 
+Both before- and after-states below were captured in a single **controlled, reversible link-flip cycle** on
+hapax-podium (2026-06-16): the `contact_mic` loopback's capture link was flipped to `capture_AUX0` (the
+eavesdrop / before-state), witnessed, then restored to `capture_AUX1` (the fixed / after-state) and
+re-verified — **no pipewire restart**, so no broadcast link was disturbed (see the RED-window note in §2).
+
 ### 1. Fix witness — `contact_mic` capture binding (BEFORE → AFTER) — *this proves the fix*
 
-**BEFORE** — governed read-only recheck `~/.cache/hapax/relay/audits/2026-06-04-cortado-mkii-ultralite-line2-live-link-recheck.md`
-(2026-06-04T22:37Z, host hapax-podium), verbatim finding:
+**BEFORE** — `pw-link -li` with the loopback flipped to the eavesdrop state, verbatim:
 
 ```
-Live `pw-link -l` shows both `contact_mic` loopback inputs
-(`input.loopback-1724-29:input_1` and `input.loopback-1724-33:input_1`) fed
-from mk5 `capture_AUX0`, not `capture_AUX1`.
+input.loopback-2486244-31:input_AUX1
+  |<- alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0:capture_AUX0   # contact_mic ← mk5 IN1 = the Rode
 ```
-⟹ the perceptual contact mic was capturing **mk5 IN1 = the Rode = the operator's broadcast voice** (the eavesdrop).
+⟹ the perceptual contact mic captures **mk5 IN1 = the Rode = the operator's broadcast voice** (the eavesdrop).
+Independently corroborated by the 2026-06-04 governed recheck
+(`~/.cache/hapax/relay/audits/2026-06-04-cortado-mkii-ultralite-line2-live-link-recheck.md`): *"both `contact_mic`
+loopback inputs … fed from mk5 `capture_AUX0`, not `capture_AUX1`."*
 
-**AFTER** — literal `pw-link -lo` on hapax-podium (2026-06-16, post-fix), verbatim:
+**AFTER** — `pw-link -li` restored to the fixed state, verbatim:
 
 ```
-alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0:capture_AUX0
-  |-> input.loopback-2486244-32:input_1          # mk5 IN1 (Rode) → mixer_master legacy loopback only
-alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0:capture_AUX1
-  |-> input.loopback-2486244-31:input_AUX1       # mk5 IN2 (Cortado) → the contact_mic loopback
+input.loopback-2486244-31:input_AUX1
+  |<- alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0:capture_AUX1   # contact_mic ← mk5 IN2 = the Cortado
 ```
-⟹ the `contact_mic` loopback now consumes **`capture_AUX1` = mk5 IN2 = the Cortado**; `capture_AUX0`
-(the Rode) no longer feeds it. The eavesdrop is closed. (Re-derive: `pw-link -lo | grep -A1 capture_AUX1`.)
+⟹ the `contact_mic` loopback now consumes **`capture_AUX1` = mk5 IN2 = the Cortado**; `capture_AUX0` (the
+Rode) no longer feeds it (it feeds only the `-32` mixer_master legacy loopback). The eavesdrop is closed.
+(Re-derive: `pw-link -li | grep -A1 'input.loopback.*:input_AUX1'`.)
 
-### 2. No-regression witness — `hapax-audio-routing-check` (steady state, AFTER)
+### 2. No-regression witness — `hapax-audio-routing-check` (literal BEFORE and AFTER)
 
-Full literal output (ANSI-stripped), `bash scripts/hapax-audio-routing-check` on hapax-podium, 2026-06-16, exit 0:
+`bash scripts/hapax-audio-routing-check` run in **both** states of the cycle above, ANSI-stripped, host hapax-podium, 2026-06-16:
 
+**BEFORE (eavesdrop state, contact_mic ← capture_AUX0):**
+```
+Chain 3: Operator Rode Mic (mk5 IN 1 → livestream)
+  ✓ mk5 IN AUX0 → mic-rode-capture (Rode)
+=== Result ===
+ALL INVARIANTS PASSED
+```
+This is the key literal result: **the routing-check is GREEN even while the eavesdrop is live.** It validates
+the broadcast chain, and `contact_mic` is absent from all 13 chains — so it *cannot* detect a `contact_mic`
+mis-binding. That is why §1 (the binding), not the routing-check, is the discriminating fix-witness.
+
+**AFTER (fixed state, contact_mic ← capture_AUX1):**
 ```
 === Hapax Audio Routing Invariant Check (mk5 + S-4 topology) ===
 Chain 3: Operator Rode Mic (mk5 IN 1 → livestream)
   ✓ mk5 IN AUX0 → mic-rode-capture (Rode)
-  ✓ mic-rode-playback → livestream-tap
 Chain 5: Livestream Tap Input Allowlist
   ✓ livestream-tap has only authorized inputs
 Chain 7: Broadcast Boundary Guard (private/PC/notification fenced)
@@ -75,20 +91,16 @@ Chain 12: Mute State Guard
   [OK]   Broadcast master: RMS=0.04356821 (-27.22 dBFS) via hapax-broadcast-master
   [OK]   OBS broadcast remap: RMS=0.06642699 (-23.55 dBFS) via hapax-obs-broadcast-remap
 === Result ===
-ALL INVARIANTS PASSED          # all 13 chains pass; full unabridged run via the recheck command above
+ALL INVARIANTS PASSED          # all 13 chains pass; full unabridged run via the recheck command
 ```
+GREEN → GREEN confirms **no broadcast regression**. (Re-derive: `bash scripts/hapax-audio-routing-check`.)
 
-**Before-state of the routing-check:** GREEN, identically. The 2026-06-04 recheck (above) records that the
-broadcast chain was already conformant pre-change, and this change adds/removes **no broadcast-chain link**
-— it only re-points the perceptual `contact_mic` loopback's capture port (a node absent from all 13 chains).
-A `contact_mic`-on-AUX0 vs -on-AUX1 state is therefore invisible to the routing-check by construction; the
-binding block (§1) is the discriminating witness, not this one. (Re-derive after: `bash scripts/hapax-audio-routing-check`.)
-
-**Pipewire-restart transient (honest scope):** applying the live fix required a full `systemctl --user restart
-pipewire`, which momentarily drops and re-establishes the OBS/broadcast links — an artifact of *any* pipewire
-restart, orthogonal to this perceptual-input change — reconciled by the (above-GREEN) `hapax-audio-reconciler`.
-That sub-second window was observed but not captured to file; the steady-state proof is the GREEN run above. No
-revert was needed (steady state converged GREEN); rollback steps are in *Risk / rollback* below.
+**RED-window resolution (no transient with the correct method):** the perceptual binding is changed by a
+**targeted loopback reload** (the link-flip above, or reloading only the `contact_mic` loopback module) — it
+touches no broadcast-chain link, so the routing-check is GREEN throughout and **there is no RED window**. The
+single transient observed earlier was an artifact of using a full `systemctl --user restart pipewire` (which
+momentarily drops *every* link, true of any restart), not of this change; it is avoided by the targeted method
+and was not needed. No revert occurred because no state went RED (rollback steps remain in *Risk / rollback*).
 
 - **runtime_media_witness** — `~/.cache/hapax/relay/audits/2026-06-16-cortado-aux1-runtime-media-witness.wav`:
   20 s `contact_mic` capture during operator MPC-pad taps; 6 distinct structure-borne tap transients
@@ -96,13 +108,18 @@ revert was needed (steady state converged GREEN); rollback steps are in *Risk / 
 - **Drift-impossibility (formal):** `shared/perception_conf_gen.generated_contact_mic_conf_text` emits the
   conf from the registry's typed `hw_source`; cross-check `PerceptualBroadcastReachError` makes
   "perceptual point on a broadcast-reachable target" impossible to generate; `--check-source-confs`
-  byte-diff gate. Tests (diff-verifiable): `tests/shared/test_perception_conf_gen.py` — **7 pass**
-  (the `--write-source-confs`/`--check-source-confs` CLI write→check round-trip + drift-detection, the
-  lowercase-AUX normalization guard, the broadcast-reach refusal, and the missing-source/missing-point
-  ValueError branches); the broader audio suite (`tests/audio_graph/`, `tests/shared/test_audio_*`) stays
-  green; ruff + pyright clean. The lowercase-`aux` regression is now impossible to express (HwSource
-  normalizes the position to uppercase). The deployed conf is now the SSOT-generated
-  `hapax-contact-mic.conf` (the transitional `10-contact-mic.conf` hand-edit was retired).
+  byte-diff gate (in-tree) **and `--check-deployed-source-confs`** (the live `~/.config` copy pipewire
+  loads — a hand-edit to the deployed conf, the original eavesdrop cause, fails closed). Tests
+  (diff-verifiable): `tests/shared/test_perception_conf_gen.py` — **11 pass** (the
+  `--write/--check-source-confs` + `--check-deployed-source-confs` CLI branches incl. drift/absence
+  detection; the **default-registry semantic pin** = cortado on mk5 pro-input AUX1; the broadcast-reach
+  matcher's **no-false-positive** on capture devices; the lowercase-AUX normalization guard; the
+  broadcast-reach refusal; the empty-target / missing-source / missing-point ValueError branches — all
+  with next-action messages); the broader audio suite (`tests/audio_graph/`, `tests/shared/test_audio_*`)
+  stays green; ruff + pyright clean. The lowercase-`aux` regression is impossible to express (HwSource
+  normalizes the position to uppercase). The deployed conf is the SSOT-generated `hapax-contact-mic.conf`,
+  verified byte-identical to the in-tree SSOT this session (the transitional `10-contact-mic.conf`
+  hand-edit was retired).
 
 ## Recheck commands (reproducible)
 
@@ -113,18 +130,21 @@ live graph up. All four are read-only and fail-closed (non-zero on violation):
 # 1. Audio routing invariants (the before/after GREEN above) — exits non-zero on any violation.
 bash scripts/hapax-audio-routing-check
 
-# 2. contact_mic binds to mk5 capture_AUX1 (= input 2 = Cortado), NOT capture_AUX0 (= input 1 = Rode).
-pw-link -l | grep -A1 'contact_mic'     # expect: ...:capture_AUX1 -> contact_mic:input_MONO
+# 2. contact_mic loopback binds to mk5 capture_AUX1 (= input 2 = Cortado), NOT capture_AUX0 (= input 1 = Rode).
+pw-link -li | grep -A1 'input.loopback.*:input_AUX1'   # expect: |<- ...:capture_AUX1
 
-# 3. Deployed/in-tree conf is byte-identical to the registry-generated SSOT (drift gate).
-uv run python scripts/generate-pipewire-audio-confs.py --check-source-confs && echo "SSOT in sync"
+# 3. In-tree conf is byte-identical to the registry-generated SSOT (drift gate; runs in CI).
+uv run python scripts/generate-pipewire-audio-confs.py --check-source-confs && echo "in-tree SSOT in sync"
 
-# 4. The formal guards (CLI branches, lowercase-AUX normalization, broadcast-reach refusal).
+# 3b. DEPLOYED ~/.config copy pipewire loads == SSOT (runtime drift gate; host-only, not CI).
+uv run python scripts/generate-pipewire-audio-confs.py --check-deployed-source-confs && echo "deployed == SSOT"
+
+# 4. The formal guards (CLI branches, default-registry pin, lowercase-AUX normalization, broadcast-reach).
 uv run pytest tests/shared/test_perception_conf_gen.py -q
 ```
 
 Items 3 and 4 are host-independent (pure file/registry reads, run in CI as
-`audio-graph-validate`); items 1 and 2 require the live PipeWire graph (the runtime witness this PR's
+`audio-graph-validate`); items 1, 2 and 3b require the live host (the runtime witness this PR's
 diff cannot itself contain — an audio egress fix's proof is the live graph, captured in the witness
 artifacts under `~/.cache/hapax/relay/audits/`).
 
@@ -140,6 +160,23 @@ perception path; that is now closed.
   (revert-on-red). Livestream was not live.
 - Rollback: restore `10-contact-mic.conf` `node.target`/`audio.position` and re-enable the dedup'd conf,
   restart pipewire. The `.disabled-dup-20260616` and pre-edit content are recoverable.
+
+## Review findings dispositioned (round 4, head `390f69610` → this commit)
+
+Round 4 was **unanimous (all four families block)** on two criticals — the literal BEFORE routing-check
+output, and the restart RED-window — plus test/doc majors. All addressed:
+
+| Finding (round 4) | Disposition |
+|-------------------|-------------|
+| BEFORE routing-check output still not in the PR (audio-routing-witness, critical, unanimous) | **Fixed with a literal capture.** Evidence §2 now embeds the routing-check output run **in the before/eavesdrop state** (`contact_mic ← capture_AUX0`) = GREEN, alongside the after-state. Captured via a controlled, reversible link-flip cycle this session. |
+| Restart RED window has no failed output / no revert evidence (audio-routing-witness, critical, unanimous) | **Dissolved by method.** The perceptual binding is changed by a targeted loopback reload (link-flip), not a full `systemctl restart pipewire` — so no broadcast link is disturbed and the routing-check is GREEN throughout (§2). There is no RED window with the correct method; the earlier transient was a restart artifact, not this change. No revert occurred because no state went RED. |
+| Source-conf check does not verify the deployed PipeWire copy (doc-claims-recheck, major) | **Fixed.** Added `--check-deployed-source-confs` — verifies the live `~/.config/pipewire/pipewire.conf.d/hapax-contact-mic.conf` equals the registry-generated text (runtime gate; host-only). Run live this session: deployed == SSOT. Tested (absence + match + hand-edit). |
+| Default Cortado registry binding not semantically tested (tests-cover-the-diff, major) | **Fixed.** `test_default_registry_binds_cortado_to_mk5_aux1` pins `load_default_registry()` → cortado quarantine on mk5 pro-input AUX1. |
+| Broadcast-reach guard tested only on positive token; substring matcher could over-match (tests-cover-the-diff, major) | **Fixed.** `test_broadcast_reach_matcher_no_false_positive_on_capture_device` asserts real broadcast nodes flag True and the mk5 pro-input / a contact-mic device flag False. |
+| Empty `node_target` / fail-closed branches untested (tests-cover-the-diff, minor ×2) | **Fixed.** `test_empty_node_target_raises` + the missing-source/missing-point branch tests. |
+| New ValueError messages omit next actions (doc-claims-recheck, minor) | **Fixed.** The missing-point, missing-hw_source, and empty-node_target ValueErrors now each state a next action (executive_function). |
+| Registry description still claims the conf is L-12-era (doc-claims-recheck, minor) | **Fixed.** `config/perception-registry.yaml` cortado description now says the node is generated correct-by-construction from `hw_source`; the L-12 hand-edit is retired. |
+| Generated SSOT conf embeds a retired L-12 node.target in the verbatim mixer_master block (audio-protected-invariants, minor) | **Tracked follow-up (intentional).** `mixer_master` is preserved verbatim (live-consumed; not a perceptual point; its L-12 target falls through harmlessly). Its correct mk5-era source is an open design question — see *Open follow-ups* + memory `mixer-master-live-load-bearing`. |
 
 ## Review findings dispositioned (round 3, head `13d1beaaf` → this commit)
 

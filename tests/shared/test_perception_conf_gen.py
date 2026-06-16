@@ -21,6 +21,7 @@ import pytest
 
 from shared.perception_conf_gen import (
     PerceptualBroadcastReachError,
+    _is_broadcast_reachable,
     generated_contact_mic_conf_text,
 )
 from shared.perception_registry import (
@@ -119,6 +120,37 @@ def test_missing_point_raises() -> None:
         generated_contact_mic_conf_text(PerceptionRegistry(points={}))
 
 
+def test_empty_node_target_raises() -> None:
+    # The empty-node_target fail-closed branch (a malformed registry must not emit
+    # a conf with no capture target → silent fallback to the wrong port = the eavesdrop).
+    with pytest.raises(ValueError, match="node_target is empty"):
+        generated_contact_mic_conf_text(_cortado_registry(node_target=""))
+
+
+def test_default_registry_binds_cortado_to_mk5_aux1() -> None:
+    # Semantic pin on the ACTUAL deployed registry (config/perception-registry.yaml):
+    # the cortado point must be perceptual/quarantine and bound to the mk5 pro-input AUX1
+    # (= physical input 2 = the Cortado), not AUX0 (= input 1 = the Rode = the eavesdrop).
+    point = load_default_registry().points["cortado"]
+    assert point.exposure == ExposureDomain.QUARANTINE
+    assert point.hw_source is not None
+    assert point.hw_source.position == "AUX1"
+    assert "MOTU_UltraLite-mk5" in point.hw_source.node_target
+    assert "pro-input" in point.hw_source.node_target
+    # and it generates correct-by-construction from that default registry.
+    conf = generated_contact_mic_conf_text(load_default_registry())
+    assert "audio.position = [ AUX1 ]" in conf.split("LEGACY mixer_master")[0]
+
+
+def test_broadcast_reach_matcher_no_false_positive_on_capture_device() -> None:
+    # The substring matcher must flag real broadcast nodes but NOT over-match an
+    # innocent capture device (else valid perceptual sources would be wrongly refused).
+    assert _is_broadcast_reachable("hapax-livestream-tap") is True
+    assert _is_broadcast_reachable("hapax-voice-fx-capture") is True
+    assert _is_broadcast_reachable(MK5_PRO_INPUT) is False
+    assert _is_broadcast_reachable("alsa_input.usb-Cortado_contact-00.analog-stereo") is False
+
+
 def test_cli_write_source_confs_then_check_roundtrip(tmp_path, monkeypatch) -> None:
     # The --write-source-confs CLI branch must emit exactly the library text,
     # and a subsequent --check-source-confs against that output must pass (0).
@@ -147,4 +179,27 @@ def test_cli_check_source_confs_detects_drift(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(sys, "argv", ["gen", "--check-source-confs"])
     with pytest.raises(SystemExit, match="differs from the registry-generated text"):
+        gen.main()
+
+
+def test_cli_check_deployed_source_confs(tmp_path, monkeypatch) -> None:
+    # --check-deployed-source-confs verifies the DEPLOYED ~/.config copy pipewire
+    # actually loads (a host artifact CI cannot see): passes when it matches the
+    # registry-generated text, fails (SystemExit) on a live hand-edit or absence.
+    gen = _load_generator_cli()
+    deployed = tmp_path / "hapax-contact-mic.conf"
+    monkeypatch.setattr(gen, "DEPLOYED_CONTACT_MIC_CONF_PATH", deployed)
+
+    # absent → fails closed
+    monkeypatch.setattr(sys, "argv", ["gen", "--check-deployed-source-confs"])
+    with pytest.raises(SystemExit, match="DEPLOYED"):
+        gen.main()
+
+    # matching the SSOT → passes
+    deployed.write_text(generated_contact_mic_conf_text(load_default_registry()), encoding="utf-8")
+    assert gen.main() == 0
+
+    # live hand-edit → fails closed
+    deployed.write_text("# someone hand-edited the live conf\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="DEPLOYED"):
         gen.main()
