@@ -20,6 +20,7 @@ DEFAULT_CACHE_DIR = Path.home() / ".cache/hapax"
 DEFAULT_COORDINATOR_STATE = Path("/dev/shm/hapax-coordinator/state.json")
 DEFAULT_LANE_PID_DIR = Path(f"/run/user/{os.getuid()}/hapax-claude")
 DEFAULT_CLAIM_GRACE_SECONDS = 300
+DEFAULT_COORDINATOR_STATE_MAX_AGE_SECONDS = 180
 FLOW_STATUS_KEYS = ("offered", "claimed", "in_progress", "blocked", "pr_open")
 UNOWNED_VALUES = {"", "null", "none", "~", "unassigned"}
 UUID_SUFFIX_RE = re.compile(
@@ -187,12 +188,53 @@ def claim_signals(
     return signals, grace
 
 
-def read_coordinator_state(path: Path) -> dict[str, Any] | None:
+def read_coordinator_state(
+    path: Path, *, max_age_seconds: int = DEFAULT_COORDINATOR_STATE_MAX_AGE_SECONDS
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    now = datetime.now(UTC).timestamp()
+    status: dict[str, Any] = {
+        "path": str(path),
+        "fresh": False,
+        "max_age_s": max_age_seconds,
+        "age_s": None,
+        "timestamp_age_s": None,
+        "reasons": [],
+    }
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return loaded if isinstance(loaded, dict) else None
+        raw = path.read_text(encoding="utf-8")
+        stat = path.stat()
+    except OSError as exc:
+        status["reasons"].append(f"unreadable:{exc.__class__.__name__}")
+        return None, status
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError:
+        status["reasons"].append("invalid_json")
+        return None, status
+    if not isinstance(loaded, dict):
+        status["reasons"].append("not_object")
+        return None, status
+
+    age_s = max(0, int(now - stat.st_mtime))
+    status["age_s"] = age_s
+    if age_s > max_age_seconds:
+        status["reasons"].append("file_mtime_stale")
+
+    timestamp = loaded.get("timestamp")
+    if timestamp is not None:
+        try:
+            timestamp_age_s = int(now - float(timestamp))
+        except (TypeError, ValueError):
+            status["reasons"].append("timestamp_invalid")
+        else:
+            status["timestamp_age_s"] = timestamp_age_s
+            if timestamp_age_s < -10:
+                status["reasons"].append("timestamp_in_future")
+            elif timestamp_age_s > max_age_seconds:
+                status["reasons"].append("timestamp_stale")
+
+    status["fresh"] = not status["reasons"]
+    return loaded, status
 
 
 def _read_proc_cmdline(pid: int) -> list[str]:
@@ -263,6 +305,7 @@ def pickup_evidence(
     task: TaskRecord,
     *,
     coordinator_state: dict[str, Any] | None,
+    coordinator_state_fresh: bool,
     claim_records: list[ClaimRecord],
     lane_pid_dir: Path,
 ) -> tuple[bool, list[dict[str, Any]]]:
@@ -277,7 +320,12 @@ def pickup_evidence(
     if isinstance(lane, dict):
         claimed_task = str(lane.get("claimed_task") or "")
         if bool(lane.get("alive")) and claimed_task in aliases:
-            evidence.append({"kind": "coordinator_lane_claim", "role": role})
+            kind = (
+                "coordinator_lane_claim"
+                if coordinator_state_fresh
+                else "stale_coordinator_lane_claim"
+            )
+            evidence.append({"kind": kind, "role": role})
 
     launcher = live_headless_launcher(lane_pid_dir, role)
     if launcher:
@@ -307,6 +355,7 @@ def silent_stranded_items(
     tasks: list[TaskRecord],
     *,
     coordinator_state: dict[str, Any] | None,
+    coordinator_state_fresh: bool,
     claim_records: list[ClaimRecord],
     lane_pid_dir: Path,
 ) -> list[dict[str, Any]]:
@@ -317,6 +366,7 @@ def silent_stranded_items(
         picked_up, evidence = pickup_evidence(
             task,
             coordinator_state=coordinator_state,
+            coordinator_state_fresh=coordinator_state_fresh,
             claim_records=claim_records,
             lane_pid_dir=lane_pid_dir,
         )
@@ -338,6 +388,7 @@ def undrained_p0_incident_items(
     tasks: list[TaskRecord],
     *,
     coordinator_state: dict[str, Any] | None,
+    coordinator_state_fresh: bool,
     claim_records: list[ClaimRecord],
     lane_pid_dir: Path,
 ) -> list[dict[str, Any]]:
@@ -356,6 +407,7 @@ def undrained_p0_incident_items(
         picked_up, evidence = pickup_evidence(
             task,
             coordinator_state=coordinator_state,
+            coordinator_state_fresh=coordinator_state_fresh,
             claim_records=claim_records,
             lane_pid_dir=lane_pid_dir,
         )
@@ -378,6 +430,7 @@ def build_report(
     lane_pid_dir: Path = DEFAULT_LANE_PID_DIR,
     *,
     claim_grace_seconds: int = DEFAULT_CLAIM_GRACE_SECONDS,
+    coordinator_state_max_age_seconds: int = DEFAULT_COORDINATOR_STATE_MAX_AGE_SECONDS,
 ) -> dict[str, Any]:
     tasks = load_tasks(tasks_dir)
     tasks_by_id = {task.task_id: task for task in tasks}
@@ -389,16 +442,20 @@ def build_report(
     p0_or_remediation = [task for task in tasks if is_p0_or_remediation(task)]
     no_owner = [task for task in tasks if is_no_owner(task)]
     claim_records = read_claim_records(cache_dir)
-    coordinator_state = read_coordinator_state(coordinator_state_path)
+    coordinator_state, coordinator_state_status = read_coordinator_state(
+        coordinator_state_path, max_age_seconds=coordinator_state_max_age_seconds
+    )
     silent_stranded = silent_stranded_items(
         tasks,
         coordinator_state=coordinator_state,
+        coordinator_state_fresh=bool(coordinator_state_status["fresh"]),
         claim_records=claim_records,
         lane_pid_dir=lane_pid_dir,
     )
     undrained_incidents = undrained_p0_incident_items(
         tasks,
         coordinator_state=coordinator_state,
+        coordinator_state_fresh=bool(coordinator_state_status["fresh"]),
         claim_records=claim_records,
         lane_pid_dir=lane_pid_dir,
     )
@@ -424,8 +481,9 @@ def build_report(
             "no_owner": "Visible backlog or active work in offered/claimed/in_progress with no assigned lane.",
             "silent_stranded_p0_or_remediation": (
                 "P0/remediation work in claimed/in_progress without live pickup evidence from "
-                "coordinator lane state or an exact hapax-claude-headless launcher; offered is "
-                "separately counted as visible queue backlog, and blocked is counted as a durable blocker."
+                "fresh coordinator lane state or an exact hapax-claude-headless launcher; offered "
+                "is separately counted as visible queue backlog, and blocked is counted as a durable "
+                "blocker. Stale coordinator state is reported as evidence but is not accepted as pickup."
             ),
             "undrained_p0_incident_intake": (
                 "Notification-fed P0 incident-intake work in offered/claimed/in_progress that has "
@@ -442,6 +500,7 @@ def build_report(
         "stale_claims": stale_claims,
         "claim_grace": claim_grace,
         "claim_records": [asdict(claim) for claim in claim_records],
+        "coordinator_state_status": coordinator_state_status,
         "coordinator_state": coordinator_state,
     }
 
@@ -453,6 +512,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--coordinator-state", type=Path, default=DEFAULT_COORDINATOR_STATE)
     parser.add_argument("--lane-pid-dir", type=Path, default=DEFAULT_LANE_PID_DIR)
     parser.add_argument("--claim-grace-seconds", type=int, default=DEFAULT_CLAIM_GRACE_SECONDS)
+    parser.add_argument(
+        "--coordinator-state-max-age-seconds",
+        type=int,
+        default=DEFAULT_COORDINATOR_STATE_MAX_AGE_SECONDS,
+    )
     parser.add_argument("--output", type=Path)
     return parser
 
@@ -465,6 +529,7 @@ def main(argv: list[str] | None = None) -> int:
         args.coordinator_state.expanduser(),
         args.lane_pid_dir.expanduser(),
         claim_grace_seconds=args.claim_grace_seconds,
+        coordinator_state_max_age_seconds=args.coordinator_state_max_age_seconds,
     )
     text = json.dumps(report, indent=2, sort_keys=True)
     if args.output:

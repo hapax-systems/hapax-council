@@ -145,6 +145,46 @@ def test_coordinator_live_lane_claim_satisfies_pickup(tmp_path: Path) -> None:
     assert report["counts"]["silent_stranded_p0_or_remediation"] == 0
 
 
+def test_stale_coordinator_lane_claim_does_not_satisfy_pickup(tmp_path: Path) -> None:
+    audit = _audit_module()
+    tasks = tmp_path / "tasks"
+    cache = tmp_path / "cache"
+    pid_dir = tmp_path / "pids"
+    state = tmp_path / "state.json"
+    tasks.mkdir()
+    cache.mkdir()
+    pid_dir.mkdir()
+    _task(
+        tasks,
+        "assigned-p0",
+        "task_id: assigned-p0\nstatus: in_progress\nassigned_to: gamma\npriority: p0\n",
+    )
+    state.write_text(
+        json.dumps(
+            {"timestamp": 1, "lanes": {"gamma": {"alive": True, "claimed_task": "assigned-p0"}}}
+        ),
+        encoding="utf-8",
+    )
+    os.utime(state, (1, 1))
+
+    report = audit.build_report(
+        tasks,
+        cache,
+        state,
+        pid_dir,
+        coordinator_state_max_age_seconds=60,
+    )
+
+    assert report["counts"]["silent_stranded_p0_or_remediation"] == 1
+    assert report["coordinator_state_status"]["fresh"] is False
+    assert "file_mtime_stale" in report["coordinator_state_status"]["reasons"]
+    stranded = report["silent_stranded_p0_or_remediation"][0]
+    assert stranded["task_id"] == "assigned-p0"
+    assert stranded["pickup_evidence"] == [
+        {"kind": "stale_coordinator_lane_claim", "role": "gamma"}
+    ]
+
+
 def test_offered_notification_p0_counts_as_undrained_not_silent(tmp_path: Path) -> None:
     audit = _audit_module()
     tasks = tmp_path / "tasks"
