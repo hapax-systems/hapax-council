@@ -80,6 +80,11 @@ class PhasePlan:
     def __post_init__(self) -> None:
         if not self.criteria:
             raise ValueError("PhasePlan.criteria must be non-empty")
+        if any(not (1.0 < c <= 5.0) for c in self.criteria):
+            raise ValueError(
+                "PhasePlan.criteria must lie on the gate-operative (1.0, 5.0] coherence rubric "
+                "(prep refuses an out-of-range criterion, so a bad value crashes the prep pass)"
+            )
         keys = [round(c, _CRITERION_KEY_PRECISION) for c in self.criteria]
         if len(set(keys)) != len(keys):
             raise ValueError(
