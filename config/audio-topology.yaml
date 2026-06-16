@@ -168,8 +168,10 @@ nodes:
     industrial_name: interface.mk5.usb-in.multichannel
     description: |
       MOTU UltraLite mk5 pro-audio multichannel capture endpoint. AUX0 is the
-      Rode Wireless Pro operator mic; AUX2/3 are the wet S-4 analog insert
-      return.
+      Rode Wireless Pro operator mic (physical input 1); AUX1 is the Cortado MKIII
+      contact mic (physical input 2, perceptual/quarantine — see
+      config/perception-registry.yaml cortado.hw_source; supersedes the retired
+      L-12 CH2 mapping); AUX2/3 are the wet S-4 analog insert return.
     hw: hw:CARD=UltraLitemk5
     channels:
       count: 10
@@ -177,6 +179,7 @@ nodes:
     params:
       audit_role: mk5-broadcast-interface
       operator_mic_position: AUX0
+      contact_mic_position: AUX1
       s4_wet_return_positions: AUX2 AUX3
       retired_replacement_for: mpc-usb-return
 

@@ -45,6 +45,7 @@ and `alsa_input.usb-MOTU_UltraLite-mk5_…pro-input-0` at 48 kHz.
 | Jack | PipeWire port | Connects | Role |
 |------|---------------|----------|------|
 | IN 1 | `pro-input-0:capture_AUX0` (mono) | Rode Wireless Pro | operator voice |
+| IN 2 | `pro-input-0:capture_AUX1` (mono) | Cortado MKIII contact mic | perceptual / quarantine (`contact_mic`; NOT broadcast — see `config/perception-registry.yaml` cortado.hw_source) |
 | IN 3 | `pro-input-0:capture_AUX2` | S-4 line out 1 | wet voice return L |
 | IN 4 | `pro-input-0:capture_AUX3` | S-4 line out 2 | wet voice return R |
 | OUT 3 | `pro-output-0:playback_AUX2` | S-4 line in 1 | dry voice send L |

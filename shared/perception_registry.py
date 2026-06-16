@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shared.audio_graph.model import ExposureDomain
 from shared.percepts import GeometryClass
@@ -65,6 +65,37 @@ class ArchiveSpec(BaseModel):
     description: str = ""
 
 
+class HwSource(BaseModel):
+    """The point's hardware capture binding — the SINGLE typed source for the
+    generated pipewire loopback conf's ``node.target`` + ``audio.position``.
+
+    Exists to eliminate the hand-typed channel that drifted: cortado's conf
+    targeted the retired Zoom L-12 so ``contact_mic`` fell through to mk5
+    capture_AUX0 (the Rode) = an eavesdrop class. With this typed, the
+    generator emits the conf from here and there is nothing left to hand-type
+    (REQ-20260616-perception-audio-ssot-program, Phase 1)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    node_target: str
+    """ALSA capture device the loopback binds to (e.g. the mk5 pro-input)."""
+    position: str
+    """``audio.position`` channel on that device (e.g. ``AUX1`` = mk5 line-in 2).
+    AUX positions are normalized to UPPERCASE (see the validator)."""
+
+    @field_validator("position")
+    @classmethod
+    def _normalize_aux_position(cls, v: str) -> str:
+        """Force AUX channel positions UPPERCASE so the lowercase-aux eavesdrop is
+        impossible to express. pipewire matches ``audio.position`` against the
+        device's channel position ("AUX1"); lowercase "aux1" does NOT match and
+        silently falls back to the first port (capture_AUX0 = the Rode). Making
+        this impossible-by-construction is the formal closure (REQ-20260616)."""
+        if v.lower().startswith("aux") and v[3:].isdigit():
+            return "AUX" + v[3:]
+        return v
+
+
 class PerceptionPoint(BaseModel):
     """One capture point — a physical sensor with a geometry class."""
 
@@ -75,6 +106,10 @@ class PerceptionPoint(BaseModel):
     description: str = ""
     pipewire_node: str | None = None
     """Substring ``pw-cat --record --target`` accepts (None for future points)."""
+    hw_source: HwSource | None = None
+    """Typed hardware capture binding the generator emits the loopback conf
+    from (device + audio.position). When set, the conf is generated, not
+    hand-typed — drift-impossible-by-construction."""
     av_pair: str | None = None
     """camera-loopback role this mic is lens-co-located with (av_paired only)."""
     channels: dict[str, PerceptChannel] = Field(default_factory=dict)

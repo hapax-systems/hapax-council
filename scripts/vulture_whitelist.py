@@ -4149,3 +4149,12 @@ mint_session_id
 claim_paths
 session_role_marker_path
 identity_stamp
+
+# Pydantic v2 @field_validator on the perception-registry HwSource — invoked by
+# model validation (the AUX-position uppercase normalization that makes the
+# lowercase-aux eavesdrop impossible), not a static call. REQ-20260616 Phase 1.
+from shared.perception_registry import (
+    HwSource as _HwSource,
+)
+
+_HwSource._normalize_aux_position
