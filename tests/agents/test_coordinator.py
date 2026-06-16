@@ -1128,13 +1128,14 @@ class TestOrphanClaimRecovery:
         *,
         name: str = "p0-orphan",
         assigned_to: str = "alpha",
+        status: str = "claimed",
         claimed_at: str = "2000-01-01T00:00:00Z",
     ) -> Path:
         path = tmp_path / f"{name}.md"
         path.write_text(
             f"""---
 title: "P0 orphan"
-status: claimed
+status: {status}
 assigned_to: {assigned_to}
 priority: p0
 claimed_at: {claimed_at}
@@ -1149,6 +1150,22 @@ Body.
 
     def test_stale_claimed_p0_without_live_pickup_reoffers(self, tmp_path: Path):
         path = self._task_note(tmp_path)
+        task = _parse_task(path)
+        assert task is not None
+        ledger = tmp_path / "authority-case-ledger.jsonl"
+
+        with patch("agents.coordinator.core.REOFFER_LEDGER", ledger):
+            count = Coordinator()._reoffer_orphaned_claims([task], {}, now_wall=time.time())
+
+        assert count == 1
+        reparsed = _parse_task(path)
+        assert reparsed is not None
+        assert reparsed.status == "offered"
+        assert reparsed.assigned_to == "unassigned"
+        assert "orphan_claim_reoffer" in ledger.read_text(encoding="utf-8")
+
+    def test_stale_in_progress_p0_without_live_pickup_reoffers(self, tmp_path: Path):
+        path = self._task_note(tmp_path, status="in_progress")
         task = _parse_task(path)
         assert task is not None
         ledger = tmp_path / "authority-case-ledger.jsonl"

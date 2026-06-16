@@ -681,7 +681,9 @@ class Coordinator:
         for task in tasks:
             if reoffered >= MAX_ORPHAN_CLAIM_REOFFERS_PER_TICK:
                 break
-            if task.status != "claimed" or not _is_p0_or_remediation_task(task):
+            if task.status not in {"claimed", "in_progress"} or not _is_p0_or_remediation_task(
+                task
+            ):
                 continue
             if _task_claim_age_s(task, now_wall=now_wall) < ORPHAN_CLAIM_REOFFER_GRACE_S:
                 continue
@@ -693,7 +695,7 @@ class Coordinator:
 
     def _reoffer_orphaned_claim(self, task: Task, lanes: dict[str, LaneState]) -> bool:
         current = _parse_task(task.path)
-        if current is None or current.status != "claimed":
+        if current is None or current.status not in {"claimed", "in_progress"}:
             return False
         lane = lanes.get(current.assigned_to) or LaneState(role=current.assigned_to)
         if _task_has_live_pickup(current, {current.assigned_to: lane}):
@@ -704,7 +706,7 @@ class Coordinator:
             return False
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         new = re.sub(
-            r"^status:\s*['\"]?claimed['\"]?\s*$",
+            r"^status:\s*['\"]?(?:claimed|in_progress)['\"]?\s*$",
             "status: offered",
             text,
             count=1,
