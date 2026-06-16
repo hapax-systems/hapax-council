@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -57,8 +58,12 @@ def test_report_counts_flow_states_and_stranded_items(tmp_path: Path) -> None:
         "pr-open",
         "task_id: pr-open\nstatus: pr_open\nassigned_to: cx-red\npriority: p0\n",
     )
-    (cache / "cc-active-task-delta").write_text("missing-task\n", encoding="utf-8")
-    (cache / "cc-active-task-gamma-session").write_text("remediation-blocked\n", encoding="utf-8")
+    missing_claim = cache / "cc-active-task-delta"
+    blocked_claim = cache / "cc-active-task-gamma-session"
+    missing_claim.write_text("missing-task\n", encoding="utf-8")
+    blocked_claim.write_text("remediation-blocked\n", encoding="utf-8")
+    os.utime(missing_claim, (1, 1))
+    os.utime(blocked_claim, (1, 1))
 
     report = audit.build_report(tasks, cache, tmp_path / "missing-state.json")
 
@@ -73,6 +78,39 @@ def test_report_counts_flow_states_and_stranded_items(tmp_path: Path) -> None:
     reasons = {item["task_id"]: item["reason"] for item in report["stale_claims"]}
     assert reasons["missing-task"] == "task_not_active"
     assert reasons["remediation-blocked"] == "blocked-unassigned"
+
+
+def test_report_keeps_fresh_claim_churn_in_grace_bucket(tmp_path: Path) -> None:
+    audit = _audit_module()
+    tasks = tmp_path / "tasks"
+    cache = tmp_path / "cache"
+    tasks.mkdir()
+    cache.mkdir()
+    (cache / "cc-active-task-delta").write_text("missing-task\n", encoding="utf-8")
+
+    report = audit.build_report(tasks, cache, tmp_path / "missing-state.json")
+
+    assert report["counts"]["stale_claim"] == 0
+    assert report["counts"]["claim_grace"] == 1
+
+
+def test_claim_file_may_reference_note_stem_alias(tmp_path: Path) -> None:
+    audit = _audit_module()
+    tasks = tmp_path / "tasks"
+    cache = tmp_path / "cache"
+    tasks.mkdir()
+    cache.mkdir()
+    _task(
+        tasks,
+        "long-filename-descriptor",
+        "task_id: short-task\nstatus: claimed\nassigned_to: gamma\npriority: p0\n",
+    )
+    (cache / "cc-active-task-gamma").write_text("long-filename-descriptor\n", encoding="utf-8")
+
+    report = audit.build_report(tasks, cache, tmp_path / "missing-state.json")
+
+    assert report["counts"]["stale_claim"] == 0
+    assert report["counts"]["claim_grace"] == 0
 
 
 def test_cli_writes_report(tmp_path: Path) -> None:

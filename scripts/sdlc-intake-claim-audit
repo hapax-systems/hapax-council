@@ -16,6 +16,7 @@ import yaml
 DEFAULT_TASKS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
 DEFAULT_CACHE_DIR = Path.home() / ".cache/hapax"
 DEFAULT_COORDINATOR_STATE = Path("/dev/shm/hapax-coordinator/state.json")
+DEFAULT_CLAIM_GRACE_SECONDS = 300
 FLOW_STATUS_KEYS = ("offered", "claimed", "in_progress", "blocked", "pr_open")
 UNOWNED_VALUES = {"", "null", "none", "~", "unassigned"}
 
@@ -114,8 +115,12 @@ def claim_role(path: Path) -> str:
     return name[len(prefix) :].split("-", 1)[0]
 
 
-def claim_signals(cache_dir: Path, tasks_by_id: dict[str, TaskRecord]) -> list[dict[str, str]]:
+def claim_signals(
+    cache_dir: Path, tasks_by_id: dict[str, TaskRecord], *, grace_seconds: int
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     signals: list[dict[str, str]] = []
+    grace: list[dict[str, str]] = []
+    now = datetime.now(UTC).timestamp()
     for path in sorted(cache_dir.glob("cc-active-task*")):
         try:
             task_id = path.read_text(encoding="utf-8", errors="ignore").strip().splitlines()[0]
@@ -131,15 +136,22 @@ def claim_signals(cache_dir: Path, tasks_by_id: dict[str, TaskRecord]) -> list[d
             if task.status == "blocked" and task.assigned_to in UNOWNED_VALUES:
                 reason = "blocked-unassigned"
         if reason:
-            signals.append(
-                {
-                    "claim_file": str(path),
-                    "role": claim_role(path),
-                    "task_id": task_id,
-                    "reason": reason,
-                }
-            )
-    return signals
+            try:
+                age_s = max(0, int(now - path.stat().st_mtime))
+            except OSError:
+                age_s = 0
+            record = {
+                "claim_file": str(path),
+                "role": claim_role(path),
+                "task_id": task_id,
+                "reason": reason,
+                "age_s": str(age_s),
+            }
+            if age_s > grace_seconds:
+                signals.append(record)
+            else:
+                grace.append(record)
+    return signals, grace
 
 
 def read_coordinator_state(path: Path) -> dict[str, Any] | None:
@@ -150,16 +162,26 @@ def read_coordinator_state(path: Path) -> dict[str, Any] | None:
     return loaded if isinstance(loaded, dict) else None
 
 
-def build_report(tasks_dir: Path, cache_dir: Path, coordinator_state_path: Path) -> dict[str, Any]:
+def build_report(
+    tasks_dir: Path,
+    cache_dir: Path,
+    coordinator_state_path: Path,
+    *,
+    claim_grace_seconds: int = DEFAULT_CLAIM_GRACE_SECONDS,
+) -> dict[str, Any]:
     tasks = load_tasks(tasks_dir)
     tasks_by_id = {task.task_id: task for task in tasks}
+    for task in tasks:
+        tasks_by_id.setdefault(Path(task.path).stem, task)
     status_counter = Counter(task.status for task in tasks)
     status_counts = {status: int(status_counter.get(status, 0)) for status in FLOW_STATUS_KEYS}
     remediation = [task for task in tasks if is_remediation(task)]
     p0_or_remediation = [task for task in tasks if is_p0_or_remediation(task)]
     no_owner = [task for task in tasks if is_no_owner(task)]
     silent_stranded = [task for task in p0_or_remediation if is_silently_stranded(task)]
-    stale_claims = claim_signals(cache_dir, tasks_by_id)
+    stale_claims, claim_grace = claim_signals(
+        cache_dir, tasks_by_id, grace_seconds=claim_grace_seconds
+    )
     return {
         "observed_at": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "tasks_dir": str(tasks_dir),
@@ -171,11 +193,13 @@ def build_report(tasks_dir: Path, cache_dir: Path, coordinator_state_path: Path)
             "p0_or_remediation": len(p0_or_remediation),
             "no_owner": len(no_owner),
             "stale_claim": len(stale_claims),
+            "claim_grace": len(claim_grace),
             "silent_stranded_p0_or_remediation": len(silent_stranded),
         },
         "silent_stranded_p0_or_remediation": [asdict(task) for task in silent_stranded],
         "no_owner_tasks": [asdict(task) for task in no_owner],
         "stale_claims": stale_claims,
+        "claim_grace": claim_grace,
         "coordinator_state": read_coordinator_state(coordinator_state_path),
     }
 
@@ -185,6 +209,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tasks-dir", type=Path, default=DEFAULT_TASKS_DIR)
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     parser.add_argument("--coordinator-state", type=Path, default=DEFAULT_COORDINATOR_STATE)
+    parser.add_argument("--claim-grace-seconds", type=int, default=DEFAULT_CLAIM_GRACE_SECONDS)
     parser.add_argument("--output", type=Path)
     return parser
 
@@ -195,6 +220,7 @@ def main(argv: list[str] | None = None) -> int:
         args.tasks_dir.expanduser(),
         args.cache_dir.expanduser(),
         args.coordinator_state.expanduser(),
+        claim_grace_seconds=args.claim_grace_seconds,
     )
     text = json.dumps(report, indent=2, sort_keys=True)
     if args.output:
