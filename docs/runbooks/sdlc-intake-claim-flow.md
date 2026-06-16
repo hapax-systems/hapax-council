@@ -41,6 +41,20 @@ claimed/in-progress without live owner evidence.
 blocked/unassigned task. Treat these as cleanup or routing repair inputs unless a
 fresh lane launcher also proves ownership.
 
+## Incident Memory
+
+Notification-fed P0 incidents are fingerprinted. Repeated alerts update the
+active incident task and append `~/.cache/hapax/p0-incident-intake/events.jsonl`.
+If the matching task is already in `closed/`, intake must mint a new active
+recurrence task instead of silently editing the closed note. The recurrence task
+links `recurrence_of_task_id` / `recurrence_of_task_path` and carries the prior
+Resolution/Post-mortem excerpt into `## Prior Incident Context`.
+
+P0 incident tasks include `## Acceptance criteria` and `## Post-mortem`; closure
+should document root cause, remediation/refusal, verification evidence,
+recurrence prevention, and follow-up tasks. A flow that drains notifications but
+forgets its own prior failures is not healthy flow.
+
 ## Runtime Gates
 
 These user units are part of the governed intake drain and must be installed.

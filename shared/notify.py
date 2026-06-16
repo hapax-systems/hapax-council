@@ -176,6 +176,8 @@ _DESKTOP_URGENCY_BYTE = {
     "urgent": 2,
 }
 
+_TECHNICAL_NOTIFICATION_APPS = {"Hapax System", "LLM Stack", "notify-send"}
+
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
@@ -214,6 +216,7 @@ def send_notification(
 
     replace_id: int | None = None
     intake_task_id: str | None = None
+    intake_recorded = False
     intake = _record_p0_incident_intake(
         title,
         message,
@@ -225,6 +228,16 @@ def send_notification(
         message = _with_sdlc_intake_marker(message, intake.task_id)
         intake_task_id = intake.task_id
         replace_id = intake.replace_id
+        intake_recorded = True
+
+    if intake_recorded and intake_task_id is not None:
+        _dismiss_existing_intake_notifications(intake_task_id)
+        _dismiss_existing_consumed_notifications(title, intake_task_id)
+
+        _emit_watershed_event(title, message, tags, priority)
+        if not _desktop_after_successful_p0_intake():
+            _log.info("P0 intake consumed technical notification: %s -> %s", title, intake_task_id)
+            return True
 
     if _is_duplicate(title, message):
         _log.debug("Suppressed duplicate notification: %s", title)
@@ -238,8 +251,6 @@ def send_notification(
         return True
 
     try:
-        if intake_task_id is not None:
-            _dismiss_existing_intake_notifications(intake_task_id)
         if replace_id is None:
             delivered = _send_desktop(title, message, priority=priority)
         else:
@@ -407,8 +418,34 @@ def _with_sdlc_intake_marker(message: str, task_id: str) -> str:
     return f"{message.rstrip()}\n{marker}" if message.strip() else marker
 
 
+def _desktop_after_successful_p0_intake() -> bool:
+    return os.environ.get("HAPAX_NOTIFY_DESKTOP_AFTER_P0_INTAKE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _dismiss_existing_intake_notifications(task_id: str) -> None:
     marker = f"SDLC intake: {task_id}"
+    _dismiss_mako_notifications(lambda notification: marker in str(notification.get("body") or ""))
+
+
+def _dismiss_existing_consumed_notifications(title: str, task_id: str) -> None:
+    marker = f"SDLC intake: {task_id}"
+    title = title.strip()
+
+    def _matches(notification: dict) -> bool:
+        app_name = str(notification.get("app_name") or notification.get("app-name") or "")
+        summary = str(notification.get("summary") or notification.get("title") or "").strip()
+        body = str(notification.get("body") or "")
+        return marker in body or (summary == title and app_name in _TECHNICAL_NOTIFICATION_APPS)
+
+    _dismiss_mako_notifications(_matches)
+
+
+def _dismiss_mako_notifications(predicate) -> None:
     try:
         result = _run_subprocess(
             ["makoctl", "list", "-j"],
@@ -424,9 +461,8 @@ def _dismiss_existing_intake_notifications(task_id: str) -> None:
         for notification in notifications:
             if not isinstance(notification, dict):
                 continue
-            body = str(notification.get("body") or "")
             notification_id = notification.get("id")
-            if marker not in body or notification_id is None:
+            if notification_id is None or not predicate(notification):
                 continue
             _run_subprocess(
                 ["makoctl", "dismiss", "--no-history", "-n", str(notification_id)],

@@ -20,7 +20,10 @@ EnvironmentFile=-/run/user/1000/hapax-secrets.env
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=hapax-quota-telemetry
-MemoryMax=256M
+# Receipt refresh imports several provider/client surfaces and briefly exceeds
+# the old 256M cap on live hosts; reclaim first and keep a hard ceiling.
+MemoryHigh=512M
+MemoryMax=1G
 TimeoutStartSec=180
 # Killswitch: `systemctl --user mask hapax-quota-telemetry.timer` stops the
 # writer; receipts then lapse after quota stale_after (15m) and the live ledger

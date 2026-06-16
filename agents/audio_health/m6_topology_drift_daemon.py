@@ -238,21 +238,19 @@ def _emit_snapshot(state: DriftState, modules: list[ModuleInfo], *, now: float, 
 
 
 def _send_ntfy(direction: str, detail: str) -> None:
-    """Send desktop notification."""
+    """Route topology drift through governed P0 intake."""
     try:
-        subprocess.run(
-            [
-                "notify-send",
-                "--urgency=normal",
-                "--app-name=LLM Stack",
-                "Audio: Topology Drift",
-                f"Topology drift: module {direction} — {detail}",
-            ],
-            capture_output=True,
-            timeout=5,
+        from shared.notify import send_notification
+
+        send_notification(
+            "Audio: Topology Drift",
+            f"Topology drift: module {direction} — {detail}",
+            priority="high",
+            tags=["audio", "warning"],
+            technical=True,
         )
     except Exception:
-        log.debug("notify-send failed", exc_info=True)
+        log.debug("topology drift notification failed", exc_info=True)
 
 
 def run_daemon(config: M6DaemonConfig | None = None) -> None:

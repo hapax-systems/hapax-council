@@ -12,6 +12,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-quota-telemetry-writer"
 FIXTURES = REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json"
+UNIT = REPO_ROOT / "systemd" / "units" / "hapax-quota-telemetry.service"
 NOW = "2026-06-10T00:00:00Z"
 
 
@@ -189,3 +190,11 @@ def test_no_secret_material_in_output(tmp_path: Path) -> None:
         "hapax-secrets.env",
     ):
         assert token not in text
+
+
+def test_systemd_unit_allows_receipt_refresh_import_spike() -> None:
+    text = UNIT.read_text(encoding="utf-8")
+
+    assert "MemoryHigh=512M" in text
+    assert "MemoryMax=1G" in text
+    assert "MemoryMax=256M" not in text

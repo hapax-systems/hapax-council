@@ -100,6 +100,7 @@ REOFFER_LEDGER = Path(
 
 FALLBACK_LANE_ROLES = ("alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta")
 LANE_ROLES = FALLBACK_LANE_ROLES
+DEFAULT_P0_DRAIN_LANES = "cx-red:codex,cx-p0:codex,cx-crit:codex"
 SESSION_PREFIXES = (
     ("hapax-claude-", "claude"),
     ("hapax-codex-", "codex"),
@@ -176,6 +177,8 @@ class LaneDescriptor:
     role: str
     session: str
     platform: str
+    startable: bool = False
+    p0_drain: bool = False
 
 
 @dataclass
@@ -193,6 +196,8 @@ class LaneState:
     idle: bool = True
     output_age_s: float = float("inf")  # age of the freshest progress signal
     stalled: bool = False  # ground-truth projection, re-derived each tick
+    startable: bool = False
+    p0_drain: bool = False
 
 
 @dataclass
@@ -239,6 +244,17 @@ class Coordinator:
         if orphan_reoffers:
             tasks = self._scan_tasks()
         offered = [t for t in tasks if t.status == "offered"]
+        idle_lanes = [l for l in lanes.values() if l.alive and l.idle and l.claimed_task is None]
+        p0_offered = [task for task in offered if _is_p0_or_remediation_task(task)]
+        p0_drain_lanes = []
+        if p0_offered and not idle_lanes and admission.state != "closed":
+            p0_drain_lanes = _p0_drain_lane_states(lanes)
+            for lane in p0_drain_lanes:
+                lanes[lane.role] = lane
+            idle_lanes = [
+                l for l in lanes.values() if l.alive and l.idle and l.claimed_task is None
+            ]
+
         state = CoordinatorState(
             timestamp=time.time(),
             offered_tasks=len(offered),
@@ -251,7 +267,6 @@ class Coordinator:
         )
 
         dispatches = 0
-        idle_lanes = [l for l in lanes.values() if l.alive and l.idle and l.claimed_task is None]
 
         # L3: pace the dispatch loop under CPU pressure. 'closed' dispatches
         # nothing this tick (tasks stay offered — queued, not dropped); 'paced'
@@ -309,6 +324,7 @@ class Coordinator:
         # loop. The converge ceiling (max_dispatches) and cooldown are unchanged.
         now_mono = time.monotonic()
         age_norm_s = _age_norm_s(cache)
+        dispatch_offered = p0_offered if p0_drain_lanes else offered
         queue_tasks = [
             QueueTask(
                 task_id=t.task_id,
@@ -316,7 +332,7 @@ class Coordinator:
                 platform_suitability=t.platform_suitability,
                 age_s=max(0.0, state.timestamp - t.created_at) if t.created_at else 0.0,
             )
-            for t in offered
+            for t in dispatch_offered
         ]
         queue_lanes = [
             QueueLane(
@@ -342,7 +358,7 @@ class Coordinator:
         plan, skipped_cooldown = self._repair_cooled_plan(
             plan, queue_tasks, queue_lanes, age_norm_s=age_norm_s, now_mono=now_mono
         )
-        task_by_id = {t.task_id: t for t in offered}
+        task_by_id = {t.task_id: t for t in dispatch_offered}
         lane_by_role = {l.role: l for l in idle_lanes}
         for task_id, role in plan:
             task = task_by_id.get(task_id)
@@ -1042,6 +1058,78 @@ def _discover_lanes() -> list[LaneDescriptor]:
     return sorted(lanes_by_role.values(), key=lambda lane: lane.role)
 
 
+def _lane_worktree(role: str, platform: str) -> Path:
+    override = os.environ.get("HAPAX_DISPATCH_WORKTREE")
+    if override:
+        return Path(override).expanduser()
+    root = Path(os.environ.get("HAPAX_DISPATCH_PROJECT_ROOT", str(Path.home() / "projects")))
+    if platform == "codex":
+        if role.startswith("cx-"):
+            return root / f"hapax-council--{role}"
+        return root / f"hapax-council--cx-{role}"
+    if platform == "claude":
+        return root / "hapax-council" if role == "alpha" else root / f"hapax-council--{role}"
+    return root / f"hapax-council--{role}"
+
+
+def _p0_drain_lane_descriptors() -> list[LaneDescriptor]:
+    raw = os.environ.get("HAPAX_COORDINATOR_P0_DRAIN_LANES", DEFAULT_P0_DRAIN_LANES)
+    descriptors: list[LaneDescriptor] = []
+    for item in raw.split(","):
+        spec = item.strip()
+        if not spec:
+            continue
+        if ":" in spec:
+            role, platform = spec.split(":", 1)
+        else:
+            role, platform = spec, "codex"
+        role = role.strip()
+        platform = platform.strip().lower().replace("_", "-")
+        if not role or platform not in SUPPORTED_DISPATCH_PLATFORMS:
+            continue
+        descriptors.append(
+            LaneDescriptor(role=role, session="", platform=platform, startable=True, p0_drain=True)
+        )
+    return descriptors
+
+
+def _lane_has_active_claim(role: str, session: str = "") -> bool:
+    for active_task_file in _active_task_candidates(role, session):
+        try:
+            if active_task_file.read_text(encoding="utf-8").strip():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _p0_drain_lane_states(existing_lanes: dict[str, LaneState]) -> list[LaneState]:
+    states: list[LaneState] = []
+    for descriptor in _p0_drain_lane_descriptors():
+        if descriptor.role in existing_lanes:
+            continue
+        if _lane_has_active_claim(descriptor.role, descriptor.session):
+            continue
+        worktree = _lane_worktree(descriptor.role, descriptor.platform)
+        if not (worktree / "scripts" / "cc-claim").is_file():
+            continue
+        if not (worktree / "scripts" / "cc-close").is_file():
+            continue
+        states.append(
+            LaneState(
+                role=descriptor.role,
+                session=descriptor.session,
+                platform=descriptor.platform,
+                alive=True,
+                idle=True,
+                pid_source="p0-drain-startable",
+                startable=True,
+                p0_drain=True,
+            )
+        )
+    return states
+
+
 def _relay_candidates(role: str, session: str = "") -> list[Path]:
     candidates = [
         RELAY_DIR / f"{role}-status.yaml",
@@ -1319,7 +1407,12 @@ def _check_lane(lane: str | LaneDescriptor) -> LaneState:
         session=descriptor.session,
         platform=descriptor.platform,
         alive=bool(descriptor.session),
+        startable=descriptor.startable,
+        p0_drain=descriptor.p0_drain,
     )
+    if descriptor.startable:
+        state.alive = True
+        state.pid_source = "startable"
 
     pidfile = _pid_dir_for_platform(descriptor.platform) / f"{descriptor.role}.pid"
     if pidfile.exists():
@@ -1519,4 +1612,6 @@ def _lane_to_dict(lane: LaneState) -> dict:
         "idle": lane.idle,
         "stalled": lane.stalled,
         "output_age_s": round(lane.output_age_s, 1) if lane.output_age_s != float("inf") else None,
+        "startable": lane.startable,
+        "p0_drain": lane.p0_drain,
     }

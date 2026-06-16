@@ -81,6 +81,9 @@ def test_service_failure_creates_governed_p0_task(tmp_path):
     assert "source_mutation_authorized: true" in task
     assert "runtime_mutation_authorized: true" in task
     assert "## Required Work" in task
+    assert "## Acceptance criteria" in task
+    assert "## Post-mortem" in task
+    assert "recurrence-prevention notes are written" in task
     assert str(ledger_path) in task
     assert str(state_path) in task
 
@@ -138,6 +141,87 @@ def test_same_incident_updates_existing_task(tmp_path):
     assert "INV-2 false: local worktree ledger drift remains" in latest
     assert "INV-2 false: local worktree ledger drift\n```" not in latest
     assert "p0-incident-intake updated" in task
+
+
+def test_recurrence_after_closed_task_mints_new_active_task_with_prior_context(tmp_path):
+    task_root = tmp_path / "tasks"
+    state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+    first = datetime(2026, 6, 12, 20, 0, tzinfo=UTC)
+    second = first + timedelta(hours=2)
+
+    first_result = record_notification(
+        "Service Failed: demo.service",
+        "first failure text",
+        priority="urgent",
+        tags=["skull"],
+        task_root=task_root,
+        state_path=state_path,
+        ledger_path=ledger_path,
+        now=first,
+    )
+    assert first_result.task_path is not None
+    first_task = first_result.task_path.read_text(encoding="utf-8")
+    first_task = first_task.replace("status: offered", "status: done", 1)
+    first_task = first_task.replace("completed_at: null", "completed_at: 2026-06-12T20:30:00Z", 1)
+    first_task += textwrap.dedent(
+        """
+
+        ## Resolution
+
+        Root cause: demo unit used a stale deploy path.
+        Remediation: unit path was source-activation rooted.
+        Verification: journal stayed clean for one timer cycle.
+        """
+    )
+    closed_dir = task_root / "closed"
+    closed_dir.mkdir(parents=True)
+    closed_path = closed_dir / first_result.task_path.name
+    closed_path.write_text(first_task, encoding="utf-8")
+    first_result.task_path.unlink()
+
+    second_result = record_notification(
+        "Service Failed: demo.service",
+        "second failure text after the prior task was closed",
+        priority="urgent",
+        tags=["skull"],
+        task_root=task_root,
+        state_path=state_path,
+        ledger_path=ledger_path,
+        now=second,
+    )
+
+    assert second_result.created is True
+    assert second_result.updated is False
+    assert second_result.recurrence is True
+    assert second_result.recurrence_of_task_id == first_result.task_id
+    assert second_result.recurrence_of_task_path == closed_path
+    assert second_result.task_id != first_result.task_id
+    assert second_result.task_id == f"{first_result.task_id}-r1"
+    assert second_result.task_path is not None
+    assert second_result.task_path.parent == task_root / "active"
+    assert closed_path.exists()
+
+    task = second_result.task_path.read_text(encoding="utf-8")
+    assert "## Prior Incident Context" in task
+    assert f"recurrence_of_task_id: {first_result.task_id}" in task
+    assert f'recurrence_of_task_path: "{closed_path}"' in task
+    assert "This alert recurred after prior task" in task
+    assert "Root cause: demo unit used a stale deploy path." in task
+    assert "second failure text after the prior task was closed" in task
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    incident = state["incidents"][first_result.fingerprint]
+    assert incident["task_id"] == second_result.task_id
+    assert incident["base_task_id"] == first_result.task_id
+    assert incident["recurrence_count"] == 1
+    assert incident["recurrence_of_task_id"] == first_result.task_id
+    assert incident["recurrence_of_task_path"] == str(closed_path)
+
+    events = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
+    assert events[-1]["recurrence"] is True
+    assert events[-1]["recurrence_count"] == 1
+    assert events[-1]["recurrence_of_task_id"] == first_result.task_id
 
 
 def test_existing_task_without_latest_alert_gets_repaired(tmp_path):
@@ -330,7 +414,58 @@ def test_lufs_panic_cap_alert_gets_technical_intake():
     assert classification.fingerprint == "audio_lufs_breach:lufs-panic-cap"
 
 
-def test_service_failed_cli_records_incident_and_sends_bounded_pointer(tmp_path):
+def test_audio_topology_drift_alert_gets_technical_intake():
+    classification = classify_notification(
+        "Audio: Topology Drift",
+        "Topology drift: module appeared — +module-loopback:source=hapax-livestream",
+        priority="high",
+        tags=["audio", "warning"],
+    )
+
+    assert classification.technical is True
+    assert classification.kind == "audio_topology_drift"
+    assert classification.fingerprint == "audio_topology_drift:audio-topology-drift"
+
+
+def test_sdlc_dispatch_refusal_alert_gets_technical_intake():
+    classification = classify_notification(
+        "SDLC: dispatch refusal circuit breaker",
+        "Task p0-incident-demo refused 3x on lane delta. Reason: dispatch_exit_16",
+        priority="high",
+        tags=["sdlc", "no-spin"],
+    )
+
+    assert classification.technical is True
+    assert classification.kind == "sdlc_dispatch_refusal"
+    assert classification.fingerprint == "sdlc_dispatch_refusal:p0-incident-demo"
+
+
+def test_sdlc_task_stuck_alert_gets_technical_intake():
+    classification = classify_notification(
+        "SDLC: task stuck, blocked",
+        "p0-incident-demo stalled and was reoffered 3x without progress; set to blocked.",
+        priority="high",
+        tags=["sdlc", "stalled"],
+    )
+
+    assert classification.technical is True
+    assert classification.kind == "sdlc_task_stalled"
+    assert classification.fingerprint == "sdlc_task_stalled:p0-incident-demo"
+
+
+def test_sdlc_dispatch_starvation_alert_gets_technical_intake():
+    classification = classify_notification(
+        "SDLC: dispatch starvation detected",
+        "225 offered tasks have not dispatched for 3600s.",
+        priority="high",
+        tags=["sdlc", "no-spin"],
+    )
+
+    assert classification.technical is True
+    assert classification.kind == "sdlc_dispatch_starvation"
+
+
+def test_service_failed_cli_records_incident_and_consumes_desktop_by_default(tmp_path):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     notify_log = tmp_path / "notify.log"
@@ -375,6 +510,51 @@ def test_service_failed_cli_records_incident_and_sends_bounded_pointer(tmp_path)
     assert list((tmp_path / "tasks" / "active").glob("p0-incident-*.md"))
     assert (tmp_path / "state.json").is_file()
     assert (tmp_path / "events.jsonl").is_file()
+    assert not notify_log.exists()
+
+
+def test_service_failed_cli_can_send_bounded_pointer_when_requested(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    notify_log = tmp_path / "notify.log"
+    _write_fake_bin(
+        fake_bin / "gdbus",
+        """
+        #!/usr/bin/env bash
+        printf '%s\n' "$@" >> "$HAPAX_NOTIFY_CAPTURE"
+        """,
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(tmp_path / "home"),
+            "PATH": f"{fake_bin}:{env['PATH']}",
+            "HAPAX_NOTIFY_CAPTURE": str(notify_log),
+        }
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(INTAKE_SCRIPT),
+            "service-failed",
+            "--desktop-confirmation",
+            "--task-root",
+            str(tmp_path / "tasks"),
+            "--state-path",
+            str(tmp_path / "state.json"),
+            "--ledger-path",
+            str(tmp_path / "events.jsonl"),
+            "demo.service",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
     notify_text = notify_log.read_text(encoding="utf-8")
     notify_args = notify_text.splitlines()
     assert "org.freedesktop.Notifications.Notify" in notify_text
@@ -470,3 +650,63 @@ def test_cli_dismiss_existing_intake_notifications_uses_mako_marker(monkeypatch)
         ["makoctl", "dismiss", "--no-history", "-n", "21"],
         ["makoctl", "dismiss", "--no-history", "-n", "23"],
     ]
+
+
+def test_cli_drain_desktop_dismisses_consumed_intake_notifications(tmp_path, monkeypatch, capsys):
+    cli = _load_cli_module()
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "incidents": {
+                    "f1": {
+                        "task_id": "p0-incident-demo",
+                        "last_title": "Service Failed: demo.service",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd == ["makoctl", "list", "-j"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=json.dumps(
+                    [
+                        {"id": 21, "body": "SDLC intake: p0-incident-demo\nold"},
+                        {
+                            "id": 22,
+                            "app_name": "Hapax System",
+                            "summary": "Service Failed: demo.service",
+                            "body": "raw",
+                        },
+                        {
+                            "id": 23,
+                            "app_name": "LLM Stack",
+                            "summary": "SDLC: dispatch refusal circuit breaker",
+                            "body": "Task p0-incident-demo refused 3x",
+                        },
+                        {"id": 24, "summary": "Service Failed: demo.service", "body": "user"},
+                        {"id": 25, "app_name": "Hapax System", "summary": "Other", "body": ""},
+                    ]
+                ),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    rc = cli.main(["drain-desktop", "--state-path", str(state_path)])
+
+    assert rc == 0
+    assert [call[0] for call in calls[1:]] == [
+        ["makoctl", "dismiss", "--no-history", "-n", "21"],
+        ["makoctl", "dismiss", "--no-history", "-n", "22"],
+        ["makoctl", "dismiss", "--no-history", "-n", "23"],
+    ]
+    assert "dismissed 3 consumed P0 intake" in capsys.readouterr().out

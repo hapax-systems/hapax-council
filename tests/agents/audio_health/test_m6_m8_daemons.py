@@ -10,6 +10,7 @@ from agents.audio_health.m6_topology_drift_daemon import (
     DriftState,
     M6DaemonConfig,
     ModuleInfo,
+    _send_ntfy,
     compute_module_signature,
 )
 from agents.audio_health.m6_topology_drift_daemon import (
@@ -140,6 +141,26 @@ class TestM6Emission:
         assert data["monitor"] == "topology-drift"
         assert data["expected_count"] == 5
         assert data["observed_count"] == 1
+
+    def test_topology_drift_notification_uses_governed_p0_intake(self) -> None:
+        calls = []
+
+        def fake_send_notification(*args, **kwargs):
+            calls.append((args, kwargs))
+            return True
+
+        with patch("shared.notify.send_notification", fake_send_notification):
+            _send_ntfy("appeared", "+module-loopback:source=hapax-livestream")
+
+        assert calls == [
+            (
+                (
+                    "Audio: Topology Drift",
+                    "Topology drift: module appeared — +module-loopback:source=hapax-livestream",
+                ),
+                {"priority": "high", "tags": ["audio", "warning"], "technical": True},
+            )
+        ]
 
 
 # ── M8 Tests ────────────────────────────────────────────────────────────

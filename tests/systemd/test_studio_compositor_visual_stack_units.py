@@ -25,6 +25,10 @@ SCREWM_QUAKE_LAYOUT = REPO_ROOT / "config" / "compositor-layouts" / "screwm-quak
 SCREWM_V4L2_BRIDGE_DROPIN = (
     UNITS_DIR / "hapax-v4l2-bridge.service.d" / "zzzz-screwm-quake-primary.conf"
 )
+BRIDGE_DARKPLACES_GATE = UNITS_DIR / "hapax-v4l2-bridge.service.d" / "darkplaces-runtime-gate.conf"
+BRIDGE_WATCHDOG_DARKPLACES_GATE = (
+    UNITS_DIR / "hapax-v4l2-bridge-watchdog.service.d" / "darkplaces-runtime-gate.conf"
+)
 OBS_YUYV_BRIDGE = UNITS_DIR / "hapax-obs-video50-yuyv-compat-bridge.service"
 SOURCE_ROOT = "%h/.cache/hapax/source-activation/worktree"
 
@@ -295,6 +299,11 @@ def test_v4l2_bridge_runs_from_activation_worktree_and_is_supervised_by_studio()
     assert any("HAPAX_V4L2_BRIDGE_ENABLED=1" in line for line in lines)
 
 
+def test_v4l2_bridge_is_condition_skipped_in_darkplaces_runtime() -> None:
+    lines = _active_unit_lines(BRIDGE_DARKPLACES_GATE)
+    assert "ConditionPathExists=!%h/.config/hapax/enable-darkplaces-runtime" in lines
+
+
 def test_v4l2_bridge_watchdog_runs_from_activation_worktree() -> None:
     parser = _load_unit(BRIDGE_WATCHDOG)
     assert parser.get("Service", "Type") == "oneshot"
@@ -313,6 +322,11 @@ def test_v4l2_bridge_watchdog_runs_from_activation_worktree() -> None:
     assert "hapax-compositor-runtime-source-check" in parser.get("Service", "ExecStartPre")
     assert "studio-compositor.service" in parser.get("Unit", "After")
     assert "hapax-v4l2-bridge.service" in parser.get("Unit", "After")
+
+
+def test_v4l2_bridge_watchdog_is_condition_skipped_in_darkplaces_runtime() -> None:
+    lines = _active_unit_lines(BRIDGE_WATCHDOG_DARKPLACES_GATE)
+    assert "ConditionPathExists=!%h/.config/hapax/enable-darkplaces-runtime" in lines
 
 
 def test_v4l2_bridge_watchdog_timer_polls_at_incident_cadence() -> None:

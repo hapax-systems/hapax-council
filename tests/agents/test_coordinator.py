@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from agents.coordinator.core import (
@@ -25,6 +26,7 @@ from agents.coordinator.core import (
     _headless_task_from_argv,
     _lane_to_dict,
     _live_headless_launcher,
+    _p0_drain_lane_states,
     _parse_task,
     _prepare_dispatch_message,
     _task_flow_counts,
@@ -267,6 +269,7 @@ current_claim: null
 
         with (
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
             patch("pathlib.Path.home", return_value=tmp_path),
         ):
             state = _check_lane(
@@ -828,6 +831,122 @@ class TestCoordinatorState:
         data = json.loads((tmp_path / "state.json").read_text())
         assert data["offered_tasks"] == 3
         assert data["lanes_alive"] == 4
+
+
+class TestP0DrainLanes:
+    def _worktree(self, root: Path, role: str = "cx-p0") -> Path:
+        worktree = root / f"hapax-council--{role}"
+        scripts = worktree / "scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "cc-claim").write_text("#!/bin/sh\n", encoding="utf-8")
+        (scripts / "cc-close").write_text("#!/bin/sh\n", encoding="utf-8")
+        return worktree
+
+    def test_configured_drain_lane_requires_free_worktree(self, tmp_path: Path):
+        self._worktree(tmp_path)
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "HAPAX_COORDINATOR_P0_DRAIN_LANES": "cx-p0:codex,cx-missing:codex",
+                    "HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path),
+                },
+            ),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+        ):
+            lanes = _p0_drain_lane_states({})
+
+        assert [lane.role for lane in lanes] == ["cx-p0"]
+        assert lanes[0].platform == "codex"
+        assert lanes[0].alive is True
+        assert lanes[0].idle is True
+        assert lanes[0].p0_drain is True
+        assert lanes[0].pid_source == "p0-drain-startable"
+
+    def test_configured_drain_lane_skips_existing_claim(self, tmp_path: Path):
+        self._worktree(tmp_path)
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        (cache_dir / "cc-active-task-cx-p0").write_text("already-working\n", encoding="utf-8")
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "HAPAX_COORDINATOR_P0_DRAIN_LANES": "cx-p0:codex",
+                    "HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path),
+                },
+            ),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+        ):
+            assert _p0_drain_lane_states({}) == []
+
+    def test_tick_injects_drain_lane_only_for_p0_when_saturated(self, tmp_path: Path):
+        self._worktree(tmp_path)
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        p0_task = Task(
+            task_id="p0-alert",
+            title="P0 alert",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=1.0,
+            effort_class="standard",
+            platform_suitability=("codex",),
+            quality_floor="deterministic_ok",
+            path=tmp_path / "p0-alert.md",
+            priority="p0",
+            authority_case="CASE-TEST-001",
+        )
+        normal_task = Task(
+            task_id="normal-high-wsjf",
+            title="Normal",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=999.0,
+            effort_class="standard",
+            platform_suitability=("codex",),
+            quality_floor="deterministic_ok",
+            path=tmp_path / "normal.md",
+        )
+        busy = LaneState(
+            role="beta",
+            platform="claude",
+            alive=True,
+            idle=False,
+            claimed_task="busy-task",
+        )
+        dispatched: list[tuple[str, str]] = []
+
+        def fake_dispatch(task: Task, lane: LaneState) -> tuple[bool, str]:
+            dispatched.append((task.task_id, lane.role))
+            return True, ""
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "HAPAX_COORDINATOR_P0_DRAIN_LANES": "cx-p0:codex",
+                    "HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path),
+                },
+            ),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch.object(Coordinator, "_scan_tasks", return_value=[normal_task, p0_task]),
+            patch.object(Coordinator, "_check_lanes", return_value={"beta": busy}),
+            patch.object(Coordinator, "_dispatch", side_effect=fake_dispatch),
+            patch.object(Coordinator, "_write_state"),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=SimpleNamespace(state="open"),
+            ),
+            patch("agents.coordinator.core.converge_action_cap", return_value=6),
+        ):
+            Coordinator().tick()
+
+        assert dispatched == [("p0-alert", "cx-p0")]
 
 
 class TestPickLane:

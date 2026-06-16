@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -13,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from shared.p0_incident_intake import record_notification
+from shared.p0_incident_intake import TECHNICAL_TITLE_PATTERNS, record_notification
 
 
 def _path_arg(value: str) -> Path:
@@ -129,7 +130,10 @@ def _record(args: argparse.Namespace, *, title: str, message: str, technical: bo
     if args.no_desktop:
         return 0
 
-    _dismiss_existing_intake_notifications(result.task_id)
+    _dismiss_existing_consumed_notifications(title, result.task_id)
+    if not _desktop_confirmation_enabled(args):
+        return 0
+
     body = "\n".join(
         part
         for part in (
@@ -164,10 +168,42 @@ def _failure_next_action(args: argparse.Namespace) -> str:
     )
 
 
+def _desktop_confirmation_enabled(args: argparse.Namespace) -> bool:
+    if args.desktop_confirmation:
+        return True
+    return os.environ.get("HAPAX_P0_INTAKE_DESKTOP_CONFIRM", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _dismiss_existing_intake_notifications(task_id: str | None) -> None:
     if task_id is None:
         return
     marker = f"SDLC intake: {task_id}"
+    _dismiss_mako_notifications(lambda notification: marker in str(notification.get("body") or ""))
+
+
+def _dismiss_existing_consumed_notifications(title: str, task_id: str | None) -> None:
+    if task_id is None:
+        return
+    marker = f"SDLC intake: {task_id}"
+    title = title.strip()
+    technical_apps = {"Hapax System", "LLM Stack", "notify-send"}
+
+    def _matches(notification: dict) -> bool:
+        app_name = str(notification.get("app_name") or notification.get("app-name") or "")
+        summary = str(notification.get("summary") or notification.get("title") or "").strip()
+        body = str(notification.get("body") or "")
+        return marker in body or (summary == title and app_name in technical_apps)
+
+    _dismiss_mako_notifications(_matches)
+
+
+def _dismiss_mako_notifications(predicate) -> int:
+    dismissed = 0
     try:
         result = subprocess.run(
             ["makoctl", "list", "-j"],
@@ -176,24 +212,25 @@ def _dismiss_existing_intake_notifications(task_id: str | None) -> None:
             text=True,
         )
         if result.returncode != 0:
-            return
+            return 0
         notifications = json.loads(result.stdout or "[]")
         if not isinstance(notifications, list):
-            return
+            return 0
         for notification in notifications:
             if not isinstance(notification, dict):
                 continue
-            body = str(notification.get("body") or "")
             notification_id = notification.get("id")
-            if marker not in body or notification_id is None:
+            if notification_id is None or not predicate(notification):
                 continue
             subprocess.run(
                 ["makoctl", "dismiss", "--no-history", "-n", str(notification_id)],
                 timeout=2,
                 capture_output=True,
             )
+            dismissed += 1
     except Exception:
-        return
+        return dismissed
+    return dismissed
 
 
 def _service_failed(args: argparse.Namespace) -> int:
@@ -212,6 +249,43 @@ def _notification(args: argparse.Namespace) -> int:
     return _record(args, title=args.title, message=args.message, technical=args.technical)
 
 
+def _drain_desktop(args: argparse.Namespace) -> int:
+    try:
+        state = json.loads(args.state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        state = {}
+    incidents = state.get("incidents") if isinstance(state, dict) else {}
+    if not isinstance(incidents, dict):
+        incidents = {}
+    task_ids: set[str] = set()
+    titles: set[str] = set()
+    for record in incidents.values():
+        if not isinstance(record, dict):
+            continue
+        task_id = str(record.get("task_id") or "").strip()
+        title = str(record.get("last_title") or "").strip()
+        if task_id:
+            task_ids.add(task_id)
+        if title:
+            titles.add(title)
+    technical_apps = {"Hapax System", "LLM Stack", "notify-send"}
+    technical_prefixes = tuple(prefix for prefix, _kind in TECHNICAL_TITLE_PATTERNS)
+
+    def _matches(notification: dict) -> bool:
+        app_name = str(notification.get("app_name") or notification.get("app-name") or "")
+        summary = str(notification.get("summary") or notification.get("title") or "").strip()
+        body = str(notification.get("body") or "")
+        if any(f"SDLC intake: {task_id}" in body for task_id in task_ids):
+            return True
+        if app_name not in technical_apps:
+            return False
+        return summary in titles or any(summary.startswith(prefix) for prefix in technical_prefixes)
+
+    dismissed = _dismiss_mako_notifications(_matches)
+    print(f"desktop drain: dismissed {dismissed} consumed P0 intake notification(s)")
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.set_defaults(func=None)
@@ -224,6 +298,11 @@ def _parser() -> argparse.ArgumentParser:
         p.add_argument("--state-path", type=_path_arg, default=None)
         p.add_argument("--ledger-path", type=_path_arg, default=None)
         p.add_argument("--no-desktop", action="store_true")
+        p.add_argument(
+            "--desktop-confirmation",
+            action="store_true",
+            help="After successful P0 intake, also emit a visible desktop confirmation.",
+        )
 
     service = sub.add_parser("service-failed", help="Record a failed systemd user unit.")
     add_common(service)
@@ -236,6 +315,13 @@ def _parser() -> argparse.ArgumentParser:
     notification.add_argument("--message", required=True)
     notification.add_argument("--technical", action="store_true")
     notification.set_defaults(func=_notification)
+
+    drain = sub.add_parser(
+        "drain-desktop",
+        help="Dismiss visible desktop notifications already represented in P0 intake state.",
+    )
+    add_common(drain)
+    drain.set_defaults(func=_drain_desktop)
 
     return parser
 
