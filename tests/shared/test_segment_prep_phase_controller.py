@@ -256,3 +256,16 @@ class TestPhasePlanValidation:
     def test_accepts_a_well_formed_ascending_plus_reversal_ladder(self):
         plan = PhasePlan(criteria=(3.0, 3.5, 4.0, 3.2))
         assert plan.criteria == (3.0, 3.5, 4.0, 3.2)
+
+    def test_rejects_criterion_outside_operative_range(self):
+        # C_k must lie on the gate-operative (1.0, 5.0] coherence rubric — prep refuses otherwise,
+        # so an out-of-range plan would crash the first prep pass instead of failing at build time.
+        with pytest.raises(ValueError):
+            PhasePlan(criteria=(0.5,))
+        with pytest.raises(ValueError):
+            PhasePlan(criteria=(1.0,))  # exclusive lower bound
+        with pytest.raises(ValueError):
+            PhasePlan(criteria=(5.5,))
+
+    def test_accepts_upper_bound_criterion(self):
+        assert PhasePlan(criteria=(5.0,)).criteria == (5.0,)
