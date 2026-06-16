@@ -269,6 +269,6 @@ exit 1
     assert "hit an API/quota limit" in note
     assert not (cache / "cc-active-task-cx-amber").exists()
     assert not (cache / f"cc-active-task-cx-amber-{sid}").exists()
-    assert "status: quota_wall_reoffered" in (
-        cache / "relay" / "cx-amber.yaml"
-    ).read_text(encoding="utf-8")
+    assert "status: quota_wall_reoffered" in (cache / "relay" / "cx-amber.yaml").read_text(
+        encoding="utf-8"
+    )

@@ -737,7 +737,7 @@ retired_reason: clean exit
                 "-c",
                 (
                     "exec -a hapax-codex-headless "
-                    "bash -c 'while true; do sleep 1; done' _ --task \"$1\" \"$2\""
+                    'bash -c \'while true; do sleep 1; done\' _ --task "$1" "$2"'
                 ),
                 "_",
                 task_id,
