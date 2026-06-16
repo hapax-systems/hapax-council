@@ -104,6 +104,7 @@ PROGRESS_NTFY_TOPIC="${HAPAX_NTFY_TOPIC:-hapax}"
 # or the launcher exceeds a hard lifetime ceiling (escalate + reap).
 REAP_OFF="${HAPAX_SUPERVISOR_REAP_OFF:-0}"
 LAUNCHER_MAX_LIFETIME_S="${HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S:-21600}"  # 6h
+PROC_SCAN_LAUNCHERS="${HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS:-1}"
 
 # Repo root for `python3 -m shared.…`. Resolve $0 through the deploy symlink
 # (~/.local/bin/…) so REPO_DIR is the release dir that actually ships shared/;
@@ -135,6 +136,56 @@ LOCAL_DEV_MAINTENANCE_MODE="$(local_dev_maintenance_mode)"
 if [ "$LOCAL_DEV_MAINTENANCE_MODE" = "appendix-only" ]; then
   log "appendix-only local-dev maintenance: unclaimed idle-await respawns disabled; active claimed-task resumes preserved"
 fi
+
+p0_intake_backlog_present() {
+  [ "${HAPAX_SUPERVISOR_P0_IDLE_RESPAWN:-1}" = "1" ] || return 1
+  python3 - "$VAULT_ROOT/active" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+active = Path(sys.argv[1])
+if not active.is_dir():
+    sys.exit(1)
+
+
+def field(frontmatter: str, key: str) -> str:
+    match = re.search(rf"(?im)^{re.escape(key)}:\s*(.*)$", frontmatter)
+    return match.group(1).strip().strip("\"'") if match else ""
+
+
+for path in sorted(active.glob("*.md")):
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        continue
+    if not text.startswith("---"):
+        continue
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        continue
+    frontmatter = parts[1]
+    if field(frontmatter, "status").lower() != "offered":
+        continue
+    if field(frontmatter, "priority").lower() != "p0":
+        continue
+    haystack = " ".join(
+        (
+            path.stem,
+            field(frontmatter, "title"),
+            field(frontmatter, "kind"),
+            field(frontmatter, "tags"),
+        )
+    ).lower()
+    if (
+        "p0-incident" in path.stem.lower()
+        or "incident-intake" in haystack
+        or "technical-alert" in haystack
+    ):
+        sys.exit(0)
+sys.exit(1)
+PY
+}
 
 # ── liveness ──────────────────────────────────────────────────────────────────
 
@@ -266,28 +317,32 @@ import sys
 from pathlib import Path
 
 vault_root, lane, claim_file = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
-if not claim_file.is_file():
-    sys.exit(0)
-lines = [ln.strip() for ln in claim_file.read_text(errors="replace").splitlines() if ln.strip()]
-if not lines:
-    sys.exit(0)
-task_id = lines[0]
-
 active = vault_root / "active"
-note = active / f"{task_id}.md"
-if not note.is_file():
-    note = next(iter(sorted(active.glob(f"{task_id}-*.md"))), None) if active.is_dir() else None
-if note is None or not note.is_file():
-    sys.exit(0)
-
-text = note.read_text(errors="replace")
+claim_files = [claim_file]
+claim_files.extend(sorted(claim_file.parent.glob(f"{claim_file.name}-*")))
 
 def field(name: str) -> str:
     m = re.search(rf"^{name}:\s*(.+?)\s*$", text, re.MULTILINE)
     return m.group(1).strip().strip('"').strip("'") if m else ""
 
-if field("status") in {"claimed", "in_progress"} and field("assigned_to") == lane:
-    print(f"{task_id}\t{field('title')}")
+for candidate in sorted(
+    [path for path in claim_files if path.is_file()],
+    key=lambda path: path.stat().st_mtime,
+    reverse=True,
+):
+    lines = [ln.strip() for ln in candidate.read_text(errors="replace").splitlines() if ln.strip()]
+    if not lines:
+        continue
+    task_id = lines[0]
+    note = active / f"{task_id}.md"
+    if not note.is_file():
+        note = next(iter(sorted(active.glob(f"{task_id}-*.md"))), None) if active.is_dir() else None
+    if note is None or not note.is_file():
+        continue
+    text = note.read_text(errors="replace")
+    if field("status") in {"claimed", "in_progress"} and field("assigned_to") == lane:
+        print(f"{task_id}\t{field('title')}")
+        sys.exit(0)
 PY
 }
 
@@ -338,7 +393,7 @@ guard() {
   clear_streak "$lane" no-worktree
 
   case "$kind" in
-    claude)   reap_guard "$lane"; if claude_alive "$lane"; then progress_guard "$lane"; return 0; fi ;;
+    claude)   reap_guard "$lane"; if launcher_alive "$lane" || claude_alive "$lane"; then progress_guard "$lane"; return 0; fi ;;
     codex)    tmux_session_alive "hapax-codex-$lane" && return 0 ;;
     antigrav) tmux_session_alive "hapax-antigrav-$lane" && return 0 ;;
   esac
@@ -355,8 +410,12 @@ guard() {
   fi
 
   if [ "$LOCAL_DEV_MAINTENANCE_MODE" = "appendix-only" ] && [ -z "$task_id" ]; then
-    log "$lane ($kind): DEAD with no active task — appendix-only local-dev maintenance suppresses idle-await respawn"
-    return 0
+    if p0_intake_backlog_present; then
+      log "$lane ($kind): DEAD with no active task but P0 incident backlog exists — allowing idle-await respawn"
+    else
+      log "$lane ($kind): DEAD with no active task — appendix-only local-dev maintenance suppresses idle-await respawn"
+      return 0
+    fi
   fi
 
   if [ "$DRY_RUN" = "1" ]; then
@@ -431,10 +490,7 @@ guard() {
 #   alive -> nudge the live launcher's stdin fifo (its own injection mechanism;
 #            a re-launch would flock-fail). Both resume the SAME task.
 launcher_alive() {
-  local lpf="$RUNTIME_DIR/$1.launcher.pid" pid=""
-  [ -f "$lpf" ] || return 1
-  pid="$(cat "$lpf" 2>/dev/null || true)"
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+  launcher_pid "$1" >/dev/null
 }
 
 # Seconds since output.jsonl was last written; returns 1 (no echo) if absent
@@ -468,21 +524,9 @@ import sys
 from pathlib import Path
 
 vault_root, lane, claim_file = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
-if not claim_file.is_file():
-    sys.exit(0)
-lines = [ln.strip() for ln in claim_file.read_text(errors="replace").splitlines() if ln.strip()]
-if not lines:
-    sys.exit(0)
-task_id = lines[0]
-
 active = vault_root / "active"
-note = active / f"{task_id}.md"
-if not note.is_file():
-    note = next(iter(sorted(active.glob(f"{task_id}-*.md"))), None) if active.is_dir() else None
-if note is None or not note.is_file():
-    sys.exit(0)
-
-text = note.read_text(errors="replace")
+claim_files = [claim_file]
+claim_files.extend(sorted(claim_file.parent.glob(f"{claim_file.name}-*")))
 
 
 def field(name: str) -> str:
@@ -490,8 +534,24 @@ def field(name: str) -> str:
     return m.group(1).strip().strip('"').strip("'") if m else ""
 
 
-if field("assigned_to") == lane:
-    print(f"{task_id}\t{field('status')}\t{field('title')}")
+for candidate in sorted(
+    [path for path in claim_files if path.is_file()],
+    key=lambda path: path.stat().st_mtime,
+    reverse=True,
+):
+    lines = [ln.strip() for ln in candidate.read_text(errors="replace").splitlines() if ln.strip()]
+    if not lines:
+        continue
+    task_id = lines[0]
+    note = active / f"{task_id}.md"
+    if not note.is_file():
+        note = next(iter(sorted(active.glob(f"{task_id}-*.md"))), None) if active.is_dir() else None
+    if note is None or not note.is_file():
+        continue
+    text = note.read_text(errors="replace")
+    if field("assigned_to") == lane:
+        print(f"{task_id}\t{field('status')}\t{field('title')}")
+        sys.exit(0)
 PY
 }
 
@@ -564,6 +624,7 @@ if note is not None and note.is_file():
     t = re.sub(r"^assigned_to:.*$", "assigned_to: unassigned", t, count=1, flags=re.MULTILINE)
     note.write_text(t)
 PY
+  rm -f "$HOME/.cache/hapax/cc-active-task-$1"-* 2>/dev/null || true
   : > "$HOME/.cache/hapax/cc-active-task-$1" 2>/dev/null || true
 }
 
@@ -674,16 +735,110 @@ progress_guard() {
 
 # ── zombie-launcher reaper (terminal-task + lifetime ceiling) ─────────────────
 
-# launcher_pid <lane>: echo the lane's LIVE launcher pid, or return 1 if there is
-# no live launcher. (launcher_alive returns only a boolean; the reaper needs the
-# pid value to target the SIGTERM.)
-launcher_pid() {
-  local lpf="$RUNTIME_DIR/$1.launcher.pid" pid=""
+# launcher_pid_from_proc <lane>: echo a live hapax-claude-headless wrapper whose
+# pidfile was lost. Constrain to the current HOME so tests and other users' lanes
+# cannot be mistaken for this supervisor's fleet.
+launcher_pid_from_proc() {
+  [ "$PROC_SCAN_LAUNCHERS" = "1" ] || return 1
+  python3 - "$1" "$HOME" <<'PY' 2>/dev/null
+import os
+import sys
+from pathlib import Path
+
+lane, expected_home = sys.argv[1], sys.argv[2]
+
+
+def read_parts(path: Path) -> list[str]:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return []
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+
+def env_home(pid: str) -> str:
+    for part in read_parts(Path("/proc") / pid / "environ"):
+        if part.startswith("HOME="):
+            return part.split("=", 1)[1]
+    return ""
+
+
+for entry in sorted(Path("/proc").iterdir(), key=lambda path: int(path.name) if path.name.isdigit() else -1):
+    if not entry.name.isdigit():
+        continue
+    pid = entry.name
+    if int(pid) in {os.getpid(), os.getppid()}:
+        continue
+    argv = read_parts(entry / "cmdline")
+    if not argv:
+        continue
+    if not any(Path(arg).name == "hapax-claude-headless" for arg in argv):
+        continue
+    if lane not in argv:
+        continue
+    if env_home(pid) != expected_home:
+        continue
+    try:
+        os.kill(int(pid), 0)
+    except OSError:
+        continue
+    print(pid)
+    sys.exit(0)
+sys.exit(1)
+PY
+}
+
+launcher_pid_from_pidfile() {
+  local lpf="$RUNTIME_DIR/$1.launcher.pid"
   [ -f "$lpf" ] || return 1
-  pid="$(cat "$lpf" 2>/dev/null || true)"
-  case "$pid" in '' | *[!0-9]*) return 1 ;; esac
-  kill -0 "$pid" 2>/dev/null || return 1
-  printf '%s\n' "$pid"
+  python3 - "$1" "$lpf" "$HOME" <<'PY' 2>/dev/null
+import os
+import sys
+from pathlib import Path
+
+lane, pidfile, expected_home = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
+
+
+def read_parts(path: Path) -> list[str]:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return []
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+
+def env_home(pid: int) -> str:
+    for part in read_parts(Path("/proc") / str(pid) / "environ"):
+        if part.startswith("HOME="):
+            return part.split("=", 1)[1]
+    return ""
+
+
+try:
+    pid = int(pidfile.read_text().strip())
+except (OSError, ValueError):
+    sys.exit(1)
+try:
+    os.kill(pid, 0)
+except OSError:
+    sys.exit(1)
+argv = read_parts(Path("/proc") / str(pid) / "cmdline")
+if not any(Path(arg).name == "hapax-claude-headless" for arg in argv):
+    sys.exit(1)
+if lane not in argv:
+    sys.exit(1)
+if env_home(pid) != expected_home:
+    sys.exit(1)
+print(pid)
+PY
+}
+
+# launcher_pid <lane>: echo the lane's LIVE launcher pid, or return 1 if there is
+# no live launcher. The pidfile is authoritative when present; the /proc fallback
+# catches lock-holding wrappers whose pidfile/fifo was lost mid-loop.
+launcher_pid() {
+  launcher_pid_from_pidfile "$1" && return 0
+  launcher_pid_from_proc "$1"
 }
 
 # launcher_etimes <pid>: elapsed seconds since the launcher started, or return 1
@@ -709,12 +864,23 @@ from pathlib import Path
 vault_root, lane, claim_file = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
 # No claim -> not terminal on task grounds (the lifetime ceiling covers a
 # claimless launcher); mirror the launcher's "no task binding -> live".
-if not claim_file.is_file():
+claim_files = [claim_file]
+claim_files.extend(sorted(claim_file.parent.glob(f"{claim_file.name}-*")))
+claim_files = sorted(
+    [path for path in claim_files if path.is_file()],
+    key=lambda path: path.stat().st_mtime,
+    reverse=True,
+)
+if not claim_files:
     sys.exit(1)
-lines = [ln.strip() for ln in claim_file.read_text(errors="replace").splitlines() if ln.strip()]
-if not lines:
+task_id = ""
+for candidate in claim_files:
+    lines = [ln.strip() for ln in candidate.read_text(errors="replace").splitlines() if ln.strip()]
+    if lines:
+        task_id = lines[0]
+        break
+if not task_id:
     sys.exit(1)
-task_id = lines[0]
 active = vault_root / "active"
 note = active / f"{task_id}.md"
 if not note.is_file():

@@ -31,6 +31,27 @@ def test_parse_unit_file_marks_installable_and_critical(tmp_path: Path) -> None:
     assert parsed.kind == "timer"
 
 
+def test_hapax_coordinator_service_is_critical_unit(tmp_path: Path) -> None:
+    unit = tmp_path / "hapax-coordinator.service"
+    unit.write_text("[Service]\nExecStart=/bin/true\n", encoding="utf-8")
+
+    parsed = audit.parse_unit_file(unit)
+
+    assert parsed.critical is True
+
+
+def test_governed_intake_drain_timers_are_critical_units(tmp_path: Path) -> None:
+    for name in ("hapax-request-decompose.timer", "hapax-cc-task-offer-ready.timer"):
+        unit = tmp_path / name
+        unit.write_text(
+            "[Timer]\nOnUnitActiveSec=300\n\n[Install]\nWantedBy=timers.target\n", encoding="utf-8"
+        )
+
+        parsed = audit.parse_unit_file(unit)
+
+        assert parsed.critical is True
+
+
 def test_missing_critical_unit_is_critical(tmp_path: Path) -> None:
     unit = tmp_path / "hapax-operator-current-state.timer"
     unit.write_text("[Install]\nWantedBy=timers.target\n", encoding="utf-8")

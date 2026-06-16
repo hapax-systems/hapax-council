@@ -86,6 +86,7 @@ def _base(tmp_path: Path, **overrides: str) -> tuple[dict[str, str], Path, Path]
             "HAPAX_SUPERVISOR_RESTART_COOLDOWN_S": "0",
             "HAPAX_CLAUDE_HEADLESS_BIN": str(bin_dir / "hapax-claude-headless"),
             "HAPAX_CLAUDE_BIN": str(bin_dir / "hapax-claude"),
+            "HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS": "0",
             # Deterministic admission gate (default open; the defer test sets closed).
             "HAPAX_SUPERVISOR_ADMISSION_CMD": "echo open",
         }
@@ -125,11 +126,22 @@ def _write_claim(
         )
 
 
-def _spawn_launcher(runtime_dir: Path, lane: str) -> subprocess.Popen[bytes]:
+def _spawn_launcher(env: dict[str, str], runtime_dir: Path, lane: str) -> subprocess.Popen[bytes]:
     """A real, long-lived process standing in for a live headless launcher, in
     its OWN session (setsid) so a hypothetical process-group kill would be
     observable and would NOT reach the test runner."""
-    proc = subprocess.Popen(["sleep", "600"], start_new_session=True)
+    proc = subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            ('exec -a "$2" python3 -c \'import time; time.sleep(600)\' "$1"'),
+            "_",
+            lane,
+            "hapax-claude-headless",
+        ],
+        env=env,
+        start_new_session=True,
+    )
     (runtime_dir / f"{lane}.launcher.pid").write_text(f"{proc.pid}\n", encoding="utf-8")
     return proc
 
@@ -174,7 +186,7 @@ def test_supervisor_reaps_launcher_when_task_terminal(tmp_path: Path) -> None:
     _make_worktree(env, "delta")
     _mark_claude_alive(runtime_dir, "delta")
     _write_claim(env, "delta", "done-task", status=None)  # no active note → terminal
-    proc = _spawn_launcher(runtime_dir, "delta")
+    proc = _spawn_launcher(env, runtime_dir, "delta")
     try:
         result = _run(env)
         assert result.returncode == 0, result.stderr
@@ -190,7 +202,7 @@ def test_supervisor_keeps_launcher_when_task_live(tmp_path: Path) -> None:
     _make_worktree(env, "delta")
     _mark_claude_alive(runtime_dir, "delta")
     _write_claim(env, "delta", "live-task", status="in_progress")
-    proc = _spawn_launcher(runtime_dir, "delta")
+    proc = _spawn_launcher(env, runtime_dir, "delta")
     try:
         result = _run(env)
         assert result.returncode == 0, result.stderr
@@ -207,7 +219,7 @@ def test_supervisor_reap_deferred_when_admission_closed(tmp_path: Path) -> None:
     _make_worktree(env, "delta")
     _mark_claude_alive(runtime_dir, "delta")
     _write_claim(env, "delta", "done-task", status=None)
-    proc = _spawn_launcher(runtime_dir, "delta")
+    proc = _spawn_launcher(env, runtime_dir, "delta")
     try:
         result = _run(env)
         assert result.returncode == 0, result.stderr
@@ -233,12 +245,57 @@ def test_supervisor_reaps_launcher_over_lifetime_ceiling(tmp_path: Path) -> None
     _make_worktree(env, "delta")
     _mark_claude_alive(runtime_dir, "delta")
     _write_claim(env, "delta", "live-task", status="in_progress")  # task LIVE
-    proc = _spawn_launcher(runtime_dir, "delta")
+    proc = _spawn_launcher(env, runtime_dir, "delta")
     time.sleep(1.2)  # ensure etimes >= 1 so the ceiling=0 trigger is unambiguous
     try:
         result = _run(env)
         assert result.returncode == 0, result.stderr
         assert _wait_dead(proc), "launcher past lifetime ceiling was not reaped"
+        assert "lifetime" in result.stdout
+        assert notify_log.exists() and "lifetime ceiling" in notify_log.read_text()
+    finally:
+        _cleanup(proc)
+
+
+def test_supervisor_reaps_pidfile_free_launcher_over_lifetime_ceiling(tmp_path: Path) -> None:
+    """A lock-holding launcher without launcher.pid is still found through /proc
+    and reaped once it exceeds the lifetime ceiling."""
+    notify_log = tmp_path / "notify.txt"
+    _write_executable(
+        tmp_path / "bin" / "notify-recorder",
+        f'#!/usr/bin/env bash\nprintf \'%s|%s\\n\' "$1" "$2" >> "{notify_log}"\n',
+    )
+    env, calls, runtime_dir = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S="0",
+        HAPAX_SUPERVISOR_NOTIFY_CMD=str(tmp_path / "bin" / "notify-recorder"),
+        HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS="1",
+    )
+    _make_worktree(env, "delta")
+    _mark_claude_alive(runtime_dir, "delta")
+    _write_claim(env, "delta", "live-task", status="in_progress")
+    launcher = Path(env["HAPAX_CLAUDE_HEADLESS_BIN"])
+    _write_executable(
+        launcher,
+        """
+        #!/usr/bin/env python3
+        import signal
+        import sys
+        import time
+
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        time.sleep(600)
+        """,
+    )
+    proc = subprocess.Popen(
+        [str(launcher), "--task", "live-task", "delta", "prompt"],
+        env=env,
+        start_new_session=True,
+    )
+    try:
+        result = _run(env)
+        assert result.returncode == 0, result.stderr
+        assert _wait_dead(proc), "pidfile-free launcher past lifetime ceiling was not reaped"
         assert "lifetime" in result.stdout
         assert notify_log.exists() and "lifetime ceiling" in notify_log.read_text()
     finally:
@@ -251,7 +308,7 @@ def test_supervisor_reaper_dry_run_does_not_kill(tmp_path: Path) -> None:
     _make_worktree(env, "delta")
     _mark_claude_alive(runtime_dir, "delta")
     _write_claim(env, "delta", "done-task", status=None)
-    proc = _spawn_launcher(runtime_dir, "delta")
+    proc = _spawn_launcher(env, runtime_dir, "delta")
     try:
         result = _run(env)
         assert result.returncode == 0, result.stderr
@@ -279,7 +336,7 @@ def test_supervisor_reaper_can_be_disabled(tmp_path: Path) -> None:
     _make_worktree(env, "delta")
     _mark_claude_alive(runtime_dir, "delta")
     _write_claim(env, "delta", "done-task", status=None)
-    proc = _spawn_launcher(runtime_dir, "delta")
+    proc = _spawn_launcher(env, runtime_dir, "delta")
     try:
         result = _run(env)
         assert result.returncode == 0, result.stderr

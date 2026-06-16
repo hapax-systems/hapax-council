@@ -1017,7 +1017,7 @@ def test_dispatch_feed_includes_valid_offered_task(tmp_path: Path) -> None:
     assert dispatchable[0]["route_metadata"]["quality_floor"] == "deterministic_ok"
 
 
-def test_dispatch_feed_accepts_parent_plan_only_offered_task(tmp_path: Path) -> None:
+def test_dispatch_feed_holds_parent_plan_only_offered_task(tmp_path: Path) -> None:
     active = tmp_path / "requests" / "active"
     active.mkdir(parents=True)
     tasks_active = tmp_path / "tasks" / "active"
@@ -1038,13 +1038,39 @@ def test_dispatch_feed_accepts_parent_plan_only_offered_task(tmp_path: Path) -> 
     assert result.returncode == 0
 
     data = json.loads(feed.read_text())
-    dispatchable = data["dispatch"]["dispatchable_tasks"]
+    assert data["dispatch"]["dispatchable_count"] == 0
+    assert data["dispatch"]["dispatchable_tasks"] == []
+    queue_item = data["dispatch"]["planning_queue"][0]
+    assert queue_item["task_id"] == "T-PLAN"
+    assert queue_item["action_needed"] == "needs concrete parent_spec"
 
-    assert data["dispatch"]["dispatchable_count"] == 1
-    assert dispatchable[0]["task_id"] == "T-PLAN"
-    assert dispatchable[0]["parent_plan"] == str(request_path)
-    assert dispatchable[0]["parent_request"] == ""
-    assert dispatchable[0]["parent_spec"] == ""
+
+def test_dispatch_feed_holds_parent_request_only_offered_task(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    tasks_active = tmp_path / "tasks" / "active"
+    tasks_active.mkdir(parents=True)
+
+    request_path = active / "REQ-PARENT.md"
+    _write_request(request_path, "REQ-PARENT", status="accepted_for_planning")
+    _write_task(
+        tasks_active / "T-PARENT.md",
+        "T-PARENT",
+        parent_request=str(request_path),
+        authority_case="CASE-TEST-001",
+        wsjf="6.0",
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    assert data["dispatch"]["dispatchable_count"] == 0
+    assert data["dispatch"]["dispatchable_tasks"] == []
+    queue_item = data["dispatch"]["planning_queue"][0]
+    assert queue_item["task_id"] == "T-PARENT"
+    assert queue_item["action_needed"] == "needs concrete parent_spec"
 
 
 def test_dispatch_feed_holds_missing_quality_floor(tmp_path: Path) -> None:

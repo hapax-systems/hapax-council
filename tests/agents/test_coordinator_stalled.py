@@ -139,6 +139,55 @@ def test_project_stalled_fresh_working() -> None:
             )
 
 
+def test_project_stalled_pidfile_free_live_launcher_stays_busy() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        with (
+            _isolated(tmp),
+            patch(
+                "agents.coordinator.core._live_headless_launcher",
+                return_value=(os.getpid(), "ut-task-20260602"),
+            ),
+        ):
+            lane = _lane(output_age_s=float("inf"))
+            lane.pid = os.getpid()
+            lane.pid_source = "proc"
+
+            assert (
+                project_stalled(lane, non_terminal_task_ids=frozenset({lane.claimed_task})) is False
+            )
+
+
+def test_project_stalled_live_tmux_session_stays_busy_without_launcher_pid() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        with _isolated(tmp):
+            lane = _lane(role="cx-red", claim="ut-task-20260602", output_age_s=0.0)
+            lane.session = "hapax-codex-cx-red"
+            lane.platform = "codex"
+
+            assert (
+                project_stalled(lane, non_terminal_task_ids=frozenset({lane.claimed_task})) is False
+            )
+
+
+def test_project_stalled_live_tmux_session_with_stale_output_stalls() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        with _isolated(tmp):
+            lane = _lane(
+                role="cx-red",
+                claim="ut-task-20260602",
+                output_age_s=STALL_OUTPUT_GRACE_S + 1.0,
+            )
+            lane.session = "hapax-codex-cx-red"
+            lane.platform = "codex"
+
+            assert (
+                project_stalled(lane, non_terminal_task_ids=frozenset({lane.claimed_task})) is True
+            )
+
+
 def test_project_stalled_no_claim_or_terminal_claim() -> None:
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
@@ -342,6 +391,28 @@ def test_tick_reoffers_are_bounded_per_tick() -> None:
             assert spy.call_count == MAX_REOFFERS_PER_TICK == 1
             assert state.lanes_stalled == 2
             assert state.reoffers_this_tick == 1
+
+
+def test_tick_does_not_reoffer_blocked_or_pr_open_lane_claims() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        with _isolated(tmp):
+            lanes = {
+                "ut_blocked": _lane(
+                    role="ut_blocked", claim="ut-blocked-20260602", output_age_s=99999.0
+                ),
+                "ut_pr": _lane(role="ut_pr", claim="ut-pr-20260602", output_age_s=99999.0),
+            }
+            tasks = [
+                _offered_task("ut-blocked-20260602", status="blocked"),
+                _offered_task("ut-pr-20260602", status="pr_open"),
+            ]
+            with patch.object(Coordinator, "_reoffer_stalled") as spy:
+                state, _ = _run_tick(lanes, tasks, "open")
+
+            spy.assert_not_called()
+            assert state.lanes_stalled == 0
+            assert state.reoffers_this_tick == 0
 
 
 # ── concrete safety acceptance + SHM surface ──────────────────────────────────

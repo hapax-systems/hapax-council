@@ -103,6 +103,21 @@ def test_coordinator_pinned_to_a_fleet_fenced_core() -> None:
     assert not (allowed & FLEET_FENCE), "coordinator cores must be off the SDLC fleet's cpuset"
 
 
+def test_coordinator_runs_from_source_activation_worktree() -> None:
+    text = (UNITS_DIR / "hapax-coordinator.service").read_text()
+    assert "WorkingDirectory=%h/.cache/hapax/source-activation/worktree" in text
+    assert "ConditionPathExists=%h/.cache/hapax/source-activation/worktree/pyproject.toml" in text
+    assert ".cache/hapax/rebuild/worktree" not in text
+
+
+def test_coordinator_dispatcher_uses_source_activation_worktree() -> None:
+    text = (UNITS_DIR / "hapax-coordinator.service").read_text()
+    assert (
+        "Environment=HAPAX_METHODOLOGY_DISPATCHER=%h/.cache/hapax/source-activation/"
+        "worktree/scripts/hapax-methodology-dispatch"
+    ) in text
+
+
 # ── Deploy visibility: install-units.sh links the slice + drop-ins ───────────
 
 

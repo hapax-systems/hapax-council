@@ -98,6 +98,7 @@ def _base(tmp_path: Path, **overrides: str) -> tuple[dict[str, str], Path]:
             "HAPAX_SUPERVISOR_CODEX_LANES": "",
             "HAPAX_SUPERVISOR_ANTIGRAV_LANES": "",
             "HAPAX_SUPERVISOR_RESTART_COOLDOWN_S": "0",
+            "HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS": "0",
             "HAPAX_CLAUDE_HEADLESS_BIN": str(bin_dir / "hapax-claude-headless"),
             "HAPAX_CLAUDE_BIN": str(bin_dir / "hapax-claude"),
             "HAPAX_CODEX_BIN": str(bin_dir / "hapax-codex"),
@@ -127,6 +128,36 @@ def _write_claim(env: dict[str, str], lane: str, task_id: str, *, status: str = 
     )
 
 
+def _write_offered_p0_incident(env: dict[str, str], task_id: str) -> None:
+    active = Path(env["HAPAX_SUPERVISOR_VAULT_ROOT"]) / "active"
+    active.mkdir(parents=True, exist_ok=True)
+    (active / f"{task_id}.md").write_text(
+        (
+            "---\n"
+            f"task_id: {task_id}\n"
+            f'title: "P0 incident {task_id}"\n'
+            "status: offered\n"
+            "assigned_to: unassigned\n"
+            "priority: p0\n"
+            "kind: recovery_triage\n"
+            "tags: [incident-intake, technical-alert]\n"
+            "---\n"
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_session_claim(
+    env: dict[str, str], lane: str, task_id: str, *, status: str = "claimed"
+) -> None:
+    _write_claim(env, lane, task_id, status=status)
+    claim_dir = Path(env["HOME"]) / ".cache" / "hapax"
+    (claim_dir / f"cc-active-task-{lane}").unlink()
+    (claim_dir / f"cc-active-task-{lane}-9b6ba5ca-513c-41aa-9900-d3026b42aad1").write_text(
+        f"{task_id}\n", encoding="utf-8"
+    )
+
+
 def _run(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run([str(SUPERVISOR)], env=env, capture_output=True, text=True)
 
@@ -148,6 +179,23 @@ def _wait_reads(calls: Path, name: str, *, timeout: float = 8.0) -> str:
             return text
         time.sleep(0.05)
     return text
+
+
+def _spawn_pidfile_free_launcher(
+    env: dict[str, str], lane: str, task_id: str, *, exe_name: str = "hapax-claude-headless"
+) -> subprocess.Popen:
+    return subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            ('exec -a "$3" python3 -c \'import time; time.sleep(60)\' --task "$1" "$2"'),
+            "_",
+            task_id,
+            lane,
+            exe_name,
+        ],
+        env=env,
+    )
 
 
 # ─── core fix: dead lanes ALWAYS respawn, even with no task ────────────────────
@@ -173,6 +221,114 @@ def test_supervisor_respawns_dead_claude_lane_with_no_task(tmp_path: Path) -> No
     assert "respawning read-only" in result.stdout
 
 
+def test_supervisor_does_not_respawn_over_pidfile_free_launcher(tmp_path: Path) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_CLAUDE_LANES="delta",
+        HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS="1",
+        HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S="3600",
+    )
+    _make_worktree(env, "delta")
+    _write_claim(env, "delta", "live-task", status="in_progress")
+    proc = _spawn_pidfile_free_launcher(env, "delta", "live-task")
+    try:
+        time.sleep(0.2)
+        result = _run(env)
+
+        assert result.returncode == 0, result.stderr
+        assert _reads(calls, "claude-headless.txt") == ""
+        assert _reads(calls, "claude.txt") == ""
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_supervisor_ignores_pidfile_free_launcher_from_different_home(tmp_path: Path) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_CLAUDE_LANES="delta",
+        HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS="1",
+    )
+    _make_worktree(env, "delta")
+    _write_claim(env, "delta", "live-task", status="in_progress")
+    foreign_env = dict(env)
+    foreign_home = tmp_path / "foreign-home"
+    foreign_home.mkdir()
+    foreign_env["HOME"] = str(foreign_home)
+    proc = _spawn_pidfile_free_launcher(foreign_env, "delta", "live-task")
+    try:
+        time.sleep(0.2)
+        result = _run(env)
+
+        assert result.returncode == 0, result.stderr
+        assert "live-task delta" in _wait_reads(calls, "claude-headless.txt")
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_supervisor_ignores_substring_headless_process(tmp_path: Path) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_CLAUDE_LANES="delta",
+        HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS="1",
+    )
+    _make_worktree(env, "delta")
+    _write_claim(env, "delta", "live-task", status="in_progress")
+    proc = _spawn_pidfile_free_launcher(
+        env, "delta", "live-task", exe_name="not-hapax-claude-headless"
+    )
+    try:
+        time.sleep(0.2)
+        result = _run(env)
+
+        assert result.returncode == 0, result.stderr
+        assert "live-task delta" in _wait_reads(calls, "claude-headless.txt")
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_supervisor_rejects_reused_launcher_pidfile(tmp_path: Path) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_CLAUDE_LANES="delta",
+        HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S="0",
+    )
+    _make_worktree(env, "delta")
+    _write_claim(env, "delta", "live-task", status="in_progress")
+    foreign = subprocess.Popen(["sleep", "60"])
+    try:
+        pidfile = Path(env["HAPAX_SUPERVISOR_RUNTIME_DIR"]) / "delta.launcher.pid"
+        pidfile.write_text(f"{foreign.pid}\n", encoding="utf-8")
+
+        result = _run(env)
+
+        assert result.returncode == 0, result.stderr
+        assert foreign.poll() is None
+        assert f"reaping launcher pid={foreign.pid}" not in result.stdout
+        assert "live-task delta" in _wait_reads(calls, "claude-headless.txt")
+    finally:
+        foreign.terminate()
+        try:
+            foreign.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            foreign.kill()
+            foreign.wait(timeout=5)
+
+
 def test_supervisor_appendix_only_suppresses_dead_claude_lane_with_no_task(
     tmp_path: Path,
 ) -> None:
@@ -190,6 +346,24 @@ def test_supervisor_appendix_only_suppresses_dead_claude_lane_with_no_task(
     assert _reads(calls, "claude.txt") == ""
     assert "appendix-only local-dev maintenance" in result.stdout
     assert "suppresses idle-await respawn" in result.stdout
+
+
+def test_supervisor_appendix_only_allows_idle_lane_for_offered_p0_incident(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_CLAUDE_LANES="delta",
+        HAPAX_LOCAL_DEV_MAINTENANCE_MODE="appendix-only",
+    )
+    _make_worktree(env, "delta")
+    _write_offered_p0_incident(env, "p0-incident-notification-drain")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert "--role delta --terminal tmux --readonly" in _wait_reads(calls, "claude.txt")
+    assert "P0 incident backlog exists" in result.stdout
 
 
 def test_supervisor_respawns_dead_claude_lane_with_claimed_task(tmp_path: Path) -> None:
@@ -223,6 +397,27 @@ def test_supervisor_appendix_only_preserves_claimed_task_resume(tmp_path: Path) 
     headless = _wait_reads(calls, "claude-headless.txt")
     assert "delta" in headless
     assert "appendix-active-task" in headless
+    assert _reads(calls, "claude.txt") == ""
+
+
+def test_supervisor_appendix_only_preserves_session_keyed_claimed_task_resume(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_CLAUDE_LANES="gamma",
+        HAPAX_LOCAL_DEV_MAINTENANCE_MODE="appendix-only",
+    )
+    _make_worktree(env, "gamma")
+    _write_session_claim(env, "gamma", "p0-incident-notification-drain", status="claimed")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    headless = _wait_reads(calls, "claude-headless.txt")
+    assert "gamma" in headless
+    assert "p0-incident-notification-drain" in headless
+    assert "DEAD with no active task" not in result.stdout
     assert _reads(calls, "claude.txt") == ""
 
 

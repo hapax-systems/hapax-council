@@ -9,6 +9,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 UNITS_DIR = REPO_ROOT / "systemd" / "units"
 SERVICE_UNIT = UNITS_DIR / "hapax-request-decompose.service"
 TIMER_UNIT = UNITS_DIR / "hapax-request-decompose.timer"
+READY_SERVICE_UNIT = UNITS_DIR / "hapax-cc-task-offer-ready.service"
+READY_TIMER_UNIT = UNITS_DIR / "hapax-cc-task-offer-ready.timer"
+PRESET_UNIT = REPO_ROOT / "systemd" / "user-preset.d" / "hapax.preset"
 ACTIVE_WORKTREE = "%h/.cache/hapax/source-activation/worktree"
 
 
@@ -58,4 +61,36 @@ def test_request_decompose_timer_targets_decompose_service() -> None:
     assert parser.get("Timer", "OnBootSec") == "5min"
     assert parser.get("Timer", "OnUnitActiveSec") == "15min"
     assert parser.get("Timer", "Unit", fallback=SERVICE_UNIT.name) == SERVICE_UNIT.name
+    assert parser.get("Install", "WantedBy") == "timers.target"
+
+
+def test_request_pipeline_timers_are_preset_enabled() -> None:
+    preset_lines = {
+        line.strip()
+        for line in PRESET_UNIT.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert "enable hapax-request-intake-consumer.timer" in preset_lines
+    assert "enable hapax-request-decompose.timer" in preset_lines
+    assert "enable hapax-cc-task-offer-ready.timer" in preset_lines
+
+
+def test_ready_offer_unit_uses_source_activation_worktree() -> None:
+    parser = _load_unit(READY_SERVICE_UNIT)
+    service_text = READY_SERVICE_UNIT.read_text(encoding="utf-8")
+
+    assert parser.get("Service", "Type") == "oneshot"
+    assert parser.get("Service", "WorkingDirectory") == ACTIVE_WORKTREE
+    assert parser.get("Service", "ExecStart") == (
+        f"{ACTIVE_WORKTREE}/scripts/cc-task-offer-ready --reconcile"
+    )
+    assert "%h/projects/hapax-council" not in service_text
+
+
+def test_ready_offer_timer_targets_ready_offer_service() -> None:
+    parser = _load_unit(READY_TIMER_UNIT)
+
+    assert parser.get("Timer", "OnUnitActiveSec") == "300"
+    assert parser.get("Timer", "Unit", fallback=READY_SERVICE_UNIT.name) == READY_SERVICE_UNIT.name
     assert parser.get("Install", "WantedBy") == "timers.target"

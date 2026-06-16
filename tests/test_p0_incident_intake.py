@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -23,6 +24,10 @@ from shared.p0_incident_intake import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INTAKE_SCRIPT = REPO_ROOT / "scripts" / "hapax-p0-incident-intake"
+
+
+def _latest_alert_section(text: str) -> str:
+    return text.split("## Latest Alert", 1)[1].split("## Evidence", 1)[0]
 
 
 def _write_fake_bin(path: Path, body: str) -> None:
@@ -104,7 +109,7 @@ def test_same_incident_updates_existing_task(tmp_path):
     )
     second_result = record_notification(
         "SDLC invariant violation",
-        "INV-2 false: local worktree ledger drift remains",
+        r"INV-2 false: local worktree ledger drift remains; literal backref \1 must survive",
         priority="urgent",
         tags=["skull"],
         task_root=task_root,
@@ -125,7 +130,52 @@ def test_same_incident_updates_existing_task(tmp_path):
 
     task = first_result.task_path.read_text(encoding="utf-8")
     assert "incident_count: 2" in task
+    assert task.count("## Latest Alert") == 1
+    assert "- Count: 2" in task
+    assert "- Last seen: `2026-06-12T20:05:00Z`" in task
+    latest = _latest_alert_section(task)
+    assert r"literal backref \1 must survive" in latest
+    assert "INV-2 false: local worktree ledger drift remains" in latest
+    assert "INV-2 false: local worktree ledger drift\n```" not in latest
     assert "p0-incident-intake updated" in task
+
+
+def test_existing_task_without_latest_alert_gets_repaired(tmp_path):
+    task_root = tmp_path / "tasks"
+    state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+    first = datetime(2026, 6, 12, 20, 0, tzinfo=UTC)
+    second = first + timedelta(minutes=5)
+
+    first_result = record_notification(
+        "Service Failed: demo.service",
+        "first failure text",
+        priority="urgent",
+        tags=["skull"],
+        task_root=task_root,
+        state_path=state_path,
+        ledger_path=ledger_path,
+        now=first,
+    )
+    task_text = first_result.task_path.read_text(encoding="utf-8")
+    task_text = re.sub(r"(?s)## Latest Alert\n\n.*?\n## Evidence\n", "## Evidence\n", task_text)
+    first_result.task_path.write_text(task_text, encoding="utf-8")
+
+    record_notification(
+        "Service Failed: demo.service",
+        "second failure text",
+        priority="urgent",
+        tags=["skull"],
+        task_root=task_root,
+        state_path=state_path,
+        ledger_path=ledger_path,
+        now=second,
+    )
+
+    repaired = first_result.task_path.read_text(encoding="utf-8")
+    assert repaired.count("## Latest Alert") == 1
+    assert repaired.index("## Latest Alert") < repaired.index("## Evidence")
+    assert "second failure text" in _latest_alert_section(repaired)
 
 
 def test_concurrent_alerts_preserve_single_task_and_count(tmp_path):

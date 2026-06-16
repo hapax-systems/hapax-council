@@ -172,6 +172,9 @@ class TestTickIntegration:
             stack.enter_context(
                 patch("agents.coordinator.core.SHM_FILE", tmp_path / "shm" / "state.json")
             )
+            stack.enter_context(
+                patch("agents.coordinator.core.DISPATCH_TIMEOUT_LANDING_GRACE_S", 0.0)
+            )
             mock_run = stack.enter_context(patch("subprocess.run"))
             if now is not None:
                 stack.enter_context(

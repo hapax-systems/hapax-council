@@ -506,6 +506,11 @@ GATE_CLOSURE=()
 SYSTEMD_UNCLASSIFIED=()
 AUDIO_SAFE_RESTARTS=()
 DID_ANYTHING=0
+GOVERNED_INTAKE_PRESET_UNIT_SETS=(
+    "hapax-request-decompose.timer hapax-request-decompose.service"
+    "hapax-cc-task-offer-ready.timer hapax-cc-task-offer-ready.service"
+)
+GOVERNED_INTAKE_PRESET_ENABLE=()
 
 unit_install_scope() {
     local f="$1"
@@ -629,8 +634,8 @@ cleanup_known_stale_user_dropins_for_unit() {
             done
             rmdir "$dropin_dir" 2>/dev/null || true
             ;;
-        hapax-imagination.service|hapax-reverie.service|hapax-darkplaces-v4l2.service|\
-        hapax-segment-prep.service|logos-api.service)
+        hapax-cc-task-offer-ready.service|hapax-imagination.service|hapax-reverie.service|\
+        hapax-darkplaces-v4l2.service|hapax-segment-prep.service|logos-api.service)
             remove_unversioned_user_dropins_for_unit "$unit"
             ;;
     esac
@@ -998,10 +1003,66 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
     DID_ANYTHING=1
 fi
 
+preset_enables_unit_at_sha() {
+    local unit="$1" preset
+    for preset in "${USER_PRESETS[@]}"; do
+        git cat-file -e "$SHA:$preset" 2>/dev/null || continue
+        if git show "$SHA:$preset" | grep -Eq "^[[:space:]]*enable[[:space:]]+$unit([[:space:]]|$)"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+install_governed_intake_unit_at_sha() {
+    local unit="$1" reason="$2"
+    local rel dest
+    rel="systemd/units/$unit"
+    dest="$SYSTEMD_USER_DIR/$unit"
+    if [ -L "$dest" ]; then
+        rm -f "$dest"
+    fi
+    git show "$SHA:$rel" > "$dest"
+    echo "  '$rel' -> '$dest' ($reason)"
+    cleanup_known_stale_user_dropins_for_unit "$unit"
+    return 0
+}
+
+governed_intake_unit_exists_at_sha() {
+    local unit="$1"
+    local rel="systemd/units/$unit"
+    if git cat-file -e "$SHA:$rel" 2>/dev/null; then
+        return 0
+    fi
+    echo "  warning: preset requires $unit but $rel is absent at $SHA; cannot activate governed intake. Next action: add $rel at the deployed SHA or remove the preset enable for its timer." >&2
+    return 1
+}
+
+install_governed_intake_preset_units() {
+    local set timer unit install_ok
+    GOVERNED_INTAKE_PRESET_ENABLE=()
+    for set in "${GOVERNED_INTAKE_PRESET_UNIT_SETS[@]}"; do
+        timer="${set%% *}"
+        preset_enables_unit_at_sha "$timer" || continue
+        install_ok=1
+        for unit in $set; do
+            if ! governed_intake_unit_exists_at_sha "$unit"; then
+                install_ok=0
+            fi
+        done
+        [ "$install_ok" -eq 1 ] || continue
+        for unit in $set; do
+            install_governed_intake_unit_at_sha "$unit" "preset-activated governed intake unit"
+        done
+        GOVERNED_INTAKE_PRESET_ENABLE+=("$timer")
+    done
+}
+
 # --- systemd user presets ---
 if [ "${#USER_PRESETS[@]}" -gt 0 ]; then
     echo "systemd user presets changed (${#USER_PRESETS[@]}):"
     mkdir -p "$SYSTEMD_USER_PRESET_DIR"
+    mkdir -p "$SYSTEMD_USER_DIR"
     for f in "${USER_PRESETS[@]}"; do
         base="$(basename "$f")"
         dest="$SYSTEMD_USER_PRESET_DIR/$base"
@@ -1012,7 +1073,12 @@ if [ "${#USER_PRESETS[@]}" -gt 0 ]; then
             rm -fv "$dest" || true
         fi
     done
+    install_governed_intake_preset_units
     systemctl --user daemon-reload
+    for unit in "${GOVERNED_INTAKE_PRESET_ENABLE[@]}"; do
+        echo "enable+starting $unit (governed intake preset)"
+        systemctl --user enable --now "$unit"
+    done
     DID_ANYTHING=1
 fi
 
