@@ -2146,6 +2146,60 @@ def test_council_coherence_check_criterion_is_config_sourced_ratchets_the_bar(
     assert tightened.council_decisions["mean_score"] == 3.0
 
 
+def test_council_coherence_check_stamps_criterion_for_sced_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """G4 (producer-DV capture): every coherence decision records the in-force
+    criterion C_k beside the pre-gate mean_score, so each council-decisions
+    ledger row is a complete changing-criterion SCED observation. The stamp must
+    ride the PASS branch, the below-criterion REFINE branch, and the degraded
+    REFUSED branch alike — the producer's pre-gate score distribution against the
+    ratcheting bar is only reconstructable if C_k travels with the score for
+    every outcome (C_k is irrecoverable post-hoc)."""
+    from agents.deliberative_council import engine as council_engine
+    from agents.deliberative_council.models import ConvergenceStatus, CouncilVerdict
+
+    def _fake(scores: dict[str, int], status: Any = ConvergenceStatus.CONVERGED) -> Any:
+        async def fake_deliberate(
+            council_input: Any, mode: Any, rubric: Any, config: Any = None
+        ) -> Any:
+            return CouncilVerdict(
+                scores=scores,
+                confidence_bands={},
+                convergence_status=status,
+                disagreement_log=[],
+                research_findings=[],
+                evidence_matrix=None,
+                receipt={"council_health": {"members_valid": 6, "families_valid": 5}},
+            )
+
+        return fake_deliberate
+
+    # PASS branch: mean 4.0 clears the default criterion — C_k is stamped.
+    monkeypatch.setattr(prep, "_COHERENCE_CRITERION", 3.0)
+    monkeypatch.setattr(council_engine, "deliberate", _fake({"a": 4, "b": 4}))
+    passed = prep._council_coherence_check("a strong script", "prog-1")
+    assert passed.passed is True
+    assert passed.council_decisions["criterion"] == 3.0
+
+    # REFINE branch: the SAME mean-4.0 producer output now misses a raised C_k;
+    # both the pre-gate mean AND the bar it missed are captured for the DV.
+    monkeypatch.setattr(prep, "_COHERENCE_CRITERION", 4.5)
+    refined = prep._council_coherence_check("an adequate script", "prog-1")
+    assert refined.passed is False
+    assert refined.refused is False
+    assert refined.council_decisions["criterion"] == 4.5
+    assert refined.council_decisions["mean_score"] == 4.0
+
+    # REFUSED branch (degraded council, no valid scores) still stamps the in-force
+    # criterion — a refused observation is still a phase-tagged data point.
+    monkeypatch.setattr(prep, "_COHERENCE_CRITERION", 3.0)
+    monkeypatch.setattr(council_engine, "deliberate", _fake({}))
+    refused = prep._council_coherence_check("a script", "prog-1")
+    assert refused.refused is True
+    assert refused.council_decisions["criterion"] == 3.0
+
+
 def test_resolve_coherence_criterion_reads_env_and_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

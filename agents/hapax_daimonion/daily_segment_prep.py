@@ -4021,6 +4021,15 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
         "families_valid": health.get("families_valid"),
         "failed_members": verdict.receipt.get("failed_members", []),
         "mean_score": round(mean_score, 2) if mean_score is not None else None,
+        # G4 (producer-DV capture): stamp the in-force criterion C_k alongside the
+        # PRE-gate producer mean so each council-decisions ledger row is a complete
+        # changing-criterion SCED observation — (mean_score, criterion, released?).
+        # The pre-gate mean is recorded for EVERY outcome (refused/refined/passed),
+        # so the per-phase producer score distribution is reconstructable against
+        # the ratcheting bar; that distinguishes curriculum (the producer learns to
+        # track a rising C_k) from sieve (flat producer, the gate just rejects more).
+        # C_k is irrecoverable post-hoc, so it must be stamped at decision time.
+        "criterion": _COHERENCE_CRITERION,
         # Per-axis scores — the generative trace reads council_decisions["scores"]
         # to populate the stance assessment (motivated_angle/directedness/etc.);
         # without it those fields are silently unassessed (codex-1, PR #4133).
