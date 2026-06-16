@@ -54,6 +54,25 @@ Fix the broken widget.
         assert task.wsjf == 12.0
         assert "claude" in task.platform_suitability
 
+    def test_nullable_or_invalid_wsjf_defaults_to_zero(self, tmp_path: Path):
+        for value in ("null", "not-a-number", ".nan"):
+            task_file = tmp_path / f"{value}.md"
+            task_file.write_text(
+                f"""---
+title: "Loose WSJF"
+status: offered
+assigned_to: unassigned
+wsjf: {value}
+---
+""",
+                encoding="utf-8",
+            )
+
+            task = _parse_task(task_file)
+
+            assert task is not None
+            assert task.wsjf == 0.0
+
     def test_invalid_yaml(self, tmp_path: Path):
         task_file = tmp_path / "bad.md"
         task_file.write_text("no frontmatter here")

@@ -634,8 +634,8 @@ cleanup_known_stale_user_dropins_for_unit() {
             done
             rmdir "$dropin_dir" 2>/dev/null || true
             ;;
-        hapax-imagination.service|hapax-reverie.service|hapax-darkplaces-v4l2.service|\
-        hapax-segment-prep.service|logos-api.service)
+        hapax-cc-task-offer-ready.service|hapax-imagination.service|hapax-reverie.service|\
+        hapax-darkplaces-v4l2.service|hapax-segment-prep.service|logos-api.service)
             remove_unversioned_user_dropins_for_unit "$unit"
             ;;
     esac

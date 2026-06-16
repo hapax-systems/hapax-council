@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -692,7 +693,7 @@ def _parse_task(path: Path) -> Task | None:
         title=meta.get("title", path.stem),
         status=status,
         assigned_to=meta.get("assigned_to", "unassigned"),
-        wsjf=float(meta.get("wsjf", 0.0)),
+        wsjf=_frontmatter_float(meta.get("wsjf")),
         effort_class=meta.get("effort_class", "standard"),
         platform_suitability=tuple(platforms),
         quality_floor=meta.get("quality_floor", "deterministic_ok"),
@@ -711,6 +712,18 @@ def _frontmatter_text(value: object) -> str | None:
         return None
     text = str(value).strip().strip("\"'")
     return None if not text or text.lower() in {"null", "none", "~"} else text
+
+
+def _frontmatter_float(value: object, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    if isinstance(value, str) and not value.strip():
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if math.isfinite(parsed) else default
 
 
 FLOW_STATUS_KEYS = ("offered", "claimed", "in_progress", "blocked", "pr_open")

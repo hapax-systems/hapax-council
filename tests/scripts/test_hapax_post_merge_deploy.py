@@ -436,6 +436,48 @@ def test_preset_only_deploy_installs_and_starts_governed_intake_timers(
     assert "preset-activated governed intake unit" in result.stdout
 
 
+def test_preset_only_deploy_removes_stale_ready_offer_dropin(tmp_path: Path) -> None:
+    repo, sha = _repo_with_intake_units_then_preset_commit(tmp_path)
+    home = tmp_path / "home"
+    stale_dropin = (
+        home
+        / ".config"
+        / "systemd"
+        / "user"
+        / "hapax-cc-task-offer-ready.service.d"
+        / "worktree-override.conf"
+    )
+    stale_dropin.parent.mkdir(parents=True)
+    stale_dropin.write_text(
+        "[Service]\nExecStart=\nExecStart=/missing/worktree/scripts/cc-task-offer-ready --reconcile\n",
+        encoding="utf-8",
+    )
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not stale_dropin.exists()
+    assert not stale_dropin.parent.exists()
+    assert "removing unversioned local drop-in" in result.stdout
+    assert (home / ".config/systemd/user/hapax-cc-task-offer-ready.service").is_file()
+
+
 def test_preset_only_deploy_refuses_governed_intake_timer_without_service(
     tmp_path: Path,
 ) -> None:
