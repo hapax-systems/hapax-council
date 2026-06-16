@@ -404,6 +404,99 @@ task_id: p0-claim-blocked
         assert state.claimed_task == "older-live-task"
         assert state.idle is False
 
+    def test_resolved_no_active_claim_relay_task_id_does_not_hold_lane(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / "cx-gold.yaml").write_text(
+            """session: cx-gold
+platform: codex
+status: resolved_pending_frontier_review_no_active_claim
+current_claim: null
+task_id: p0-resolved-incident
+""",
+            encoding="utf-8",
+        )
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="cx-gold",
+                    session="hapax-codex-cx-gold",
+                    platform="codex",
+                )
+            )
+
+        assert state.claimed_task is None
+        assert state.idle is True
+
+    def test_no_task_other_session_diagnostic_claim_does_not_hold_lane(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / "cx-green.yaml").write_text(
+            """session: cx-green
+platform: codex
+status: bootstrap_preflight_no_task_other_session_claim_active
+current_claim: "other session active: p0-incident assigned_to=cx-green session=old-session"
+task_id: null
+""",
+            encoding="utf-8",
+        )
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="cx-green",
+                    session="hapax-codex-cx-green",
+                    platform="codex",
+                )
+            )
+
+        assert state.claimed_task is None
+        assert state.idle is True
+
+    def test_active_relay_task_id_still_counts_as_claim(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / "cx-red.yaml").write_text(
+            """session: cx-red
+platform: codex
+status: active_claim_p0_incident_triage
+current_claim: null
+task_id: p0-active-incident
+""",
+            encoding="utf-8",
+        )
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="cx-red",
+                    session="hapax-codex-cx-red",
+                    platform="codex",
+                )
+            )
+
+        assert state.claimed_task == "p0-active-incident"
+        assert state.idle is False
+
     def test_role_status_retired_beats_stale_peer_active_without_claim(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
         relay_dir.mkdir()

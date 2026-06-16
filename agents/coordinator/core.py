@@ -1097,24 +1097,62 @@ def _relay_reports_claim_ownership_block(relay: dict) -> bool:
     return status == "blocked-claim-ownership"
 
 
-def _claim_from_relay(relay: dict) -> str | None:
-    if _relay_reports_claim_ownership_block(relay):
-        return None
-    return _stringify_task(
-        relay.get("current_claim")
-        or relay.get("current_task")
-        or relay.get("task_id")
-        or relay.get("currently_working_on")
+def _relay_status_has_no_active_claim(relay: dict) -> bool:
+    status = _normalized_status(relay.get("status") or relay.get("session_status"))
+    if not status:
+        return False
+    if status in {"queue-dry", "equilibrium", "idle", "retired"} or status.startswith("idle-"):
+        return True
+    return (
+        status.startswith("resolved-")
+        or "no-active-claim" in status
+        or "no-task" in status
+        or status == "blocked-claim-ownership"
     )
+
+
+def _relay_status_supports_task_id_claim(relay: dict) -> bool:
+    status = _normalized_status(relay.get("status") or relay.get("session_status"))
+    if not status:
+        return False
+    return status in {"active", "executing", "claimed", "in-progress", "working"} or any(
+        token in status for token in ("active-claim", "in-progress", "working")
+    )
+
+
+def _diagnostic_claim_text(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    text = value.strip().lower()
+    return text.startswith("other session active:") or (
+        " assigned_to=" in text and " session=" in text
+    )
+
+
+def _claim_from_relay(relay: dict) -> str | None:
+    if _relay_reports_claim_ownership_block(relay) or _relay_status_has_no_active_claim(relay):
+        return None
+    for key in ("current_claim", "current_task", "currently_working_on"):
+        value = relay.get(key)
+        if _diagnostic_claim_text(value):
+            continue
+        claim = _stringify_task(value)
+        if claim:
+            return claim
+    if _relay_status_supports_task_id_claim(relay):
+        return _stringify_task(relay.get("task_id"))
+    return None
 
 
 def _relay_status_is_idle(value: object) -> bool | None:
     status = _normalized_status(value)
     if not status:
         return None
-    if status in {"queue-dry", "equilibrium", "idle"} or status.startswith("idle-"):
+    if status in {"queue-dry", "equilibrium", "idle", "retired"} or status.startswith("idle-"):
         return True
     if status == "blocked-claim-ownership":
+        return True
+    if status.startswith("resolved-") or "no-active-claim" in status or "no-task" in status:
         return True
     if status in {"active", "executing", "claimed", "in-progress", "working", "retiring"}:
         return False
