@@ -312,6 +312,39 @@ current_claim: relay-task
         assert state.claimed_task == "relay-task"
         assert state.idle is False
 
+    def test_relay_task_id_none_does_not_create_phantom_claim(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / "cx-blue.yaml").write_text(
+            """session: cx-blue
+platform: codex
+status: idle
+session_status: QUEUE-DRY
+current_claim: null
+task_id: none
+""",
+            encoding="utf-8",
+        )
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="cx-blue",
+                    session="hapax-codex-cx-blue",
+                    platform="codex",
+                )
+            )
+
+        assert state.alive is True
+        assert state.claimed_task is None
+        assert state.idle is True
+
     def test_role_status_retired_beats_stale_peer_active_without_claim(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
         relay_dir.mkdir()

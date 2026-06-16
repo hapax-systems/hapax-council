@@ -1083,7 +1083,7 @@ def _stringify_task(value: object) -> str | None:
                 return str(nested)
         return None
     text = str(value).strip()
-    return text or None
+    return None if not text or text.lower() in {"null", "none", "~"} else text
 
 
 def _claim_from_relay(relay: dict) -> str | None:
