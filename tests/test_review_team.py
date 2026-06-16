@@ -66,6 +66,59 @@ class TestLensRegistry:
         ]
         assert missing == []
 
+    def test_voice_doctrine_consent_egress_criterion_passes_eval_plane_without_coverage_hole(
+        self,
+    ) -> None:
+        # Class-closure canary (2026-06-15): the voice-doctrine consent-egress item carries the correct
+        # CRITERION for data/LLM egress — a shared-gateway eval-plane call matching the deliberative
+        # council's established pattern (e.g. composability classification on the 'balanced' route) PASSES,
+        # and a finding is raised only for a NEW external sink / ungated sensitive egress. The old phrasing
+        # had no such criterion, so all 4 families mis-fired it as a CRITICAL on PR #4143's eval-plane call.
+        #
+        # Crucially this does NOT scope consent-egress out of voice-doctrine: a daimonion eval-plane change
+        # must STILL receive an egress-reviewing lens (security/consent-provenance are NOT path-selected for
+        # bare agents/hapax_daimonion/ paths — only voice-doctrine is), so removing it would leave a coverage
+        # hole. This test exercises lenses_for_files to prove the coverage is retained.
+        #
+        # Predicate is re-ratified in the linked parent_spec (pr-review-team-design-2026-06-11.md, Amendment
+        # 2026-06-15: the operator chose the class-fix; the inline-criterion design is the accepted one, the
+        # scope-out attempt is rejected for the coverage hole). Lens charters are LLM-consumed prose with no
+        # deterministic judging code path, so the only unit-testable surfaces are SELECTION (lenses_for_files,
+        # the real reviewer-prompt path) and the rendered charter content; the criterion's effect on verdicts
+        # is validated by the re-review dossier, as for every other lens in the registry.
+        rt = _load_review_team_module()
+        reg = _registry()
+        eval_plane_diff = ["agents/hapax_daimonion/segment_composability_gate.py"]
+        lenses = rt.lenses_for_files(eval_plane_diff, reg)
+        assert "voice-doctrine" in lenses, (
+            "a daimonion eval-plane change must still get an egress-reviewing lens (no coverage hole)"
+        )
+        # consent-egress survives the real checklist parser the reviewer prompt is built from
+        assert "consent-egress" in rt.charter_checklist_items("voice-doctrine"), (
+            "consent-egress must remain a parsed checklist item the reviewers receive"
+        )
+
+        charter = (LENS_DIR / "voice-doctrine.md").read_text(encoding="utf-8")
+        consent_line = next(
+            (ln for ln in charter.splitlines() if ln.startswith("- [ ] consent-egress:")), ""
+        )
+        assert consent_line, "voice-doctrine must keep a consent-egress checklist item"
+        low = consent_line.lower()
+        # the AUDIO/broadcast half is retained — this lens's core duty (codex-1: pin both behaviors, not
+        # just the eval-plane criterion, so deleting the TTS/broadcast gate language fails this test).
+        assert "broadcast consent gates" in low, consent_line
+        assert "tts" in low, consent_line
+        # the eval-plane PASS criterion is present...
+        assert "eval-plane" in low and "passes" in low, consent_line
+        assert "balanced" in low, consent_line
+        # ...and a finding is still raised for genuinely-unsafe egress (not a blanket exemption)
+        assert "finding" in low and ("new" in low and "sink" in low), consent_line
+        # do NOT reference trust-boundary as a lens (it is a SURFACE; its lenses are security +
+        # silent-failure-hunting) and do NOT claim other lenses cover daimonion egress (they are not selected
+        # for these paths).
+        referenced = set(re.findall(r"[a-z-]+(?= lens)", low))
+        assert "trust-boundary" not in referenced, consent_line
+
     def test_sizing_matches_ratified_spec(self) -> None:
         sizing = _registry()["sizing"]
         assert sizing["t3_docs"]["team_size"] == 2
