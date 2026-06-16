@@ -2146,31 +2146,33 @@ def test_council_coherence_check_criterion_is_config_sourced_ratchets_the_bar(
     assert tightened.council_decisions["mean_score"] == 3.0
 
 
-def test_resolve_coherence_criterion_reads_env_and_fails_safe(
+def test_resolve_coherence_criterion_reads_env_and_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """G1 hardening: the criterion is sourced from ``HAPAX_COHERENCE_CRITERION``
-    through the real parse path, and any value that would fail the release gate
-    OPEN (non-finite, non-numeric, out of the (0, 5] rubric range) is rejected
-    back to the default 3.0 instead of silently disabling the gate. A bare
-    ``mean_score < C_k`` over an unvalidated ``float(os.environ[...])`` would let
-    ``nan``/negative/garbage wave every segment through — this pins it closed."""
-    # Unset → default.
+    through the real parse path. A bare ``mean_score < C_k`` over an unvalidated
+    ``float(os.environ[...])`` fails the release gate OPEN — ``nan`` is always
+    False, and on the [1, 5] rubric any ``C_k <= 1.0`` can never trip the mean.
+    Because this is a release gate in a ratcheted experiment, a *set-but-invalid*
+    value is REFUSED (raises) rather than silently reverted to a permissive
+    default — fail-closed, like ``_council_coherence_check`` on a degraded
+    council. An *unset* var is not a misconfiguration and uses the default 3.0."""
+    # Unset → validated default (no regression).
     monkeypatch.delenv("HAPAX_COHERENCE_CRITERION", raising=False)
     assert prep._resolve_coherence_criterion() == 3.0
 
-    # A valid in-range value is honored (the SCED ratchet surface).
-    monkeypatch.setenv("HAPAX_COHERENCE_CRITERION", "3.5")
-    assert prep._resolve_coherence_criterion() == 3.5
-    monkeypatch.setenv("HAPAX_COHERENCE_CRITERION", "5")
-    assert prep._resolve_coherence_criterion() == 5.0
+    # Valid in-range values are honored (the SCED ratchet surface), incl. bounds.
+    for good, expected in (("3.5", 3.5), ("5", 5.0), ("1.01", 1.01), ("4.5", 4.5)):
+        monkeypatch.setenv("HAPAX_COHERENCE_CRITERION", good)
+        assert prep._resolve_coherence_criterion() == expected
 
-    # Every fail-open vector falls back to the default, never disabling the gate.
-    for bad in ("nan", "inf", "-inf", "0", "-1", "5.1", "100", "", "high", "3.0x"):
+    # Every fail-open vector is refused at resolve time — never silently defaulted,
+    # never able to disable the gate. Includes the rubric lower bound (<= 1.0 can
+    # never trip mean_score < C_k) and the non-finite / out-of-range / garbage set.
+    for bad in ("nan", "inf", "-inf", "0", "1", "1.0", "-1", "5.1", "100", "", "high", "3.0x"):
         monkeypatch.setenv("HAPAX_COHERENCE_CRITERION", bad)
-        assert prep._resolve_coherence_criterion() == 3.0, (
-            f"criterion {bad!r} must fall back to the default, not fail the gate open"
-        )
+        with pytest.raises(ValueError, match="HAPAX_COHERENCE_CRITERION"):
+            prep._resolve_coherence_criterion()
 
 
 def test_prep_segment_blocks_release_when_coherence_fails_after_noop_refine(

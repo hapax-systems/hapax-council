@@ -162,38 +162,42 @@ _COHERENCE_CRITERION_DEFAULT = 3.0
 
 
 def _resolve_coherence_criterion() -> float:
-    """Resolve C_k from ``HAPAX_COHERENCE_CRITERION``, hardened against fail-OPEN.
+    """Resolve C_k from ``HAPAX_COHERENCE_CRITERION`` — FAIL-CLOSED on misconfig.
 
-    The gate fires on ``mean_score < C_k``, so a non-finite / non-numeric /
-    out-of-range criterion does not fail safe — it fails OPEN: ``NaN`` makes the
-    comparison always False (every segment waves through), a negative or zero
-    value can never trip, and a malformed string would crash module import. The
-    coherence rubric scores on [1, 5], so a meaningful criterion lies in (0, 5];
-    anything else is rejected back to the default 3.0 with a loud warning rather
-    than silently disabling the release gate.
+    The gate fires on ``mean_score < C_k``, so an invalid criterion does not fail
+    safe — it fails OPEN: ``NaN`` makes the comparison always False (every segment
+    waves through), and because scores are on the [1, 5] rubric, any ``C_k <= 1.0``
+    can never trip the mean gate (the minimum achievable mean is 1.0) — the bar is
+    silently disabled. Falling back to a permissive default is ALSO wrong here: in
+    a ratcheted phase enforcing a stricter C_k, quietly reverting a fat-fingered
+    value to 3.0 weakens the live release gate and corrupts the experimental
+    record. So a *set-but-invalid* value is REFUSED at resolve time (the process
+    will not start and silently release under the wrong threshold) — consistent
+    with ``_council_coherence_check`` itself, which refuses rather than fail-opens
+    on a degraded council. The operative range is ``(1.0, 5.0]``. An *unset* var
+    is not a misconfiguration: it uses the validated default 3.0 (no regression).
     """
     raw = os.environ.get("HAPAX_COHERENCE_CRITERION")
     if raw is None:
         return _COHERENCE_CRITERION_DEFAULT
     try:
         value = float(raw)
-    except (TypeError, ValueError):
-        log.warning(
-            "HAPAX_COHERENCE_CRITERION=%r is not a number; the coherence gate would "
-            "fail open — falling back to the default criterion %.1f",
-            raw,
-            _COHERENCE_CRITERION_DEFAULT,
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"HAPAX_COHERENCE_CRITERION={raw!r} is not a number. The coherence "
+            "release gate fails OPEN on an invalid criterion, so this is refused at "
+            "startup rather than silently releasing under the default "
+            f"{_COHERENCE_CRITERION_DEFAULT:.1f}. Unset it to use the default, or set "
+            "a value in (1.0, 5.0]."
+        ) from exc
+    if not math.isfinite(value) or not (1.0 < value <= 5.0):
+        raise ValueError(
+            f"HAPAX_COHERENCE_CRITERION={raw!r} is outside the operative (1.0, 5.0] "
+            "range for the [1, 5] coherence rubric (a value <= 1.0 can never trip "
+            "mean_score < C_k, disabling the gate; > 5.0 or non-finite is "
+            "meaningless). Refused at startup rather than silently releasing under "
+            f"the default {_COHERENCE_CRITERION_DEFAULT:.1f}. Unset it to use the default."
         )
-        return _COHERENCE_CRITERION_DEFAULT
-    if not math.isfinite(value) or not (0.0 < value <= 5.0):
-        log.warning(
-            "HAPAX_COHERENCE_CRITERION=%r is outside the (0, 5] rubric range "
-            "(non-finite/negative/too-high would fail the coherence gate OPEN) — "
-            "falling back to the default criterion %.1f",
-            raw,
-            _COHERENCE_CRITERION_DEFAULT,
-        )
-        return _COHERENCE_CRITERION_DEFAULT
     return value
 
 
