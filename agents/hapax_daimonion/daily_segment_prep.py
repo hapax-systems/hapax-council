@@ -3901,11 +3901,14 @@ def _append_council_decisions_ledger(
     # smoke run hitting the same shared date dir concurrently with the 04:00
     # oneshot would otherwise tear NDJSON lines (rows exceed PIPE_BUF, so raw
     # O_APPEND is not atomic). sort_keys=True + the default spaced separators
-    # reproduce the prior bytes exactly. Fail-OPEN (raising=False) preserves the
-    # prior best-effort semantics; log on a swallowed failure as before.
+    # reproduce the prior bytes exactly. raising=True + try/except preserves BOTH
+    # the prior FAIL-OPEN semantics AND the prior exc_info stack-trace telemetry
+    # (a bare False return would discard the exception context).
     ledger_path = prep_dir / COUNCIL_DECISIONS_LEDGER_FILENAME
-    if not append_jsonl(ledger_path, row, sort_keys=True, raising=False):
-        log.debug("council decisions ledger append failed")
+    try:
+        append_jsonl(ledger_path, row, sort_keys=True, raising=True)
+    except Exception:
+        log.debug("council decisions ledger append failed", exc_info=True)
 
 
 def _prep_deadline_exceeded(

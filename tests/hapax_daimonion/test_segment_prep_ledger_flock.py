@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from agents.hapax_daimonion import daily_segment_prep as prep
 
 
@@ -72,35 +74,54 @@ def test_prep_diagnostic_append_uses_flock_and_canonical_bytes(tmp_path: Path) -
     assert _is_canonical_line(lines[0])
 
 
-def test_fail_modes_preserved_per_writer(tmp_path: Path, monkeypatch) -> None:
-    """council-decisions stays FAIL-OPEN (raising=False); candidate-ledger and
-    prep-diagnostic stay FAIL-LOUD (raising=True). Each call's ``raising`` kwarg is
-    captured to prove the contract per writer."""
-    seen: dict[str, object] = {}
-
-    def fake_append(path: object, record: object, **kwargs: object) -> bool:
-        seen.clear()
-        seen.update(kwargs)
-        return False
-
-    monkeypatch.setattr(prep, "append_jsonl", fake_append)
-
-    # FAIL-OPEN: returns False, must not raise.
-    prep._append_council_decisions_ledger(tmp_path, "p", {}, terminal_status="released")
-    assert seen["raising"] is False
-
-    # FAIL-LOUD writers pass raising=True (they had no surrounding try/except).
-    seen.clear()
-    prep._append_candidate_ledger(tmp_path, {"programme_id": "p"}, tmp_path / "a.json")
-    assert seen["raising"] is True
-
-    seen.clear()
-    prep._write_prep_diagnostic_outcome(
-        tmp_path,
-        prep_session=None,
-        programme_id="p",
-        terminal_status="no_candidate",
-        terminal_reason="r",
-        not_loadable_reason="",
+def test_writers_create_missing_parent_dir(tmp_path: Path) -> None:
+    """The explicit mkdir was removed; append_jsonl must create the (date) dir.
+    Append into a NON-existent prep dir and confirm the ledger is materialised."""
+    prep_dir = tmp_path / "does-not-exist-yet" / "2026-06-16"
+    assert not prep_dir.exists()
+    prep._append_council_decisions_ledger(
+        prep_dir,
+        "prog-1",
+        {"coherence": {"mean_score": 4.0, "criterion": 3.0}},
+        terminal_status="released",
     )
-    assert seen["raising"] is True
+    ledger = prep_dir / prep.COUNCIL_DECISIONS_LEDGER_FILENAME
+    assert ledger.is_file()
+    assert json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])["terminal_status"] == (
+        "released"
+    )
+
+
+def test_fail_modes_preserved_per_writer(tmp_path: Path) -> None:
+    """Force a REAL append failure and assert the actual outcome — not a mock. Each
+    LEDGER PATH is pre-created as a DIRECTORY, so the helper's data-fd open raises
+    IsADirectoryError (an OSError) at the append step itself — isolating each
+    writer's append fail-mode from any upstream work (e.g. the diagnostic dossier
+    write, which uses the real prep dir and succeeds first). council-decisions
+    stays FAIL-OPEN (swallows, no exception escapes); candidate-ledger and
+    prep-diagnostic stay FAIL-LOUD (the OSError propagates)."""
+    (tmp_path / prep.COUNCIL_DECISIONS_LEDGER_FILENAME).mkdir()
+    (tmp_path / prep.CANDIDATE_LEDGER).mkdir()
+    (tmp_path / prep.PREP_DIAGNOSTIC_LEDGER_FILENAME).mkdir()
+
+    # FAIL-OPEN: the council writer must NOT raise (try/except + log.debug).
+    prep._append_council_decisions_ledger(
+        tmp_path,
+        "p",
+        {"coherence": {"mean_score": 4.0, "criterion": 3.0}},
+        terminal_status="released",
+    )
+
+    # FAIL-LOUD: the candidate + diagnostic writers must propagate the error.
+    with pytest.raises(OSError):
+        prep._append_candidate_ledger(tmp_path, {"programme_id": "p"}, tmp_path / "a.json")
+
+    with pytest.raises(OSError):
+        prep._write_prep_diagnostic_outcome(
+            tmp_path,
+            prep_session=None,
+            programme_id="p",
+            terminal_status="no_candidate",
+            terminal_reason="r",
+            not_loadable_reason="",
+        )
