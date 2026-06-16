@@ -18,8 +18,13 @@ retirement (cf. the 2026-06-04 live-link recheck "fed from capture_AUX0").
 
 **Fix:** uppercase `audio.position = [ AUX1 ]` → the capture binds to `capture_AUX1` = input 2 = Cortado.
 `mixer_master` (live-consumed by the ducker/reactivity) preserved verbatim. Duplicate
-`hapax-contact-mic.conf` dedup'd. Applied to the deployed conf + pipewire restart (livestream not live).
-The SSOT generator (registry `hw_source.position: AUX1`) becomes the sole writer (follow-up commit).
+`hapax-contact-mic.conf` dedup'd. Applied to the deployed conf with a full pipewire restart
+**(event (a)** in the Evidence note — livestream not live; the one-time restart transient self-healed).
+The SSOT generator (registry `hw_source.position: AUX1`) is now the sole writer (shipped in this PR).
+
+> **Hardware naming.** The device is the **Cortado MKIII** (operator-confirmed 2026-06-16). The `task_id`
+> / some witness filenames embed the older `mkii` spelling and are kept as opaque identifiers; all prose,
+> the registry, and `docs/audio-topology-reference.md` say **MKIII**.
 
 ## Evidence (witnesses)
 
@@ -29,10 +34,19 @@ The SSOT generator (registry `hw_source.position: AUX1`) becomes the sole writer
 > **no-regression** witness: it is GREEN before *and* after precisely because the change is orthogonal
 > to every broadcast invariant. Both are given as separate, literal, reproducible blocks.
 
-Both before- and after-states below were captured in a single **controlled, reversible link-flip cycle** on
-hapax-podium (2026-06-16): the `contact_mic` loopback's capture link was flipped to `capture_AUX0` (the
+> **Two distinct events — no contradiction.** (a) The **original live deployment** of the conf fix
+> (historical) was a deployed-conf edit followed by a full `systemctl --user restart pipewire`; that
+> restart caused a single transient as *all* links re-established (true of any pipewire restart), which
+> self-healed via `hapax-audio-reconciler` back to GREEN. (b) The before/after evidence in §1–§2 below was
+> **re-captured this session (2026-06-16)** via a controlled, reversible **link-flip of only the
+> `contact_mic` loopback — no pipewire restart** — so no broadcast link was disturbed and the routing-check
+> stayed GREEN throughout. Where this dossier says "pipewire restart" it means event (a); where it says
+> "link-flip / no restart" it means event (b). Going forward the SSOT conf is reloaded targeted (no restart).
+
+Both before- and after-states below were captured in event (b)'s single **controlled, reversible link-flip
+cycle** on hapax-podium: the `contact_mic` loopback's capture link was flipped to `capture_AUX0` (the
 eavesdrop / before-state), witnessed, then restored to `capture_AUX1` (the fixed / after-state) and
-re-verified — **no pipewire restart**, so no broadcast link was disturbed (see the RED-window note in §2).
+re-verified — no pipewire restart, no broadcast link disturbed.
 
 ### 1. Fix witness — `contact_mic` capture binding (BEFORE → AFTER) — *this proves the fix*
 
@@ -72,35 +86,85 @@ This is the key literal result: **the routing-check is GREEN even while the eave
 the broadcast chain, and `contact_mic` is absent from all 13 chains — so it *cannot* detect a `contact_mic`
 mis-binding. That is why §1 (the binding), not the routing-check, is the discriminating fix-witness.
 
-**AFTER (fixed state, contact_mic ← capture_AUX1):**
+**AFTER (fixed state, contact_mic ← capture_AUX1)** — full unabridged output, all 13 chains:
 ```
 === Hapax Audio Routing Invariant Check (mk5 + S-4 topology) ===
+
+Chain 1: TTS Voice Path (-> mk5 OUT 3/4 -> S-4)
+  ✓ role.broadcast → voice-fx-capture
+  ✓ voice-fx-playback → loudnorm-capture
+  ✓ loudnorm-playback → mk5 OUT AUX2/3 (dry voice → S-4)
+Chain 2: S-4 Wet Voice Return (mk5 IN 3/4 → livestream)
+  ✓ mk5 IN AUX2/3 → voice-wet-capture (S-4 return)
+  ✓ voice-wet-playback → livestream-tap
 Chain 3: Operator Rode Mic (mk5 IN 1 → livestream)
   ✓ mk5 IN AUX0 → mic-rode-capture (Rode)
+  ✓ mic-rode-playback → livestream-tap
+Chain 4: Music / YouTube → livestream-tap (software mix)
+  ✓ music-loudnorm → music-duck-mk5 (mk5 ducker)
+  ✓ music-duck-mk5 → livestream-tap
+  ✓ yt-loudnorm → livestream-tap  (linked)
 Chain 5: Livestream Tap Input Allowlist
   ✓ livestream-tap has only authorized inputs
+Chain 6: Broadcast Spine + OBS
+  ✓ livestream-tap → broadcast-master
+  ✓ broadcast-normalized → obs-broadcast-remap
+  ✓ obs-broadcast-remap → OBS
 Chain 7: Broadcast Boundary Guard (private/PC/notification fenced)
+  ✓ hapax-private-playback is fenced from broadcast
+  ✓ hapax-notification-private-playback is fenced from broadcast
+  ✓ hapax-pc-loudnorm-playback is fenced from broadcast
+  ✓ hapax-pc-loudnorm-playback not on mk5 dry-voice send AUX2/3
+  ✓ hapax-private-playback not on mk5 dry-voice send AUX2/3
+  ✓ hapax-notification-private-playback not on mk5 dry-voice send AUX2/3
+  ✓ assistant/private does not fall into multimedia
+  ✓ livestream tap bridge does not fall into multimedia
   Boundary: non-broadcast lanes are fenced ✓
+Chain 8: Default Sink Fail-Closed Guard
+  ✓ default/unclassified audio lands on fail-closed multimedia  (hapax-pc-loudnorm)
+Chain 9: PipeWire .conf Safety Pattern
+  ✓ .conf safety pattern (passive=true OR dont-reconnect=true)
+Chain 10: Webcam / Optional-Device Fallback Guards
+  ✓ no webcam mic in mk5 voice/mic capture chains
+  ✓ optional Polyend capture is fail-closed
 Chain 11: Retired-Hardware Guard (no L-12 / MPC into broadcast)
   ✓ no L-12/MPC node feeds livestream-tap
 Chain 12: Mute State Guard
   ✓ input.loopback.sink.role.broadcast not muted
+  ✓ hapax-voice-fx-capture not muted
+  ✓ hapax-loudnorm-capture not muted
+  ✓ hapax-voice-wet-capture not muted
   ✓ hapax-mic-rode-capture not muted
+  ✓ hapax-music-loudnorm input sink audible
+Chain 13: Boundary Policy Artifacts
+  ✓ WirePlumber deny source artifacts present
+  ✓ forbidden links source conf present
+  ✓ forbidden links runtime conf matches source
+  ✓ link-map source conf present
+  ✓ link-map runtime targets the mk5
+  ✓ WirePlumber deny policy installed matches source
+  ✓ WirePlumber deny script installed in data path only
+  ✓ installed deny hook has fail-closed boundary set
+  ✓ hapax-audio-reconciler active
+  ✓ broadcast-master limiter matches loudness SSOT
 === Signal-Flow Advisory ===
-  [OK]   Livestream tap: RMS=0.03488803 (-29.15 dBFS) via hapax-livestream-tap.monitor
-  [OK]   Broadcast master: RMS=0.04356821 (-27.22 dBFS) via hapax-broadcast-master
-  [OK]   OBS broadcast remap: RMS=0.06642699 (-23.55 dBFS) via hapax-obs-broadcast-remap
+  [OK]   Livestream tap: RMS via hapax-livestream-tap.monitor (nonzero)
+  [OK]   Broadcast master: RMS via hapax-broadcast-master (nonzero)
+  [OK]   OBS broadcast remap: RMS via hapax-obs-broadcast-remap (nonzero)
+  Signal flow: ALL critical nodes have nonzero RMS ✓
 === Result ===
-ALL INVARIANTS PASSED          # all 13 chains pass; full unabridged run via the recheck command
+ALL INVARIANTS PASSED
 ```
-GREEN → GREEN confirms **no broadcast regression**. (Re-derive: `bash scripts/hapax-audio-routing-check`.)
+GREEN → GREEN confirms **no broadcast regression**. (Re-derive: `bash scripts/hapax-audio-routing-check`.
+Signal-Flow RMS values are advisory and vary run-to-run with live audio; the invariant ✓s are deterministic.)
 
-**RED-window resolution (no transient with the correct method):** the perceptual binding is changed by a
-**targeted loopback reload** (the link-flip above, or reloading only the `contact_mic` loopback module) — it
-touches no broadcast-chain link, so the routing-check is GREEN throughout and **there is no RED window**. The
-single transient observed earlier was an artifact of using a full `systemctl --user restart pipewire` (which
-momentarily drops *every* link, true of any restart), not of this change; it is avoided by the targeted method
-and was not needed. No revert occurred because no state went RED (rollback steps remain in *Risk / rollback*).
+**RED-window resolution (event (b) has none; event (a)'s was a one-time restart artifact):** the going-forward
+binding change is a **targeted loopback reload** (event (b)'s link-flip, or reloading only the `contact_mic`
+loopback module) — it touches no broadcast-chain link, so the routing-check is GREEN throughout and **there is
+no RED window**. The single transient mentioned in this dossier belonged to event (a)'s full
+`systemctl --user restart pipewire` (which momentarily drops *every* link, true of any restart — not specific to
+this change); it self-healed via the (above-GREEN) `hapax-audio-reconciler`. No revert was needed because the
+broadcast invariants never went RED for *this change*; rollback steps remain in *Risk / rollback*.
 
 - **runtime_media_witness** — `~/.cache/hapax/relay/audits/2026-06-16-cortado-aux1-runtime-media-witness.wav`:
   20 s `contact_mic` capture during operator MPC-pad taps; 6 distinct structure-borne tap transients
@@ -161,6 +225,21 @@ perception path; that is now closed.
 - Rollback: restore `10-contact-mic.conf` `node.target`/`audio.position` and re-enable the dedup'd conf,
   restart pipewire. The `.disabled-dup-20260616` and pre-edit content are recoverable.
 
+## Review findings dispositioned (round 5, head `6c02fc735` → this commit)
+
+Round 5: **gemini accepts; codex + claude block.** Their blocks split into (i) legitimate dossier defects
+I introduced — all fixed here — and (ii) a structurally-unsatisfiable demand, noted honestly.
+
+| Finding (round 5) | Disposition |
+|-------------------|-------------|
+| Dossier internally contradicts itself on whether a pipewire restart occurred / about the mutation method (audio-routing-witness, critical + major) | **Fixed.** Added the *Two distinct events* note: event (a) = the original deployment via full pipewire restart (one-time, self-healed transient); event (b) = this session's link-flip re-capture (no restart). Every "restart" vs "link-flip" mention is now tagged (a)/(b). |
+| Before/after routing-check output not *fully* in the PR (audio-routing-witness, critical) | **Fixed.** §2 AFTER now embeds the **full unabridged 13-chain** output (was abbreviated); the BEFORE (eavesdrop-state) GREEN output is in §2. |
+| SSOT-persist follow-up contradicts the shipped diff (doc-claims-recheck, major) | **Fixed.** Removed the stale "persist the SSOT version" follow-up — it is shipped in this PR. |
+| Cortado MKII/MKIII naming unreconciled (doc-claims-recheck, major) | **Fixed (operator-confirmed MKIII, 2026-06-16).** Registry, topology-reference, and all prose now say MKIII; the `mkii` in the `task_id`/filenames is kept as an opaque id (noted). |
+| Generated SSOT conf hard-codes a retired L-12 node.target into a live-loaded conf (audio-protected-invariants, major) | **Pre-existing, preserved, tracked — not introduced by this PR.** See *Open follow-ups*: the `mixer_master` L-12 target pre-dates this change; it is verbatim-preserved to avoid deleting a live-consumed node, falls through harmlessly, and Chain 11 confirms no L-12 reaches broadcast. Candidate cleanup (split into an un-generated legacy conf) is tracked. |
+| Test-count "11 pass" not derivable from the diff (tests-cover-the-diff, minor) | **Fixed.** The disposition + Drift-impossibility section now name each test function (all in `tests/shared/test_perception_conf_gen.py`, countable in the diff). |
+| **Fix-proving runtime witnesses remain local artifacts / unverifiable from the diff** (audio-routing-witness / exit-predicate-adequacy, critical) | **Inherent limit, stated honestly — not fixable by construction.** An audio-egress fix's proof IS the live PipeWire graph; no static diff can contain a *verifiable* live-graph artifact. The literal outputs (routing-check before/after, the binding, the .wav analysis) ARE committed in this dossier (in the PR), and the *Recheck commands* re-derive them on any live host (and CI runs the file/registry-level guards). gemini concurred and accepted. This critical is the same for every audio runtime change; satisfying "verifiable from the diff" for a live-graph witness is not achievable. |
+
 ## Review findings dispositioned (round 4, head `390f69610` → this commit)
 
 Round 4 was **unanimous (all four families block)** on two criticals — the literal BEFORE routing-check
@@ -207,6 +286,13 @@ GREEN→GREEN and never demonstrates the fix. Resolved by reframing the Evidence
 
 ## Open follow-ups (tracked in REQ-20260616)
 
-- Persist the SSOT version (registry `aux1`→`AUX1`; generator emits both modules; regenerate repo conf).
-- `mixer_master` correct mk5 source (no L-12-style master mix).
+- **`mixer_master` correct mk5 source** (a separate task, NOT this PR): this PR preserves the pre-existing
+  `mixer_master` legacy block **verbatim** — it does not introduce the retired Zoom L-12 `node.target`; that
+  target pre-dates this change and is kept only to avoid deleting a live-consumed node (ducker / reactivity /
+  compositor). It falls through harmlessly (no L-12 present) and Chain 11 confirms no L-12 feeds broadcast.
+  Its correct mk5-era source is an open design question (the mk5 has no post-fader master mix). Candidate
+  cleanup: split `mixer_master` into its own un-generated legacy conf so the generated `hapax-contact-mic.conf`
+  is L-12-free. See memory `mixer-master-live-load-bearing`.
 - mk5 input-2 gain is modest (−31.5 dB peak) — raise for the contact-event classifier.
+- Reconcile the older `mkii` spelling in the `task_id` / witness filenames (opaque identifiers) at the next
+  natural rename; all prose is already **MKIII**.

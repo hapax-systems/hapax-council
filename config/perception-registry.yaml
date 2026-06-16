@@ -116,7 +116,7 @@ points:
     geometry: contact
     exposure: quarantine
     description: >-
-      Zeppelin Design Labs Cortado MkIII contact mic (desk vibration).
+      Zeppelin Design Labs Cortado MKIII contact mic (desk vibration).
       LIVE on MOTU mk5 line-in 2 = pro-input capture_AUX1 (operator-confirmed
       2026-06-15). Perceptual/quarantine — NEVER broadcast-reachable. The
       contact_mic virtual node is generated correct-by-construction from this
