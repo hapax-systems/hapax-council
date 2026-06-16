@@ -1972,45 +1972,6 @@ def prep_segment(
         )
         return None
 
-    # S2 topic+type composability gate (alpha 2026-06-15): reject un-composable PARALLEL-LIST plans
-    # (tier-list/catalogue/abstract-of-abstracts) BEFORE the expensive compose. The S1 2x2 isolated
-    # topic+type composability as the DOMINANT binding constraint (un-composable ~= -2 pts and a clean
-    # prompt cannot rescue it). Mirrors the no_segment_beats skip + feeds the planner-substance-feedback
-    # loop so the next batch re-authors a composable angle. FAIL-OPEN: a gate error returns accept=True
-    # and never blocks a legitimate compose.
-    from agents.hapax_daimonion.segment_composability_gate import assess_composability
-
-    # Bound the gate's gateway call by the remaining prep budget so it cannot block ~60s near deadline
-    # exhaustion (mirrors the deadline discipline the council passes guard with _prep_deadline_exceeded).
-    _gate_timeout = 60.0
-    if deadline_monotonic is not None:
-        _gate_timeout = max(5.0, min(60.0, deadline_monotonic - time.monotonic()))
-    _composability = assess_composability(role, topic, list(beats), timeout=_gate_timeout)
-    if not _composability.accept:
-        log.info(
-            "prep_segment: %s un-composable topic+type, skipping: %s",
-            prog_id,
-            _composability.reason,
-        )
-        _write_prep_diagnostic_outcome(
-            prep_dir,
-            prep_session=prep_session,
-            programme_id=prog_id,
-            role=role,
-            topic=topic,
-            segment_beats=list(beats),
-            terminal_status="no_candidate",
-            terminal_reason="uncomposable_topic_type",
-            not_loadable_reason=f"un-composable topic+type: {_composability.reason}",
-            no_candidate_metadata={
-                "candidate_source": "segment_composability_gate",
-                "candidate_count": 0,
-                "role": role,
-            },
-        )
-        _record_substance_feedback(prep_session, prog_id, _composability.reason)
-        return None
-
     source_readiness = programme_source_readiness(programme)
     if source_readiness.get("ok") is not True:
         log.warning(
@@ -2064,6 +2025,54 @@ def prep_segment(
             },
         )
         return None
+
+    # S2 topic+type composability gate (alpha 2026-06-15): reject un-composable PARALLEL-LIST plans
+    # (tier-list/catalogue/abstract-of-abstracts) BEFORE the expensive compose. The S1 2x2 isolated
+    # topic+type composability as the DOMINANT binding constraint (un-composable ~= -2 pts and a clean
+    # prompt cannot rescue it). Runs AFTER source-readiness so a plan that source-readiness would refuse
+    # never pays the outbound gateway call. Mirrors the no_segment_beats skip + feeds the
+    # planner-substance-feedback loop so the next batch re-authors a composable angle. FAIL-OPEN: a gate
+    # error returns accept=True and never blocks a legitimate compose.
+    from agents.hapax_daimonion.segment_composability_gate import assess_composability
+
+    # Bound the gate's gateway call by the remaining prep budget; if the budget is already exhausted, SKIP
+    # the optional cost-saving gate entirely (fail-open) rather than spend a blocking gateway call — the
+    # downstream deadline guards refuse honestly. (max(5.0, remaining) previously still permitted a 5s call
+    # on an expired deadline; skipping is correct.)
+    _run_gate = True
+    _gate_timeout = 60.0
+    if deadline_monotonic is not None:
+        _remaining = deadline_monotonic - time.monotonic()
+        if _remaining <= 5.0:
+            _run_gate = False
+        else:
+            _gate_timeout = min(60.0, _remaining)
+    if _run_gate:
+        _composability = assess_composability(role, topic, list(beats), timeout=_gate_timeout)
+        if not _composability.accept:
+            log.info(
+                "prep_segment: %s un-composable topic+type, skipping: %s",
+                prog_id,
+                _composability.reason,
+            )
+            _write_prep_diagnostic_outcome(
+                prep_dir,
+                prep_session=prep_session,
+                programme_id=prog_id,
+                role=role,
+                topic=topic,
+                segment_beats=list(beats),
+                terminal_status="no_candidate",
+                terminal_reason="uncomposable_topic_type",
+                not_loadable_reason=f"un-composable topic+type: {_composability.reason}",
+                no_candidate_metadata={
+                    "candidate_source": "segment_composability_gate",
+                    "candidate_count": 0,
+                    "role": role,
+                },
+            )
+            _record_substance_feedback(prep_session, prog_id, _composability.reason)
+            return None
 
     log.info("prep_segment: composing %s (%s, %d beats)", prog_id, role, len(beats))
 

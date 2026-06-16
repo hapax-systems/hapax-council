@@ -167,8 +167,11 @@ def test_anchor_classification_live() -> None:
             "the most severe failure category",
         ],
     )
-    # Fail-open means a gateway outage yields accept+errored on both; only assert discrimination when the
-    # live gate actually ran (not errored).
-    if not arc.errored and not tier.errored:
-        assert arc.accept is True
-        assert tier.accept is False
+    # When explicitly run live (-m llm), the gateway MUST be reachable — a fail-open (errored) result is a
+    # genuine failure of the live-predictor check, NOT a silent pass. Assert the gate actually ran, then
+    # assert it discriminates arc from tier-list. (Previously guarded by `if not errored`, which let a
+    # gateway outage pass green and never proved the live predictor — claude-1, PR #4143.)
+    assert not arc.errored, f"live gate errored (fail-open) — gateway unreachable: {arc.reason}"
+    assert not tier.errored, f"live gate errored (fail-open) — gateway unreachable: {tier.reason}"
+    assert arc.accept is True, f"live gate failed to ACCEPT a building arc: {arc.reason}"
+    assert tier.accept is False, f"live gate failed to REJECT a tier-list: {tier.reason}"
