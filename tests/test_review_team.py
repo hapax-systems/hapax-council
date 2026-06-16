@@ -79,12 +79,23 @@ class TestLensRegistry:
         # must STILL receive an egress-reviewing lens (security/consent-provenance are NOT path-selected for
         # bare agents/hapax_daimonion/ paths — only voice-doctrine is), so removing it would leave a coverage
         # hole. This test exercises lenses_for_files to prove the coverage is retained.
+        #
+        # Predicate is re-ratified in the linked parent_spec (pr-review-team-design-2026-06-11.md, Amendment
+        # 2026-06-15: the operator chose the class-fix; the inline-criterion design is the accepted one, the
+        # scope-out attempt is rejected for the coverage hole). Lens charters are LLM-consumed prose with no
+        # deterministic judging code path, so the only unit-testable surfaces are SELECTION (lenses_for_files,
+        # the real reviewer-prompt path) and the rendered charter content; the criterion's effect on verdicts
+        # is validated by the re-review dossier, as for every other lens in the registry.
         rt = _load_review_team_module()
         reg = _registry()
         eval_plane_diff = ["agents/hapax_daimonion/segment_composability_gate.py"]
         lenses = rt.lenses_for_files(eval_plane_diff, reg)
         assert "voice-doctrine" in lenses, (
             "a daimonion eval-plane change must still get an egress-reviewing lens (no coverage hole)"
+        )
+        # consent-egress survives the real checklist parser the reviewer prompt is built from
+        assert "consent-egress" in rt.charter_checklist_items("voice-doctrine"), (
+            "consent-egress must remain a parsed checklist item the reviewers receive"
         )
 
         charter = (LENS_DIR / "voice-doctrine.md").read_text(encoding="utf-8")
