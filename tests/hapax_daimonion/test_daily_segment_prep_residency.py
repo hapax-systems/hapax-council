@@ -2100,6 +2100,81 @@ def test_council_coherence_check_passes_when_all_axes_clear_floor(
     assert outcome.council_decisions["axis_min"] == 2  # mediocre, but not catastrophic
 
 
+def test_council_coherence_check_criterion_is_config_sourced_ratchets_the_bar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """G1 (changing-criterion SCED): the host-gate quality bar is the
+    config-sourced C_k criterion (``HAPAX_COHERENCE_CRITERION``), not a hardcoded
+    3.0. Ratcheting C_k UP must tighten the gate with no code change: a healthy
+    council whose mean (3.0) clears the default criterion is REFINED
+    (passed=False, refused=False — a recoverable quality miss, NOT a fail-loud
+    refusal) once the criterion is raised above its mean. This is the movable
+    threshold the experiment ratchets across phases; the FAIL-LOUD refused path
+    and the absolute critical-axis floor are deliberately left unaffected."""
+    from agents.deliberative_council import engine as council_engine
+    from agents.deliberative_council.models import ConvergenceStatus, CouncilVerdict
+
+    async def fake_deliberate(
+        council_input: Any, mode: Any, rubric: Any, config: Any = None
+    ) -> Any:
+        # mean 3.0, every axis clears the absolute floor — so only the criterion
+        # can decide this case (isolating C_k's effect from the axis floor).
+        return CouncilVerdict(
+            scores={"opening_pressure": 3, "payoff_resolution": 2, "thematic_progression": 4},
+            confidence_bands={},
+            convergence_status=ConvergenceStatus.CONVERGED,
+            disagreement_log=[],
+            research_findings=[],
+            evidence_matrix=None,
+            receipt={"council_health": {"members_valid": 6, "families_valid": 5}},
+        )
+
+    monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
+
+    # Default criterion (3.0): the mean-3.0 council passes (no regression).
+    monkeypatch.setattr(prep, "_COHERENCE_CRITERION", 3.0)
+    baseline = prep._council_coherence_check("an adequate script", "prog-1")
+    assert baseline.passed is True
+    assert baseline.refused is False
+
+    # Ratchet C_k up to 3.5: the SAME council now misses the bar and refines —
+    # without touching the code or the absolute axis floor.
+    monkeypatch.setattr(prep, "_COHERENCE_CRITERION", 3.5)
+    tightened = prep._council_coherence_check("an adequate script", "prog-1")
+    assert tightened.passed is False
+    assert tightened.refused is False  # a recoverable quality miss, not a refusal
+    assert tightened.council_decisions["mean_score"] == 3.0
+
+
+def test_resolve_coherence_criterion_reads_env_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """G1 hardening: the criterion is sourced from ``HAPAX_COHERENCE_CRITERION``
+    through the real parse path. A bare ``mean_score < C_k`` over an unvalidated
+    ``float(os.environ[...])`` fails the release gate OPEN — ``nan`` is always
+    False, and on the [1, 5] rubric any ``C_k <= 1.0`` can never trip the mean.
+    Because this is a release gate in a ratcheted experiment, a *set-but-invalid*
+    value is REFUSED (raises) rather than silently reverted to a permissive
+    default — fail-closed, like ``_council_coherence_check`` on a degraded
+    council. An *unset* var is not a misconfiguration and uses the default 3.0."""
+    # Unset → validated default (no regression).
+    monkeypatch.delenv("HAPAX_COHERENCE_CRITERION", raising=False)
+    assert prep._resolve_coherence_criterion() == 3.0
+
+    # Valid in-range values are honored (the SCED ratchet surface), incl. bounds.
+    for good, expected in (("3.5", 3.5), ("5", 5.0), ("1.01", 1.01), ("4.5", 4.5)):
+        monkeypatch.setenv("HAPAX_COHERENCE_CRITERION", good)
+        assert prep._resolve_coherence_criterion() == expected
+
+    # Every fail-open vector is refused at resolve time — never silently defaulted,
+    # never able to disable the gate. Includes the rubric lower bound (<= 1.0 can
+    # never trip mean_score < C_k) and the non-finite / out-of-range / garbage set.
+    for bad in ("nan", "inf", "-inf", "0", "1", "1.0", "-1", "5.1", "100", "", "high", "3.0x"):
+        monkeypatch.setenv("HAPAX_COHERENCE_CRITERION", bad)
+        with pytest.raises(ValueError, match="HAPAX_COHERENCE_CRITERION"):
+            prep._resolve_coherence_criterion()
+
+
 def test_prep_segment_blocks_release_when_coherence_fails_after_noop_refine(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

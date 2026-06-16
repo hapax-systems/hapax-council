@@ -22,6 +22,7 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import re as _re
@@ -149,6 +150,58 @@ _CLEAN_MEASURE = os.environ.get("HAPAX_SEGMENT_PREP_CLEAN_MEASURE", "").strip().
 # a catastrophic single-dimension failure that the mean averages away — see
 # _council_coherence_check. Tunable; 1 blocks only total collapse on an axis.
 _COHERENCE_CRITICAL_AXIS_FLOOR = int(os.environ.get("HAPAX_COHERENCE_CRITICAL_AXIS_FLOOR", "1"))
+
+# The host-gate coherence criterion C_k (G1 of the changing-criterion SCED — see
+# ~/UNIFIED-EXPERIMENTAL-PLAN-2026-06-15.md). The experiment FIXES the ruler (the council rubric) and
+# RATCHETS this threshold across phases; making it config-sourced is the first data-spine item — the
+# criterion cannot move while it is hardcoded. DEFAULT 3.0 == the current live behavior (no regression):
+# until the SCED phase-controller sets it, the gate behaves exactly as the prior `mean_score < 3.0` wall.
+# The ABSOLUTE FLOOR (safety gates + the critical-axis floor above + the NDCVB dissociated@r honesty floor)
+# rides BELOW C_k — nothing hosts below the floor regardless of the criterion.
+_COHERENCE_CRITERION_DEFAULT = 3.0
+
+
+def _resolve_coherence_criterion() -> float:
+    """Resolve C_k from ``HAPAX_COHERENCE_CRITERION`` — FAIL-CLOSED on misconfig.
+
+    The gate fires on ``mean_score < C_k``, so an invalid criterion does not fail
+    safe — it fails OPEN: ``NaN`` makes the comparison always False (every segment
+    waves through), and because scores are on the [1, 5] rubric, any ``C_k <= 1.0``
+    can never trip the mean gate (the minimum achievable mean is 1.0) — the bar is
+    silently disabled. Falling back to a permissive default is ALSO wrong here: in
+    a ratcheted phase enforcing a stricter C_k, quietly reverting a fat-fingered
+    value to 3.0 weakens the live release gate and corrupts the experimental
+    record. So a *set-but-invalid* value is REFUSED at resolve time (the process
+    will not start and silently release under the wrong threshold) — consistent
+    with ``_council_coherence_check`` itself, which refuses rather than fail-opens
+    on a degraded council. The operative range is ``(1.0, 5.0]``. An *unset* var
+    is not a misconfiguration: it uses the validated default 3.0 (no regression).
+    """
+    raw = os.environ.get("HAPAX_COHERENCE_CRITERION")
+    if raw is None:
+        return _COHERENCE_CRITERION_DEFAULT
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"HAPAX_COHERENCE_CRITERION={raw!r} is not a number. The coherence "
+            "release gate fails OPEN on an invalid criterion, so this is refused at "
+            "startup rather than silently releasing under the default "
+            f"{_COHERENCE_CRITERION_DEFAULT:.1f}. Unset it to use the default, or set "
+            "a value in (1.0, 5.0]."
+        ) from exc
+    if not math.isfinite(value) or not (1.0 < value <= 5.0):
+        raise ValueError(
+            f"HAPAX_COHERENCE_CRITERION={raw!r} is outside the operative (1.0, 5.0] "
+            "range for the [1, 5] coherence rubric (a value <= 1.0 can never trip "
+            "mean_score < C_k, disabling the gate; > 5.0 or non-finite is "
+            "meaningless). Refused at startup rather than silently releasing under "
+            f"the default {_COHERENCE_CRITERION_DEFAULT:.1f}. Unset it to use the default."
+        )
+    return value
+
+
+_COHERENCE_CRITERION = _resolve_coherence_criterion()
 
 # Plan-time informed-authorship budgets. Recruitment + thesis authoring run
 # BEFORE planning, so they are bounded and measured — a slate-wide recruit or a
@@ -3901,8 +3954,9 @@ class _CoherenceOutcome:
     council cannot certify coherence, so the segment must NOT be released (the
     caller writes a terminal ``council_degraded_refused_no_release`` diagnostic
     and produces no candidate). ``passed`` is the quality verdict for a HEALTHY
-    council (mean >= 3.0); ``passed=False`` with feedback is a recoverable quality
-    miss that feeds refinement. ``council_decisions`` is the receipt fragment
+    council (mean >= the C_k criterion); ``passed=False`` with feedback is a recoverable quality
+    miss that feeds refinement. The quality threshold is the config-sourced C_k criterion
+    (``HAPAX_COHERENCE_CRITERION``, default 3.0). ``council_decisions`` is the receipt fragment
     recorded into the prep manifest + the council-decisions ledger.
     """
 
@@ -3919,8 +3973,8 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
     must treat that as a terminal no-release, NOT a soft feedback injection. The
     prior implementation returned ``(True, "")`` on a down council (fail-OPEN),
     letting an unavailable council wave a segment through — that is the bug this
-    fixes. A healthy council with mean < 3.0 yields ``passed=False`` with
-    axis-level feedback (a genuine, recoverable quality gate).
+    fixes. A healthy council with mean below the C_k criterion yields ``passed=False``
+    with axis-level feedback (a genuine, recoverable quality gate).
     """
     import asyncio
 
@@ -4004,9 +4058,12 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
         feedback_lines.append(f"  Council note: {note[:200]}")
     feedback = "\n".join(feedback_lines)
 
-    if mean_score < 3.0:
+    if mean_score < _COHERENCE_CRITERION:
         log.warning(
-            "_council_coherence_check: low coherence (mean=%.1f) for %s", mean_score, programme_id
+            "_council_coherence_check: coherence %.1f below criterion %.1f for %s",
+            mean_score,
+            _COHERENCE_CRITERION,
+            programme_id,
         )
         return _CoherenceOutcome(
             passed=False, feedback=feedback, refused=False, council_decisions=decision
