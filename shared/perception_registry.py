@@ -65,6 +65,24 @@ class ArchiveSpec(BaseModel):
     description: str = ""
 
 
+class HwSource(BaseModel):
+    """The point's hardware capture binding — the SINGLE typed source for the
+    generated pipewire loopback conf's ``node.target`` + ``audio.position``.
+
+    Exists to eliminate the hand-typed channel that drifted: cortado's conf
+    targeted the retired Zoom L-12 so ``contact_mic`` fell through to mk5
+    capture_AUX0 (the Rode) = an eavesdrop class. With this typed, the
+    generator emits the conf from here and there is nothing left to hand-type
+    (REQ-20260616-perception-audio-ssot-program, Phase 1)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    node_target: str
+    """ALSA capture device the loopback binds to (e.g. the mk5 pro-input)."""
+    position: str
+    """``audio.position`` channel on that device (e.g. ``aux1`` = mk5 line-in 2)."""
+
+
 class PerceptionPoint(BaseModel):
     """One capture point — a physical sensor with a geometry class."""
 
@@ -75,6 +93,10 @@ class PerceptionPoint(BaseModel):
     description: str = ""
     pipewire_node: str | None = None
     """Substring ``pw-cat --record --target`` accepts (None for future points)."""
+    hw_source: HwSource | None = None
+    """Typed hardware capture binding the generator emits the loopback conf
+    from (device + audio.position). When set, the conf is generated, not
+    hand-typed — drift-impossible-by-construction."""
     av_pair: str | None = None
     """camera-loopback role this mic is lens-co-located with (av_paired only)."""
     channels: dict[str, PerceptChannel] = Field(default_factory=dict)
