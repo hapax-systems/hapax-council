@@ -334,6 +334,25 @@ def test_claim_sweep_ignores_body_status_lines(tmp_path: Path) -> None:
     assert claim.exists()
 
 
+def test_lane_active_task_lease_reads_session_keyed_claim(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    claims = tmp_path / "claims"
+    claims.mkdir(parents=True)
+    task_id = "p0-incident-session-keyed-pickup"
+    claim = claims / "cc-active-task-gamma-9b6ba5ca-513c-41aa-9900-d3026b42aad1"
+    claim.write_text(f"{task_id}\n", encoding="utf-8")
+
+    previous = os.environ.get("HAPAX_CC_CLAIMS_DIR")
+    os.environ["HAPAX_CC_CLAIMS_DIR"] = str(claims)
+    try:
+        assert module.lane_active_task_lease("gamma") == task_id
+    finally:
+        if previous is None:
+            os.environ.pop("HAPAX_CC_CLAIMS_DIR", None)
+        else:
+            os.environ["HAPAX_CC_CLAIMS_DIR"] = previous
+
+
 def _run(
     tmp_path: Path,
     *args: str,

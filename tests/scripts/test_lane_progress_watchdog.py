@@ -156,6 +156,15 @@ def _write_claim(
     return note
 
 
+def _move_claim_to_session(env: dict[str, str], lane: str, task_id: str) -> Path:
+    claim_dir = Path(env["HOME"]) / ".cache" / "hapax"
+    legacy = claim_dir / f"cc-active-task-{lane}"
+    legacy.unlink()
+    session = claim_dir / f"cc-active-task-{lane}-9b6ba5ca-513c-41aa-9900-d3026b42aad1"
+    session.write_text(f"{task_id}\n", encoding="utf-8")
+    return session
+
+
 def _alive_pid() -> int:
     """A pid guaranteed live for the duration of the test (the test process)."""
     return os.getpid()
@@ -207,6 +216,22 @@ def _stalled_lane(
     return note
 
 
+def _spawn_headless_launcher(env: dict[str, str], lane: str, task_id: str) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            ('exec -a "$3" python3 -c \'import time; time.sleep(60)\' --task "$1" "$2"'),
+            "_",
+            task_id,
+            lane,
+            "hapax-claude-headless",
+        ],
+        env=env,
+        text=True,
+    )
+
+
 def _run(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run([str(SUPERVISOR)], env=env, capture_output=True, text=True)
 
@@ -249,7 +274,12 @@ def test_live_launcher_stall_nudges_fifo_same_task(tmp_path: Path) -> None:
     """Live launcher + output-stale (the observed theta case) -> nudge the live
     launcher's stdin FIFO with a resume message; do NOT re-launch (flock)."""
     env, calls = _base(tmp_path, HAPAX_SUPERVISOR_CLAUDE_LANES="theta")
-    _stalled_lane(env, "theta", "reform-native-merge-queue-20260601", launcher_alive=True)
+    task_id = "reform-native-merge-queue-20260601"
+    _stalled_lane(env, "theta", task_id, launcher_alive=False)
+    launcher = _spawn_headless_launcher(env, "theta", task_id)
+    (Path(env["HAPAX_SUPERVISOR_RUNTIME_DIR"]) / "theta.launcher.pid").write_text(
+        f"{launcher.pid}\n", encoding="utf-8"
+    )
 
     # A real FIFO with a background reader (claude would be the reader in prod).
     fifo = Path(env["HAPAX_SUPERVISOR_RUNTIME_DIR"]) / "theta.stdin"
@@ -269,6 +299,8 @@ def test_live_launcher_stall_nudges_fifo_same_task(tmp_path: Path) -> None:
     finally:
         reader.terminate()
         reader.wait(timeout=5)
+        launcher.terminate()
+        launcher.wait(timeout=5)
 
     # No re-launch when a live launcher holds the lane.
     assert _reads(calls, "claude-headless.txt").strip() == ""
@@ -314,6 +346,22 @@ def test_claimed_but_not_in_progress_not_resumed(tmp_path: Path) -> None:
     assert _reads(calls, "claude-headless.txt").strip() == ""
 
 
+def test_session_keyed_claim_stall_relaunches_same_task(tmp_path: Path) -> None:
+    """A stale in_progress lane with only a session-keyed claim is still owned
+    work and must be resumed, not treated as claimless."""
+    env, calls = _base(tmp_path, HAPAX_SUPERVISOR_CLAUDE_LANES="gamma")
+    task_id = "p0-incident-session-keyed-progress"
+    _stalled_lane(env, "gamma", task_id, launcher_alive=False)
+    _move_claim_to_session(env, "gamma", task_id)
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    headless = _wait_reads(calls, "claude-headless.txt")
+    assert f"--task {task_id}" in headless
+    assert "gamma" in headless
+
+
 def test_pr_open_not_resumed(tmp_path: Path) -> None:
     """A pr_open lane is finishing, not stalled mid-build -> never resumed."""
     env, calls = _base(tmp_path, HAPAX_SUPERVISOR_CLAUDE_LANES="delta")
@@ -350,6 +398,29 @@ def test_attempts_exhausted_reoffers_and_ntfys(tmp_path: Path) -> None:
     assert claim.read_text(encoding="utf-8").strip() == ""
     curl = _reads(calls, "curl.txt")
     assert "delta" in curl and "reform-clog-i-20260601" in curl
+
+
+def test_attempts_exhausted_clears_session_keyed_claim(tmp_path: Path) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_CLAUDE_LANES="gamma",
+        HAPAX_SUPERVISOR_RESUME_MAX_ATTEMPTS="1",
+    )
+    task_id = "p0-incident-session-exhausted"
+    note = _stalled_lane(env, "gamma", task_id, launcher_alive=False)
+    session = _move_claim_to_session(env, "gamma", task_id)
+    legacy = Path(env["HOME"]) / ".cache" / "hapax" / "cc-active-task-gamma"
+
+    _run(env)
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    text = note.read_text(encoding="utf-8")
+    assert "status: offered" in text
+    assert "assigned_to: unassigned" in text
+    assert legacy.read_text(encoding="utf-8").strip() == ""
+    assert not session.exists()
+    assert "gamma" in _reads(calls, "curl.txt")
 
 
 # ─── AC4: pressure gating (queue, never drop) ──────────────────────────────────

@@ -32,8 +32,10 @@ def test_report_counts_flow_states_and_stranded_items(tmp_path: Path) -> None:
     audit = _audit_module()
     tasks = tmp_path / "tasks"
     cache = tmp_path / "cache"
+    pid_dir = tmp_path / "pids"
     tasks.mkdir()
     cache.mkdir()
+    pid_dir.mkdir()
     _task(
         tasks,
         "p0-offered",
@@ -65,7 +67,7 @@ def test_report_counts_flow_states_and_stranded_items(tmp_path: Path) -> None:
     os.utime(missing_claim, (1, 1))
     os.utime(blocked_claim, (1, 1))
 
-    report = audit.build_report(tasks, cache, tmp_path / "missing-state.json")
+    report = audit.build_report(tasks, cache, tmp_path / "missing-state.json", pid_dir)
 
     assert report["counts"]["offered"] == 1
     assert report["counts"]["claimed"] == 1
@@ -75,6 +77,7 @@ def test_report_counts_flow_states_and_stranded_items(tmp_path: Path) -> None:
     assert report["counts"]["stale_claim"] == 2
     assert report["counts"]["silent_stranded_p0_or_remediation"] == 1
     assert report["silent_stranded_p0_or_remediation"][0]["task_id"] == "p0-claimed-unowned"
+    assert report["silent_stranded_p0_or_remediation"][0]["reason"] == "missing_assigned_lane"
     reasons = {item["task_id"]: item["reason"] for item in report["stale_claims"]}
     assert reasons["missing-task"] == "task_not_active"
     assert reasons["remediation-blocked"] == "blocked-unassigned"
@@ -92,6 +95,78 @@ def test_report_keeps_fresh_claim_churn_in_grace_bucket(tmp_path: Path) -> None:
 
     assert report["counts"]["stale_claim"] == 0
     assert report["counts"]["claim_grace"] == 1
+
+
+def test_assigned_p0_without_live_lane_pickup_is_silent_stranded(tmp_path: Path) -> None:
+    audit = _audit_module()
+    tasks = tmp_path / "tasks"
+    cache = tmp_path / "cache"
+    pid_dir = tmp_path / "pids"
+    tasks.mkdir()
+    cache.mkdir()
+    pid_dir.mkdir()
+    _task(
+        tasks,
+        "assigned-p0",
+        "task_id: assigned-p0\nstatus: claimed\nassigned_to: gamma\npriority: p0\n",
+    )
+    (cache / "cc-active-task-gamma").write_text("assigned-p0\n", encoding="utf-8")
+
+    report = audit.build_report(tasks, cache, tmp_path / "missing-state.json", pid_dir)
+
+    assert report["counts"]["silent_stranded_p0_or_remediation"] == 1
+    stranded = report["silent_stranded_p0_or_remediation"][0]
+    assert stranded["task_id"] == "assigned-p0"
+    assert stranded["reason"] == "assigned_lane_not_live"
+    assert stranded["pickup_evidence"][0]["kind"] == "claim_file"
+
+
+def test_coordinator_live_lane_claim_satisfies_pickup(tmp_path: Path) -> None:
+    audit = _audit_module()
+    tasks = tmp_path / "tasks"
+    cache = tmp_path / "cache"
+    pid_dir = tmp_path / "pids"
+    state = tmp_path / "state.json"
+    tasks.mkdir()
+    cache.mkdir()
+    pid_dir.mkdir()
+    _task(
+        tasks,
+        "assigned-p0",
+        "task_id: assigned-p0\nstatus: in_progress\nassigned_to: gamma\npriority: p0\n",
+    )
+    state.write_text(
+        json.dumps({"lanes": {"gamma": {"alive": True, "claimed_task": "assigned-p0"}}}),
+        encoding="utf-8",
+    )
+
+    report = audit.build_report(tasks, cache, state, pid_dir)
+
+    assert report["counts"]["silent_stranded_p0_or_remediation"] == 0
+
+
+def test_offered_notification_p0_counts_as_undrained_not_silent(tmp_path: Path) -> None:
+    audit = _audit_module()
+    tasks = tmp_path / "tasks"
+    cache = tmp_path / "cache"
+    pid_dir = tmp_path / "pids"
+    tasks.mkdir()
+    cache.mkdir()
+    pid_dir.mkdir()
+    _task(
+        tasks,
+        "p0-incident-demo",
+        (
+            "task_id: p0-incident-demo\nstatus: offered\nassigned_to: unassigned\n"
+            "priority: p0\nkind: recovery_triage\ntags: [incident-intake, technical-alert]\n"
+        ),
+    )
+
+    report = audit.build_report(tasks, cache, tmp_path / "missing-state.json", pid_dir)
+
+    assert report["counts"]["silent_stranded_p0_or_remediation"] == 0
+    assert report["counts"]["undrained_p0_incident_intake"] == 1
+    assert report["undrained_p0_incident_intake"][0]["reason"] == "offered_not_picked_up"
 
 
 def test_claim_file_may_reference_note_stem_alias(tmp_path: Path) -> None:

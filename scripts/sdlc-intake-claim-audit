@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from collections import Counter
 from dataclasses import asdict, dataclass
@@ -17,6 +18,7 @@ import yaml
 DEFAULT_TASKS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
 DEFAULT_CACHE_DIR = Path.home() / ".cache/hapax"
 DEFAULT_COORDINATOR_STATE = Path("/dev/shm/hapax-coordinator/state.json")
+DEFAULT_LANE_PID_DIR = Path(f"/run/user/{os.getuid()}/hapax-claude")
 DEFAULT_CLAIM_GRACE_SECONDS = 300
 FLOW_STATUS_KEYS = ("offered", "claimed", "in_progress", "blocked", "pr_open")
 UNOWNED_VALUES = {"", "null", "none", "~", "unassigned"}
@@ -35,6 +37,14 @@ class TaskRecord:
     priority: str
     kind: str
     tags: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ClaimRecord:
+    path: str
+    role: str
+    task_id: str
+    age_s: int
 
 
 def _scalar(value: object) -> str:
@@ -101,14 +111,23 @@ def is_p0_or_remediation(task: TaskRecord) -> bool:
     return task.priority == "p0" or is_remediation(task)
 
 
+def is_p0_incident_intake(task: TaskRecord) -> bool:
+    haystack = " ".join((task.task_id, task.title, task.kind, " ".join(task.tags))).lower()
+    return task.priority == "p0" and (
+        "p0-incident" in task.task_id
+        or "incident-intake" in haystack
+        or "technical-alert" in haystack
+    )
+
+
 def is_no_owner(task: TaskRecord) -> bool:
     return (
         task.status in {"offered", "claimed", "in_progress"} and task.assigned_to in UNOWNED_VALUES
     )
 
 
-def is_silently_stranded(task: TaskRecord) -> bool:
-    return task.status in {"claimed", "in_progress"} and task.assigned_to in UNOWNED_VALUES
+def task_aliases(task: TaskRecord) -> set[str]:
+    return {task.task_id, Path(task.path).stem}
 
 
 def claim_role(path: Path) -> str:
@@ -119,18 +138,32 @@ def claim_role(path: Path) -> str:
     return UUID_SUFFIX_RE.sub("", name[len(prefix) :])
 
 
-def claim_signals(
-    cache_dir: Path, tasks_by_id: dict[str, TaskRecord], *, grace_seconds: int
-) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    signals: list[dict[str, str]] = []
-    grace: list[dict[str, str]] = []
+def read_claim_records(cache_dir: Path) -> list[ClaimRecord]:
     now = datetime.now(UTC).timestamp()
+    records: list[ClaimRecord] = []
     for path in sorted(cache_dir.glob("cc-active-task*")):
         try:
             task_id = path.read_text(encoding="utf-8", errors="ignore").strip().splitlines()[0]
         except (OSError, IndexError):
             task_id = ""
+        try:
+            age_s = max(0, int(now - path.stat().st_mtime))
+        except OSError:
+            age_s = 0
+        records.append(
+            ClaimRecord(path=str(path), role=claim_role(path), task_id=task_id, age_s=age_s)
+        )
+    return records
+
+
+def claim_signals(
+    claim_records: list[ClaimRecord], tasks_by_id: dict[str, TaskRecord], *, grace_seconds: int
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    signals: list[dict[str, str]] = []
+    grace: list[dict[str, str]] = []
+    for claim in claim_records:
         reason = ""
+        task_id = claim.task_id
         if not task_id:
             reason = "empty"
         elif task_id not in tasks_by_id:
@@ -140,18 +173,14 @@ def claim_signals(
             if task.status == "blocked" and task.assigned_to in UNOWNED_VALUES:
                 reason = "blocked-unassigned"
         if reason:
-            try:
-                age_s = max(0, int(now - path.stat().st_mtime))
-            except OSError:
-                age_s = 0
             record = {
-                "claim_file": str(path),
-                "role": claim_role(path),
+                "claim_file": claim.path,
+                "role": claim.role,
                 "task_id": task_id,
                 "reason": reason,
-                "age_s": str(age_s),
+                "age_s": str(claim.age_s),
             }
-            if age_s > grace_seconds:
+            if claim.age_s > grace_seconds:
                 signals.append(record)
             else:
                 grace.append(record)
@@ -166,10 +195,187 @@ def read_coordinator_state(path: Path) -> dict[str, Any] | None:
     return loaded if isinstance(loaded, dict) else None
 
 
+def _read_proc_cmdline(pid: int) -> list[str]:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return []
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+
+def _pid_is_live(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _headless_launcher_matches(argv: list[str], role: str) -> bool:
+    return any(Path(arg).name == "hapax-claude-headless" for arg in argv) and role in argv
+
+
+def _headless_task_from_argv(argv: list[str], role: str) -> str | None:
+    if not _headless_launcher_matches(argv, role):
+        return None
+    task: str | None = None
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--task" and i + 1 < len(argv):
+            task = argv[i + 1].strip()
+            i += 2
+            continue
+        if arg.startswith("--task="):
+            task = arg.split("=", 1)[1].strip()
+        i += 1
+    return task or None
+
+
+def live_headless_launcher(lane_pid_dir: Path, role: str) -> dict[str, Any] | None:
+    pidfile = lane_pid_dir / f"{role}.launcher.pid"
+    try:
+        pid = int(pidfile.read_text().strip())
+    except (OSError, ValueError):
+        pid = 0
+    if pid > 0 and _pid_is_live(pid):
+        argv = _read_proc_cmdline(pid)
+        if _headless_launcher_matches(argv, role):
+            return {
+                "pid": pid,
+                "task_id": _headless_task_from_argv(argv, role),
+                "source": "pidfile",
+            }
+
+    try:
+        pid_dirs = [path for path in Path("/proc").iterdir() if path.name.isdigit()]
+    except OSError:
+        return None
+    for path in sorted(pid_dirs, key=lambda item: int(item.name)):
+        pid = int(path.name)
+        argv = _read_proc_cmdline(pid)
+        if _headless_launcher_matches(argv, role) and _pid_is_live(pid):
+            return {"pid": pid, "task_id": _headless_task_from_argv(argv, role), "source": "proc"}
+    return None
+
+
+def pickup_evidence(
+    task: TaskRecord,
+    *,
+    coordinator_state: dict[str, Any] | None,
+    claim_records: list[ClaimRecord],
+    lane_pid_dir: Path,
+) -> tuple[bool, list[dict[str, Any]]]:
+    if task.assigned_to in UNOWNED_VALUES:
+        return False, [{"kind": "missing_assigned_lane"}]
+
+    aliases = task_aliases(task)
+    role = task.assigned_to
+    evidence: list[dict[str, Any]] = []
+    lanes = (coordinator_state or {}).get("lanes", {})
+    lane = lanes.get(role) if isinstance(lanes, dict) else None
+    if isinstance(lane, dict):
+        claimed_task = str(lane.get("claimed_task") or "")
+        if bool(lane.get("alive")) and claimed_task in aliases:
+            evidence.append({"kind": "coordinator_lane_claim", "role": role})
+
+    launcher = live_headless_launcher(lane_pid_dir, role)
+    if launcher:
+        launcher_task = str(launcher.get("task_id") or "")
+        if launcher_task in aliases:
+            evidence.append(
+                {
+                    "kind": "live_headless_launcher",
+                    "role": role,
+                    "pid": launcher.get("pid"),
+                    "source": launcher.get("source"),
+                }
+            )
+
+    for claim in claim_records:
+        if claim.role == role and claim.task_id in aliases:
+            evidence.append({"kind": "claim_file", "role": role, "path": claim.path})
+
+    # A claim file alone is only a routing hint; pickup requires a live lane owner.
+    picked_up = any(
+        item["kind"] in {"coordinator_lane_claim", "live_headless_launcher"} for item in evidence
+    )
+    return picked_up, evidence
+
+
+def silent_stranded_items(
+    tasks: list[TaskRecord],
+    *,
+    coordinator_state: dict[str, Any] | None,
+    claim_records: list[ClaimRecord],
+    lane_pid_dir: Path,
+) -> list[dict[str, Any]]:
+    stranded: list[dict[str, Any]] = []
+    for task in tasks:
+        if task.status not in {"claimed", "in_progress"} or not is_p0_or_remediation(task):
+            continue
+        picked_up, evidence = pickup_evidence(
+            task,
+            coordinator_state=coordinator_state,
+            claim_records=claim_records,
+            lane_pid_dir=lane_pid_dir,
+        )
+        if picked_up:
+            continue
+        reason = (
+            "missing_assigned_lane"
+            if task.assigned_to in UNOWNED_VALUES
+            else "assigned_lane_not_live"
+        )
+        record = asdict(task)
+        record["reason"] = reason
+        record["pickup_evidence"] = evidence
+        stranded.append(record)
+    return stranded
+
+
+def undrained_p0_incident_items(
+    tasks: list[TaskRecord],
+    *,
+    coordinator_state: dict[str, Any] | None,
+    claim_records: list[ClaimRecord],
+    lane_pid_dir: Path,
+) -> list[dict[str, Any]]:
+    undrained: list[dict[str, Any]] = []
+    for task in tasks:
+        if task.status not in {"offered", "claimed", "in_progress"} or not is_p0_incident_intake(
+            task
+        ):
+            continue
+        if task.status == "offered":
+            record = asdict(task)
+            record["reason"] = "offered_not_picked_up"
+            record["pickup_evidence"] = []
+            undrained.append(record)
+            continue
+        picked_up, evidence = pickup_evidence(
+            task,
+            coordinator_state=coordinator_state,
+            claim_records=claim_records,
+            lane_pid_dir=lane_pid_dir,
+        )
+        if not picked_up:
+            record = asdict(task)
+            record["reason"] = (
+                "missing_assigned_lane"
+                if task.assigned_to in UNOWNED_VALUES
+                else "assigned_lane_not_live"
+            )
+            record["pickup_evidence"] = evidence
+            undrained.append(record)
+    return undrained
+
+
 def build_report(
     tasks_dir: Path,
     cache_dir: Path,
     coordinator_state_path: Path,
+    lane_pid_dir: Path = DEFAULT_LANE_PID_DIR,
     *,
     claim_grace_seconds: int = DEFAULT_CLAIM_GRACE_SECONDS,
 ) -> dict[str, Any]:
@@ -182,9 +388,22 @@ def build_report(
     remediation = [task for task in tasks if is_remediation(task)]
     p0_or_remediation = [task for task in tasks if is_p0_or_remediation(task)]
     no_owner = [task for task in tasks if is_no_owner(task)]
-    silent_stranded = [task for task in p0_or_remediation if is_silently_stranded(task)]
+    claim_records = read_claim_records(cache_dir)
+    coordinator_state = read_coordinator_state(coordinator_state_path)
+    silent_stranded = silent_stranded_items(
+        tasks,
+        coordinator_state=coordinator_state,
+        claim_records=claim_records,
+        lane_pid_dir=lane_pid_dir,
+    )
+    undrained_incidents = undrained_p0_incident_items(
+        tasks,
+        coordinator_state=coordinator_state,
+        claim_records=claim_records,
+        lane_pid_dir=lane_pid_dir,
+    )
     stale_claims, claim_grace = claim_signals(
-        cache_dir, tasks_by_id, grace_seconds=claim_grace_seconds
+        claim_records, tasks_by_id, grace_seconds=claim_grace_seconds
     )
     return {
         "observed_at": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -199,23 +418,31 @@ def build_report(
             "stale_claim": len(stale_claims),
             "claim_grace": len(claim_grace),
             "silent_stranded_p0_or_remediation": len(silent_stranded),
+            "undrained_p0_incident_intake": len(undrained_incidents),
         },
         "definitions": {
             "no_owner": "Visible backlog or active work in offered/claimed/in_progress with no assigned lane.",
             "silent_stranded_p0_or_remediation": (
-                "P0/remediation work in claimed/in_progress with no assigned lane; offered is "
-                "counted as visible queue backlog, and blocked is counted as a durable blocker."
+                "P0/remediation work in claimed/in_progress without live pickup evidence from "
+                "coordinator lane state or an exact hapax-claude-headless launcher; offered is "
+                "separately counted as visible queue backlog, and blocked is counted as a durable blocker."
+            ),
+            "undrained_p0_incident_intake": (
+                "Notification-fed P0 incident-intake work in offered/claimed/in_progress that has "
+                "not reached a live governed lane owner."
             ),
             "stale_claim": (
                 "Claim signals older than claim_grace_seconds that point to no active task or to "
                 "an active blocked/unassigned task."
             ),
         },
-        "silent_stranded_p0_or_remediation": [asdict(task) for task in silent_stranded],
+        "silent_stranded_p0_or_remediation": silent_stranded,
+        "undrained_p0_incident_intake": undrained_incidents,
         "no_owner_tasks": [asdict(task) for task in no_owner],
         "stale_claims": stale_claims,
         "claim_grace": claim_grace,
-        "coordinator_state": read_coordinator_state(coordinator_state_path),
+        "claim_records": [asdict(claim) for claim in claim_records],
+        "coordinator_state": coordinator_state,
     }
 
 
@@ -224,6 +451,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tasks-dir", type=Path, default=DEFAULT_TASKS_DIR)
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     parser.add_argument("--coordinator-state", type=Path, default=DEFAULT_COORDINATOR_STATE)
+    parser.add_argument("--lane-pid-dir", type=Path, default=DEFAULT_LANE_PID_DIR)
     parser.add_argument("--claim-grace-seconds", type=int, default=DEFAULT_CLAIM_GRACE_SECONDS)
     parser.add_argument("--output", type=Path)
     return parser
@@ -235,6 +463,7 @@ def main(argv: list[str] | None = None) -> int:
         args.tasks_dir.expanduser(),
         args.cache_dir.expanduser(),
         args.coordinator_state.expanduser(),
+        args.lane_pid_dir.expanduser(),
         claim_grace_seconds=args.claim_grace_seconds,
     )
     text = json.dumps(report, indent=2, sort_keys=True)

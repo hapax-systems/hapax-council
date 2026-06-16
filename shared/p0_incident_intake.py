@@ -195,7 +195,7 @@ def _record_notification_locked(
         )
         created = True
     else:
-        _update_existing_task(task_path, task_record, title=title, now=now)
+        _update_existing_task(task_path, task_record, title=title, message=message, now=now)
         updated = True
 
     task_record["task_path"] = str(task_path)
@@ -372,12 +372,21 @@ def _write_new_task(
     tmp.replace(path)
 
 
-def _update_existing_task(path: Path, record: dict[str, Any], *, title: str, now: datetime) -> None:
+def _update_existing_task(
+    path: Path, record: dict[str, Any], *, title: str, message: str, now: datetime
+) -> None:
     text = path.read_text(encoding="utf-8")
     text = _set_frontmatter_scalar(text, "updated_at", _iso(now))
     text = _set_frontmatter_scalar(text, "last_incident_at", _iso(now))
     text = _set_frontmatter_scalar(text, "incident_count", str(record["count"]))
     text = _set_frontmatter_scalar(text, "last_incident_fingerprint", record["fingerprint"])
+    latest_block = _render_latest_alert(record, title=title, message=message)
+    text = re.sub(
+        r"(?s)## Latest Alert\n\n.*?\n## Evidence\n",
+        latest_block + "\n## Evidence\n",
+        text,
+        count=1,
+    )
     log_line = (
         f"- {_iso(now)} p0-incident-intake updated from `{_clip(title, 96)}` "
         f"(count={record['count']})."
@@ -423,7 +432,7 @@ def _render_task(
     now_s = _iso(now)
     task_id = record["task_id"]
     task_title = f"P0 incident: {_clip(title, 90)}"
-    latest = _clip(message, 1800)
+    latest_alert = _render_latest_alert(record, title=title, message=message)
     return f"""---
 type: cc-task
 task_id: {task_id}
@@ -497,19 +506,7 @@ last_incident_fingerprint: {record["fingerprint"]}
 
 # {task_title}
 
-## Latest Alert
-
-- Title: `{title}`
-- Priority: `p0`
-- Kind: `{record["kind"]}`
-- Fingerprint: `{record["fingerprint"]}`
-- Count: {record["count"]}
-- First seen: `{record["first_seen"]}`
-- Last seen: `{record["last_seen"]}`
-
-```text
-{latest}
-```
+{latest_alert}
 
 ## Evidence
 
@@ -528,4 +525,22 @@ last_incident_fingerprint: {record["fingerprint"]}
 ## Session Log
 
 - {now_s} p0-incident-intake minted this task from technical notification `{_clip(title, 96)}`.
+"""
+
+
+def _render_latest_alert(record: dict[str, Any], *, title: str, message: str) -> str:
+    latest = _clip(message, 1800)
+    return f"""## Latest Alert
+
+- Title: `{title}`
+- Priority: `p0`
+- Kind: `{record["kind"]}`
+- Fingerprint: `{record["fingerprint"]}`
+- Count: {record["count"]}
+- First seen: `{record["first_seen"]}`
+- Last seen: `{record["last_seen"]}`
+
+```text
+{latest}
+```
 """

@@ -267,28 +267,32 @@ import sys
 from pathlib import Path
 
 vault_root, lane, claim_file = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
-if not claim_file.is_file():
-    sys.exit(0)
-lines = [ln.strip() for ln in claim_file.read_text(errors="replace").splitlines() if ln.strip()]
-if not lines:
-    sys.exit(0)
-task_id = lines[0]
-
 active = vault_root / "active"
-note = active / f"{task_id}.md"
-if not note.is_file():
-    note = next(iter(sorted(active.glob(f"{task_id}-*.md"))), None) if active.is_dir() else None
-if note is None or not note.is_file():
-    sys.exit(0)
-
-text = note.read_text(errors="replace")
+claim_files = [claim_file]
+claim_files.extend(sorted(claim_file.parent.glob(f"{claim_file.name}-*")))
 
 def field(name: str) -> str:
     m = re.search(rf"^{name}:\s*(.+?)\s*$", text, re.MULTILINE)
     return m.group(1).strip().strip('"').strip("'") if m else ""
 
-if field("status") in {"claimed", "in_progress"} and field("assigned_to") == lane:
-    print(f"{task_id}\t{field('title')}")
+for candidate in sorted(
+    [path for path in claim_files if path.is_file()],
+    key=lambda path: path.stat().st_mtime,
+    reverse=True,
+):
+    lines = [ln.strip() for ln in candidate.read_text(errors="replace").splitlines() if ln.strip()]
+    if not lines:
+        continue
+    task_id = lines[0]
+    note = active / f"{task_id}.md"
+    if not note.is_file():
+        note = next(iter(sorted(active.glob(f"{task_id}-*.md"))), None) if active.is_dir() else None
+    if note is None or not note.is_file():
+        continue
+    text = note.read_text(errors="replace")
+    if field("status") in {"claimed", "in_progress"} and field("assigned_to") == lane:
+        print(f"{task_id}\t{field('title')}")
+        sys.exit(0)
 PY
 }
 
@@ -466,21 +470,9 @@ import sys
 from pathlib import Path
 
 vault_root, lane, claim_file = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
-if not claim_file.is_file():
-    sys.exit(0)
-lines = [ln.strip() for ln in claim_file.read_text(errors="replace").splitlines() if ln.strip()]
-if not lines:
-    sys.exit(0)
-task_id = lines[0]
-
 active = vault_root / "active"
-note = active / f"{task_id}.md"
-if not note.is_file():
-    note = next(iter(sorted(active.glob(f"{task_id}-*.md"))), None) if active.is_dir() else None
-if note is None or not note.is_file():
-    sys.exit(0)
-
-text = note.read_text(errors="replace")
+claim_files = [claim_file]
+claim_files.extend(sorted(claim_file.parent.glob(f"{claim_file.name}-*")))
 
 
 def field(name: str) -> str:
@@ -488,8 +480,24 @@ def field(name: str) -> str:
     return m.group(1).strip().strip('"').strip("'") if m else ""
 
 
-if field("assigned_to") == lane:
-    print(f"{task_id}\t{field('status')}\t{field('title')}")
+for candidate in sorted(
+    [path for path in claim_files if path.is_file()],
+    key=lambda path: path.stat().st_mtime,
+    reverse=True,
+):
+    lines = [ln.strip() for ln in candidate.read_text(errors="replace").splitlines() if ln.strip()]
+    if not lines:
+        continue
+    task_id = lines[0]
+    note = active / f"{task_id}.md"
+    if not note.is_file():
+        note = next(iter(sorted(active.glob(f"{task_id}-*.md"))), None) if active.is_dir() else None
+    if note is None or not note.is_file():
+        continue
+    text = note.read_text(errors="replace")
+    if field("assigned_to") == lane:
+        print(f"{task_id}\t{field('status')}\t{field('title')}")
+        sys.exit(0)
 PY
 }
 
@@ -562,6 +570,7 @@ if note is not None and note.is_file():
     t = re.sub(r"^assigned_to:.*$", "assigned_to: unassigned", t, count=1, flags=re.MULTILINE)
     note.write_text(t)
 PY
+  rm -f "$HOME/.cache/hapax/cc-active-task-$1"-* 2>/dev/null || true
   : > "$HOME/.cache/hapax/cc-active-task-$1" 2>/dev/null || true
 }
 
@@ -725,19 +734,56 @@ sys.exit(1)
 PY
 }
 
+launcher_pid_from_pidfile() {
+  local lpf="$RUNTIME_DIR/$1.launcher.pid"
+  [ -f "$lpf" ] || return 1
+  python3 - "$1" "$lpf" "$HOME" <<'PY' 2>/dev/null
+import os
+import sys
+from pathlib import Path
+
+lane, pidfile, expected_home = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
+
+
+def read_parts(path: Path) -> list[str]:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return []
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+
+def env_home(pid: int) -> str:
+    for part in read_parts(Path("/proc") / str(pid) / "environ"):
+        if part.startswith("HOME="):
+            return part.split("=", 1)[1]
+    return ""
+
+
+try:
+    pid = int(pidfile.read_text().strip())
+except (OSError, ValueError):
+    sys.exit(1)
+try:
+    os.kill(pid, 0)
+except OSError:
+    sys.exit(1)
+argv = read_parts(Path("/proc") / str(pid) / "cmdline")
+if not any(Path(arg).name == "hapax-claude-headless" for arg in argv):
+    sys.exit(1)
+if lane not in argv:
+    sys.exit(1)
+if env_home(pid) != expected_home:
+    sys.exit(1)
+print(pid)
+PY
+}
+
 # launcher_pid <lane>: echo the lane's LIVE launcher pid, or return 1 if there is
 # no live launcher. The pidfile is authoritative when present; the /proc fallback
 # catches lock-holding wrappers whose pidfile/fifo was lost mid-loop.
 launcher_pid() {
-  local lpf="$RUNTIME_DIR/$1.launcher.pid" pid=""
-  if [ -f "$lpf" ]; then
-    pid="$(cat "$lpf" 2>/dev/null || true)"
-    case "$pid" in '' | *[!0-9]*) pid="" ;; esac
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      printf '%s\n' "$pid"
-      return 0
-    fi
-  fi
+  launcher_pid_from_pidfile "$1" && return 0
   launcher_pid_from_proc "$1"
 }
 
@@ -764,12 +810,23 @@ from pathlib import Path
 vault_root, lane, claim_file = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
 # No claim -> not terminal on task grounds (the lifetime ceiling covers a
 # claimless launcher); mirror the launcher's "no task binding -> live".
-if not claim_file.is_file():
+claim_files = [claim_file]
+claim_files.extend(sorted(claim_file.parent.glob(f"{claim_file.name}-*")))
+claim_files = sorted(
+    [path for path in claim_files if path.is_file()],
+    key=lambda path: path.stat().st_mtime,
+    reverse=True,
+)
+if not claim_files:
     sys.exit(1)
-lines = [ln.strip() for ln in claim_file.read_text(errors="replace").splitlines() if ln.strip()]
-if not lines:
+task_id = ""
+for candidate in claim_files:
+    lines = [ln.strip() for ln in candidate.read_text(errors="replace").splitlines() if ln.strip()]
+    if lines:
+        task_id = lines[0]
+        break
+if not task_id:
     sys.exit(1)
-task_id = lines[0]
 active = vault_root / "active"
 note = active / f"{task_id}.md"
 if not note.is_file():

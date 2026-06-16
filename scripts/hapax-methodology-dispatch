@@ -440,14 +440,29 @@ def lane_process_absent(lane: str) -> tuple[bool, str]:
 
 
 def lane_active_task_lease(lane: str) -> str | None:
-    """The task id lane ``lane`` currently claims (``cc-active-task-<lane>``), or
-    None. The mutation-moment cross-check (not the bare pid) for the TOCTOU guard."""
+    """The task id lane ``lane`` currently claims, or None.
+
+    cc-claim writes both a legacy ``cc-active-task-<lane>`` file and a
+    session-keyed ``cc-active-task-<lane>-<uuid>`` file. Mutation-moment TOCTOU
+    checks must treat either as an active lane claim because crash/reap paths can
+    leave only the session-keyed file behind.
+    """
     claims_dir = Path(os.environ.get("HAPAX_CC_CLAIMS_DIR", str(Path.home() / ".cache" / "hapax")))
-    try:
-        text = (claims_dir / f"cc-active-task-{lane}").read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    return text or None
+    legacy = claims_dir / f"cc-active-task-{lane}"
+    candidates = [legacy]
+    candidates.extend(sorted(claims_dir.glob(f"cc-active-task-{lane}-*")))
+    for claim in sorted(
+        [path for path in candidates if path.is_file()],
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    ):
+        try:
+            text = claim.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if text:
+            return text
+    return None
 
 
 # --- Cross-role stale-claim sweeper (reform-identity-coherence, cluster 11) -----

@@ -125,6 +125,9 @@ def test_same_incident_updates_existing_task(tmp_path):
 
     task = first_result.task_path.read_text(encoding="utf-8")
     assert "incident_count: 2" in task
+    assert "- Count: 2" in task
+    assert "- Last seen: `2026-06-12T20:05:00Z`" in task
+    assert "INV-2 false: local worktree ledger drift remains" in task
     assert "p0-incident-intake updated" in task
 
 

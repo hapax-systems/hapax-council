@@ -126,11 +126,22 @@ def _write_claim(
         )
 
 
-def _spawn_launcher(runtime_dir: Path, lane: str) -> subprocess.Popen[bytes]:
+def _spawn_launcher(env: dict[str, str], runtime_dir: Path, lane: str) -> subprocess.Popen[bytes]:
     """A real, long-lived process standing in for a live headless launcher, in
     its OWN session (setsid) so a hypothetical process-group kill would be
     observable and would NOT reach the test runner."""
-    proc = subprocess.Popen(["sleep", "600"], start_new_session=True)
+    proc = subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            ('exec -a "$2" python3 -c \'import time; time.sleep(600)\' "$1"'),
+            "_",
+            lane,
+            "hapax-claude-headless",
+        ],
+        env=env,
+        start_new_session=True,
+    )
     (runtime_dir / f"{lane}.launcher.pid").write_text(f"{proc.pid}\n", encoding="utf-8")
     return proc
 
@@ -175,7 +186,7 @@ def test_supervisor_reaps_launcher_when_task_terminal(tmp_path: Path) -> None:
     _make_worktree(env, "delta")
     _mark_claude_alive(runtime_dir, "delta")
     _write_claim(env, "delta", "done-task", status=None)  # no active note → terminal
-    proc = _spawn_launcher(runtime_dir, "delta")
+    proc = _spawn_launcher(env, runtime_dir, "delta")
     try:
         result = _run(env)
         assert result.returncode == 0, result.stderr
@@ -191,7 +202,7 @@ def test_supervisor_keeps_launcher_when_task_live(tmp_path: Path) -> None:
     _make_worktree(env, "delta")
     _mark_claude_alive(runtime_dir, "delta")
     _write_claim(env, "delta", "live-task", status="in_progress")
-    proc = _spawn_launcher(runtime_dir, "delta")
+    proc = _spawn_launcher(env, runtime_dir, "delta")
     try:
         result = _run(env)
         assert result.returncode == 0, result.stderr
@@ -208,7 +219,7 @@ def test_supervisor_reap_deferred_when_admission_closed(tmp_path: Path) -> None:
     _make_worktree(env, "delta")
     _mark_claude_alive(runtime_dir, "delta")
     _write_claim(env, "delta", "done-task", status=None)
-    proc = _spawn_launcher(runtime_dir, "delta")
+    proc = _spawn_launcher(env, runtime_dir, "delta")
     try:
         result = _run(env)
         assert result.returncode == 0, result.stderr
@@ -234,7 +245,7 @@ def test_supervisor_reaps_launcher_over_lifetime_ceiling(tmp_path: Path) -> None
     _make_worktree(env, "delta")
     _mark_claude_alive(runtime_dir, "delta")
     _write_claim(env, "delta", "live-task", status="in_progress")  # task LIVE
-    proc = _spawn_launcher(runtime_dir, "delta")
+    proc = _spawn_launcher(env, runtime_dir, "delta")
     time.sleep(1.2)  # ensure etimes >= 1 so the ceiling=0 trigger is unambiguous
     try:
         result = _run(env)
@@ -297,7 +308,7 @@ def test_supervisor_reaper_dry_run_does_not_kill(tmp_path: Path) -> None:
     _make_worktree(env, "delta")
     _mark_claude_alive(runtime_dir, "delta")
     _write_claim(env, "delta", "done-task", status=None)
-    proc = _spawn_launcher(runtime_dir, "delta")
+    proc = _spawn_launcher(env, runtime_dir, "delta")
     try:
         result = _run(env)
         assert result.returncode == 0, result.stderr
@@ -325,7 +336,7 @@ def test_supervisor_reaper_can_be_disabled(tmp_path: Path) -> None:
     _make_worktree(env, "delta")
     _mark_claude_alive(runtime_dir, "delta")
     _write_claim(env, "delta", "done-task", status=None)
-    proc = _spawn_launcher(runtime_dir, "delta")
+    proc = _spawn_launcher(env, runtime_dir, "delta")
     try:
         result = _run(env)
         assert result.returncode == 0, result.stderr
