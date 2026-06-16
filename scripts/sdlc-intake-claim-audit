@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""Audit request/intake task state through claim and lane pickup signals."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from collections import Counter
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+DEFAULT_TASKS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
+DEFAULT_CACHE_DIR = Path.home() / ".cache/hapax"
+DEFAULT_COORDINATOR_STATE = Path("/dev/shm/hapax-coordinator/state.json")
+FLOW_STATUS_KEYS = ("offered", "claimed", "in_progress", "blocked", "pr_open")
+UNOWNED_VALUES = {"", "null", "none", "~", "unassigned"}
+
+
+@dataclass(frozen=True)
+class TaskRecord:
+    task_id: str
+    path: str
+    title: str
+    status: str
+    assigned_to: str
+    priority: str
+    kind: str
+    tags: tuple[str, ...]
+
+
+def _scalar(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value).strip().strip("\"'")
+
+
+def _tags(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value.lower(),)
+    if isinstance(value, list):
+        return tuple(str(item).strip().lower() for item in value if str(item).strip())
+    return ()
+
+
+def _frontmatter(path: Path) -> dict[str, Any] | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    if end == -1:
+        return None
+    try:
+        loaded = yaml.safe_load(text[3:end].strip()) or {}
+    except yaml.YAMLError:
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def load_tasks(tasks_dir: Path) -> list[TaskRecord]:
+    records: list[TaskRecord] = []
+    for path in sorted(tasks_dir.glob("*.md")):
+        fm = _frontmatter(path)
+        if not fm:
+            continue
+        task_id = _scalar(fm.get("task_id")) or path.stem
+        records.append(
+            TaskRecord(
+                task_id=task_id,
+                path=str(path),
+                title=_scalar(fm.get("title")),
+                status=_scalar(fm.get("status")).lower(),
+                assigned_to=_scalar(fm.get("assigned_to")).lower(),
+                priority=_scalar(fm.get("priority")).lower(),
+                kind=_scalar(fm.get("kind")).lower(),
+                tags=_tags(fm.get("tags")),
+            )
+        )
+    return records
+
+
+def is_remediation(task: TaskRecord) -> bool:
+    haystack = " ".join((task.task_id, task.title, task.kind, " ".join(task.tags))).lower()
+    return "remediation" in haystack or "admission-blocked" in haystack
+
+
+def is_p0_or_remediation(task: TaskRecord) -> bool:
+    return task.priority == "p0" or is_remediation(task)
+
+
+def is_no_owner(task: TaskRecord) -> bool:
+    return (
+        task.status in {"offered", "claimed", "in_progress"} and task.assigned_to in UNOWNED_VALUES
+    )
+
+
+def is_silently_stranded(task: TaskRecord) -> bool:
+    return task.status in {"claimed", "in_progress"} and task.assigned_to in UNOWNED_VALUES
+
+
+def claim_role(path: Path) -> str:
+    name = path.name
+    prefix = "cc-active-task-"
+    if not name.startswith(prefix):
+        return ""
+    return name[len(prefix) :].split("-", 1)[0]
+
+
+def claim_signals(cache_dir: Path, active_task_ids: set[str]) -> list[dict[str, str]]:
+    signals: list[dict[str, str]] = []
+    for path in sorted(cache_dir.glob("cc-active-task*")):
+        try:
+            task_id = path.read_text(encoding="utf-8", errors="ignore").strip().splitlines()[0]
+        except (OSError, IndexError):
+            task_id = ""
+        reason = ""
+        if not task_id:
+            reason = "empty"
+        elif task_id not in active_task_ids:
+            reason = "task_not_active"
+        if reason:
+            signals.append(
+                {
+                    "claim_file": str(path),
+                    "role": claim_role(path),
+                    "task_id": task_id,
+                    "reason": reason,
+                }
+            )
+    return signals
+
+
+def read_coordinator_state(path: Path) -> dict[str, Any] | None:
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def build_report(tasks_dir: Path, cache_dir: Path, coordinator_state_path: Path) -> dict[str, Any]:
+    tasks = load_tasks(tasks_dir)
+    active_ids = {task.task_id for task in tasks}
+    status_counter = Counter(task.status for task in tasks)
+    status_counts = {status: int(status_counter.get(status, 0)) for status in FLOW_STATUS_KEYS}
+    remediation = [task for task in tasks if is_remediation(task)]
+    p0_or_remediation = [task for task in tasks if is_p0_or_remediation(task)]
+    no_owner = [task for task in tasks if is_no_owner(task)]
+    silent_stranded = [task for task in p0_or_remediation if is_silently_stranded(task)]
+    stale_claims = claim_signals(cache_dir, active_ids)
+    return {
+        "observed_at": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "tasks_dir": str(tasks_dir),
+        "cache_dir": str(cache_dir),
+        "counts": {
+            "active_total": len(tasks),
+            **status_counts,
+            "remediation": len(remediation),
+            "p0_or_remediation": len(p0_or_remediation),
+            "no_owner": len(no_owner),
+            "stale_claim": len(stale_claims),
+            "silent_stranded_p0_or_remediation": len(silent_stranded),
+        },
+        "silent_stranded_p0_or_remediation": [asdict(task) for task in silent_stranded],
+        "no_owner_tasks": [asdict(task) for task in no_owner],
+        "stale_claims": stale_claims,
+        "coordinator_state": read_coordinator_state(coordinator_state_path),
+    }
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--tasks-dir", type=Path, default=DEFAULT_TASKS_DIR)
+    parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
+    parser.add_argument("--coordinator-state", type=Path, default=DEFAULT_COORDINATOR_STATE)
+    parser.add_argument("--output", type=Path)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    report = build_report(
+        args.tasks_dir.expanduser(),
+        args.cache_dir.expanduser(),
+        args.coordinator_state.expanduser(),
+    )
+    text = json.dumps(report, indent=2, sort_keys=True)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(text + "\n", encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -15,6 +15,8 @@ import os
 import re
 import subprocess
 import time
+from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -163,6 +165,7 @@ class LaneState:
     platform: str = "claude"
     alive: bool = False
     pid: int | None = None
+    pid_source: str | None = None
     relay_age_s: float = float("inf")
     claimed_task: str | None = None
     idle: bool = True
@@ -183,6 +186,8 @@ class CoordinatorState:
     dispatches_this_tick: int = 0
     lanes_stalled: int = 0
     reoffers_this_tick: int = 0
+    task_status_counts: dict[str, int] = field(default_factory=dict)
+    task_flow_counts: dict[str, int] = field(default_factory=dict)
     lanes: dict[str, dict] = field(default_factory=dict)
 
 
@@ -211,6 +216,8 @@ class Coordinator:
             lanes_alive=sum(1 for l in lanes.values() if l.alive),
             lanes_idle=sum(1 for l in lanes.values() if l.idle and l.alive),
             lanes_total=len(lanes),
+            task_status_counts=_task_status_counts(tasks),
+            task_flow_counts=_task_flow_counts(tasks),
         )
 
         dispatches = 0
@@ -464,8 +471,17 @@ class Coordinator:
         try:
             message_id = _prepare_dispatch_message(task, lane)
         except Exception as exc:  # noqa: BLE001 - refusal ledger needs the root cause.
-            log.warning("Dispatch to %s could not mint durable MQ binding: %s", lane.role, exc)
-            return False, f"durable_mq_prepare_failed:{type(exc).__name__}:{exc}"
+            next_action = (
+                "next_action=check HAPAX_RELAY_MQ_DB path, relay DB parent permissions, "
+                "and disk pressure; then rerun governed dispatch for the same task/lane"
+            )
+            log.warning(
+                "Dispatch to %s could not mint durable MQ binding: %s; %s",
+                lane.role,
+                exc,
+                next_action,
+            )
+            return False, f"durable_mq_prepare_failed:{type(exc).__name__}:{exc}; {next_action}"
 
         cmd = [
             str(dispatcher),
@@ -637,6 +653,8 @@ class Coordinator:
             "dispatches_this_tick": state.dispatches_this_tick,
             "lanes_stalled": state.lanes_stalled,
             "reoffers_this_tick": state.reoffers_this_tick,
+            "task_status_counts": state.task_status_counts,
+            "task_flow_counts": state.task_flow_counts,
             "lanes": state.lanes,
         }
         if refusal_stats:
@@ -693,6 +711,38 @@ def _frontmatter_text(value: object) -> str | None:
         return None
     text = str(value).strip().strip("\"'")
     return None if not text or text.lower() in {"null", "none", "~"} else text
+
+
+FLOW_STATUS_KEYS = ("offered", "claimed", "in_progress", "blocked", "pr_open")
+
+
+def _task_status_counts(tasks: Sequence[Task]) -> dict[str, int]:
+    counts = Counter(task.status for task in tasks)
+    return {status: int(counts.get(status, 0)) for status in FLOW_STATUS_KEYS}
+
+
+def _is_remediation_task(task: Task) -> bool:
+    haystack = " ".join((task.task_id, task.title, task.effort_class, task.quality_floor)).lower()
+    return "remediation" in haystack or "admission-blocked" in haystack
+
+
+def _is_unowned(task: Task) -> bool:
+    owner = task.assigned_to.strip().lower()
+    return task.status in {"offered", "claimed", "in_progress"} and owner in {
+        "",
+        "null",
+        "none",
+        "~",
+        "unassigned",
+    }
+
+
+def _task_flow_counts(tasks: Sequence[Task]) -> dict[str, int]:
+    return {
+        **_task_status_counts(tasks),
+        "remediation": sum(1 for task in tasks if _is_remediation_task(task)),
+        "no_owner": sum(1 for task in tasks if _is_unowned(task)),
+    }
 
 
 def _platform_tokens(value: object) -> tuple[str, ...]:
@@ -894,6 +944,10 @@ def _prepare_dispatch_message(task: Task, lane: LaneState) -> str | None:
             "platform": lane.platform,
             "mode": COORDINATOR_DISPATCH_MODE,
             "parent_spec": task.parent_spec,
+            "next_action_on_binding_failure": (
+                "Check HAPAX_RELAY_MQ_DB, relay DB parent permissions, and disk "
+                "pressure; then rerun governed methodology dispatch for this task/lane."
+            ),
         },
         sort_keys=True,
     )
@@ -1001,6 +1055,7 @@ def _check_lane(lane: str | LaneDescriptor) -> LaneState:
                 raise OSError
             state.alive = True
             state.pid = pid
+            state.pid_source = "pidfile"
         except (ValueError, OSError):
             pass
 
@@ -1011,6 +1066,7 @@ def _check_lane(lane: str | LaneDescriptor) -> LaneState:
             state.alive = True
             if state.pid is None:
                 state.pid = launcher_pid
+                state.pid_source = "proc"
             if launcher_task and not state.claimed_task:
                 state.claimed_task = launcher_task
                 state.idle = False
@@ -1069,6 +1125,14 @@ def _launcher_pid_present(role: str) -> bool:
     return True
 
 
+def _lane_launcher_process_present(lane: LaneState) -> bool:
+    if lane.pid is not None and _pid_is_live(lane.pid):
+        return True
+    if _launcher_pid_present(lane.role):
+        return True
+    return lane.platform == "claude" and _live_headless_launcher(lane.role) is not None
+
+
 def _load_dispatch_cache() -> dict | None:
     """The measured service-time cache (`dispatch_service_time --recompute`). None when
     absent/corrupt — callers fall back to the fixed defaults. Path resolves through
@@ -1122,8 +1186,10 @@ def project_stalled(
     claim = lane.claimed_task
     if not claim or claim not in non_terminal_task_ids:
         return False  # idle, or the claim is already terminal → not stalled
-    if not _launcher_pid_present(lane.role):
+    if not _lane_launcher_process_present(lane):
         return True  # owner process gone, task still non-terminal
+    if lane.platform == "claude" and lane.pid_source == "proc":
+        return False  # pidfile-free launcher is live; supervisor owns any later reap.
     return lane.output_age_s > output_grace_s
 
 
@@ -1155,6 +1221,7 @@ def _lane_to_dict(lane: LaneState) -> dict:
         "platform": lane.platform,
         "alive": lane.alive,
         "pid": lane.pid,
+        "pid_source": lane.pid_source,
         "relay_age_s": round(lane.relay_age_s, 1) if lane.relay_age_s != float("inf") else None,
         "claimed_task": lane.claimed_task,
         "idle": lane.idle,

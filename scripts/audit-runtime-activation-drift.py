@@ -35,6 +35,7 @@ CRITICAL_UNITS = frozenset(
         "hapax-cc-pr-autoqueue.timer",
         "hapax-cc-pr-merge-watcher.timer",
         "hapax-coord.service",
+        "hapax-coordinator.service",
         "hapax-operator-current-state.timer",
         "hapax-relay-to-cc-tasks.timer",
         "hapax-request-intake-consumer.timer",

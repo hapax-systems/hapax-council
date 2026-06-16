@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,8 +21,10 @@ from agents.coordinator.core import (
     _effective_platform_suitability,
     _headless_task_from_argv,
     _lane_to_dict,
+    _live_headless_launcher,
     _parse_task,
     _prepare_dispatch_message,
+    _task_flow_counts,
 )
 
 
@@ -116,12 +120,15 @@ class TestLaneState:
         assert state.idle is True
 
     def test_lane_to_dict(self):
-        lane = LaneState(role="beta", alive=True, pid=12345, claimed_task="fix-bug")
+        lane = LaneState(
+            role="beta", alive=True, pid=12345, pid_source="pidfile", claimed_task="fix-bug"
+        )
         d = _lane_to_dict(lane)
         assert d["role"] == "beta"
         assert d["platform"] == "claude"
         assert d["alive"] is True
         assert d["pid"] == 12345
+        assert d["pid_source"] == "pidfile"
         assert d["claimed_task"] == "fix-bug"
 
     def test_peer_status_fallback_marks_queue_dry_lane_idle(self, tmp_path: Path):
@@ -230,8 +237,44 @@ current_claim: relay-task
 
         assert state.alive is True
         assert state.pid == 12345
+        assert state.pid_source == "proc"
         assert state.claimed_task == "p0-live-task"
         assert state.idle is False
+
+    def test_live_headless_launcher_discovers_real_pidfile_free_process(self, tmp_path: Path):
+        role = "ut-proc-lane"
+        task_id = "p0-proc-discovery-task"
+        proc = subprocess.Popen(
+            [
+                "bash",
+                "-c",
+                (
+                    "exec -a hapax-claude-headless "
+                    'python3 -c \'import time; time.sleep(60)\' --task "$1" "$2"'
+                ),
+                "_",
+                task_id,
+                role,
+            ]
+        )
+        try:
+            found: tuple[int, str | None] | None = None
+            deadline = time.time() + 5
+            with patch("agents.coordinator.core.PID_DIR", tmp_path / "pid"):
+                while time.time() < deadline:
+                    found = _live_headless_launcher(role)
+                    if found is not None:
+                        break
+                    time.sleep(0.05)
+
+            assert found == (proc.pid, task_id)
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
 
     def test_dynamic_tmux_discovery_includes_alpha_and_codex(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
@@ -356,6 +399,19 @@ class TestDispatch:
 
         assert message_id is not None
         assert db_path.exists()
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT subject, authority_case, recipients_spec, payload FROM messages"
+            ).fetchone()
+        assert row is not None
+        assert row[0] == "t1"
+        assert row[1] == "CASE-TEST-001"
+        assert row[2] == "cx-red"
+        payload = json.loads(row[3])
+        assert payload["task_id"] == "t1"
+        assert payload["lane"] == "cx-red"
+        assert payload["parent_spec"] == "/tmp/spec.md"
+        assert "next_action_on_binding_failure" in payload
 
     def test_dispatch_uses_methodology_dispatcher(self, tmp_path: Path):
         dispatcher = tmp_path / "projects/hapax-council/scripts/hapax-methodology-dispatch"
@@ -405,6 +461,64 @@ class TestDispatch:
             ]
         ]
 
+    def test_dispatch_reports_mq_prepare_failure_with_next_action(self, tmp_path: Path):
+        dispatcher = tmp_path / "hapax-methodology-dispatch"
+        dispatcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        dispatcher.chmod(0o755)
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("codex",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+            authority_case="CASE-TEST-001",
+        )
+        lane = LaneState(role="cx-red", platform="codex", alive=True, idle=True)
+
+        with (
+            patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
+            patch("agents.coordinator.core._prepare_dispatch_message", side_effect=OSError("disk")),
+        ):
+            ok, reason = Coordinator()._dispatch(task, lane)
+
+        assert ok is False
+        assert reason.startswith("durable_mq_prepare_failed:OSError:disk")
+        assert "next_action=check HAPAX_RELAY_MQ_DB" in reason
+
+    def test_dispatch_without_authority_case_omits_mq_message_id(self, tmp_path: Path):
+        dispatcher = tmp_path / "hapax-methodology-dispatch"
+        dispatcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        dispatcher.chmod(0o755)
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("codex",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+        )
+        lane = LaneState(role="cx-red", platform="codex", alive=True, idle=True)
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with (
+            patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
+            patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
+        ):
+            assert Coordinator()._dispatch(task, lane) == (True, "")
+
+        assert "--mq-message-id" not in calls[0]
+
 
 class TestScanTasks:
     def test_scan_empty_dir(self, tmp_path: Path):
@@ -437,3 +551,36 @@ wsjf: 5.0
         ids = {t.task_id for t in tasks}
         assert "high-priority" in ids
         assert "low-priority" in ids
+
+    def test_task_flow_counts_include_remediation_and_no_owner(self):
+        tasks = [
+            Task(
+                task_id="request-decompose-admission-blocked-a",
+                title="Repair request decomposition admission",
+                status="offered",
+                assigned_to="unassigned",
+                wsjf=10.0,
+                effort_class="standard",
+                platform_suitability=("codex",),
+                quality_floor="deterministic_ok",
+                path=Path("/tmp/a.md"),
+            ),
+            Task(
+                task_id="task-b",
+                title="PR task",
+                status="pr_open",
+                assigned_to="cx-red",
+                wsjf=10.0,
+                effort_class="standard",
+                platform_suitability=("codex",),
+                quality_floor="deterministic_ok",
+                path=Path("/tmp/b.md"),
+            ),
+        ]
+
+        counts = _task_flow_counts(tasks)
+
+        assert counts["offered"] == 1
+        assert counts["pr_open"] == 1
+        assert counts["remediation"] == 1
+        assert counts["no_owner"] == 1

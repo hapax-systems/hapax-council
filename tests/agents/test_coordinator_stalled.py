@@ -139,6 +139,25 @@ def test_project_stalled_fresh_working() -> None:
             )
 
 
+def test_project_stalled_pidfile_free_live_launcher_stays_busy() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        with (
+            _isolated(tmp),
+            patch(
+                "agents.coordinator.core._live_headless_launcher",
+                return_value=(os.getpid(), "ut-task-20260602"),
+            ),
+        ):
+            lane = _lane(output_age_s=float("inf"))
+            lane.pid = os.getpid()
+            lane.pid_source = "proc"
+
+            assert (
+                project_stalled(lane, non_terminal_task_ids=frozenset({lane.claimed_task})) is False
+            )
+
+
 def test_project_stalled_no_claim_or_terminal_claim() -> None:
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)

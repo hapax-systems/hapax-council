@@ -485,9 +485,14 @@ def _claim_task_dead_reason(task_id: str, active_dir: Path) -> str | None:
         text = note.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return None  # unreadable -> do not reap on this basis
+    scan_text = text
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            scan_text = text[3:end]
     status = ""
     assigned_to = ""
-    for line in text.splitlines():
+    for line in scan_text.splitlines():
         if line.startswith("status:"):
             status = line.split(":", 1)[1].strip().strip("\"'").lower()
         elif line.startswith("assigned_to:"):
