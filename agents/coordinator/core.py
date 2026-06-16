@@ -1037,7 +1037,9 @@ def _discover_lanes() -> list[LaneDescriptor]:
 
 def _relay_candidates(role: str, session: str = "") -> list[Path]:
     candidates = [
+        RELAY_DIR / f"{role}-status.yaml",
         RELAY_DIR / f"{role}.yaml",
+        RELAY_DIR / f"status-{role}.yaml",
         RELAY_DIR / f"peer-status-{role}.yaml",
     ]
     if session:

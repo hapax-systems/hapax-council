@@ -311,6 +311,77 @@ current_claim: relay-task
         assert state.claimed_task == "relay-task"
         assert state.idle is False
 
+    def test_role_status_retired_beats_stale_peer_active_without_claim(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        peer_status = relay_dir / "peer-status-epsilon.yaml"
+        peer_status.write_text(
+            """session: epsilon
+platform: claude
+session_status: ACTIVE
+current_claim: old-task
+""",
+            encoding="utf-8",
+        )
+        role_status = relay_dir / "epsilon-status.yaml"
+        role_status.write_text(
+            """role: epsilon
+status: retired
+retired_reason: clean exit
+""",
+            encoding="utf-8",
+        )
+        now = time.time()
+        os.utime(peer_status, (now - 3600, now - 3600))
+        os.utime(role_status, (now, now))
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="epsilon",
+                    session="hapax-claude-epsilon",
+                    platform="claude",
+                )
+            )
+
+        assert state.alive is True
+        assert state.claimed_task is None
+        assert state.idle is True
+
+    def test_active_task_file_still_beats_retired_role_status(self, tmp_path: Path):
+        role = "ut-role"
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / f"{role}-status.yaml").write_text(
+            f"""role: {role}
+status: retired
+retired_reason: clean exit
+""",
+            encoding="utf-8",
+        )
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        (cache_dir / f"cc-active-task-{role}").write_text("live-task\n", encoding="utf-8")
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role=role,
+                    session=f"hapax-claude-{role}",
+                    platform="claude",
+                )
+            )
+
+        assert state.claimed_task == "live-task"
+        assert state.idle is False
+
     def test_active_task_candidates_include_session_keyed_claims(self, tmp_path: Path):
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
