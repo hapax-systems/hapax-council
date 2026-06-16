@@ -462,6 +462,7 @@ _UUID_SUFFIX_RE = re.compile(
     r"-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 _TERMINAL_CLAIM_STATUSES = {"done", "completed", "closed", "withdrawn", "superseded"}
+_UNASSIGNED_VALUES = {"", "null", "none", "~", "unassigned"}
 DEFAULT_CLAIM_LEASE_TTL = 21600  # matches cc-claim's HAPAX_CLAIM_LEASE_TTL_SECS default
 
 
@@ -470,26 +471,32 @@ def _claim_role(filename: str) -> str:
     return _UUID_SUFFIX_RE.sub("", filename[len(_CLAIM_PREFIX) :])
 
 
-def _claim_task_terminal_or_missing(task_id: str, active_dir: Path) -> bool:
-    """True when the claimed task is absent from active/ (closed/withdrawn/moved) or
-    carries a terminal status — i.e. the claim is dead and the slot can be freed."""
+def _claim_task_dead_reason(task_id: str, active_dir: Path) -> str | None:
+    """Reason the claim is dead, if the lane slot can be freed."""
     if not task_id:
-        return True
+        return "terminal-or-missing"
     note = active_dir / f"{task_id}.md"
     if not note.exists():
         variants = sorted(active_dir.glob(f"{task_id}-*.md"))
         if not variants:
-            return True
+            return "terminal-or-missing"
         note = variants[0]
     try:
         text = note.read_text(encoding="utf-8", errors="ignore")
     except OSError:
-        return False  # unreadable → do not reap on this basis
+        return None  # unreadable -> do not reap on this basis
+    status = ""
+    assigned_to = ""
     for line in text.splitlines():
         if line.startswith("status:"):
             status = line.split(":", 1)[1].strip().strip("\"'").lower()
-            return status in _TERMINAL_CLAIM_STATUSES
-    return False
+        elif line.startswith("assigned_to:"):
+            assigned_to = line.split(":", 1)[1].strip().strip("\"'").lower()
+    if status in _TERMINAL_CLAIM_STATUSES:
+        return "terminal-or-missing"
+    if status == "blocked" and assigned_to in _UNASSIGNED_VALUES:
+        return "blocked-unassigned"
+    return None
 
 
 def sweep_stale_claims(
@@ -526,8 +533,9 @@ def sweep_stale_claims(
     for f, role, mtime, task_id in metas:
         age = now - mtime
         role_is_live = (now - freshest_by_role.get(role, 0.0)) <= lease_ttl
-        if _claim_task_terminal_or_missing(task_id, active_dir) and age > grace_secs:
-            reason = "terminal-or-missing"
+        dead_reason = _claim_task_dead_reason(task_id, active_dir)
+        if dead_reason and age > grace_secs:
+            reason = dead_reason
         elif age > lease_ttl and not role_is_live:
             reason = "lease-expired"
         else:

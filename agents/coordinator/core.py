@@ -33,6 +33,9 @@ from shared.dispatch_service_time import (
 from shared.jsonl_append import append_jsonl
 from shared.notify import send_notification
 from shared.recovery_governor import converge_action_cap
+from shared.relay_mq import send_message
+from shared.relay_mq_envelope import Envelope
+from shared.route_metadata_schema import assess_route_metadata
 from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES
 from shared.sdlc_pressure_gate import admission_state
 
@@ -75,6 +78,7 @@ RELAY_DIR = CACHE_DIR / "relay"
 PID_DIR = Path(f"/run/user/{os.getuid()}/hapax-claude")
 SHM_DIR = Path("/dev/shm/hapax-coordinator")
 SHM_FILE = SHM_DIR / "state.json"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # The same authority-case ledger cc-stage-advance writes — one SSOT for transitions.
 # Honor the same env override so both producers target the same inode.
@@ -90,11 +94,18 @@ SESSION_PREFIXES = (
     ("hapax-gemini-", "gemini"),
 )
 DISPATCH_COOLDOWN_S = 120.0
+COORDINATOR_DISPATCH_MODE = "headless"
+COORDINATOR_DISPATCH_PROFILE = "full"
+SUPPORTED_DISPATCH_PLATFORMS = ("claude", "codex", "gemini", "vibe", "antigrav", "api")
 
-# The methodology dispatcher lives in the primary clone (not this worktree). A
-# module constant so tests can point it at a hermetic fixture instead of relying
-# on the operator's exact ~/projects/hapax-council layout existing.
-METHODOLOGY_DISPATCHER = Path.home() / "projects/hapax-council/scripts/hapax-methodology-dispatch"
+# Dispatch through the running release checkout by default. A hard-coded primary
+# clone can drift dirty and make the coordinator follow unactivated source.
+METHODOLOGY_DISPATCHER = Path(
+    os.environ.get(
+        "HAPAX_METHODOLOGY_DISPATCHER",
+        str(REPO_ROOT / "scripts" / "hapax-methodology-dispatch"),
+    )
+).expanduser()
 
 # A lane that owns a non-terminal task but has emitted no progress signal for this
 # long (or whose supervising launcher PID is gone) is projected `stalled` and its
@@ -129,6 +140,9 @@ class Task:
     quality_floor: str
     path: Path
     created_at: float | None = None  # epoch; drives WSJF aging (None -> no aging)
+    authority_case: str | None = None
+    authority_item: str | None = None
+    parent_spec: str | None = None
 
 
 @dataclass
@@ -447,21 +461,30 @@ class Coordinator:
         if not dispatcher.exists():
             log.warning("hapax-methodology-dispatch not found, cannot dispatch to %s", lane.role)
             return False, "dispatcher_not_found"
+        try:
+            message_id = _prepare_dispatch_message(task, lane)
+        except Exception as exc:  # noqa: BLE001 - refusal ledger needs the root cause.
+            log.warning("Dispatch to %s could not mint durable MQ binding: %s", lane.role, exc)
+            return False, f"durable_mq_prepare_failed:{type(exc).__name__}:{exc}"
+
+        cmd = [
+            str(dispatcher),
+            "--task",
+            task.task_id,
+            "--lane",
+            lane.role,
+            "--platform",
+            lane.platform,
+            "--mode",
+            COORDINATOR_DISPATCH_MODE,
+            "--launch",
+        ]
+        if message_id:
+            cmd.extend(["--mq-message-id", message_id])
 
         try:
             result = subprocess.run(
-                [
-                    str(dispatcher),
-                    "--task",
-                    task.task_id,
-                    "--lane",
-                    lane.role,
-                    "--platform",
-                    lane.platform,
-                    "--mode",
-                    "headless",
-                    "--launch",
-                ],
+                cmd,
                 timeout=10,
                 capture_output=True,
                 text=True,
@@ -645,6 +668,7 @@ def _parse_task(path: Path) -> Task | None:
     platforms = meta.get("platform_suitability", ["any"])
     if isinstance(platforms, str):
         platforms = [platforms]
+    platforms = _effective_platform_suitability(platforms, meta)
     return Task(
         task_id=path.stem,
         title=meta.get("title", path.stem),
@@ -656,7 +680,68 @@ def _parse_task(path: Path) -> Task | None:
         quality_floor=meta.get("quality_floor", "deterministic_ok"),
         path=path,
         created_at=_created_at_epoch(meta.get("created_at") or meta.get("updated_at")),
+        authority_case=_frontmatter_text(meta.get("authority_case")),
+        authority_item=_frontmatter_text(meta.get("authority_item") or meta.get("slice_id")),
+        parent_spec=_frontmatter_text(meta.get("parent_spec")),
     )
+
+
+def _frontmatter_text(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return None
+    text = str(value).strip().strip("\"'")
+    return None if not text or text.lower() in {"null", "none", "~"} else text
+
+
+def _platform_tokens(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        raw = [value]
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        raw = [str(item) for item in value]
+    else:
+        raw = [str(value)]
+    out: list[str] = []
+    for item in raw:
+        token = item.strip().lower().replace("_", "-")
+        if token and token not in out:
+            out.append(token)
+    return tuple(out)
+
+
+def _effective_platform_suitability(platforms: object, frontmatter: dict) -> tuple[str, ...]:
+    base = _platform_tokens(platforms) or ("any",)
+    try:
+        assessment = assess_route_metadata(frontmatter)
+    except Exception:  # noqa: BLE001 - malformed metadata is still caught by dispatch.
+        return base
+    metadata = assessment.metadata
+    if metadata is None:
+        return base
+
+    constraints = metadata.route_constraints
+    required_mode = _frontmatter_text(constraints.required_mode)
+    if required_mode and required_mode.lower() != COORDINATOR_DISPATCH_MODE:
+        return ()
+    required_profile = _frontmatter_text(constraints.required_profile)
+    if required_profile and required_profile.lower() != COORDINATOR_DISPATCH_PROFILE:
+        return ()
+
+    allowed = set(_platform_tokens(constraints.allowed_platforms))
+    prohibited = set(_platform_tokens(constraints.prohibited_platforms))
+    if "any" in base:
+        if not allowed and not prohibited:
+            return ("any",)
+        selected = set(allowed or SUPPORTED_DISPATCH_PLATFORMS)
+    else:
+        selected = set(base)
+        if allowed:
+            selected &= allowed
+    selected -= prohibited
+    return tuple(platform for platform in SUPPORTED_DISPATCH_PLATFORMS if platform in selected)
 
 
 def _created_at_epoch(value: object) -> float | None:
@@ -777,7 +862,122 @@ def _active_task_candidates(role: str, session: str = "") -> list[Path]:
     ]
     if session:
         candidates.append(CACHE_DIR / f"cc-active-task-{session}")
+    try:
+        candidates.extend(
+            sorted(
+                CACHE_DIR.glob(f"cc-active-task-{role}-*"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+        )
+    except OSError:
+        pass
     return list(dict.fromkeys(candidates))
+
+
+def _relay_mq_db_path() -> Path:
+    return Path(
+        os.environ.get("HAPAX_RELAY_MQ_DB", str(CACHE_DIR / "relay" / "messages.db"))
+    ).expanduser()
+
+
+def _prepare_dispatch_message(task: Task, lane: LaneState) -> str | None:
+    if not task.authority_case:
+        return None
+    db_path = _relay_mq_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(
+        {
+            "kind": "coordinator_dispatch",
+            "task_id": task.task_id,
+            "lane": lane.role,
+            "platform": lane.platform,
+            "mode": COORDINATOR_DISPATCH_MODE,
+            "parent_spec": task.parent_spec,
+        },
+        sort_keys=True,
+    )
+    return send_message(
+        db_path,
+        Envelope(
+            sender="hapax-coordinator",
+            message_type="dispatch",
+            priority=0,
+            subject=task.task_id,
+            authority_case=task.authority_case,
+            authority_item=task.authority_item or task.task_id,
+            recipients_spec=lane.role,
+            payload=payload,
+            tags=["sdlc", "coordinator", "dispatch"],
+        ),
+    )
+
+
+def _headless_task_from_argv(argv: list[str], role: str) -> str | None:
+    if not any("hapax-claude-headless" in arg for arg in argv):
+        return None
+    if role not in argv:
+        return None
+    task: str | None = None
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--task" and i + 1 < len(argv):
+            task = argv[i + 1].strip()
+            i += 2
+            continue
+        if arg.startswith("--task="):
+            task = arg.split("=", 1)[1].strip()
+        i += 1
+    return task or None
+
+
+def _read_proc_cmdline(pid: int) -> list[str]:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return []
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+
+def _pid_is_live(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _live_headless_launcher(role: str) -> tuple[int, str | None] | None:
+    """Return a live lane launcher even when its pidfile/fifo was lost.
+
+    The dispatch-blocking failure mode is a bash wrapper that still holds the
+    lifetime flock but has no ``<lane>.launcher.pid``. Treating that lane as dead
+    causes every dispatch attempt to hit the same lock and never reach pickup.
+    """
+
+    pidfile = PID_DIR / f"{role}.launcher.pid"
+    try:
+        pid = int(pidfile.read_text().strip())
+    except (OSError, ValueError):
+        pid = 0
+    if pid > 0 and _pid_is_live(pid):
+        return pid, _headless_task_from_argv(_read_proc_cmdline(pid), role)
+
+    proc_root = Path("/proc")
+    try:
+        pid_dirs = [path for path in proc_root.iterdir() if path.name.isdigit()]
+    except OSError:
+        return None
+    for path in sorted(pid_dirs, key=lambda p: int(p.name)):
+        pid = int(path.name)
+        argv = _read_proc_cmdline(pid)
+        if not argv:
+            continue
+        task = _headless_task_from_argv(argv, role)
+        if task is not None and _pid_is_live(pid):
+            return pid, task
+    return None
 
 
 def _check_lane(lane: str | LaneDescriptor) -> LaneState:
@@ -797,11 +997,23 @@ def _check_lane(lane: str | LaneDescriptor) -> LaneState:
     if pidfile.exists():
         try:
             pid = int(pidfile.read_text().strip())
-            os.kill(pid, 0)
+            if not _pid_is_live(pid):
+                raise OSError
             state.alive = True
             state.pid = pid
         except (ValueError, OSError):
             pass
+
+    if descriptor.platform == "claude":
+        launcher = _live_headless_launcher(descriptor.role)
+        if launcher is not None:
+            launcher_pid, launcher_task = launcher
+            state.alive = True
+            if state.pid is None:
+                state.pid = launcher_pid
+            if launcher_task and not state.claimed_task:
+                state.claimed_task = launcher_task
+                state.idle = False
 
     relay, relay_mtime = _load_freshest_relay(descriptor.role, descriptor.session)
     if relay_mtime is not None:

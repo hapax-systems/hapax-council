@@ -104,6 +104,7 @@ PROGRESS_NTFY_TOPIC="${HAPAX_NTFY_TOPIC:-hapax}"
 # or the launcher exceeds a hard lifetime ceiling (escalate + reap).
 REAP_OFF="${HAPAX_SUPERVISOR_REAP_OFF:-0}"
 LAUNCHER_MAX_LIFETIME_S="${HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S:-21600}"  # 6h
+PROC_SCAN_LAUNCHERS="${HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS:-1}"
 
 # Repo root for `python3 -m shared.…`. Resolve $0 through the deploy symlink
 # (~/.local/bin/…) so REPO_DIR is the release dir that actually ships shared/;
@@ -431,10 +432,7 @@ guard() {
 #   alive -> nudge the live launcher's stdin fifo (its own injection mechanism;
 #            a re-launch would flock-fail). Both resume the SAME task.
 launcher_alive() {
-  local lpf="$RUNTIME_DIR/$1.launcher.pid" pid=""
-  [ -f "$lpf" ] || return 1
-  pid="$(cat "$lpf" 2>/dev/null || true)"
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+  launcher_pid "$1" >/dev/null
 }
 
 # Seconds since output.jsonl was last written; returns 1 (no echo) if absent
@@ -674,16 +672,73 @@ progress_guard() {
 
 # ── zombie-launcher reaper (terminal-task + lifetime ceiling) ─────────────────
 
+# launcher_pid_from_proc <lane>: echo a live hapax-claude-headless wrapper whose
+# pidfile was lost. Constrain to the current HOME so tests and other users' lanes
+# cannot be mistaken for this supervisor's fleet.
+launcher_pid_from_proc() {
+  [ "$PROC_SCAN_LAUNCHERS" = "1" ] || return 1
+  python3 - "$1" "$HOME" <<'PY' 2>/dev/null
+import os
+import sys
+from pathlib import Path
+
+lane, expected_home = sys.argv[1], sys.argv[2]
+
+
+def read_parts(path: Path) -> list[str]:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return []
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+
+def env_home(pid: str) -> str:
+    for part in read_parts(Path("/proc") / pid / "environ"):
+        if part.startswith("HOME="):
+            return part.split("=", 1)[1]
+    return ""
+
+
+for entry in sorted(Path("/proc").iterdir(), key=lambda path: int(path.name) if path.name.isdigit() else -1):
+    if not entry.name.isdigit():
+        continue
+    pid = entry.name
+    if int(pid) in {os.getpid(), os.getppid()}:
+        continue
+    argv = read_parts(entry / "cmdline")
+    if not argv:
+        continue
+    if not any("hapax-claude-headless" in arg for arg in argv):
+        continue
+    if lane not in argv:
+        continue
+    if env_home(pid) != expected_home:
+        continue
+    try:
+        os.kill(int(pid), 0)
+    except OSError:
+        continue
+    print(pid)
+    sys.exit(0)
+sys.exit(1)
+PY
+}
+
 # launcher_pid <lane>: echo the lane's LIVE launcher pid, or return 1 if there is
-# no live launcher. (launcher_alive returns only a boolean; the reaper needs the
-# pid value to target the SIGTERM.)
+# no live launcher. The pidfile is authoritative when present; the /proc fallback
+# catches lock-holding wrappers whose pidfile/fifo was lost mid-loop.
 launcher_pid() {
   local lpf="$RUNTIME_DIR/$1.launcher.pid" pid=""
-  [ -f "$lpf" ] || return 1
-  pid="$(cat "$lpf" 2>/dev/null || true)"
-  case "$pid" in '' | *[!0-9]*) return 1 ;; esac
-  kill -0 "$pid" 2>/dev/null || return 1
-  printf '%s\n' "$pid"
+  if [ -f "$lpf" ]; then
+    pid="$(cat "$lpf" 2>/dev/null || true)"
+    case "$pid" in '' | *[!0-9]*) pid="" ;; esac
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      printf '%s\n' "$pid"
+      return 0
+    fi
+  fi
+  launcher_pid_from_proc "$1"
 }
 
 # launcher_etimes <pid>: elapsed seconds since the launcher started, or return 1

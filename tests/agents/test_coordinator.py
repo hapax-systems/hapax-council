@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -13,9 +14,13 @@ from agents.coordinator.core import (
     LaneDescriptor,
     LaneState,
     Task,
+    _active_task_candidates,
     _check_lane,
+    _effective_platform_suitability,
+    _headless_task_from_argv,
     _lane_to_dict,
     _parse_task,
+    _prepare_dispatch_message,
 )
 
 
@@ -61,6 +66,41 @@ Done.
 """
         )
         assert _parse_task(task_file) is None
+
+    def test_route_constraints_narrow_platform_suitability(self):
+        platforms = _effective_platform_suitability(
+            ["any"],
+            {
+                "route_metadata_schema": 1,
+                "quality_floor": "deterministic_ok",
+                "authority_level": "authoritative",
+                "mutation_surface": "source",
+                "mutation_scope_refs": [],
+                "route_constraints": {
+                    "allowed_platforms": ["codex"],
+                    "prohibited_platforms": [],
+                    "required_mode": "headless",
+                    "required_profile": "full",
+                },
+            },
+        )
+
+        assert platforms == ("codex",)
+
+    def test_required_interactive_mode_is_not_coordinator_routable(self):
+        platforms = _effective_platform_suitability(
+            ["claude"],
+            {
+                "route_metadata_schema": 1,
+                "quality_floor": "deterministic_ok",
+                "authority_level": "authoritative",
+                "mutation_surface": "source",
+                "mutation_scope_refs": [],
+                "route_constraints": {"required_mode": "interactive"},
+            },
+        )
+
+        assert platforms == ()
 
 
 class TestLaneState:
@@ -141,6 +181,56 @@ current_claim: relay-task
             )
 
         assert state.claimed_task == "relay-task"
+        assert state.idle is False
+
+    def test_active_task_candidates_include_session_keyed_claims(self, tmp_path: Path):
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        old_session = cache_dir / "cc-active-task-cx-red-old"
+        new_session = cache_dir / "cc-active-task-cx-red-new"
+        old_session.write_text("old-task\n", encoding="utf-8")
+        new_session.write_text("new-task\n", encoding="utf-8")
+
+        with patch("agents.coordinator.core.CACHE_DIR", cache_dir):
+            candidates = _active_task_candidates("cx-red")
+
+        assert candidates[0] == cache_dir / "cc-active-task-cx-red"
+        assert new_session in candidates
+        assert old_session in candidates
+
+    def test_headless_cmdline_task_parser_requires_matching_lane(self):
+        argv = [
+            "bash",
+            "/home/hapax/.local/bin/hapax-claude-headless",
+            "--task",
+            "p0-task",
+            "delta",
+            "prompt",
+        ]
+
+        assert _headless_task_from_argv(argv, "delta") == "p0-task"
+        assert _headless_task_from_argv(argv, "epsilon") is None
+
+    def test_pidfile_free_headless_launcher_marks_lane_busy(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.PID_DIR", tmp_path / "pids"),
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch(
+                "agents.coordinator.core._live_headless_launcher",
+                return_value=(12345, "p0-live-task"),
+            ),
+        ):
+            state = _check_lane(LaneDescriptor(role="delta", session="", platform="claude"))
+
+        assert state.alive is True
+        assert state.pid == 12345
+        assert state.claimed_task == "p0-live-task"
         assert state.idle is False
 
     def test_dynamic_tmux_discovery_includes_alpha_and_codex(self, tmp_path: Path):
@@ -244,6 +334,29 @@ class TestPickLane:
 
 
 class TestDispatch:
+    def test_prepare_dispatch_message_writes_strict_mq_binding(self, tmp_path: Path):
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("codex",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+            authority_case="CASE-TEST-001",
+            parent_spec="/tmp/spec.md",
+        )
+        lane = LaneState(role="cx-red", platform="codex", alive=True, idle=True)
+        db_path = tmp_path / "relay" / "messages.db"
+
+        with patch.dict(os.environ, {"HAPAX_RELAY_MQ_DB": str(db_path)}):
+            message_id = _prepare_dispatch_message(task, lane)
+
+        assert message_id is not None
+        assert db_path.exists()
+
     def test_dispatch_uses_methodology_dispatcher(self, tmp_path: Path):
         dispatcher = tmp_path / "projects/hapax-council/scripts/hapax-methodology-dispatch"
         dispatcher.parent.mkdir(parents=True)
@@ -259,6 +372,7 @@ class TestDispatch:
             platform_suitability=("codex",),
             quality_floor="deterministic_ok",
             path=Path("/tmp/t1.md"),
+            authority_case="CASE-TEST-001",
         )
         lane = LaneState(role="cx-red", platform="codex", alive=True, idle=True)
         calls: list[list[str]] = []
@@ -269,6 +383,7 @@ class TestDispatch:
 
         with (
             patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
+            patch("agents.coordinator.core._prepare_dispatch_message", return_value="mq-test-1"),
             patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
         ):
             assert Coordinator()._dispatch(task, lane) == (True, "")
@@ -285,6 +400,8 @@ class TestDispatch:
                 "--mode",
                 "headless",
                 "--launch",
+                "--mq-message-id",
+                "mq-test-1",
             ]
         ]
 

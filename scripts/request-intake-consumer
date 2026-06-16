@@ -605,12 +605,8 @@ for task_path in sorted((tasks_dir / "active").glob("*.md")):
     if not re.match(r"^CASE-[A-Z0-9-]+$", authority_case):
         queue_task("needs authority case", 2)
         continue
-    if not (
-        resolve_ref_exists(parent_spec)
-        or resolve_ref_exists(parent_plan)
-        or resolve_ref_exists(parent_request)
-    ):
-        queue_task("needs parent spec, plan, or request", 2)
+    if not resolve_ref_exists(parent_spec):
+        queue_task("needs concrete parent_spec", 2)
         continue
     if any(dep not in closed_ids for dep in depends_on):
         continue

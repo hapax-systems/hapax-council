@@ -43,6 +43,7 @@ def _base_env(tmp_path: Path, *, notify_record: Path, codex_rc: int) -> dict[str
         HAPAX_SUPERVISOR_CLAUDE_LANES="",
         HAPAX_SUPERVISOR_CODEX_LANES=LANE,
         HAPAX_SUPERVISOR_ANTIGRAV_LANES="",
+        HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS="0",
         # Deterministic worktree presence: dir-check only, no git fallback.
         HAPAX_SUPERVISOR_GIT_WORKTREE_DETECT="0",
         HAPAX_SUPERVISOR_RESTART_COOLDOWN_S="0",

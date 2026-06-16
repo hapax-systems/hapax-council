@@ -67,6 +67,7 @@ def _supervisor_fixture(tmp_path: Path, *, intake_exit: int) -> tuple[Path, dict
             "HAPAX_SUPERVISOR_CLAUDE_LANES": "",
             "HAPAX_SUPERVISOR_CODEX_LANES": "cx-missing",
             "HAPAX_SUPERVISOR_ANTIGRAV_LANES": "",
+            "HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS": "0",
             "HAPAX_SUPERVISOR_ESCALATE_MISSING_WORKTREE_CYCLES": "1",
             "HAPAX_SUPERVISOR_ESCALATE_REFIRE_S": "0",
             "HAPAX_SUPERVISOR_NTFY_TOPIC": "hapax-test",

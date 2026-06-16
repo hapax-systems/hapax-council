@@ -289,6 +289,28 @@ def _recipient_row(db_path: Path, message_id: str, recipient: str) -> sqlite3.Ro
     return row
 
 
+def test_claim_sweep_reaps_blocked_unassigned_session_claim(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    claims = tmp_path / "claims"
+    active = tmp_path / "tasks" / "active"
+    claims.mkdir(parents=True)
+    active.mkdir(parents=True)
+    task_id = "p0-incident-blocked-task"
+    claim = claims / "cc-active-task-gamma-9b6ba5ca-513c-41aa-9900-d3026b42aad1"
+    claim.write_text(f"{task_id}\n", encoding="utf-8")
+    (active / f"{task_id}.md").write_text(
+        f"---\ntask_id: {task_id}\nstatus: blocked\nassigned_to: unassigned\n---\n",
+        encoding="utf-8",
+    )
+    old = 1000.0
+    os.utime(claim, (old, old))
+
+    reaped = module.sweep_stale_claims(claims, active, now=old + 301, grace_secs=300)
+
+    assert reaped == [(claim.name, task_id, "blocked-unassigned")]
+    assert not claim.exists()
+
+
 def _run(
     tmp_path: Path,
     *args: str,
