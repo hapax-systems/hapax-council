@@ -3,12 +3,17 @@ Description=Hapax audio health M2 — LUFS-S rolling loudness monitor
 After=pipewire.service pipewire-pulse.service
 Requires=pipewire-pulse.service
 PartOf=hapax-audio-health.target
-ConditionPathExists=%h/.cache/hapax/source-activation/worktree/pyproject.toml
+# Execution root: rebuild/worktree is the tested invariant for the whole
+# hapax-audio-health-* suite — tests/systemd/test_audio_health_systemd_readiness.py
+# pins all 8 units here as the "current deployed worktree". Do NOT migrate this
+# unit alone to source-activation/worktree: it splits the suite and fails that
+# test in merge-queue CI. A canonical-root move must be a separate suite-wide change.
+ConditionPathExists=%h/.cache/hapax/rebuild/worktree/pyproject.toml
 
 [Service]
 Type=simple
 NotifyAccess=all
-WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+WorkingDirectory=%h/.cache/hapax/rebuild/worktree
 ExecStart=%h/.local/bin/uv run python -m agents.audio_health.m2_lufs_s_daemon
 Restart=on-failure
 RestartSec=10
