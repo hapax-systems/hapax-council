@@ -70,3 +70,32 @@ def test_cross_check_refuses_broadcast_reachable_target_for_quarantine_point() -
     bad = _cortado_registry(node_target="hapax-livestream-tap")
     with pytest.raises(PerceptualBroadcastReachError):
         generated_contact_mic_conf_text(bad)
+
+
+def test_lowercase_aux_position_is_normalized_uppercase() -> None:
+    # Formal guard: lowercase 'aux1' (the original eavesdrop cause) is normalized
+    # to 'AUX1' at the model boundary, so the generated conf always matches the
+    # mk5 AUX1 channel position (= input 2 = Cortado), never falls back to AUX0.
+    assert HwSource(node_target=MK5_PRO_INPUT, position="aux1").position == "AUX1"
+    conf = generated_contact_mic_conf_text(_cortado_registry(position="aux1"))
+    assert "audio.position = [ AUX1 ]" in conf
+    assert "audio.position = [ aux1 ]" not in conf.split("LEGACY mixer_master")[0]
+
+
+def test_missing_hw_source_raises() -> None:
+    reg = PerceptionRegistry(
+        points={
+            "cortado": PerceptionPoint(
+                geometry=GeometryClass.CONTACT,
+                exposure=ExposureDomain.QUARANTINE,
+                pipewire_node="contact_mic",
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="hw_source"):
+        generated_contact_mic_conf_text(reg)
+
+
+def test_missing_point_raises() -> None:
+    with pytest.raises(ValueError, match="no point"):
+        generated_contact_mic_conf_text(PerceptionRegistry(points={}))

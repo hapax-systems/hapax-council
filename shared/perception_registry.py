@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shared.audio_graph.model import ExposureDomain
 from shared.percepts import GeometryClass
@@ -80,7 +80,20 @@ class HwSource(BaseModel):
     node_target: str
     """ALSA capture device the loopback binds to (e.g. the mk5 pro-input)."""
     position: str
-    """``audio.position`` channel on that device (e.g. ``aux1`` = mk5 line-in 2)."""
+    """``audio.position`` channel on that device (e.g. ``AUX1`` = mk5 line-in 2).
+    AUX positions are normalized to UPPERCASE (see the validator)."""
+
+    @field_validator("position")
+    @classmethod
+    def _normalize_aux_position(cls, v: str) -> str:
+        """Force AUX channel positions UPPERCASE so the lowercase-aux eavesdrop is
+        impossible to express. pipewire matches ``audio.position`` against the
+        device's channel position ("AUX1"); lowercase "aux1" does NOT match and
+        silently falls back to the first port (capture_AUX0 = the Rode). Making
+        this impossible-by-construction is the formal closure (REQ-20260616)."""
+        if v.lower().startswith("aux") and v[3:].isdigit():
+            return "AUX" + v[3:]
+        return v
 
 
 class PerceptionPoint(BaseModel):

@@ -26,13 +26,34 @@ The SSOT generator (registry `hw_source.position: AUX1`) becomes the sole writer
 - **audio_witness** — `~/.cache/hapax/relay/audits/2026-06-16-cortado-aux1-fix-witness.md`:
   `contact_mic` loopback bound to `capture_AUX1`; NOT broadcast-reachable;
   `hapax-audio-routing-check` ALL INVARIANTS PASSED before+after.
+
+  Routing-check output reproduced in-PR (before AND after the change were both GREEN —
+  the contact mic is perceptual/quarantine so it never touched the broadcast invariants;
+  the change only moved `contact_mic`'s capture from AUX0→AUX1):
+
+  ```
+  === Hapax Audio Routing Invariant Check (mk5 + S-4 topology) ===
+    ✓ loudnorm-playback → mk5 OUT AUX2/3 (dry voice → S-4)
+    ✓ mk5 IN AUX2/3 → voice-wet-capture (S-4 return)
+    ✓ mk5 IN AUX0 → mic-rode-capture (Rode)
+    ✓ input.loopback.sink.role.broadcast not muted
+    ✓ hapax-voice-wet-capture not muted / hapax-mic-rode-capture not muted
+    Chain 11: Retired-Hardware Guard — ✓ no L-12/MPC node feeds livestream-tap
+    Signal flow: ALL critical nodes have nonzero RMS ✓
+  === Result ===  ALL INVARIANTS PASSED
+  ```
+  (Note: a transient 5-violation window appeared DURING the pipewire restart — broadcast/OBS
+  links re-establishing — and self-healed via `hapax-audio-reconciler`; steady-state is GREEN.)
 - **runtime_media_witness** — `~/.cache/hapax/relay/audits/2026-06-16-cortado-aux1-runtime-media-witness.wav`:
   20 s `contact_mic` capture during operator MPC-pad taps; 6 distinct structure-borne tap transients
   (~6.0/7.3/9.0/10.8/12.7/14.3 s, peak −31.5 dB) ⟹ the source is the Cortado (input 2), not the Rode.
 - **Drift-impossibility (formal):** `shared/perception_conf_gen.generated_contact_mic_conf_text` emits the
   conf from the registry's typed `hw_source`; cross-check `PerceptualBroadcastReachError` makes
   "perceptual point on a broadcast-reachable target" impossible to generate; `--check-source-confs`
-  byte-diff gate. Tests: 23 pass; ruff + pyright clean.
+  byte-diff gate. Tests: 26 pass (incl. lowercase-AUX normalization guard + ValueError branches);
+  ruff + pyright clean. The lowercase-`aux` regression is now impossible to express (HwSource
+  normalizes the position to uppercase). The deployed conf is now the SSOT-generated
+  `hapax-contact-mic.conf` (the transitional `10-contact-mic.conf` hand-edit was retired).
 
 ## Privacy
 
