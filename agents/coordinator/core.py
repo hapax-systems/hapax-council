@@ -1086,7 +1086,20 @@ def _stringify_task(value: object) -> str | None:
     return None if not text or text.lower() in {"null", "none", "~"} else text
 
 
+def _normalized_status(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        return ""
+    return value.strip().lower().replace(" ", "-").replace("_", "-")
+
+
+def _relay_reports_claim_ownership_block(relay: dict) -> bool:
+    status = _normalized_status(relay.get("status") or relay.get("session_status"))
+    return status == "blocked-claim-ownership"
+
+
 def _claim_from_relay(relay: dict) -> str | None:
+    if _relay_reports_claim_ownership_block(relay):
+        return None
     return _stringify_task(
         relay.get("current_claim")
         or relay.get("current_task")
@@ -1096,10 +1109,12 @@ def _claim_from_relay(relay: dict) -> str | None:
 
 
 def _relay_status_is_idle(value: object) -> bool | None:
-    if not isinstance(value, str) or not value:
+    status = _normalized_status(value)
+    if not status:
         return None
-    status = value.strip().lower().replace(" ", "-").replace("_", "-")
     if status in {"queue-dry", "equilibrium", "idle"} or status.startswith("idle-"):
+        return True
+    if status == "blocked-claim-ownership":
         return True
     if status in {"active", "executing", "claimed", "in-progress", "working", "retiring"}:
         return False
@@ -1123,6 +1138,17 @@ def _active_task_candidates(role: str, session: str = "") -> list[Path]:
     except OSError:
         pass
     return list(dict.fromkeys(candidates))
+
+
+def _active_task_claims_task(role: str, session: str, aliases: set[str]) -> bool:
+    for active_task_file in _active_task_candidates(role, session):
+        try:
+            task_id = active_task_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if task_id in aliases:
+            return True
+    return False
 
 
 def _relay_mq_db_path() -> Path:
@@ -1346,7 +1372,11 @@ def _dispatch_landed(task: Task, lane: LaneState) -> bool:
         LaneDescriptor(role=lane.role, session=lane.session, platform=lane.platform)
     )
     aliases = {task.task_id, task.path.stem}
-    return observed.claimed_task in aliases and _lane_launcher_process_present(observed)
+    return (
+        observed.claimed_task in aliases
+        and _active_task_claims_task(observed.role, observed.session, aliases)
+        and _lane_launcher_process_present(observed)
+    )
 
 
 def _load_dispatch_cache() -> dict | None:

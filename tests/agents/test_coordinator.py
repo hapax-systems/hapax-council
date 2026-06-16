@@ -345,6 +345,65 @@ task_id: none
         assert state.claimed_task is None
         assert state.idle is True
 
+    def test_blocked_claim_ownership_relay_does_not_hold_lane_claim(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / "cx-blue-status.yaml").write_text(
+            """role: cx-blue
+status: blocked_claim_ownership
+task_id: p0-claim-blocked
+""",
+            encoding="utf-8",
+        )
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="cx-blue",
+                    session="hapax-codex-cx-blue",
+                    platform="codex",
+                )
+            )
+
+        assert state.claimed_task is None
+        assert state.idle is True
+
+    def test_blocked_claim_ownership_relay_does_not_mask_active_lease(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / "cx-blue-status.yaml").write_text(
+            """role: cx-blue
+status: blocked_claim_ownership
+task_id: p0-claim-blocked
+""",
+            encoding="utf-8",
+        )
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        (cache_dir / "cc-active-task-cx-blue").write_text("older-live-task\n", encoding="utf-8")
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="cx-blue",
+                    session="hapax-codex-cx-blue",
+                    platform="codex",
+                )
+            )
+
+        assert state.claimed_task == "older-live-task"
+        assert state.idle is False
+
     def test_role_status_retired_beats_stale_peer_active_without_claim(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
         relay_dir.mkdir()
@@ -868,6 +927,47 @@ class TestDispatch:
             patch("agents.coordinator.core._dispatch_landed", return_value=True),
         ):
             assert Coordinator()._dispatch(task, lane) == (True, "")
+
+    def test_dispatch_landed_requires_exact_active_claim_lease(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / "cx-red-status.yaml").write_text(
+            """role: cx-red
+status: active
+current_claim: p0-task
+""",
+            encoding="utf-8",
+        )
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        task = Task(
+            task_id="p0-task",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("codex",),
+            quality_floor="deterministic_ok",
+            path=tmp_path / "p0-task.md",
+        )
+        lane = LaneState(
+            role="cx-red",
+            session="hapax-codex-cx-red",
+            platform="codex",
+            alive=True,
+            idle=False,
+        )
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core._lane_launcher_process_present", return_value=True),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            assert _dispatch_landed(task, lane) is False
+            (cache_dir / "cc-active-task-cx-red").write_text("p0-task\n", encoding="utf-8")
+            assert _dispatch_landed(task, lane) is True
 
     def test_dispatch_reports_mq_prepare_failure_with_next_action(self, tmp_path: Path):
         dispatcher = tmp_path / "hapax-methodology-dispatch"
