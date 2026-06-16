@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest  # noqa: TC002 (used at runtime in fixture type hint)
 
@@ -1233,3 +1233,97 @@ def test_main_does_not_touch_healthy_claim(tmp_path: Path) -> None:
     assert same.status == "claimed"
     assert same.assigned_to == "alpha"
     assert same.claimed_at is not None
+
+
+# ----------------------------------------------------------------------------
+# main() ghost-claim self-heal — notification suppression (post-#4140 recurrence)
+# ----------------------------------------------------------------------------
+
+
+def _main_args_with_ntfy(tmp_path: Path, vault: Path) -> list[str]:
+    """CLI args for a writing sweep with ntfy ENABLED (tmp throttle/state).
+
+    Unlike ``_main_args`` (which sets ``--no-ntfy``), this exercises the
+    dispatch path so tests can assert whether a ghost pages the operator.
+    """
+    return [
+        "--vault-root",
+        str(vault),
+        "--relay-root",
+        str(tmp_path / "relay"),
+        "--repo-root",
+        str(tmp_path),
+        "--state-path",
+        str(tmp_path / "state.json"),
+        "--event-log-path",
+        str(tmp_path / "log.md"),
+        "--throttle-path",
+        str(tmp_path / "throttle.json"),
+        "--no-dashboard",
+    ]
+
+
+def test_main_does_not_page_for_self_healed_ghost(tmp_path: Path) -> None:
+    """Post-#4140 recurrence fix: a ghost-claimed note self-healed in THIS sweep
+    must NOT dispatch an ntfy alert.
+
+    #4140 wired the heal (storm stops re-firing) but left ``dispatch_alerts``
+    running over the un-filtered sweep events, so the FIRST detection still sent
+    a ``violation`` ntfy -> ``p0-incident-intake`` minted a fresh P0 task for
+    every transient ghost (one per task_id; observed 2026-06-15/16, ledger
+    fingerprints ``...segprep-s2-compo`` et al.). The heal already remediated the
+    violation; paging the operator (and minting a task) for an auto-fixed
+    transient is noise. Detection stays in the event log (asserted below), so
+    this is severity-routing, not detection-avoidance."""
+    sweeper = _load_sweeper_module()
+    vault = _build_vault(tmp_path)
+    note_path = _write_note(
+        vault / "active",
+        "cc-ghost",
+        status="claimed",
+        assigned_to="alpha",
+        claimed_at=None,
+    )
+    sender = MagicMock(return_value=True)
+    with (
+        patch("cc_hygiene.checks._gh_pr_list", return_value=[]),
+        patch("cc_hygiene.ntfy._default_sender", return_value=sender),
+    ):
+        rc = sweeper.main(_main_args_with_ntfy(tmp_path, vault))
+    assert rc == 0
+    # Healed on disk...
+    healed = parse_task_note(note_path)
+    assert healed is not None
+    assert healed.status == "offered"
+    # ...and NOT paged (this is the regression #4140 left open).
+    assert sender.call_count == 0
+    # Detection is still durably recorded — no detection-avoidance.
+    assert "ghost_claimed" in (tmp_path / "log.md").read_text()
+
+
+def test_main_still_pages_unhealed_ghost_under_no_actions(tmp_path: Path) -> None:
+    """Contrast / over-suppression guard: with ``--no-actions`` the ghost is NOT
+    healed, so the violation persists and MUST still page. Suppression is keyed
+    strictly to a *successful* heal, never to the mere presence of a ghost."""
+    sweeper = _load_sweeper_module()
+    vault = _build_vault(tmp_path)
+    note_path = _write_note(
+        vault / "active",
+        "cc-ghost",
+        status="claimed",
+        assigned_to="alpha",
+        claimed_at=None,
+    )
+    sender = MagicMock(return_value=True)
+    with (
+        patch("cc_hygiene.checks._gh_pr_list", return_value=[]),
+        patch("cc_hygiene.ntfy._default_sender", return_value=sender),
+    ):
+        rc = sweeper.main(_main_args_with_ntfy(tmp_path, vault) + ["--no-actions"])
+    assert rc == 0
+    # Not healed (observational mode)...
+    same = parse_task_note(note_path)
+    assert same is not None
+    assert same.status == "claimed"
+    # ...so the live violation still pages.
+    assert sender.call_count == 1
