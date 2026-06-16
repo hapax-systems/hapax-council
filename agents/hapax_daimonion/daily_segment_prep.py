@@ -40,6 +40,7 @@ from shared.hermeneutic_spiral import (
     persist_source_consequences,
     retrieve_fore_understanding,
 )
+from shared.jsonl_append import append_jsonl
 from shared.resident_command_r import (
     RESIDENT_COMMAND_R_MODEL,
     call_resident_command_r,
@@ -444,10 +445,11 @@ def _write_prep_diagnostic_outcome(
         "terminal_reason": terminal_reason,
         "not_loadable_reason": not_loadable_reason,
     }
+    # flock-guarded cross-process append (see _append_council_decisions_ledger).
+    # sort_keys=True reproduces the prior bytes exactly; raising=True preserves
+    # this writer's prior FAIL-LOUD semantics (it had no surrounding try/except).
     ledger_path = prep_dir / PREP_DIAGNOSTIC_LEDGER_FILENAME
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    with ledger_path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(ledger_row, sort_keys=True) + "\n")
+    append_jsonl(ledger_path, ledger_row, sort_keys=True, raising=True)
     return dossier_path
 
 
@@ -1776,10 +1778,11 @@ def _append_candidate_ledger(prep_dir: Path, payload: dict[str, Any], artifact_p
         "runtime_pool_eligible": False,
         "selected_release_required": True,
     }
+    # flock-guarded cross-process append (see _append_council_decisions_ledger).
+    # sort_keys=True reproduces the prior bytes exactly; raising=True preserves
+    # this writer's prior FAIL-LOUD semantics (it had no surrounding try/except).
     ledger_path = prep_dir / CANDIDATE_LEDGER
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    with ledger_path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(row, sort_keys=True) + "\n")
+    append_jsonl(ledger_path, row, sort_keys=True, raising=True)
 
 
 def _format_recruited_source_menu(resolved_source_set: ResolvedSourceSet) -> str:
@@ -3894,13 +3897,15 @@ def _append_council_decisions_ledger(
         "terminal_status": terminal_status,
         "council_decisions": decisions,
     }
-    try:
-        ledger_path = prep_dir / COUNCIL_DECISIONS_LEDGER_FILENAME
-        ledger_path.parent.mkdir(parents=True, exist_ok=True)
-        with ledger_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(row, sort_keys=True) + "\n")
-    except Exception:
-        log.debug("council decisions ledger append failed", exc_info=True)
+    # flock-guarded cross-process append (shared.jsonl_append): a manual batch /
+    # smoke run hitting the same shared date dir concurrently with the 04:00
+    # oneshot would otherwise tear NDJSON lines (rows exceed PIPE_BUF, so raw
+    # O_APPEND is not atomic). sort_keys=True + the default spaced separators
+    # reproduce the prior bytes exactly. Fail-OPEN (raising=False) preserves the
+    # prior best-effort semantics; log on a swallowed failure as before.
+    ledger_path = prep_dir / COUNCIL_DECISIONS_LEDGER_FILENAME
+    if not append_jsonl(ledger_path, row, sort_keys=True, raising=False):
+        log.debug("council decisions ledger append failed")
 
 
 def _prep_deadline_exceeded(
