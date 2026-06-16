@@ -209,19 +209,23 @@ class TestLoadLedgerTrace:
         subdir: str,
         task_id: str,
         *,
-        status: str,
+        status: str | None,
         blocked_reason: str | None = None,
         blocked_witness: str | None = None,
+        blocked_witness_path: str | None = None,
     ) -> None:
         directory = vault / subdir
         directory.mkdir(parents=True, exist_ok=True)
         extra = ""
+        status_line = f"status: {status}\n" if status is not None else ""
         if blocked_reason is not None:
             extra += f"blocked_reason: {blocked_reason}\n"
         if blocked_witness is not None:
             extra += f"blocked_witness: {blocked_witness}\n"
+        if blocked_witness_path is not None:
+            extra += f"blocked_witness_path: {blocked_witness_path}\n"
         (directory / f"{task_id}.md").write_text(
-            (f"---\ntype: cc-task\ntask_id: {task_id}\nstatus: {status}\n{extra}---\n"),
+            (f"---\ntype: cc-task\ntask_id: {task_id}\n{status_line}{extra}---\n"),
             encoding="utf-8",
         )
 
@@ -361,6 +365,28 @@ class TestLoadLedgerTrace:
         assert trace[0]["task_status"] == "done"
         assert r.holds, r.violations
 
+    def test_vault_closed_note_without_status_defaults_to_terminal(self, tmp_path):
+        iso = "2026-06-02T00:00:00Z"
+        ref = datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+        path = self._write(
+            [
+                {
+                    "kind": "stage_transition",
+                    "ts": iso,
+                    "task_id": "closed-without-status",
+                    "to_stage": "S6",
+                }
+            ]
+        )
+        self._task_note(tmp_path, "closed", "closed-without-status", status=None)
+        try:
+            trace = _load_ledger_trace(path, vault_tasks=tmp_path)
+            r = check_inv2_liveness(trace, now=ref + 7 * 86400.0, stale_after_s=86400.0)
+        finally:
+            path.unlink(missing_ok=True)
+        assert trace[0]["task_status"] == "closed"
+        assert r.holds, r.violations
+
     def test_vault_evidenced_blocked_status_suppresses_unbounded_stuck_page(self, tmp_path):
         iso = "2026-06-02T00:00:00Z"
         ref = datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
@@ -381,6 +407,64 @@ class TestLoadLedgerTrace:
         finally:
             path.unlink(missing_ok=True)
         assert trace[0]["task_status"] == "blocked"
+        assert r.holds, r.violations
+
+    def test_vault_blocked_witness_path_suppresses_unbounded_stuck_page(self, tmp_path):
+        iso = "2026-06-02T00:00:00Z"
+        ref = datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+        path = self._write(
+            [
+                {
+                    "kind": "stage_transition",
+                    "ts": iso,
+                    "task_id": "blocked-with-path",
+                    "to_stage": "S5",
+                }
+            ]
+        )
+        self._task_note(
+            tmp_path,
+            "active",
+            "blocked-with-path",
+            status="blocked",
+            blocked_reason="awaiting_independent_review",
+            blocked_witness_path="/tmp/review-packet.md",
+        )
+        try:
+            trace = _load_ledger_trace(path, vault_tasks=tmp_path)
+            r = check_inv2_liveness(trace, now=ref + 7 * 86400.0, stale_after_s=86400.0)
+        finally:
+            path.unlink(missing_ok=True)
+        assert trace[0]["blocked_witness_path"] == "/tmp/review-packet.md"
+        assert r.holds, r.violations
+
+    def test_vault_malformed_and_missing_task_id_notes_do_not_break_valid_metadata(self, tmp_path):
+        iso = "2026-06-02T00:00:00Z"
+        ref = datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+        path = self._write(
+            [{"kind": "stage_transition", "ts": iso, "task_id": "valid", "to_stage": "S6"}]
+        )
+        active = tmp_path / "active"
+        active.mkdir(parents=True)
+        (active / "malformed.md").write_text("---\ntask_id: [\n---\n", encoding="utf-8")
+        (active / "missing-task-id.md").write_text(
+            "---\ntype: cc-task\nstatus: done\n---\n",
+            encoding="utf-8",
+        )
+        self._task_note(tmp_path, "closed", "valid", status="done")
+        try:
+            trace = _load_ledger_trace(path, vault_tasks=tmp_path)
+            r = check_inv2_liveness(trace, now=ref + 7 * 86400.0, stale_after_s=86400.0)
+        finally:
+            path.unlink(missing_ok=True)
+        assert trace == [
+            {
+                "task_id": "valid",
+                "to_stage": "S6",
+                "timestamp": ref,
+                "task_status": "done",
+            }
+        ]
         assert r.holds, r.violations
 
 

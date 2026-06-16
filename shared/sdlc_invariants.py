@@ -619,11 +619,12 @@ def main(argv: list[str] | None = None) -> int:
     """Advisory invariant evaluator over the live authority-case-ledger.
 
     ``python -m shared.sdlc_invariants [--ledger PATH] [--findings PATH]
-    [--stale-after-s N] [--mint-escapes] [--grant-dir DIR] [--key-file PATH]
-    [--no-alert]`` evaluates INV-1..5, records violations to the findings ledger, and
-    prints each result. With ``--mint-escapes`` (the systemd-timer mode) it also
-    AUTO-MINTS the relevant escape for each INV-3/4/5 violation and alerts the
-    operator. ADVISORY-WITH-LEDGER ONLY — always exits 0; never a gate.
+    [--vault-tasks PATH] [--stale-after-s N] [--mint-escapes] [--grant-dir DIR]
+    [--key-file PATH] [--no-alert]`` evaluates INV-1..5, records violations to
+    the findings ledger, and prints each result. With ``--mint-escapes`` (the
+    systemd-timer mode) it also AUTO-MINTS the relevant escape for each INV-3/4/5
+    violation and alerts the operator. ADVISORY-WITH-LEDGER ONLY — always exits
+    0; never a gate.
     """
     parser = argparse.ArgumentParser(prog="sdlc_invariants")
     parser.add_argument("--ledger", default=str(DEFAULT_AUTHORITY_LEDGER))
