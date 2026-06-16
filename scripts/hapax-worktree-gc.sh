@@ -400,9 +400,12 @@ process_worktree() {
             printf 'hapax-worktree-gc: removed %s\n' "$path"
             removed=$((removed + 1))
             # Delete the now-orphaned LOCAL branch ref. This block requires merged=1 (see the
-            # guard above), so `-d` is merged-only and fail-closes — NEVER -D.
-            if [[ -n "$branch" ]] && git -C "$repo" branch -d "$branch" >/dev/null 2>&1; then
-                printf 'hapax-worktree-gc: deleted merged local branch %s\n' "$branch"
+            # guard above), so `-d` is merged-only and fail-closes — NEVER -D. Use the BARE branch
+            # name (branch_label): $branch is the full `refs/heads/<name>` ref from `worktree list
+            # --porcelain`, but `git branch -d` takes a local branch name — passing the ref targets a
+            # non-existent branch, so the delete silently failed and the ref was never reaped.
+            if [[ -n "$branch_label" ]] && git -C "$repo" branch -d "$branch_label" >/dev/null 2>&1; then
+                printf 'hapax-worktree-gc: deleted merged local branch %s\n' "$branch_label"
             fi
         fi
         return 0

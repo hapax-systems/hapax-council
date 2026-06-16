@@ -293,3 +293,50 @@ def test_detection_failure_preserves_release_dir(tmp_path: Path) -> None:
     assert release.exists(), "detection failure must NEVER free a dir"
     assert "DETECTION-FAILED" in result.stdout
     assert "live_refused=1" in result.stdout
+
+
+def test_deletes_merged_local_branch_ref_after_worktree_removal(tmp_path: Path) -> None:
+    """Regression for the refs/heads/ prefix bug (codex-1, #4142): ``git branch -d`` was passed the full
+    ``refs/heads/<name>`` ref (from ``worktree list --porcelain``) instead of the bare branch name, so the
+    delete silently failed and the merged LOCAL BRANCH REF was never reaped even after its worktree was
+    removed. Asserts the ref is actually gone."""
+    repo = _make_repo(tmp_path)
+    now = int(time.time())
+
+    wt = tmp_path / "hapax-council--merged-feature"
+    _git(repo, "branch", "merged-feature", "main")
+    _git(repo, "worktree", "add", str(wt), "merged-feature")
+    _age_path(wt, now=now, seconds_old=49 * 3600)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_curl = bin_dir / "curl"
+    fake_curl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_curl.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(SCRIPT),
+            "--repo",
+            str(repo),
+            "--base-ref",
+            "main",
+            "--no-fetch",
+            "--now",
+            str(now),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not wt.exists()  # the merged worktree is removed
+    # ...and the orphaned LOCAL BRANCH REF is actually reaped (the bug: it survived the removal).
+    assert _git(repo, "branch", "--list", "merged-feature") == ""
+    assert "deleted merged local branch merged-feature" in result.stdout
