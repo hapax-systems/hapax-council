@@ -22,6 +22,7 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import re as _re
@@ -157,7 +158,46 @@ _COHERENCE_CRITICAL_AXIS_FLOOR = int(os.environ.get("HAPAX_COHERENCE_CRITICAL_AX
 # until the SCED phase-controller sets it, the gate behaves exactly as the prior `mean_score < 3.0` wall.
 # The ABSOLUTE FLOOR (safety gates + the critical-axis floor above + the NDCVB dissociated@r honesty floor)
 # rides BELOW C_k — nothing hosts below the floor regardless of the criterion.
-_COHERENCE_CRITERION = float(os.environ.get("HAPAX_COHERENCE_CRITERION", "3.0"))
+_COHERENCE_CRITERION_DEFAULT = 3.0
+
+
+def _resolve_coherence_criterion() -> float:
+    """Resolve C_k from ``HAPAX_COHERENCE_CRITERION``, hardened against fail-OPEN.
+
+    The gate fires on ``mean_score < C_k``, so a non-finite / non-numeric /
+    out-of-range criterion does not fail safe — it fails OPEN: ``NaN`` makes the
+    comparison always False (every segment waves through), a negative or zero
+    value can never trip, and a malformed string would crash module import. The
+    coherence rubric scores on [1, 5], so a meaningful criterion lies in (0, 5];
+    anything else is rejected back to the default 3.0 with a loud warning rather
+    than silently disabling the release gate.
+    """
+    raw = os.environ.get("HAPAX_COHERENCE_CRITERION")
+    if raw is None:
+        return _COHERENCE_CRITERION_DEFAULT
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        log.warning(
+            "HAPAX_COHERENCE_CRITERION=%r is not a number; the coherence gate would "
+            "fail open — falling back to the default criterion %.1f",
+            raw,
+            _COHERENCE_CRITERION_DEFAULT,
+        )
+        return _COHERENCE_CRITERION_DEFAULT
+    if not math.isfinite(value) or not (0.0 < value <= 5.0):
+        log.warning(
+            "HAPAX_COHERENCE_CRITERION=%r is outside the (0, 5] rubric range "
+            "(non-finite/negative/too-high would fail the coherence gate OPEN) — "
+            "falling back to the default criterion %.1f",
+            raw,
+            _COHERENCE_CRITERION_DEFAULT,
+        )
+        return _COHERENCE_CRITERION_DEFAULT
+    return value
+
+
+_COHERENCE_CRITERION = _resolve_coherence_criterion()
 
 # Plan-time informed-authorship budgets. Recruitment + thesis authoring run
 # BEFORE planning, so they are bounded and measured — a slate-wide recruit or a
