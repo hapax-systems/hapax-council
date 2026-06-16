@@ -126,7 +126,10 @@ points:
     pipewire_node: contact_mic
     hw_source:
       node_target: alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0
-      position: aux1
+      # UPPERCASE: lowercase 'aux1' does NOT match the mk5's AUX1 channel
+      # position and falls back to capture_AUX0 (the Rode) — the eavesdrop.
+      # 'AUX1' matches capture_AUX1 = mk5 physical input 2 = the Cortado.
+      position: AUX1
     voice_source_tag: contact-mic
     status: available
     equipment_ref: config/equipment/zeppelin-design-labs-cortado-mkiii-versatile-rugged-steel-co.yaml

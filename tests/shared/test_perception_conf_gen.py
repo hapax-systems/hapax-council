@@ -31,7 +31,7 @@ MK5_PRO_INPUT = "alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0"
 
 
 def _cortado_registry(
-    node_target: str = MK5_PRO_INPUT, position: str = "aux1"
+    node_target: str = MK5_PRO_INPUT, position: str = "AUX1"
 ) -> PerceptionRegistry:
     return PerceptionRegistry(
         points={
@@ -48,14 +48,20 @@ def _cortado_registry(
 
 def test_contact_mic_conf_emitted_from_registry_targets_mk5_aux1() -> None:
     conf = generated_contact_mic_conf_text(_cortado_registry())
-    assert f'node.target = "{MK5_PRO_INPUT}"' in conf
-    assert "audio.position = [ aux1 ]" in conf
-    assert 'node.name = "contact_mic"' in conf
-    # the bug is gone correct-by-construction: no retired L-12 device anywhere.
-    assert "ZOOM_Corporation_L-12" not in conf
+    # contact_mic module = everything before the preserved legacy mixer_master block.
+    contact_mod = conf.split("LEGACY mixer_master")[0]
+    assert f'node.target = "{MK5_PRO_INPUT}"' in contact_mod
+    # UPPERCASE AUX1 matches the mk5 capture_AUX1 channel position (= input 2 = Cortado).
+    # Lowercase 'aux1' falls back to capture_AUX0 (the Rode) = the eavesdrop.
+    assert "audio.position = [ AUX1 ]" in contact_mod
+    assert 'node.name = "contact_mic"' in contact_mod
+    # the eavesdrop is gone correct-by-construction: no retired L-12 in the contact_mic binding.
+    assert "ZOOM_Corporation_L-12" not in contact_mod
     # passive + dont-reconnect preserved (the room-mic-hijack guard).
-    assert "node.passive = true" in conf
-    assert "node.dont-reconnect = true" in conf
+    assert "node.passive = true" in contact_mod
+    assert "node.dont-reconnect = true" in contact_mod
+    # mixer_master preserved (live-consumed by ducker/reactivity — must not be deleted).
+    assert 'node.name = "mixer_master"' in conf
 
 
 def test_cross_check_refuses_broadcast_reachable_target_for_quarantine_point() -> None:

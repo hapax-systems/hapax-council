@@ -38,6 +38,36 @@ _GENERATED_HEADER = (
     "# byte-diff-gated against this output (REQ-20260616 Phase 1).\n"
 )
 
+# LEGACY mixer_master — preserved VERBATIM from the L-12-era conf so regeneration
+# does not delete this live, heavily-consumed node (hapax-audio-ducker + audio
+# reactivity + compositor read it). Its node.target is still the RETIRED Zoom
+# L-12 (falls through at runtime); its correct mk5 source is an unresolved design
+# question (the mk5 has no post-fader master mix). NOT yet modelled in the SSOT —
+# see memory mixer-master-live-load-bearing + REQ-20260616.
+_LEGACY_MIXER_MASTER_MODULE = (
+    "    # LEGACY mixer_master (see module docstring) — preserved verbatim,\n"
+    "    # pending its correct mk5-era source. Do NOT remove: live consumers.\n"
+    "    {\n"
+    "        name = libpipewire-module-loopback\n"
+    "        args = {\n"
+    '            node.description = "Mixer Master Output"\n'
+    "            capture.props = {\n"
+    "                audio.position = [ aux12 ]\n"
+    "                stream.dont-remix = true\n"
+    '                node.target = "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input"\n'
+    "                node.passive = true\n"
+    "                node.dont-reconnect = true\n"
+    "            }\n"
+    "            playback.props = {\n"
+    '                node.name = "mixer_master"\n'
+    '                node.description = "Mixer Master Output"\n'
+    '                media.class = "Audio/Source"\n'
+    "                audio.position = [ MONO ]\n"
+    "            }\n"
+    "        }\n"
+    "    }\n"
+)
+
 
 class PerceptualBroadcastReachError(ValueError):
     """A quarantine/perceptual point's hw_source resolves to a broadcast target."""
@@ -103,4 +133,4 @@ def generated_contact_mic_conf_text(
         position=src.position,
         node_name=node_name,
     )
-    return f"{_GENERATED_HEADER}\ncontext.modules = [\n{body}]\n"
+    return f"{_GENERATED_HEADER}\ncontext.modules = [\n{body}{_LEGACY_MIXER_MASTER_MODULE}]\n"
