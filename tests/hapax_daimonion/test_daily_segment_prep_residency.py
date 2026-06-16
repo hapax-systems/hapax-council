@@ -2199,6 +2199,20 @@ def test_council_coherence_check_stamps_criterion_for_sced_capture(
     assert refused.refused is True
     assert refused.council_decisions["criterion"] == 3.0
 
+    # UNAVAILABLE branch (deliberate raises) returns BEFORE the main decision dict
+    # is built — it is a refused observation that can still reach the ledger, so it
+    # must carry C_k too (the "every coherence decision" predicate holds uniformly).
+    monkeypatch.setattr(prep, "_COHERENCE_CRITERION", 4.0)
+
+    async def _boom(council_input: Any, mode: Any, rubric: Any, config: Any = None) -> Any:
+        raise RuntimeError("litellm down")
+
+    monkeypatch.setattr(council_engine, "deliberate", _boom)
+    unavailable = prep._council_coherence_check("a script", "prog-1")
+    assert unavailable.refused is True
+    assert unavailable.council_decisions["convergence_status"] == "unavailable"
+    assert unavailable.council_decisions["criterion"] == 4.0
+
 
 def test_resolve_coherence_criterion_reads_env_and_fails_closed(
     monkeypatch: pytest.MonkeyPatch,

@@ -4007,7 +4007,15 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
             passed=False,
             feedback="",
             refused=True,
-            council_decisions={"check": "coherence", "convergence_status": "unavailable"},
+            # G4: a council-unavailable refusal is still a phase-tagged observation
+            # that can reach the ledger — stamp C_k here too so EVERY coherence
+            # decision (this early-return predates the main decision dict) carries
+            # the in-force criterion, not just the post-deliberate branches.
+            council_decisions={
+                "check": "coherence",
+                "convergence_status": "unavailable",
+                "criterion": _COHERENCE_CRITERION,
+            },
         )
 
     health = verdict.receipt.get("council_health", {})
