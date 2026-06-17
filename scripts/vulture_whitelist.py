@@ -4172,3 +4172,10 @@ from shared.gate_log import (
 append_gate_event
 read_gate_events
 is_persistent
+
+# Capability-routing D8 governance floor (Phase 0.3) — Pydantic invokes this
+# model_validator dynamically during TaskSpec validation; vulture cannot follow
+# that dynamic path. REQ-20260616-capability-aware-routing / S5-CAPABILITY-ROUTING-TIER1.
+from agents.request_decomposer.models import TaskSpec as _TaskSpecD8  # noqa: E402
+
+_TaskSpecD8._enforce_d8_governance_floor

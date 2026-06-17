@@ -46,6 +46,105 @@ class TestTaskSpec:
         assert t.task_id == "test-task"
         assert t.status == "offered"
 
+    def test_d8_rust_source_forces_frontier(self):
+        t = TaskSpec(
+            task_id="d8-rs",
+            title="touch a rust file",
+            mutation_surface="source",
+            target_paths=["agents/foo/render.rs"],
+            parent_request="REQ-test.md",
+            authority_case="CASE-TEST",
+            acceptance_criteria=["x"],
+        )
+        assert t.quality_floor == "frontier_required"
+
+    def test_d8_wgsl_source_forces_frontier(self):
+        t = TaskSpec(
+            task_id="d8-wgsl",
+            title="touch a shader",
+            mutation_surface="source",
+            target_paths=["agents/foo/cymatic.wgsl"],
+            parent_request="REQ-test.md",
+            authority_case="CASE-TEST",
+            acceptance_criteria=["x"],
+        )
+        assert t.quality_floor == "frontier_required"
+
+    def test_d8_codeowners_path_forces_frontier(self):
+        # axioms/ is CODEOWNERS-protected (.github/CODEOWNERS), sourced live.
+        t = TaskSpec(
+            task_id="d8-co",
+            title="touch a governed path",
+            mutation_surface="source",
+            target_paths=["axioms/registry.yaml"],
+            parent_request="REQ-test.md",
+            authority_case="CASE-TEST",
+            acceptance_criteria=["x"],
+        )
+        assert t.quality_floor == "frontier_required"
+
+    def test_d8_pure_python_non_governed_unchanged(self):
+        t = TaskSpec(
+            task_id="d8-py",
+            title="touch a plain python file",
+            mutation_surface="source",
+            target_paths=["agents/foo/bar.py"],
+            parent_request="REQ-test.md",
+            authority_case="CASE-TEST",
+            acceptance_criteria=["x"],
+        )
+        assert t.quality_floor == "deterministic_ok"
+
+    def test_d8_no_target_paths_unchanged(self):
+        t = TaskSpec(
+            task_id="d8-none",
+            title="no touch set",
+            mutation_surface="source",
+            parent_request="REQ-test.md",
+            authority_case="CASE-TEST",
+            acceptance_criteria=["x"],
+        )
+        assert t.quality_floor == "deterministic_ok"
+
+    def test_d8_only_fires_on_source_surface(self):
+        # A non-source surface touching a .rs path must NOT be forced to frontier.
+        t = TaskSpec(
+            task_id="d8-notsrc",
+            title="docs surface, rs path",
+            mutation_surface="vault_docs",
+            target_paths=["notes/example.rs"],
+            parent_request="REQ-test.md",
+            authority_case="CASE-TEST",
+            acceptance_criteria=["x"],
+        )
+        assert t.quality_floor == "deterministic_ok"
+
+    def test_codeowners_matcher_handles_dir_anydepth_glob_exact(self):
+        from agents.request_decomposer.models import _path_matches_codeowners
+
+        # directory prefix (/axioms/)
+        assert _path_matches_codeowners("axioms/registry.yaml", ("/axioms/",))
+        assert not _path_matches_codeowners("agents/foo.py", ("/axioms/",))
+        # any-depth basename (**/CLAUDE.md)
+        assert _path_matches_codeowners("agents/x/CLAUDE.md", ("**/CLAUDE.md",))
+        # fnmatch globs (the codex/claude '*' finding)
+        assert _path_matches_codeowners("agents/x/foo.rs", ("*.rs",))
+        assert _path_matches_codeowners("build/out.js", ("build/*",))
+        assert not _path_matches_codeowners("src/out.js", ("build/*",))
+        # exact + basename
+        assert _path_matches_codeowners(".github/CODEOWNERS", ("/.github/CODEOWNERS",))
+        assert not _path_matches_codeowners("docs/readme.md", ("/axioms/",))
+
+    def test_codeowners_matcher_respects_root_anchoring(self):
+        from agents.request_decomposer.models import _path_matches_codeowners
+
+        # root-anchored pattern (leading /) matches ONLY at repo root
+        assert _path_matches_codeowners(".github/CODEOWNERS", ("/.github/CODEOWNERS",))
+        assert not _path_matches_codeowners("tmp/.github/CODEOWNERS", ("/.github/CODEOWNERS",))
+        # non-anchored pattern matches at any depth
+        assert _path_matches_codeowners("agents/x/CLAUDE.md", ("CLAUDE.md",))
+        assert _path_matches_codeowners("CLAUDE.md", ("CLAUDE.md",))
+
     def test_blocked_requires_reason(self):
         with pytest.raises(ValueError, match="blocked_reason"):
             TaskSpec(
@@ -310,6 +409,27 @@ class TestWriter:
                 assert "parent_request: REQ-test.md" in content
                 assert "route_metadata_schema: 1" in content
                 assert "mutation_scope_refs:" in content
+
+    def test_real_write_renders_target_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            decomp = RequestDecomposition(
+                request_id="test-tp",
+                request_path="/tmp/test.md",
+                tasks=[
+                    TaskSpec(
+                        task_id="tp-task",
+                        title="touch rust",
+                        parent_request="REQ-test.md",
+                        authority_case="CASE-TEST",
+                        acceptance_criteria=["x"],
+                        target_paths=["agents/foo/bar.rs"],
+                    )
+                ],
+            )
+            paths = write_decomposition(decomp, Path(td))
+            content = paths[0].read_text()
+            assert "target_paths:" in content
+            assert "agents/foo/bar.rs" in content
 
     def test_real_write_frontmatter_is_yaml_safe(self):
         with tempfile.TemporaryDirectory() as td:
