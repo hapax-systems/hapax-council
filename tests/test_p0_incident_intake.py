@@ -440,7 +440,22 @@ def test_sdlc_dispatch_refusal_alert_gets_technical_intake():
     assert classification.fingerprint == "sdlc_dispatch_refusal:p0-incident-demo"
 
 
-def test_sdlc_task_stuck_alert_gets_technical_intake():
+def test_sdlc_task_stuck_on_normal_task_gets_technical_intake():
+    classification = classify_notification(
+        "SDLC: task stuck, blocked",
+        "segprep-g1-config-criterion-20260615 stalled and was reoffered 3x without progress; set to blocked.",
+        priority="high",
+        tags=["sdlc", "stalled"],
+    )
+
+    assert classification.technical is True
+    assert classification.kind == "sdlc_task_stalled"
+    assert classification.fingerprint == "sdlc_task_stalled:segprep-g1-config-criterion-20260615"
+
+
+def test_sdlc_task_stuck_on_incident_task_does_not_remint():
+    # Self-amplification break: a stalled AUTO-MINTED p0-incident task must NOT mint a
+    # fresh sdlc_task_stalled P0 -- it would loop forever (these tasks are not lane-workable).
     classification = classify_notification(
         "SDLC: task stuck, blocked",
         "p0-incident-demo stalled and was reoffered 3x without progress; set to blocked.",
@@ -448,9 +463,8 @@ def test_sdlc_task_stuck_alert_gets_technical_intake():
         tags=["sdlc", "stalled"],
     )
 
-    assert classification.technical is True
-    assert classification.kind == "sdlc_task_stalled"
-    assert classification.fingerprint == "sdlc_task_stalled:p0-incident-demo"
+    assert classification.technical is False
+    assert classification.reason == "stalled_incident_task_no_remint"
 
 
 def test_sdlc_dispatch_starvation_alert_gets_technical_intake():
