@@ -46,6 +46,79 @@ class TestTaskSpec:
         assert t.task_id == "test-task"
         assert t.status == "offered"
 
+    def test_d8_rust_source_forces_frontier(self):
+        t = TaskSpec(
+            task_id="d8-rs",
+            title="touch a rust file",
+            mutation_surface="source",
+            target_paths=["agents/foo/render.rs"],
+            parent_request="REQ-test.md",
+            authority_case="CASE-TEST",
+            acceptance_criteria=["x"],
+        )
+        assert t.quality_floor == "frontier_required"
+
+    def test_d8_wgsl_source_forces_frontier(self):
+        t = TaskSpec(
+            task_id="d8-wgsl",
+            title="touch a shader",
+            mutation_surface="source",
+            target_paths=["agents/foo/cymatic.wgsl"],
+            parent_request="REQ-test.md",
+            authority_case="CASE-TEST",
+            acceptance_criteria=["x"],
+        )
+        assert t.quality_floor == "frontier_required"
+
+    def test_d8_codeowners_path_forces_frontier(self):
+        # axioms/ is CODEOWNERS-protected (.github/CODEOWNERS), sourced live.
+        t = TaskSpec(
+            task_id="d8-co",
+            title="touch a governed path",
+            mutation_surface="source",
+            target_paths=["axioms/registry.yaml"],
+            parent_request="REQ-test.md",
+            authority_case="CASE-TEST",
+            acceptance_criteria=["x"],
+        )
+        assert t.quality_floor == "frontier_required"
+
+    def test_d8_pure_python_non_governed_unchanged(self):
+        t = TaskSpec(
+            task_id="d8-py",
+            title="touch a plain python file",
+            mutation_surface="source",
+            target_paths=["agents/foo/bar.py"],
+            parent_request="REQ-test.md",
+            authority_case="CASE-TEST",
+            acceptance_criteria=["x"],
+        )
+        assert t.quality_floor == "deterministic_ok"
+
+    def test_d8_no_target_paths_unchanged(self):
+        t = TaskSpec(
+            task_id="d8-none",
+            title="no touch set",
+            mutation_surface="source",
+            parent_request="REQ-test.md",
+            authority_case="CASE-TEST",
+            acceptance_criteria=["x"],
+        )
+        assert t.quality_floor == "deterministic_ok"
+
+    def test_d8_only_fires_on_source_surface(self):
+        # A non-source surface touching a .rs path must NOT be forced to frontier.
+        t = TaskSpec(
+            task_id="d8-notsrc",
+            title="docs surface, rs path",
+            mutation_surface="vault_docs",
+            target_paths=["notes/example.rs"],
+            parent_request="REQ-test.md",
+            authority_case="CASE-TEST",
+            acceptance_criteria=["x"],
+        )
+        assert t.quality_floor == "deterministic_ok"
+
     def test_blocked_requires_reason(self):
         with pytest.raises(ValueError, match="blocked_reason"):
             TaskSpec(

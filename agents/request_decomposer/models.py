@@ -2,9 +2,57 @@
 
 from __future__ import annotations
 
+import functools
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+_GOVERNANCE_SUFFIXES = (".rs", ".wgsl")
+
+
+@functools.lru_cache(maxsize=1)
+def _codeowners_protected_patterns() -> tuple[str, ...]:
+    """Path patterns from ``.github/CODEOWNERS`` — the governance-protected set.
+
+    Sourced live from the repo's CODEOWNERS (never a hardcoded list, so the D8
+    floor tracks governance changes). Returns the leading path token of each
+    non-comment, non-blank line; empty if CODEOWNERS is absent.
+    """
+    codeowners = Path(__file__).resolve().parents[2] / ".github" / "CODEOWNERS"
+    if not codeowners.is_file():
+        return ()
+    patterns: list[str] = []
+    for raw in codeowners.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#"):
+            patterns.append(line.split()[0])
+    return tuple(patterns)
+
+
+def _path_matches_codeowners(path: str, patterns: tuple[str, ...]) -> bool:
+    p = path.strip().lstrip("/")
+    for pat in patterns:
+        q = pat.lstrip("/")
+        if q.startswith("**/"):
+            base = q[3:]
+            if p == base or p.endswith("/" + base):
+                return True
+        elif q.endswith("/"):
+            prefix = q.rstrip("/")
+            if p == prefix or p.startswith(prefix + "/"):
+                return True
+        elif p == q or p.endswith("/" + q):
+            return True
+    return False
+
+
+def _is_governance_protected_path(path: str) -> bool:
+    """A .rs/.wgsl file or a CODEOWNERS-protected path (the D8 frontier surfaces)."""
+    return path.strip().lower().endswith(_GOVERNANCE_SUFFIXES) or _path_matches_codeowners(
+        path, _codeowners_protected_patterns()
+    )
+
 
 QualityFloorValue = Literal[
     "frontier_required",
@@ -59,6 +107,9 @@ class TaskSpec(BaseModel):
 
     intent: str = ""
     acceptance_criteria: list[str] = Field(default_factory=list)
+    # File touch-set (paths this task will mutate). Drives the D8 governance floor.
+    # Populated by the decomposer (Phase 1 wiring); default empty is additive.
+    target_paths: list[str] = Field(default_factory=list)
 
     @field_validator("mutation_surface", mode="before")
     @classmethod
@@ -90,6 +141,17 @@ class TaskSpec(BaseModel):
         if (
             self.quality_floor == "frontier_review_required"
             and self.authority_level == "authoritative"
+        ):
+            self.quality_floor = "frontier_required"
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_d8_governance_floor(self) -> TaskSpec:
+        # D8: a SOURCE mutation touching a .rs/.wgsl file or a CODEOWNERS-protected
+        # path stays frontier — enforced in code here, not in MATRIX prose.
+        # (Activation: the decomposer must populate target_paths — Phase 1 wiring.)
+        if self.mutation_surface == "source" and any(
+            _is_governance_protected_path(p) for p in self.target_paths
         ):
             self.quality_floor = "frontier_required"
         return self
