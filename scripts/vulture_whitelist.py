@@ -4158,3 +4158,17 @@ from shared.perception_registry import (
 )
 
 _HwSource._normalize_aux_position
+
+# Capability-routing gate-event log (Phase 0.2) — the measurement substrate is
+# additive + standalone by design; its append/read/persistence helpers are wired
+# by Phase 2+ consumers (the dev-story A/B harness + the SdlcRouter), not a static
+# caller yet. REQ-20260616-capability-aware-routing / S5-CAPABILITY-ROUTING-TIER1.
+from shared.gate_log import (
+    append_gate_event,  # noqa: E402
+    is_persistent,  # noqa: E402
+    read_gate_events,  # noqa: E402
+)
+
+append_gate_event
+read_gate_events
+is_persistent
