@@ -296,13 +296,16 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
         exit 2
       fi
       # Validate against the known lane vocabulary so a typo cannot mint a bogus
-      # identity: greek slots, cx-<color>, vbe-<n>, antigrav.
+      # identity: greek slots, cx-<color>, vbe-<n>, cc-<name>, antigrav.
+      # cc-<name> = relay-coordinated Claude lanes (cc-zai, cc-cns, cc-cutovr, ...),
+      # first-class governed lanes per the operator decision 2026-06-17.
       case "$_ar_role" in
         alpha | beta | gamma | delta | epsilon | zeta | eta | theta | iota | antigrav) ;;
         cx-[a-z]*) ;;
+        cc-[a-z]*) ;;
         vbe-[0-9]*) ;;
         *)
-          echo "agent-role.sh: unknown role '$_ar_role' (expected a greek slot, cx-<color>, vbe-<n>, or antigrav)" >&2
+          echo "agent-role.sh: unknown role '$_ar_role' (expected a greek slot, cx-<color>, cc-<name>, vbe-<n>, or antigrav)" >&2
           exit 2
           ;;
       esac

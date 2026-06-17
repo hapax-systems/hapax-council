@@ -18,6 +18,20 @@
 
 set -eu
 
+# Env-var identity (the canonical first signal). The spawners export
+# HAPAX_AGENT_NAME / HAPAX_AGENT_ROLE / CLAUDE_ROLE for the session; this mirrors
+# hapax_agent_identity's env precedence in hooks/scripts/agent-role.sh and is the
+# most reliable WM-independent source — it survives a missing compositor (KWin/niri:
+# no hyprctl) AND a session-role marker keyed by a non-matching sid (launcher
+# SESSION_UUID vs the resolver's CLAUDE_CODE_SESSION_ID). Without it this script
+# falsely reported "unassigned" for env-assigned sessions on KWin.
+for _ev in "${HAPAX_AGENT_NAME:-}" "${HAPAX_AGENT_ROLE:-}" "${CLAUDE_ROLE:-}"; do
+  if [ -n "$_ev" ]; then
+    printf '%s\n' "$_ev"
+    exit 0
+  fi
+done
+
 # WM-independent identity (reform-identity-coherence, cluster 11): a per-session
 # marker — written by the spawners (hapax-claude / hapax-claude-headless) and the
 # in-session reassert command, keyed by the session id — resolves identity without
@@ -86,7 +100,7 @@ fi
 
 # Match a known session name. Case-insensitive, last match wins so activity
 # glyphs + prefixes don't interfere.
-identity=$(echo "$title" | grep -oiE '\b(cx-[a-z][a-z-]*|alpha|beta|gamma|delta|epsilon|zeta|eta)\b' | tail -1 | tr '[:upper:]' '[:lower:]')
+identity=$(echo "$title" | grep -oiE '\b(cx-[a-z][a-z-]*|cc-[a-z][a-z-]*|alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota)\b' | tail -1 | tr '[:upper:]' '[:lower:]')
 
 if [ -z "$identity" ]; then
   echo "hapax-whoami: window title did not match a known session name: $title" >&2
