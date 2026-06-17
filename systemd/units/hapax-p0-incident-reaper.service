@@ -1,12 +1,7 @@
 [Unit]
 Description=Drain resolved P0 incidents from the coalescing state (the reap half)
-# Route reap failures to the governed failure notifier, like every other unit. %n
-# expands to this unit's FULL name (hapax-p0-incident-reaper.service), so the
-# instantiated notifier is notify-failure@hapax-p0-incident-reaper.service.service:
-# the doubled ".service" is the correct systemd template-instance form (instance =
-# "hapax-p0-incident-reaper.service", type = .service) and matches the live
-# notify-failure@<unit>.service.service instances. Inert while notify-failure@ is
-# neutered; live again with the notify-failure@ re-arm.
+# Route reap failures to the governed per-unit failure notifier, like every other
+# unit (inert while notify-failure@ is neutered; live with the notify-failure@ rearm).
 OnFailure=notify-failure@%n.service
 
 [Service]
