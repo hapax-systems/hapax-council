@@ -1,8 +1,12 @@
 [Unit]
 Description=Drain resolved P0 incidents from the coalescing state (the reap half)
-After=hapax-secrets.service
+# Failures must surface: a silently-failed reaper preserves stale P0 state.
+# (Inert while notify-failure@ is neutered; activates with the #5 re-arm.)
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
+# Reads state.json / ledger / vault tasks and runs `systemctl --user is-active`;
+# needs no secrets, so no hapax-secrets ordering dependency.
 ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-p0-incident-intake reap
 Nice=10

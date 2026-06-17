@@ -452,44 +452,50 @@ def reap_resolved_incidents(
     best-effort -- a single incident's health-check failure never blocks the rest.
     """
     now = now or datetime.now(UTC)
-    state = _load_state(state_path)
-    incidents = state.get("incidents", {})
     reaped: list[tuple[str, str]] = []
-    for fingerprint, record in list(incidents.items()):
-        if not isinstance(record, dict):
-            continue
-        task_id = record.get("task_id")
-        kind = record.get("kind", "")
-        reason: str | None = None
-        if task_id:
-            match = _find_task(task_root, str(task_id))
-            if match is not None and match.closed:
-                reason = "task_closed"
-        if reason is None and kind == "systemd_service_failed" and unit_active is not None:
-            unit = fingerprint.split(":", 1)[1] if ":" in fingerprint else ""
-            try:
-                if unit and unit_active(unit):
-                    reason = "unit_recovered"
-            except Exception:  # noqa: BLE001 -- a health-check failure must not block the reap
-                reason = None
-        if reason:
-            reaped.append((fingerprint, reason))
-            del incidents[fingerprint]
-            append_jsonl(
-                ledger_path,
-                {
-                    "ts": _iso(now),
-                    "kind": "p0_incident_resolved",
-                    "fingerprint": fingerprint,
-                    "task_id": task_id,
-                    "reason": reason,
-                },
-                sort_keys=True,
-                raising=False,
-            )
-    if reaped:
-        state["updated_at"] = _iso(now)
-        _store_state(state_path, state)
+    # Reap under the SAME lock record_notification() uses. The reap is a
+    # read -> decide -> delete -> store cycle on state.json; an unlocked reap
+    # racing a live intake would load a snapshot, then overwrite a concurrently
+    # recorded/updated incident -- silently dropping live P0 state. Holding the
+    # lock across the (fast) task-glob + systemctl probes serializes reap vs intake.
+    with _state_file_lock(state_path):
+        state = _load_state(state_path)
+        incidents = state.get("incidents", {})
+        for fingerprint, record in list(incidents.items()):
+            if not isinstance(record, dict):
+                continue
+            task_id = record.get("task_id")
+            kind = record.get("kind", "")
+            reason: str | None = None
+            if task_id:
+                match = _find_task(task_root, str(task_id))
+                if match is not None and match.closed:
+                    reason = "task_closed"
+            if reason is None and kind == "systemd_service_failed" and unit_active is not None:
+                unit = fingerprint.split(":", 1)[1] if ":" in fingerprint else ""
+                try:
+                    if unit and unit_active(unit):
+                        reason = "unit_recovered"
+                except Exception:  # noqa: BLE001 -- a health-check failure must not block the reap
+                    reason = None
+            if reason:
+                reaped.append((fingerprint, reason))
+                del incidents[fingerprint]
+                append_jsonl(
+                    ledger_path,
+                    {
+                        "ts": _iso(now),
+                        "kind": "p0_incident_resolved",
+                        "fingerprint": fingerprint,
+                        "task_id": task_id,
+                        "reason": reason,
+                    },
+                    sort_keys=True,
+                    raising=False,
+                )
+        if reaped:
+            state["updated_at"] = _iso(now)
+            _store_state(state_path, state)
     return reaped
 
 
