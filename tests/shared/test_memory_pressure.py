@@ -10,6 +10,7 @@ from shared.memory_pressure import (
     classify_live_swappiness,
     classify_memory_psi_pressure,
     classify_swap_zram_saturation,
+    classify_swappiness_drift,
     memory_threshold,
     parse_cgroup_memory_events,
     parse_meminfo,
@@ -101,7 +102,12 @@ def test_live_swappiness_drift_uses_injected_reader() -> None:
 
     assert signal.pressure_class == MemoryPressureClass.SYSCTL_DRIFT
     assert signal.state == ResourceState.RED
-    assert signal.raw == {"live_value": 150, "expected_value": 5, "drift": 145}
+    assert signal.raw == {
+        "live_value": 150,
+        "expected_value": 5,
+        "zram_active": False,
+        "drift": 145,
+    }
 
 
 def test_service_cgroup_oom_events_are_representable_without_journal() -> None:
@@ -148,3 +154,25 @@ def test_parsers_preserve_raw_memory_evidence() -> None:
     assert props.memory_max_bytes == 512 * 1024 * 1024
     assert props.memory_high_bytes is None
     assert props.oom_score_adjust == -500
+
+
+def test_swappiness_drift_zram_box_high_value_is_healthy() -> None:
+    # On a zram swap box a high vm.swappiness (CachyOS sets 150) is correct, not drift.
+    signal = classify_swappiness_drift(150, zram_active=True)
+    assert signal.state == ResourceState.GREEN
+    assert signal.raw["zram_active"] is True
+    assert signal.raw["drift"] == 0
+    assert "zram" in signal.message
+
+
+def test_swappiness_drift_zram_box_below_floor_is_red() -> None:
+    # A swappiness pushed below the zram floor fights the zram tuning -> RED.
+    signal = classify_swappiness_drift(5, zram_active=True)
+    assert signal.state == ResourceState.RED
+
+
+def test_swappiness_drift_off_zram_still_expects_low_default() -> None:
+    # Off zram, 150 is genuine drift from the low default.
+    signal = classify_swappiness_drift(150, zram_active=False)
+    assert signal.state == ResourceState.RED
+    assert signal.raw["drift"] == 145

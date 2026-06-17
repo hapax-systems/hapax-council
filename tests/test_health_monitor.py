@@ -734,6 +734,33 @@ class TestMemoryChecks:
         assert by_name["memory.sysctl_drift"].status == Status.HEALTHY
 
     @pytest.mark.asyncio
+    async def test_memory_pressure_sysctl_drift_zram_box_high_swappiness_healthy(self):
+        # On a zram swap box a high vm.swappiness (CachyOS sets 150) is correct, so the
+        # sysctl_drift check must be HEALTHY even with no HAPAX_EXPECTED_SWAPPINESS env.
+        import os
+
+        from agents.health_monitor import check_memory_pressure
+
+        def fake_read(path):
+            if str(path) == "/proc/meminfo":
+                return "MemTotal: 134217728 kB\nMemAvailable: 70254592 kB\n"
+            if str(path) == "/proc/swaps":
+                return "Filename Type Size Used Priority\n/dev/zram0 partition 33554432 100 100\n"
+            if str(path) == "/proc/sys/vm/swappiness":
+                return "150\n"
+            return None
+
+        with (
+            patch("agents.health_monitor.checks.memory._read_text", side_effect=fake_read),
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            os.environ.pop("HAPAX_EXPECTED_SWAPPINESS", None)
+            results = await check_memory_pressure()
+
+        by_name = {result.name: result for result in results}
+        assert by_name["memory.sysctl_drift"].status == Status.HEALTHY
+
+    @pytest.mark.asyncio
     async def test_memory_pressure_degrades_when_meminfo_unreadable(self):
         from agents.health_monitor import check_memory_pressure
 
