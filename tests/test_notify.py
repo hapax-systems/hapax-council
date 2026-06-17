@@ -6,6 +6,7 @@ All I/O is mocked. No real HTTP requests or subprocess calls.
 from __future__ import annotations
 
 import json
+import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -145,14 +146,16 @@ class TestSendNotification:
         send_notification("T", "M", priority="urgent", tags=["skull"])
         mock_desktop.assert_called_once_with("T", "M", priority="urgent")
 
+    @patch("shared.notify._dismiss_existing_consumed_notifications")
     @patch("shared.notify._dismiss_existing_intake_notifications")
     @patch("shared.p0_incident_intake.record_notification")
     @patch("shared.notify._send_desktop", return_value=True)
-    def test_technical_alert_records_p0_intake_and_replace_id(
+    def test_technical_alert_records_p0_intake_and_consumes_desktop_by_default(
         self,
         mock_desktop,
         mock_record,
         mock_dismiss,
+        mock_dismiss_consumed,
         _dedup,
         _watershed,
         _logos,
@@ -179,13 +182,48 @@ class TestSendNotification:
             tags=["rotating_light"],
             technical=None,
         )
+        mock_desktop.assert_not_called()
+        mock_dismiss.assert_called_once_with("p0-incident-stack-failed-abc123")
+        mock_dismiss_consumed.assert_called_once_with(
+            "Stack Failed", "p0-incident-stack-failed-abc123"
+        )
+
+    @patch("shared.notify._dismiss_existing_consumed_notifications")
+    @patch("shared.notify._dismiss_existing_intake_notifications")
+    @patch("shared.p0_incident_intake.record_notification")
+    @patch("shared.notify._send_desktop", return_value=True)
+    def test_technical_alert_can_opt_in_to_desktop_confirmation(
+        self,
+        mock_desktop,
+        mock_record,
+        _mock_dismiss,
+        _mock_dismiss_consumed,
+        _dedup,
+        _watershed,
+        _logos,
+    ):
+        mock_record.return_value = SimpleNamespace(
+            technical=True,
+            task_id="p0-incident-stack-failed-abc123",
+            replace_id=456,
+            click_url="obsidian://open?vault=Personal&file=20-projects/example",
+        )
+
+        with patch.dict(os.environ, {"HAPAX_NOTIFY_DESKTOP_AFTER_P0_INTAKE": "1"}):
+            result = send_notification(
+                "Stack Failed",
+                "1 check failed",
+                priority="high",
+                tags=["rotating_light"],
+            )
+
+        assert result is True
         mock_desktop.assert_called_once_with(
             "Stack Failed",
             "1 check failed\nSDLC intake: p0-incident-stack-failed-abc123",
             priority="high",
             replace_id=456,
         )
-        mock_dismiss.assert_called_once_with("p0-incident-stack-failed-abc123")
 
     @patch("shared.p0_incident_intake.record_notification", side_effect=OSError("state locked"))
     @patch("shared.notify._send_desktop", return_value=True)

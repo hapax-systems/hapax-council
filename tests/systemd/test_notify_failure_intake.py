@@ -68,5 +68,4 @@ def test_notify_failure_execstart_runs_intake_cli(tmp_path):
     assert result.returncode == 0, result.stderr
     task_glob = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
     assert list(task_glob.glob("p0-incident-systemd-service-failed-demo-service-*.md"))
-    notify_text = notify_log.read_text(encoding="utf-8")
-    assert "SDLC intake: p0-incident-systemd-service-failed-demo-service" in notify_text
+    assert not notify_log.exists(), "P0 intake should consume failures without desktop echo"
