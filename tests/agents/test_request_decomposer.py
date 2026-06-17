@@ -119,6 +119,22 @@ class TestTaskSpec:
         )
         assert t.quality_floor == "deterministic_ok"
 
+    def test_codeowners_matcher_handles_dir_anydepth_glob_exact(self):
+        from agents.request_decomposer.models import _path_matches_codeowners
+
+        # directory prefix (/axioms/)
+        assert _path_matches_codeowners("axioms/registry.yaml", ("/axioms/",))
+        assert not _path_matches_codeowners("agents/foo.py", ("/axioms/",))
+        # any-depth basename (**/CLAUDE.md)
+        assert _path_matches_codeowners("agents/x/CLAUDE.md", ("**/CLAUDE.md",))
+        # fnmatch globs (the codex/claude '*' finding)
+        assert _path_matches_codeowners("agents/x/foo.rs", ("*.rs",))
+        assert _path_matches_codeowners("build/out.js", ("build/*",))
+        assert not _path_matches_codeowners("src/out.js", ("build/*",))
+        # exact + basename
+        assert _path_matches_codeowners(".github/CODEOWNERS", ("/.github/CODEOWNERS",))
+        assert not _path_matches_codeowners("docs/readme.md", ("/axioms/",))
+
     def test_blocked_requires_reason(self):
         with pytest.raises(ValueError, match="blocked_reason"):
             TaskSpec(
@@ -383,6 +399,27 @@ class TestWriter:
                 assert "parent_request: REQ-test.md" in content
                 assert "route_metadata_schema: 1" in content
                 assert "mutation_scope_refs:" in content
+
+    def test_real_write_renders_target_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            decomp = RequestDecomposition(
+                request_id="test-tp",
+                request_path="/tmp/test.md",
+                tasks=[
+                    TaskSpec(
+                        task_id="tp-task",
+                        title="touch rust",
+                        parent_request="REQ-test.md",
+                        authority_case="CASE-TEST",
+                        acceptance_criteria=["x"],
+                        target_paths=["agents/foo/bar.rs"],
+                    )
+                ],
+            )
+            paths = write_decomposition(decomp, Path(td))
+            content = paths[0].read_text()
+            assert "target_paths:" in content
+            assert "agents/foo/bar.rs" in content
 
     def test_real_write_frontmatter_is_yaml_safe(self):
         with tempfile.TemporaryDirectory() as td:

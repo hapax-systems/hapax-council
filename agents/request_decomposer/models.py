@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import functools
 from pathlib import Path
 from typing import Literal
@@ -31,16 +32,25 @@ def _codeowners_protected_patterns() -> tuple[str, ...]:
 
 
 def _path_matches_codeowners(path: str, patterns: tuple[str, ...]) -> bool:
+    # CODEOWNERS uses gitignore-style globs. Handle directory-prefix (``dir/``),
+    # any-depth (``**/name``), fnmatch globs (``*.ext``, ``dir/*``), and exact /
+    # basename matches. (Full gitignore semantics are broader; this covers the
+    # governance CODEOWNERS patterns plus the common glob cases.)
     p = path.strip().lstrip("/")
+    base = p.rsplit("/", 1)[-1]
     for pat in patterns:
         q = pat.lstrip("/")
-        if q.startswith("**/"):
-            base = q[3:]
-            if p == base or p.endswith("/" + base):
-                return True
-        elif q.endswith("/"):
+        if not q:
+            continue
+        if q.endswith("/"):
             prefix = q.rstrip("/")
             if p == prefix or p.startswith(prefix + "/"):
+                return True
+            continue
+        if q.startswith("**/"):
+            q = q[3:]
+        if any(c in q for c in "*?["):
+            if fnmatch.fnmatch(p, q) or fnmatch.fnmatch(base, q):
                 return True
         elif p == q or p.endswith("/" + q):
             return True
