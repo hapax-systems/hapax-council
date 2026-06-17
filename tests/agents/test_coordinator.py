@@ -1342,3 +1342,29 @@ wsjf: 5.0
         assert counts["pr_open"] == 1
         assert counts["remediation"] == 1
         assert counts["no_owner"] == 1
+
+
+def test_escalate_stalled_skips_renotify_for_incident_tasks(tmp_path: Path):
+    """Self-amplification break: a stalled AUTO-MINTED p0-incident task is escalated to
+    `blocked` but must NOT emit the "task stuck" notification (it would re-mint a
+    sdlc_task_stalled P0 → loop). A normal stalled task still notifies."""
+    coord = Coordinator()
+    lane = LaneState(role="delta", alive=True, pid=111, pid_source="pidfile", claimed_task="x")
+    task = tmp_path / "t.md"
+    body = "---\nstatus: claimed\nassigned_to: delta\n---\nbody\n"
+
+    with (
+        patch("agents.coordinator.core.send_notification") as notify,
+        patch.object(coord, "_clear_claim_signal"),
+        patch.object(coord, "_emit_reoffer_ledger"),
+    ):
+        task.write_text(body, encoding="utf-8")
+        assert (
+            coord._escalate_stalled(lane, "p0-incident-demo-20260617", task, task.read_text())
+            is True
+        )
+        notify.assert_not_called()
+
+        task.write_text(body, encoding="utf-8")
+        coord._escalate_stalled(lane, "segprep-normal-task-20260617", task, task.read_text())
+        assert notify.called

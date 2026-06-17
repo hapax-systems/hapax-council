@@ -637,6 +637,11 @@ class Coordinator:
             reoffers,
             lane.role,
         )
+        if claim.startswith("p0-incident-"):
+            # Escalated to blocked above; skip the "task stuck" notification — it
+            # would re-mint a sdlc_task_stalled P0 (self-amplification loop). The
+            # intake also rejects such re-mints as a belt-and-suspenders break.
+            return True
         try:
             send_notification(
                 "SDLC: task stuck, blocked",

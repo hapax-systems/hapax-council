@@ -111,6 +111,15 @@ def classify_notification(
         return IncidentClassification("nontechnical", "", False, "technical_false")
 
     kind = _technical_kind(title_s)
+    if kind == "sdlc_task_stalled":
+        # Self-amplification break: a stalled/blocked AUTO-MINTED incident task
+        # (p0-incident-*) must NOT mint another P0 — it would re-enter forever as a
+        # fresh sdlc_task_stalled incident. These tasks are not lane-workable.
+        _stalled_id = re.search(r"\b(?:Task\s+)?([a-z0-9][a-z0-9_.-]{8,})\b", message_s)
+        if _stalled_id and _stalled_id.group(1).startswith("p0-incident-"):
+            return IncidentClassification(
+                "nontechnical", "", False, "stalled_incident_task_no_remint"
+            )
     if technical is True and not kind:
         kind = "technical_alert"
 
