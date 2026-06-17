@@ -50,25 +50,29 @@ rather than the dirty canonical checkout. See
 
 ## Session-naming invariant
 
-Approved session names are `alpha`, `beta`, `gamma`, `delta`, and
-`epsilon`. Codex thread names use `cx-<color-word>` (for example
-`cx-red`) and map onto these worktree slots separately. These are
-operational identities — not rhetorical choices — and the tooling
-assumes them:
+The canonical lane vocabulary (SSOT: `hooks/scripts/agent-role.sh`
+`assert-identity`) is: greek slots `alpha` `beta` `gamma` `delta`
+`epsilon` `zeta` `eta` `theta` `iota`, plus `antigrav`; Codex
+`cx-<color>` (e.g. `cx-red`); Claude relay lanes `cc-<name>` (e.g.
+`cc-zai`); and Vibe `vbe-<n>`. These are operational identities — not
+rhetorical choices — and the tooling assumes them:
 
-- `hapax-whoami` (identity resolver) grep-matches this set.
-- `scripts/hapax-whoami-audit.sh` fails non-zero on any other name.
+- `hapax-whoami` (identity resolver) resolves the role env var FIRST
+  (`HAPAX_AGENT_ROLE`/`HAPAX_AGENT_NAME`/`CLAUDE_ROLE`), then the
+  session-role marker, then the compositor walk — WM-independent, so
+  identity survives a missing hyprctl (KWin/niri).
+- `scripts/hapax-whoami-audit.sh` fails non-zero on any name outside
+  the vocabulary above.
 - `session-name-enforcement.sh` PreToolUse hook BLOCKS Bash commands
-  that reference a greek-letter-shaped name outside this set when
-  used as a session identifier (`session=<name>`,
-  `hapax-council--<name>/` worktree slot, `session-context.sh
-  <name>` argument, etc.).
-- The worktree cap (`no-stale-branches.sh`) is currently sized for the
-  Claude+Codex transition: legacy Claude lanes plus Codex `cx-*`
-  lanes, with `cx-*` worktrees named directly.
+  that reference a greek-letter-shaped token OUTSIDE the approved greek
+  slots (i.e. `kappa` and beyond) when used as a session identifier.
+- The worktree cap (`no-stale-branches.sh`) is sized for the full
+  multi-interface team (greek + `cx-*` + `cc-*` + `vbe-*` + antigrav).
 
-Adding a new session name requires amending both this file and the
-approved list in `scripts/hapax-whoami-audit.sh`, then re-running
+Adding a new session name requires amending this file AND the canonical
+vocabulary in `hooks/scripts/agent-role.sh` (assert-identity), the
+approved list in `scripts/hapax-whoami-audit.sh`, and the greek
+deny-list in `session-name-enforcement.sh`, then re-running
 `scripts/worktree-cap-audit.sh` to confirm the new slot fits the
 cap.
 

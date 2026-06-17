@@ -44,9 +44,11 @@ if [ -z "${WHOAMI_BIN}" ] || [ ! -x "${WHOAMI_BIN}" ]; then
     exit 1
 fi
 
-# Approved Claude session-name set. Codex thread names are approved by
-# regex below so each color lane does not need a governance amendment.
-APPROVED_NAMES="alpha beta gamma delta epsilon"
+# Approved session-name set — the canonical lane vocabulary (mirror of
+# hooks/scripts/agent-role.sh assert-identity): greek slots alpha..iota + antigrav.
+# Codex cx-<color>, Claude relay cc-<name>, and Vibe vbe-<n> lanes are approved by
+# regex below so each lane does not need a governance amendment.
+APPROVED_NAMES="alpha beta gamma delta epsilon zeta eta theta iota antigrav"
 
 quiet=false
 expected=""
@@ -73,7 +75,7 @@ fi
 # Approved-set membership check.
 matched=false
 case "$identity" in
-    cx-[a-z]*)
+    cx-[a-z]* | cc-[a-z]* | vbe-[0-9]*)
         matched=true
         ;;
     *)
@@ -89,7 +91,7 @@ esac
 if [ "$matched" != true ]; then
     if [ "$quiet" != true ]; then
         echo "INVALID: $identity"
-        echo "hapax-whoami-audit: '$identity' is not in approved set: $APPROVED_NAMES or cx-<color>" >&2
+        echo "hapax-whoami-audit: '$identity' is not in approved set: $APPROVED_NAMES or cx-<color>/cc-<name>/vbe-<n>" >&2
     fi
     exit 2
 fi
