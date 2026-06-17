@@ -11,8 +11,6 @@ from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
 
-import pytest
-
 import shared.p0_incident_intake as p0_intake
 from shared.p0_incident_intake import (
     DEFAULT_AUTHORITY_CASE,
@@ -332,30 +330,54 @@ def test_concurrent_alerts_preserve_single_task_and_count(tmp_path):
     assert f"incident_count: {worker_count}" in task_files[0].read_text(encoding="utf-8")
 
 
-def test_record_notification_requires_durable_ledger_append(tmp_path, monkeypatch):
+def test_ledger_append_failure_fails_open_and_persists_state(tmp_path, monkeypatch):
+    """Fail-open: a ledger IO failure must NOT abort the coalescing-state write (else the
+    next identical alert re-mints -> re-flood). No exception; state persisted; recurrence
+    still coalesces even while the ledger is failing."""
     task_root = tmp_path / "tasks"
     state_path = tmp_path / "state.json"
     ledger_path = tmp_path / "events.jsonl"
 
-    def fake_append_jsonl(*_args, **_kwargs):
-        return False
+    monkeypatch.setattr(p0_intake, "append_jsonl", lambda *_a, **_k: False)
 
-    monkeypatch.setattr(p0_intake, "append_jsonl", fake_append_jsonl)
+    result = record_notification(
+        "Service Failed: demo.service",
+        "systemd OnFailure fired.",
+        priority="urgent",
+        tags=["skull"],
+        task_root=task_root,
+        state_path=state_path,
+        ledger_path=ledger_path,
+        now=datetime(2026, 6, 12, 20, 0, tzinfo=UTC),
+    )
+    assert result.created is True
+    assert state_path.exists()
+    assert len(json.loads(state_path.read_text())["incidents"]) == 1
 
-    with pytest.raises(RuntimeError, match="p0 incident ledger append failed"):
-        record_notification(
-            "Service Failed: demo.service",
-            "systemd OnFailure fired.",
-            priority="urgent",
-            tags=["skull"],
-            task_root=task_root,
-            state_path=state_path,
-            ledger_path=ledger_path,
-            now=datetime(2026, 6, 12, 20, 0, tzinfo=UTC),
-        )
+    result2 = record_notification(
+        "Service Failed: demo.service",
+        "systemd OnFailure fired again.",
+        priority="urgent",
+        tags=["skull"],
+        task_root=task_root,
+        state_path=state_path,
+        ledger_path=ledger_path,
+        now=datetime(2026, 6, 12, 20, 1, tzinfo=UTC),
+    )
+    assert result2.task_id == result.task_id
+    assert result2.created is False
+    assert list(json.loads(state_path.read_text())["incidents"].values())[0]["count"] == 2
 
-    assert not state_path.exists()
-    assert not ledger_path.exists()
+
+def test_rotate_ledger_when_oversized(tmp_path):
+    ledger = tmp_path / "events.jsonl"
+    ledger.write_text("x" * 100)
+    p0_intake._rotate_ledger(ledger, max_bytes=50)
+    assert (tmp_path / "events.jsonl.1").exists()
+    assert not ledger.exists()
+    ledger.write_text("y" * 10)
+    p0_intake._rotate_ledger(ledger, max_bytes=50)
+    assert ledger.exists()
 
 
 def test_high_priority_nontechnical_notification_does_not_create_task(tmp_path):
