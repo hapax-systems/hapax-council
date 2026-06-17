@@ -236,7 +236,14 @@ def close_linked_task(
     # cc-close uses CLAUDE_ROLE only for the log line (not gating); the
     # watcher is not a session, so a synthetic value is fine.
     env.setdefault("CLAUDE_ROLE", role)
-    cmd = [str(cc_close), task.task_id, "--pr", str(task.pr_number)]
+    # The watcher only closes tasks whose PR is MERGED; cc-close still runs the
+    # PR-merge evidence gate to verify that. The pre-merge AC-checkbox and
+    # acceptance-receipt gates belong to the pre-merge review/admission pipeline
+    # and are redundant post-merge, so a legitimately-merged PR's task must drain
+    # regardless of pre-merge bookkeeping (otherwise the watcher loops forever).
+    env["HAPAX_CC_TASK_CLOSURE_GATE_OFF"] = "1"
+    env["HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF"] = "1"
+    cmd = [str(cc_close), task.task_id, "--pr", str(task.pr_number), "--retroactive"]
     LOG.info("closing task %s for PR #%d", task.task_id, task.pr_number)
     try:
         proc = runner(

@@ -272,10 +272,14 @@ class TestRunWatcher:
         )
         assert counters == {"merged": 1, "linked": 1, "closed": 1, "failed": 0, "skipped": 0}
         # cc-close was invoked with --pr 100.
-        assert any(cmd[-2:] == ["--pr", "100"] for cmd in runner.cc_close_invocations), (
-            runner.cc_close_invocations
-        )
-        assert "HAPAX_CC_TASK_CLOSURE_GATE_OFF" not in runner.cc_close_envs[-1]
+        assert any(
+            cmd[-3:] == ["--pr", "100", "--retroactive"] for cmd in runner.cc_close_invocations
+        ), runner.cc_close_invocations
+        # The merge is authoritative: cc-close runs with the pre-merge AC + receipt
+        # gates skipped so a merged-PR task drains regardless of pre-merge bookkeeping,
+        # BUT the PR-merge evidence gate stays ON (the merge is still verified).
+        assert runner.cc_close_envs[-1]["HAPAX_CC_TASK_CLOSURE_GATE_OFF"] == "1"
+        assert runner.cc_close_envs[-1]["HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF"] == "1"
         assert "HAPAX_PR_MERGE_GATE_OFF" not in runner.cc_close_envs[-1]
         # Cursor advanced.
         new_cursor = watcher.read_cursor(cursor)
@@ -551,9 +555,9 @@ class TestReconcileMerged:
         )
 
         assert counters["closed"] == 1
-        assert any(cmd[-2:] == ["--pr", "100"] for cmd in runner.cc_close_invocations), (
-            runner.cc_close_invocations
-        )
+        assert any(
+            cmd[-3:] == ["--pr", "100", "--retroactive"] for cmd in runner.cc_close_invocations
+        ), runner.cc_close_invocations
 
     def test_merged_pr_close_failure_is_not_fatal(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
@@ -632,9 +636,9 @@ class TestReconcilePrNullRepair:
         assert counters["closed"] == 1
         # The re-derived PR number was written back into the note.
         assert "pr: 207" in note.read_text()
-        assert any(cmd[-2:] == ["--pr", "207"] for cmd in runner.cc_close_invocations), (
-            runner.cc_close_invocations
-        )
+        assert any(
+            cmd[-3:] == ["--pr", "207", "--retroactive"] for cmd in runner.cc_close_invocations
+        ), runner.cc_close_invocations
 
     def test_pr_null_with_branch_no_pr_blocks(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
