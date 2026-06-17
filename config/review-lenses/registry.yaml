@@ -96,7 +96,7 @@ families:
     reviewer_command: ["codex", "exec", "--sandbox", "read-only", "-"]
     timeout_seconds: 1200
   - family: gemini
-    reviewer_command: ["gemini", "--skip-trust", "--approval-mode", "plan", "-p", "Perform the review request provided on stdin; reply with exactly one fenced yaml code block and no prose."]
+    reviewer_command: ["gemini", "--skip-trust", "--approval-mode", "plan", "-p", "You are reviewing a UNIFIED DIFF on stdin. The leading plus/minus/space line prefixes, the @@ hunk headers, and diff --git / +++ / --- lines are DIFF SYNTAX, not source code. Before reporting ANY IndentationError, SyntaxError, invalid-decorator, or invalid-shell-expansion finding, strip the leading diff prefix and confirm the defect exists in the real line content; do NOT flag artifacts of diff rendering such as a plus misread as indentation, a context path misread as a decorator, or a shell parameter expansion split by a diff marker. Perform the review request provided on stdin; reply with exactly one fenced yaml code block and no prose."]
     timeout_seconds: 1200
 
 # Authoring-lane -> model family (writer's family never holds the majority

@@ -1595,3 +1595,16 @@ class TestGoGate:
         )
         stale = [b for b in blockers_mismatch if "stale_head" in b]
         assert len(stale) == 1, f"mismatched head_sha MUST trigger stale_head: {blockers_mismatch}"
+
+
+def test_gemini_reviewer_prompt_has_diff_awareness():
+    """Regression guard: the gemini reviewer hallucinated phantom IndentationError /
+    SyntaxError / invalid-decorator criticals by misreading unified-diff +/- prefixes
+    and context paths as source code, blocking valid PRs (#4135, #4161, #4163) that
+    claude + codex accepted. Its reviewer_command prompt must declare that diff
+    prefixes are syntax, not code, so it confirms a defect against real line content."""
+    reg = _registry()
+    gemini = next(f for f in reg["families"] if (f.get("family") or f.get("name")) == "gemini")
+    prompt = " ".join(str(part) for part in gemini["reviewer_command"])
+    assert "UNIFIED DIFF" in prompt, "gemini reviewer prompt lost its diff-awareness guard"
+    assert "DIFF SYNTAX" in prompt
