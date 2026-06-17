@@ -1,8 +1,13 @@
 [Unit]
 Description=Drain resolved P0 incidents from the coalescing state (the reap half)
-# Failure routing (OnFailure=notify-failure@%n.service) is intentionally deferred to
-# the notify-failure@ re-arm: it is inert while that template is neutered, and the
-# reaper is a best-effort 15-min oneshot whose next tick retries any failed drain.
+# Route reap failures to the governed failure notifier, like every other unit. %n
+# expands to this unit's FULL name (hapax-p0-incident-reaper.service), so the
+# instantiated notifier is notify-failure@hapax-p0-incident-reaper.service.service:
+# the doubled ".service" is the correct systemd template-instance form (instance =
+# "hapax-p0-incident-reaper.service", type = .service) and matches the live
+# notify-failure@<unit>.service.service instances. Inert while notify-failure@ is
+# neutered; live again with the notify-failure@ re-arm.
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot

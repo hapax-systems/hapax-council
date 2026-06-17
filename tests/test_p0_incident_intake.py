@@ -1048,3 +1048,19 @@ def test_systemd_unit_recovered_keeps_on_probe_exception():
 
     assert probe("u", run=raise_oserror) is False
     assert probe("u", run=raise_timeout) is False
+
+
+def test_reaper_service_routes_failures_to_notify_failure():
+    # Pin the durable failure wire: dropping OnFailure must never silently regress
+    # (notify-failure@%n.service is the governed per-unit failure route).
+    svc = (REPO_ROOT / "systemd" / "units" / "hapax-p0-incident-reaper.service").read_text()
+    assert "OnFailure=notify-failure@%n.service" in svc
+
+
+def test_reaper_timer_is_wired_into_durable_inventories():
+    # Self-evidence that the timer is enabled by the governed deploy path (preset
+    # sweep) and tracked by the activation-drift audit -- not left to chance.
+    preset = (REPO_ROOT / "systemd" / "user-preset.d" / "hapax.preset").read_text()
+    assert "enable hapax-p0-incident-reaper.timer" in preset
+    audit = (REPO_ROOT / "scripts" / "audit-runtime-activation-drift.py").read_text()
+    assert '"hapax-p0-incident-reaper.timer"' in audit
