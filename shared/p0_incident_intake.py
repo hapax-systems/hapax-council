@@ -11,6 +11,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -34,6 +35,9 @@ DEFAULT_PARENT_SPEC = (
 DEFAULT_AUTHORITY_CASE = "CASE-SYSTEM-INTEGRITY-20260611"
 DEFAULT_VAULT_NAME = "Personal"
 LATEST_ALERT_BLOCK_RE = re.compile(r"(?s)## Latest Alert\n\n.*?\n## Evidence\n")
+
+log = logging.getLogger(__name__)
+
 
 TECHNICAL_TITLE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("Service Failed:", "systemd_service_failed"),
@@ -255,6 +259,12 @@ def _record_notification_locked(
         updated = True
 
     task_record["task_path"] = str(task_path)
+    # Persist coalescing state FIRST: a ledger IO failure must NOT abort the state
+    # write, else the next identical alert re-mints -> re-flood. Fail-open on the ledger.
+    incidents[classification.fingerprint] = task_record
+    state["updated_at"] = _iso(now)
+    _store_state(state_path, state)
+    _rotate_ledger(ledger_path)
     appended = append_jsonl(
         ledger_path,
         {
@@ -277,14 +287,13 @@ def _record_notification_locked(
             else None,
         },
         sort_keys=True,
-        raising=True,
+        raising=False,
     )
     if not appended:
-        raise RuntimeError(f"p0 incident ledger append failed: {ledger_path}")
-
-    incidents[classification.fingerprint] = task_record
-    state["updated_at"] = _iso(now)
-    _store_state(state_path, state)
+        log.warning(
+            "p0 incident ledger append failed (coalescing state persisted; continuing): %s",
+            ledger_path,
+        )
 
     return IntakeResult(
         technical=True,
@@ -399,6 +408,16 @@ def _load_state(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {"version": 1, "incidents": {}}
     return data if isinstance(data, dict) else {"version": 1, "incidents": {}}
+
+
+def _rotate_ledger(path: Path, *, max_bytes: int = 8_000_000) -> None:
+    """Rotate the P0 incident ledger past max_bytes (keep one prior generation as .1).
+    Best-effort; a rotation failure must never block intake."""
+    try:
+        if path.exists() and path.stat().st_size >= max_bytes:
+            path.replace(path.with_name(path.name + ".1"))
+    except OSError:
+        log.warning("p0 incident ledger rotation failed (continuing): %s", path)
 
 
 def _store_state(path: Path, state: dict[str, Any]) -> None:
