@@ -11,8 +11,8 @@
 # greek deny-list below never touches them.
 #
 # Only greek-letter-shaped tokens BEYOND the approved slots (kappa, lambda, mu,
-# nu, xi, omicron, sigma, tau, upsilon, phi, chi, psi, omega) are blocked when
-# they appear as a session identifier.
+# nu, xi, omicron, pi, rho, sigma, tau, upsilon, phi, chi, psi, omega) are blocked
+# when they appear as a session identifier. Must match the UNAPPROVED regex below.
 #
 # False-positive shield — the hook is conservative. It only fires
 # when the unknown-session name appears:

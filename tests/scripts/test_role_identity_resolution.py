@@ -121,16 +121,26 @@ def test_enforcement_blocks_greek_beyond_iota(tmp_path: Path) -> None:
 # --- hapax-whoami: env-first beats a PRESENT marker; --match-title seam ---
 
 
-def test_whoami_env_beats_present_marker(tmp_path: Path) -> None:
+def test_whoami_env_beats_present_and_reachable_marker(tmp_path: Path) -> None:
+    # Two-phase, airtight: first PROVE the marker is reachable for this sid, then
+    # prove env wins over that same proven-reachable marker. (The resolver keys the
+    # marker by HAPAX_SESSION_ID, falling back to CLAUDE_CODE_SESSION_ID.)
     (tmp_path / ".cache" / "hapax").mkdir(parents=True)
     (tmp_path / ".cache" / "hapax" / "session-role-sid99").write_text("gamma\n")
-    r = _run(
+
+    # Phase 1: no identity env → the marker IS reachable and resolves to its value.
+    r_marker = _run(["bash", str(WHOAMI)], tmp_path, {"CLAUDE_CODE_SESSION_ID": "sid99"})
+    assert r_marker.returncode == 0, r_marker.stderr
+    assert r_marker.stdout.strip() == "gamma", "precondition: the marker must be reachable"
+
+    # Phase 2: same reachable marker, but an identity env var is now set → env wins.
+    r_env = _run(
         ["bash", str(WHOAMI)],
         tmp_path,
         {"HAPAX_AGENT_ROLE": "cc-zai", "CLAUDE_CODE_SESSION_ID": "sid99"},
     )
-    assert r.returncode == 0, r.stderr
-    assert r.stdout.strip() == "cc-zai"  # env wins over the present marker
+    assert r_env.returncode == 0, r_env.stderr
+    assert r_env.stdout.strip() == "cc-zai"  # env beats the proven-reachable marker
 
 
 @pytest.mark.parametrize(
