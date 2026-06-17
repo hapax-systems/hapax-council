@@ -70,6 +70,13 @@ rhetorical choices — and the tooling assumes them:
 - The worktree cap (`no-stale-branches.sh`) is sized for the full
   multi-interface team (greek + `cx-*` + `cc-*` + `vbe-*` + antigrav).
 
+Recheck commands (verify these claims after any change):
+- `agent-role.sh whoami` — the resolved role for this session (the SSOT path).
+- `scripts/hapax-whoami-audit.sh` — exits non-zero on a name outside the vocabulary.
+- `uv run pytest tests/scripts/test_role_identity_resolution.py tests/hooks/test_session_name_enforcement.py`
+  — exercises env-first resolution, the audit approved-set, the assert-identity vocab,
+  and the enforcement deny-list against the canonical vocabulary above.
+
 Adding a new session name requires amending this file AND the canonical
 vocabulary in `hooks/scripts/agent-role.sh` (assert-identity), the
 approved list in `scripts/hapax-whoami-audit.sh`, and the greek

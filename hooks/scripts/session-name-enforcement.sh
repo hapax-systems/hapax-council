@@ -58,7 +58,7 @@ CMD_STRIPPED="$(printf '%s' "$CMD" | sed -zE "s/'[^']*'//g; s/\"[^\"]*\"//g")"
 # Case-insensitive. This is an explicit deny-list rather than an
 # approved-only allow-list — over-matching on allow-list would
 # false-positive on `alpha-bearing-string` etc.
-UNAPPROVED='kappa|lambda|mu|nu|xi|omicron|sigma|tau|upsilon|phi|chi|psi|omega'
+UNAPPROVED='kappa|lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega'
 
 # Assemble the regex for where an unapproved name can appear.
 # Each pattern is an anchor that strongly implies "this is being
@@ -90,7 +90,8 @@ done
 
 if [ -n "$violation" ]; then
     echo "BLOCKED: Unknown session name referenced: '$violation'" >&2
-    echo "  Approved session names: alpha, beta, gamma, delta, epsilon" >&2
+    echo "  Approved lanes: greek slots alpha..iota, antigrav, cx-<color>, cc-<name>, vbe-<n>" >&2
+    echo "  (canonical vocabulary SSOT: hooks/scripts/agent-role.sh assert-identity)" >&2
     echo "  Governance: docs/governance/ (session-naming invariant, task #152)" >&2
     echo "  Command: $(echo "$CMD" | head -c 120)" >&2
     exit 2

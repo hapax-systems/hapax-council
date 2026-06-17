@@ -147,3 +147,35 @@ def test_whoami_match_title(tmp_path: Path, title: str, expected: str) -> None:
     r = _run(["bash", str(WHOAMI), "--match-title", title], tmp_path, {})
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == expected
+
+
+# --- hapax-whoami: full env precedence == hapax_agent_identity's order ---
+# NAME -> CODEX thread/session/role -> HAPAX_AGENT_ROLE -> CLAUDE_ROLE.
+
+
+def test_whoami_name_beats_all_other_env(tmp_path: Path) -> None:
+    r = _run(
+        ["bash", str(WHOAMI)],
+        tmp_path,
+        {
+            "HAPAX_AGENT_NAME": "cc-zai",
+            "CODEX_ROLE": "cx-red",
+            "HAPAX_AGENT_ROLE": "alpha",
+            "CLAUDE_ROLE": "beta",
+        },
+    )
+    assert r.stdout.strip() == "cc-zai"
+
+
+def test_whoami_codex_env_precedes_agent_role(tmp_path: Path) -> None:
+    r = _run(
+        ["bash", str(WHOAMI)],
+        tmp_path,
+        {"CODEX_ROLE": "cx-blue", "HAPAX_AGENT_ROLE": "alpha", "CLAUDE_ROLE": "gamma"},
+    )
+    assert r.stdout.strip() == "cx-blue"
+
+
+def test_whoami_claude_role_is_last_resort_env(tmp_path: Path) -> None:
+    r = _run(["bash", str(WHOAMI)], tmp_path, {"CLAUDE_ROLE": "delta"})
+    assert r.stdout.strip() == "delta"
