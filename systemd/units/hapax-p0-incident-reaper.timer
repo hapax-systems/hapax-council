@@ -8,4 +8,7 @@ AccuracySec=30s
 Persistent=true
 
 [Install]
+# Enabled by the governed install-units.sh *.timer sweep + systemd/user-preset.d/hapax.preset
+# (and tracked in audit-runtime-activation-drift CRITICAL_UNITS).
+# Recheck: systemctl --user is-enabled hapax-p0-incident-reaper.timer
 WantedBy=timers.target

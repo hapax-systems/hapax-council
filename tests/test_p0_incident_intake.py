@@ -1004,3 +1004,47 @@ def test_reap_mutates_state_inside_the_lock(tmp_path, monkeypatch):
     assert reaped == [("operational:l", "task_closed")]
     # _store_state ran exactly once, and the lock was held when it ran
     assert store_observed_lock == [True]
+
+
+def test_systemd_unit_recovered_probe_branches():
+    # Deterministic coverage of the positive-confirmation probe state machine,
+    # exercised through the loaded CLI module with a mocked systemctl runner.
+    import types
+
+    probe = _load_cli_module()._systemd_unit_recovered
+
+    def show(stdout, returncode=0):
+        return lambda _argv: types.SimpleNamespace(returncode=returncode, stdout=stdout)
+
+    # loaded + active -> recovered (reap)
+    assert probe("u", run=show("LoadState=loaded\nActiveState=active\nResult=success\n")) is True
+    # loaded + inactive + success (oneshot recovered cleanly) -> reap
+    assert probe("u", run=show("LoadState=loaded\nActiveState=inactive\nResult=success\n")) is True
+    # loaded + failed -> keep
+    assert probe("u", run=show("LoadState=loaded\nActiveState=failed\nResult=exit-code\n")) is False
+    # loaded + inactive + non-success -> keep
+    assert (
+        probe("u", run=show("LoadState=loaded\nActiveState=inactive\nResult=exit-code\n")) is False
+    )
+    # unknown / not-loaded -> keep (cannot confirm recovery)
+    assert (
+        probe("u", run=show("LoadState=not-found\nActiveState=inactive\nResult=success\n")) is False
+    )
+    # nonzero systemctl return -> keep
+    assert probe("u", run=show("", returncode=1)) is False
+
+
+def test_systemd_unit_recovered_keeps_on_probe_exception():
+    # A probe that cannot run (systemctl missing) or times out must KEEP, never reap.
+    import subprocess
+
+    probe = _load_cli_module()._systemd_unit_recovered
+
+    def raise_oserror(_argv):
+        raise OSError("systemctl not found")
+
+    def raise_timeout(_argv):
+        raise subprocess.TimeoutExpired(cmd="systemctl", timeout=5)
+
+    assert probe("u", run=raise_oserror) is False
+    assert probe("u", run=raise_timeout) is False

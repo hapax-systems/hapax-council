@@ -246,54 +246,59 @@ def _notification(args: argparse.Namespace) -> int:
     return _record(args, title=args.title, message=args.message, technical=args.technical)
 
 
-def _reap(args: argparse.Namespace) -> int:
-    def unit_recovered(unit: str) -> bool:
-        # POSITIVE-confirmation recovery: only reap when systemd KNOWS the unit and
-        # reports it in a clearly-recovered state. A probe failure, an unknown /
-        # never-loaded unit, or an ambiguous state KEEPS the incident (fail-safe) --
-        # we never reap on uncertainty, only on confirmed recovery. (is-failed alone
-        # would treat an unloaded/unknown unit, or a failed systemctl, as "recovered".)
-        try:
-            proc = subprocess.run(
-                [
-                    "systemctl",
-                    "--user",
-                    "show",
-                    unit,
-                    "-p",
-                    "LoadState",
-                    "-p",
-                    "ActiveState",
-                    "-p",
-                    "Result",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        except OSError:
-            return False
-        if proc.returncode != 0:
-            return False
-        props: dict[str, str] = {}
-        for line in proc.stdout.splitlines():
-            if "=" in line:
-                key, value = line.split("=", 1)
-                props[key] = value
-        if props.get("LoadState") != "loaded":
-            return False  # unknown / never-loaded -> cannot confirm recovery
-        active = props.get("ActiveState", "")
-        if active == "active":
-            return True  # running service recovered
-        # a Type=oneshot recovered by exiting cleanly; anything else (failed /
-        # activating / deactivating / ambiguous) is not confirmed-recovered -> keep
-        return active == "inactive" and props.get("Result") == "success"
+def _systemd_unit_recovered(unit: str, *, run=None) -> bool:
+    # POSITIVE-confirmation recovery probe (module-level so its branches are unit
+    # testable). Reap (True) ONLY when systemd KNOWS the unit and reports it cleanly
+    # recovered: loaded AND (active, or a Type=oneshot that exited Result=success).
+    # A probe failure (OSError / timeout / nonzero return), an unknown / never-loaded
+    # unit, or any ambiguous state returns False (keep -- never reap on uncertainty).
+    # Bounded by a 5s timeout so a stalled user-manager / DBus probe can never hang
+    # the reaper while it holds the shared state lock.
+    if run is None:
 
+        def run(argv):
+            return subprocess.run(argv, capture_output=True, text=True, check=False, timeout=5)
+
+    try:
+        proc = run(
+            [
+                "systemctl",
+                "--user",
+                "show",
+                unit,
+                "-p",
+                "LoadState",
+                "-p",
+                "ActiveState",
+                "-p",
+                "Result",
+            ]
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if proc.returncode != 0:
+        return False
+    props: dict[str, str] = {}
+    for line in proc.stdout.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            props[key] = value
+    if props.get("LoadState") != "loaded":
+        return False  # unknown / never-loaded -> cannot confirm recovery
+    active = props.get("ActiveState", "")
+    if active == "active":
+        return True  # running service recovered
+    # a Type=oneshot recovered by exiting cleanly; anything else (failed / activating
+    # / deactivating / ambiguous) is not confirmed-recovered -> keep
+    return active == "inactive" and props.get("Result") == "success"
+
+
+def _reap(args: argparse.Namespace) -> int:
     reaped = reap_resolved_incidents(
         state_path=args.state_path,
         ledger_path=args.ledger_path,
         task_root=args.task_root,
-        unit_recovered=unit_recovered,
+        unit_recovered=_systemd_unit_recovered,
     )
     for fingerprint, reason in reaped:
         print(f"reaped {fingerprint} ({reason})")
