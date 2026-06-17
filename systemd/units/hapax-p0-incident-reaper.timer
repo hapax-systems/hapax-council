@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic reap of resolved P0 incidents (every 15 min)
+
+[Timer]
+OnBootSec=180s
+OnUnitActiveSec=15min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

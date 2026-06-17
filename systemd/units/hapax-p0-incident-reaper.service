@@ -1,0 +1,8 @@
+[Unit]
+Description=Drain resolved P0 incidents from the coalescing state (the reap half)
+After=hapax-secrets.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-p0-incident-intake reap
+Nice=10

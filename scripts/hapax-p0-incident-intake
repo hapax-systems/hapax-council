@@ -14,7 +14,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from shared.p0_incident_intake import classify_notification, record_notification
+from shared.p0_incident_intake import (
+    classify_notification,
+    reap_resolved_incidents,
+    record_notification,
+)
 
 HAPAX_NOTIFICATION_APP_NAMES = {"hapax system", "llm stack"}
 
@@ -242,6 +246,28 @@ def _notification(args: argparse.Namespace) -> int:
     return _record(args, title=args.title, message=args.message, technical=args.technical)
 
 
+def _reap(args: argparse.Namespace) -> int:
+    def unit_active(unit: str) -> bool:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", unit],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.stdout.strip() == "active"
+
+    reaped = reap_resolved_incidents(
+        state_path=args.state_path,
+        ledger_path=args.ledger_path,
+        task_root=args.task_root,
+        unit_active=unit_active,
+    )
+    for fingerprint, reason in reaped:
+        print(f"reaped {fingerprint} ({reason})")
+    print(f"reaped {len(reaped)} resolved incident(s)")
+    return 0
+
+
 def _drain_desktop(args: argparse.Namespace) -> int:
     try:
         state = json.loads(args.state_path.read_text(encoding="utf-8"))
@@ -383,6 +409,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     add_common(drain)
     drain.set_defaults(func=_drain_desktop)
+
+    reap = sub.add_parser(
+        "reap",
+        help="Drain resolved incidents (closed task or recovered unit) from the coalescing state.",
+    )
+    add_common(reap)
+    reap.set_defaults(func=_reap)
 
     return parser
 

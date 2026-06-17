@@ -774,3 +774,122 @@ def test_cli_drain_desktop_dismisses_consumed_intake_notifications(tmp_path, mon
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert "health_stack_failed:stack-failed" in state["incidents"]
     assert list((task_root / "active").glob("p0-incident-health-stack-failed-*.md"))
+
+
+def test_reap_resolved_incidents_drains_closed_and_recovered(tmp_path):
+    # The 'drain' half: a closed remediation task OR a recovered systemd unit reaps
+    # its incident from state.json; an active task / still-failing unit is kept.
+    task_root = tmp_path / "tasks"
+    (task_root / "active").mkdir(parents=True)
+    (task_root / "closed").mkdir(parents=True)
+    state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+
+    (task_root / "closed" / "p0-incident-aaa.md").write_text("closed", encoding="utf-8")
+    (task_root / "active" / "p0-incident-bbb.md").write_text("active", encoding="utf-8")
+
+    state = {
+        "version": 1,
+        "incidents": {
+            "operational:aaa": {"kind": "lane_supervisor", "task_id": "p0-incident-aaa"},
+            "operational:bbb": {"kind": "lane_supervisor", "task_id": "p0-incident-bbb"},
+            "systemd_service_failed:demo.service": {
+                "kind": "systemd_service_failed",
+                "task_id": "p0-incident-ccc",
+            },
+            "systemd_service_failed:broken.service": {
+                "kind": "systemd_service_failed",
+                "task_id": "p0-incident-ddd",
+            },
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    reaped = p0_intake.reap_resolved_incidents(
+        state_path=state_path,
+        ledger_path=ledger_path,
+        task_root=task_root,
+        unit_active=lambda u: u == "demo.service",  # demo recovered; broken still down
+    )
+
+    assert dict(reaped) == {
+        "operational:aaa": "task_closed",
+        "systemd_service_failed:demo.service": "unit_recovered",
+    }
+    remaining = json.loads(state_path.read_text())["incidents"]
+    assert set(remaining) == {"operational:bbb", "systemd_service_failed:broken.service"}
+
+    rows = [json.loads(line) for line in ledger_path.read_text().splitlines() if line.strip()]
+    assert {r["fingerprint"] for r in rows} == {
+        "operational:aaa",
+        "systemd_service_failed:demo.service",
+    }
+    assert all(r["kind"] == "p0_incident_resolved" for r in rows)
+
+
+def test_reap_keeps_incident_when_unit_check_raises(tmp_path):
+    # A health-probe exception must NOT reap (fail-safe: keep the incident).
+    task_root = tmp_path / "tasks"
+    (task_root / "active").mkdir(parents=True)
+    (task_root / "closed").mkdir(parents=True)
+    state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+    state = {
+        "version": 1,
+        "incidents": {
+            "systemd_service_failed:flaky.service": {
+                "kind": "systemd_service_failed",
+                "task_id": "p0-incident-flaky",
+            }
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    def boom(_unit):
+        raise RuntimeError("systemctl unavailable")
+
+    reaped = p0_intake.reap_resolved_incidents(
+        state_path=state_path,
+        ledger_path=ledger_path,
+        task_root=task_root,
+        unit_active=boom,
+    )
+    assert reaped == []
+    assert set(json.loads(state_path.read_text())["incidents"]) == {
+        "systemd_service_failed:flaky.service"
+    }
+
+
+def test_reap_subcommand_drains_closed_task(tmp_path):
+    # Exercises the `reap` CLI subcommand end-to-end against a closed-task incident.
+    task_root = tmp_path / "tasks"
+    (task_root / "active").mkdir(parents=True)
+    (task_root / "closed").mkdir(parents=True)
+    (task_root / "closed" / "p0-incident-zzz.md").write_text("closed", encoding="utf-8")
+    state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+    state = {
+        "version": 1,
+        "incidents": {"operational:zzz": {"kind": "lane_supervisor", "task_id": "p0-incident-zzz"}},
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(INTAKE_SCRIPT),
+            "reap",
+            "--task-root",
+            str(task_root),
+            "--state-path",
+            str(state_path),
+            "--ledger-path",
+            str(ledger_path),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(state_path.read_text())["incidents"] == {}
