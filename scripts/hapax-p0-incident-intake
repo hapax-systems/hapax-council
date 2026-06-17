@@ -247,20 +247,25 @@ def _notification(args: argparse.Namespace) -> int:
 
 
 def _reap(args: argparse.Namespace) -> int:
-    def unit_active(unit: str) -> bool:
+    def unit_recovered(unit: str) -> bool:
+        # A systemd_service_failed incident is resolved when the unit is no longer
+        # in a failed state. `is-failed` prints "failed" (exit 0) only while failed;
+        # anything else (active / inactive / dead -- incl. a recovered Type=oneshot)
+        # means it recovered. This is broader than is-active, which would never reap
+        # an oneshot that recovers by succeeding to inactive.
         result = subprocess.run(
-            ["systemctl", "--user", "is-active", unit],
+            ["systemctl", "--user", "is-failed", unit],
             capture_output=True,
             text=True,
             check=False,
         )
-        return result.stdout.strip() == "active"
+        return result.stdout.strip() != "failed"
 
     reaped = reap_resolved_incidents(
         state_path=args.state_path,
         ledger_path=args.ledger_path,
         task_root=args.task_root,
-        unit_active=unit_active,
+        unit_recovered=unit_recovered,
     )
     for fingerprint, reason in reaped:
         print(f"reaped {fingerprint} ({reason})")

@@ -440,16 +440,20 @@ def reap_resolved_incidents(
     state_path: Path = DEFAULT_STATE_PATH,
     ledger_path: Path = DEFAULT_LEDGER_PATH,
     task_root: Path = DEFAULT_TASK_ROOT,
-    unit_active: Callable[[str], bool] | None = None,
+    unit_recovered: Callable[[str], bool] | None = None,
     now: datetime | None = None,
 ) -> list[tuple[str, str]]:
     """Drain RESOLVED P0 incidents from the coalescing state -- the missing 'drain' half.
 
     An incident whose remediation cc-task is CLOSED, or whose systemd unit has RECOVERED
-    (``unit_active`` returns True), is removed from state.json and a p0_incident_resolved
-    row is appended to the ledger. Without this, state.json grows immortally and re-arming
-    notify-failure@ refills it. Returns (fingerprint, reason) for each reaped incident;
-    best-effort -- a single incident's health-check failure never blocks the rest.
+    (``unit_recovered`` returns True -- the unit is no longer in a *failed* state, which
+    covers Type=oneshot/timer services that recover by succeeding to inactive, not only
+    long-running services that go active), is removed from state.json and a
+    p0_incident_resolved row is appended to the ledger. Without this, state.json grows
+    immortally and re-arming notify-failure@ refills it. Returns (fingerprint, reason) for
+    each reaped incident; best-effort -- a single incident's health-check failure never
+    blocks the rest. A unit that flaps back to failed after a reap is simply re-minted by
+    the next notify-failure@ firing, so a transient recovery never loses the incident.
     """
     now = now or datetime.now(UTC)
     reaped: list[tuple[str, str]] = []
@@ -471,17 +475,17 @@ def reap_resolved_incidents(
                 match = _find_task(task_root, str(task_id))
                 if match is not None and match.closed:
                     reason = "task_closed"
-            if reason is None and kind == "systemd_service_failed" and unit_active is not None:
+            if reason is None and kind == "systemd_service_failed" and unit_recovered is not None:
                 unit = fingerprint.split(":", 1)[1] if ":" in fingerprint else ""
                 try:
-                    if unit and unit_active(unit):
+                    if unit and unit_recovered(unit):
                         reason = "unit_recovered"
                 except Exception:  # noqa: BLE001 -- a health-check failure must not block the reap
                     reason = None
             if reason:
                 reaped.append((fingerprint, reason))
                 del incidents[fingerprint]
-                append_jsonl(
+                appended = append_jsonl(
                     ledger_path,
                     {
                         "ts": _iso(now),
@@ -493,6 +497,12 @@ def reap_resolved_incidents(
                     sort_keys=True,
                     raising=False,
                 )
+                if not appended:
+                    log.warning(
+                        "p0 incident resolved-row append failed (incident %s drained anyway): %s",
+                        fingerprint,
+                        ledger_path,
+                    )
         if reaped:
             state["updated_at"] = _iso(now)
             _store_state(state_path, state)
