@@ -4179,3 +4179,13 @@ is_persistent
 from agents.request_decomposer.models import TaskSpec as _TaskSpecD8  # noqa: E402
 
 _TaskSpecD8._enforce_d8_governance_floor
+
+# InterviewConductor is the new turn-state-motor MVP (cc-task
+# voice-interview-conductor-turn-motor-20260615, REQ-20260616 Track A). Its live caller
+# (daemon answer-buffer capture + runner-handle injection) is a follow-on task; the class
+# is exercised by tests/hapax_daimonion/test_interview_conductor.py.
+from agents.hapax_daimonion.interview_conductor import (
+    InterviewConductor as _InterviewConductor,
+)
+
+_InterviewConductor
