@@ -142,7 +142,12 @@ def _is_duplicate(title: str, message: str) -> bool:
     state: dict = {}
     try:
         if _DEDUP_FILE.exists():
-            state = _json.loads(_DEDUP_FILE.read_text())
+            loaded = _json.loads(_DEDUP_FILE.read_text())
+            # Validate the JSON root is a mapping: a writer producing valid JSON whose
+            # root is null/list/string/number must not raise AttributeError out of the
+            # dedup gate (state.get below runs outside this try). SHM-corruption class.
+            if isinstance(loaded, dict):
+                state = loaded
     except Exception:
         pass
     last_sent = state.get(key, 0)
