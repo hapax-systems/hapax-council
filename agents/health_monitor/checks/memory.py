@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 
 from shared.memory_pressure import (
-    DEFAULT_EXPECTED_SWAPPINESS,
     MemoryPressureSignal,
     classify_global_ram_pressure,
     classify_memory_psi_pressure,
@@ -54,7 +53,9 @@ async def check_memory_pressure() -> list[CheckResult]:
         signals.append(classify_memory_psi_pressure(parse_memory_psi(memory_psi_text)))
 
     swaps_text = _read_text(_SWAPS_PATH) or ""
-    signals.append(classify_swap_zram_saturation(parse_proc_swaps(swaps_text)))
+    swap_devices = parse_proc_swaps(swaps_text)
+    signals.append(classify_swap_zram_saturation(swap_devices))
+    zram_active = any(device.is_zram for device in swap_devices)
 
     swappiness_text = _read_text(_SWAPPINESS_PATH)
     if swappiness_text is None:
@@ -71,13 +72,17 @@ async def check_memory_pressure() -> list[CheckResult]:
         return results
 
     try:
-        expected = int(os.environ.get("HAPAX_EXPECTED_SWAPPINESS", DEFAULT_EXPECTED_SWAPPINESS))
-        signals.append(
-            classify_swappiness_drift(
-                int(swappiness_text.strip()),
-                expected_value=expected,
+        live_swappiness = int(swappiness_text.strip())
+        expected_env = os.environ.get("HAPAX_EXPECTED_SWAPPINESS")
+        if expected_env is not None:
+            # explicit operator override wins (exact match)
+            signals.append(
+                classify_swappiness_drift(live_swappiness, expected_value=int(expected_env))
             )
-        )
+        else:
+            # box-class default: a zram swap box correctly runs a high vm.swappiness
+            # (CachyOS sets 150), so only hold to the flat low default when off zram.
+            signals.append(classify_swappiness_drift(live_swappiness, zram_active=zram_active))
     except ValueError:
         results = [_check_result(signal, started_at=t) for signal in signals]
         results.append(
