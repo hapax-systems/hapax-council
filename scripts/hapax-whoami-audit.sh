@@ -2,17 +2,17 @@
 # hapax-whoami-audit.sh — print + verify the current Claude Code session identity.
 #
 # Wraps `scripts/hapax-whoami` and adds invariant enforcement: the
-# identity resolved from the foot window title must be one of the
-# governance-approved session names:
+# resolved identity (env-first, then session-role marker, then window
+# title) must be one of the governance-approved lanes — the canonical
+# vocabulary (SSOT: hooks/scripts/agent-role.sh assert-identity):
 #
-#   alpha    — primary/permanent, workstation-resident
-#   beta     — permanent secondary, livestream perf support
-#   gamma    — reserved (experimental / future)
-#   delta    — permanent tertiary, first-class from 2026-04-12
-#   epsilon  — permanent quaternary (LRR epic rotation)
-#   cx-<color> — Codex thread identity (for example cx-red)
+#   greek slots: alpha beta gamma delta epsilon zeta eta theta iota
+#   antigrav    — IDE-bound lane
+#   cx-<color>  — Codex thread identity (for example cx-red)
+#   cc-<name>   — relay-coordinated Claude lane (for example cc-zai)
+#   vbe-<n>     — Vibe lane
 #
-# Any other name (zeta, eta, sigma, "claude", etc.) exits non-zero so
+# Any other name (kappa and beyond, "claude", etc.) exits non-zero so
 # callers — CI jobs, audit hooks, `session-context.sh` — surface the
 # violation without guessing the correct identity.
 #

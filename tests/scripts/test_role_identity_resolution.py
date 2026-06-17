@@ -116,3 +116,34 @@ def test_enforcement_allows_canonical_greek_slot(tmp_path: Path) -> None:
 def test_enforcement_blocks_greek_beyond_iota(tmp_path: Path) -> None:
     r = _hook("hapax-claude --session kappa", tmp_path)
     assert r.returncode == 2
+
+
+# --- hapax-whoami: env-first beats a PRESENT marker; --match-title seam ---
+
+
+def test_whoami_env_beats_present_marker(tmp_path: Path) -> None:
+    (tmp_path / ".cache" / "hapax").mkdir(parents=True)
+    (tmp_path / ".cache" / "hapax" / "session-role-sid99").write_text("gamma\n")
+    r = _run(
+        ["bash", str(WHOAMI)],
+        tmp_path,
+        {"HAPAX_AGENT_ROLE": "cc-zai", "CLAUDE_CODE_SESSION_ID": "sid99"},
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "cc-zai"  # env wins over the present marker
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("claude cc-zai", "cc-zai"),
+        ("spinner theta - foo", "theta"),
+        ("iota", "iota"),
+        ("cx-red", "cx-red"),
+        ("no identity here", ""),
+    ],
+)
+def test_whoami_match_title(tmp_path: Path, title: str, expected: str) -> None:
+    r = _run(["bash", str(WHOAMI), "--match-title", title], tmp_path, {})
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == expected

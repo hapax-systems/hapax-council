@@ -58,9 +58,10 @@ The canonical lane vocabulary (SSOT: `hooks/scripts/agent-role.sh`
 rhetorical choices — and the tooling assumes them:
 
 - `hapax-whoami` (identity resolver) resolves the role env var FIRST
-  (`HAPAX_AGENT_ROLE`/`HAPAX_AGENT_NAME`/`CLAUDE_ROLE`), then the
-  session-role marker, then the compositor walk — WM-independent, so
-  identity survives a missing hyprctl (KWin/niri).
+  (`HAPAX_AGENT_NAME`, then `HAPAX_AGENT_ROLE`, then `CLAUDE_ROLE`), then
+  the session-role marker, then the compositor walk — WM-independent, so
+  identity survives a missing hyprctl (KWin/niri). Same precedence as
+  `hapax_agent_identity` in `agent-role.sh`.
 - `scripts/hapax-whoami-audit.sh` fails non-zero on any name outside
   the vocabulary above.
 - `session-name-enforcement.sh` PreToolUse hook BLOCKS Bash commands

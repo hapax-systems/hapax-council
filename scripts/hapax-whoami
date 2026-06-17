@@ -18,6 +18,17 @@
 
 set -eu
 
+# Canonical identity regex — shared by the --match-title seam and the foot-window
+# -title path below. Mirrors the lane vocabulary in hooks/scripts/agent-role.sh.
+_IDENTITY_RE='\b(cx-[a-z][a-z-]*|cc-[a-z][a-z-]*|alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota)\b'
+
+# Testable seam: `hapax-whoami --match-title "<title>"` runs ONLY the title->identity
+# match (the foot-window-title path) so the matcher is unit-testable without a compositor.
+if [ "${1:-}" = "--match-title" ]; then
+  printf '%s\n' "$(printf '%s' "${2:-}" | grep -oiE "$_IDENTITY_RE" | tail -1 | tr '[:upper:]' '[:lower:]')"
+  exit 0
+fi
+
 # Env-var identity (the canonical first signal). The spawners export
 # HAPAX_AGENT_NAME / HAPAX_AGENT_ROLE / CLAUDE_ROLE for the session; this mirrors
 # hapax_agent_identity's env precedence in hooks/scripts/agent-role.sh and is the
@@ -100,7 +111,7 @@ fi
 
 # Match a known session name. Case-insensitive, last match wins so activity
 # glyphs + prefixes don't interfere.
-identity=$(echo "$title" | grep -oiE '\b(cx-[a-z][a-z-]*|cc-[a-z][a-z-]*|alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota)\b' | tail -1 | tr '[:upper:]' '[:lower:]')
+identity=$(echo "$title" | grep -oiE "$_IDENTITY_RE" | tail -1 | tr '[:upper:]' '[:lower:]')
 
 if [ -z "$identity" ]; then
   echo "hapax-whoami: window title did not match a known session name: $title" >&2
