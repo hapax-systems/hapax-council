@@ -22,6 +22,7 @@ WHOAMI = REPO / "scripts" / "hapax-whoami"
 AUDIT = REPO / "scripts" / "hapax-whoami-audit.sh"
 AGENT_ROLE = REPO / "hooks" / "scripts" / "agent-role.sh"
 ENFORCE = REPO / "hooks" / "scripts" / "session-name-enforcement.sh"
+CLAUDE_SEND = REPO / "scripts" / "hapax-claude-send"
 
 
 def _run(cmd: list[str], home: Path, env_extra: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -113,9 +114,26 @@ def test_enforcement_allows_canonical_greek_slot(tmp_path: Path) -> None:
     assert r.returncode == 0, r.stderr
 
 
-def test_enforcement_blocks_greek_beyond_iota(tmp_path: Path) -> None:
-    r = _hook("hapax-claude --session kappa", tmp_path)
+@pytest.mark.parametrize("name", ["kappa", "pi", "rho", "omega"])
+def test_enforcement_blocks_greek_beyond_iota(tmp_path: Path, name: str) -> None:
+    r = _hook(f"hapax-claude --session {name}", tmp_path)
     assert r.returncode == 2
+
+
+# --- hapax-claude-send: cc-<name> is an accepted relay target ---
+# (Validation runs before the message check, so "no message" fails fast with
+# 'missing MESSAGE' iff the role passed — no tmux, no hang, no side effects.)
+
+
+def test_claude_send_accepts_cc_lane(tmp_path: Path) -> None:
+    r = _run(["bash", str(CLAUDE_SEND), "--session", "cc-zai"], tmp_path, {})
+    assert "invalid role" not in r.stderr.lower()  # cc-zai cleared role validation
+
+
+def test_claude_send_rejects_unapproved_role(tmp_path: Path) -> None:
+    r = _run(["bash", str(CLAUDE_SEND), "--session", "kappa"], tmp_path, {})
+    assert r.returncode == 2
+    assert "invalid role" in r.stderr.lower()
 
 
 # --- hapax-whoami: env-first beats a PRESENT marker; --match-title seam ---
