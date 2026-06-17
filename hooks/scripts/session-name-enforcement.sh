@@ -2,17 +2,17 @@
 # session-name-enforcement.sh — PreToolUse hook (Bash commands)
 #
 # Blocks Bash commands that reference a non-approved session name.
-# The governance-approved Claude session-name set is:
+# Canonical lane vocabulary (mirror of hooks/scripts/agent-role.sh assert-identity):
 #
-#   alpha beta gamma delta epsilon
+#   greek slots: alpha beta gamma delta epsilon zeta eta theta iota  (+ antigrav)
 #
-# Codex thread names use `cx-<color-word>` (for example `cx-red`) to
-# avoid Greek-string ambiguity while staying visually distinct from
-# Claude roles.
+# Codex thread names use `cx-<color-word>`, Claude relay lanes `cc-<name>`, and
+# Vibe lanes `vbe-<n>` — distinct namespaces, not greek-letter-shaped, so the
+# greek deny-list below never touches them.
 #
-# Any other greek-letter-shaped token (zeta, eta, theta, iota, kappa,
-# lambda, mu, nu, xi, omicron, pi, rho, sigma, tau, upsilon, phi,
-# chi, psi, omega) appearing as a session identifier is blocked.
+# Only greek-letter-shaped tokens BEYOND the approved slots (kappa, lambda, mu,
+# nu, xi, omicron, pi, rho, sigma, tau, upsilon, phi, chi, psi, omega) are blocked
+# when they appear as a session identifier. Must match the UNAPPROVED regex below.
 #
 # False-positive shield — the hook is conservative. It only fires
 # when the unknown-session name appears:
@@ -58,7 +58,7 @@ CMD_STRIPPED="$(printf '%s' "$CMD" | sed -zE "s/'[^']*'//g; s/\"[^\"]*\"//g")"
 # Case-insensitive. This is an explicit deny-list rather than an
 # approved-only allow-list — over-matching on allow-list would
 # false-positive on `alpha-bearing-string` etc.
-UNAPPROVED='zeta|eta|theta|iota|kappa|lambda|mu|nu|xi|omicron|sigma|tau|upsilon|phi|chi|psi|omega'
+UNAPPROVED='kappa|lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega'
 
 # Assemble the regex for where an unapproved name can appear.
 # Each pattern is an anchor that strongly implies "this is being
@@ -90,7 +90,8 @@ done
 
 if [ -n "$violation" ]; then
     echo "BLOCKED: Unknown session name referenced: '$violation'" >&2
-    echo "  Approved session names: alpha, beta, gamma, delta, epsilon" >&2
+    echo "  Approved lanes: greek slots alpha..iota, antigrav, cx-<color>, cc-<name>, vbe-<n>" >&2
+    echo "  (canonical vocabulary SSOT: hooks/scripts/agent-role.sh assert-identity)" >&2
     echo "  Governance: docs/governance/ (session-naming invariant, task #152)" >&2
     echo "  Command: $(echo "$CMD" | head -c 120)" >&2
     exit 2

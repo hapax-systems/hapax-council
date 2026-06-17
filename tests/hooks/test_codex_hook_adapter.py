@@ -154,7 +154,7 @@ def test_shell_command_runs_session_name_enforcement(tmp_path: Path) -> None:
             "hook_event_name": "PreToolUse",
             "session_id": "s1",
             "tool_name": "exec_command",
-            "tool_input": {"cmd": "scripts/hapax-codex --session zeta -- mcp list"},
+            "tool_input": {"cmd": "scripts/hapax-codex --session kappa -- mcp list"},
         },
         home=tmp_path,
     )
