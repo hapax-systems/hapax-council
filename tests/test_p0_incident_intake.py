@@ -873,9 +873,10 @@ def test_reap_subcommand_drains_closed_task(tmp_path):
         "version": 1,
         "incidents": {
             "operational:zzz": {"kind": "lane_supervisor", "task_id": "p0-incident-zzz"},
-            # Drives the real `systemctl --user is-failed` callback end-to-end so a
-            # NameError / missing import in the CLI cannot hide. Its fate depends on
-            # the host's is-failed output, so the test only asserts the run succeeds.
+            # Drives the real `systemctl --user show` callback end-to-end so a
+            # NameError / missing import in the CLI cannot hide. The unit is unknown
+            # (LoadState=not-found) -> positive-confirmation cannot confirm recovery
+            # -> this incident is deterministically KEPT.
             "systemd_service_failed:hapax-no-such-unit-xyz.service": {
                 "kind": "systemd_service_failed",
                 "task_id": "p0-incident-nosuch",
@@ -904,6 +905,9 @@ def test_reap_subcommand_drains_closed_task(tmp_path):
     assert result.returncode == 0, result.stderr
     remaining = json.loads(state_path.read_text())["incidents"]
     assert "operational:zzz" not in remaining  # closed-task incident drained
+    # the real `systemctl show` probe ran (no NameError) and could not confirm
+    # recovery of an unknown unit, so it KEPT the incident (positive-confirmation)
+    assert "systemd_service_failed:hapax-no-such-unit-xyz.service" in remaining
 
 
 def test_reap_keeps_systemd_incident_when_unit_none_or_colonless(tmp_path):

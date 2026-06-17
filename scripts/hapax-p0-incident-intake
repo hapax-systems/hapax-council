@@ -248,18 +248,46 @@ def _notification(args: argparse.Namespace) -> int:
 
 def _reap(args: argparse.Namespace) -> int:
     def unit_recovered(unit: str) -> bool:
-        # A systemd_service_failed incident is resolved when the unit is no longer
-        # in a failed state. `is-failed` prints "failed" (exit 0) only while failed;
-        # anything else (active / inactive / dead -- incl. a recovered Type=oneshot)
-        # means it recovered. This is broader than is-active, which would never reap
-        # an oneshot that recovers by succeeding to inactive.
-        result = subprocess.run(
-            ["systemctl", "--user", "is-failed", unit],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return result.stdout.strip() != "failed"
+        # POSITIVE-confirmation recovery: only reap when systemd KNOWS the unit and
+        # reports it in a clearly-recovered state. A probe failure, an unknown /
+        # never-loaded unit, or an ambiguous state KEEPS the incident (fail-safe) --
+        # we never reap on uncertainty, only on confirmed recovery. (is-failed alone
+        # would treat an unloaded/unknown unit, or a failed systemctl, as "recovered".)
+        try:
+            proc = subprocess.run(
+                [
+                    "systemctl",
+                    "--user",
+                    "show",
+                    unit,
+                    "-p",
+                    "LoadState",
+                    "-p",
+                    "ActiveState",
+                    "-p",
+                    "Result",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            return False
+        if proc.returncode != 0:
+            return False
+        props: dict[str, str] = {}
+        for line in proc.stdout.splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                props[key] = value
+        if props.get("LoadState") != "loaded":
+            return False  # unknown / never-loaded -> cannot confirm recovery
+        active = props.get("ActiveState", "")
+        if active == "active":
+            return True  # running service recovered
+        # a Type=oneshot recovered by exiting cleanly; anything else (failed /
+        # activating / deactivating / ambiguous) is not confirmed-recovered -> keep
+        return active == "inactive" and props.get("Result") == "success"
 
     reaped = reap_resolved_incidents(
         state_path=args.state_path,
