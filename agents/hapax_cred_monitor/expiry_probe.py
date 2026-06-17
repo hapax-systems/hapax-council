@@ -165,7 +165,7 @@ def route_expiry_alerts(
             continue
         priority = "urgent" if status.severity == "p0" else "high"
         try:
-            intake_run(
+            proc = intake_run(
                 [
                     str(_INTAKE),
                     "notification",
@@ -178,9 +178,15 @@ def route_expiry_alerts(
                     priority,
                     "--tag",
                     "key",
+                    # emit a visible desktop bubble too, not just the coalesced P0 task --
+                    # a dying credential should be SEEN, not only filed.
+                    "--desktop-confirmation",
                 ]
             )
-            routed.append(status.name)
         except (OSError, subprocess.TimeoutExpired):
             continue
+        # Only count as routed when the intake actually SUCCEEDED; a nonzero exit means
+        # the alert did not land, so it must not be reported as routed.
+        if getattr(proc, "returncode", 1) == 0:
+            routed.append(status.name)
     return routed

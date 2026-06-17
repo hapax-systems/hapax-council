@@ -91,6 +91,7 @@ def test_route_expiry_alerts_routes_only_non_ok_with_right_priority():
     prios = sorted(c[c.index("--priority") + 1] for c in calls)
     assert prios == ["high", "urgent"]
     assert all("--technical" in c for c in calls)
+    assert all("--desktop-confirmation" in c for c in calls)  # dying creds must be SEEN
 
 
 def test_route_expiry_alerts_survives_intake_failure():
@@ -112,3 +113,75 @@ def test_collect_runs_tailscale_and_each_rclone_remote():
     statuses = ep.collect_expiry_statuses(rclone_remotes=("gdrive", "b2"), now=_NOW, run=run)
     names = {s.name for s in statuses}
     assert names == {"rclone/gdrive", "rclone/b2"}  # tailscale disabled -> omitted
+
+
+def test_route_does_not_count_nonzero_intake_exit_as_routed():
+    # an intake that RUNS but exits nonzero means the alert did not land -> not routed
+    calls = []
+    routed = ep.route_expiry_alerts(
+        [ep.CredentialExpiry("dead", False, None, "p0", "t", "m")],
+        intake_run=lambda argv: calls.append(list(argv)) or _proc(returncode=1),
+    )
+    assert calls and routed == []
+
+
+def _empty_store(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    return store
+
+
+def test_main_invokes_expiry_watchdog_by_default(tmp_path, monkeypatch):
+    from agents.hapax_cred_monitor import __main__ as m
+
+    seen = {}
+    monkeypatch.setattr(m, "collect_expiry_statuses", lambda: ["sentinel"])
+    monkeypatch.setattr(
+        m, "route_expiry_alerts", lambda statuses: seen.update(s=statuses) or ["routed-name"]
+    )
+    rc = m.main(["--store", str(_empty_store(tmp_path)), "--cache-dir", str(tmp_path / "cache")])
+    assert rc == 0
+    assert seen == {"s": ["sentinel"]}  # the tick collected + routed
+
+
+def test_main_skips_expiry_watchdog_with_flag(tmp_path, monkeypatch):
+    from agents.hapax_cred_monitor import __main__ as m
+
+    called = {"routed": False}
+    monkeypatch.setattr(m, "collect_expiry_statuses", lambda: ["sentinel"])
+    monkeypatch.setattr(
+        m, "route_expiry_alerts", lambda statuses: called.__setitem__("routed", True)
+    )
+    rc = m.main(
+        [
+            "--store",
+            str(_empty_store(tmp_path)),
+            "--cache-dir",
+            str(tmp_path / "cache"),
+            "--no-expiry-probe",
+        ]
+    )
+    assert rc == 0 and called["routed"] is False
+
+
+def test_main_survives_expiry_probe_failure(tmp_path, monkeypatch):
+    from agents.hapax_cred_monitor import __main__ as m
+
+    def boom():
+        raise RuntimeError("probe died")
+
+    monkeypatch.setattr(m, "collect_expiry_statuses", boom)
+    rc = m.main(["--store", str(_empty_store(tmp_path)), "--cache-dir", str(tmp_path / "cache")])
+    assert rc == 0  # a probe failure must not break the snapshot tick
+
+
+def test_main_report_mode_skips_expiry_watchdog(tmp_path, monkeypatch, capsys):
+    # --report prints JSON and returns early; the probe must not run in report mode
+    from agents.hapax_cred_monitor import __main__ as m
+
+    called = {"routed": False}
+    monkeypatch.setattr(
+        m, "route_expiry_alerts", lambda statuses: called.__setitem__("routed", True)
+    )
+    rc = m.main(["--store", str(_empty_store(tmp_path)), "--report"])
+    assert rc == 0 and called["routed"] is False
