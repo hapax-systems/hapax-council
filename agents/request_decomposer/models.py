@@ -39,6 +39,7 @@ def _path_matches_codeowners(path: str, patterns: tuple[str, ...]) -> bool:
     p = path.strip().lstrip("/")
     base = p.rsplit("/", 1)[-1]
     for pat in patterns:
+        anchored = pat.startswith("/")  # leading "/" anchors to repo root
         q = pat.lstrip("/")
         if not q:
             continue
@@ -47,13 +48,21 @@ def _path_matches_codeowners(path: str, patterns: tuple[str, ...]) -> bool:
             if p == prefix or p.startswith(prefix + "/"):
                 return True
             continue
-        if q.startswith("**/"):
+        any_depth = q.startswith("**/")
+        if any_depth:
             q = q[3:]
+        # Root-anchored patterns match only at root; non-anchored and **/ patterns
+        # match at any depth (gitignore/CODEOWNERS basename semantics).
         if any(c in q for c in "*?["):
-            if fnmatch.fnmatch(p, q) or fnmatch.fnmatch(base, q):
+            if fnmatch.fnmatch(p, q):
                 return True
-        elif p == q or p.endswith("/" + q):
-            return True
+            if (any_depth or not anchored) and fnmatch.fnmatch(base, q):
+                return True
+        else:
+            if p == q:
+                return True
+            if (any_depth or not anchored) and p.endswith("/" + q):
+                return True
     return False
 
 

@@ -135,6 +135,16 @@ class TestTaskSpec:
         assert _path_matches_codeowners(".github/CODEOWNERS", ("/.github/CODEOWNERS",))
         assert not _path_matches_codeowners("docs/readme.md", ("/axioms/",))
 
+    def test_codeowners_matcher_respects_root_anchoring(self):
+        from agents.request_decomposer.models import _path_matches_codeowners
+
+        # root-anchored pattern (leading /) matches ONLY at repo root
+        assert _path_matches_codeowners(".github/CODEOWNERS", ("/.github/CODEOWNERS",))
+        assert not _path_matches_codeowners("tmp/.github/CODEOWNERS", ("/.github/CODEOWNERS",))
+        # non-anchored pattern matches at any depth
+        assert _path_matches_codeowners("agents/x/CLAUDE.md", ("CLAUDE.md",))
+        assert _path_matches_codeowners("CLAUDE.md", ("CLAUDE.md",))
+
     def test_blocked_requires_reason(self):
         with pytest.raises(ValueError, match="blocked_reason"):
             TaskSpec(
