@@ -73,13 +73,14 @@ def test_s4_arm_service_uses_source_activation_environment() -> None:
     assert "Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree" in body
 
 
-def test_s4_arm_timer_is_boot_scoped_not_recurring_marker_loop() -> None:
+def test_s4_arm_timer_is_user_manager_startup_scoped_not_recurring_marker_loop() -> None:
     timer = _read_unit(TIMER)
 
     assert timer.get("Timer", "Unit") == "hapax-s4-arm.service"
-    assert timer.get("Timer", "OnBootSec") == "2min"
+    assert timer.get("Timer", "OnStartupSec") == "2min"
     assert timer.get("Timer", "Persistent") == "false"
     assert timer.get("Install", "WantedBy") == "timers.target"
+    assert not timer.has_option("Timer", "OnBootSec")
     assert not timer.has_option("Timer", "OnUnitActiveSec")
     assert not timer.has_option("Timer", "OnCalendar")
 
