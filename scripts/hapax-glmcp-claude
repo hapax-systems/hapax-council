@@ -26,6 +26,9 @@ Environment overrides:
   HAPAX_GLMCP_ALLOW_NON_52=1     allow a non-GLM-5.2 primary model
   HAPAX_GLMCP_ALLOW_SECRET_ENTRY_OVERRIDE=1 allow a reviewed glmcp/* pass entry
   HAPAX_GLMCP_ALLOW_BASE_URL_OVERRIDE=1 allow a reviewed endpoint override
+
+Recheck:
+  hapax-glmcp-claude --check
 EOF
 }
 
@@ -146,7 +149,6 @@ if [[ -z "$auth_token" ]]; then
   exit 6
 fi
 
-export ANTHROPIC_AUTH_TOKEN="$auth_token"
 export ANTHROPIC_BASE_URL="$base_url"
 export API_TIMEOUT_MS="${API_TIMEOUT_MS:-3000000}"
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}"
@@ -156,10 +158,9 @@ export ANTHROPIC_DEFAULT_SONNET_MODEL="$primary_model"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="$haiku_model"
 export HAPAX_LLM_PROVIDER="zai-glm-coding-plan"
 
-unset auth_token
-
 if [[ "$check_only" == true ]]; then
-  if ! claude_version="$(claude --version)"; then
+  unset auth_token
+  if ! claude_version="$(env -u ANTHROPIC_AUTH_TOKEN claude --version)"; then
     echo "hapax-glmcp-claude: claude --version failed; verify Claude Code runs before using the GLMCP lane." >&2
     exit 9
   fi
@@ -168,5 +169,8 @@ if [[ "$check_only" == true ]]; then
   printf '%s\n' "$claude_version"
   exit 0
 fi
+
+export ANTHROPIC_AUTH_TOKEN="$auth_token"
+unset auth_token
 
 exec claude "$@"

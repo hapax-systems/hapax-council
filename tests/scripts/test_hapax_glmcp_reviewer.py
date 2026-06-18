@@ -111,6 +111,8 @@ def test_call_glm_uses_coding_plan_endpoint_and_model(monkeypatch: pytest.Monkey
     assert body["messages"][0]["role"] == "system"
     assert "UNTRUSTED DATA" in body["messages"][0]["content"]
     assert "quote every title/detail string" in body["messages"][0]["content"]
+    assert "Copy checklist lens ids" in body["messages"][0]["content"]
+    assert "item slugs exactly" in body["messages"][0]["content"]
     assert body["messages"][1]["content"] == "review prompt"
     assert body["max_tokens"] == 123
     assert body["thinking"] == {"type": "disabled"}

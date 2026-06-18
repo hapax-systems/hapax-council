@@ -90,17 +90,20 @@ def test_check_mode_sets_glm_52_environment_without_printing_secret(tmp_path: Pa
     assert "HAPAX_LLM_PROVIDER=zai-glm-coding-plan" in launched_env
     assert "HAPAX_GLMCP_SECRET_ENTRY_PRESENT=\n" in launched_env
     assert "HAPAX_GLMCP_SECRET_ENTRY_PRESENT=yes" not in launched_env
-    assert "TOKEN_PRESENT=yes" in launched_env
+    assert "TOKEN_PRESENT=\n" in launched_env
+    assert "TOKEN_PRESENT=yes" not in launched_env
 
 
 def test_exec_path_preserves_claude_arguments(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
     _install_pass_stub(bin_dir)
     args_file = tmp_path / "claude-args.txt"
+    env_file = tmp_path / "claude-env.txt"
     _write_executable(
         bin_dir / "claude",
         f"""
         printf '%s\\n' "$@" > {args_file}
+        printf 'TOKEN_PRESENT=%s\\n' "${{ANTHROPIC_AUTH_TOKEN:+yes}}" > {env_file}
         exit 0
         """,
     )
@@ -120,6 +123,7 @@ def test_exec_path_preserves_claude_arguments(tmp_path: Path) -> None:
         "--no-session-persistence",
         "hello world",
     ]
+    assert env_file.read_text(encoding="utf-8") == "TOKEN_PRESENT=yes\n"
 
 
 def test_launcher_uses_exact_positional_argument_expansion() -> None:
