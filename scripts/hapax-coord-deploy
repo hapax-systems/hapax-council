@@ -125,6 +125,10 @@ stop_service_before_worktree_mutation_or_fail() {
 
 resume_previous_service_after_pre_restart_failure() {
     if [ "$SERVICE_WAS_ACTIVE_FOR_MUTATION" = "1" ]; then
+        if [ "$ROLLBACK_SHA_RECEIPTED" != "1" ]; then
+            stop_unreceipted_service_after_receipt_failure
+            return
+        fi
         restart_service_after_restart_failure_rollback
     else
         printf 'hapax-coord.service was inactive before deploy; leaving it stopped'
@@ -180,8 +184,10 @@ if [ "$CURRENT_SHA" = "$TARGET_SHA" ] && [ "$DEPLOYED_SHA" = "$TARGET_SHA" ] && 
 fi
 
 ROLLBACK_SHA=""
+ROLLBACK_SHA_RECEIPTED=0
 if [ "$DEPLOYED_SHA" != "none" ] && git -C "$WT" cat-file -e "$DEPLOYED_SHA^{commit}" 2>/dev/null; then
     ROLLBACK_SHA="$DEPLOYED_SHA"
+    ROLLBACK_SHA_RECEIPTED=1
 elif [ "$CURRENT_SHA" != "none" ] && git -C "$WT" cat-file -e "$CURRENT_SHA^{commit}" 2>/dev/null; then
     ROLLBACK_SHA="$CURRENT_SHA"
 fi
@@ -189,6 +195,10 @@ CLEAN_NEXT="next: inspect git -C $WT status --porcelain=v1 --untracked-files=all
 
 rollback_service_after_receipt_failure() {
     local service_rc
+    if [ "$ROLLBACK_SHA_RECEIPTED" != "1" ]; then
+        stop_unreceipted_service_after_receipt_failure
+        return
+    fi
     if systemctl --user restart hapax-coord.service >/dev/null 2>&1; then
         printf 'restarted hapax-coord.service on rollback sha %s' "$ROLLBACK_SHA"
     else
@@ -200,6 +210,10 @@ rollback_service_after_receipt_failure() {
 
 restart_service_after_restart_failure_rollback() {
     local service_rc
+    if [ "$ROLLBACK_SHA_RECEIPTED" != "1" ]; then
+        stop_unreceipted_service_after_receipt_failure
+        return
+    fi
     if systemctl --user restart hapax-coord.service >/dev/null 2>&1; then
         printf 'restarted hapax-coord.service on rollback sha %s' "$ROLLBACK_SHA"
     else

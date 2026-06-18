@@ -370,6 +370,31 @@ def test_coord_deploy_refuses_target_mutation_when_initial_stop_fails(
     assert (worktree / ".deployed-sha").read_text(encoding="utf-8").strip() == sha_a
 
 
+def test_coord_deploy_first_rollout_clean_failure_does_not_restart_unreceipted_target(
+    tmp_path: Path,
+) -> None:
+    repo, sha = _init_coord_repo(tmp_path)
+    act_root = tmp_path / "activation"
+    bin_dir, calls = _fake_systemctl(tmp_path)
+    calls.with_name("systemctl-service-state.txt").write_text("active\n", encoding="utf-8")
+
+    result = _deploy(repo, act_root, bin_dir, calls, fail_clean_on_sha=sha)
+
+    worktree = act_root / "worktree"
+    assert result.returncode == 1
+    assert "clean untracked/ignored activation worktree" in result.stderr
+    assert "activation worktree remains at" in result.stderr
+    assert "stopped hapax-coord.service to avoid serving unreceipted target" in result.stderr
+    assert "restarted hapax-coord.service on rollback sha" not in result.stderr
+    assert _activation_head(worktree) == sha
+    assert not (worktree / ".deployed-sha").exists()
+    assert _restart_calls(calls) == []
+    assert (
+        calls.with_name("systemctl-service-state.txt").read_text(encoding="utf-8").strip()
+        == "inactive"
+    )
+
+
 def test_coord_deploy_rolls_activation_back_when_restart_fails(tmp_path: Path) -> None:
     repo, sha_a = _init_coord_repo(tmp_path)
     act_root = tmp_path / "activation"
