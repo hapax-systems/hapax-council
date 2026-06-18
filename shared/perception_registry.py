@@ -1,4 +1,4 @@
-"""13-point perception registry — capture-side dual of the Port abstraction.
+"""16-point perception registry (13 audio/av + 3 Pi-fleet IR edge cams) — capture-side dual of the Port abstraction.
 
 CASE-VOICE-FOUNDATION-20260610 §5d (points-not-roles, operator-directed):
 every audio input is a first-class perception sensor with a geometry class;
@@ -96,6 +96,26 @@ class HwSource(BaseModel):
         return v
 
 
+class EdgeSource(BaseModel):
+    """A network edge sensor's capture binding — for points that run inference
+    on-device and POST percepts to the council rather than streaming audio
+    locally (the Pi-fleet IR cams: YOLOv8n ONNX on-device, results POSTed to
+    ``/api/pi/{role}/ir`` and mirrored to ``~/hapax-state/pi-noir/{role}.json``).
+
+    Unlike ``hw_source``/``pipewire_node`` there is NO local audio capture, so
+    ``ir_edge`` points bind here and set ``pipewire_node=None``
+    (REQ-20260616-perception-audio-ssot-program)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    role: str
+    """Pi role/zone the edge cam serves (e.g. ``desk``, ``room``, ``overhead``)."""
+    http_endpoint: str
+    """Council ingest endpoint the Pi POSTs its percepts to (e.g. ``/api/pi/desk/ir``)."""
+    state_path: str
+    """Mirrored percept-JSON path the council reads (e.g. ``~/hapax-state/pi-noir/desk.json``)."""
+
+
 class PerceptionPoint(BaseModel):
     """One capture point — a physical sensor with a geometry class."""
 
@@ -112,6 +132,9 @@ class PerceptionPoint(BaseModel):
     hand-typed — drift-impossible-by-construction."""
     av_pair: str | None = None
     """camera-loopback role this mic is lens-co-located with (av_paired only)."""
+    edge_source: EdgeSource | None = None
+    """Network edge-capture binding (``ir_edge`` points only; mutually exclusive
+    with pipewire_node/hw_source — the sensor POSTs percepts, no local audio)."""
     channels: dict[str, PerceptChannel] = Field(default_factory=dict)
     perception_recruitable: bool = True
     voice_source_tag: str | None = None
@@ -134,6 +157,21 @@ class PerceptionPoint(BaseModel):
                 raise ValueError("av_paired points must declare av_pair")
         if self.geometry == GeometryClass.SPATIAL_ARRAY and "doa" not in self.channels:
             raise ValueError("spatial_array points must declare a 'doa' channel")
+        if self.geometry != GeometryClass.IR_EDGE and self.edge_source is not None:
+            raise ValueError("edge_source is only valid for ir_edge points")
+        if self.geometry == GeometryClass.IR_EDGE:
+            if self.exposure != ExposureDomain.QUARANTINE:
+                raise ValueError(
+                    "ir_edge points compile to exposure=quarantine "
+                    f"(face-landmark + rPPG biometrics, never broadcast); got {self.exposure!r}"
+                )
+            if self.edge_source is None:
+                raise ValueError("ir_edge points must declare edge_source")
+            if self.pipewire_node is not None or self.hw_source is not None:
+                raise ValueError(
+                    "ir_edge points have no local audio capture; "
+                    "bind edge_source, not pipewire_node/hw_source"
+                )
         return self
 
 
@@ -152,7 +190,7 @@ class SubscriptionSpec(BaseModel):
 
 
 class PerceptionRegistry(BaseModel):
-    """Versioned 13-point capture registry."""
+    """Versioned 16-point capture registry (13 audio/av + 3 IR edge)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -277,6 +315,7 @@ def load_default_registry(path: Path = DEFAULT_REGISTRY_PATH) -> PerceptionRegis
 __all__ = [
     "ArchiveSpec",
     "DEFAULT_REGISTRY_PATH",
+    "EdgeSource",
     "PerceptChannel",
     "PerceptionPoint",
     "PerceptionRegistry",

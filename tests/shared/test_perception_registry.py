@@ -9,6 +9,8 @@ from shared.audio_graph.model import ExposureDomain
 from shared.perception_registry import (
     DEFAULT_REGISTRY_PATH,
     ArchiveSpec,
+    EdgeSource,
+    HwSource,
     PerceptChannel,
     PerceptionPoint,
     PerceptionRegistry,
@@ -20,6 +22,8 @@ from shared.percepts import GeometryClass
 
 _MODELS_UNDER_TEST = (
     ArchiveSpec,
+    EdgeSource,
+    HwSource,
     PerceptChannel,
     PerceptionPoint,
     SubscriptionSpec,
@@ -65,6 +69,70 @@ def test_spatial_array_requires_doa_channel() -> None:
     """'spatial-array ReSpeaker w/ DOA' — the bearings channel is the contract."""
     with pytest.raises(ValidationError, match="doa"):
         _point(geometry=GeometryClass.SPATIAL_ARRAY)
+
+
+_IR_EDGE = EdgeSource(
+    role="desk", http_endpoint="/api/pi/desk/ir", state_path="~/hapax-state/pi-noir/desk.json"
+)
+
+
+def test_ir_edge_must_be_quarantined() -> None:
+    """Pi IR cams carry face landmarks + rPPG biometrics — never broadcast-reachable."""
+    with pytest.raises(ValidationError, match="quarantine"):
+        _point(
+            geometry=GeometryClass.IR_EDGE,
+            exposure=ExposureDomain.BROADCAST,
+            pipewire_node=None,
+            edge_source=_IR_EDGE,
+        )
+
+
+def test_ir_edge_requires_edge_source() -> None:
+    with pytest.raises(ValidationError, match="edge_source"):
+        _point(
+            geometry=GeometryClass.IR_EDGE,
+            exposure=ExposureDomain.QUARANTINE,
+            pipewire_node=None,
+        )
+
+
+def test_ir_edge_forbids_local_pipewire_capture() -> None:
+    """An edge cam has no local audio — pipewire_node must be empty."""
+    with pytest.raises(ValidationError, match="no local audio"):
+        _point(
+            geometry=GeometryClass.IR_EDGE,
+            exposure=ExposureDomain.QUARANTINE,
+            pipewire_node="alsa_input.test",
+            edge_source=_IR_EDGE,
+        )
+
+
+def test_ir_edge_forbids_local_hw_capture() -> None:
+    """An edge cam has no local audio — hw_source must be empty."""
+    with pytest.raises(ValidationError, match="no local audio"):
+        _point(
+            geometry=GeometryClass.IR_EDGE,
+            exposure=ExposureDomain.QUARANTINE,
+            pipewire_node=None,
+            hw_source=HwSource(node_target="alsa_input.test", position="AUX1"),
+            edge_source=_IR_EDGE,
+        )
+
+
+def test_non_ir_points_reject_edge_source() -> None:
+    with pytest.raises(ValidationError, match="edge_source.*ir_edge"):
+        _point(edge_source=_IR_EDGE)
+
+
+def test_ir_edge_valid_point() -> None:
+    p = _point(
+        geometry=GeometryClass.IR_EDGE,
+        exposure=ExposureDomain.QUARANTINE,
+        pipewire_node=None,
+        edge_source=_IR_EDGE,
+    )
+    assert p.geometry == GeometryClass.IR_EDGE
+    assert p.edge_source is not None and p.edge_source.http_endpoint == "/api/pi/desk/ir"
 
 
 def test_subscription_must_reference_declared_point() -> None:
@@ -177,8 +245,50 @@ def test_registry_file_loads_and_load_default_agrees(live_registry) -> None:
     assert load_default_registry() == live_registry
 
 
-def test_thirteen_points(live_registry) -> None:
-    assert len(live_registry.points) == 13
+def test_sixteen_points(live_registry) -> None:
+    # 13 audio/av points + 3 Pi-fleet IR edge cams (ir-desk / ir-room / ir-overhead).
+    assert len(live_registry.points) == 16
+
+
+def test_ir_edge_points_are_registered_exactly(live_registry) -> None:
+    expected = {
+        "ir-desk": (
+            "desk",
+            "/api/pi/desk/ir",
+            "~/hapax-state/pi-noir/desk.json",
+        ),
+        "ir-room": (
+            "room",
+            "/api/pi/room/ir",
+            "~/hapax-state/pi-noir/room.json",
+        ),
+        "ir-overhead": (
+            "overhead",
+            "/api/pi/overhead/ir",
+            "~/hapax-state/pi-noir/overhead.json",
+        ),
+    }
+    ir_points = {
+        point_id: point
+        for point_id, point in live_registry.points.items()
+        if point.geometry == GeometryClass.IR_EDGE
+    }
+    assert set(ir_points) == set(expected)
+    for point_id, (role, endpoint, state_path) in expected.items():
+        point = ir_points[point_id]
+        assert point.exposure == ExposureDomain.QUARANTINE
+        assert point.pipewire_node is None
+        assert point.hw_source is None
+        assert point.edge_source is not None
+        assert point.edge_source.role == role
+        assert point.edge_source.http_endpoint == endpoint
+        assert point.edge_source.state_path == state_path
+        assert {name: channel.kind for name, channel in point.channels.items()} == {
+            "person": "person",
+            "gaze": "gaze",
+            "hands": "hands",
+            "biometrics": "biometrics",
+        }
 
 
 def test_all_geometry_classes_represented(live_registry) -> None:
