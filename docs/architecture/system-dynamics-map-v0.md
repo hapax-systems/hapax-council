@@ -163,6 +163,79 @@ backend or frontend framework. Production should pin and vendor browser assets,
 persist graph snapshots, add automated link checks, and validate graph snapshots
 against SHACL shapes.
 
+## Recheck Commands
+
+Run these from `~/projects/hapax-council` after changing the seed graph or viewer:
+
+```bash
+python3 -m json.tool docs/architecture/system-dynamics-map.seed.json >/tmp/system-dynamics-map.seed.pretty.json
+```
+
+```bash
+python3 - <<'PY'
+import json
+import re
+from pathlib import Path
+
+root = Path("docs/architecture")
+seed = json.loads((root / "system-dynamics-map.seed.json").read_text())
+html = (root / "system-dynamics-map-viewer.html").read_text()
+embedded = json.loads(
+    re.search(
+        r'<script type="application/json" id="seed-data">\s*(.*?)\s*</script>',
+        html,
+        re.S,
+    ).group(1)
+)
+
+for name, data in [("seed", seed), ("embedded", embedded)]:
+    node_ids = [node["id"] for node in data["nodes"]]
+    edge_ids = [edge["id"] for edge in data["edges"]]
+    assert len(node_ids) == len(set(node_ids)), f"{name}: duplicate node IDs"
+    assert len(edge_ids) == len(set(edge_ids)), f"{name}: duplicate edge IDs"
+    node_set = set(node_ids)
+    layers = {layer["id"] for layer in data["layers"]}
+    statuses = set(data["status_kinds"])
+    for node in data["nodes"]:
+        assert node["layer"] in layers, f"{name}: invalid node layer {node['id']}"
+        assert node["status"] in statuses, f"{name}: invalid node status {node['id']}"
+        assert node.get("docs"), f"{name}: node missing docs {node['id']}"
+    for edge in data["edges"]:
+        assert edge["source"] in node_set, f"{name}: missing edge source {edge['id']}"
+        assert edge["target"] in node_set, f"{name}: missing edge target {edge['id']}"
+        assert edge["layer"] in layers, f"{name}: invalid edge layer {edge['id']}"
+        assert edge["status"] in statuses, f"{name}: invalid edge status {edge['id']}"
+print(f"seed nodes={len(seed['nodes'])} edges={len(seed['edges'])}")
+print(f"embedded nodes={len(embedded['nodes'])} edges={len(embedded['edges'])}")
+PY
+```
+
+```bash
+rg -n '#[0-9A-Fa-f]{3,8}\b' \
+  docs/architecture/system-dynamics-map-v0.md \
+  docs/architecture/system-dynamics-map.seed.json \
+  docs/architecture/system-dynamics-map-viewer.html
+```
+
+```bash
+git diff --check -- \
+  docs/architecture/system-dynamics-map-v0.md \
+  docs/architecture/system-dynamics-map.seed.json \
+  docs/architecture/system-dynamics-map-viewer.html
+```
+
+For visual regression, serve `docs/architecture/` locally and capture the viewer:
+
+```bash
+python3 -m http.server 8765 --bind 127.0.0.1
+npx playwright screenshot --browser chromium --viewport-size 1440,960 \
+  --wait-for-selector '#cy canvas' --wait-for-timeout 3000 --full-page \
+  http://127.0.0.1:8765/system-dynamics-map-viewer.html /tmp/system-dynamics-map-viewer-desktop.png
+npx playwright screenshot --browser chromium --viewport-size 390,844 \
+  --wait-for-selector '#cy canvas' --wait-for-timeout 3000 --full-page \
+  http://127.0.0.1:8765/system-dynamics-map-viewer.html /tmp/system-dynamics-map-viewer-mobile.png
+```
+
 ## Source Notes
 
 Primary standards and docs used for the v0 map:
@@ -172,8 +245,11 @@ Primary standards and docs used for the v0 map:
 - OMG BPMN 2.0.2 formal, January 2014: https://www.omg.org/spec/BPMN/2.0.2/
 - OMG CMMN 1.1 formal, December 2016: https://www.omg.org/spec/CMMN/1.1/About-CMMN
 - OMG SysML 2.0 formal, September 2025: https://www.omg.org/spec/SysML/2.0/About-SysML
+- OMG final-adoption press release for SysML v2.0, July 2025: https://www.omg.org/news/releases/pr2025/07-21-25.htm
 - The Open Group ArchiMate 4, released April 2026: https://www.opengroup.org/archimate-licensed-downloads
+- The Open Group ArchiMate 4 release announcement, April 27 2026: https://www.opengroup.org/The-Open-Group-Announces-ArchiMate%C2%AE-4-Specification
 - W3C RDF 1.2 Concepts, Candidate Recommendation Snapshot, April 2026: https://www.w3.org/TR/rdf12-concepts/
+- W3C RDF 1.2 Concepts publication history, 7 April 2026 CRS: https://www.w3.org/standards/history/rdf12-concepts/
 - W3C SHACL and SHACL 1.2 Core: https://www.w3.org/TR/shacl/ and https://www.w3.org/TR/shacl12-core/
 - W3C PROV-O: https://www.w3.org/TR/prov-o/
 - W3C JSON-LD 1.1: https://www.w3.org/TR/json-ld11/
