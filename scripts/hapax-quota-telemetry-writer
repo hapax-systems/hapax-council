@@ -57,8 +57,10 @@ the existing receipts script (which records config paths/existence only).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -116,6 +118,14 @@ GLMCP_ADMISSION_ENDPOINTS = frozenset(
 GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2", "glm-5.2[1m]"})
 GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS = 3600
 GLMCP_ADMISSION_RECEIPT_GLOB = "*glmcp-quota-admission*.yaml"
+GLMCP_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.:/@+-]{2,239}\Z")
+GLMCP_ADMISSION_SAFE_RECEIPT_NAME_RE = re.compile(
+    r"\A[a-z0-9_.@+-]*glmcp-quota-admission[a-z0-9_.@+-]*\.yaml\Z"
+)
+GLMCP_ADMISSION_SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
 GLMCP_ADMISSION_RECHECK_COMMAND = (
     f"find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '{GLMCP_ADMISSION_RECEIPT_GLOB}' -print"
 )
@@ -217,8 +227,8 @@ def _parse_utc(value: str) -> datetime | None:
 
 def _warn_ignored_glmcp_admission(path: Path, reason: str) -> None:
     print(
-        f"hapax-quota-telemetry-writer: ignoring GLMCP admission receipt {path.name}: "
-        f"{reason}; path: {path}; recheck: {GLMCP_ADMISSION_RECHECK_COMMAND}; "
+        f"hapax-quota-telemetry-writer: ignoring GLMCP admission receipt {_receipt_label(path)}: "
+        f"{reason}; dir: {path.parent}; recheck: {GLMCP_ADMISSION_RECHECK_COMMAND}; "
         f"{GLMCP_ADMISSION_RECOVERY_HINT}",
         file=sys.stderr,
     )
@@ -226,6 +236,17 @@ def _warn_ignored_glmcp_admission(path: Path, reason: str) -> None:
 
 def _evidence_value(value: str, *, max_chars: int) -> str:
     return " ".join(value.split())[:max_chars]
+
+
+def _receipt_label(path: Path) -> str:
+    name = path.name
+    if (
+        GLMCP_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(name)
+        and GLMCP_ADMISSION_SECRETISH_RE.search(name) is None
+    ):
+        return name
+    digest = hashlib.sha256(name.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return f"unsafe-receipt-name-sha256:{digest}"
 
 
 def active_quota_walls(
@@ -356,6 +377,16 @@ def active_glmcp_admission_receipts(
         if not receipt_evidence_ref:
             _warn_ignored_glmcp_admission(path, "evidence_ref missing")
             continue
+        receipt_evidence_ref = _evidence_value(receipt_evidence_ref, max_chars=240)
+        if (
+            GLMCP_ADMISSION_EVIDENCE_REF_RE.fullmatch(receipt_evidence_ref) is None
+            or GLMCP_ADMISSION_SECRETISH_RE.search(receipt_evidence_ref) is not None
+        ):
+            _warn_ignored_glmcp_admission(
+                path,
+                "evidence_ref unsafe; expected a sanitized witness reference, not raw secret material",
+            )
+            continue
         observed_raw = (
             fields.get("observed_at", "")
             or fields.get("captured_at", "")
@@ -410,7 +441,7 @@ def active_glmcp_admission_receipts(
             GlmcpAdmission(
                 evidence_ref=(
                     "relay-receipt:"
-                    f"{path.name}:witness:{_evidence_value(receipt_evidence_ref, max_chars=240)}:"
+                    f"{_receipt_label(path)}:witness:{receipt_evidence_ref}:"
                     f"supported_tool:{supported_tool}:endpoint:{endpoint}:model:{model}:"
                     f"observed_at:{observed_at.isoformat().replace('+00:00', 'Z')}:"
                     f"fresh_until:{fresh_until.isoformat().replace('+00:00', 'Z')}"

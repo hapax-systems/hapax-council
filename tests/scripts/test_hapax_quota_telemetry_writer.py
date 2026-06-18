@@ -265,6 +265,31 @@ def test_glmcp_admission_scans_documented_recheck_glob(tmp_path: Path) -> None:
     )
 
 
+def test_glmcp_admission_hashes_unsafe_receipt_name_in_evidence(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    unsafe_name = "sk-secret-token-glmcp-quota-admission.yaml"
+    _glmcp_admission(
+        relay,
+        observed_at="2026-06-09T23:55:00Z",
+        name=unsafe_name,
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload_text = out.read_text(encoding="utf-8")
+    payload = json.loads(payload_text)
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["subscription_quota_state"] == "fresh"
+    assert any("unsafe-receipt-name-sha256:" in ref for ref in glmcp_snapshot["evidence_refs"])
+    assert unsafe_name not in payload_text
+
+
 @pytest.mark.parametrize("timestamp_field", ["captured_at", "detected_at"])
 def test_glmcp_admission_accepts_timestamp_fallback_fields(
     tmp_path: Path,
@@ -775,6 +800,42 @@ evidence_ref: supported-tool-usage-witness
     }
     assert states["glmcp.review.direct"] == "unknown"
     assert "stale_after_seconds missing" in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
+
+
+def test_glmcp_admission_receipt_rejects_secretish_evidence_ref(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    secretish_ref = "sk-live-secret-token-000000000000000000000000"
+    (relay / "glmcp-quota-admission-secretish-evidence.yaml").write_text(
+        f"""status: quota_available
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5.2
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 900
+evidence_ref: {secretish_ref}
+""",
+        encoding="utf-8",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload_text = out.read_text(encoding="utf-8")
+    payload = json.loads(payload_text)
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["glmcp.review.direct"] == "unknown"
+    assert "evidence_ref unsafe" in result.stderr
+    assert secretish_ref not in result.stderr
+    assert secretish_ref not in payload_text
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
 
