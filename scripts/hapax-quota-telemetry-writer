@@ -118,9 +118,9 @@ GLMCP_ADMISSION_ENDPOINTS = frozenset(
 GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2", "glm-5.2[1m]"})
 GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS = 3600
 GLMCP_ADMISSION_RECEIPT_GLOB = "*glmcp-quota-admission*.yaml"
-GLMCP_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.@+-]{2,239}\Z")
+GLMCP_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
 GLMCP_ADMISSION_SAFE_RECEIPT_NAME_RE = re.compile(
-    r"\A[a-z0-9_.@+-]*glmcp-quota-admission[a-z0-9_.@+-]*\.yaml\Z"
+    r"\A[a-z0-9_.+-]*glmcp-quota-admission[a-z0-9_.+-]*\.yaml\Z"
 )
 GLMCP_ADMISSION_SECRETISH_RE = re.compile(
     r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
@@ -302,7 +302,7 @@ def active_glmcp_admission_receipts(
         except (OSError, UnicodeDecodeError) as exc:
             _warn_ignored_glmcp_admission(
                 path,
-                f"unreadable receipt {type(exc).__name__}: {exc}",
+                f"unreadable receipt {type(exc).__name__}",
             )
             continue
         fields, parse_error = _parse_flat_yaml_strict(raw_receipt)
@@ -417,14 +417,13 @@ def active_glmcp_admission_receipts(
         if stale_after_seconds <= 0:
             _warn_ignored_glmcp_admission(
                 path,
-                f"non-positive stale_after_seconds {stale_after_seconds}",
+                "non-positive stale_after_seconds",
             )
             continue
         if stale_after_seconds > GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS:
             _warn_ignored_glmcp_admission(
                 path,
-                f"stale_after_seconds {stale_after_seconds} exceeds maximum "
-                f"{GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS}",
+                f"stale_after_seconds exceeds maximum {GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS}",
             )
             continue
         fresh_until = observed_at + timedelta(seconds=stale_after_seconds)
