@@ -25,6 +25,7 @@ class GeometryClass(StrEnum):
     CONTACT = "contact"
     AMBIENT = "ambient"
     INSTRUMENT = "instrument"
+    IR_EDGE = "ir_edge"
 
 
 class Percept(BaseModel):

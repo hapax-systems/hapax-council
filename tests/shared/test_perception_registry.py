@@ -9,6 +9,7 @@ from shared.audio_graph.model import ExposureDomain
 from shared.perception_registry import (
     DEFAULT_REGISTRY_PATH,
     ArchiveSpec,
+    EdgeSource,
     PerceptChannel,
     PerceptionPoint,
     PerceptionRegistry,
@@ -65,6 +66,41 @@ def test_spatial_array_requires_doa_channel() -> None:
     """'spatial-array ReSpeaker w/ DOA' — the bearings channel is the contract."""
     with pytest.raises(ValidationError, match="doa"):
         _point(geometry=GeometryClass.SPATIAL_ARRAY)
+
+
+_IR_EDGE = EdgeSource(
+    role="desk", http_endpoint="/api/pi/desk/ir", state_path="~/hapax-state/pi-noir/desk.json"
+)
+
+
+def test_ir_edge_must_be_quarantined() -> None:
+    """Pi IR cams carry face landmarks + rPPG biometrics — never broadcast-reachable."""
+    with pytest.raises(ValidationError, match="quarantine"):
+        _point(
+            geometry=GeometryClass.IR_EDGE,
+            exposure=ExposureDomain.BROADCAST,
+            pipewire_node=None,
+            edge_source=_IR_EDGE,
+        )
+
+
+def test_ir_edge_requires_edge_source() -> None:
+    with pytest.raises(ValidationError, match="edge_source"):
+        _point(geometry=GeometryClass.IR_EDGE, pipewire_node=None)
+
+
+def test_ir_edge_forbids_local_audio_capture() -> None:
+    """An edge cam has no local audio — pipewire_node/hw_source must be empty."""
+    with pytest.raises(ValidationError, match="no local audio"):
+        _point(
+            geometry=GeometryClass.IR_EDGE, pipewire_node="alsa_input.test", edge_source=_IR_EDGE
+        )
+
+
+def test_ir_edge_valid_point() -> None:
+    p = _point(geometry=GeometryClass.IR_EDGE, pipewire_node=None, edge_source=_IR_EDGE)
+    assert p.geometry == GeometryClass.IR_EDGE
+    assert p.edge_source is not None and p.edge_source.http_endpoint == "/api/pi/desk/ir"
 
 
 def test_subscription_must_reference_declared_point() -> None:
@@ -177,8 +213,9 @@ def test_registry_file_loads_and_load_default_agrees(live_registry) -> None:
     assert load_default_registry() == live_registry
 
 
-def test_thirteen_points(live_registry) -> None:
-    assert len(live_registry.points) == 13
+def test_sixteen_points(live_registry) -> None:
+    # 13 audio/av points + 3 Pi-fleet IR edge cams (ir-desk / ir-room / ir-overhead).
+    assert len(live_registry.points) == 16
 
 
 def test_all_geometry_classes_represented(live_registry) -> None:
