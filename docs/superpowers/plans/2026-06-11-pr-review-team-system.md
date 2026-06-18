@@ -60,7 +60,17 @@ Trust boundaries: **security** (input validation at boundary, no secret leakage,
   all roster families unless outage-degraded); families roster covers all configured
   model families.
 - [ ] **Step 2: Run, verify fails** (`uv run pytest tests/test_review_team.py -x -q` → file-not-found).
-- [ ] **Step 3: Write registry.yaml** with: `always_on_lenses`, `surface_lenses` rows mirroring spec §1 globs (`agents/hapax_daimonion/**`; `shared/governance/**`+`axioms/**`; `config/pipewire/**`+`config/audio-*`+`scripts/*audio*`; `systemd/**`+`scripts/*deploy*`; `scripts/cc-*`+`shared/sdlc_lifecycle.py`+`shared/release_gate.py`; tests-only special row; `*mcp*`+`*oauth*`+`*egress*`+`*publish*` trust row), `sizing` (t3_docs 2/2; t2_standard 3, quorum 2, block_on_named_critical; t1_critical 4-5, quorum 3, require_all_families, criticals_must_resolve), `families` (argv templates per design decision 8, timeout 1200), `lane_families` (greek→claude, `cx-*`→codex, iota/kappa/lambda/mu→gemini, `vbe-*`→vibe non-reviewing).
+- [ ] **Step 3: Write registry.yaml** with: `always_on_lenses`, `surface_lenses`
+  rows mirroring spec §1 globs (`agents/hapax_daimonion/**`;
+  `shared/governance/**`+`axioms/**`; `config/pipewire/**`+`config/audio-*`+
+  `scripts/*audio*`; `systemd/**`+`scripts/*deploy*`; `scripts/cc-*`+
+  `shared/sdlc_lifecycle.py`+`shared/release_gate.py`; tests-only special row;
+  `*mcp*`+`*oauth*`+`*egress*`+`*publish*` trust row), `sizing` (t3_docs 2/2;
+  t2_standard 3, quorum 2, block_on_named_critical; t1_critical 4-5, quorum 3,
+  require_all_families, criticals_must_resolve), `families` (argv templates per
+  design decision 8, timeout 1200), `lane_families` (greek→claude, `cx-*`→codex,
+  iota/kappa/lambda/mu→gemini, `cx-glmcp`/`codex-glmcp`/`glmcp` and `glm-*`→glm,
+  `vbe-*`→vibe non-reviewing).
 - [ ] **Step 4: Tests pass.**  - [ ] **Step 5: Commit** `feat(review-team): lens registry — surfaces, sizing, families`.
 
 ### Task 2: 21 lens charters
