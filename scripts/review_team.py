@@ -196,10 +196,17 @@ def _structured_zai_error_matches(
     error_classes: frozenset[str],
     actions: frozenset[str],
 ) -> bool:
-    if _STRUCTURED_ZAI_ENVELOPE_RE.search(text) is None:
+    envelope = _STRUCTURED_ZAI_ENVELOPE_RE.search(text)
+    if envelope is None:
         return False
+    control_text = re.split(
+        r";\s*(?:message|detail)=",
+        text[envelope.start() :],
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
     tokens: dict[str, set[str]] = {"error_class": set(), "action": set()}
-    for match in _STRUCTURED_TOKEN_RE.finditer(text):
+    for match in _STRUCTURED_TOKEN_RE.finditer(control_text):
         tokens[match.group("key")].add(match.group("value"))
     return bool(tokens["error_class"] & error_classes or tokens["action"] & actions)
 
