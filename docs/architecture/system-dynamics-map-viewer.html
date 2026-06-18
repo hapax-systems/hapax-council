@@ -5252,7 +5252,7 @@
     "expires_at": "2026-06-18T20:56:02Z",
     "freshness": "fresh",
     "source_ref": "docs/architecture/system-dynamics-map-v1.md",
-    "source_hash": "0ded18003d4b0002df887941ce6110ae1159f55b7cc326a295495f9fe6f2b602",
+    "source_hash": "263d72f5fc81c6bb76489eaab94ac5bc76fc8a129d399bb8c6e358dd747d7aff",
     "source_type": "fixture",
     "evidence": [
       {
@@ -6467,6 +6467,20 @@
       renderNodePanel(defaultFocusNode());
     }
 
+    function forceUnselect(elements) {
+      elements.unselect();
+    }
+
+    function clearSelection({ renderPanel = false } = {}) {
+      selectedElement = null;
+      if (cy) {
+        forceUnselect(cy.elements());
+      }
+      if (renderPanel) {
+        renderInitialPanel();
+      }
+    }
+
     function renderCheckboxes() {
       const layers = seed.layers.map((layer) => layer.id);
       document.getElementById("layer-filters").innerHTML = layers.map((id) => {
@@ -6600,6 +6614,30 @@
       return new Set(lens?.visible_edge_ids || seed.edges.map((edge) => edge.id));
     }
 
+    function selectedElementIsVisible() {
+      if (!cy || !selectedElement) {
+        return false;
+      }
+      const element = cy.$id(selectedElement.id);
+      return !element.empty() && !element.hasClass("hidden");
+    }
+
+    function visibleSelectedElement() {
+      return selectedElementIsVisible() ? selectedElement : null;
+    }
+
+    function reconcileSelectedElement() {
+      if (!selectedElement) {
+        return false;
+      }
+      if (!selectedElementIsVisible()) {
+        clearSelection({ renderPanel: true });
+        return true;
+      }
+      cy.$id(selectedElement.id).select();
+      return false;
+    }
+
     function renderLensSummary() {
       const lens = activeLensData();
       if (!lens) {
@@ -6639,6 +6677,9 @@
       if (node.empty()) {
         throw new Error(`Unknown node: ${id}. Check system-dynamics-map.seed.json nodes[].id before selecting.`);
       }
+      if (node.hasClass("hidden")) {
+        throw new Error(`Node ${id} is hidden by the active lens or filters. Clear filters or choose a lens that includes it before selecting.`);
+      }
       cy.elements().unselect();
       node.select();
       selectedElement = { group: "nodes", id };
@@ -6653,6 +6694,9 @@
       const edge = cy.$id(id);
       if (edge.empty()) {
         throw new Error(`Unknown edge: ${id}. Check system-dynamics-map.seed.json edges[].id before selecting.`);
+      }
+      if (edge.hasClass("hidden")) {
+        throw new Error(`Edge ${id} is hidden by the active lens or filters. Clear filters or choose a lens that includes it before selecting.`);
       }
       cy.elements().unselect();
       edge.select();
@@ -6761,6 +6805,10 @@
       const edgeTextMatches = new Map();
       const edgeMatchedEndpointIds = new Set();
 
+      if (selectedElement) {
+        forceUnselect(cy.elements());
+      }
+
       document.getElementById("resolution-label").textContent = scale ? `- ${scale.label}` : "";
       document.getElementById("resolution-description").textContent = scale ? scale.description : "";
       document.getElementById("resolution").setAttribute("aria-valuetext", scale ? `${scale.label}: ${scale.description}` : String(maxResolution));
@@ -6820,6 +6868,7 @@
       const visibleNodes = cy.nodes().filter((node) => !node.hasClass("hidden")).length;
       const visibleEdges = cy.edges().filter((edge) => !edge.hasClass("hidden")).length;
       document.getElementById("counts").textContent = `${visibleNodes} nodes / ${visibleEdges} edges`;
+      reconcileSelectedElement();
       renderFinderResults(search);
       updateStateSummary();
     }
@@ -7079,6 +7128,9 @@
         return await response.json();
       } catch (error) {
         console.warn("Falling back to embedded seed data.", error);
+        dataHealthMessages.push(
+          "Seed data loaded from embedded fallback after fetch failed. Restore system-dynamics-map.seed.json or rerun scripts/system_dynamics_map_materialize.py."
+        );
         return inlineSeed;
       }
     }
@@ -7170,9 +7222,7 @@
       cy.on("mouseout", "edge", (event) => event.target.removeClass("hovered"));
       cy.on("tap", (event) => {
         if (event.target === cy) {
-          selectedElement = null;
-          cy.elements().unselect();
-          renderInitialPanel();
+          clearSelection({ renderPanel: true });
         }
       });
 
@@ -7190,7 +7240,7 @@
           visible_statuses: Array.from(checkedValues("status")).sort(),
           visible_node_ids: Array.from(visibleNodeIds()).sort(),
           visible_edge_ids: Array.from(visibleEdgeIds()).sort(),
-          selected: selectedElement
+          selected: visibleSelectedElement()
         };
       }
 
@@ -7206,6 +7256,16 @@
         URL.revokeObjectURL(url);
       }
 
+      function selectedElementCount() {
+        let count = 0;
+        cy.elements().forEach((element) => {
+          if (element.selected()) {
+            count += 1;
+          }
+        });
+        return count;
+      }
+
       window.systemDynamicsMapRuntime = {
         activeLens: () => activeLens,
         activeLayout: () => activeLayout,
@@ -7219,6 +7279,7 @@
         relatedClaims: (id) => claimRows(id),
         relationFor: (id) => relationEntry(id),
         selectEdge: focusEdge,
+        selectedElementCount,
         selectNode: focusNode,
         stateSummary: () => document.getElementById("state-summary").textContent,
         visibleCounts: () => ({
@@ -7279,6 +7340,13 @@
         link.remove();
       });
       document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          document.getElementById("search").value = "";
+          applyFilters();
+          clearSelection({ renderPanel: true });
+          return;
+        }
         if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLButtonElement) {
           return;
         }
@@ -7290,10 +7358,6 @@
         } else if (/^[1-5]$/.test(event.key)) {
           document.getElementById("resolution").value = event.key;
           applyFilters();
-        } else if (event.key === "Escape") {
-          document.getElementById("search").value = "";
-          applyFilters();
-          renderInitialPanel();
         }
       });
       window.addEventListener("resize", () => {
@@ -7304,7 +7368,6 @@
       renderInitialPanel();
       applyFilters();
       cy.ready(() => {
-        cy.$id(seed.default_focus).select();
         setTimeout(fitVisibleGraph, 80);
       });
     }

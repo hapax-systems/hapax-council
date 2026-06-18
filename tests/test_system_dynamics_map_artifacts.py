@@ -943,9 +943,10 @@ def test_v1_contract_artifacts_cover_claims_observations_lenses_and_package():
     assert package["git_sha_role"] == "generation_head"
     assert lock["git_sha_role"] == "generation_head"
     assert "content hashes are the staleness key" in package["git_sha_policy"]
+    assert "PR history carries commit provenance" in package["git_sha_policy"]
     assert "self-referential future commit SHA" in lock["staleness_policy"]
-    assert re.fullmatch(r"[0-9a-f]{40}|unknown", package["git_sha"])
-    assert re.fullmatch(r"[0-9a-f]{40}|unknown", lock["git_sha"])
+    assert package["git_sha"] == "unknown"
+    assert lock["git_sha"] == "unknown"
     package_paths = {artifact["path"] for artifact in package["artifacts"]}
     for required in (
         "docs/architecture/system-dynamics-map.claims.json",
