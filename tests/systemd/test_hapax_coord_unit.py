@@ -19,6 +19,7 @@ def test_hapax_coord_unit_runs_from_coord_activation_worktree() -> None:
     parser = _read_unit()
 
     assert parser.get("Service", "Type") == "simple"
+    assert parser.get("Service", "Environment") == f"HAPAX_COORD_ROOT={ACTIVATION_WORKTREE}"
     assert parser.get("Service", "WorkingDirectory") == ACTIVATION_WORKTREE
     assert (
         parser.get("Service", "ExecStart") == f"{ACTIVATION_WORKTREE}/scripts/run-dev.sh --daemon"
@@ -33,6 +34,6 @@ def test_hapax_coord_unit_does_not_install_or_expose_secrets() -> None:
     text = UNIT.read_text(encoding="utf-8")
 
     assert "systemctl" not in text
-    assert "Environment=" not in text
+    assert text.count("Environment=") == 1
     assert "0.0.0.0" not in text
     assert "/home/hapax/projects/hapax-coord/scripts/run-dev.sh" not in text
