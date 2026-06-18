@@ -116,8 +116,9 @@ GLMCP_ADMISSION_ENDPOINTS = frozenset(
 GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2", "glm-5.2[1m]"})
 GLMCP_ADMISSION_DEFAULT_STALE_AFTER_SECONDS = 900
 GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS = 3600
+GLMCP_ADMISSION_RECEIPT_GLOB = "*glmcp-quota-admission*.yaml"
 GLMCP_ADMISSION_RECHECK_COMMAND = (
-    "find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*glmcp-quota-admission*.yaml' -print"
+    f"find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '{GLMCP_ADMISSION_RECEIPT_GLOB}' -print"
 )
 GLMCP_ADMISSION_RECOVERY_HINT = (
     "false-negative recovery: repair receipt permissions/encoding or create a fresh "
@@ -271,7 +272,7 @@ def active_glmcp_admission_receipts(
     if not receipt_dir.is_dir():
         return []
     refs: list[str] = []
-    for path in sorted(receipt_dir.glob("*glmcp-quota-admission*.yaml")):
+    for path in sorted(receipt_dir.glob(GLMCP_ADMISSION_RECEIPT_GLOB)):
         try:
             raw_receipt = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:

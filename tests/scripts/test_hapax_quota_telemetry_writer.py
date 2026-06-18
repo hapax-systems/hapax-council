@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 import stat
 import subprocess
 import sys
@@ -96,6 +97,15 @@ evidence_ref: supported-tool-usage-witness
 """,
         encoding="utf-8",
     )
+
+
+def test_glmcp_admission_recheck_command_uses_scanner_glob() -> None:
+    namespace = runpy.run_path(str(SCRIPT))
+    receipt_glob = namespace["GLMCP_ADMISSION_RECEIPT_GLOB"]
+
+    assert receipt_glob == "*glmcp-quota-admission*.yaml"
+    assert f"-name '{receipt_glob}'" in namespace["GLMCP_ADMISSION_RECHECK_COMMAND"]
+    assert "receipt_dir.glob(GLMCP_ADMISSION_RECEIPT_GLOB)" in SCRIPT.read_text(encoding="utf-8")
 
 
 def test_writes_valid_live_ledger_with_fresh_captured_at(tmp_path: Path) -> None:
