@@ -4257,3 +4257,16 @@ _HkpSnapshot._bundle_uid_shape
 _HkpTombstone._commitment_is_not_bare_hash
 _HkpChecksumEntry._hash_shape
 _hkp_validate_bundle
+
+# HKP cache-only shadow exporter — extensionless scripts/hapax-hkp-export imports
+# these source entry points outside vulture's scanned Python-module call graph.
+# S5-HKP-EXPORTER-20260618.
+from shared.hkp_bundle_export import (  # noqa: E402
+    build_derived_index as _hkp_build_derived_index,
+)
+from shared.hkp_bundle_export import (
+    export_shadow_bundle as _hkp_export_shadow_bundle,
+)
+
+_hkp_build_derived_index
+_hkp_export_shadow_bundle
