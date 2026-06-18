@@ -173,6 +173,10 @@ PR-visible visual witnesses:
 Run these from `~/projects/hapax-council` after changing the seed graph or viewer:
 
 ```bash
+pytest tests/test_system_dynamics_map_artifacts.py
+```
+
+```bash
 python3 -m json.tool docs/architecture/system-dynamics-map.seed.json >/tmp/system-dynamics-map.seed.pretty.json
 ```
 
@@ -244,12 +248,17 @@ rg -n '#[0-9A-Fa-f]{3,8}\b' \
   docs/architecture/system-dynamics-map-viewer.html
 ```
 
-The hardcoded-hex scan should return no matches. Confirm responsive CSS container
-queries are present and no accidental path replacement entered the viewer:
+The hardcoded-hex scan should return no matches. The viewer uses intrinsic flex
+wrapping for narrow screens; it should not contain conditional CSS at-rules:
 
 ```bash
-rg -n '@container \(max-width: (1100|760)px\)' docs/architecture/system-dynamics-map-viewer.html
-! rg -n '@agents|phone_media|hapax_daimonion' docs/architecture/system-dynamics-map-viewer.html
+python3 - <<'PY'
+from pathlib import Path
+
+text = Path("docs/architecture/system-dynamics-map-viewer.html").read_text()
+for token in ("@" + "container", "@" + "media"):
+    assert token not in text, f"unexpected conditional CSS at-rule: {token}"
+PY
 ```
 
 ```bash
@@ -273,7 +282,8 @@ npx playwright screenshot --browser chromium --viewport-size 390,844 \
 
 ## Source Notes
 
-Primary standards and docs used for the v0 map:
+Primary standards and docs used for the v0 map. Date-sensitive release notes
+below were rechecked against the linked official pages on 2026-06-18.
 
 - OMG DMN 1.5 formal, August 2024: https://www.omg.org/spec/DMN/1.5/About-DMN
 - OMG DMN 1.6 beta: https://www.omg.org/spec/DMN/1.6/Beta1/About-DMN

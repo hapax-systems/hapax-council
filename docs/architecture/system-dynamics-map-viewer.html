@@ -35,7 +35,6 @@
     }
 
     body {
-      container-type: inline-size;
       display: grid;
       grid-template-rows: auto 1fr;
       min-height: 100vh;
@@ -71,9 +70,11 @@
     }
 
     .app {
-      display: grid;
-      grid-template-columns: minmax(280px, 360px) minmax(0, 1fr) minmax(300px, 390px);
+      align-items: stretch;
+      display: flex;
+      flex-wrap: wrap;
       min-height: 0;
+      overflow: auto;
     }
 
     aside,
@@ -90,15 +91,22 @@
 
     .controls {
       border-right: 1px solid var(--line);
+      flex: 1 1 280px;
+      order: 3;
     }
 
     .details {
       border-left: 1px solid var(--line);
+      flex: 1 1 320px;
+      order: 2;
     }
 
     .workspace {
       display: grid;
+      flex: 999 1 520px;
       grid-template-rows: auto 1fr;
+      min-height: 72vh;
+      order: 1;
       overflow: hidden;
     }
 
@@ -303,53 +311,6 @@
       color: var(--danger);
       margin: 16px;
       padding: 12px;
-    }
-
-    @container (max-width: 1100px) {
-      .app {
-        grid-template-columns: 310px minmax(0, 1fr);
-      }
-
-      .details {
-        border-left: 0;
-        border-top: 1px solid var(--line);
-        grid-column: 1 / -1;
-        max-height: 42vh;
-      }
-    }
-
-    @container (max-width: 760px) {
-      body {
-        min-height: 100dvh;
-      }
-
-      .app {
-        display: flex;
-        flex-direction: column;
-        overflow: auto;
-      }
-
-      .controls,
-      .details {
-        border: 0;
-        max-height: none;
-      }
-
-      .workspace {
-        order: 1;
-      }
-
-      .details {
-        order: 2;
-      }
-
-      .controls {
-        order: 3;
-      }
-
-      .workspace {
-        min-height: 72vh;
-      }
     }
   </style>
 </head>
