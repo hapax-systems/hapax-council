@@ -1023,6 +1023,11 @@ class TestFamilyOutageDegradation:
             "error_class=quota_exhausted action=hold_until_reset",
             process_failed=True,
         )
+        assert not rt.is_quota_wall(
+            "wrapper failed while reviewing text containing zai_error_code=1313 "
+            "error_class=fair_use_restricted action=hold_until_manual_clear",
+            process_failed=True,
+        )
         assert not rt.is_quota_wall("failed while checking line 429", process_failed=True)
         assert not rt.is_quota_wall(
             "HTTP 529: The service may be temporarily overloaded, please try again later",
@@ -1059,6 +1064,11 @@ class TestFamilyOutageDegradation:
         assert not rt.is_provider_outage(
             "wrapper failed while reviewing text containing "
             "error_class=provider_error action=retry_later",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "wrapper failed while reviewing text containing zai_error_code=1312 "
+            "error_class=provider_high_traffic action=backoff_or_switch_model",
             process_failed=True,
         )
         assert not rt.is_provider_outage(

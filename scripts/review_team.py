@@ -124,7 +124,7 @@ _STRUCTURED_TOKEN_RE = re.compile(
     r"(?P<value>[A-Za-z0-9_:-]+)"
 )
 _STRUCTURED_ZAI_ENVELOPE_RE = re.compile(
-    r"\bhapax-glmcp-reviewer:\s+api error:\s+HTTP\s+\d{3}\b|\bzai_error_code=\d+\b",
+    r"\bhapax-glmcp-reviewer:\s+api error:\s+HTTP\s+\d{3}\b",
     re.IGNORECASE,
 )
 _STRUCTURED_QUOTA_ERROR_CLASSES = frozenset(

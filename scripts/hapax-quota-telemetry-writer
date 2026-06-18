@@ -29,8 +29,8 @@ Each tick does two writes:
      Claude/Codex/Gemini subscription routes are ``fresh``. GLMCP is stricter:
      it is ``unknown`` unless a fresh, short-lived Coding Plan admission receipt
      exists. Recheck admission evidence with
-     ``ls ~/.cache/hapax/relay/receipts/*glmcp-quota-admission*.yaml`` and this
-     writer's ``--json`` summary.
+     ``find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*glmcp-quota-admission*.yaml' -print``
+     and this writer's ``--json`` summary.
    - ``local_resource_state`` + local-compute snapshot: nvidia-smi VRAM
      pressure and load average, fail-closed to ``unknown`` when unprobeable.
 
