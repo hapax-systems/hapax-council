@@ -163,6 +163,11 @@ backend or frontend framework. Production should pin and vendor browser assets,
 persist graph snapshots, add automated link checks, and validate graph snapshots
 against SHACL shapes.
 
+PR-visible visual witnesses:
+
+- Desktop: `system-dynamics-map-viewer-desktop.png`
+- Mobile: `system-dynamics-map-viewer-mobile.png`
+
 ## Recheck Commands
 
 Run these from `~/projects/hapax-council` after changing the seed graph or viewer:
@@ -223,6 +228,10 @@ for name, data in [("seed", seed), ("embedded", embedded)]:
         assert edge["status"] in statuses, (
             f"{name}: invalid edge status {edge['id']}. Fix by using a declared status_kinds value."
         )
+assert seed == embedded, (
+    "embedded viewer fallback drifted from system-dynamics-map.seed.json. "
+    "Fix by updating both JSON copies from the same canonical seed."
+)
 print(f"seed nodes={len(seed['nodes'])} edges={len(seed['edges'])}")
 print(f"embedded nodes={len(embedded['nodes'])} edges={len(embedded['edges'])}")
 PY
