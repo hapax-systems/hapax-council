@@ -1,14 +1,15 @@
 """Torso S-4 MIDI interface — scene recall via program change + CC commands.
 
-The live S-4 control plane is the RK-006 OUT_2 DIN lane plus the A/B shim.
-The S-4 USB-MIDI gadget and the old Erica MIDI Dispatch lane are not accepted
-as authoritative S-4 inputs after the 2026-06-10 bench.
+The live S-4 control plane is the S-4's own USB-MIDI port. The older RK-006
+DIN lane remains a fallback when no S-4 USB-MIDI candidate is visible, but it
+is no longer the authority path after the 2026-06-17 wet-return restoration.
+The old Erica MIDI Dispatch lane is not accepted as an authoritative S-4 input.
 
-Hardware-absent posture: when the S-4 is not USB-enumerated,
-`find_s4_midi_output()` returns `None` and the router's downgrade-to-single-
-engine clamp (`policy.apply_safety_clamps`) routes around the missing
-hardware. All public functions tolerate `None` ports — they log and no-op
-rather than raising.
+Hardware-absent posture: when neither the preferred S-4 USB-MIDI port nor the
+RK-006 fallback is visible, `find_s4_midi_output()` returns `None` and the
+router's downgrade-to-single-engine clamp (`policy.apply_safety_clamps`) routes
+around the missing hardware. All public functions tolerate `None` ports — they
+log and no-op rather than raising.
 """
 
 from __future__ import annotations
@@ -51,8 +52,20 @@ S4_MIDI_CHANNEL: Final[int] = 0
 DEFAULT_CC_DELAY_MS: Final[float] = 20.0
 
 # Port-name match patterns for the proven live control plane. mido returns
-# Linux ALSA names with a trailing client number that can drift across reboots.
-_RK006_PORT_PATTERNS: Final[tuple[str, ...]] = ("RK-006", "RK006", "Retrokits")
+# Linux ALSA names with trailing client/port numbers that can drift across
+# reboots, e.g. ``S-4:S-4 MIDI 1 48:0``.
+_S4_USB_MIDI_PORT_PATTERNS: Final[tuple[str, ...]] = (
+    "S-4:S-4 MIDI",
+    "S-4 MIDI",
+    "Torso S-4",
+    "Torso Electronics S-4",
+    "Torso_Electronics_S-4",
+)
+_RK006_FALLBACK_PORT_PATTERNS: Final[tuple[str, ...]] = ("RK-006", "RK006", "Retrokits")
+_S4_PORT_MATCH_GROUPS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
+    ("S-4 USB-MIDI", _S4_USB_MIDI_PORT_PATTERNS),
+    ("RK-006 fallback", _RK006_FALLBACK_PORT_PATTERNS),
+)
 
 
 def list_midi_outputs() -> list[str]:
@@ -71,11 +84,34 @@ def list_midi_outputs() -> list[str]:
         return []
 
 
+def _matching_s4_port_groups(names: Iterable[str]) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    available = tuple(names)
+    groups: list[tuple[str, tuple[str, ...]]] = []
+    for label, patterns in _S4_PORT_MATCH_GROUPS:
+        matched = tuple(
+            name
+            for name in available
+            if any(pattern.lower() in name.lower() for pattern in patterns)
+        )
+        if matched:
+            groups.append((label, matched))
+    return tuple(groups)
+
+
+def resolve_s4_midi_output_name(names: Iterable[str]) -> str | None:
+    """Return the preferred S-4 MIDI output name from an available-name list."""
+
+    for _, matched in _matching_s4_port_groups(names):
+        return matched[0]
+    return None
+
+
 def find_s4_midi_output() -> BaseOutput | None:
     """Open the best-matching MIDI output for the S-4.
 
     Search order:
-      1. RK-006 USB MIDI port (the proven OUT_2 DIN path to S-4).
+      1. S-4's own USB-MIDI port (current live control path).
+      2. RK-006 USB MIDI fallback (legacy OUT_2 DIN path to S-4).
 
     Returns ``None`` when no candidate matches OR when mido is missing.
     The router's safety-clamp layer translates ``None`` into a
@@ -85,14 +121,25 @@ def find_s4_midi_output() -> BaseOutput | None:
         log.debug("mido not installed; S-4 MIDI lane unavailable")
         return None
     names = list_midi_outputs()
-    for pattern in _RK006_PORT_PATTERNS:
-        for name in names:
-            if pattern.lower() in name.lower():
-                try:
-                    return mido.open_output(name)
-                except Exception:
-                    log.warning("RK-006 S-4 control port %r open failed", name, exc_info=True)
-                    return None
+    groups = _matching_s4_port_groups(names)
+    if not groups:
+        return None
+
+    # A visible preferred group owns the decision. If S-4 USB-MIDI is present
+    # but busy/broken, fail closed instead of silently sending control to a
+    # lower-priority legacy lane.
+    label, matched = groups[0]
+    for name in matched:
+        try:
+            return mido.open_output(name)
+        except Exception:
+            log.warning(
+                "%s S-4 control port %r open failed. Next action: check ALSA/mido port "
+                "ownership and reconnect the S-4 USB path before retrying.",
+                label,
+                name,
+                exc_info=True,
+            )
     return None
 
 
@@ -100,14 +147,14 @@ def is_s4_reachable() -> bool:
     """True iff at least one S-4 MIDI candidate port is present.
 
     Distinct from `HardwareState.s4_usb_enumerated` (which checks the
-    audio-side ALSA card) — both are required for full operation but
-    can disagree transiently during USB enumeration / WirePlumber
-    re-link windows. The router's hardware probe combines both.
+    audio-side ALSA card) — both are required for full operation but can
+    disagree transiently during USB enumeration / WirePlumber re-link windows.
+    The router's hardware probe combines both.
     """
     if not _MIDO_AVAILABLE:
         return False
     names = list_midi_outputs()
-    return any(any(p.lower() in n.lower() for p in _RK006_PORT_PATTERNS) for n in names)
+    return bool(resolve_s4_midi_output_name(names))
 
 
 def emit_program_change(

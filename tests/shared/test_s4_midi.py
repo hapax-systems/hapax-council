@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+import importlib.machinery
+import importlib.util
+import logging
+import sys
+from pathlib import Path
+from unittest.mock import MagicMock, call, patch
 
 from shared.s4_midi import (
     DEFAULT_CC_DELAY_MS,
@@ -15,8 +20,26 @@ from shared.s4_midi import (
     find_s4_midi_output,
     is_s4_reachable,
     list_midi_outputs,
+    resolve_s4_midi_output_name,
 )
 from shared.s4_scenes import EMPIRICAL_S4_GAIN_LADDER
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+S4_CONFIGURE_BASE = REPO_ROOT / "scripts" / "s4-configure-base.py"
+
+
+def _load_s4_configure_base(monkeypatch, fake_mido: MagicMock):
+    monkeypatch.setitem(sys.modules, "mido", fake_mido)
+    loader = importlib.machinery.SourceFileLoader(
+        "s4_configure_base_under_test",
+        str(S4_CONFIGURE_BASE),
+    )
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
 
 # ── Port discovery ──────────────────────────────────────────────────
 
@@ -39,18 +62,86 @@ def test_find_s4_midi_output_returns_none_when_no_match() -> None:
         assert find_s4_midi_output() is None
 
 
-def test_find_s4_midi_output_uses_rk006_control_plane() -> None:
-    """The proven live S-4 input is RK-006 OUT_2, not S-4 USB or Dispatch."""
+def test_resolve_s4_midi_output_name_prefers_s4_usb_regardless_list_order() -> None:
+    assert (
+        resolve_s4_midi_output_name(
+            [
+                "Retrokits RK-006 MIDI 1",
+                "S-4:S-4 MIDI 1 48:0",
+            ]
+        )
+        == "S-4:S-4 MIDI 1 48:0"
+    )
+
+
+def test_find_s4_midi_output_prefers_s4_usb_control_plane() -> None:
+    """The current live S-4 input is the device's own USB-MIDI port."""
     with patch("shared.s4_midi._MIDO_AVAILABLE", True), patch("shared.s4_midi.mido") as mido_mock:
         mido_mock.get_output_names.return_value = [
             "MIDI Dispatch MIDI 2",
-            "Torso S-4 MIDI 1",
+            "Retrokits RK-006 MIDI 1",
+            "S-4:S-4 MIDI 1 48:0",
+        ]
+        port = MagicMock(name="s4_usb_port")
+        mido_mock.open_output.return_value = port
+        assert find_s4_midi_output() is port
+        mido_mock.open_output.assert_called_once_with("S-4:S-4 MIDI 1 48:0")
+
+
+def test_find_s4_midi_output_uses_rk006_fallback_when_usb_absent() -> None:
+    with patch("shared.s4_midi._MIDO_AVAILABLE", True), patch("shared.s4_midi.mido") as mido_mock:
+        mido_mock.get_output_names.return_value = [
+            "MIDI Dispatch MIDI 2",
             "Retrokits RK-006 MIDI 1",
         ]
         port = MagicMock(name="rk006_port")
         mido_mock.open_output.return_value = port
         assert find_s4_midi_output() is port
         mido_mock.open_output.assert_called_once_with("Retrokits RK-006 MIDI 1")
+
+
+def test_find_s4_midi_output_does_not_fall_back_when_s4_usb_open_fails(caplog) -> None:
+    with patch("shared.s4_midi._MIDO_AVAILABLE", True), patch("shared.s4_midi.mido") as mido_mock:
+        mido_mock.get_output_names.return_value = [
+            "Retrokits RK-006 MIDI 1",
+            "S-4:S-4 MIDI 1 48:0",
+        ]
+        mido_mock.open_output.side_effect = OSError("busy")
+        with caplog.at_level(logging.WARNING, logger="shared.s4_midi"):
+            assert find_s4_midi_output() is None
+        mido_mock.open_output.assert_called_once_with("S-4:S-4 MIDI 1 48:0")
+    assert "Next action: check ALSA/mido port ownership" in caplog.text
+
+
+def test_find_s4_midi_output_retries_same_priority_s4_usb_candidates() -> None:
+    with patch("shared.s4_midi._MIDO_AVAILABLE", True), patch("shared.s4_midi.mido") as mido_mock:
+        mido_mock.get_output_names.return_value = [
+            "S-4:S-4 MIDI 1 48:0",
+            "Torso Electronics S-4",
+            "Retrokits RK-006 MIDI 1",
+        ]
+        port = MagicMock(name="second_s4_usb_port")
+        mido_mock.open_output.side_effect = [OSError("busy"), port]
+        assert find_s4_midi_output() is port
+        assert mido_mock.open_output.mock_calls == [
+            call("S-4:S-4 MIDI 1 48:0"),
+            call("Torso Electronics S-4"),
+        ]
+
+
+def test_find_s4_midi_output_stops_before_rk006_after_all_s4_usb_candidates_fail() -> None:
+    with patch("shared.s4_midi._MIDO_AVAILABLE", True), patch("shared.s4_midi.mido") as mido_mock:
+        mido_mock.get_output_names.return_value = [
+            "S-4:S-4 MIDI 1 48:0",
+            "Torso Electronics S-4",
+            "Retrokits RK-006 MIDI 1",
+        ]
+        mido_mock.open_output.side_effect = OSError("busy")
+        assert find_s4_midi_output() is None
+        assert mido_mock.open_output.mock_calls == [
+            call("S-4:S-4 MIDI 1 48:0"),
+            call("Torso Electronics S-4"),
+        ]
 
 
 def test_find_s4_midi_output_does_not_use_retired_dispatch_port() -> None:
@@ -71,14 +162,20 @@ def test_find_s4_midi_output_ignores_unrelated_dispatch_names() -> None:
 
 def test_is_s4_reachable_true_when_s4_port_present() -> None:
     with patch("shared.s4_midi._MIDO_AVAILABLE", True), patch("shared.s4_midi.mido") as mido_mock:
+        mido_mock.get_output_names.return_value = ["S-4:S-4 MIDI 1 48:0"]
+        assert is_s4_reachable() is True
+
+
+def test_is_s4_reachable_true_for_rk006_fallback() -> None:
+    with patch("shared.s4_midi._MIDO_AVAILABLE", True), patch("shared.s4_midi.mido") as mido_mock:
         mido_mock.get_output_names.return_value = ["Retrokits RK006 MIDI 1"]
         assert is_s4_reachable() is True
 
 
-def test_is_s4_reachable_false_for_decorative_s4_usb_only() -> None:
+def test_is_s4_reachable_true_for_s4_usb_name_variant() -> None:
     with patch("shared.s4_midi._MIDO_AVAILABLE", True), patch("shared.s4_midi.mido") as mido_mock:
         mido_mock.get_output_names.return_value = ["Torso Electronics S-4"]
-        assert is_s4_reachable() is False
+        assert is_s4_reachable() is True
 
 
 def test_is_s4_reachable_false_when_only_unrelated_ports() -> None:
@@ -90,6 +187,41 @@ def test_is_s4_reachable_false_when_only_unrelated_ports() -> None:
 def test_is_s4_reachable_false_when_mido_unavailable() -> None:
     with patch("shared.s4_midi._MIDO_AVAILABLE", False):
         assert is_s4_reachable() is False
+
+
+# ── Configure script integration ────────────────────────────────────
+
+
+def test_s4_configure_base_main_prefers_s4_usb(monkeypatch, capsys) -> None:
+    fake_mido = MagicMock()
+    fake_mido.get_output_names.return_value = [
+        "Retrokits RK-006 MIDI 1",
+        "S-4:S-4 MIDI 1 48:0",
+    ]
+    fake_port = MagicMock()
+    fake_mido.open_output.return_value.__enter__.return_value = fake_port
+    module = _load_s4_configure_base(monkeypatch, fake_mido)
+    monkeypatch.setattr(module.time, "sleep", MagicMock())
+
+    assert module.main() == 0
+
+    fake_mido.open_output.assert_called_once_with("S-4:S-4 MIDI 1 48:0")
+    assert fake_port.send.call_count == len(EMPIRICAL_S4_GAIN_LADDER)
+    captured = capsys.readouterr()
+    assert "Opening MIDI port: S-4:S-4 MIDI 1 48:0" in captured.out
+
+
+def test_s4_configure_base_main_no_match_prints_next_action(monkeypatch, capsys) -> None:
+    fake_mido = MagicMock()
+    fake_mido.get_output_names.return_value = ["Unrelated MIDI 1"]
+    module = _load_s4_configure_base(monkeypatch, fake_mido)
+
+    assert module.main() == 1
+
+    fake_mido.open_output.assert_not_called()
+    captured = capsys.readouterr()
+    assert "S-4 MIDI port not found among ['Unrelated MIDI 1']." in captured.err
+    assert "Next action: verify S-4 USB-MIDI enumeration" in captured.err
 
 
 # ── Program change ──────────────────────────────────────────────────
