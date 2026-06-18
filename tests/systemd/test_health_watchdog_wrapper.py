@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 import textwrap
 from pathlib import Path
 
@@ -82,7 +81,7 @@ def _write_fake_uv(path: Path) -> Path:
 
 def _write_fake_shared_notify(root: Path) -> None:
     package = root / "shared"
-    package.mkdir()
+    package.mkdir(parents=True)
     (package / "__init__.py").write_text("", encoding="utf-8")
     (package / "notify.py").write_text(
         textwrap.dedent(
@@ -205,7 +204,7 @@ def test_failed_stack_routes_through_intake_cli(tmp_path: Path) -> None:
     intake_cli = _write_executable(
         tmp_path / "hapax-p0-incident-intake",
         f"""
-        #!/usr/bin/env {sys.executable}
+        #!/usr/bin/env python3
         import json
         import sys
         with open({str(intake_log)!r}, "a", encoding="utf-8") as fh:
