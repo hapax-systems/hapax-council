@@ -612,6 +612,53 @@ def test_user_scoped_units_still_deploy_to_user_dir(tmp_path: Path) -> None:
     assert record["deploy_groups"]["systemd_system_units"] == []
 
 
+def test_watchdog_change_installs_commit_copy_to_local_bin(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    watchdog_body = "#!/usr/bin/env bash\necho deployed-watchdog\n"
+    watchdog_path = "systemd/watchdogs/health-watchdog"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            watchdog_path: watchdog_body,
+            "systemd/units/health-monitor.service": (
+                "[Unit]\n"
+                "Description=Health monitor\n"
+                "\n"
+                "[Service]\n"
+                f"ExecStart={home}/.local/bin/health-watchdog\n"
+            ),
+        },
+    )
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    installed = home / ".local" / "bin" / "health-watchdog"
+    assert installed.read_text(encoding="utf-8") == watchdog_body
+    assert os.access(installed, os.X_OK)
+    calls = systemctl_calls.read_text(encoding="utf-8")
+    assert "--user is-active --quiet health-monitor.service" in calls
+    assert "--user restart health-monitor.service" in calls
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["deploy_groups"]["systemd_watchdogs"] == [watchdog_path]
+
+
 def test_preset_only_deploy_installs_and_starts_governed_intake_timers(
     tmp_path: Path,
 ) -> None:
