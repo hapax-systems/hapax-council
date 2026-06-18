@@ -272,8 +272,7 @@ def _handle_fader_batch(fader: dict, values: list[int]) -> bool:
     value = _coalesced_fader_value(fader, values)
     if value is None:
         return False
-    _apply_fader(fader, value)
-    return True
+    return _handle_fader(fader, value)
 
 
 def load_map(path: str | Path) -> tuple[dict, dict]:
