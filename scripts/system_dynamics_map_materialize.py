@@ -254,8 +254,12 @@ sd:NodeShape
   sh:targetClass sd:Node ;
   sh:property [ sh:path sd:stableId ; sh:minCount 1 ; sh:datatype xsd:string ] ;
   sh:property [ sh:path rdfs:label ; sh:minCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path sd:kind ; sh:minCount 1 ; sh:datatype xsd:string ] ;
   sh:property [ sh:path sd:layer ; sh:minCount 1 ; sh:nodeKind sh:IRI ] ;
+  sh:property [ sh:path sd:resolution ; sh:minCount 1 ; sh:datatype xsd:integer ] ;
   sh:property [ sh:path sd:status ; sh:minCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path dcterms:description ; sh:minCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path sd:context ; sh:minCount 1 ; sh:datatype xsd:string ] ;
   sh:property [ sh:path sd:documentationLink ; sh:minCount 1 ; sh:nodeKind sh:IRI ] ;
   sh:property [ sh:path sd:hardeningNote ; sh:datatype xsd:string ] ;
   sh:property [ sh:path sd:alias ; sh:datatype xsd:string ] ;
@@ -268,7 +272,11 @@ sd:EdgeShape
   sh:property [ sh:path sd:source ; sh:minCount 1 ; sh:nodeKind sh:IRI ] ;
   sh:property [ sh:path sd:target ; sh:minCount 1 ; sh:nodeKind sh:IRI ] ;
   sh:property [ sh:path sd:relation ; sh:minCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path sd:layer ; sh:minCount 1 ; sh:nodeKind sh:IRI ] ;
+  sh:property [ sh:path sd:resolution ; sh:minCount 1 ; sh:datatype xsd:integer ] ;
+  sh:property [ sh:path sd:status ; sh:minCount 1 ; sh:datatype xsd:string ] ;
   sh:property [ sh:path sd:confidence ; sh:minCount 1 ; sh:datatype xsd:decimal ] ;
+  sh:property [ sh:path dcterms:description ; sh:minCount 1 ; sh:datatype xsd:string ] ;
   sh:property [ sh:path sd:documentationLink ; sh:minCount 1 ; sh:nodeKind sh:IRI ] .
 
 sd:RenderedViewShape

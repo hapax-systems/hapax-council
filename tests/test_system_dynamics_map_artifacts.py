@@ -22,7 +22,10 @@ BASE = Namespace("https://hapax.local/system-dynamics-map/v0/")
 SD = Namespace("https://hapax.local/ns/system-dynamics-map#")
 SH = Namespace("http://www.w3.org/ns/shacl#")
 PROV = Namespace("http://www.w3.org/ns/prov#")
+DCTERMS = Namespace("http://purl.org/dc/terms/")
+RDFS = Namespace("http://www.w3.org/2000/01/rdf-schema#")
 XSD_STRING = URIRef("http://www.w3.org/2001/XMLSchema#string")
+XSD_INTEGER = URIRef("http://www.w3.org/2001/XMLSchema#integer")
 XSD_DECIMAL = URIRef("http://www.w3.org/2001/XMLSchema#decimal")
 
 
@@ -268,6 +271,15 @@ def test_materialized_rdf_artifacts_parse_and_match_seed_contract():
         subject = URIRef(BASE[f"node/{node['id']}"])
         assert (subject, RDF.type, SD.Node) in partition
         assert (subject, SD.stableId, Literal(node["id"])) in partition
+        assert (subject, RDFS.label, Literal(node["label"])) in partition
+        assert (subject, SD.kind, Literal(node["kind"])) in partition
+        assert (
+            subject,
+            SD.resolution,
+            Literal(str(node["resolution"]), datatype=XSD_INTEGER),
+        ) in partition
+        assert (subject, DCTERMS.description, Literal(node["summary"])) in partition
+        assert (subject, SD.context, Literal(node["context"])) in partition
         assert (subject, SD.documentationLink, None) in partition
         for doc in node["docs"]:
             assert (subject, SD.documentationLink, URIRef(doc["url"])) in partition
@@ -285,11 +297,19 @@ def test_materialized_rdf_artifacts_parse_and_match_seed_contract():
         assert (subject, SD.source, URIRef(BASE[f"node/{edge['source']}"])) in partition
         assert (subject, SD.target, URIRef(BASE[f"node/{edge['target']}"])) in partition
         assert (subject, SD.relation, Literal(edge["relation"])) in partition
+        assert (subject, SD.layer, URIRef(BASE[f"layer/{edge['layer']}"])) in partition
+        assert (
+            subject,
+            SD.resolution,
+            Literal(str(edge["resolution"]), datatype=XSD_INTEGER),
+        ) in partition
+        assert (subject, SD.status, Literal(edge["status"])) in partition
         assert (
             subject,
             SD.confidence,
             Literal(str(edge["confidence"]), datatype=XSD_DECIMAL),
         ) in partition
+        assert (subject, DCTERMS.description, Literal(edge["summary"])) in partition
         for doc in edge["docs"]:
             assert (subject, SD.documentationLink, URIRef(doc["url"])) in partition
 
@@ -321,9 +341,13 @@ def test_materialized_rdf_artifacts_parse_and_match_seed_contract():
 
     for path, datatype, node_kind in (
         (SD.stableId, XSD_STRING, None),
-        (URIRef("http://www.w3.org/2000/01/rdf-schema#label"), XSD_STRING, None),
+        (RDFS.label, XSD_STRING, None),
+        (SD.kind, XSD_STRING, None),
         (SD.layer, None, SH.IRI),
+        (SD.resolution, XSD_INTEGER, None),
         (SD.status, XSD_STRING, None),
+        (DCTERMS.description, XSD_STRING, None),
+        (SD.context, XSD_STRING, None),
         (SD.documentationLink, None, SH.IRI),
     ):
         _assert_shape_property(shapes, SD.NodeShape, path, datatype=datatype, node_kind=node_kind)
@@ -333,7 +357,11 @@ def test_materialized_rdf_artifacts_parse_and_match_seed_contract():
         (SD.source, None, SH.IRI),
         (SD.target, None, SH.IRI),
         (SD.relation, XSD_STRING, None),
+        (SD.layer, None, SH.IRI),
+        (SD.resolution, XSD_INTEGER, None),
+        (SD.status, XSD_STRING, None),
         (SD.confidence, XSD_DECIMAL, None),
+        (DCTERMS.description, XSD_STRING, None),
         (SD.documentationLink, None, SH.IRI),
     ):
         _assert_shape_property(shapes, SD.EdgeShape, path, datatype=datatype, node_kind=node_kind)
