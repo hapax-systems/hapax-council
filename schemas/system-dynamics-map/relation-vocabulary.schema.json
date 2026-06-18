@@ -1,0 +1,11 @@
+{
+  "$id": "https://hapax.local/schema/system-dynamics-map/relation-vocabulary.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "relations"
+  ],
+  "title": "System dynamics relation vocabulary",
+  "type": "object"
+}

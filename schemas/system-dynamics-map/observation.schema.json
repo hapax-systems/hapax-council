@@ -1,0 +1,19 @@
+{
+  "$id": "https://hapax.local/schema/system-dynamics-map/observation.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "required": [
+    "id",
+    "subject",
+    "state",
+    "observed_at",
+    "valid_time",
+    "transaction_time",
+    "expires_at",
+    "freshness",
+    "source_ref",
+    "source_hash"
+  ],
+  "title": "System dynamics temporal observation",
+  "type": "object"
+}

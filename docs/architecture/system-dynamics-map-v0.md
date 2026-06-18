@@ -1,10 +1,10 @@
-# System Dynamics Map v0
+# System Dynamics Map v1
 
-Task: `system-dynamics-map-v0-20260618`
+Task: `system-dynamics-map-v1-enhancement-20260618`
 
-Authority case: `CASE-SYSTEM-DYNAMICS-MAP-20260618`
+Authority case: `CASE-SYSTEM-DYNAMICS-MAP-V1-ENHANCEMENT-20260618`
 
-Parent spec: `~/Documents/Personal/20-projects/hapax-research/specs/2026-06-18-system-dynamics-map-v0-parent-spec.md`
+Parent spec: `~/Documents/Personal/20-projects/hapax-research/specs/2026-06-18-system-dynamics-map-v1-enhancement-parent-spec.md`
 
 ## Decision
 
@@ -97,9 +97,9 @@ letting any one source flatten the rest of the system.
 
 ## Canonical Data Contract
 
-V0 uses `system-dynamics-map.seed.json` as a portable seed shape. The eventual
-persisted form should be RDF named graphs plus SHACL shapes, but the seed file is
-structured so it can be lifted into that backend:
+V1 keeps `system-dynamics-map.seed.json` as the portable topology seed, but it is
+no longer the whole contract. The durable package now separates topology,
+claims, observations, relations, lenses, schemas, and reproducibility metadata:
 
 - `default_focus`: neutral initial focus for the viewer; currently the
   canonical semantic backbone.
@@ -109,11 +109,43 @@ structured so it can be lifted into that backend:
   summary, confidence, and documentation/evidence links in `docs[]`.
 - `view_scales[]`: declared scales that explain why an element appears at a given
   resolution.
-- `status_kinds[]`: claim-type vocabulary that distinguishes asserted, inferred,
-  observed, simulated, rendered, and candidate elements.
+- `status_kinds[]`: claim-type vocabulary. Topology elements must not use
+  `observed`; observed state lives in temporal observations.
+- `system-dynamics-map.claims.json`: first-class claim records for every node and
+  edge, including provenance, valid time, transaction time, confidence basis,
+  freshness, and contradiction state.
+- `system-dynamics-map.observations.jsonl`: timestamped state/evidence records
+  with observed time, valid interval, source hash, expiry, and freshness.
+- `system-dynamics-map.relations.json`: controlled relation vocabulary derived
+  from curated edge relations, including category, source/target kinds, layers,
+  directionality, and allowed claim types.
+- `system-dynamics-map.lenses.json`: persisted projections with visible/hidden
+  node and edge IDs, layout, state mode, aggregation, and lossiness/reversibility.
+- `schemas/system-dynamics-map/*.schema.json`: JSON Schema artifacts for seed,
+  claims, observations, lenses, relations, view manifest, and package metadata.
+- `system-dynamics-map.package.json` and `system-dynamics-map.lock.json`:
+  reproducibility contract with source hashes, generated hashes, generator
+  command, validation commands, and recorded git SHA evidence.
 
 The viewer consumes this shape and should remain replaceable. The graph contract
 is the important artifact; Cytoscape is the current projection engine.
+
+## Concrete Operating Slice
+
+V1 adds a concrete Hapax SDLC operating slice instead of only expanding standards
+coverage. The slice spans:
+
+- `sdlc-intake`
+- `cc-task-claim`
+- `review-dossier`
+- `pr-ci-checks`
+- `merge-release`
+- `operating-lens`
+
+This slice is deliberately read-only. It shows how a real workflow can be
+represented as topology plus temporal observations without making the map the
+writer of task, PR, CI, or release truth. The fixture lives at
+`docs/architecture/fixtures/system-dynamics-map/sdlc-operating-slice.json`.
 
 ## Hardening Rules
 
@@ -152,16 +184,19 @@ is the important artifact; Cytoscape is the current projection engine.
    node/edge editing workflows. Sigma is a fallback for very large, simpler graphs.
    Graphviz/Mermaid remain useful for deterministic static snapshots.
 
-## V0 Viewer
+## V1 Viewer
 
 `system-dynamics-map-viewer.html` is intentionally a static file. It provides:
 
+- Persisted lens selection.
 - Layer filters.
 - Status filters.
 - Resolution slider.
 - Search.
 - Layout switching.
 - Node and edge context panels.
+- Claim/evidence drilldown.
+- Temporal observation state summaries and stale observation visibility.
 - External documentation links from the graph data.
 
 This is enough to review the concept and refine the graph without committing to a
@@ -173,12 +208,18 @@ longer depends on CDN egress.
 Persisted hardening artifacts:
 
 - `system-dynamics-map.canonical.trig`: named-graph RDF/TriG-style snapshot for
-  asserted graph content, rendered-view metadata, and provenance.
+  asserted graph content, observations, claim records, rendered-view metadata,
+  and provenance.
 - `system-dynamics-map.shacl.ttl`: SHACL shape contract for nodes, edges,
-  rendered views, and provenance activity records.
+  rendered views, claims, observations, and provenance activity records.
 - `system-dynamics-map.view-manifest.json`: versioned projection manifest with
-  source hashes, visible layers/statuses, runtime asset hash, and validation
-  commands.
+  source hashes, visible/hidden IDs, lens metadata, runtime asset hash, and
+  validation commands.
+- `system-dynamics-map.package.json` / `system-dynamics-map.lock.json`:
+  reproducible package metadata and generated-file hash lock.
+- `system-dynamics-map.claims.json`, `system-dynamics-map.observations.jsonl`,
+  `system-dynamics-map.lenses.json`, and `system-dynamics-map.relations.json`:
+  companion semantic artifacts consumed by tests and the served viewer.
 
 Browser verification lives in `tests/test_system_dynamics_map_viewer_playwright.py`.
 It exercises the static viewer through Playwright and asserts that Cytoscape
@@ -203,6 +244,10 @@ python3 -m json.tool docs/architecture/system-dynamics-map.seed.json >/tmp/syste
 
 ```bash
 python3 scripts/system_dynamics_map_materialize.py --check
+```
+
+```bash
+scripts/system-dynamics-map-gate
 ```
 
 ```bash

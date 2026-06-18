@@ -16,8 +16,18 @@ VENDOR_PATH = ARCHITECTURE_DIR / "vendor" / "cytoscape-3.34.0.min.js"
 TRIG_PATH = ARCHITECTURE_DIR / "system-dynamics-map.canonical.trig"
 SHACL_PATH = ARCHITECTURE_DIR / "system-dynamics-map.shacl.ttl"
 MANIFEST_PATH = ARCHITECTURE_DIR / "system-dynamics-map.view-manifest.json"
-EXPECTED_NODE_COUNT = 29
-EXPECTED_EDGE_COUNT = 35
+CLAIMS_PATH = ARCHITECTURE_DIR / "system-dynamics-map.claims.json"
+OBSERVATIONS_PATH = ARCHITECTURE_DIR / "system-dynamics-map.observations.jsonl"
+LENSES_PATH = ARCHITECTURE_DIR / "system-dynamics-map.lenses.json"
+RELATIONS_PATH = ARCHITECTURE_DIR / "system-dynamics-map.relations.json"
+PACKAGE_PATH = ARCHITECTURE_DIR / "system-dynamics-map.package.json"
+LOCK_PATH = ARCHITECTURE_DIR / "system-dynamics-map.lock.json"
+SDLC_FIXTURE_PATH = (
+    ARCHITECTURE_DIR / "fixtures" / "system-dynamics-map" / "sdlc-operating-slice.json"
+)
+SCHEMA_DIR = REPO_ROOT / "schemas" / "system-dynamics-map"
+EXPECTED_NODE_COUNT = 35
+EXPECTED_EDGE_COUNT = 42
 EXPECTED_LAYER_IDS = {
     "source-models",
     "decision-modeling",
@@ -26,7 +36,7 @@ EXPECTED_LAYER_IDS = {
     "observation-state",
     "projection",
 }
-BASE = Namespace("https://hapax.local/system-dynamics-map/v0/")
+BASE = Namespace("https://hapax.local/system-dynamics-map/v1/")
 SD = Namespace("https://hapax.local/ns/system-dynamics-map#")
 SH = Namespace("http://www.w3.org/ns/shacl#")
 PROV = Namespace("http://www.w3.org/ns/prov#")
@@ -35,6 +45,7 @@ RDFS = Namespace("http://www.w3.org/2000/01/rdf-schema#")
 XSD_STRING = URIRef("http://www.w3.org/2001/XMLSchema#string")
 XSD_INTEGER = URIRef("http://www.w3.org/2001/XMLSchema#integer")
 XSD_DECIMAL = URIRef("http://www.w3.org/2001/XMLSchema#decimal")
+XSD_DATETIME = URIRef("http://www.w3.org/2001/XMLSchema#dateTime")
 
 
 def _load_seed() -> dict:
@@ -53,6 +64,14 @@ def _load_viewer() -> tuple[str, dict]:
         "Fix by restoring the seed-data script tag or removing the file-open fallback claim."
     )
     return html, json.loads(match.group(1))
+
+
+def _load_observations() -> list[dict]:
+    return [
+        json.loads(line)
+        for line in OBSERVATIONS_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 def _shape_property(shapes: Graph, shape: URIRef, path: URIRef):
@@ -131,6 +150,18 @@ def test_system_dynamics_seed_graph_is_referentially_valid():
             f"{name}: default_focus does not name a node. "
             "Fix by adding the default_focus node or correcting default_focus."
         )
+        for required_node in (
+            "sdlc-intake",
+            "cc-task-claim",
+            "review-dossier",
+            "pr-ci-checks",
+            "merge-release",
+            "operating-lens",
+        ):
+            assert required_node in node_set, (
+                f"{name}: missing concrete SDLC operating-slice node {required_node}. "
+                "Fix by preserving the v1 operating-slice fixture in the seed graph."
+            )
         layer_labels = {layer["label"] for layer in data["layers"]}
         assert "DMN Layer" not in layer_labels, (
             f"{name}: layer labels still frame the map as DMN-centered. "
@@ -162,6 +193,10 @@ def test_system_dynamics_seed_graph_is_referentially_valid():
             assert node["status"] in statuses, (
                 f"{name}: invalid node status {node['id']}. "
                 "Fix by using a declared status_kinds value."
+            )
+            assert node["status"] != "observed", (
+                f"{name}: node {node['id']} marks topology as observed. "
+                "Fix by representing observed state in system-dynamics-map.observations.jsonl."
             )
             assert node.get("docs"), (
                 f"{name}: node missing docs {node['id']}. Fix by adding at least one docs[] link."
@@ -200,6 +235,10 @@ def test_system_dynamics_seed_graph_is_referentially_valid():
             assert edge["status"] in statuses, (
                 f"{name}: invalid edge status {edge['id']}. "
                 "Fix by using a declared status_kinds value."
+            )
+            assert edge["status"] != "observed", (
+                f"{name}: edge {edge['id']} marks topology as observed. "
+                "Fix by representing observed state in system-dynamics-map.observations.jsonl."
             )
             assert edge.get("relation"), (
                 f"{name}: edge missing relation {edge['id']}. "
@@ -301,23 +340,65 @@ def test_materialized_semantic_artifacts_are_current():
 
 def test_materializer_write_and_stale_detection_paths(tmp_path, monkeypatch):
     seed_path = tmp_path / "system-dynamics-map.seed.json"
+    viewer_path = tmp_path / "system-dynamics-map-viewer.html"
     vendor_path = tmp_path / "cytoscape-3.34.0.min.js"
     trig_path = tmp_path / "system-dynamics-map.canonical.trig"
     shacl_path = tmp_path / "system-dynamics-map.shacl.ttl"
     manifest_path = tmp_path / "system-dynamics-map.view-manifest.json"
+    claims_path = tmp_path / "system-dynamics-map.claims.json"
+    observations_path = tmp_path / "system-dynamics-map.observations.jsonl"
+    lenses_path = tmp_path / "system-dynamics-map.lenses.json"
+    relations_path = tmp_path / "system-dynamics-map.relations.json"
+    package_path = tmp_path / "system-dynamics-map.package.json"
+    lock_path = tmp_path / "system-dynamics-map.lock.json"
+    fixture_path = tmp_path / "fixtures" / "system-dynamics-map" / "sdlc-operating-slice.json"
+    schema_dir = tmp_path / "schemas"
     seed_path.write_text(SEED_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    viewer_path.write_text(VIEWER_PATH.read_text(encoding="utf-8"), encoding="utf-8")
     vendor_path.write_bytes(VENDOR_PATH.read_bytes())
 
     monkeypatch.setattr(materialize, "SEED_PATH", seed_path)
+    monkeypatch.setattr(materialize, "VIEWER_PATH", viewer_path)
     monkeypatch.setattr(materialize, "VENDOR_PATH", vendor_path)
     monkeypatch.setattr(materialize, "TRIG_PATH", trig_path)
     monkeypatch.setattr(materialize, "SHACL_PATH", shacl_path)
     monkeypatch.setattr(materialize, "MANIFEST_PATH", manifest_path)
+    monkeypatch.setattr(materialize, "CLAIMS_PATH", claims_path)
+    monkeypatch.setattr(materialize, "OBSERVATIONS_PATH", observations_path)
+    monkeypatch.setattr(materialize, "LENSES_PATH", lenses_path)
+    monkeypatch.setattr(materialize, "RELATIONS_PATH", relations_path)
+    monkeypatch.setattr(materialize, "PACKAGE_PATH", package_path)
+    monkeypatch.setattr(materialize, "LOCK_PATH", lock_path)
+    monkeypatch.setattr(materialize, "SDLC_FIXTURE_PATH", fixture_path)
+    monkeypatch.setattr(materialize, "SEED_SCHEMA_PATH", schema_dir / "seed.schema.json")
+    monkeypatch.setattr(materialize, "CLAIM_SCHEMA_PATH", schema_dir / "claim-fragment.schema.json")
+    monkeypatch.setattr(
+        materialize, "OBSERVATION_SCHEMA_PATH", schema_dir / "observation.schema.json"
+    )
+    monkeypatch.setattr(materialize, "LENS_SCHEMA_PATH", schema_dir / "lens.schema.json")
+    monkeypatch.setattr(
+        materialize, "RELATION_SCHEMA_PATH", schema_dir / "relation-vocabulary.schema.json"
+    )
+    monkeypatch.setattr(
+        materialize, "VIEW_MANIFEST_SCHEMA_PATH", schema_dir / "view-manifest.schema.json"
+    )
+    monkeypatch.setattr(materialize, "PACKAGE_SCHEMA_PATH", schema_dir / "package.schema.json")
 
     materialize.write_artifacts()
-    assert trig_path.exists()
-    assert shacl_path.exists()
-    assert manifest_path.exists()
+    for path in (
+        trig_path,
+        shacl_path,
+        manifest_path,
+        claims_path,
+        observations_path,
+        lenses_path,
+        relations_path,
+        package_path,
+        lock_path,
+        fixture_path,
+        schema_dir / "seed.schema.json",
+    ):
+        assert path.exists()
     assert materialize.check_artifacts() == []
 
     trig_path.write_text("stale\n", encoding="utf-8")
@@ -350,7 +431,7 @@ def test_materialized_rdf_artifacts_parse_and_match_seed_contract():
     shapes.parse(SHACL_PATH, format="turtle")
 
     graph_ids = {str(graph.identifier) for graph in dataset.graphs()}
-    for graph_name in (*seed["status_kinds"], "provenance"):
+    for graph_name in (*seed["status_kinds"], "claims", "provenance"):
         assert str(BASE[f"graph/{graph_name}"]) in graph_ids, (
             f"{TRIG_PATH}: missing parseable named graph {graph_name}. "
             "Fix by regenerating the canonical TriG artifact."
@@ -412,6 +493,14 @@ def test_materialized_rdf_artifacts_parse_and_match_seed_contract():
         for doc in edge["docs"]:
             assert (subject, SD.documentationLink, URIRef(doc["url"])) in partition
 
+    observed = dataset.graph(URIRef(BASE["graph/observed"]))
+    claims_graph = dataset.graph(URIRef(BASE["graph/claims"]))
+    assert (None, RDF.type, SD.Observation) in observed
+    assert (None, RDF.type, SD.Claim) in claims_graph
+    assert len(list(claims_graph.triples((None, RDF.type, SD.Claim)))) == (
+        EXPECTED_NODE_COUNT + EXPECTED_EDGE_COUNT
+    )
+
     provenance = dataset.graph(URIRef(BASE["graph/provenance"]))
     activity = URIRef(BASE["activity/materialize-v1"])
     assert (activity, RDF.type, PROV.Activity) in provenance
@@ -433,6 +522,8 @@ def test_materialized_rdf_artifacts_parse_and_match_seed_contract():
         (SD.NodeShape, SD.Node),
         (SD.EdgeShape, SD.Edge),
         (SD.RenderedViewShape, SD.RenderedView),
+        (SD.ClaimShape, SD.Claim),
+        (SD.ObservationShape, SD.Observation),
         (SD.ProvenanceActivityShape, PROV.Activity),
     ):
         assert (shape, RDF.type, SH.NodeShape) in shapes
@@ -474,6 +565,34 @@ def test_materialized_rdf_artifacts_parse_and_match_seed_contract():
             shapes, SD.RenderedViewShape, path, datatype=datatype, node_kind=node_kind
         )
 
+    for path, datatype in (
+        (SD.stableId, XSD_STRING),
+        (SD.claimType, XSD_STRING),
+        (SD.claimSubject, XSD_STRING),
+        (SD.claimPredicate, XSD_STRING),
+        (SD.claimObject, XSD_STRING),
+        (SD.confidence, XSD_DECIMAL),
+        (SD.confidenceBasis, XSD_STRING),
+        (SD.validFrom, XSD_DATETIME),
+        (SD.transactionTime, XSD_DATETIME),
+        (SD.freshness, XSD_STRING),
+        (SD.contradictionState, XSD_STRING),
+    ):
+        _assert_shape_property(shapes, SD.ClaimShape, path, datatype=datatype)
+
+    for path, datatype, node_kind in (
+        (SD.stableId, XSD_STRING, None),
+        (SD.observationSubject, None, SH.IRI),
+        (SD.state, XSD_STRING, None),
+        (SD.observedAt, XSD_DATETIME, None),
+        (SD.validFrom, XSD_DATETIME, None),
+        (SD.transactionTime, XSD_DATETIME, None),
+        (SD.freshness, XSD_STRING, None),
+    ):
+        _assert_shape_property(
+            shapes, SD.ObservationShape, path, datatype=datatype, node_kind=node_kind
+        )
+
     for path in (PROV.used, PROV.generated, PROV.wasAssociatedWith):
         _assert_shape_property(shapes, SD.ProvenanceActivityShape, path)
 
@@ -489,6 +608,8 @@ def test_shacl_shapes_and_view_manifest_cover_the_durable_contract():
         "sd:NodeShape",
         "sd:EdgeShape",
         "sd:RenderedViewShape",
+        "sd:ClaimShape",
+        "sd:ObservationShape",
         "sd:ProvenanceActivityShape",
     ):
         assert token in shapes, (
@@ -500,7 +621,14 @@ def test_shacl_shapes_and_view_manifest_cover_the_durable_contract():
     assert manifest["source_snapshot"]["node_count"] == EXPECTED_NODE_COUNT
     assert manifest["source_snapshot"]["edge_count"] == EXPECTED_EDGE_COUNT
     assert manifest["claim_partitions"] == seed["status_kinds"]
+    assert manifest["claim_contract"] == {
+        "claim_count": EXPECTED_NODE_COUNT + EXPECTED_EDGE_COUNT,
+        "claims": "system-dynamics-map.claims.json",
+        "observation_count": len(_load_observations()),
+        "relation_count": len(json.loads(RELATIONS_PATH.read_text(encoding="utf-8"))["relations"]),
+    }
     assert manifest["default_projection"]["default_focus"] == seed["default_focus"]
+    assert manifest["default_projection"]["lens"] == "topology"
     assert manifest["default_projection"]["runtime_asset"] == "vendor/cytoscape-3.34.0.min.js"
     assert manifest["default_projection"]["runtime_asset_sri"] == materialize._sha384_sri(
         VENDOR_PATH
@@ -510,12 +638,90 @@ def test_shacl_shapes_and_view_manifest_cover_the_durable_contract():
         == "uv run --extra ci pytest tests/test_system_dynamics_map_viewer_playwright.py"
     )
     assert manifest["provenance"] == {
-        "activity": "https://hapax.local/system-dynamics-map/v0/activity/materialize-v1",
+        "activity": "https://hapax.local/system-dynamics-map/v1/activity/materialize-v1",
         "agent": "scripts/system_dynamics_map_materialize.py",
         "generated": [
             "system-dynamics-map.canonical.trig",
             "system-dynamics-map.shacl.ttl",
             "system-dynamics-map.view-manifest.json",
+            "system-dynamics-map.claims.json",
+            "system-dynamics-map.package.json",
+            "system-dynamics-map.lock.json",
         ],
-        "used": ["system-dynamics-map.seed.json"],
+        "used": [
+            "system-dynamics-map.seed.json",
+            "system-dynamics-map.relations.json",
+            "system-dynamics-map.observations.jsonl",
+            "system-dynamics-map.lenses.json",
+        ],
     }
+
+
+def test_v1_contract_artifacts_cover_claims_observations_lenses_and_package():
+    seed = _load_seed()
+    node_ids = {node["id"] for node in seed["nodes"]}
+    edge_ids = {edge["id"] for edge in seed["edges"]}
+    relation_ids = {edge["relation"] for edge in seed["edges"]}
+
+    relations = json.loads(RELATIONS_PATH.read_text(encoding="utf-8"))
+    assert relations["schema"] == "system-dynamics-map-relation-vocabulary-v1"
+    assert {relation["id"] for relation in relations["relations"]} == relation_ids
+    assert all(relation["directionality"] == "directed" for relation in relations["relations"])
+
+    claims = json.loads(CLAIMS_PATH.read_text(encoding="utf-8"))
+    assert claims["schema"] == "system-dynamics-map-claims-v1"
+    assert len(claims["claims"]) == EXPECTED_NODE_COUNT + EXPECTED_EDGE_COUNT
+    for claim in claims["claims"]:
+        assert claim["provenance"]["source_hash"]
+        assert claim["valid_time"]["from"]
+        assert claim["transaction_time"]
+        assert 0 <= claim["confidence_basis"]["score"] <= 1
+        assert claim["contradiction_state"] == "none"
+
+    observations = _load_observations()
+    assert {item["subject"] for item in observations} <= node_ids
+    assert any(item["freshness"] == "stale" for item in observations)
+    assert all(item["observed_at"] and item["source_hash"] for item in observations)
+
+    lenses = json.loads(LENSES_PATH.read_text(encoding="utf-8"))
+    assert lenses["schema"] == "system-dynamics-map-lenses-v1"
+    assert lenses["default_lens"] == "topology"
+    assert {lens["id"] for lens in lenses["lenses"]} == {
+        "topology",
+        "operating-slice",
+        "evidence-risk",
+    }
+    operating = next(lens for lens in lenses["lenses"] if lens["id"] == "operating-slice")
+    assert set(operating["visible_node_ids"]) >= {
+        "sdlc-intake",
+        "cc-task-claim",
+        "review-dossier",
+        "pr-ci-checks",
+        "merge-release",
+    }
+    for lens in lenses["lenses"]:
+        assert set(lens["visible_node_ids"]) <= node_ids
+        assert set(lens["visible_edge_ids"]) <= edge_ids
+        visible = set(lens["visible_node_ids"])
+        for edge in seed["edges"]:
+            if edge["id"] in set(lens["visible_edge_ids"]):
+                assert edge["source"] in visible and edge["target"] in visible
+
+    package = json.loads(PACKAGE_PATH.read_text(encoding="utf-8"))
+    lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+    assert package["schema"] == "system-dynamics-map-package-v1"
+    assert lock["schema"] == "system-dynamics-map-lock-v1"
+    package_paths = {artifact["path"] for artifact in package["artifacts"]}
+    for required in (
+        "docs/architecture/system-dynamics-map.claims.json",
+        "docs/architecture/system-dynamics-map.observations.jsonl",
+        "docs/architecture/system-dynamics-map.lenses.json",
+        "docs/architecture/system-dynamics-map.relations.json",
+        "schemas/system-dynamics-map/claim-fragment.schema.json",
+    ):
+        assert required in package_paths
+    assert lock["source_hashes"]["seed"] == materialize._sha256(SEED_PATH)
+
+    fixture = json.loads(SDLC_FIXTURE_PATH.read_text(encoding="utf-8"))
+    assert fixture["schema"] == "system-dynamics-map-sdlc-operating-slice-fixture-v1"
+    assert len(fixture["operator_questions"]) >= 5

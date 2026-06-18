@@ -229,7 +229,7 @@
       "kind": "telemetry",
       "layer": "observation-state",
       "resolution": 4,
-      "status": "observed",
+      "status": "asserted",
       "summary": "Telemetry conventions for traces, metrics, logs, profiles, and resources.",
       "context": "OpenTelemetry gives runtime observation vocabulary. It should feed observed graph overlays, not overwrite the design graph.",
       "docs": [
@@ -255,7 +255,7 @@
       "kind": "standard",
       "layer": "observation-state",
       "resolution": 4,
-      "status": "observed",
+      "status": "asserted",
       "summary": "Distributed trace propagation format.",
       "context": "Trace Context helps correlate observed runtime behavior across service boundaries.",
       "docs": [
@@ -282,7 +282,7 @@
       "kind": "standard",
       "layer": "observation-state",
       "resolution": 4,
-      "status": "observed",
+      "status": "asserted",
       "summary": "Common event metadata envelope.",
       "context": "CloudEvents-style envelopes can normalize event metadata flowing into the observation graph.",
       "docs": [
@@ -863,6 +863,172 @@
         "systems",
         "source-model"
       ]
+    },
+    {
+      "id": "sdlc-intake",
+      "label": "SDLC Intake",
+      "kind": "operating-slice",
+      "layer": "observation-state",
+      "resolution": 2,
+      "status": "asserted",
+      "summary": "Concrete Hapax operating slice for work intake, claim, review, PR, CI, and release state.",
+      "context": "The v1 map needs at least one real operating slice, not just a standards taxonomy. SDLC intake is a useful slice because it has tasks, claim files, review dossiers, PR state, CI checks, merge evidence, and stale/drift concepts.",
+      "docs": [
+        {
+          "label": "Task tracking contract",
+          "url": "https://github.com/hapax-systems/hapax-council/blob/main/CLAUDE.md#cc-task-tracking"
+        }
+      ],
+      "hardening": [
+        "Treat SDLC state as observed evidence over task and PR sources, not as an authority writer."
+      ],
+      "aliases": [
+        "task intake",
+        "operating slice"
+      ],
+      "tags": [
+        "sdlc",
+        "operating-slice"
+      ]
+    },
+    {
+      "id": "cc-task-claim",
+      "label": "cc-task Claim",
+      "kind": "state-transition",
+      "layer": "observation-state",
+      "resolution": 3,
+      "status": "asserted",
+      "summary": "Claim transition that binds a governed task to a lane/session before mutation.",
+      "context": "A claim record turns operator intent into authorized implementation work. The graph should show claim state, claimant, timestamp, route evidence, and whether the claim is stale.",
+      "docs": [
+        {
+          "label": "cc-task tracking",
+          "url": "https://github.com/hapax-systems/hapax-council/blob/main/CLAUDE.md#cc-task-tracking"
+        }
+      ],
+      "hardening": [
+        "Observe claim state from task notes and claim files; do not infer authority from prose alone."
+      ],
+      "aliases": [
+        "claim gate",
+        "task claim"
+      ],
+      "tags": [
+        "sdlc",
+        "claim"
+      ]
+    },
+    {
+      "id": "review-dossier",
+      "label": "Review Dossier",
+      "kind": "evidence-artifact",
+      "layer": "semantic-backbone",
+      "resolution": 3,
+      "status": "asserted",
+      "summary": "Structured review artifact that records reviewer findings, acceptance, escalation, and evidence.",
+      "context": "Review dossiers are evidence-bearing artifacts. The map should expose which claim or PR they review, what accepted it, and whether any acceptance is degraded or stale.",
+      "docs": [
+        {
+          "label": "Review team script",
+          "url": "https://github.com/hapax-systems/hapax-council/blob/main/scripts/review_team.py"
+        }
+      ],
+      "hardening": [
+        "Keep review verdict, acceptance receipt, and merge evidence as distinct claims."
+      ],
+      "aliases": [
+        "review receipt",
+        "acceptance dossier"
+      ],
+      "tags": [
+        "review",
+        "evidence"
+      ]
+    },
+    {
+      "id": "pr-ci-checks",
+      "label": "PR / CI Checks",
+      "kind": "release-signal",
+      "layer": "execution-surfaces",
+      "resolution": 3,
+      "status": "asserted",
+      "summary": "Pull request and CI check state used by release gates.",
+      "context": "PR state and check runs provide observed release readiness signals. They must stay separate from the underlying task and review claims because they can lag or fail independently.",
+      "docs": [
+        {
+          "label": "GitHub pull requests",
+          "url": "https://docs.github.com/en/pull-requests"
+        },
+        {
+          "label": "GitHub Actions checks",
+          "url": "https://docs.github.com/en/actions"
+        }
+      ],
+      "hardening": [
+        "Record check conclusion, head SHA, merge queue state, and observed time before treating release state as current."
+      ],
+      "aliases": [
+        "CI",
+        "pull request checks"
+      ],
+      "tags": [
+        "sdlc",
+        "release"
+      ]
+    },
+    {
+      "id": "merge-release",
+      "label": "Merge / Release Evidence",
+      "kind": "state-transition",
+      "layer": "execution-surfaces",
+      "resolution": 3,
+      "status": "asserted",
+      "summary": "Merged PR, release stage, and closure evidence that terminates a governed work slice.",
+      "context": "A task is not durably complete until release evidence, merge state, acceptance receipt, and cc-close state converge.",
+      "docs": [
+        {
+          "label": "GitHub merge methods",
+          "url": "https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges"
+        }
+      ],
+      "hardening": [
+        "Link merge commit, task close, acceptance receipt, and generated artifacts in one auditable path."
+      ],
+      "aliases": [
+        "release closure",
+        "merge evidence"
+      ],
+      "tags": [
+        "sdlc",
+        "release"
+      ]
+    },
+    {
+      "id": "operating-lens",
+      "label": "Operating Lens",
+      "kind": "projection-contract",
+      "layer": "projection",
+      "resolution": 2,
+      "status": "rendered",
+      "summary": "Saved projection that answers a concrete operator question over topology, state, and evidence.",
+      "context": "A frequent-use map needs saved lenses for questions such as what is stuck, what changed, what is stale, and which source supports a state.",
+      "docs": [
+        {
+          "label": "Cytoscape.js layouts",
+          "url": "https://js.cytoscape.org/#layouts"
+        }
+      ],
+      "hardening": [
+        "Persist lens filters, layout, visible IDs, hidden IDs, source hashes, and lossiness instead of relying on browser state."
+      ],
+      "aliases": [
+        "saved lens",
+        "operator view"
+      ],
+      "tags": [
+        "projection",
+        "operating-slice"
+      ]
     }
   ],
   "edges": [
@@ -1298,7 +1464,7 @@
       "relation": "emits_telemetry",
       "layer": "observation-state",
       "resolution": 4,
-      "status": "observed",
+      "status": "asserted",
       "summary": "Runtime services should emit telemetry that can be correlated to system topology and claims.",
       "confidence": 0.82,
       "docs": [
@@ -1315,7 +1481,7 @@
       "relation": "propagates_trace_identity",
       "layer": "observation-state",
       "resolution": 4,
-      "status": "observed",
+      "status": "asserted",
       "summary": "Trace Context correlates runtime evaluation behavior across service calls.",
       "confidence": 0.82,
       "docs": [
@@ -1349,7 +1515,7 @@
       "relation": "observes",
       "layer": "observation-state",
       "resolution": 5,
-      "status": "observed",
+      "status": "asserted",
       "summary": "Telemetry evidence should attach to canonical runtime identities.",
       "confidence": 0.8,
       "docs": [
@@ -1458,6 +1624,125 @@
         {
           "label": "Sigma.js",
           "url": "https://www.sigmajs.org/"
+        }
+      ]
+    },
+    {
+      "id": "sdlc-intake-to-claim",
+      "source": "sdlc-intake",
+      "target": "cc-task-claim",
+      "relation": "advances_to",
+      "layer": "observation-state",
+      "resolution": 3,
+      "status": "asserted",
+      "summary": "Governed intake advances to a claimed task before source mutation.",
+      "confidence": 0.95,
+      "docs": [
+        {
+          "label": "cc-task tracking",
+          "url": "https://github.com/hapax-systems/hapax-council/blob/main/CLAUDE.md#cc-task-tracking"
+        }
+      ]
+    },
+    {
+      "id": "claim-to-review-dossier",
+      "source": "cc-task-claim",
+      "target": "review-dossier",
+      "relation": "produces_evidence",
+      "layer": "semantic-backbone",
+      "resolution": 3,
+      "status": "asserted",
+      "summary": "Claimed implementation produces review evidence before release.",
+      "confidence": 0.9,
+      "docs": [
+        {
+          "label": "Review team script",
+          "url": "https://github.com/hapax-systems/hapax-council/blob/main/scripts/review_team.py"
+        }
+      ]
+    },
+    {
+      "id": "review-dossier-to-pr-ci",
+      "source": "review-dossier",
+      "target": "pr-ci-checks",
+      "relation": "guards_release",
+      "layer": "execution-surfaces",
+      "resolution": 3,
+      "status": "asserted",
+      "summary": "Review acceptance and CI results jointly guard release readiness.",
+      "confidence": 0.9,
+      "docs": [
+        {
+          "label": "GitHub Actions checks",
+          "url": "https://docs.github.com/en/actions"
+        }
+      ]
+    },
+    {
+      "id": "pr-ci-to-merge-release",
+      "source": "pr-ci-checks",
+      "target": "merge-release",
+      "relation": "admits_release",
+      "layer": "execution-surfaces",
+      "resolution": 3,
+      "status": "asserted",
+      "summary": "Passing PR and CI evidence admits a merge/release transition.",
+      "confidence": 0.88,
+      "docs": [
+        {
+          "label": "GitHub merge methods",
+          "url": "https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges"
+        }
+      ]
+    },
+    {
+      "id": "operating-lens-to-sdlc",
+      "source": "operating-lens",
+      "target": "sdlc-intake",
+      "relation": "projects_operating_slice",
+      "layer": "projection",
+      "resolution": 2,
+      "status": "rendered",
+      "summary": "The saved operating lens projects the SDLC slice for frequent inspection.",
+      "confidence": 0.86,
+      "docs": [
+        {
+          "label": "Cytoscape.js layouts",
+          "url": "https://js.cytoscape.org/#layouts"
+        }
+      ]
+    },
+    {
+      "id": "temporal-state-to-sdlc",
+      "source": "temporal-state-events",
+      "target": "sdlc-intake",
+      "relation": "models_observed_state",
+      "layer": "observation-state",
+      "resolution": 2,
+      "status": "asserted",
+      "summary": "Temporal state records make SDLC status inspectable as evidence instead of static labels.",
+      "confidence": 0.88,
+      "docs": [
+        {
+          "label": "OWL-Time",
+          "url": "https://www.w3.org/TR/owl-time/"
+        }
+      ]
+    },
+    {
+      "id": "prov-to-review-dossier",
+      "source": "prov-o",
+      "target": "review-dossier",
+      "relation": "records_generation_of",
+      "layer": "semantic-backbone",
+      "resolution": 3,
+      "status": "asserted",
+      "summary": "Review dossiers should record the activity and evidence that generated an acceptance claim.",
+      "confidence": 0.9,
+      "docs": [
+        {
+          "label": "W3C PROV-O",
+          "url": "https://www.w3.org/TR/prov-o/"
         }
       ]
     }

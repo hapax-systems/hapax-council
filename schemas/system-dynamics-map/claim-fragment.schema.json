@@ -1,0 +1,20 @@
+{
+  "$id": "https://hapax.local/schema/system-dynamics-map/claim-fragment.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "required": [
+    "id",
+    "claim_type",
+    "subject",
+    "predicate",
+    "object",
+    "provenance",
+    "valid_time",
+    "transaction_time",
+    "confidence_basis",
+    "freshness",
+    "contradiction_state"
+  ],
+  "title": "System dynamics claim fragment",
+  "type": "object"
+}

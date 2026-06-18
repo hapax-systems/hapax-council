@@ -1,0 +1,18 @@
+{
+  "$id": "https://hapax.local/schema/system-dynamics-map/lens.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "required": [
+    "id",
+    "label",
+    "visible_layers",
+    "visible_statuses",
+    "max_resolution",
+    "layout",
+    "visible_node_ids",
+    "visible_edge_ids",
+    "aggregation"
+  ],
+  "title": "System dynamics map lens",
+  "type": "object"
+}

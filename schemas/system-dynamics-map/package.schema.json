@@ -1,0 +1,15 @@
+{
+  "$id": "https://hapax.local/schema/system-dynamics-map/package.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "map_id",
+    "version",
+    "artifacts",
+    "validation",
+    "git_sha"
+  ],
+  "title": "System dynamics package lock",
+  "type": "object"
+}

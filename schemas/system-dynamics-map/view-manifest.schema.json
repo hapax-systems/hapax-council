@@ -1,0 +1,15 @@
+{
+  "$id": "https://hapax.local/schema/system-dynamics-map/view-manifest.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "map_id",
+    "version",
+    "source_snapshot",
+    "default_projection",
+    "provenance"
+  ],
+  "title": "System dynamics view manifest",
+  "type": "object"
+}

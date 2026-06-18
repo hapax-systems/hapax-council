@@ -1,0 +1,40 @@
+{
+  "generated_at": "2026-06-18T00:00:00Z",
+  "instances": [
+    {
+      "id": "sdlc-intake",
+      "role": "intake",
+      "source_ref": "docs/architecture/system-dynamics-map-v0.md"
+    },
+    {
+      "id": "cc-task-claim",
+      "role": "claim",
+      "source_ref": "scripts/cc-claim"
+    },
+    {
+      "id": "review-dossier",
+      "role": "review",
+      "source_ref": "scripts/review_team.py"
+    },
+    {
+      "id": "pr-ci-checks",
+      "role": "release_signal",
+      "source_ref": "https://github.com/hapax-systems/hapax-council/pull/4179"
+    },
+    {
+      "id": "merge-release",
+      "role": "closure",
+      "source_ref": "https://github.com/hapax-systems/hapax-council/commit/1522faae8212ddbc63da64140a12f86117f30c2d"
+    }
+  ],
+  "operator_questions": [
+    "why is this work stuck?",
+    "what changed since the prior snapshot?",
+    "which evidence supports this state?",
+    "which observations are stale?",
+    "which path gates release readiness?"
+  ],
+  "purpose": "Concrete operating slice used to prove the map can represent topology, state, evidence, and release readiness without centering a source notation.",
+  "schema": "system-dynamics-map-sdlc-operating-slice-fixture-v1",
+  "slice_id": "hapax-sdlc-intake-review-release"
+}

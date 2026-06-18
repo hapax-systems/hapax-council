@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+python3 scripts/system_dynamics_map_materialize.py --check
+uv run pytest tests/test_system_dynamics_map_artifacts.py

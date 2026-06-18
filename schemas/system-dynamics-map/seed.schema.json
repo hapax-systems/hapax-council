@@ -1,0 +1,16 @@
+{
+  "$id": "https://hapax.local/schema/system-dynamics-map/seed.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "required": [
+    "map_id",
+    "version",
+    "generated_at",
+    "authority_case",
+    "default_focus",
+    "nodes",
+    "edges"
+  ],
+  "title": "System dynamics map seed",
+  "type": "object"
+}

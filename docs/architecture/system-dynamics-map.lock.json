@@ -1,0 +1,32 @@
+{
+  "generated_at": "2026-06-18T00:00:00Z",
+  "generated_hashes": {
+    "docs/architecture/fixtures/system-dynamics-map/sdlc-operating-slice.json": "acecba8b9fd4b7ed0327b1a6f98e2565989f2ca7ce7df4eeeac248370562e161",
+    "docs/architecture/system-dynamics-map-viewer.html": "29db69724632af2ad00d0a99835fcc80c953722124bec642daf473f32096d15d",
+    "docs/architecture/system-dynamics-map.canonical.trig": "a1a772d0f054ac85405ec9bf2d761f90cfbd633343e8c3756c9dafc5e57c8780",
+    "docs/architecture/system-dynamics-map.claims.json": "fbddb8158cdd383b50e5e9b9f1444d0476530c2afd8ca80fabcf5449ac75c408",
+    "docs/architecture/system-dynamics-map.lenses.json": "e328aeac8110905e80803f2673f9e77e7825043f1dad4d9b0732b3f349857262",
+    "docs/architecture/system-dynamics-map.observations.jsonl": "2745ba6135f2d87818d5df71c86c72b433b3cd396222bfafd15bd895a24ebf20",
+    "docs/architecture/system-dynamics-map.relations.json": "dad3674299582c73ae42852f6e35eefe6838ddfd7d0073e8ea2739ce8e82dc0f",
+    "docs/architecture/system-dynamics-map.shacl.ttl": "56c382e4afa373f2d989676e2f3d0c533d7fe91743b1893199cf19c4923e653b",
+    "docs/architecture/system-dynamics-map.view-manifest.json": "f352e52d741726164249d382f7084a22c4666ac446853e69de1a70c8f19c83cc",
+    "schemas/system-dynamics-map/claim-fragment.schema.json": "a1dda93f756a9878a8ce3f81a9a71cffbff203887890f47ee4c85a30eaf4584d",
+    "schemas/system-dynamics-map/lens.schema.json": "9e9f2f1f3bab74bed5066447f03a2ac4c8a58e95d3f716044030c7e80432a4b9",
+    "schemas/system-dynamics-map/observation.schema.json": "034b4362c28e7e59948b06c7a44aca7374ab21539ec4fb10b8f5ded1cc68ad26",
+    "schemas/system-dynamics-map/package.schema.json": "75f40c10c2faf980375aa955110134c1274bf2b4d4d78b25b47286c30719bb79",
+    "schemas/system-dynamics-map/relation-vocabulary.schema.json": "3d0040b172472c24bda97797c27493534cb0be7c8cb7f163c3571b51fc67cef3",
+    "schemas/system-dynamics-map/seed.schema.json": "dabdbecca4b43d1855a1c56adb7c6cded9db8faa425ea5b3fc699e47aa819806",
+    "schemas/system-dynamics-map/view-manifest.schema.json": "4b50e379d4068a8df0059415b4c7fccebb0a6bd3dfcc93b7352f4ed10797159c"
+  },
+  "git_sha": "cfb058b04dc7d8d2e8dba67335a4f02a9a13739d",
+  "map_id": "system-dynamics-map-v0",
+  "package_hash": "67a11bcd1e42b25acdeb4719e5949ff35328e7b4af0c83df903b6fc4be0be53d",
+  "schema": "system-dynamics-map-lock-v1",
+  "source_hashes": {
+    "seed": "5fc813ddefee7634c70f553cd825f269f9c2d026df3836826cf169c23cbb70a4",
+    "vendor": "9c2a3bf2592e0b14a1f7bec07c03a54f16dedf32af9cd0af155c716aa6c87bc3",
+    "viewer": "29db69724632af2ad00d0a99835fcc80c953722124bec642daf473f32096d15d"
+  },
+  "staleness_policy": "Generated hashes must match rendered materializer output; git_sha is recorded evidence and is not a staleness key.",
+  "version": "0.1.0"
+}
