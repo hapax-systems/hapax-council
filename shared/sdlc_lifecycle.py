@@ -507,6 +507,65 @@ def _auto_arm_truthy(value: object) -> bool:
     return str(value).strip().lower() in _AUTO_ARM_TRUTHY
 
 
+def _explicit_risk_flag_true(frontmatter: Mapping[str, Any], name: str) -> bool:
+    """Whether a route-metadata risk flag was explicitly set true.
+
+    Top-level ``route_metadata_schema`` makes many task notes explicit route
+    metadata subjects. That should not by itself block the subscription-secret
+    carve-out below; only an actual explicit ``risk_flags.<name>: true`` does.
+    """
+
+    from shared.route_metadata_schema import route_metadata_payload_from_frontmatter
+
+    risk_flags = route_metadata_payload_from_frontmatter(frontmatter).get("risk_flags")
+    if not isinstance(risk_flags, Mapping):
+        return False
+    return _auto_arm_truthy(risk_flags.get(name))
+
+
+def _pass_backed_runtime_secret_auto_arm_ok(frontmatter: Mapping[str, Any]) -> bool:
+    """True for narrow pass-backed runtime-only secret tooling.
+
+    A task title containing "secret" is often privacy-sensitive and should stay
+    system-held. The exception is explicitly declared provider tooling that reads
+    an existing pass entry only at runtime, stores no secret value, uses only
+    already-purchased subscription quota, and is constrained to supported tools.
+    This waives only the derived privacy/secret keyword flag; explicit
+    route-metadata privacy flags, governance/public/audio/provider-spend flags,
+    sensitive paths, and public/runtime gates still apply normally.
+    """
+
+    if not _auto_arm_truthy(frontmatter.get("pass_backed_secret_only")):
+        return False
+    if not _auto_arm_truthy(frontmatter.get("no_secret_value_storage")):
+        return False
+    if not _auto_arm_truthy(frontmatter.get("subscription_quota_only")):
+        return False
+    if not _auto_arm_truthy(frontmatter.get("supported_tools_only")):
+        return False
+    secret_entry = _frontmatter_non_null_scalar(frontmatter.get("secret_entry"))
+    if not secret_entry:
+        return False
+    # Intentionally scoped to the GLM Coding Plan pass namespace.
+    if not secret_entry.startswith("glmcp/"):
+        return False
+    if any(ch.isspace() for ch in secret_entry):
+        return False
+    parts = secret_entry.split("/")
+    return not any(part in {"", ".", ".."} for part in parts) and not secret_entry.startswith(
+        ("/", "~")
+    )
+
+
+def release_auto_arm_waivers(frontmatter: Mapping[str, Any]) -> tuple[str, ...]:
+    """Auto-arm waiver names used by the lifecycle assessment for audit receipts."""
+
+    waivers: list[str] = []
+    if _pass_backed_runtime_secret_auto_arm_ok(frontmatter):
+        waivers.append("pass_backed_runtime_secret_waiver")
+    return tuple(waivers)
+
+
 def _effective_sensitive_flags(frontmatter: Mapping[str, Any]) -> list[str]:
     """Sensitive risk flags from explicit route metadata OR keyword derivation.
 
@@ -520,6 +579,13 @@ def _effective_sensitive_flags(frontmatter: Mapping[str, Any]) -> list[str]:
     flags: set[str] = set()
     derived = _derive_risk_flags(frontmatter)
     for name in SENSITIVE_RISK_FLAGS:
+        if (
+            name == "privacy_or_secret_sensitive"
+            and derived.get(name)
+            and _pass_backed_runtime_secret_auto_arm_ok(frontmatter)
+            and not _explicit_risk_flag_true(frontmatter, name)
+        ):
+            continue
         if derived.get(name):
             flags.add(name)
     metadata = assess_route_metadata(frontmatter).metadata

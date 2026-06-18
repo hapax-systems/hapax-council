@@ -51,18 +51,26 @@ ACCEPT_VERDICTS = frozenset({"accept", "accept-with-findings"})
 
 #: Reviewer verdicts the dispatcher may record. ``invalid-output`` is what an
 #: unparseable reviewer reply becomes — it never counts as an accept.
-#: ``quota-wall`` is a provider usage wall, a FAMILY-AVAILABILITY signal:
+#: ``quota-wall`` and ``provider-outage`` are FAMILY-AVAILABILITY signals:
 #: on 2026-06-12 the claude weekly wall surfaced as invalid-output for 13
 #: hours and t1's require_all_families sealed the merge gate fleet-wide
-#: (postmortem failure class #1). Walls must be named so the constitution
-#: can degrade instead of seal.
+#: (postmortem failure class #1). Availability failures must be named so the
+#: constitution can degrade instead of seal, while preserving the true cause.
 REVIEWER_VERDICTS = frozenset(
-    {"accept", "accept-with-findings", "block", "invalid-output", "quota-wall"}
+    {
+        "accept",
+        "accept-with-findings",
+        "block",
+        "invalid-output",
+        "quota-wall",
+        "provider-outage",
+    }
 )
+FAMILY_OUTAGE_VERDICTS = frozenset({"quota-wall", "provider-outage"})
 TEAM_CLASS_RANK = {"t3_docs": 0, "t2_standard": 1, "t1_critical": 2}
 
 #: Provider usage-wall shapes (the 2026-06-12 claude weekly-wall text is the
-#: canonical fixture; the rest cover the codex/gemini families' phrasings).
+#: canonical fixture; the rest cover the codex/gemini/glm families' phrasings).
 _RESET_TIME_SHAPE = (
     r"(?:(?:[A-Z][a-z]{2}\s+\d{1,2},\s+)?"
     r"\d{1,2}(?::\d{2})?\s*(?:am|pm)"
@@ -103,6 +111,25 @@ _QUOTA_WALL_LINE_RE = re.compile(
     r"\Z",
     re.IGNORECASE,
 )
+_QUOTA_WALL_HTTP_RE = re.compile(
+    r"\bHTTP\s+429\b.*"
+    r"(?:quota|usage limit|rate.?limit|too many requests|insufficient balance|"
+    r"RESOURCE_EXHAUSTED)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_PROVIDER_OUTAGE_SHAPE_RE = re.compile(
+    r"\bHTTP\s+(?:429|5\d\d)\b",
+    re.IGNORECASE,
+)
+
+_PROVIDER_OUTAGE_LINE_RE = re.compile(
+    r"(?:temporarily overloaded|server-side issue|try again later|retry later|"
+    r"check the Z\.ai Coding Plan endpoint|bad gateway|service unavailable|"
+    r"gateway timeout|network error|timed out)",
+    re.IGNORECASE,
+)
+_PROVIDER_OUTAGE_MAX_CHARS = 4_000
 
 #: The dispatcher's family-outage witness state (canonical path; the
 #: dispatcher aliases this). Admission consults it so a forged dossier
@@ -130,16 +157,25 @@ def is_quota_wall(
     model was active enough to write something.
     """
 
-    if not process_failed or not text:
-        return False
-    # Anti-forge anchor (postmortem 2026-06-15): if the reviewer process
-    # emitted review content on stdout, it was running — the stderr text
-    # is supplementary, not sole wall evidence.
-    if model_stdout and model_stdout.strip():
+    if not process_failed or not (text or model_stdout):
         return False
     stripped = text.strip()
+    stdout_stripped = model_stdout.strip()
+    # Anti-forge anchor (postmortem 2026-06-15): if the reviewer process
+    # emitted review content on stdout, it was running — stderr text is
+    # supplementary, not sole wall evidence. Narrow exception: Claude Code
+    # can emit its own non-model quota wall on stdout with empty stderr and a
+    # nonzero exit. Accept only a short exact provider wall phrase.
+    if stdout_stripped:
+        return bool(
+            not stripped
+            and len(stdout_stripped) <= _QUOTA_WALL_MAX_CHARS
+            and _QUOTA_WALL_SHAPE_RE.fullmatch(stdout_stripped)
+        )
     # Fast path: short, bare wall phrase (the 2026-06-12 claude shape)
     if len(stripped) <= _QUOTA_WALL_MAX_CHARS and _QUOTA_WALL_SHAPE_RE.fullmatch(stripped):
+        return True
+    if len(stripped) <= _PROVIDER_OUTAGE_MAX_CHARS and _QUOTA_WALL_HTTP_RE.search(stripped):
         return True
     # Slow path: CLI chrome wraps the wall phrase (codex v0.139.0 emits
     # ~704 chars including "ERROR: You've hit your usage limit. Visit …
@@ -151,6 +187,40 @@ def is_quota_wall(
         if line and _QUOTA_WALL_LINE_RE.fullmatch(line):
             return True
     return False
+
+
+def is_provider_outage(
+    text: str,
+    *,
+    process_failed: bool = False,
+    model_stdout: str = "",
+) -> bool:
+    """True when process-failure diagnostics show provider unavailability.
+
+    This deliberately uses the same channel-trust constraints as quota-wall
+    classification: no model stdout may be present, and the diagnostic must be
+    terse and match known provider outage phrasing.
+    """
+
+    if not process_failed or not text:
+        return False
+    stripped = text.strip()
+    if model_stdout.strip():
+        return False
+    if len(stripped) > _PROVIDER_OUTAGE_MAX_CHARS:
+        return False
+    normalized = re.sub(r"\A[-\w.]+:\s+api error:\s*", "", stripped, flags=re.I)
+    http_429 = bool(re.search(r"\bHTTP\s+429\b", stripped, flags=re.IGNORECASE))
+    http_5xx = bool(re.search(r"\bHTTP\s+5\d\d\b", stripped, flags=re.IGNORECASE))
+    outage_terms = bool(_PROVIDER_OUTAGE_LINE_RE.search(stripped))
+    provider_detail = re.split(r";\s*retry later\b", normalized, maxsplit=1, flags=re.IGNORECASE)[0]
+    provider_detail_outage_terms = bool(_PROVIDER_OUTAGE_LINE_RE.search(provider_detail))
+    direct_outage = normalized.lower().startswith(("network error:", "request timed out after"))
+    return (
+        (http_5xx and outage_terms)
+        or (http_429 and provider_detail_outage_terms)
+        or (direct_outage and outage_terms)
+    )
 
 
 def _parse_iso_datetime(value: Any) -> datetime:

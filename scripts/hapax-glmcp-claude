@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+# hapax-glmcp-claude - run Claude Code through the Z.ai GLM Coding Plan lane.
+#
+# This wrapper is intentionally session-scoped. It does not edit
+# ~/.claude/settings.json and it never writes the Z.ai key to disk.
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: hapax-glmcp-claude [--check] [claude args...]
+
+Runs Claude Code with GLM Coding Plan environment variables for this invocation.
+The Z.ai API key is read from pass at runtime.
+
+Defaults:
+  pass entry: glmcp/api-key
+  base URL:   https://api.z.ai/api/anthropic
+  model:      glm-5.2[1m]
+
+Environment overrides:
+  HAPAX_GLMCP_SECRET_ENTRY       pass entry name (default: glmcp/api-key)
+  HAPAX_GLMCP_MODEL              primary GLM model (default: glm-5.2[1m])
+  HAPAX_GLMCP_HAIKU_MODEL        Haiku/default-light mapping (default: glm-4.5-air)
+  HAPAX_GLMCP_ANTHROPIC_BASE_URL endpoint override, gated to the Z.ai API host
+  HAPAX_GLMCP_ALLOW_NON_52=1     allow a non-GLM-5.2 primary model
+  HAPAX_GLMCP_ALLOW_SECRET_ENTRY_OVERRIDE=1 allow a reviewed glmcp/* pass entry
+  HAPAX_GLMCP_ALLOW_BASE_URL_OVERRIDE=1 allow a reviewed endpoint override
+
+Recheck:
+  hapax-glmcp-claude --check
+EOF
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+fi
+
+check_only=false
+if [[ "${1:-}" == "--check" ]]; then
+  check_only=true
+  shift
+fi
+
+default_secret_entry="glmcp/api-key"
+secret_entry="${HAPAX_GLMCP_SECRET_ENTRY:-$default_secret_entry}"
+official_base_url="https://api.z.ai/api/anthropic"
+base_url="${HAPAX_GLMCP_ANTHROPIC_BASE_URL:-$official_base_url}"
+primary_model="${HAPAX_GLMCP_MODEL:-glm-5.2[1m]}"
+haiku_model="${HAPAX_GLMCP_HAIKU_MODEL:-glm-4.5-air}"
+pass_error_file=""
+
+cleanup() {
+  if [[ -n "${pass_error_file:-}" ]]; then
+    rm -f "$pass_error_file"
+  fi
+}
+
+exit_after_signal() {
+  status="$1"
+  cleanup
+  trap - EXIT HUP INT TERM
+  exit "$status"
+}
+
+valid_glmcp_secret_entry() {
+  local candidate="$1"
+  local segment
+  local -a segments
+  [[ "$candidate" == glmcp/* ]] || return 1
+  [[ "$candidate" != */ ]] || return 1
+  [[ "$candidate" != *[[:space:]]* ]] || return 1
+  IFS=/ read -r -a segments <<<"$candidate"
+  for segment in "${segments[@]}"; do
+    [[ -n "$segment" && "$segment" != "." && "$segment" != ".." ]] || return 1
+  done
+  return 0
+}
+
+trap cleanup EXIT
+trap 'exit_after_signal 129' HUP
+trap 'exit_after_signal 130' INT
+trap 'exit_after_signal 143' TERM
+
+case "$primary_model" in
+  "glm-5.2"|"glm-5.2[1m]") ;;
+  *)
+    if [[ "${HAPAX_GLMCP_ALLOW_NON_52:-0}" != "1" ]]; then
+      echo "hapax-glmcp-claude: refusing primary model '$primary_model'; expected glm-5.2 or glm-5.2[1m]" >&2
+      echo "Set HAPAX_GLMCP_ALLOW_NON_52=1 only for explicit non-5.2 experiments." >&2
+      exit 2
+    fi
+    ;;
+esac
+
+if [[ "$secret_entry" != "$default_secret_entry" ]]; then
+  if [[ "${HAPAX_GLMCP_ALLOW_SECRET_ENTRY_OVERRIDE:-0}" != "1" ]]; then
+    echo "hapax-glmcp-claude: refusing pass entry '$secret_entry'; expected $default_secret_entry" >&2
+    echo "Set HAPAX_GLMCP_ALLOW_SECRET_ENTRY_OVERRIDE=1 only after reviewing the GLMCP-specific pass entry." >&2
+    exit 8
+  fi
+  if ! valid_glmcp_secret_entry "$secret_entry"; then
+    echo "hapax-glmcp-claude: refused pass entry '$secret_entry'; this launcher only reads non-traversing glmcp/* secrets." >&2
+    echo "For other providers or experiments, use a separate launcher and secret entry." >&2
+    exit 8
+  fi
+fi
+
+case "$base_url" in
+  "$official_base_url"|"$official_base_url/") ;;
+  *)
+    if [[ "${HAPAX_GLMCP_ALLOW_BASE_URL_OVERRIDE:-0}" != "1" ]]; then
+      echo "hapax-glmcp-claude: refusing base URL '$base_url'; expected $official_base_url" >&2
+      echo "Set HAPAX_GLMCP_ALLOW_BASE_URL_OVERRIDE=1 only after reviewing the endpoint that will receive the pass-backed token." >&2
+      exit 7
+    fi
+    case "$base_url" in
+      https://api.z.ai/*) ;;
+      *)
+        echo "hapax-glmcp-claude: refused base URL '$base_url'; this launcher only sends the pass-backed token to https://api.z.ai/" >&2
+        echo "For non-Z.ai experiments, use a separate launcher and secret entry instead of this GLM Coding Plan lane." >&2
+        exit 7
+        ;;
+    esac
+    ;;
+esac
+
+command -v pass >/dev/null 2>&1 || {
+  echo "hapax-glmcp-claude: pass is not on PATH; install pass or add it to PATH before using the glmcp/api-key secret." >&2
+  exit 3
+}
+command -v claude >/dev/null 2>&1 || {
+  echo "hapax-glmcp-claude: claude is not on PATH; install Claude Code or add the claude binary to PATH." >&2
+  exit 4
+}
+
+case "$-" in
+  *x*)
+    # Once the pass-backed token enters the environment, keep shell tracing off
+    # for this process. The wrapper execs Claude Code, so there is no caller
+    # shell state to restore.
+    set +x
+    ;;
+esac
+
+pass_error_file="$(mktemp -t hapax-glmcp-pass.XXXXXX)"
+auth_token="$(pass show "$secret_entry" 2>"$pass_error_file" | sed -n '1p')" || {
+  echo "hapax-glmcp-claude: failed to read pass entry '$secret_entry'; check: pass show '$secret_entry' >/dev/null" >&2
+  echo "hapax-glmcp-claude: pass returned an error; stderr was suppressed to avoid replaying secret-adjacent diagnostics." >&2
+  rm -f "$pass_error_file"
+  pass_error_file=""
+  exit 5
+}
+rm -f "$pass_error_file"
+pass_error_file=""
+
+if [[ -z "$auth_token" ]]; then
+  echo "hapax-glmcp-claude: pass entry '$secret_entry' returned an empty first line; update the pass entry so line 1 is the Z.ai API key." >&2
+  exit 6
+fi
+
+export ANTHROPIC_BASE_URL="$base_url"
+export API_TIMEOUT_MS="${API_TIMEOUT_MS:-3000000}"
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}"
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-1000000}"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="$primary_model"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="$primary_model"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="$haiku_model"
+export HAPAX_LLM_PROVIDER="zai-glm-coding-plan"
+
+if [[ "$check_only" == true ]]; then
+  unset auth_token
+  if ! claude_version="$(env -u ANTHROPIC_AUTH_TOKEN claude --version)"; then
+    echo "hapax-glmcp-claude: claude --version failed; verify Claude Code runs before using the GLMCP lane." >&2
+    exit 9
+  fi
+  printf 'hapax-glmcp-claude: ok secret=available base_url=%s primary_model=%s compact_window=%s\n' \
+    "$base_url" "$primary_model" "$CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+  printf '%s\n' "$claude_version"
+  exit 0
+fi
+
+export ANTHROPIC_AUTH_TOKEN="$auth_token"
+unset auth_token
+
+exec claude "$@"
