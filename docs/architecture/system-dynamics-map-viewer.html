@@ -2206,7 +2206,7 @@
         selectNode: (id) => {
           const node = cy.$id(id);
           if (node.empty()) {
-            throw new Error(`Unknown node: ${id}`);
+            throw new Error(`Unknown node: ${id}. Check system-dynamics-map.seed.json nodes[].id before selecting.`);
           }
           cy.elements().unselect();
           node.select();

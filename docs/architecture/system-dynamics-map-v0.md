@@ -231,7 +231,7 @@ git diff --check -- \
 For visual regression, serve `docs/architecture/` locally and capture the viewer:
 
 ```bash
-python3 -m http.server 8765 --bind 127.0.0.1
+python3 -m http.server 8765 --bind 127.0.0.1 --directory docs/architecture
 npx playwright screenshot --browser chromium --viewport-size 1440,960 \
   --wait-for-selector '#cy canvas' --wait-for-timeout 3000 --full-page \
   http://127.0.0.1:8765/system-dynamics-map-viewer.html /tmp/system-dynamics-map-viewer-desktop.png

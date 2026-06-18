@@ -104,7 +104,7 @@ def test_system_dynamics_viewer_core_interactions():
             assert selected["id"] == "opentelemetry"
             assert page.locator("#panel").inner_text().startswith("OpenTelemetry")
 
-            with pytest.raises(PlaywrightError):
+            with pytest.raises(PlaywrightError, match="nodes\\[\\]\\.id"):
                 page.evaluate("window.systemDynamicsMapRuntime.selectNode('missing-node')")
         finally:
             browser.close()

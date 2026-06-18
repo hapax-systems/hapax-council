@@ -227,6 +227,10 @@ def test_materializer_write_and_stale_detection_paths(tmp_path, monkeypatch):
 
     trig_path.write_text("stale\n", encoding="utf-8")
     assert any("stale" in error for error in materialize.check_artifacts())
+    shacl_path.unlink()
+    errors = materialize.check_artifacts()
+    assert any("stale" in error for error in errors)
+    assert any("missing" in error for error in errors)
 
 
 def test_materialized_rdf_artifacts_keep_valid_prefix_directives():
@@ -261,8 +265,10 @@ def test_materialized_rdf_artifacts_parse_and_match_seed_contract():
         partition = dataset.graph(URIRef(BASE[f"graph/{node['status']}"]))
         subject = URIRef(BASE[f"node/{node['id']}"])
         assert (subject, RDF.type, SD.Node) in partition
-        assert (subject, SD.stableId, None) in partition
+        assert (subject, SD.stableId, Literal(node["id"])) in partition
         assert (subject, SD.documentationLink, None) in partition
+        for doc in node["docs"]:
+            assert (subject, SD.documentationLink, URIRef(doc["url"])) in partition
 
     for edge in seed["edges"]:
         partition = dataset.graph(URIRef(BASE[f"graph/{edge['status']}"]))
@@ -270,9 +276,14 @@ def test_materialized_rdf_artifacts_parse_and_match_seed_contract():
         assert (subject, RDF.type, SD.Edge) in partition
         assert (subject, SD.source, URIRef(BASE[f"node/{edge['source']}"])) in partition
         assert (subject, SD.target, URIRef(BASE[f"node/{edge['target']}"])) in partition
-        assert (subject, SD.relation, None) in partition
-        assert (subject, SD.confidence, None) in partition
-        assert (subject, SD.documentationLink, None) in partition
+        assert (subject, SD.relation, Literal(edge["relation"])) in partition
+        assert (
+            subject,
+            SD.confidence,
+            Literal(str(edge["confidence"]), datatype=XSD_DECIMAL),
+        ) in partition
+        for doc in edge["docs"]:
+            assert (subject, SD.documentationLink, URIRef(doc["url"])) in partition
 
     provenance = dataset.graph(URIRef(BASE["graph/provenance"]))
     activity = URIRef(BASE["activity/materialize-v1"])
