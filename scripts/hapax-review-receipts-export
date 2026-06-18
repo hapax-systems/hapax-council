@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Export review-team dossiers + acceptance receipts for the trainyard.
+
+The richest review signal in the SDLC (cross-family verdicts, criticals,
+auto-receipts) was invisible at the yard. This projects every
+*.review-dossier.yaml and *.acceptance.yaml in the active task dir into one
+JSON feed the cockpit consumes (consume-don't-rederive; coord speaks yason).
+Writes ~/.cache/hapax/coord/review-receipts.json atomically.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+import yaml
+
+VAULT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
+OUT = Path.home() / ".cache/hapax/coord/review-receipts.json"
+
+
+class SourceVaultUnavailable(RuntimeError):
+    """Raised when the canonical cc-task source vault cannot be read."""
+
+
+def _require_source_vault() -> None:
+    if not VAULT.exists():
+        raise SourceVaultUnavailable(
+            f"active cc-task vault missing at {VAULT}; "
+            "next: restore or mount the active task vault before exporting"
+        )
+    if not VAULT.is_dir():
+        raise SourceVaultUnavailable(
+            f"active cc-task vault is not a directory at {VAULT}; "
+            "next: restore the active task vault directory before exporting"
+        )
+    try:
+        with os.scandir(VAULT):
+            pass
+    except OSError as exc:
+        raise SourceVaultUnavailable(
+            f"active cc-task vault unreadable at {VAULT}: {exc}; "
+            "next: restore readable access before exporting"
+        ) from exc
+
+
+def _mapping_rows(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    return [row for row in value if isinstance(row, dict)]
+
+
+def _read_source_text(path: Path, label: str) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise SourceVaultUnavailable(
+            f"active cc-task {label} unreadable at {path}: {exc}; "
+            "next: restore readable access before exporting"
+        ) from exc
+
+
+def dossier_summary(path: Path) -> dict | None:
+    try:
+        d = yaml.safe_load(_read_source_text(path, "review dossier"))
+    except yaml.YAMLError as exc:
+        return {
+            "task_id": path.name.split(".review-dossier")[0],
+            "verdict": "unparseable",
+            "error": str(exc)[:200],
+        }
+    if not isinstance(d, dict):
+        return None
+    reviewers = _mapping_rows(d.get("reviewers"))
+    return {
+        "task_id": d.get("task_id") or path.name.split(".review-dossier")[0],
+        "pr": d.get("pr"),
+        "verdict": d.get("review_team_verdict"),
+        "head_sha": str(d.get("head_sha") or "")[:12],
+        "team_class": d.get("team_class"),
+        "families": [r.get("family") for r in reviewers],
+        "reviewer_verdicts": {str(r.get("family")): r.get("verdict") for r in reviewers},
+        "critical_count": sum(
+            1
+            for r in reviewers
+            for f in _mapping_rows(r.get("findings"))
+            if f.get("severity") == "critical"
+        ),
+        "no_quorum_cause": d.get("no_quorum_cause"),
+    }
+
+
+def acceptance_summary(path: Path) -> dict | None:
+    try:
+        d = yaml.safe_load(_read_source_text(path, "acceptance receipt"))
+    except yaml.YAMLError:
+        return {"task_id": path.name.split(".acceptance")[0], "verdict": "unparseable"}
+    if not isinstance(d, dict):
+        return None
+    return {
+        "task_id": path.name.split(".acceptance")[0],
+        "verdict": d.get("verdict"),
+        "acceptor": d.get("acceptor"),
+        # yaml parses unquoted ISO stamps into datetime, which json.dumps
+        # rejects (dossier critical: canonical receipts crash the exporter)
+        "timestamp": str(d.get("timestamp")) if d.get("timestamp") is not None else None,
+    }
+
+
+def main() -> int:
+    try:
+        _require_source_vault()
+        dossiers = [
+            s for p in sorted(VAULT.glob("*.review-dossier.yaml")) if (s := dossier_summary(p))
+        ]
+        receipts = [
+            s for p in sorted(VAULT.glob("*.acceptance.yaml")) if (s := acceptance_summary(p))
+        ]
+    except SourceVaultUnavailable as exc:
+        print(f"review-receipts BLOCKED: {exc}", file=sys.stderr)
+        return 2
+    payload = {
+        "schema": 1,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "dossiers": dossiers,
+        "acceptances": receipts,
+        "counts": {
+            "dossiers": len(dossiers),
+            "blocked": sum(1 for d in dossiers if d.get("verdict") == "blocked"),
+            "no_quorum": sum(1 for d in dossiers if d.get("verdict") == "no-quorum"),
+            "quorum_accept": sum(1 for d in dossiers if d.get("verdict") == "quorum-accept"),
+            "acceptances": len(receipts),
+        },
+    }
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    tmp = OUT.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=1))
+    os.replace(tmp, OUT)
+    print(f"review-receipts: {len(dossiers)} dossiers, {len(receipts)} acceptances -> {OUT}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -8,7 +8,8 @@ After=dev-%i.device
 [Service]
 Type=oneshot
 # %h resolves to the user's home directory; %i is the template instance
-# (the kernel device name, e.g. video0).
-ExecStart=%h/projects/hapax-council/systemd/units/studio-camera-reconfigure.sh %i
+# (the kernel device name, e.g. video0). Run from source activation so udev
+# never calls a mutable development checkout.
+ExecStart=%h/.cache/hapax/source-activation/worktree/systemd/units/studio-camera-reconfigure.sh %i
 StandardOutput=journal
 StandardError=journal

@@ -1,0 +1,307 @@
+#!/usr/bin/env bash
+# Deploy hapax-coord into the coord activation worktree and restart the yard
+# only when origin/main changes.
+set -euo pipefail
+
+REPO="${HAPAX_COORD_DEPLOY_REPO:-/home/hapax/projects/hapax-coord}"
+ACT_ROOT="${HAPAX_COORD_DEPLOY_ACT_ROOT:-$HOME/.cache/hapax/coord-activation}"
+WT="$ACT_ROOT/worktree"
+SETUP_NEXT="next: verify HAPAX_COORD_DEPLOY_REPO points to a readable hapax-coord git checkout with origin/main, verify HAPAX_COORD_DEPLOY_ACT_ROOT is writable, then rerun scripts/hapax-coord-deploy"
+
+if [ "${1:-}" = "--contract-json" ]; then
+    printf '{"schema":1,"source_repo":"%s","activation_worktree":"%s","target_ref":"origin/main","writes_deployed_sha":true,"writes_deployed_sha_after_restart":true,"rolls_back_worktree_on_restart_failure":true,"rolls_back_worktree_on_clean_failure":true,"rolls_back_worktree_on_checkout_failure":true,"proves_rollback_clean_before_service_restart":true,"cleans_activation_worktree":true,"restarts_service":"hapax-coord.service"}\n' "$REPO" "$WT"
+    exit 0
+fi
+
+deploy_fail() {
+    local label="$1"
+    local rc="$2"
+    local detail="$3"
+    detail="${detail//$'\n'/; }"
+    if [ -z "$detail" ]; then
+        detail="no output"
+    fi
+    echo "coord-deploy: $label failed (rc=$rc): $detail; $SETUP_NEXT" >&2
+    exit "$rc"
+}
+
+run_or_fail() {
+    local label="$1"
+    shift
+    local out
+    local rc
+    if out="$("$@" 2>&1)"; then
+        if [ -n "$out" ]; then
+            printf '%s\n' "$out"
+        fi
+    else
+        rc=$?
+        deploy_fail "$label" "$rc" "$out"
+    fi
+}
+
+capture_or_fail() {
+    local label="$1"
+    shift
+    local out
+    local rc
+    if out="$("$@" 2>&1)"; then
+        printf '%s' "$out"
+    else
+        rc=$?
+        deploy_fail "$label" "$rc" "$out"
+    fi
+}
+
+activation_dirty_entries() {
+    git -C "$WT" status --porcelain=v1 --untracked-files=all --ignored=matching 2>/dev/null \
+        | grep -Ev '^(\?\?|!!) \.deployed-sha$' || true
+}
+
+clean_activation_worktree_or_fail() {
+    local out
+    local rc
+    if out="$(git -C "$WT" clean -xfd -- . ":(exclude).deployed-sha" 2>&1)"; then
+        if [ -n "$out" ]; then
+            printf '%s\n' "$out"
+        fi
+    else
+        rc=$?
+        pre_restart_worktree_fail "$rc" "clean untracked/ignored activation worktree $WT" "$out"
+    fi
+}
+
+checkout_activation_worktree_or_fail() {
+    local out
+    local rc
+    if out="$(git -C "$WT" checkout --detach --force "$TARGET_SHA" --quiet 2>&1)"; then
+        if [ -n "$out" ]; then
+            printf '%s\n' "$out"
+        fi
+    else
+        rc=$?
+        pre_restart_worktree_fail "$rc" "checkout activation worktree $WT" "$out"
+    fi
+}
+
+RECEIPT_NEXT="next: inspect $WT/.deployed-sha permissions and systemctl --user status hapax-coord.service, reconcile activation/deployed sha state, then rerun scripts/hapax-coord-deploy"
+
+validate_receipt_path_or_fail() {
+    if [ -e "$WT/.deployed-sha" ] && [ ! -f "$WT/.deployed-sha" ]; then
+        echo "coord-deploy: deployed sha receipt path invalid: $WT/.deployed-sha is not a regular file; $RECEIPT_NEXT" >&2
+        exit 1
+    fi
+}
+
+run_or_fail "fetch origin/main from $REPO" git -C "$REPO" fetch origin +refs/heads/main:refs/remotes/origin/main --quiet
+TARGET_SHA="$(capture_or_fail "resolve origin/main in $REPO" git -C "$REPO" rev-parse refs/remotes/origin/main)"
+
+run_or_fail "create activation root $ACT_ROOT" mkdir -p "$ACT_ROOT"
+if [ ! -d "$WT/.git" ] && [ ! -f "$WT/.git" ]; then
+    run_or_fail "add activation worktree $WT" git -C "$REPO" worktree add --detach "$WT" "$TARGET_SHA"
+fi
+validate_receipt_path_or_fail
+
+CURRENT_SHA="$(git -C "$WT" rev-parse HEAD 2>/dev/null || echo none)"
+DEPLOYED_SHA="$(cat "$WT/.deployed-sha" 2>/dev/null || echo none)"
+ACTIVATION_DIRTY="$(activation_dirty_entries)"
+if [ "$CURRENT_SHA" = "$TARGET_SHA" ] && [ "$DEPLOYED_SHA" = "$TARGET_SHA" ] && [ -z "$ACTIVATION_DIRTY" ]; then
+    echo "coord-deploy: up to date at $TARGET_SHA"
+    exit 0
+fi
+
+ROLLBACK_SHA=""
+if [ "$DEPLOYED_SHA" != "none" ] && git -C "$WT" cat-file -e "$DEPLOYED_SHA^{commit}" 2>/dev/null; then
+    ROLLBACK_SHA="$DEPLOYED_SHA"
+elif [ "$CURRENT_SHA" != "none" ] && git -C "$WT" cat-file -e "$CURRENT_SHA^{commit}" 2>/dev/null; then
+    ROLLBACK_SHA="$CURRENT_SHA"
+fi
+RESTART_NEXT="next: inspect systemctl --user status hapax-coord.service and journalctl --user -u hapax-coord.service -n 100, fix the service failure, then rerun scripts/hapax-coord-deploy"
+CLEAN_NEXT="next: inspect git -C $WT status --porcelain=v1 --untracked-files=all --ignored=matching and filesystem permissions, repair or clean the activation worktree, then rerun scripts/hapax-coord-deploy"
+
+rollback_service_after_receipt_failure() {
+    local service_rc
+    if systemctl --user restart hapax-coord.service >/dev/null 2>&1; then
+        printf 'restarted hapax-coord.service on rollback sha %s' "$ROLLBACK_SHA"
+    else
+        service_rc=$?
+        systemctl --user stop hapax-coord.service >/dev/null 2>&1 || true
+        printf 'rollback service restart failed rc=%s; stopped hapax-coord.service to avoid serving unreceipted target' "$service_rc"
+    fi
+}
+
+restart_service_after_restart_failure_rollback() {
+    local service_rc
+    if systemctl --user restart hapax-coord.service >/dev/null 2>&1; then
+        printf 'restarted hapax-coord.service on rollback sha %s' "$ROLLBACK_SHA"
+    else
+        service_rc=$?
+        printf 'rollback service restart failed rc=%s; inspect hapax-coord.service before retrying' "$service_rc"
+    fi
+}
+
+stop_unreceipted_service_after_receipt_failure() {
+    local service_rc
+    if systemctl --user stop hapax-coord.service >/dev/null 2>&1; then
+        printf 'stopped hapax-coord.service to avoid serving unreceipted target'
+    else
+        service_rc=$?
+        printf 'failed to stop hapax-coord.service rc=%s after receipt failure' "$service_rc"
+    fi
+}
+
+clean_rollback_or_stop() {
+    local context="$1"
+    local detail="$2"
+    local next="$3"
+    local rollback_clean_detail
+    local rollback_clean_rc
+    local service_detail
+    local detail_part=""
+    if [ -n "$detail" ]; then
+        detail_part="; $detail"
+    fi
+    if rollback_clean_detail="$(git -C "$WT" clean -xfd -- . ":(exclude).deployed-sha" 2>&1)"; then
+        return 0
+    else
+        rollback_clean_rc=$?
+    fi
+    rollback_clean_detail="${rollback_clean_detail//$'\n'/; }"
+    if [ -z "$rollback_clean_detail" ]; then
+        rollback_clean_detail="no output"
+    fi
+    service_detail="$(stop_unreceipted_service_after_receipt_failure)"
+    echo "coord-deploy: $context; rolled activation worktree back to $ROLLBACK_SHA but rollback clean failed (rc=$rollback_clean_rc): $rollback_clean_detail; $service_detail$detail_part; $next" >&2
+    return "$rollback_clean_rc"
+}
+
+pre_restart_worktree_fail() {
+    local rc="$1"
+    local label="$2"
+    local detail="$3"
+    local rollback_detail
+    local rollback_rc
+    local rollback_clean_detail
+    local rollback_clean_rc
+    local service_detail
+    detail="${detail//$'\n'/; }"
+    if [ -z "$detail" ]; then
+        detail="no output"
+    fi
+    if [ -n "$ROLLBACK_SHA" ] && [ "$ROLLBACK_SHA" != "$TARGET_SHA" ]; then
+        if rollback_detail="$(git -C "$WT" checkout --detach --force "$ROLLBACK_SHA" --quiet 2>&1)"; then
+            if rollback_clean_detail="$(git -C "$WT" clean -xfd -- . ":(exclude).deployed-sha" 2>&1)"; then
+                echo "coord-deploy: $label failed before restart; rolled activation worktree back to $ROLLBACK_SHA before restart; $detail; $CLEAN_NEXT" >&2
+            else
+                rollback_clean_rc=$?
+                rollback_clean_detail="${rollback_clean_detail//$'\n'/; }"
+                if [ -z "$rollback_clean_detail" ]; then
+                    rollback_clean_detail="no output"
+                fi
+                service_detail="$(stop_unreceipted_service_after_receipt_failure)"
+                echo "coord-deploy: $label failed before restart; rolled activation worktree back to $ROLLBACK_SHA but rollback clean failed (rc=$rollback_clean_rc): $rollback_clean_detail; $service_detail; $detail; $CLEAN_NEXT" >&2
+            fi
+        else
+            rollback_rc=$?
+            rollback_detail="${rollback_detail//$'\n'/; }"
+            if [ -z "$rollback_detail" ]; then
+                rollback_detail="no output"
+            fi
+            service_detail="$(stop_unreceipted_service_after_receipt_failure)"
+            echo "coord-deploy: $label failed before restart; rollback checkout to $ROLLBACK_SHA failed (rc=$rollback_rc): $rollback_detail; $service_detail; $detail; $CLEAN_NEXT" >&2
+        fi
+    elif [ -n "$ROLLBACK_SHA" ]; then
+        service_detail="$(stop_unreceipted_service_after_receipt_failure)"
+        echo "coord-deploy: $label failed before restart; activation worktree remains at $ROLLBACK_SHA; $service_detail; $detail; $CLEAN_NEXT" >&2
+    else
+        service_detail="$(stop_unreceipted_service_after_receipt_failure)"
+        echo "coord-deploy: $label failed before restart; no prior activation worktree sha available; $service_detail; $detail; $CLEAN_NEXT" >&2
+    fi
+    exit "$rc"
+}
+
+receipt_fail() {
+    local rc="$1"
+    local detail="$2"
+    local checkout_detail
+    local checkout_rc
+    local service_detail
+    detail="${detail//$'\n'/; }"
+    if [ -z "$detail" ]; then
+        detail="no output"
+    fi
+    if [ -n "$ROLLBACK_SHA" ] && [ "$ROLLBACK_SHA" != "$TARGET_SHA" ]; then
+        if checkout_detail="$(git -C "$WT" checkout --detach --force "$ROLLBACK_SHA" --quiet 2>&1)"; then
+            if clean_rollback_or_stop "receipt write failed after restart" "$detail" "$RECEIPT_NEXT"; then
+                service_detail="$(rollback_service_after_receipt_failure)"
+                echo "coord-deploy: receipt write failed after restart; rolled activation worktree back to $ROLLBACK_SHA; $service_detail; $detail; $RECEIPT_NEXT" >&2
+            fi
+        else
+            checkout_rc=$?
+            checkout_detail="${checkout_detail//$'\n'/; }"
+            if [ -z "$checkout_detail" ]; then
+                checkout_detail="no output"
+            fi
+            service_detail="$(stop_unreceipted_service_after_receipt_failure)"
+            echo "coord-deploy: receipt write failed after restart; rollback checkout to $ROLLBACK_SHA failed (rc=$checkout_rc): $checkout_detail; $service_detail; $detail; $RECEIPT_NEXT" >&2
+        fi
+    elif [ -n "$ROLLBACK_SHA" ]; then
+        service_detail="$(stop_unreceipted_service_after_receipt_failure)"
+        echo "coord-deploy: receipt write failed after restart; activation worktree remains at $ROLLBACK_SHA; $service_detail; $detail; $RECEIPT_NEXT" >&2
+    else
+        service_detail="$(stop_unreceipted_service_after_receipt_failure)"
+        echo "coord-deploy: receipt write failed after restart; no prior activation worktree sha available; $service_detail; $detail; $RECEIPT_NEXT" >&2
+    fi
+    exit "$rc"
+}
+
+write_receipt_or_fail() {
+    local out
+    local rc
+    if out="$(printf '%s\n' "$TARGET_SHA" > "$WT/.deployed-sha.tmp" 2>&1)"; then
+        :
+    else
+        rc=$?
+        receipt_fail "$rc" "write .deployed-sha.tmp failed: $out"
+    fi
+    if out="$(mv -T "$WT/.deployed-sha.tmp" "$WT/.deployed-sha" 2>&1)"; then
+        :
+    else
+        rc=$?
+        receipt_fail "$rc" "promote .deployed-sha failed: $out"
+    fi
+}
+
+checkout_activation_worktree_or_fail
+clean_activation_worktree_or_fail
+echo "coord-deploy: checked out $TARGET_SHA; restarting hapax-coord"
+if systemctl --user restart hapax-coord.service; then
+    :
+else
+    rc=$?
+    if [ -n "$ROLLBACK_SHA" ] && [ "$ROLLBACK_SHA" != "$TARGET_SHA" ]; then
+        if rollback_detail="$(git -C "$WT" checkout --detach --force "$ROLLBACK_SHA" --quiet 2>&1)"; then
+            if clean_rollback_or_stop "restart failed" "" "$RESTART_NEXT"; then
+                service_detail="$(restart_service_after_restart_failure_rollback)"
+                echo "coord-deploy: restart failed; rolled activation worktree back to $ROLLBACK_SHA; $service_detail; $RESTART_NEXT" >&2
+            fi
+        else
+            rollback_rc=$?
+            rollback_detail="${rollback_detail//$'\n'/; }"
+            if [ -z "$rollback_detail" ]; then
+                rollback_detail="no output"
+            fi
+            service_detail="$(stop_unreceipted_service_after_receipt_failure)"
+            echo "coord-deploy: restart failed; rollback checkout to $ROLLBACK_SHA failed (rc=$rollback_rc): $rollback_detail; $service_detail; $RESTART_NEXT" >&2
+        fi
+    elif [ -n "$ROLLBACK_SHA" ]; then
+        service_detail="$(stop_unreceipted_service_after_receipt_failure)"
+        echo "coord-deploy: restart failed; activation worktree remains at $ROLLBACK_SHA; $service_detail; $RESTART_NEXT" >&2
+    else
+        service_detail="$(stop_unreceipted_service_after_receipt_failure)"
+        echo "coord-deploy: restart failed; no prior activation worktree sha available; $service_detail; $RESTART_NEXT" >&2
+    fi
+    exit "$rc"
+fi
+write_receipt_or_fail
+echo "coord-deploy: activated $TARGET_SHA"

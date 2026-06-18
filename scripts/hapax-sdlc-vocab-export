@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""Export the SDLC vocabulary for consumers (RC-4 / consume-don't-rederive).
+
+The trainyard (hapax-coord) consumes this JSON instead of re-deriving stage
+and status vocabularies in Lisp — the audit found its hand-coded enum matched
+0/253 live tasks. The export is GENERATED from the owning SSOTs:
+  * stages: shared.sdlc_invariants.SDLC_LADDER (operational tokens; the
+    BLOCKED pseudo-state rides separately as pseudo_stages) + the
+    shared.sdlc_lifecycle STAGE_RE / ladder-token bridge
+  * observed vocab: the live task corpus (so consumers can parity-check),
+    frontmatter only — body text never counts
+Writes ~/.cache/hapax/coord/sdlc-vocab.json atomically.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from shared.sdlc_invariants import SDLC_LADDER  # noqa: E402
+from shared.sdlc_lifecycle import (  # noqa: E402
+    STAGE_RE,
+    frontmatter_from_text,
+    stage_token,
+)
+
+VAULT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
+OUT = Path.home() / ".cache/hapax/coord/sdlc-vocab.json"
+
+
+class SourceVaultUnavailable(RuntimeError):
+    """Raised when the canonical cc-task source vault cannot be read."""
+
+
+def _require_source_vault() -> None:
+    if not VAULT.exists():
+        raise SourceVaultUnavailable(
+            f"active cc-task vault missing at {VAULT}; "
+            "next: restore or mount the active task vault before exporting"
+        )
+    if not VAULT.is_dir():
+        raise SourceVaultUnavailable(
+            f"active cc-task vault is not a directory at {VAULT}; "
+            "next: restore the active task vault directory before exporting"
+        )
+    try:
+        with os.scandir(VAULT):
+            pass
+    except OSError as exc:
+        raise SourceVaultUnavailable(
+            f"active cc-task vault unreadable at {VAULT}: {exc}; "
+            "next: restore readable access before exporting"
+        ) from exc
+
+
+def observed_vocab() -> tuple[dict[str, int], dict[str, int]]:
+    _require_source_vault()
+    stages: dict[str, int] = {}
+    statuses: dict[str, int] = {}
+    for note in VAULT.glob("*.md"):
+        try:
+            text = note.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise SourceVaultUnavailable(
+                f"active cc-task note unreadable at {note}: {exc}; "
+                "next: restore readable access before exporting"
+            ) from exc
+        fm = frontmatter_from_text(text)
+        for field, target in (("stage", stages), ("status", statuses)):
+            value = fm.get(field)
+            if value not in (None, ""):
+                value = str(value).strip()
+                target[value] = target.get(value, 0) + 1
+    return stages, statuses
+
+
+def _ladder_token(raw: str) -> str:
+    """Map an observed stage form onto a REAL ladder token, else 'unknown'.
+    stage_token() normalizes but does not validate membership — for garbage
+    like S13_FOO it invents a token, which would let the parity canary
+    falsely report full parity (review finding, PR #4100 round 2)."""
+    token = stage_token(raw)
+    if token and token in SDLC_LADDER.stages:
+        return token
+    return "unknown"
+
+
+def main() -> int:
+    try:
+        stages, statuses = observed_vocab()
+    except SourceVaultUnavailable as exc:
+        print(f"sdlc-vocab BLOCKED: {exc}", file=sys.stderr)
+        return 2
+    payload = {
+        "schema": 1,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "stage_re": STAGE_RE.pattern,
+        "ladder_tokens": [s for s in SDLC_LADDER.stages if s not in SDLC_LADDER.blocked],
+        "pseudo_stages": sorted(SDLC_LADDER.blocked),
+        "observed_stages": {
+            raw: {"count": n, "ladder_token": _ladder_token(raw)}
+            for raw, n in sorted(stages.items())
+        },
+        "observed_statuses": dict(sorted(statuses.items())),
+        "source": "shared.sdlc_invariants.SDLC_LADDER + shared.sdlc_lifecycle + live task corpus",
+    }
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    tmp = OUT.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=1))
+    os.replace(tmp, OUT)
+    print(f"sdlc-vocab: {len(stages)} stage forms, {len(statuses)} statuses -> {OUT}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

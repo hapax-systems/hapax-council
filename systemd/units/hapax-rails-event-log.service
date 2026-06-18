@@ -1,0 +1,7 @@
+# Hapax-Auto-Enable: true
+[Unit]
+Description=Fold SDLC feeds into the rails event log (the map's substrate)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/hapax-rails-event-log

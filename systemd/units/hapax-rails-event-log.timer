@@ -1,0 +1,11 @@
+# Hapax-Auto-Enable: true
+[Unit]
+Description=Rails event log fold timer (30s tick — inotify push is the B2 upgrade)
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

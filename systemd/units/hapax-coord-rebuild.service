@@ -1,0 +1,8 @@
+# Hapax-Auto-Enable: true
+[Unit]
+Description=Hapax coord deploy — fetch main, refresh the activation worktree, restart the yard on change
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-coord-deploy

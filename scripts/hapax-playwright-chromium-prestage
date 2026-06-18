@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""Pre-stage Chromium for the coord recheck's Playwright witness."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def _browser_root() -> Path:
+    return Path(
+        os.environ.get(
+            "HAPAX_RECHECK_PLAYWRIGHT_BROWSERS",
+            Path.home() / ".cache/hapax/source-activation/playwright-browsers",
+        )
+    )
+
+
+def _activation_root() -> Path:
+    return Path(
+        os.environ.get(
+            "HAPAX_RECHECK_ACTIVATION",
+            os.environ.get(
+                "HAPAX_SOURCE_ACTIVATION_WORKTREE",
+                Path.home() / ".cache/hapax/source-activation/worktree",
+            ),
+        )
+    )
+
+
+def _staged_chromium_executable(root: Path) -> Path | None:
+    try:
+        candidates = sorted(root.iterdir(), reverse=True)
+    except OSError:
+        return None
+    for candidate in candidates:
+        if not candidate.name.startswith(("chromium-", "chromium_headless_shell-")):
+            continue
+        for rel in (
+            "chrome-linux64/chrome",
+            "chrome-linux/chrome",
+            "chrome-headless-shell-linux64/chrome-headless-shell",
+        ):
+            executable = candidate / rel
+            if executable.exists() and os.access(executable, os.X_OK):
+                return executable
+    return None
+
+
+def main() -> int:
+    browser_root = _browser_root()
+    activation = _activation_root()
+    env = dict(os.environ)
+    env["PLAYWRIGHT_BROWSERS_PATH"] = str(browser_root)
+    cmd = ["uv", "run", "python", "-m", "playwright", "install", "chromium"]
+    try:
+        browser_root.mkdir(parents=True, exist_ok=True)
+        subprocess.run(cmd, cwd=activation, env=env, check=True)
+    except OSError as exc:
+        print(
+            f"FAIL playwright chromium install could not start: {exc}; "
+            f"browser_root={browser_root}; activation={activation}; "
+            "next: ensure the source activation worktree exists, uv is on PATH, "
+            "then rerun scripts/hapax-playwright-chromium-prestage",
+            file=sys.stderr,
+        )
+        return 1
+    except subprocess.CalledProcessError as exc:
+        print(
+            f"FAIL playwright chromium install failed rc={exc.returncode}; "
+            f"browser_root={browser_root}; activation={activation}; "
+            "next: rerun scripts/hapax-playwright-chromium-prestage from the "
+            "source activation worktree and inspect uv/playwright output",
+            file=sys.stderr,
+        )
+        return exc.returncode or 1
+    executable = _staged_chromium_executable(browser_root)
+    if executable is None:
+        print(
+            f"FAIL no executable Chromium under {browser_root}; "
+            "next: inspect PLAYWRIGHT_BROWSERS_PATH and rerun this pre-stage command",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"OK staged Chromium: {executable}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

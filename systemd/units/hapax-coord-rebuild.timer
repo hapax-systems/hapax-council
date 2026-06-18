@@ -1,0 +1,11 @@
+# Hapax-Auto-Enable: true
+[Unit]
+Description=Hapax coord deploy timer (GAP-1 — the yard tracks main)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=false
+
+[Install]
+WantedBy=timers.target
