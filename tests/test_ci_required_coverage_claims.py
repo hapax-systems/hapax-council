@@ -1,4 +1,6 @@
 import re
+import subprocess
+import textwrap
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +26,16 @@ def _workflow_job_block(workflow_text: str, job_name: str) -> str:
     )
     assert match is not None, f"missing workflow job {job_name}"
     return match.group(0)
+
+
+def _workflow_shell_function(workflow_text: str, function_name: str) -> str:
+    match = re.search(
+        rf"^ {{10}}{re.escape(function_name)}\(\) \{{\n(?P<body>.*?^ {{10}}\}})",
+        workflow_text,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert match is not None, f"missing shell function {function_name}"
+    return textwrap.dedent(match.group(0))
 
 
 def test_homage_visual_regression_nightly_workflow_exists_for_ci_claim() -> None:
@@ -170,6 +182,49 @@ def test_ci_docs_only_prs_trigger_required_jobs_with_sentinels() -> None:
         assert "Docs-only required-check sentinel" in job_block
         assert "needs.docs_only_filter.outputs.docs_only == 'true'" in job_block
         assert "needs.docs_only_filter.outputs.docs_only != 'true'" in job_block
+
+
+def test_ci_docs_only_filter_executes_system_dynamics_map_carveout() -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+    script = "\n\n".join(
+        _workflow_shell_function(ci_text, function_name)
+        for function_name in (
+            "is_audio_authority_path",
+            "is_system_dynamics_map_authority_path",
+            "docs_only_path",
+        )
+    )
+    script += textwrap.dedent(
+        """
+
+        assert_docs_only_result() {
+          local expected="$1"
+          local path="$2"
+          set +e
+          docs_only_path "$path"
+          local actual="$?"
+          set -e
+          if [ "$actual" -ne "$expected" ]; then
+            echo "$path expected $expected, got $actual" >&2
+            exit 1
+          fi
+        }
+
+        assert_docs_only_result 1 docs/architecture/system-dynamics-map-viewer.html
+        assert_docs_only_result 1 docs/architecture/system-dynamics-map.canonical.trig
+        assert_docs_only_result 1 docs/architecture/vendor/cytoscape-3.34.0.min.js
+        assert_docs_only_result 0 docs/architecture/ordinary-note.md
+        assert_docs_only_result 1 shared/runtime.py
+        """
+    )
+
+    result = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_ci_merge_group_docs_only_filter_has_stable_base_sha() -> None:
