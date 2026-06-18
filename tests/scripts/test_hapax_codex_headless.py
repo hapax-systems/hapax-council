@@ -17,6 +17,16 @@ def _write_executable(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
+def _write_minimal_council(council_dir: Path, retire_log: Path) -> None:
+    _write_executable(council_dir / "hooks" / "scripts" / "codex-hook-adapter.sh", "exit 0\n")
+    _write_executable(
+        council_dir / "scripts" / "hapax-relay-retire",
+        f"""printf '%s\\n' "$*" >> "{retire_log}"
+exit 0
+""",
+    )
+
+
 def test_codex_headless_runs_on_appendix_via_remote_payload(tmp_path: Path) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
@@ -134,3 +144,355 @@ exit 0
 
     assert result.returncode == 0, result.stderr
     assert args_file.exists()
+
+
+def test_codex_headless_blocks_retired_relay_without_force(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    relay = cache / "relay"
+    cache.mkdir(parents=True)
+    relay.mkdir(parents=True)
+    (relay / "cx-amber.yaml").write_text("status: retired\n", encoding="utf-8")
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    args_file = tmp_path / "codex-args.txt"
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\\n' "$*" > {args_file}
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 6
+    assert "pass --force to reactivate" in result.stderr
+    assert str(relay / "cx-amber.yaml") in result.stderr
+    assert not args_file.exists()
+
+
+def test_codex_headless_blocks_wound_down_relay_session_status(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    relay = cache / "relay"
+    cache.mkdir(parents=True)
+    relay.mkdir(parents=True)
+    relay_file = relay / "cx-amber.yaml"
+    relay_file.write_text("session_status: |\n  wind_down_idle\n", encoding="utf-8")
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    args_file = tmp_path / "codex-args.txt"
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\\n' "$*" > {args_file}
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 6
+    assert "retired/wound-down" in result.stderr
+    assert f"recheck: sed -n '1,80p' \"{relay_file}\"" in result.stderr
+    assert "$RELAY_STATUS_FILE" not in result.stderr
+    assert not args_file.exists()
+
+
+def test_codex_headless_does_not_overmatch_transitional_relay_status(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    relay = cache / "relay"
+    cache.mkdir(parents=True)
+    relay.mkdir(parents=True)
+    (relay / "cx-amber.yaml").write_text("status: retiring-soon\n", encoding="utf-8")
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    args_file = tmp_path / "codex-args.txt"
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\\n' "$*" > {args_file}
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert args_file.exists()
+
+
+def test_codex_headless_blocks_suffixed_terminal_relay_status(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    relay = cache / "relay"
+    cache.mkdir(parents=True)
+    relay.mkdir(parents=True)
+    (relay / "cx-amber.yaml").write_text("status: closed_done\n", encoding="utf-8")
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    args_file = tmp_path / "codex-args.txt"
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\\n' "$*" > {args_file}
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 6
+    assert "retired/wound-down" in result.stderr
+    assert not args_file.exists()
+
+
+def test_codex_headless_force_reactivates_retired_relay(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    relay = cache / "relay"
+    cache.mkdir(parents=True)
+    relay.mkdir(parents=True)
+    (relay / "cx-amber.yaml").write_text("status: retired\n", encoding="utf-8")
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    args_file = tmp_path / "codex-args.txt"
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\\n' "$*" > {args_file}
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "exec --dangerously-bypass-approvals-and-sandbox" in args_file.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_codex_headless_force_does_not_bypass_live_pid_guard(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    relay = cache / "relay"
+    cache.mkdir(parents=True)
+    relay.mkdir(parents=True)
+    relay_file = relay / "cx-amber.yaml"
+    relay_file.write_text("status: active\n", encoding="utf-8")
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+    pid_dir = tmp_path / "pids"
+    pid_dir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    args_file = tmp_path / "codex-args.txt"
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\\n' "$*" > {args_file}
+exit 0
+""",
+    )
+
+    live = subprocess.Popen(["sleep", "60"])
+    try:
+        (pid_dir / "cx-amber.pid").write_text(f"{live.pid}\n", encoding="utf-8")
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+        env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+        env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+        env["HAPAX_CODEX_HEADLESS_PID_DIR"] = str(pid_dir)
+
+        result = subprocess.run(
+            [
+                str(SCRIPT),
+                "--task",
+                "task-x",
+                "--no-claim",
+                "--force",
+                "cx-amber",
+                "governed prompt",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        )
+    finally:
+        live.terminate()
+        live.wait(timeout=5)
+
+    assert result.returncode == 11
+    assert "already live" in result.stderr
+    assert not args_file.exists()
+    assert (pid_dir / "cx-amber.pid").read_text(encoding="utf-8") == f"{live.pid}\n"
+    assert relay_file.read_text(encoding="utf-8") == "status: active\n"
+
+
+def test_codex_headless_cleanup_removes_owned_pid_and_retires_relay(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    (cache / "relay").mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+    pid_dir = tmp_path / "pids"
+    pid_dir.mkdir()
+    council_dir = tmp_path / "council"
+    retire_log = tmp_path / "retire.log"
+    _write_minimal_council(council_dir, retire_log)
+
+    bin_dir = tmp_path / "bin"
+    _write_executable(bin_dir / "codex", "exit 0\n")
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(council_dir)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_CODEX_HEADLESS_PID_DIR"] = str(pid_dir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not (pid_dir / "cx-amber.pid").exists()
+    assert "cx-amber --reason clean exit (codex headless)" in retire_log.read_text(encoding="utf-8")
+
+
+def test_codex_headless_cleanup_preserves_replaced_pid_without_retiring_relay(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    (cache / "relay").mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+    pid_dir = tmp_path / "pids"
+    pid_dir.mkdir()
+    council_dir = tmp_path / "council"
+    retire_log = tmp_path / "retire.log"
+    _write_minimal_council(council_dir, retire_log)
+
+    bin_dir = tmp_path / "bin"
+    _write_executable(
+        bin_dir / "codex",
+        """pid_file="$HAPAX_CODEX_HEADLESS_PID_DIR/$HAPAX_AGENT_NAME.pid"
+for _ in {1..50}; do
+  [[ -f "$pid_file" ]] && break
+  sleep 0.02
+done
+printf '999999\\n' > "$pid_file"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(council_dir)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_CODEX_HEADLESS_PID_DIR"] = str(pid_dir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (pid_dir / "cx-amber.pid").read_text(encoding="utf-8") == "999999\n"
+    assert not retire_log.exists()

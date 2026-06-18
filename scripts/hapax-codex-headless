@@ -29,6 +29,79 @@ headless_allowed() {
   [[ "${HAPAX_CODEX_HEADLESS_ALLOW:-}" == "1" || -e "$ENABLE_FILE" ]]
 }
 
+relay_retired() {
+  local relay_name="$1"
+  local relay_file="${HAPAX_RELAY_DIR:-$HOME/.cache/hapax/relay}/$relay_name.yaml"
+  local value
+  [ -f "$relay_file" ] || return 1
+  while IFS= read -r value; do
+    if relay_value_is_retired "$value"; then
+      return 0
+    fi
+  done < <(relay_current_values "$relay_file")
+  return 1
+}
+
+relay_current_values() {
+  local relay_file="$1"
+  awk '
+    BEGIN { in_session_status = 0 }
+
+    in_session_status {
+      if ($0 ~ /^[[:space:]]*$/) {
+        next
+      }
+      if ($0 !~ /^[[:space:]]+/) {
+        in_session_status = 0
+      } else {
+        value = $0
+        sub(/^[[:space:]]+/, "", value)
+        print value
+        in_session_status = 0
+        next
+      }
+    }
+
+    /^(status|state|relay_status|session_state|role):[[:space:]]*/ {
+      value = $0
+      sub(/^[^:]+:[[:space:]]*/, "", value)
+      if (value !~ /^[|>]/) {
+        print value
+      }
+      next
+    }
+
+    /^session_status:[[:space:]]*/ {
+      value = $0
+      sub(/^session_status:[[:space:]]*/, "", value)
+      if (value ~ /^[|>]/) {
+        in_session_status = 1
+        next
+      }
+      print value
+      next
+    }
+  ' "$relay_file"
+}
+
+relay_value_is_retired() {
+  local value="$1"
+  local normalized first_word
+  normalized="$(printf '%s' "$value" | sed "s/^[[:space:]\"']*//; s/[[:space:]\"']*$//" | tr '[:lower:]' '[:upper:]')"
+  first_word="${normalized%%[[:space:]]*}"
+  case "$first_word" in
+    RETIRED*|SUPERSEDED*|CLOSED*|IDLE_WOUND_DOWN*|WIND_DOWN_IDLE*|WOUND_DOWN*|WIND_DOWN*|WINDING_DOWN*|ANTIGRAVITY_TAKEOVER)
+      return 0
+      ;;
+  esac
+  case "$normalized" in
+    RETIRED*|SUPERSEDED*|CLOSED*|IDLE_WOUND_DOWN*|WIND_DOWN_IDLE*|WOUND_DOWN*|WIND_DOWN*|WINDING_DOWN*|ANTIGRAVITY_TAKEOVER)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 dispatch_host_is_local() {
   local host="${1:-}" short="" fqdn=""
   [[ -z "$host" || "$host" == "local" || "$host" == "localhost" ]] && return 0
@@ -44,6 +117,7 @@ remote_python_command() {
   local payload="$1" code="$2"
   local code_b64="" bash_script="" quoted_script="" quoted_payload="" quoted_code=""
   code_b64="$(printf '%s' "$code" | python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())')"
+  # shellcheck disable=SC2016
   bash_script='export HAPAX_REMOTE_PAYLOAD="$1"; export HAPAX_REMOTE_CODE="$2"; exec python3 -c "import base64,os; exec(base64.b64decode(os.environ[\"HAPAX_REMOTE_CODE\"]))"'
   quoted_script="${bash_script//\'/\'\\\'\'}"
   quoted_payload="${payload//\'/\'\\\'\'}"
@@ -229,6 +303,12 @@ if ! headless_allowed; then
   exit 77
 fi
 
+RELAY_STATUS_FILE="${HAPAX_RELAY_DIR:-$HOME/.cache/hapax/relay}/$SESSION.yaml"
+if [[ "$FORCE" -ne 1 ]] && relay_retired "$SESSION"; then
+  echo "hapax-codex-headless: relay '$SESSION' is retired/wound-down ($RELAY_STATUS_FILE); recheck: sed -n '1,80p' \"$RELAY_STATUS_FILE\"; pass --force to reactivate (P0 drain lanes do this automatically)" >&2
+  exit 6
+fi
+
 # Worktree selection mirrors hapax-codex's codex-native default.
 WORKDIR="${HAPAX_CODEX_HEADLESS_WORKDIR:-$HOME/projects/hapax-council--$SESSION}"
 if [[ ! -d "$WORKDIR" ]]; then
@@ -337,7 +417,7 @@ MCP_CONFIG_SCRUB="$COUNCIL_DIR/scripts/hapax-codex-mcp-config-scrub"
 [[ -x "$MCP_CONFIG_SCRUB" ]] && "$MCP_CONFIG_SCRUB"
 
 LOG_DIR="$HOME/.cache/hapax/codex-headless/$SESSION"
-PID_DIR="/run/user/$(id -u)/hapax-codex"
+PID_DIR="${HAPAX_CODEX_HEADLESS_PID_DIR:-/run/user/$(id -u)/hapax-codex}"
 mkdir -p "$LOG_DIR" "$PID_DIR" 2>/dev/null || true
 [[ -d "$PID_DIR" ]] || PID_DIR="$LOG_DIR"
 LOG_FILE="$LOG_DIR/output.jsonl"
@@ -348,9 +428,17 @@ DISPATCH_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-remote.json"
 DISPATCH_LOCAL_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-local.json"
 
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
+CODEX_PID=""
+# shellcheck disable=SC2329
 cleanup() {
-  rm -f "$PID_FILE"
-  [[ -x "$RELAY_RETIRE" ]] && "$RELAY_RETIRE" "$SESSION" --reason "clean exit (codex headless)" 2>/dev/null || true
+  local current_pid=""
+  if [[ -n "${CODEX_PID:-}" && -f "$PID_FILE" ]]; then
+    current_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+    if [[ "$current_pid" == "$CODEX_PID" ]]; then
+      rm -f "$PID_FILE"
+      [[ -x "$RELAY_RETIRE" ]] && "$RELAY_RETIRE" "$SESSION" --reason "clean exit (codex headless)" 2>/dev/null || true
+    fi
+  fi
 }
 trap cleanup EXIT
 
@@ -442,11 +530,12 @@ CODEX_ARGS=(
 CODEX_ARGS+=("${CODEX_EXTRA[@]}")
 CODEX_ARGS+=("$INITIAL_MSG")
 
-# Refuse to double-launch a live lane unless forced (the watchdog reads this PID).
-if [[ -f "$PID_FILE" && "$FORCE" -ne 1 ]]; then
+# Refuse to double-launch a live lane. --force only reactivates retired relay
+# state; it must not bypass the single-live-headless-lane invariant.
+if [[ -f "$PID_FILE" ]]; then
   EXISTING_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
   if [[ -n "$EXISTING_PID" ]] && kill -0 "$EXISTING_PID" 2>/dev/null; then
-    echo "hapax-codex-headless: lane '$SESSION' already live (pid=$EXISTING_PID); pass --force to relaunch" >&2
+    echo "hapax-codex-headless: lane '$SESSION' already live (pid=$EXISTING_PID); stop the live lane or remove the stale pid after verifying it is gone" >&2
     exit 11
   fi
 fi

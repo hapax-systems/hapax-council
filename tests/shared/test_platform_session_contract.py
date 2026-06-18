@@ -338,7 +338,10 @@ def test_codex_adapter_matches_headless_and_interactive_launcher_artifacts() -> 
     assert 'TMUX_NAME="hapax-codex-$SESSION"' in interactive_script
     assert 'LOG_DIR="$HOME/.cache/hapax/codex-headless/$SESSION"' in headless_script
     assert 'LOG_FILE="$LOG_DIR/output.jsonl"' in headless_script
-    assert 'PID_DIR="/run/user/$(id -u)/hapax-codex"' in headless_script
+    assert (
+        'PID_DIR="${HAPAX_CODEX_HEADLESS_PID_DIR:-/run/user/$(id -u)/hapax-codex}"'
+        in headless_script
+    )
     assert '[[ -d "$PID_DIR" ]] || PID_DIR="$LOG_DIR"' in headless_script
     assert 'PID_FILE="$PID_DIR/$SESSION.pid"' in headless_script
     assert 'CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$SESSION"' in headless_script
