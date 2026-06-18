@@ -144,6 +144,15 @@ def test_system_dynamics_seed_graph_is_referentially_valid():
                 f"{name}: edge missing confidence {edge['id']}. "
                 "Fix by adding a numeric confidence value for the relation claim."
             )
+            confidence = edge["confidence"]
+            assert isinstance(confidence, int | float) and not isinstance(confidence, bool), (
+                f"{name}: edge confidence is not numeric {edge['id']}. "
+                "Fix by using a JSON number between 0 and 1."
+            )
+            assert 0 <= confidence <= 1, (
+                f"{name}: edge confidence out of range {edge['id']}. "
+                "Fix by using a confidence value between 0 and 1."
+            )
             assert edge.get("docs"), (
                 f"{name}: edge missing docs/evidence links {edge['id']}. "
                 "Fix by adding at least one docs[] link for the relation source."
