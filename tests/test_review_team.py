@@ -1735,6 +1735,37 @@ class TestGoGate:
         assert "review_dossier_quorum_not_met:1/2" not in blockers
         assert "review_dossier_family_diversity:accept_families=1/2" not in blockers
 
+    def test_admission_rejects_recorded_go_gate_resolution_for_semantic_critical(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        wrong_checkout = tmp_path / "wrong-checkout"
+        wrong_checkout.mkdir()
+        semantic = _critical("logic error: trusted dossier can suppress semantic critical")
+        semantic["resolved"] = True
+        semantic["resolution_source"] = "review-go-gate"
+        semantic["resolution_detail"] = "literal-defect critical refuted by the file at head"
+        dossier = _synth(
+            rt,
+            [
+                _review("gemini-1", "gemini", "block", findings=[semantic]),
+                _review("codex-1", "codex", "accept"),
+                _review("claude-1", "claude", "accept"),
+            ],
+            repo_root=tmp_path,
+        )
+        dossier["review_team_verdict"] = rt.QUORUM_ACCEPT
+
+        monkeypatch.chdir(wrong_checkout)
+        blockers = rt._dossier_validity_blockers(
+            dossier,
+            pr_head_sha="a" * 40,
+            registry=reg,
+        )
+
+        assert "review_dossier_unresolved_critical:1" in blockers
+
     def test_real_literal_critical_still_blocks(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         self._py(tmp_path, "bad.py", "def f(:\n")

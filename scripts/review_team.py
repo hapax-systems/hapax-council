@@ -474,9 +474,21 @@ def _unresolved_criticals(reviews: Sequence[Mapping[str, Any]]) -> list[tuple[st
 
 
 def _recorded_go_gate_resolution(finding: Mapping[str, Any]) -> bool:
-    return bool(finding.get("resolved")) and str(finding.get("resolution_source") or "") == (
+    if not bool(finding.get("resolved")) or str(finding.get("resolution_source") or "") != (
         "review-go-gate"
-    )
+    ):
+        return False
+    syntax_claim = _is_syntax_compile_claim(finding)
+    namespace_claim = _is_namespace_corruption_claim(finding)
+    if not syntax_claim and not namespace_claim:
+        return False
+    rel = str(finding.get("file") or "").strip()
+    if not rel or Path(rel).is_absolute() or ".." in Path(rel).parts:
+        return False
+    suffix = Path(rel).suffix
+    if namespace_claim:
+        return suffix in {".ttl", ".trig"}
+    return suffix in {".py", ".ttl", ".trig"}
 
 
 # --- The go-gate: fail-closed literal-defect verifier -------------------------
