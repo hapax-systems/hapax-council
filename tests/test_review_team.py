@@ -1703,7 +1703,7 @@ class TestGoGate:
         assert "review_dossier_family_diversity:accept_families=1/2" not in blockers
         assert not any(b.startswith("review_team_verdict_not_quorum_accept:") for b in blockers)
 
-    def test_admission_honors_recorded_go_gate_resolution_from_wrong_checkout(
+    def test_admission_blocks_recorded_go_gate_resolution_from_wrong_checkout(
         self, tmp_path: Path, monkeypatch
     ) -> None:
         rt = _load_review_team_module()
@@ -1729,6 +1729,38 @@ class TestGoGate:
             dossier,
             pr_head_sha="a" * 40,
             registry=reg,
+        )
+
+        assert "review_dossier_unresolved_critical:1" in blockers
+
+    def test_admission_uses_frontmatter_worktree_for_go_gate_from_wrong_checkout(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        reviewed = tmp_path / "reviewed"
+        wrong_checkout = tmp_path / "wrong-checkout"
+        reviewed.mkdir()
+        wrong_checkout.mkdir()
+        (reviewed / ".git").mkdir()
+        self._py(reviewed, "shared/foo.py", "x = 1\n")
+        monkeypatch.setattr(
+            rt, "_repo_head_matches", lambda root, *a, **k: Path(root).resolve() == reviewed
+        )
+        phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
+        reviews = [
+            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("codex-1", "codex", "accept"),
+            _review("claude-1", "claude", "invalid-output"),
+        ]
+        dossier = _synth(rt, reviews, repo_root=reviewed)
+
+        monkeypatch.chdir(wrong_checkout)
+        blockers = rt._dossier_validity_blockers(
+            dossier,
+            pr_head_sha="a" * 40,
+            registry=reg,
+            frontmatter={"mutation_scope_refs": [str(reviewed / "shared" / "foo.py")]},
         )
 
         assert "review_dossier_unresolved_critical:1" not in blockers

@@ -473,24 +473,6 @@ def _unresolved_criticals(reviews: Sequence[Mapping[str, Any]]) -> list[tuple[st
     return out
 
 
-def _recorded_go_gate_resolution(finding: Mapping[str, Any]) -> bool:
-    if not bool(finding.get("resolved")) or str(finding.get("resolution_source") or "") != (
-        "review-go-gate"
-    ):
-        return False
-    syntax_claim = _is_syntax_compile_claim(finding)
-    namespace_claim = _is_namespace_corruption_claim(finding)
-    if not syntax_claim and not namespace_claim:
-        return False
-    rel = str(finding.get("file") or "").strip()
-    if not rel or Path(rel).is_absolute() or ".." in Path(rel).parts:
-        return False
-    suffix = Path(rel).suffix
-    if namespace_claim:
-        return suffix in {".ttl", ".trig"}
-    return suffix in {".py", ".ttl", ".trig"}
-
-
 # --- The go-gate: fail-closed literal-defect verifier -------------------------
 # A reviewer's "syntax error / compile failure / corruption at line N" critical is INVALIDATED
 # (does not block quorum) when the actual file at head refutes it — verified deterministically,
@@ -593,6 +575,34 @@ def _discover_repo_root() -> Path | None:
     return None
 
 
+def _repo_root_for_path(path: Path) -> Path | None:
+    cur = path if path.is_dir() else path.parent
+    for d in (cur, *cur.parents):
+        if (d / ".git").exists():
+            return d
+    return None
+
+
+def _frontmatter_repo_root(frontmatter: Mapping[str, Any] | None, head_sha: str) -> Path | None:
+    if frontmatter is None:
+        return None
+    raw_refs = frontmatter.get("mutation_scope_refs") or frontmatter.get("paths") or ()
+    if not isinstance(raw_refs, Sequence) or isinstance(raw_refs, str):
+        raw_refs = (raw_refs,)
+    seen: set[Path] = set()
+    for raw in raw_refs:
+        text = str(raw or "").strip()
+        if not text or not (text.startswith("/") or text.startswith("~")):
+            continue
+        root = _repo_root_for_path(Path(text).expanduser())
+        if root is None or root in seen:
+            continue
+        seen.add(root)
+        if _repo_head_matches(root, head_sha):
+            return root
+    return None
+
+
 def _repo_head_matches(repo_root: Path, head_sha: str) -> bool:
     """True iff ``repo_root``'s git HEAD is ``head_sha`` — i.e. the local checkout IS the reviewed PR
     at the reviewed commit. Guards against binding the verifier to the wrong checkout (claude-1)."""
@@ -657,8 +667,6 @@ def _blocking_criticals(
     reviews: Sequence[Mapping[str, Any]],
     repo_root: Path | None,
     head_sha: str | None = None,
-    *,
-    honor_recorded_go_gate_resolutions: bool = False,
 ) -> tuple[list[tuple[str, dict]], list[tuple[str, dict]]]:
     """Partition unresolved criticals into (blocking, phantom). ``repo_root=None`` discovers the repo
     from cwd. The verifier runs ONLY when the checkout is confirmed to be the reviewed commit
@@ -667,22 +675,13 @@ def _blocking_criticals(
     criticals = _unresolved_criticals(reviews)
     if os.environ.get(_GO_GATE_OFF_ENV) == "1":
         return criticals, []  # killswitch: every critical blocks (pre-go-gate behaviour)
-    recorded_phantoms: list[tuple[str, dict]] = []
-    if honor_recorded_go_gate_resolutions:
-        pending: list[tuple[str, dict]] = []
-        for reviewer_id, finding in criticals:
-            if _recorded_go_gate_resolution(finding):
-                recorded_phantoms.append((reviewer_id, finding))
-            else:
-                pending.append((reviewer_id, finding))
-        criticals = pending
     root = repo_root if repo_root is not None else _discover_repo_root()
     if root is None:
-        return criticals, recorded_phantoms
+        return criticals, []
     if not head_sha or not _repo_head_matches(root, head_sha):
-        return criticals, recorded_phantoms  # wrong/unknown checkout -> keep unresolved criticals
+        return criticals, []  # no commit to bind to, or wrong checkout -> do not verify (keep all)
     blocking: list[tuple[str, dict]] = []
-    phantom: list[tuple[str, dict]] = list(recorded_phantoms)
+    phantom: list[tuple[str, dict]] = []
     for reviewer_id, finding in criticals:
         target = blocking if verify_literal_defect_critical(finding, root) else phantom
         target.append((reviewer_id, finding))
@@ -1169,13 +1168,12 @@ def _dossier_validity_blockers(
     if len(reviews) < required_size:
         blockers.append(f"review_dossier_team_undersized:{len(reviews)}/{required_size}")
 
-    # go-gate: drop literal-defect phantoms (repo discovered from cwd = the PR checkout in CI)
-    criticals, phantoms = _blocking_criticals(
-        reviews,
-        None,
-        head_sha=str(dossier.get("head_sha") or ""),
-        honor_recorded_go_gate_resolutions=True,
-    )
+    # go-gate: drop literal-defect phantoms only against a checkout proven to be
+    # the reviewed head. Local autoqueue often runs outside the PR checkout, so
+    # prefer a declared task worktree when one is available and head-bound.
+    dossier_head_sha = str(dossier.get("head_sha") or "")
+    verification_root = _frontmatter_repo_root(frontmatter, dossier_head_sha)
+    criticals, phantoms = _blocking_criticals(reviews, verification_root, head_sha=dossier_head_sha)
     if phantoms:  # receipt: phantom invalidations are auditable in the CI log, never silent
         print(
             f"go-gate: invalidated {len(phantoms)} phantom literal-defect critical(s): "
