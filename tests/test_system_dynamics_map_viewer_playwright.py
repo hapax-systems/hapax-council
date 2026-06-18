@@ -70,6 +70,7 @@ def test_system_dynamics_viewer_core_interactions():
                 "document.querySelector('#counts').textContent === '29 nodes / 35 edges'"
             )
             page.wait_for_function(NONBLANK_CANVAS_SCRIPT, timeout=10_000)
+            assert page.evaluate("window.systemDynamicsMapRuntime.activeLayout()") == "cose"
 
             assert page.locator("#panel").inner_text().startswith("DMN")
             assert (
@@ -94,6 +95,10 @@ def test_system_dynamics_viewer_core_interactions():
             page.wait_for_function("window.systemDynamicsMapRuntime.activeLayout() === 'circle'")
             page.wait_for_function(NONBLANK_CANVAS_SCRIPT, timeout=10_000)
             assert "active" in page.get_by_role("button", name="Circle").get_attribute("class")
+            page.get_by_role("button", name="Grid").click()
+            page.wait_for_function("window.systemDynamicsMapRuntime.activeLayout() === 'grid'")
+            page.wait_for_function(NONBLANK_CANVAS_SCRIPT, timeout=10_000)
+            assert "active" in page.get_by_role("button", name="Grid").get_attribute("class")
 
             selected = page.evaluate("window.systemDynamicsMapRuntime.selectNode('opentelemetry')")
             assert selected["id"] == "opentelemetry"

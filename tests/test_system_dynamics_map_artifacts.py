@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from rdflib import RDF, Dataset, Graph, Namespace, URIRef
+from rdflib import RDF, Dataset, Graph, Literal, Namespace, URIRef
 
 from scripts import system_dynamics_map_materialize as materialize
 
@@ -22,6 +22,8 @@ BASE = Namespace("https://hapax.local/system-dynamics-map/v0/")
 SD = Namespace("https://hapax.local/ns/system-dynamics-map#")
 SH = Namespace("http://www.w3.org/ns/shacl#")
 PROV = Namespace("http://www.w3.org/ns/prov#")
+XSD_STRING = URIRef("http://www.w3.org/2001/XMLSchema#string")
+XSD_DECIMAL = URIRef("http://www.w3.org/2001/XMLSchema#decimal")
 
 
 def _load_seed() -> dict:
@@ -40,6 +42,29 @@ def _load_viewer() -> tuple[str, dict]:
         "Fix by restoring the seed-data script tag or removing the file-open fallback claim."
     )
     return html, json.loads(match.group(1))
+
+
+def _shape_property(shapes: Graph, shape: URIRef, path: URIRef):
+    for property_shape in shapes.objects(shape, SH.property):
+        if (property_shape, SH.path, path) in shapes:
+            return property_shape
+    raise AssertionError(f"{SHACL_PATH}: {shape} missing property path {path}")
+
+
+def _assert_shape_property(
+    shapes: Graph,
+    shape: URIRef,
+    path: URIRef,
+    *,
+    datatype: URIRef | None = None,
+    node_kind: URIRef | None = None,
+) -> None:
+    property_shape = _shape_property(shapes, shape, path)
+    assert (property_shape, SH.minCount, Literal(1)) in shapes
+    if datatype is not None:
+        assert (property_shape, SH.datatype, datatype) in shapes
+    if node_kind is not None:
+        assert (property_shape, SH.nodeKind, node_kind) in shapes
 
 
 def test_viewer_embedded_seed_matches_canonical_seed():
@@ -258,6 +283,23 @@ def test_materialized_rdf_artifacts_parse_and_match_seed_contract():
         assert (subject, SD.confidence, None) in asserted
         assert (subject, SD.documentationLink, None) in asserted
 
+    provenance = dataset.graph(URIRef(BASE["graph/provenance"]))
+    activity = URIRef(BASE["activity/materialize-v1"])
+    assert (activity, RDF.type, PROV.Activity) in provenance
+    assert (activity, PROV.used, Literal("system-dynamics-map.seed.json")) in provenance
+    assert (activity, PROV.generated, Literal("system-dynamics-map.canonical.trig")) in provenance
+    assert (activity, PROV.generated, Literal("system-dynamics-map.shacl.ttl")) in provenance
+    assert (
+        activity,
+        PROV.generated,
+        Literal("system-dynamics-map.view-manifest.json"),
+    ) in provenance
+    assert (
+        activity,
+        PROV.wasAssociatedWith,
+        Literal("scripts/system_dynamics_map_materialize.py"),
+    ) in provenance
+
     for shape, target_class in (
         (SD.NodeShape, SD.Node),
         (SD.EdgeShape, SD.Edge),
@@ -266,6 +308,37 @@ def test_materialized_rdf_artifacts_parse_and_match_seed_contract():
     ):
         assert (shape, RDF.type, SH.NodeShape) in shapes
         assert (shape, SH.targetClass, target_class) in shapes
+
+    for path, datatype, node_kind in (
+        (SD.stableId, XSD_STRING, None),
+        (URIRef("http://www.w3.org/2000/01/rdf-schema#label"), XSD_STRING, None),
+        (SD.layer, None, SH.IRI),
+        (SD.status, XSD_STRING, None),
+        (SD.documentationLink, None, SH.IRI),
+    ):
+        _assert_shape_property(shapes, SD.NodeShape, path, datatype=datatype, node_kind=node_kind)
+
+    for path, datatype, node_kind in (
+        (SD.stableId, XSD_STRING, None),
+        (SD.source, None, SH.IRI),
+        (SD.target, None, SH.IRI),
+        (SD.relation, XSD_STRING, None),
+        (SD.confidence, XSD_DECIMAL, None),
+        (SD.documentationLink, None, SH.IRI),
+    ):
+        _assert_shape_property(shapes, SD.EdgeShape, path, datatype=datatype, node_kind=node_kind)
+
+    for path, datatype, node_kind in (
+        (SD.sourceMap, None, SH.IRI),
+        (SD.viewer, XSD_STRING, None),
+        (SD.viewManifest, XSD_STRING, None),
+    ):
+        _assert_shape_property(
+            shapes, SD.RenderedViewShape, path, datatype=datatype, node_kind=node_kind
+        )
+
+    for path in (PROV.used, PROV.generated, PROV.wasAssociatedWith):
+        _assert_shape_property(shapes, SD.ProvenanceActivityShape, path)
 
 
 def test_shacl_shapes_and_view_manifest_cover_the_durable_contract():
@@ -292,3 +365,13 @@ def test_shacl_shapes_and_view_manifest_cover_the_durable_contract():
         manifest["validation"]["browser"]
         == "uv run --extra ci pytest tests/test_system_dynamics_map_viewer_playwright.py"
     )
+    assert manifest["provenance"] == {
+        "activity": "https://hapax.local/system-dynamics-map/v0/activity/materialize-v1",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "generated": [
+            "system-dynamics-map.canonical.trig",
+            "system-dynamics-map.shacl.ttl",
+            "system-dynamics-map.view-manifest.json",
+        ],
+        "used": ["system-dynamics-map.seed.json"],
+    }
