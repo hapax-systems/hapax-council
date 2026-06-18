@@ -32,6 +32,7 @@ def test_s4_arm_wrapper_delegates_to_shared_arm_main() -> None:
 
 def test_s4_arm_service_invokes_pre_segment_witness_flow() -> None:
     service = _read_unit(SERVICE)
+    exec_start_pre = service.get("Service", "ExecStartPre")
     exec_start = service.get("Service", "ExecStart")
 
     assert service.get("Unit", "OnFailure") == "notify-failure@%n.service"
@@ -39,8 +40,17 @@ def test_s4_arm_service_invokes_pre_segment_witness_flow() -> None:
     assert (
         service.get("Service", "WorkingDirectory") == "%h/.cache/hapax/source-activation/worktree"
     )
-    assert "uv run --directory %h/.cache/hapax/source-activation/worktree" in exec_start
-    assert "scripts/hapax-s4-arm" in exec_start
+    assert (
+        "%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check"
+        in exec_start_pre
+    )
+    assert "--require-file scripts/hapax-s4-arm" in exec_start_pre
+    assert "--require-file shared/s4_arm.py" in exec_start_pre
+    assert exec_start.startswith(
+        "%h/.cache/hapax/source-activation/worktree/.venv/bin/python "
+        "%h/.cache/hapax/source-activation/worktree/scripts/hapax-s4-arm"
+    )
+    assert "uv run" not in exec_start
     assert "--pre-segment-check" in exec_start
     assert "--task-id s4-boot-reconcile-c3-20260618" in exec_start
     assert "--authority-case CASE-VOICE-FOUNDATION-20260610" in exec_start
@@ -50,6 +60,17 @@ def test_s4_arm_service_invokes_pre_segment_witness_flow() -> None:
         in exec_start
     )
     assert "--receipt-path /dev/shm/hapax-audio/s4-boot-arm-receipt.json" in exec_start
+    assert service.get("Service", "TimeoutStartSec") == "180s"
+
+
+def test_s4_arm_service_uses_source_activation_environment() -> None:
+    body = SERVICE.read_text(encoding="utf-8")
+
+    assert (
+        "Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:"
+        "%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin" in body
+    )
+    assert "Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree" in body
 
 
 def test_s4_arm_timer_is_boot_scoped_not_recurring_marker_loop() -> None:

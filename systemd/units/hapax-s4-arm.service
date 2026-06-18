@@ -7,12 +7,14 @@ OnFailure=notify-failure@%n.service
 [Service]
 Type=oneshot
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
-Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=PYTHONUNBUFFERED=1
-ExecStart=%h/.local/bin/uv run --directory %h/.cache/hapax/source-activation/worktree scripts/hapax-s4-arm --pre-segment-check --task-id s4-boot-reconcile-c3-20260618 --authority-case CASE-VOICE-FOUNDATION-20260610 --parent-spec /home/hapax/Documents/Personal/30-areas/hapax/go-live-master-plan-2026-06-18.md --receipt-path /dev/shm/hapax-audio/s4-boot-arm-receipt.json
-TimeoutStartSec=60s
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/hapax-s4-arm --require-file shared/s4_arm.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/hapax-s4-arm --pre-segment-check --task-id s4-boot-reconcile-c3-20260618 --authority-case CASE-VOICE-FOUNDATION-20260610 --parent-spec /home/hapax/Documents/Personal/30-areas/hapax/go-live-master-plan-2026-06-18.md --receipt-path /dev/shm/hapax-audio/s4-boot-arm-receipt.json
+TimeoutStartSec=180s
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=hapax-s4-arm
