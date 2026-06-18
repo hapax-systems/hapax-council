@@ -191,20 +191,38 @@ embedded = json.loads(
 for name, data in [("seed", seed), ("embedded", embedded)]:
     node_ids = [node["id"] for node in data["nodes"]]
     edge_ids = [edge["id"] for edge in data["edges"]]
-    assert len(node_ids) == len(set(node_ids)), f"{name}: duplicate node IDs"
-    assert len(edge_ids) == len(set(edge_ids)), f"{name}: duplicate edge IDs"
+    assert len(node_ids) == len(set(node_ids)), (
+        f"{name}: duplicate node IDs. Fix by assigning each node one stable ID."
+    )
+    assert len(edge_ids) == len(set(edge_ids)), (
+        f"{name}: duplicate edge IDs. Fix by assigning each edge one stable ID."
+    )
     node_set = set(node_ids)
     layers = {layer["id"] for layer in data["layers"]}
     statuses = set(data["status_kinds"])
     for node in data["nodes"]:
-        assert node["layer"] in layers, f"{name}: invalid node layer {node['id']}"
-        assert node["status"] in statuses, f"{name}: invalid node status {node['id']}"
-        assert node.get("docs"), f"{name}: node missing docs {node['id']}"
+        assert node["layer"] in layers, (
+            f"{name}: invalid node layer {node['id']}. Fix by using a declared layers[].id."
+        )
+        assert node["status"] in statuses, (
+            f"{name}: invalid node status {node['id']}. Fix by using a declared status_kinds value."
+        )
+        assert node.get("docs"), (
+            f"{name}: node missing docs {node['id']}. Fix by adding at least one docs[] link."
+        )
     for edge in data["edges"]:
-        assert edge["source"] in node_set, f"{name}: missing edge source {edge['id']}"
-        assert edge["target"] in node_set, f"{name}: missing edge target {edge['id']}"
-        assert edge["layer"] in layers, f"{name}: invalid edge layer {edge['id']}"
-        assert edge["status"] in statuses, f"{name}: invalid edge status {edge['id']}"
+        assert edge["source"] in node_set, (
+            f"{name}: missing edge source {edge['id']}. Fix by adding the source node or correcting source."
+        )
+        assert edge["target"] in node_set, (
+            f"{name}: missing edge target {edge['id']}. Fix by adding the target node or correcting target."
+        )
+        assert edge["layer"] in layers, (
+            f"{name}: invalid edge layer {edge['id']}. Fix by using a declared layers[].id."
+        )
+        assert edge["status"] in statuses, (
+            f"{name}: invalid edge status {edge['id']}. Fix by using a declared status_kinds value."
+        )
 print(f"seed nodes={len(seed['nodes'])} edges={len(seed['edges'])}")
 print(f"embedded nodes={len(embedded['nodes'])} edges={len(embedded['edges'])}")
 PY
@@ -215,6 +233,14 @@ rg -n '#[0-9A-Fa-f]{3,8}\b' \
   docs/architecture/system-dynamics-map-v0.md \
   docs/architecture/system-dynamics-map.seed.json \
   docs/architecture/system-dynamics-map-viewer.html
+```
+
+The hardcoded-hex scan should return no matches. Confirm responsive CSS at-rules
+were not corrupted by accidental replacement:
+
+```bash
+rg -n '@media \(max-width: (1100|760)px\)' docs/architecture/system-dynamics-map-viewer.html
+! rg -n '@agents|phone_media|hapax_daimonion' docs/architecture/system-dynamics-map-viewer.html
 ```
 
 ```bash
