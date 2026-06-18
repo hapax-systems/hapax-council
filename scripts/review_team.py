@@ -130,6 +130,11 @@ _PROVIDER_OUTAGE_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 _PROVIDER_OUTAGE_MAX_CHARS = 4_000
+_UNSUPPORTED_REVIEWER_CLIENT_RE = re.compile(
+    r"(?:IneligibleTierError|UNSUPPORTED_CLIENT|client is no longer supported|"
+    r"migrate to the Antigravity suite)",
+    re.IGNORECASE,
+)
 
 #: The dispatcher's family-outage witness state (canonical path; the
 #: dispatcher aliases this). Admission consults it so a forged dossier
@@ -213,11 +218,13 @@ def is_provider_outage(
     http_429 = bool(re.search(r"\bHTTP\s+429\b", stripped, flags=re.IGNORECASE))
     http_5xx = bool(re.search(r"\bHTTP\s+5\d\d\b", stripped, flags=re.IGNORECASE))
     outage_terms = bool(_PROVIDER_OUTAGE_LINE_RE.search(stripped))
+    unsupported_client = bool(_UNSUPPORTED_REVIEWER_CLIENT_RE.search(stripped))
     provider_detail = re.split(r";\s*retry later\b", normalized, maxsplit=1, flags=re.IGNORECASE)[0]
     provider_detail_outage_terms = bool(_PROVIDER_OUTAGE_LINE_RE.search(provider_detail))
     direct_outage = normalized.lower().startswith(("network error:", "request timed out after"))
     return (
-        (http_5xx and outage_terms)
+        unsupported_client
+        or (http_5xx and outage_terms)
         or (http_429 and provider_detail_outage_terms)
         or (direct_outage and outage_terms)
     )

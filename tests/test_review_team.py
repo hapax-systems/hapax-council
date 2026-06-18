@@ -1064,10 +1064,23 @@ class TestFamilyOutageDegradation:
             "retry later or reduce the review prompt size",
             process_failed=True,
         )
+        assert rt.is_provider_outage(
+            "Error authenticating: IneligibleTierError: This client is no longer "
+            "supported for Gemini Code Assist for individuals. To continue using "
+            "Gemini, please migrate to the Antigravity suite of products.\n"
+            "reasonCode: 'UNSUPPORTED_CLIENT'",
+            process_failed=True,
+        )
         assert not rt.is_provider_outage(
             "hapax-glmcp-reviewer: api error: HTTP 529: "
             '{"error":"The service may be temporarily overloaded, please try again later"}',
             process_failed=False,
+        )
+        assert not rt.is_provider_outage(
+            "Error authenticating: IneligibleTierError: This client is no longer "
+            "supported for Gemini Code Assist for individuals.",
+            process_failed=True,
+            model_stdout="```yaml\nverdict: accept\n```",
         )
         assert not rt.is_provider_outage(
             "hapax-glmcp-reviewer: api error: HTTP 529: "

@@ -46,10 +46,17 @@ The same fix pass also verified:
   `git_sha: unknown`; content hashes are the staleness key and PR history carries
   commit provenance.
 
+- Review-team admission was hardened for the landing path: a Gemini reviewer
+  process failure with `IneligibleTierError` / `UNSUPPORTED_CLIENT` and no
+  model stdout is classified as a provider-route availability failure, so T1
+  review can use the same TTL-bounded degraded-review path as quota/provider
+  outages. Regression coverage keeps model stdout from forging that outage.
+
 - `python3 scripts/system_dynamics_map_materialize.py --check`
-- `uv run ruff check scripts/system_dynamics_map_materialize.py tests/test_system_dynamics_map_artifacts.py tests/test_system_dynamics_map_viewer_playwright.py`
-- `uv run ruff format --check scripts/system_dynamics_map_materialize.py tests/test_system_dynamics_map_artifacts.py tests/test_system_dynamics_map_viewer_playwright.py`
+- `uv run ruff check scripts/system_dynamics_map_materialize.py scripts/review_team.py tests/test_system_dynamics_map_artifacts.py tests/test_system_dynamics_map_viewer_playwright.py tests/test_review_team.py`
+- `uv run ruff format --check scripts/system_dynamics_map_materialize.py scripts/review_team.py tests/test_system_dynamics_map_artifacts.py tests/test_system_dynamics_map_viewer_playwright.py tests/test_review_team.py`
 - `uv run pytest tests/test_system_dynamics_map_artifacts.py -q`
+- `uv run pytest tests/test_review_team.py -q`
 - `uv run --extra ci pytest tests/test_system_dynamics_map_viewer_playwright.py -q`
 - `scripts/system-dynamics-map-gate`
 - `git diff --check`
