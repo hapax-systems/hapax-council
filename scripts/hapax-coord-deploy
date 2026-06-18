@@ -6,10 +6,12 @@ set -euo pipefail
 REPO="${HAPAX_COORD_DEPLOY_REPO:-/home/hapax/projects/hapax-coord}"
 ACT_ROOT="${HAPAX_COORD_DEPLOY_ACT_ROOT:-$HOME/.cache/hapax/coord-activation}"
 WT="$ACT_ROOT/worktree"
+LOCK_PATH="${HAPAX_COORD_DEPLOY_LOCK:-$ACT_ROOT/deploy.lock}"
+LOCK_WAIT_S="${HAPAX_COORD_DEPLOY_LOCK_WAIT_S:-120}"
 SETUP_NEXT="next: verify HAPAX_COORD_DEPLOY_REPO points to a readable hapax-coord git checkout with origin/main, verify HAPAX_COORD_DEPLOY_ACT_ROOT is writable, then rerun scripts/hapax-coord-deploy"
 
 if [ "${1:-}" = "--contract-json" ]; then
-    printf '{"schema":1,"source_repo":"%s","activation_worktree":"%s","target_ref":"origin/main","writes_deployed_sha":true,"writes_deployed_sha_after_restart":true,"rolls_back_worktree_on_restart_failure":true,"rolls_back_worktree_on_clean_failure":true,"rolls_back_worktree_on_checkout_failure":true,"proves_rollback_clean_before_service_restart":true,"cleans_activation_worktree":true,"restarts_service":"hapax-coord.service"}\n' "$REPO" "$WT"
+    printf '{"schema":1,"source_repo":"%s","activation_worktree":"%s","target_ref":"origin/main","single_writer_lock":"%s","writes_deployed_sha":true,"writes_deployed_sha_after_restart":true,"rolls_back_worktree_on_restart_failure":true,"rolls_back_worktree_on_clean_failure":true,"rolls_back_worktree_on_checkout_failure":true,"proves_rollback_clean_before_service_restart":true,"cleans_activation_worktree":true,"restarts_service":"hapax-coord.service"}\n' "$REPO" "$WT" "$LOCK_PATH"
     exit 0
 fi
 
@@ -53,6 +55,15 @@ capture_or_fail() {
     fi
 }
 
+acquire_deploy_lock_or_fail() {
+    exec 9>"$LOCK_PATH"
+    if flock -w "$LOCK_WAIT_S" 9; then
+        return 0
+    fi
+    echo "coord-deploy: deploy lock unavailable after ${LOCK_WAIT_S}s: $LOCK_PATH; another hapax-coord-deploy is active; next: wait for the active deploy to finish, inspect $LOCK_PATH owner if stale, then rerun scripts/hapax-coord-deploy" >&2
+    exit 75
+}
+
 activation_dirty_entries() {
     git -C "$WT" status --porcelain=v1 --untracked-files=all --ignored=matching 2>/dev/null \
         | grep -Ev '^(\?\?|!!) \.deployed-sha$' || true
@@ -93,10 +104,12 @@ validate_receipt_path_or_fail() {
     fi
 }
 
+run_or_fail "create activation root $ACT_ROOT" mkdir -p "$ACT_ROOT"
+acquire_deploy_lock_or_fail
+
 run_or_fail "fetch origin/main from $REPO" git -C "$REPO" fetch origin +refs/heads/main:refs/remotes/origin/main --quiet
 TARGET_SHA="$(capture_or_fail "resolve origin/main in $REPO" git -C "$REPO" rev-parse refs/remotes/origin/main)"
 
-run_or_fail "create activation root $ACT_ROOT" mkdir -p "$ACT_ROOT"
 if [ ! -d "$WT/.git" ] && [ ! -f "$WT/.git" ]; then
     run_or_fail "add activation worktree $WT" git -C "$REPO" worktree add --detach "$WT" "$TARGET_SHA"
 fi

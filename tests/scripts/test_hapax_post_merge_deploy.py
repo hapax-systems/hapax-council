@@ -692,6 +692,51 @@ def test_coord_service_deploy_stages_activation_before_active_restart(
     assert calls.index("coord-deploy") < calls.index("--user restart hapax-coord.service")
 
 
+def test_coord_service_active_restart_refuses_when_activation_deploy_missing(
+    tmp_path: Path,
+) -> None:
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            "systemd/units/hapax-coord.service": (
+                "[Unit]\n"
+                "Description=Coord\n"
+                "OnFailure=notify-failure@%n.service\n"
+                "\n"
+                "[Service]\n"
+                "Type=simple\n"
+                "WorkingDirectory=%h/.cache/hapax/coord-activation/worktree\n"
+                "ExecStart=%h/.cache/hapax/coord-activation/worktree/scripts/run-dev.sh --daemon\n"
+            ),
+        },
+    )
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 5
+    assert "refusing to restart hapax-coord.service" in result.stderr
+    assert "install the D2 recovery bundle" in result.stderr
+    calls = systemctl_calls.read_text(encoding="utf-8").splitlines()
+    assert "--user restart hapax-coord.service" not in calls
+
+
 def test_obs_audio_bind_unit_deploy_removes_stale_audio_l12_dropin(tmp_path: Path) -> None:
     unit_path = "systemd/units/hapax-obs-audio-bind.service"
     repo, sha = _repo_with_linear_commit(

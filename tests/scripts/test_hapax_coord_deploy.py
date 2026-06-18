@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import subprocess
@@ -169,6 +170,7 @@ def test_coord_deploy_contract_names_stable_activation_surfaces(tmp_path: Path) 
     contract = json.loads(result.stdout)
     assert contract["source_repo"] == str(repo)
     assert contract["activation_worktree"] == str(act_root / "worktree")
+    assert contract["single_writer_lock"] == str(act_root / "deploy.lock")
     assert contract["writes_deployed_sha_after_restart"] is True
     assert contract["rolls_back_worktree_on_restart_failure"] is True
     assert contract["restarts_service"] == "hapax-coord.service"
@@ -195,6 +197,37 @@ def test_coord_deploy_materializes_activation_and_skips_up_to_date(
     assert second.returncode == 0, second.stderr
     assert f"coord-deploy: up to date at {sha}" in second.stdout
     assert _restart_calls(calls) == ["--user restart hapax-coord.service"]
+
+
+def test_coord_deploy_refuses_when_single_writer_lock_is_held(tmp_path: Path) -> None:
+    repo, _sha = _init_coord_repo(tmp_path)
+    act_root = tmp_path / "activation"
+    act_root.mkdir()
+    lock_path = act_root / "deploy.lock"
+    bin_dir, calls = _fake_systemctl(tmp_path)
+
+    with lock_path.open("w", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        env = {
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "HAPAX_COORD_DEPLOY_REPO": str(repo),
+            "HAPAX_COORD_DEPLOY_ACT_ROOT": str(act_root),
+            "HAPAX_COORD_DEPLOY_LOCK_WAIT_S": "0",
+            "HAPAX_SYSTEMCTL_CALLS": str(calls),
+        }
+        result = subprocess.run(
+            [str(SCRIPT)],
+            cwd=REPO_ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    assert result.returncode == 75
+    assert "deploy lock unavailable" in result.stderr
+    assert _restart_calls(calls) == []
 
 
 def test_coord_deploy_cleans_activation_worktree_before_new_restart(
