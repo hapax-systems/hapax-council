@@ -75,7 +75,7 @@ Trust boundaries: **security** (input validation at boundary, no secret leakage,
 
 **Files:** Create `scripts/review_team.py`; Test `tests/test_review_team.py`.
 
-- [ ] **Step 1: Failing tests:** `lenses_for_files` (daimonion file → its 3 lenses + always-on; tests-only diff → test-validity+anti-theater; mixed never tests-only); `team_class_for` (risk_tier T3/docs-only → t3_docs; T1 or governance-glob hit → t1_critical; default t2_standard); `constitute_team` (t2 → 3 seats ≥2 families, writer family ≤1 seat; t1 → 4-5 seats all 3 families; t3 → 2 seats, ≥2 families when available; unavailable family → deterministic fallback + recorded `constitution_notes`).
+- [ ] **Step 1: Failing tests:** `lenses_for_files` (daimonion file → its 3 lenses + always-on; tests-only diff → test-validity+anti-theater; mixed never tests-only); `team_class_for` (risk_tier T3/docs-only → t3_docs; T1 or governance-glob hit → t1_critical; default t2_standard); `constitute_team` (t2 → 3 seats ≥2 families, writer family ≤1 seat; t1 → 4-5 seats across all roster families unless outage-degraded; t3 → 2 seats, ≥2 families when available; unavailable family → deterministic fallback + recorded `constitution_notes`).
 - [ ] **Step 2-4: TDD until green.** Pure functions over the parsed registry; no I/O beyond `load_lens_registry(path)`. Deterministic (no randomness — seat order = registry family order rotated by `pr_number % len(families)`).
 - [ ] **Step 5: Commit** `feat(review-team): team constitution engine`.
 
