@@ -193,6 +193,39 @@ def test_emit_health_fails_stale_in_progress_run(tmp_path: Path) -> None:
     assert payload["age_s"] == 9000.0
 
 
+def test_emit_health_fails_production_timeout_boundary(tmp_path: Path) -> None:
+    _write_status(
+        tmp_path,
+        {
+            "status": "in_progress",
+            "phase": "compose_segment_in_progress",
+            "updated_at": "2026-06-18T04:05:00Z",
+        },
+    )
+
+    result = subprocess.run(
+        [
+            str(SCRIPT),
+            "--prep-dir",
+            str(tmp_path),
+            "--date",
+            DAY,
+            "--now",
+            "2026-06-18T06:20:00Z",
+            "--json",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "HAPAX_SEGMENT_PREP_AUTHORITY_MODE": "open"},
+    )
+
+    assert result.returncode == 1
+    payload = _json(result)
+    assert payload["reason"] == "stale_in_progress"
+    assert payload["age_s"] == 8100.0
+
+
 def test_emit_health_fails_unreadable_status(tmp_path: Path) -> None:
     status = tmp_path / DAY / "prep-status.json"
     status.parent.mkdir(parents=True)

@@ -20,7 +20,7 @@ DEFAULT_PREP_DIR = Path(
         str(Path.home() / ".cache" / "hapax" / "segment-prep"),
     )
 )
-DEFAULT_MAX_IN_PROGRESS_AGE_S = 3 * 60 * 60
+DEFAULT_MAX_IN_PROGRESS_AGE_S = 2 * 60 * 60
 PAUSED_PHASES = {"segment_prep_authority_paused"}
 ZERO_EMIT_STATUSES = {"completed_no_segments_saved", "completed_no_programmes"}
 NEXT_ACTIONS = {
