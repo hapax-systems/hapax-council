@@ -69,6 +69,7 @@ valid_glmcp_secret_entry() {
   local segment
   local -a segments
   [[ "$candidate" == glmcp/* ]] || return 1
+  [[ "$candidate" != */ ]] || return 1
   [[ "$candidate" != *[[:space:]]* ]] || return 1
   IFS=/ read -r -a segments <<<"$candidate"
   for segment in "${segments[@]}"; do

@@ -557,6 +557,15 @@ def _pass_backed_runtime_secret_auto_arm_ok(frontmatter: Mapping[str, Any]) -> b
     )
 
 
+def release_auto_arm_waivers(frontmatter: Mapping[str, Any]) -> tuple[str, ...]:
+    """Auto-arm waiver names used by the lifecycle assessment for audit receipts."""
+
+    waivers: list[str] = []
+    if _pass_backed_runtime_secret_auto_arm_ok(frontmatter):
+        waivers.append("pass_backed_runtime_secret_waiver")
+    return tuple(waivers)
+
+
 def _effective_sensitive_flags(frontmatter: Mapping[str, Any]) -> list[str]:
     """Sensitive risk flags from explicit route metadata OR keyword derivation.
 

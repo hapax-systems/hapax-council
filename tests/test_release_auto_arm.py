@@ -13,6 +13,7 @@ from __future__ import annotations
 from shared.sdlc_lifecycle import (
     apply_release_auto_arm,
     assess_release_auto_arm,
+    release_auto_arm_waivers,
 )
 
 
@@ -122,6 +123,7 @@ def test_pass_backed_runtime_secret_subscription_task_is_auto_armable() -> None:
     assert assessment.needs_arming is True
     assert assessment.eligible is True
     assert assessment.blockers == ()
+    assert release_auto_arm_waivers(fm) == ("pass_backed_runtime_secret_waiver",)
 
 
 def test_pass_backed_runtime_secret_requires_no_secret_value_storage() -> None:
@@ -192,6 +194,21 @@ def test_pass_backed_runtime_secret_does_not_waive_governance() -> None:
     assessment = assess_release_auto_arm(fm)
     assert assessment.eligible is False
     assert "risk_flag:governance_sensitive" in assessment.blockers
+
+
+def test_pass_backed_runtime_secret_does_not_waive_provider_billing() -> None:
+    fm = _eligible_frontmatter(
+        title="Provider billing GLMCP pass-backed secret lane",
+        pass_backed_secret_only=True,
+        no_secret_value_storage=True,
+        secret_entry="glmcp/api-key",
+        subscription_quota_only=True,
+        supported_tools_only=True,
+    )
+    assessment = assess_release_auto_arm(fm)
+    assert assessment.eligible is False
+    assert "risk_flag:provider_billing_sensitive" in assessment.blockers
+    assert "risk_flag:privacy_or_secret_sensitive" not in assessment.blockers
 
 
 def test_ineligible_when_mutation_surface_is_public() -> None:

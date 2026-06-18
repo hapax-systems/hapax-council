@@ -66,6 +66,7 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_blockers,
     apply_release_auto_arm,
     assess_release_auto_arm,
+    release_auto_arm_waivers,
     task_closure_validity,
 )
 
@@ -1274,15 +1275,7 @@ def _append_release_auto_arm_ledger(
     task: TaskNote, *, ledger_path: Path, now_iso: str, role: str
 ) -> None:
     """Append an audit record for a system release auto-arm. Best-effort."""
-    auto_arm_waivers = []
-    if (
-        task.frontmatter.get("pass_backed_secret_only") is True
-        and task.frontmatter.get("no_secret_value_storage") is True
-        and task.frontmatter.get("subscription_quota_only") is True
-        and task.frontmatter.get("supported_tools_only") is True
-        and task.frontmatter.get("secret_entry")
-    ):
-        auto_arm_waivers.append("pass_backed_runtime_secret_waiver")
+    auto_arm_waivers = release_auto_arm_waivers(task.frontmatter)
     record = {
         "ts": now_iso,
         "kind": "release_auto_arm",
@@ -1294,7 +1287,7 @@ def _append_release_auto_arm_ledger(
         "note": str(task.path),
     }
     if auto_arm_waivers:
-        record["auto_arm_waivers"] = auto_arm_waivers
+        record["auto_arm_waivers"] = list(auto_arm_waivers)
     try:
         ledger_path.parent.mkdir(parents=True, exist_ok=True)
         with ledger_path.open("a", encoding="utf-8") as handle:

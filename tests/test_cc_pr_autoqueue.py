@@ -1751,6 +1751,44 @@ def test_auto_arms_pass_backed_runtime_secret_subscription_task(tmp_path: Path) 
     assert record["auto_arm_waivers"] == ["pass_backed_runtime_secret_waiver"]
 
 
+def test_auto_arm_ledger_uses_lifecycle_waiver_predicate(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-glmcp-string-truthy",
+        status="pr_open",
+        pr=707,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "title": "Activate GLMCP lane with pass-backed secret",
+            "pass_backed_secret_only": "true",
+            "no_secret_value_storage": "true",
+            "secret_entry": "glmcp/alt-key",
+            "subscription_quota_only": "true",
+            "supported_tools_only": "true",
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(707)]
+    ledger = tmp_path / "ledger.jsonl"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=ledger,
+    )
+
+    assert "release_authorized: true" in note.read_text(encoding="utf-8")
+    decision = next(d for d in report["decisions"] if d["pr"] == 707)
+    assert decision["action"] == "queue"
+    assert decision["auto_arm"] is True
+    record = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+    assert record["auto_arm_waivers"] == ["pass_backed_runtime_secret_waiver"]
+
+
 def test_dry_run_reports_release_auto_arm_without_writing_note(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     note = _write_task(
