@@ -13,6 +13,7 @@ from agents.studio_compositor.lufs_panic_cap import (
     DEFAULT_BREACH_WINDOW_MS,
     LufsPanicCap,
     _db_to_linear,
+    _resolve_wpctl_node_id,
     _sine_ease,
 )
 
@@ -51,6 +52,56 @@ class TestDbToLinear:
     def test_minus_forty_db(self) -> None:
         # 10**(-40/20) = 0.01
         assert _db_to_linear(-40.0) == pytest.approx(0.01, abs=1e-6)
+
+
+class TestWpctlNodeResolution:
+    @patch("subprocess.run")
+    def test_numeric_target_is_used_directly(self, mock_run: MagicMock) -> None:
+        assert _resolve_wpctl_node_id("80") == "80"
+        mock_run.assert_not_called()
+
+    @patch("subprocess.run")
+    def test_resolves_pipewire_node_name_from_pw_dump(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=json.dumps(
+                [
+                    {
+                        "id": 80,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {"props": {"node.name": "hapax-broadcast-master"}},
+                    }
+                ]
+            ),
+            stderr="",
+        )
+
+        assert _resolve_wpctl_node_id("hapax-broadcast-master") == "80"
+        mock_run.assert_called_once_with(
+            ["pw-dump"],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            check=False,
+        )
+
+    @patch("subprocess.run")
+    def test_returns_none_when_node_name_missing(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=json.dumps(
+                [
+                    {
+                        "id": 80,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {"props": {"node.name": "other-node"}},
+                    }
+                ]
+            ),
+            stderr="",
+        )
+
+        assert _resolve_wpctl_node_id("hapax-broadcast-master") is None
 
 
 class TestBreachAccumulator:
@@ -267,6 +318,80 @@ class TestRampVolume:
                 steps=8,
             )
         assert emitted == [0.5]
+
+
+class TestWpctlVolumeControl:
+    @patch("subprocess.run")
+    def test_read_volume_resolves_node_name_before_wpctl(self, mock_run: MagicMock) -> None:
+        pw_dump = MagicMock(
+            returncode=0,
+            stdout=json.dumps(
+                [
+                    {
+                        "id": 80,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {"props": {"node.name": "hapax-broadcast-master"}},
+                    }
+                ]
+            ),
+            stderr="",
+        )
+        get_volume = MagicMock(returncode=0, stdout="Volume: 0.82\n", stderr="")
+        mock_run.side_effect = [pw_dump, get_volume]
+
+        cap = LufsPanicCap(sink_name="hapax-broadcast-master")
+
+        assert cap._read_sink_volume() == pytest.approx(0.82)
+        assert mock_run.call_args_list[1].args[0] == ["wpctl", "get-volume", "80"]
+
+    @patch("subprocess.run")
+    def test_set_volume_resolves_node_name_before_wpctl(self, mock_run: MagicMock) -> None:
+        pw_dump = MagicMock(
+            returncode=0,
+            stdout=json.dumps(
+                [
+                    {
+                        "id": 80,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {"props": {"node.name": "hapax-broadcast-master"}},
+                    }
+                ]
+            ),
+            stderr="",
+        )
+        set_volume = MagicMock(returncode=0, stdout="", stderr="")
+        mock_run.side_effect = [pw_dump, set_volume]
+
+        cap = LufsPanicCap(sink_name="hapax-broadcast-master")
+        cap._set_sink_volume(0.5)
+
+        assert mock_run.call_args_list[1].args[0] == ["wpctl", "set-volume", "80", "0.5000"]
+
+    @patch("subprocess.run")
+    def test_set_volume_refreshes_stale_cached_node_id(self, mock_run: MagicMock) -> None:
+        stale_failure = MagicMock(returncode=1, stdout="", stderr="not found")
+        pw_dump = MagicMock(
+            returncode=0,
+            stdout=json.dumps(
+                [
+                    {
+                        "id": 81,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {"props": {"node.name": "hapax-broadcast-master"}},
+                    }
+                ]
+            ),
+            stderr="",
+        )
+        retry_success = MagicMock(returncode=0, stdout="", stderr="")
+        mock_run.side_effect = [stale_failure, pw_dump, retry_success]
+
+        cap = LufsPanicCap(sink_name="hapax-broadcast-master")
+        cap._wpctl_target_id = "80"
+        cap._set_sink_volume(0.25)
+
+        assert mock_run.call_args_list[0].args[0] == ["wpctl", "set-volume", "80", "0.2500"]
+        assert mock_run.call_args_list[2].args[0] == ["wpctl", "set-volume", "81", "0.2500"]
 
 
 class TestNotifyCallback:

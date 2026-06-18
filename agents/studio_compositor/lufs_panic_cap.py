@@ -73,6 +73,41 @@ SAMPLE_FORMAT: str = "s32le"
 SAMPLE_BYTES_PER_FRAME: int = 4 * CHANNEL_COUNT
 
 
+def _resolve_wpctl_node_id(node_name: str) -> str | None:
+    """Resolve a PipeWire ``node.name`` to the numeric ID expected by ``wpctl``."""
+    if node_name.isdecimal():
+        return node_name
+    try:
+        result = subprocess.run(
+            ["pw-dump"],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        log.warning("pw-dump failed while resolving %s for LUFS panic-cap: %s", node_name, exc)
+        return None
+    if result.returncode != 0:
+        stderr = result.stderr.strip() if result.stderr else f"rc={result.returncode}"
+        log.warning("pw-dump failed while resolving %s for LUFS panic-cap: %s", node_name, stderr)
+        return None
+    try:
+        nodes = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        log.warning("pw-dump emitted invalid JSON while resolving %s: %s", node_name, exc)
+        return None
+    for node in nodes:
+        if node.get("type") != "PipeWire:Interface:Node":
+            continue
+        props = node.get("info", {}).get("props", {})
+        if props.get("node.name") == node_name:
+            node_id = node.get("id")
+            if isinstance(node_id, int | str):
+                return str(node_id)
+    return None
+
+
 def _db_to_linear(db: float) -> float:
     return 10.0 ** (db / 20.0)
 
@@ -132,6 +167,7 @@ class LufsPanicCap:
         self._measure_thread: threading.Thread | None = None
         self._parec_proc: subprocess.Popen | None = None
         self._duck_thread: threading.Thread | None = None
+        self._wpctl_target_id: str | None = None
 
         self._triggers_total: int = 0
         self._last_peak: float = float("-inf")
@@ -352,31 +388,65 @@ class LufsPanicCap:
                 self._state = "idle"
 
     def _read_sink_volume(self) -> float:
-        try:
-            result = subprocess.run(
-                ["wpctl", "get-volume", self._sink_name],
-                capture_output=True,
-                text=True,
-                timeout=2.0,
-            )
+        result = self._run_wpctl(["get-volume"], text=True)
+        if result is not None:
             parts = result.stdout.strip().split()
             if len(parts) >= 2 and parts[0] == "Volume:":
                 return float(parts[1])
-        except Exception:
-            log.debug("wpctl get-volume failed", exc_info=True)
         return 1.0
 
     def _set_sink_volume(self, linear: float) -> None:
         linear = max(0.0, min(linear, 1.5))
+        self._run_wpctl(["set-volume", f"{linear:.4f}"], text=False)
+
+    def _control_target_id(self, *, refresh: bool = False) -> str | None:
+        if refresh:
+            self._wpctl_target_id = None
+        if self._wpctl_target_id is None:
+            self._wpctl_target_id = _resolve_wpctl_node_id(self._sink_name)
+            if self._wpctl_target_id is None:
+                log.warning(
+                    "Could not resolve PipeWire node %s for LUFS panic-cap ducking",
+                    self._sink_name,
+                )
+        return self._wpctl_target_id
+
+    def _run_wpctl(
+        self,
+        args: list[str],
+        *,
+        text: bool,
+        retry_on_failure: bool = True,
+    ) -> subprocess.CompletedProcess | None:
+        target_id = self._control_target_id()
+        if target_id is None:
+            return None
+        command = ["wpctl", args[0], target_id, *args[1:]]
         try:
-            subprocess.run(
-                ["wpctl", "set-volume", self._sink_name, f"{linear:.4f}"],
+            result = subprocess.run(
+                command,
                 capture_output=True,
+                text=text,
                 timeout=2.0,
                 check=False,
             )
-        except Exception:
-            log.debug("wpctl set-volume failed", exc_info=True)
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+            log.warning("wpctl %s failed for %s: %s", args[0], self._sink_name, exc)
+            return None
+        if result.returncode == 0:
+            return result
+        if retry_on_failure:
+            self._control_target_id(refresh=True)
+            return self._run_wpctl(args, text=text, retry_on_failure=False)
+        stderr = result.stderr.strip() if result.stderr else f"rc={result.returncode}"
+        log.warning(
+            "wpctl %s failed for %s (target_id=%s): %s",
+            args[0],
+            self._sink_name,
+            target_id,
+            stderr,
+        )
+        return None
 
     def _ramp_volume(
         self,
