@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""Fail loudly when the scheduled segment-prep run emits zero new segments."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from dataclasses import asdict, dataclass
+from datetime import UTC, date, datetime
+from pathlib import Path
+from typing import Any
+
+DEFAULT_PREP_DIR = Path.home() / ".cache" / "hapax" / "segment-prep"
+DEFAULT_MAX_IN_PROGRESS_AGE_S = 3 * 60 * 60
+PAUSED_PHASES = {"segment_prep_authority_paused"}
+ZERO_EMIT_STATUSES = {"completed_no_segments_saved", "completed_no_programmes"}
+
+
+@dataclass(frozen=True)
+class EmitHealthResult:
+    ok: bool
+    reason: str
+    status_path: str
+    status: str | None = None
+    phase: str | None = None
+    saved_count: int | None = None
+    run_saved_count: int | None = None
+    selected_release_ok: bool | None = None
+    selected_release_count: int | None = None
+    updated_at: str | None = None
+    age_s: float | None = None
+
+
+def _path_arg(value: str) -> Path:
+    return Path(value).expanduser()
+
+
+def _date_arg(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"expected YYYY-MM-DD, got {value!r}") from exc
+
+
+def _datetime_arg(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"expected ISO-8601 datetime, got {value!r}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _int_value(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
+
+
+def _sequence_count(value: object) -> int:
+    return len(value) if isinstance(value, list) else 0
+
+
+def _selected_release(payload: dict[str, Any]) -> tuple[bool | None, int | None]:
+    selected = payload.get("selected_release")
+    if not isinstance(selected, dict):
+        return None, None
+    ok = selected.get("ok")
+    selected_count = _int_value(selected.get("selected_count"))
+    return (ok if isinstance(ok, bool) else None), selected_count
+
+
+def _result(
+    ok: bool,
+    reason: str,
+    status_path: Path,
+    payload: dict[str, Any] | None = None,
+    *,
+    age_s: float | None = None,
+) -> EmitHealthResult:
+    payload = payload or {}
+    selected_ok, selected_count = _selected_release(payload)
+    return EmitHealthResult(
+        ok=ok,
+        reason=reason,
+        status_path=str(status_path),
+        status=str(payload.get("status")) if payload.get("status") is not None else None,
+        phase=str(payload.get("phase")) if payload.get("phase") is not None else None,
+        saved_count=_int_value(payload.get("saved_count")),
+        run_saved_count=_sequence_count(payload.get("run_saved_programmes")),
+        selected_release_ok=selected_ok,
+        selected_release_count=selected_count,
+        updated_at=str(payload.get("updated_at"))
+        if payload.get("updated_at") is not None
+        else None,
+        age_s=round(age_s, 1) if age_s is not None else None,
+    )
+
+
+def evaluate_status(
+    prep_dir: Path,
+    target_date: date,
+    *,
+    now: datetime,
+    max_in_progress_age_s: int,
+) -> EmitHealthResult:
+    status_path = prep_dir / target_date.isoformat() / "prep-status.json"
+    if not status_path.exists():
+        return _result(False, "missing_status", status_path)
+    try:
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return _result(False, "unreadable_status", status_path)
+    if not isinstance(payload, dict):
+        return _result(False, "invalid_status_payload", status_path)
+
+    status = str(payload.get("status") or "")
+    phase = str(payload.get("phase") or "")
+    if status == "paused" or phase in PAUSED_PHASES:
+        return _result(True, "paused_authority", status_path, payload)
+
+    updated_at = _parse_datetime(payload.get("updated_at"))
+    age_s = (now - updated_at).total_seconds() if updated_at else None
+    if status == "in_progress":
+        if age_s is None:
+            return _result(False, "in_progress_missing_updated_at", status_path, payload)
+        if age_s <= max_in_progress_age_s:
+            return _result(True, "run_in_progress", status_path, payload, age_s=age_s)
+        return _result(False, "stale_in_progress", status_path, payload, age_s=age_s)
+
+    if status == "blocked":
+        return _result(False, "blocked_no_emit", status_path, payload)
+    if status == "failed" or status.endswith("_failed"):
+        return _result(False, "prep_failed", status_path, payload)
+
+    saved_count = _int_value(payload.get("saved_count")) or 0
+    run_saved_count = _sequence_count(payload.get("run_saved_programmes"))
+    if saved_count > 0 or run_saved_count > 0:
+        return _result(True, "emitted_segments", status_path, payload)
+
+    if status in ZERO_EMIT_STATUSES:
+        return _result(False, "zero_emit", status_path, payload)
+    if status == "completed":
+        return _result(False, "completed_zero_emit", status_path, payload)
+    return _result(False, "unknown_zero_emit_status", status_path, payload)
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prep-dir", type=_path_arg, default=DEFAULT_PREP_DIR)
+    parser.add_argument("--date", type=_date_arg, default=None)
+    parser.add_argument("--now", type=_datetime_arg, default=datetime.now(tz=UTC))
+    parser.add_argument(
+        "--max-in-progress-age-s",
+        type=int,
+        default=DEFAULT_MAX_IN_PROGRESS_AGE_S,
+        help="fresh in-progress statuses are OK until this age; older ones fail",
+    )
+    parser.add_argument("--json", action="store_true", help="Print a JSON result.")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    target_date = args.date or args.now.date()
+    result = evaluate_status(
+        args.prep_dir,
+        target_date,
+        now=args.now,
+        max_in_progress_age_s=args.max_in_progress_age_s,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), sort_keys=True))
+    else:
+        prefix = "OK" if result.ok else "FAIL"
+        print(
+            f"{prefix} segment-prep emit-health: {result.reason} "
+            f"status={result.status} phase={result.phase} "
+            f"saved_count={result.saved_count} run_saved_count={result.run_saved_count} "
+            f"path={result.status_path}"
+        )
+    return 0 if result.ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

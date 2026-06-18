@@ -1,0 +1,12 @@
+# Hapax-Auto-Enable: true
+[Unit]
+Description=Check segment-prep emitted at least one segment after the daily run
+
+[Timer]
+OnCalendar=*-*-* 06:20:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+Unit=hapax-segment-prep-emit-health.service
+
+[Install]
+WantedBy=timers.target
