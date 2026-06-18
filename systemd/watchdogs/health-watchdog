@@ -4,16 +4,21 @@
 # Sends to ntfy (mobile push) + notify-send (desktop) via shared.notify.
 set -euo pipefail
 
-HEALTH_MONITOR_REPO="${HAPAX_HEALTH_MONITOR_REPO:-/home/hapax/.cache/hapax/runtime/health-monitor-source}"
 SOURCE_ACTIVATION_REPO="${HAPAX_SOURCE_ACTIVATION_WORKTREE:-/home/hapax/.cache/hapax/source-activation/worktree}"
-if [[ ! -e "$HEALTH_MONITOR_REPO/.git" ]]; then
-    echo "WARN: health-monitor source missing at $HEALTH_MONITOR_REPO; falling back to source activation worktree" >&2
+HEALTH_MONITOR_REPO=""
+
+if [[ -e "$SOURCE_ACTIVATION_REPO/.git" ]]; then
     HEALTH_MONITOR_REPO="$SOURCE_ACTIVATION_REPO"
+elif [[ -n "${HAPAX_HEALTH_MONITOR_REPO:-}" && -e "${HAPAX_HEALTH_MONITOR_REPO}/.git" ]]; then
+    echo "WARN: source activation checkout missing at $SOURCE_ACTIVATION_REPO; using explicit HAPAX_HEALTH_MONITOR_REPO override" >&2
+    HEALTH_MONITOR_REPO="$HAPAX_HEALTH_MONITOR_REPO"
 fi
-if [[ ! -e "$HEALTH_MONITOR_REPO/.git" ]]; then
-    echo "ERROR: health-monitor source missing at $HEALTH_MONITOR_REPO" >&2
+
+if [[ -z "$HEALTH_MONITOR_REPO" ]]; then
+    echo "ERROR: no health-monitor activation checkout available at $SOURCE_ACTIVATION_REPO" >&2
+    echo "NEXT ACTION: run source activation or set HAPAX_SOURCE_ACTIVATION_WORKTREE/HAPAX_HEALTH_MONITOR_REPO to a valid activation checkout" >&2
     notify-send --urgency=critical --app-name="Health Monitor" --icon=dialog-error \
-        "Health Monitor Failed" "health-monitor source missing at $HEALTH_MONITOR_REPO" 2>/dev/null || true
+        "Health Monitor Failed" "No activation checkout available; run source activation or set HAPAX_SOURCE_ACTIVATION_WORKTREE" 2>/dev/null || true
     exit 1
 fi
 cd "$HEALTH_MONITOR_REPO"
@@ -133,7 +138,7 @@ if webhook:
 esac
 
 # Append to health history (atomic via temp file + rename)
-HISTORY_FILE="${HAPAX_HEALTH_HISTORY_FILE:-/home/hapax/projects/hapax-council/profiles/health-history.jsonl}"
+HISTORY_FILE="${HAPAX_HEALTH_HISTORY_FILE:-$HEALTH_MONITOR_REPO/profiles/health-history.jsonl}"
 ENTRY=$(echo "$FINAL_REPORT" | python3 -c "
 import sys, json
 r = json.load(sys.stdin)

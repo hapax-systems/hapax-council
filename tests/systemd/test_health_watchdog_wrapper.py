@@ -38,30 +38,35 @@ def _write_fake_uv(path: Path) -> Path:
             with open(log_path, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps({"args": args, "cwd": os.getcwd()}) + "\n")
 
-        status = os.environ.get("FAKE_HEALTH_STATUS", "healthy")
-        failed = 2 if status == "failed" else 0
-        report = {
-            "timestamp": "2026-06-18T00:00:00Z",
-            "overall_status": status,
-            "summary": "98/100 healthy, 0 degraded, 2 failed" if failed else "all healthy",
-            "healthy_count": 98 if failed else 100,
-            "degraded_count": 0,
-            "failed_count": failed,
-            "duration_ms": 12,
-            "groups": [
-                {
-                    "checks": [
-                        {"name": "demo", "status": "failed" if failed else "healthy"},
-                    ],
-                },
-            ],
-        }
-
         if args[:4] == ["run", "python", "-m", "agents.health_monitor"]:
+            marker = os.environ.get("FAKE_APPLY_MARKER")
+            status = os.environ.get("FAKE_HEALTH_STATUS", "healthy")
+            if marker and os.environ.get("FAKE_HEALTH_STATUS_AFTER_APPLY") and os.path.exists(marker):
+                status = os.environ["FAKE_HEALTH_STATUS_AFTER_APPLY"]
+            failed = 2 if status == "failed" else 0
+            report = {
+                "timestamp": "2026-06-18T00:00:00Z",
+                "overall_status": status,
+                "summary": "98/100 healthy, 0 degraded, 2 failed" if failed else "all healthy",
+                "healthy_count": 98 if failed else 100,
+                "degraded_count": 0,
+                "failed_count": failed,
+                "duration_ms": 12,
+                "groups": [
+                    {
+                        "checks": [
+                            {"name": "demo", "status": "failed" if failed else "healthy"},
+                        ],
+                    },
+                ],
+            }
             if "--json" in args:
                 print(json.dumps(report))
                 sys.exit(2 if status == "failed" else 0)
             if "--apply" in args:
+                if marker:
+                    with open(marker, "w", encoding="utf-8") as fh:
+                        fh.write("applied\n")
                 print("apply attempted")
                 sys.exit(0)
 
@@ -120,11 +125,22 @@ def _write_fake_shared_notify(root: Path) -> None:
     )
 
 
-def _base_env(tmp_path: Path, *, status: str = "healthy") -> dict[str, str]:
+def _base_env(
+    tmp_path: Path,
+    *,
+    status: str = "healthy",
+    pass_succeeds: bool = False,
+    set_history_file: bool = True,
+) -> dict[str, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake_uv = _write_fake_uv(bin_dir / "uv")
-    _write_executable(bin_dir / "pass", "#!/usr/bin/env sh\nexit 1\n")
+    pass_body = (
+        "#!/usr/bin/env sh\nprintf 'fake-secret\\n'\n"
+        if pass_succeeds
+        else "#!/usr/bin/env sh\nexit 1\n"
+    )
+    _write_executable(bin_dir / "pass", pass_body)
     _write_executable(
         bin_dir / "notify-send",
         """
@@ -143,13 +159,14 @@ def _base_env(tmp_path: Path, *, status: str = "healthy") -> dict[str, str]:
             "FAKE_NOTIFY_LOG": str(tmp_path / "notify.jsonl"),
             "FAKE_NOTIFY_SEND_LOG": str(tmp_path / "notify-send.log"),
             "FAKE_UV_LOG": str(tmp_path / "uv.jsonl"),
-            "HAPAX_HEALTH_HISTORY_FILE": str(tmp_path / "health-history.jsonl"),
             "HAPAX_UV": str(fake_uv),
             "N8N_HEALTH_WEBHOOK_URL": "",
             "PATH": f"{bin_dir}:{env.get('PATH', '')}",
             "PYTHONPATH": f"{stub_root}:{env.get('PYTHONPATH', '')}",
         }
     )
+    if set_history_file:
+        env["HAPAX_HEALTH_HISTORY_FILE"] = str(tmp_path / "health-history.jsonl")
     return env
 
 
@@ -171,7 +188,7 @@ def _jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
-def test_uses_source_activation_fallback_when_runtime_checkout_missing(tmp_path: Path) -> None:
+def test_uses_source_activation_checkout_by_default(tmp_path: Path) -> None:
     activation = _make_checkout(tmp_path / "source-activation")
     env = _base_env(tmp_path)
     env["HAPAX_HEALTH_MONITOR_REPO"] = str(tmp_path / "missing-runtime")
@@ -193,13 +210,28 @@ def test_missing_activation_checkouts_fail_before_uv(tmp_path: Path) -> None:
     result = _run_watchdog(env)
 
     assert result.returncode == 1
-    assert "health-monitor source missing" in result.stderr
+    assert "no health-monitor activation checkout available" in result.stderr
+    assert "NEXT ACTION: run source activation" in result.stderr
     assert not (tmp_path / "uv.jsonl").exists()
     assert "/home/hapax/projects/hapax-council" not in result.stderr
 
 
+def test_default_history_file_uses_selected_activation_checkout(tmp_path: Path) -> None:
+    activation = _make_checkout(tmp_path / "source-activation")
+    (activation / "profiles").mkdir()
+    env = _base_env(tmp_path, set_history_file=False)
+    env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(activation)
+
+    result = _run_watchdog(env)
+
+    assert result.returncode == 0, result.stderr
+    history = _jsonl(activation / "profiles" / "health-history.jsonl")
+    assert history[0]["status"] == "healthy"
+    assert not (tmp_path / "health-history.jsonl").exists()
+
+
 def test_failed_stack_routes_through_intake_cli(tmp_path: Path) -> None:
-    runtime = _make_checkout(tmp_path / "runtime")
+    activation = _make_checkout(tmp_path / "source-activation")
     intake_log = tmp_path / "intake.jsonl"
     intake_cli = _write_executable(
         tmp_path / "hapax-p0-incident-intake",
@@ -213,7 +245,7 @@ def test_failed_stack_routes_through_intake_cli(tmp_path: Path) -> None:
         """,
     )
     env = _base_env(tmp_path, status="failed")
-    env["HAPAX_HEALTH_MONITOR_REPO"] = str(runtime)
+    env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(activation)
     env["HAPAX_P0_INTAKE_CLI"] = str(intake_cli)
 
     result = _run_watchdog(env)
@@ -239,9 +271,9 @@ def test_failed_stack_routes_through_intake_cli(tmp_path: Path) -> None:
 
 
 def test_failed_stack_missing_intake_cli_falls_back_to_notification(tmp_path: Path) -> None:
-    runtime = _make_checkout(tmp_path / "runtime")
+    activation = _make_checkout(tmp_path / "source-activation")
     env = _base_env(tmp_path, status="failed")
-    env["HAPAX_HEALTH_MONITOR_REPO"] = str(runtime)
+    env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(activation)
     env["HAPAX_P0_INTAKE_CLI"] = str(tmp_path / "missing-intake")
 
     result = _run_watchdog(env)
@@ -254,7 +286,7 @@ def test_failed_stack_missing_intake_cli_falls_back_to_notification(tmp_path: Pa
 
 
 def test_failed_stack_timed_out_intake_cli_falls_back_to_notification(tmp_path: Path) -> None:
-    runtime = _make_checkout(tmp_path / "runtime")
+    activation = _make_checkout(tmp_path / "source-activation")
     intake_cli = _write_executable(
         tmp_path / "slow-intake",
         """
@@ -264,7 +296,7 @@ def test_failed_stack_timed_out_intake_cli_falls_back_to_notification(tmp_path: 
         """,
     )
     env = _base_env(tmp_path, status="failed")
-    env["HAPAX_HEALTH_MONITOR_REPO"] = str(runtime)
+    env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(activation)
     env["HAPAX_P0_INTAKE_CLI"] = str(intake_cli)
     env["HAPAX_P0_INTAKE_TIMEOUT_SECONDS"] = "0.01"
 
@@ -273,3 +305,21 @@ def test_failed_stack_timed_out_intake_cli_falls_back_to_notification(tmp_path: 
     assert result.returncode == 2, result.stderr
     notifications = _jsonl(tmp_path / "notify.jsonl")
     assert notifications[0]["title"] == "Stack Failed"
+
+
+def test_failed_stack_auto_fix_success_notifies_auto_fixed(tmp_path: Path) -> None:
+    activation = _make_checkout(tmp_path / "source-activation")
+    env = _base_env(tmp_path, status="failed", pass_succeeds=True)
+    env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(activation)
+    env["FAKE_APPLY_MARKER"] = str(tmp_path / "apply.marker")
+    env["FAKE_HEALTH_STATUS_AFTER_APPLY"] = "healthy"
+
+    result = _run_watchdog(env)
+
+    assert result.returncode == 0, result.stderr
+    uv_calls = _jsonl(tmp_path / "uv.jsonl")
+    assert ["run", "python", "-m", "agents.health_monitor", "--apply"] in [
+        call["args"] for call in uv_calls
+    ]
+    notifications = _jsonl(tmp_path / "notify.jsonl")
+    assert notifications[0]["title"] == "Auto-Fixed"
