@@ -63,10 +63,15 @@ TEAM_CLASS_RANK = {"t3_docs": 0, "t2_standard": 1, "t1_critical": 2}
 
 #: Provider usage-wall shapes (the 2026-06-12 claude weekly-wall text is the
 #: canonical fixture; the rest cover the codex/gemini families' phrasings).
+_RESET_TIME_SHAPE = (
+    r"(?:(?:[A-Z][a-z]{2}\s+\d{1,2},\s+)?"
+    r"\d{1,2}(?::\d{2})?\s*(?:am|pm)"
+    r"(?:\s+(?:\([A-Za-z_]+/[A-Za-z_]+\)|[A-Za-z_]+/[A-Za-z_]+))?)"
+)
 _QUOTA_WALL_SHAPE_RE = re.compile(
     r"\A("
     r"You('ve| have) hit your (weekly|usage|session|5-hour) limit"
-    r"(?:\s+·\s+resets\s+[^\r\n]+)?"
+    rf"(?:\s+·\s+resets\s+{_RESET_TIME_SHAPE})?"
     r"|HTTP 429 Too Many Requests"
     r"|Too Many Requests"
     r"|RESOURCE_EXHAUSTED(?::\s+Quota (?:exceeded|exhausted))?"
@@ -90,11 +95,11 @@ _QUOTA_WALL_MAX_CHARS = 600
 #: Applied ONLY when model_stdout is empty (the anti-forge anchor: a real
 #: wall produces NO review output).
 _QUOTA_WALL_LINE_RE = re.compile(
-    r"(?:ERROR:\s*)?"
+    r"\A(?:ERROR:\s*)?"
     r"You(?:'ve| have) hit your (?:weekly|usage|session|5-hour) (?:limit|cap)"
-    r"(?:\.\s+Visit\s+\S+)?"
-    r"(?:.*?(?:purchase more credits|upgrade your plan|try again))?"
-    r".*",
+    rf"(?:(?:\s+·\s+resets\s+{_RESET_TIME_SHAPE})"
+    r"|(?:\.\s+Visit\s+\S+.*(?:purchase more credits|upgrade your plan|try again).*))?"
+    r"\Z",
     re.IGNORECASE,
 )
 

@@ -51,7 +51,10 @@ def _shape_property(shapes: Graph, shape: URIRef, path: URIRef):
     for property_shape in shapes.objects(shape, SH.property):
         if (property_shape, SH.path, path) in shapes:
             return property_shape
-    raise AssertionError(f"{SHACL_PATH}: {shape} missing property path {path}")
+    raise AssertionError(
+        f"{SHACL_PATH}: {shape} missing property path {path}. "
+        "Fix by regenerating the SHACL artifact from the seed contract."
+    )
 
 
 def _assert_shape_property(

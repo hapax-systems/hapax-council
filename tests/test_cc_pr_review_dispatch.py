@@ -1093,6 +1093,31 @@ class TestFamilyOutageDegradation:
         assert claude_seats, "harness must seat a claude reviewer at t2"
         assert all(r["verdict"] == "quota-wall" for r in claude_seats)
 
+    def test_nonzero_stdout_malformed_reset_does_not_forge_quota_wall(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        self._isolate_state(monkeypatch, tmp_path)
+
+        class StdoutWallRunner(RecordingReviewers):
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.invocations.append((seat.id, seat.family, prompt))
+                if seat.family == "claude":
+                    raise dispatch.ReviewerProcessError(
+                        "",
+                        returncode=1,
+                        stdout=(
+                            "You've hit your weekly limit · resets not a date "
+                            "and here is model prose"
+                        ),
+                    )
+                return GOOD_REPLY
+
+        result, _, _, _ = _review(tmp_path, reviewers=StdoutWallRunner())
+        dossier = result["dossier"]
+        claude_seats = [r for r in dossier["reviewers"] if r["family"] == "claude"]
+        assert claude_seats, "harness must seat a claude reviewer at t2"
+        assert all(r["verdict"] == "invalid-output" for r in claude_seats)
+
     def test_nonzero_multiline_stdout_does_not_forge_quota_wall(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:

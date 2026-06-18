@@ -957,6 +957,10 @@ class TestFamilyOutageDegradation:
             "You've hit your weekly limit · resets Jun 19, 5pm (America/Chicago)",
             process_failed=True,
         )
+        assert not rt.is_quota_wall(
+            "You've hit your weekly limit · resets not a date and here is model prose",
+            process_failed=True,
+        )
 
     def test_wall_variants_classify_on_process_failure(self) -> None:
         rt = _load_review_team_module()
