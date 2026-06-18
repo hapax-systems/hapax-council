@@ -134,6 +134,7 @@ def _deploy(
     fail_checkout_on_sha: str | None = None,
     fail_clean_on_sha: str | None = None,
     fail_stop_number: int | None = None,
+    restart_if_up_to_date: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
@@ -155,6 +156,8 @@ def _deploy(
         env["HAPAX_FAIL_CLEAN_ON_SHA"] = fail_clean_on_sha
     if fail_stop_number is not None:
         env["HAPAX_SYSTEMCTL_FAIL_STOP_NUMBER"] = str(fail_stop_number)
+    if restart_if_up_to_date:
+        env["HAPAX_COORD_DEPLOY_RESTART_IF_UP_TO_DATE"] = "1"
     return subprocess.run(
         [str(SCRIPT)],
         cwd=REPO_ROOT,
@@ -204,6 +207,7 @@ def test_coord_deploy_contract_names_stable_activation_surfaces(tmp_path: Path) 
     assert contract["source_repo"] == str(repo)
     assert contract["activation_worktree"] == str(act_root / "worktree")
     assert contract["single_writer_lock"] == str(act_root / "deploy.lock")
+    assert contract["restart_if_up_to_date_env"] == "HAPAX_COORD_DEPLOY_RESTART_IF_UP_TO_DATE"
     assert contract["stops_service_before_worktree_mutation"] is True
     assert contract["writes_deployed_sha_after_restart"] is True
     assert contract["rolls_back_worktree_on_restart_failure"] is True
@@ -231,6 +235,16 @@ def test_coord_deploy_materializes_activation_and_skips_up_to_date(
     assert second.returncode == 0, second.stderr
     assert f"coord-deploy: up to date at {sha}" in second.stdout
     assert _restart_calls(calls) == ["--user restart hapax-coord.service"]
+
+    third = _deploy(repo, act_root, bin_dir, calls, restart_if_up_to_date=True)
+
+    assert third.returncode == 0, third.stderr
+    assert f"coord-deploy: up to date at {sha}; restarting hapax-coord" in third.stdout
+    assert f"coord-deploy: reactivated {sha}" in third.stdout
+    assert _restart_calls(calls) == [
+        "--user restart hapax-coord.service",
+        "--user restart hapax-coord.service",
+    ]
 
 
 def test_coord_deploy_refuses_when_single_writer_lock_is_held(tmp_path: Path) -> None:

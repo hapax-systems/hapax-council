@@ -715,7 +715,7 @@ stage_coord_activation_before_restart() {
         return 5
     fi
     echo "staging hapax-coord activation before activating hapax-coord.service"
-    "$deploy_bin"
+    HAPAX_COORD_DEPLOY_RESTART_IF_UP_TO_DATE=1 "$deploy_bin"
 }
 
 # Per-file deploy uses `git cat-file -e $SHA:$path` + `git show $SHA:$path`

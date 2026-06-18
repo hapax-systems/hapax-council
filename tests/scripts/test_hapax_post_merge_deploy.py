@@ -743,6 +743,13 @@ def test_coord_service_deploy_stages_activation_before_active_restart(
     coord_deploy.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
+        'if [ "${HAPAX_COORD_DEPLOY_RESTART_IF_UP_TO_DATE:-0}" != "1" ]; then\n'
+        '    printf "%s\\n" "missing-coord-restart-if-up-to-date-env" '
+        '>> "$HAPAX_SYSTEMCTL_CALLS"\n'
+        "    exit 43\n"
+        "fi\n"
+        'printf "%s\\n" "coord-deploy-restart-if-up-to-date='
+        '${HAPAX_COORD_DEPLOY_RESTART_IF_UP_TO_DATE}" >> "$HAPAX_SYSTEMCTL_CALLS"\n'
         'printf "%s\\n" "coord-deploy" >> "$HAPAX_SYSTEMCTL_CALLS"\n'
         'printf "%s\\n" "--user restart hapax-coord.service" >> "$HAPAX_SYSTEMCTL_CALLS"\n',
         encoding="utf-8",
@@ -769,7 +776,11 @@ def test_coord_service_deploy_stages_activation_before_active_restart(
     assert result.returncode == 0, result.stderr
     assert "staging hapax-coord activation before activating hapax-coord.service" in result.stdout
     calls = systemctl_calls.read_text(encoding="utf-8").splitlines()
-    assert calls.index("--user is-active --quiet hapax-coord.service") < calls.index("coord-deploy")
+    assert "coord-deploy-restart-if-up-to-date=1" in calls
+    assert calls.index("--user is-active --quiet hapax-coord.service") < calls.index(
+        "coord-deploy-restart-if-up-to-date=1"
+    )
+    assert calls.index("coord-deploy-restart-if-up-to-date=1") < calls.index("coord-deploy")
     assert calls.index("coord-deploy") < calls.index("--user restart hapax-coord.service")
     assert calls.count("--user restart hapax-coord.service") == 1
     assert "--user enable hapax-coord.service" not in calls
@@ -813,6 +824,13 @@ def test_coord_service_auto_enable_stages_activation_before_enable(
     coord_deploy.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
+        'if [ "${HAPAX_COORD_DEPLOY_RESTART_IF_UP_TO_DATE:-0}" != "1" ]; then\n'
+        '    printf "%s\\n" "missing-coord-restart-if-up-to-date-env" '
+        '>> "$HAPAX_SYSTEMCTL_CALLS"\n'
+        "    exit 43\n"
+        "fi\n"
+        'printf "%s\\n" "coord-deploy-restart-if-up-to-date='
+        '${HAPAX_COORD_DEPLOY_RESTART_IF_UP_TO_DATE}" >> "$HAPAX_SYSTEMCTL_CALLS"\n'
         'printf "%s\\n" "coord-deploy" >> "$HAPAX_SYSTEMCTL_CALLS"\n'
         'printf "%s\\n" "--user restart hapax-coord.service" >> "$HAPAX_SYSTEMCTL_CALLS"\n',
         encoding="utf-8",
@@ -839,7 +857,11 @@ def test_coord_service_auto_enable_stages_activation_before_enable(
     assert result.returncode == 0, result.stderr
     assert "staging hapax-coord activation before activating hapax-coord.service" in result.stdout
     calls = systemctl_calls.read_text(encoding="utf-8").splitlines()
-    assert calls.index("--user is-active --quiet hapax-coord.service") < calls.index("coord-deploy")
+    assert "coord-deploy-restart-if-up-to-date=1" in calls
+    assert calls.index("--user is-active --quiet hapax-coord.service") < calls.index(
+        "coord-deploy-restart-if-up-to-date=1"
+    )
+    assert calls.index("coord-deploy-restart-if-up-to-date=1") < calls.index("coord-deploy")
     assert calls.index("coord-deploy") < calls.index("--user restart hapax-coord.service")
     assert calls.index("--user restart hapax-coord.service") < calls.index(
         "--user enable hapax-coord.service"
