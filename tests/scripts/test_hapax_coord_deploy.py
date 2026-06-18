@@ -264,6 +264,23 @@ def test_coord_deploy_refuses_when_single_writer_lock_is_held(tmp_path: Path) ->
     assert _restart_calls(calls) == []
 
 
+def test_coord_deploy_refuses_invalid_deployed_sha_receipt_path(tmp_path: Path) -> None:
+    repo, _sha = _init_coord_repo(tmp_path)
+    act_root = tmp_path / "activation"
+    bin_dir, calls = _fake_systemctl(tmp_path)
+    first = _deploy(repo, act_root, bin_dir, calls)
+    assert first.returncode == 0, first.stderr
+    receipt = act_root / "worktree" / ".deployed-sha"
+    receipt.unlink()
+    receipt.mkdir()
+
+    result = _deploy(repo, act_root, bin_dir, calls)
+
+    assert result.returncode == 1
+    assert "deployed sha receipt path invalid" in result.stderr
+    assert _restart_calls(calls) == ["--user restart hapax-coord.service"]
+
+
 def test_coord_deploy_cleans_activation_worktree_before_new_restart(
     tmp_path: Path,
 ) -> None:
@@ -295,6 +312,25 @@ def test_coord_deploy_cleans_activation_worktree_before_new_restart(
     ]
 
 
+def test_coord_deploy_refuses_target_mutation_when_initial_stop_fails(
+    tmp_path: Path,
+) -> None:
+    repo, sha_a = _init_coord_repo(tmp_path)
+    act_root = tmp_path / "activation"
+    bin_dir, calls = _fake_systemctl(tmp_path)
+    first = _deploy(repo, act_root, bin_dir, calls)
+    assert first.returncode == 0, first.stderr
+    worktree = act_root / "worktree"
+
+    _commit_and_push(repo, "update with stop failure\n")
+    result = _deploy(repo, act_root, bin_dir, calls, fail_stop_number=1)
+
+    assert result.returncode == 1
+    assert "stop hapax-coord.service before activation worktree mutation failed" in result.stderr
+    assert _activation_head(worktree) == sha_a
+    assert (worktree / ".deployed-sha").read_text(encoding="utf-8").strip() == sha_a
+
+
 def test_coord_deploy_rolls_activation_back_when_restart_fails(tmp_path: Path) -> None:
     repo, sha_a = _init_coord_repo(tmp_path)
     act_root = tmp_path / "activation"
@@ -312,6 +348,59 @@ def test_coord_deploy_rolls_activation_back_when_restart_fails(tmp_path: Path) -
     assert _activation_head(worktree) == sha_a
     assert (worktree / ".deployed-sha").read_text(encoding="utf-8").strip() == sha_a
     assert len(_restart_calls(calls)) == 3
+
+
+def test_coord_deploy_stops_before_rollback_and_refuses_failed_rollback_checkout(
+    tmp_path: Path,
+) -> None:
+    repo, sha_a = _init_coord_repo(tmp_path)
+    act_root = tmp_path / "activation"
+    bin_dir, calls = _fake_systemctl(tmp_path)
+    first = _deploy(repo, act_root, bin_dir, calls)
+    assert first.returncode == 0, first.stderr
+    worktree = act_root / "worktree"
+
+    sha_b = _commit_and_push(repo, "rollback checkout failure update\n")
+    result = _deploy(
+        repo,
+        act_root,
+        bin_dir,
+        calls,
+        fail_restart=True,
+        fail_checkout_on_sha=sha_a,
+    )
+
+    assert result.returncode == 1
+    assert "restart failed; stopped hapax-coord.service before rollback" in result.stderr
+    assert "rollback checkout" in result.stderr
+    assert _activation_head(worktree) == sha_b
+    assert (worktree / ".deployed-sha").read_text(encoding="utf-8").strip() == sha_a
+
+
+def test_coord_deploy_reports_failed_rollback_clean_after_restart_failure(
+    tmp_path: Path,
+) -> None:
+    repo, sha_a = _init_coord_repo(tmp_path)
+    act_root = tmp_path / "activation"
+    bin_dir, calls = _fake_systemctl(tmp_path)
+    first = _deploy(repo, act_root, bin_dir, calls)
+    assert first.returncode == 0, first.stderr
+    worktree = act_root / "worktree"
+
+    _commit_and_push(repo, "rollback clean failure update\n")
+    result = _deploy(
+        repo,
+        act_root,
+        bin_dir,
+        calls,
+        fail_restart=True,
+        fail_clean_on_sha=sha_a,
+    )
+
+    assert result.returncode == 1
+    assert "rollback clean failed" in result.stderr
+    assert _activation_head(worktree) == sha_a
+    assert (worktree / ".deployed-sha").read_text(encoding="utf-8").strip() == sha_a
 
 
 def test_coord_deploy_rolls_activation_back_when_target_checkout_fails(
