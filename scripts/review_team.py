@@ -486,7 +486,8 @@ def _unresolved_criticals(reviews: Sequence[Mapping[str, Any]]) -> list[tuple[st
 # — the go-gate must not suppress a real finding (claude-1, #4136 review v2).
 _SYNTAX_COMPILE_RE = re.compile(
     r"syntax\s*error|syntaxerror|invalid\s+syntax|fails?\s+to\s+(?:compile|parse)|"
-    r"won'?t\s+(?:compile|parse)|does\s*n'?t\s+(?:compile|parse)|cannot\s+be\s+parsed|"
+    r"won'?t\s+(?:compile|parse)|will\s+not\s+(?:compile|parse)|"
+    r"does\s*n'?t\s+(?:compile|parse)|cannot\s+be\s+parsed|"
     r"un(?:parse|parseable|parsable)|compile\s+(?:error|failure)|unterminated|"
     r"indentation\s+error|missing\s+(?:colon|paren|parenthes|brace|bracket)",
     re.IGNORECASE,

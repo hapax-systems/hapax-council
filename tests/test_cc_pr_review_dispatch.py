@@ -541,6 +541,57 @@ checklist: {}
         by_family = {r["family"]: r for r in dossier["reviewers"]}
         assert by_family["codex"]["verdict"] == "invalid-output"
 
+    def test_dispatcher_invalidates_clean_rdf_phantom_critical(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        repo_root = tmp_path / "repo"
+        rdf_path = repo_root / "docs" / "ok.ttl"
+        rdf_path.parent.mkdir(parents=True)
+        rdf_path.write_text(
+            "@prefix ex: <https://example.test/> .\nex:s ex:p ex:o .\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(dispatch.review_team, "_repo_head_matches", lambda *a, **k: True)
+        reviewers = RecordingReviewers(
+            replies={
+                "gemini": """```yaml
+verdict: block
+findings:
+  - severity: critical
+    lens: tests-cover-the-diff
+    file: docs/ok.ttl
+    line: 1
+    title: Corrupted RDF namespace prefixes
+    detail: The file is invalid Turtle and will not parse.
+checklist:
+  tests-cover-the-diff:
+    diff-behavior-coverage: finding
+    red-before-green: na
+    new-paths-tested: pass
+    no-coverage-theater: pass
+  exit-predicate-adequacy:
+    predicate-testable: pass
+    predicate-evidenced: finding
+    diff-matches-predicate: pass
+    witness-durability: pass
+  doc-claims-recheck:
+    recheck-cmds-present: pass
+    claims-match-code: pass
+    stale-docs-updated: pass
+    next-actions-on-error: pass
+```"""
+            }
+        )
+
+        result, _, _, note = _review(tmp_path, reviewers=reviewers, repo_root=repo_root)
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+
+        assert result["status"] == "dispatched"
+        assert dossier["review_team_verdict"] == "quorum-accept"
+        assert any(e["kind"] == "invalidated-phantom-critical" for e in dossier["escalations"])
+
     def test_dossier_records_traceability_scope(self, tmp_path: Path) -> None:
         result, _, _, _ = _review(
             tmp_path,
