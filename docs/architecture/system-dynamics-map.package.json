@@ -61,9 +61,9 @@
       "sha256": "216e994c467405aecdc3f380184eae3915906e77f9cef909eceaf8ca96a19ccc"
     },
     {
-      "bytes": 1670,
+      "bytes": 2220,
       "path": "schemas/system-dynamics-map/lens.schema.json",
-      "sha256": "a11eb5a7d509df01557bceded2175068a6a6eb074c18625eda8866c2e42278b3"
+      "sha256": "e21cb9a38417749768eab11d0ce1fc847395cd3010883f61c04eab1ce2a5b9ee"
     },
     {
       "bytes": 1757,
@@ -76,9 +76,9 @@
       "sha256": "7b76eed33b35cc845f2bdafd5e83baddf9ad51806e82817fb72125e24ff693b5"
     },
     {
-      "bytes": 1285,
+      "bytes": 2153,
       "path": "schemas/system-dynamics-map/relation-vocabulary.schema.json",
-      "sha256": "614cc03aa8e87f6da6572d9b0cd6a18ec54265b896016f0e18c77c5126e20476"
+      "sha256": "ed48c46de224801cfe2c1c85383ee17313aded2eaad918064b799ef56344c888"
     },
     {
       "bytes": 3967,
@@ -86,9 +86,9 @@
       "sha256": "d90e150c456f4ebc38609039389c00073efb830dbb95bd02d5d302b6cb2fe933"
     },
     {
-      "bytes": 798,
+      "bytes": 6047,
       "path": "schemas/system-dynamics-map/view-manifest.schema.json",
-      "sha256": "51d91e6a2d3c093b024046147ac7705105cfc4ced464262a1de8de2cc04a748e"
+      "sha256": "79a9bed7f43358f37dbbae6b86242286365d8f6c62cc90e118137936bc0b1388"
     }
   ],
   "authority_case": "CASE-SYSTEM-DYNAMICS-MAP-V1-ENHANCEMENT-20260618",
@@ -97,7 +97,7 @@
     "check_command": "python3 scripts/system_dynamics_map_materialize.py --check",
     "command": "python3 scripts/system_dynamics_map_materialize.py"
   },
-  "git_sha": "70f8e65a8ae2c2dea1d6152162cbe56a595aebb8",
+  "git_sha": "997ea72ec003455c77133ecd27071b6c6b845ec7",
   "git_sha_policy": "Records git rev-parse HEAD at materializer invocation. Artifact commits cannot embed their own future commit SHA, so content hashes are the staleness key and git_sha is provenance.",
   "git_sha_role": "generation_head",
   "map_id": "system-dynamics-map-v1",

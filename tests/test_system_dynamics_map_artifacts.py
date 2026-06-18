@@ -497,6 +497,7 @@ def test_contract_rejects_schema_required_lens_fields_and_hidden_endpoints():
     topology["visible_edge_ids"] = ["dmn-to-drd"]
     errors = _contract_error_text(lenses=lenses)
     assert "missing required fields visible_statuses" in errors
+    assert "Fix by regenerating the artifact or adding the required contract fields." in errors
     assert "visible edge dmn-to-drd has hidden endpoint" in errors
 
 
@@ -539,7 +540,37 @@ def test_generated_schemas_validate_artifacts_and_reject_bad_shapes():
     bad_lens = copy.deepcopy(json.loads(LENSES_PATH.read_text(encoding="utf-8"))["lenses"][0])
     bad_lens["visible_statuses"] = ["not-a-status"]
     bad_lens["max_resolution"] = 0
-    assert _schema_errors(bad_lens, lens_schema)
+    bad_lens.pop("hidden_node_ids")
+    bad_lens.pop("hidden_edge_ids")
+    bad_lens.pop("state_mode")
+    bad_lens.pop("source_snapshot")
+    bad_lens.pop("validation_status")
+    lens_errors = "\n".join(_schema_errors(bad_lens, lens_schema))
+    assert "not-a-status" in lens_errors
+    assert "hidden_node_ids" in lens_errors
+    assert "hidden_edge_ids" in lens_errors
+    assert "state_mode" in lens_errors
+    assert "source_snapshot" in lens_errors
+    assert "validation_status" in lens_errors
+
+    bad_relations = copy.deepcopy(json.loads(RELATIONS_PATH.read_text(encoding="utf-8")))
+    bad_relations["relations"][0].pop("source_kinds")
+    bad_relations["relations"][0].pop("target_kinds")
+    bad_relations["relations"][0].pop("allowed_claim_types")
+    relation_errors = "\n".join(_schema_errors(bad_relations, relation_schema))
+    assert "source_kinds" in relation_errors
+    assert "target_kinds" in relation_errors
+    assert "allowed_claim_types" in relation_errors
+
+    bad_manifest = copy.deepcopy(json.loads(MANIFEST_PATH.read_text(encoding="utf-8")))
+    bad_manifest["source_snapshot"] = {}
+    bad_manifest["default_projection"] = {}
+    bad_manifest["provenance"] = {}
+    manifest_errors = "\n".join(_schema_errors(bad_manifest, view_manifest_schema))
+    assert "seed_sha256" in manifest_errors
+    assert "visible_node_ids" in manifest_errors
+    assert "hidden_node_ids" in manifest_errors
+    assert "generated" in manifest_errors
 
     bad_package = copy.deepcopy(json.loads(PACKAGE_PATH.read_text(encoding="utf-8")))
     bad_package["artifacts"][0]["sha256"] = "not-a-sha"

@@ -23,6 +23,18 @@
       ],
       "type": "object"
     },
+    "hidden_edge_ids": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "hidden_node_ids": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "id": {
       "minLength": 1,
       "type": "string"
@@ -38,6 +50,18 @@
     "max_resolution": {
       "minimum": 1,
       "type": "integer"
+    },
+    "source_snapshot": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "state_mode": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "validation_status": {
+      "minLength": 1,
+      "type": "string"
     },
     "visible_edge_ids": {
       "items": {
@@ -79,8 +103,13 @@
     "visible_statuses",
     "max_resolution",
     "layout",
+    "state_mode",
     "visible_node_ids",
     "visible_edge_ids",
+    "hidden_node_ids",
+    "hidden_edge_ids",
+    "validation_status",
+    "source_snapshot",
     "aggregation"
   ],
   "title": "System dynamics map lens",

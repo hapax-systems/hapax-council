@@ -111,8 +111,13 @@ LENS_REQUIRED = [
     "visible_statuses",
     "max_resolution",
     "layout",
+    "state_mode",
     "visible_node_ids",
     "visible_edge_ids",
+    "hidden_node_ids",
+    "hidden_edge_ids",
+    "validation_status",
+    "source_snapshot",
     "aggregation",
 ]
 RELATION_VOCABULARY_REQUIRED = ["schema", "relations"]
@@ -863,8 +868,13 @@ def generate_schema_artifacts() -> dict[Path, str]:
         "visible_statuses": _string_array_schema(enum=STATUS_KINDS),
         "max_resolution": {"type": "integer", "minimum": 1},
         "layout": {"type": "string", "minLength": 1},
+        "state_mode": {"type": "string", "minLength": 1},
         "visible_node_ids": _string_array_schema(),
         "visible_edge_ids": _string_array_schema(),
+        "hidden_node_ids": _string_array_schema(),
+        "hidden_edge_ids": _string_array_schema(),
+        "validation_status": {"type": "string", "minLength": 1},
+        "source_snapshot": {"type": "string", "minLength": 1},
         "aggregation": {
             "type": "object",
             "required": ["mode", "lossy", "reversible"],
@@ -887,13 +897,27 @@ def generate_schema_artifacts() -> dict[Path, str]:
             "type": "array",
             "items": {
                 "type": "object",
-                "required": ["id", "iri", "category", "directionality", "edge_ids"],
+                "required": [
+                    "id",
+                    "iri",
+                    "category",
+                    "directionality",
+                    "source_kinds",
+                    "target_kinds",
+                    "allowed_claim_types",
+                    "layers",
+                    "edge_ids",
+                ],
                 "additionalProperties": True,
                 "properties": {
                     "id": {"type": "string", "minLength": 1},
                     "iri": {"type": "string", "format": "uri"},
                     "category": {"type": "string", "minLength": 1},
                     "directionality": {"type": "string", "enum": ["directed"]},
+                    "source_kinds": _string_array_schema(),
+                    "target_kinds": _string_array_schema(),
+                    "allowed_claim_types": _string_array_schema(enum=STATUS_KINDS),
+                    "layers": _string_array_schema(),
                     "edge_ids": _string_array_schema(),
                 },
             },
@@ -907,9 +931,116 @@ def generate_schema_artifacts() -> dict[Path, str]:
         "schema": {"type": "string", "const": "system-dynamics-map-view-manifest-v1"},
         "map_id": {"type": "string", "minLength": 1},
         "version": {"type": "string", "minLength": 1},
-        "source_snapshot": {"type": "object"},
-        "default_projection": {"type": "object"},
-        "provenance": {"type": "object"},
+        "source_snapshot": {
+            "type": "object",
+            "required": [
+                "seed",
+                "seed_sha256",
+                "node_count",
+                "edge_count",
+                "canonical_graph",
+                "claims",
+                "observations",
+                "relations",
+                "lenses",
+                "shacl_shapes",
+            ],
+            "additionalProperties": True,
+            "properties": {
+                "seed": {"type": "string", "minLength": 1},
+                "seed_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "node_count": {"type": "integer", "minimum": 1},
+                "edge_count": {"type": "integer", "minimum": 1},
+                "canonical_graph": {"type": "string", "minLength": 1},
+                "claims": {"type": "string", "minLength": 1},
+                "observations": {"type": "string", "minLength": 1},
+                "relations": {"type": "string", "minLength": 1},
+                "lenses": {"type": "string", "minLength": 1},
+                "shacl_shapes": {"type": "string", "minLength": 1},
+            },
+        },
+        "default_projection": {
+            "type": "object",
+            "required": [
+                "lens",
+                "default_focus",
+                "visible_node_ids",
+                "hidden_node_ids",
+                "visible_edge_ids",
+                "hidden_edge_ids",
+                "visible_layers",
+                "visible_statuses",
+                "layout",
+                "resolution",
+                "aggregation",
+                "viewer",
+                "runtime_asset",
+                "runtime_asset_sri",
+            ],
+            "additionalProperties": True,
+            "properties": {
+                "lens": {"type": "string", "minLength": 1},
+                "default_focus": {"type": "string", "minLength": 1},
+                "visible_node_ids": _string_array_schema(),
+                "hidden_node_ids": _string_array_schema(),
+                "visible_edge_ids": _string_array_schema(),
+                "hidden_edge_ids": _string_array_schema(),
+                "visible_layers": _string_array_schema(),
+                "visible_statuses": _string_array_schema(enum=STATUS_KINDS),
+                "layout": {"type": "string", "minLength": 1},
+                "resolution": {"type": "integer", "minimum": 1},
+                "aggregation": {
+                    "type": "object",
+                    "required": ["mode", "lossy", "reversible"],
+                },
+                "viewer": {"type": "string", "minLength": 1},
+                "runtime_asset": {"type": "string", "minLength": 1},
+                "runtime_asset_sri": {"type": "string", "minLength": 1},
+            },
+        },
+        "lenses": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "label",
+                    "layout",
+                    "state_mode",
+                    "visible_node_count",
+                    "visible_edge_count",
+                    "aggregation",
+                ],
+                "additionalProperties": True,
+                "properties": {
+                    "id": {"type": "string", "minLength": 1},
+                    "label": {"type": "string", "minLength": 1},
+                    "layout": {"type": "string", "minLength": 1},
+                    "state_mode": {"type": "string", "minLength": 1},
+                    "visible_node_count": {"type": "integer", "minimum": 0},
+                    "visible_edge_count": {"type": "integer", "minimum": 0},
+                    "aggregation": {"type": "object"},
+                },
+            },
+        },
+        "claim_contract": {
+            "type": "object",
+            "required": ["claim_count", "claims", "observation_count", "relation_count"],
+        },
+        "validation": {
+            "type": "object",
+            "required": ["pytest", "browser", "package_gate"],
+        },
+        "provenance": {
+            "type": "object",
+            "required": ["activity", "agent", "generated", "used"],
+            "properties": {
+                "activity": {"type": "string", "format": "uri"},
+                "agent": {"type": "string", "minLength": 1},
+                "generated": _string_array_schema(),
+                "used": _string_array_schema(),
+            },
+        },
     }
 
     package_schema = _schema_object(
@@ -1487,7 +1618,10 @@ def _contract_errors(
     if "entrypoint" in seed:
         errors.append("seed: entrypoint is not allowed. Fix by using source-neutral default_focus.")
     if seed.get("default_focus") not in node_set:
-        errors.append("seed: default_focus must name an existing node.")
+        errors.append(
+            "seed: default_focus must name an existing node. "
+            "Fix by setting default_focus to a stable nodes[].id."
+        )
     for label, values in (("nodes", node_ids), ("edges", edge_ids), ("layers", layer_ids)):
         if len(values) != len(set(values)):
             errors.append(
@@ -1502,13 +1636,20 @@ def _contract_errors(
                 "Fix by moving observed state into system-dynamics-map.observations.jsonl."
             )
         if node.get("layer") not in layer_set:
-            errors.append(f"seed node {node.get('id')}: undeclared layer {node.get('layer')!r}.")
+            errors.append(
+                f"seed node {node.get('id')}: undeclared layer {node.get('layer')!r}. "
+                "Fix by using a declared layers[].id."
+            )
         if node.get("status") not in statuses:
-            errors.append(f"seed node {node.get('id')}: undeclared status {node.get('status')!r}.")
+            errors.append(
+                f"seed node {node.get('id')}: undeclared status {node.get('status')!r}. "
+                "Fix by using a declared status_kinds[] value."
+            )
         for doc in node.get("docs", []):
             if not _safe_url(doc.get("url", "")):
                 errors.append(
-                    f"seed node {node.get('id')}: unsafe documentation URL {doc.get('url')!r}."
+                    f"seed node {node.get('id')}: unsafe documentation URL {doc.get('url')!r}. "
+                    "Fix by using an absolute https:// documentation URL without whitespace."
                 )
 
     relation_bundle = relation_vocabulary
@@ -1521,7 +1662,8 @@ def _contract_errors(
                 "relations": [],
             }
             errors.append(
-                f"relation vocabulary: cannot derive from invalid seed edge endpoint {exc}."
+                f"relation vocabulary: cannot derive from invalid seed edge endpoint {exc}. "
+                "Fix by correcting edge.source/edge.target before generating relations."
             )
     errors.extend(
         _missing_required_errors(
@@ -1536,26 +1678,46 @@ def _contract_errors(
                 "Fix by moving observed state into system-dynamics-map.observations.jsonl."
             )
         if edge.get("source") not in node_set:
-            errors.append(f"seed edge {edge.get('id')}: missing source {edge.get('source')!r}.")
+            errors.append(
+                f"seed edge {edge.get('id')}: missing source {edge.get('source')!r}. "
+                "Fix by using an existing source nodes[].id."
+            )
         if edge.get("target") not in node_set:
-            errors.append(f"seed edge {edge.get('id')}: missing target {edge.get('target')!r}.")
+            errors.append(
+                f"seed edge {edge.get('id')}: missing target {edge.get('target')!r}. "
+                "Fix by using an existing target nodes[].id."
+            )
         if edge.get("layer") not in layer_set:
-            errors.append(f"seed edge {edge.get('id')}: undeclared layer {edge.get('layer')!r}.")
+            errors.append(
+                f"seed edge {edge.get('id')}: undeclared layer {edge.get('layer')!r}. "
+                "Fix by using a declared layers[].id."
+            )
         if edge.get("status") not in statuses:
-            errors.append(f"seed edge {edge.get('id')}: undeclared status {edge.get('status')!r}.")
+            errors.append(
+                f"seed edge {edge.get('id')}: undeclared status {edge.get('status')!r}. "
+                "Fix by using a declared status_kinds[] value."
+            )
         if edge.get("relation") not in relation_ids:
             errors.append(
-                f"seed edge {edge.get('id')}: undeclared relation {edge.get('relation')!r}."
+                f"seed edge {edge.get('id')}: undeclared relation {edge.get('relation')!r}. "
+                "Fix by regenerating system-dynamics-map.relations.json from the seed."
             )
         confidence = edge.get("confidence")
         if not isinstance(confidence, int | float) or isinstance(confidence, bool):
-            errors.append(f"seed edge {edge.get('id')}: confidence must be numeric.")
+            errors.append(
+                f"seed edge {edge.get('id')}: confidence must be numeric. "
+                "Fix by using a JSON number between 0 and 1."
+            )
         elif not 0 <= confidence <= 1:
-            errors.append(f"seed edge {edge.get('id')}: confidence must be between 0 and 1.")
+            errors.append(
+                f"seed edge {edge.get('id')}: confidence must be between 0 and 1. "
+                "Fix by using a confidence value in the inclusive 0..1 range."
+            )
         for doc in edge.get("docs", []):
             if not _safe_url(doc.get("url", "")):
                 errors.append(
-                    f"seed edge {edge.get('id')}: unsafe documentation URL {doc.get('url')!r}."
+                    f"seed edge {edge.get('id')}: unsafe documentation URL {doc.get('url')!r}. "
+                    "Fix by using an absolute https:// documentation URL without whitespace."
                 )
 
     claim_items = (claims or generate_claims(seed))["claims"]
@@ -1570,10 +1732,16 @@ def _contract_errors(
             _missing_required_errors(f"claim {claim.get('id', '<missing>')}", claim, CLAIM_REQUIRED)
         )
         if claim.get("claim_type") != "asserted" and not claim.get("provenance"):
-            errors.append(f"claim {claim.get('id')}: non-asserted claim lacks provenance.")
+            errors.append(
+                f"claim {claim.get('id')}: non-asserted claim lacks provenance. "
+                "Fix by attaching provenance for generated, inferred, rendered, or candidate claims."
+            )
         provenance = claim.get("provenance")
         if not isinstance(provenance, dict):
-            errors.append(f"claim {claim.get('id')}: provenance must be an object.")
+            errors.append(
+                f"claim {claim.get('id')}: provenance must be an object. "
+                "Fix by using a provenance object with source_ref, source_hash, agent, and activity."
+            )
         else:
             for field in (
                 "source_ref",
@@ -1584,16 +1752,28 @@ def _contract_errors(
                 "authority_ceiling",
             ):
                 if not provenance.get(field):
-                    errors.append(f"claim {claim.get('id')}: provenance missing {field}.")
+                    errors.append(
+                        f"claim {claim.get('id')}: provenance missing {field}. "
+                        "Fix by preserving the complete provenance record."
+                    )
         score = claim.get("confidence_basis", {}).get("score")
         if not isinstance(score, int | float) or isinstance(score, bool) or not 0 <= score <= 1:
-            errors.append(f"claim {claim.get('id')}: confidence_basis.score must be 0..1.")
+            errors.append(
+                f"claim {claim.get('id')}: confidence_basis.score must be 0..1. "
+                "Fix by using a JSON number in the inclusive 0..1 range."
+            )
 
     observation_items = observations if observations is not None else generate_observations(seed)
     if not observation_items:
-        errors.append("observations: at least one temporal observation is required.")
+        errors.append(
+            "observations: at least one temporal observation is required. "
+            "Fix by adding an observation record or regenerating observations."
+        )
     if not any(item.get("freshness") == "stale" for item in observation_items):
-        errors.append("observations: stale-state canary missing.")
+        errors.append(
+            "observations: stale-state canary missing. "
+            "Fix by preserving a stale observation canary for expiry-path validation."
+        )
     for observation in observation_items:
         observation_id = observation.get("id", "<missing>")
         errors.extend(
@@ -1612,9 +1792,15 @@ def _contract_errors(
         valid_from = valid_time.get("from")
         valid_to = valid_time.get("to")
         if not observation.get("observed_at"):
-            errors.append(f"observation {observation_id}: missing observed_at.")
+            errors.append(
+                f"observation {observation_id}: missing observed_at. "
+                "Fix by adding the observation capture timestamp."
+            )
         if not valid_from:
-            errors.append(f"observation {observation_id}: missing valid_time.from.")
+            errors.append(
+                f"observation {observation_id}: missing valid_time.from. "
+                "Fix by adding the start of the observation validity interval."
+            )
         if valid_from and valid_to and valid_from > valid_to:
             errors.append(
                 f"observation {observation_id}: invalid valid_time interval. "
@@ -1685,7 +1871,10 @@ def _contract_errors(
     lens_bundle = lenses or generate_lenses(seed)
     lens_ids = {lens["id"] for lens in lens_bundle["lenses"]}
     if lens_bundle.get("default_lens") not in lens_ids:
-        errors.append("lenses: default_lens must name an existing lens.")
+        errors.append(
+            "lenses: default_lens must name an existing lens. "
+            "Fix by setting default_lens to one of lenses[].id."
+        )
     for lens in lens_bundle["lenses"]:
         lens_id = lens.get("id", "<missing>")
         errors.extend(_missing_required_errors(f"lens {lens_id}", lens, LENS_REQUIRED))
@@ -1694,13 +1883,25 @@ def _contract_errors(
         unknown_nodes = set(lens.get("visible_node_ids", [])) - node_set
         unknown_edges = set(lens.get("visible_edge_ids", [])) - edge_set
         if unknown_layers:
-            errors.append(f"lens {lens_id}: unknown layers {sorted(unknown_layers)}.")
+            errors.append(
+                f"lens {lens_id}: unknown layers {sorted(unknown_layers)}. "
+                "Fix by using declared layers[].id values."
+            )
         if unknown_statuses:
-            errors.append(f"lens {lens_id}: unknown statuses {sorted(unknown_statuses)}.")
+            errors.append(
+                f"lens {lens_id}: unknown statuses {sorted(unknown_statuses)}. "
+                "Fix by using declared status_kinds[] values."
+            )
         if unknown_nodes:
-            errors.append(f"lens {lens_id}: unknown nodes {sorted(unknown_nodes)}.")
+            errors.append(
+                f"lens {lens_id}: unknown nodes {sorted(unknown_nodes)}. "
+                "Fix by using visible/hidden node IDs from seed nodes[].id."
+            )
         if unknown_edges:
-            errors.append(f"lens {lens_id}: unknown edges {sorted(unknown_edges)}.")
+            errors.append(
+                f"lens {lens_id}: unknown edges {sorted(unknown_edges)}. "
+                "Fix by using visible/hidden edge IDs from seed edges[].id."
+            )
         visible_nodes = set(lens.get("visible_node_ids", []))
         for edge in seed["edges"]:
             if edge["id"] in set(lens.get("visible_edge_ids", [])) and (
