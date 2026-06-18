@@ -1278,6 +1278,29 @@ class TestFamilyOutageDegradation:
         assert entries[0]["degraded_family_outage"] == ["claude"]
         assert entries[0]["degraded_family_outage_witness"] == {"claude": now}
 
+    def test_degraded_review_floor_accept_writes_receipt_against_dispatcher_witness(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        now = "2026-06-12T21:00:00+00:00"
+        state.write_text(json.dumps({"claude": now}), encoding="utf-8")
+
+        result, _, _, note = _review(
+            tmp_path,
+            now_iso=now,
+            task_kwargs={
+                "risk_tier": "T1",
+                "quality_floor": "frontier_review_required",
+            },
+            gh=FakeGh(files=["shared/foo.py", "tests/test_foo.py"]),
+        )
+
+        assert result["dossier"]["review_team_verdict"] == "quorum-accept"
+        assert result["dossier"]["degraded_family_outage"] == ["claude"]
+        receipt_path = note.parent / "task-a.acceptance.yaml"
+        assert result["side_effects"]["receipt_path"] == str(receipt_path)
+        assert receipt_path.is_file()
+
     def test_degraded_ledger_is_idempotent_for_same_head(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:

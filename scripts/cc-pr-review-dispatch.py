@@ -740,6 +740,7 @@ def write_acceptance_receipt_if_due(
     pr_number: int | None = None,
     changed_files: tuple[str, ...] | None = None,
     changed_file_count: int | None = None,
+    outage_state_path: Path | None = None,
 ) -> Path | None:
     """The dossier IS the acceptance receipt for review-floor tasks (spec §5).
 
@@ -756,6 +757,8 @@ def write_acceptance_receipt_if_due(
         pr_number=pr_number,
         changed_files=changed_files or (),
         changed_file_count=changed_file_count,
+        outage_state_path=outage_state_path or FAMILY_OUTAGE_STATE,
+        admission_time=now_iso,
     )
     if blockers:
         LOG.warning("acceptance receipt withheld; review-team gate blocks: %s", ",".join(blockers))
@@ -877,6 +880,7 @@ def replay_dossier_side_effects(
     send_runner: Any,
     changed_files: tuple[str, ...] | None = None,
     changed_file_count: int | None = None,
+    outage_state_path: Path | None = None,
 ) -> dict[str, Any]:
     """Idempotently replay side effects derived from an already-written dossier."""
 
@@ -891,6 +895,7 @@ def replay_dossier_side_effects(
         pr_number=pr_number,
         changed_files=changed_files,
         changed_file_count=changed_file_count,
+        outage_state_path=outage_state_path,
     )
     wake_path = None
     has_block = any(str(r.get("verdict")) == "block" for r in dossier.get("reviewers") or [])
