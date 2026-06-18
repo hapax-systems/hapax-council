@@ -1926,6 +1926,8 @@ def _quota_freshness_green(request: DispatchRequest) -> bool:
         quota = request.quota
         if quota is None or not quota.available:
             return False
+        if quota.budget_ledger_stale is not False:
+            return False
         if quota is not None:
             route_state = quota.route_subscription_quota_state
             if route_state is not None and route_state != "fresh":
@@ -2297,6 +2299,8 @@ def _subscription_quota_hold_reasons(
     quota = request.quota
     if quota is None or not quota.available:
         return ("subscription_route_quota_unavailable",)
+    if quota.budget_ledger_stale is not False:
+        return ("subscription_quota_ledger_stale",)
     route_state = quota.route_subscription_quota_state
     if route_state is None:
         if _requires_route_specific_subscription_quota(capability.route_id):

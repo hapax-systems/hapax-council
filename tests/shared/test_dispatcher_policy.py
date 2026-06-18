@@ -568,6 +568,30 @@ def test_glmcp_subscription_route_missing_quota_is_not_fresh_green() -> None:
     assert "subscription_route_quota_unavailable" in decision.reason_codes
 
 
+def test_glmcp_subscription_route_holds_when_live_quota_ledger_stale() -> None:
+    request = _request(
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        route_id="glmcp.review.direct",
+        capability=_capability(route_id="glmcp.review.direct"),
+        quota=_quota(
+            budget_ledger_stale=True,
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="fresh",
+            route_quota_evidence_refs=("relay-receipt:glmcp-quota-admission.yaml",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.route_policy_green is False
+    assert decision.quota_freshness_green is False
+    assert "subscription_quota_ledger_stale" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
 def test_glmcp_subscription_route_launches_with_fresh_route_quota() -> None:
     request = _request(
         platform="glmcp",
