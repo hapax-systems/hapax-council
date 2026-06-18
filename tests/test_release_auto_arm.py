@@ -151,6 +151,20 @@ def test_pass_backed_runtime_secret_rejects_traversing_pass_entry() -> None:
     assert "risk_flag:privacy_or_secret_sensitive" in assessment.blockers
 
 
+def test_pass_backed_runtime_secret_rejects_non_glmcp_pass_entry() -> None:
+    fm = _eligible_frontmatter(
+        title="Activate GLMCP GLM-5.2 lane with pass-backed secret",
+        pass_backed_secret_only=True,
+        no_secret_value_storage=True,
+        secret_entry="other/api-key",
+        subscription_quota_only=True,
+        supported_tools_only=True,
+    )
+    assessment = assess_release_auto_arm(fm)
+    assert assessment.eligible is False
+    assert "risk_flag:privacy_or_secret_sensitive" in assessment.blockers
+
+
 def test_pass_backed_runtime_secret_does_not_waive_explicit_privacy_flag() -> None:
     fm = _eligible_frontmatter(
         title="Activate GLMCP GLM-5.2 lane with pass-backed secret",

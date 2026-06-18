@@ -851,7 +851,7 @@ class TestReceiptAndWake:
         assert (note.parent / "task-a.acceptance.yaml").is_file()
 
     def test_gate_rejected_dossier_does_not_write_acceptance_receipt(self, tmp_path: Path) -> None:
-        reviewers = RecordingReviewers(replies={"codex": BLOCK_REPLY})
+        reviewers = RecordingReviewers(replies={"glm": BLOCK_REPLY})
         result, _, _, note = _review(
             tmp_path,
             task_kwargs={"quality_floor": "frontier_review_required"},
@@ -946,7 +946,7 @@ class TestReceiptAndWake:
 
     def test_block_with_critical_fires_auto_wake(self, tmp_path: Path) -> None:
         sent: list[list[str]] = []
-        reviewers = RecordingReviewers(replies={"codex": BLOCK_REPLY})
+        reviewers = RecordingReviewers(replies={"glm": BLOCK_REPLY})
         result, _, _, note = _review(
             tmp_path,
             reviewers=reviewers,
