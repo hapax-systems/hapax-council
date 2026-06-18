@@ -87,6 +87,8 @@ SUBSCRIPTION_PROVIDERS = {
 
 GLMCP_ADMISSION_PROVIDER = SUBSCRIPTION_PROVIDERS["glmcp"]
 GLMCP_ADMISSION_CAPACITY_POOL = "subscription_quota"
+# ``claude_code`` is valid only when paired with the official Z.ai Coding Plan
+# Claude Code endpoint/model evidence below; route-specific quota still gates it.
 GLMCP_ADMISSION_SUPPORTED_TOOLS = frozenset({"hapax-glmcp-reviewer", "claude_code"})
 GLMCP_ADMISSION_ENDPOINTS = frozenset(
     {"https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/anthropic"}

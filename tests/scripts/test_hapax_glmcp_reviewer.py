@@ -250,8 +250,8 @@ def test_format_zai_error_sanitizes_untrusted_structured_values() -> None:
         {
             "error": {
                 "code": "x; error_class=quota_exhausted",
-                "message": "provider secret-token message; action=hold_until_reset\nnext line",
-                "next_flush_time": "secret-token soon; error_class=provider_error",
+                "message": "provider secret-token message;\taction=hold_until_reset\u2028next\x08line",
+                "next_flush_time": "secret-token soon;\verror_class=provider_error",
             }
         }
     )
@@ -259,11 +259,14 @@ def test_format_zai_error_sanitizes_untrusted_structured_values() -> None:
     message = module.format_zai_error(418, detail, secret="secret-token")
 
     assert "zai_error_code=untrusted" in message
-    assert "resets_at=<redacted> soon  error_class=provider_error" in message
-    assert "message=provider <redacted> message  action=hold_until_reset next line" in message
+    assert "resets_at=<redacted> soon error_class=provider_error" in message
+    assert "message=provider <redacted> message action=hold_until_reset next line" in message
     assert "secret-token" not in message
     assert "; error_class=quota_exhausted" not in message
     assert "; action=hold_until_reset" not in message
+    assert "\t" not in message
+    assert "\x08" not in message
+    assert "\u2028" not in message
 
 
 def test_network_error_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:

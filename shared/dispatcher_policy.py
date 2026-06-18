@@ -1924,6 +1924,8 @@ def _quota_freshness_green(request: DispatchRequest) -> bool:
         and capability.freshness_ok
     ):
         quota = request.quota
+        if quota is None or not quota.available:
+            return False
         if quota is not None:
             route_state = quota.route_subscription_quota_state
             if route_state is not None and route_state != "fresh":

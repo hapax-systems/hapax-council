@@ -244,10 +244,11 @@ _RESET_RE = re.compile(
     re.IGNORECASE,
 )
 _ZAI_CODE_RE = re.compile(r"\A\d{3,8}\Z")
+_STRUCTURED_VALUE_SEPARATOR_RE = re.compile(r"[;\s\x00-\x1f\x7f-\x9f\u2028\u2029]+")
 
 
 def safe_structured_value(value: str, *, max_chars: int) -> str:
-    return re.sub(r"[;\r\n]+", " ", value).strip()[:max_chars]
+    return _STRUCTURED_VALUE_SEPARATOR_RE.sub(" ", value).strip()[:max_chars]
 
 
 _ZAI_ERROR_CLASS_BY_CODE = {

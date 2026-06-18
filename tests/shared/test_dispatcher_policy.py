@@ -550,6 +550,24 @@ def test_glmcp_subscription_route_holds_when_route_quota_unknown() -> None:
     assert "route_subscription_quota_state:unknown" in decision.reason_codes
 
 
+def test_glmcp_subscription_route_missing_quota_is_not_fresh_green() -> None:
+    request = _request(
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        route_id="glmcp.review.direct",
+        capability=_capability(route_id="glmcp.review.direct"),
+        quota=None,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.route_policy_green is False
+    assert decision.quota_freshness_green is False
+    assert "subscription_route_quota_unavailable" in decision.reason_codes
+
+
 def test_glmcp_subscription_route_launches_with_fresh_route_quota() -> None:
     request = _request(
         platform="glmcp",
