@@ -339,15 +339,16 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         config = load_config()
-        api_key = read_secret(config.secret_entry)
         if check_only:
+            read_secret(config.secret_entry)
             print(
                 "hapax-glmcp-reviewer: ok "
-                f"secret_entry={config.secret_entry} base_url={config.base_url} "
-                f"model={config.model} thinking={config.thinking} "
+                f"secret=available base_url={config.base_url} model={config.model} "
+                f"thinking={config.thinking} "
                 f"timeout_seconds={config.timeout_seconds:g}"
             )
             return 0
+        api_key = read_secret(config.secret_entry)
         prompt = sys.stdin.read()
         if not prompt.strip():
             raise ConfigError("stdin prompt is empty; pipe a rendered review prompt on stdin")

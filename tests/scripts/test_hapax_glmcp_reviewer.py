@@ -358,7 +358,8 @@ def test_check_mode_does_not_print_secret(
     captured = capsys.readouterr()
     assert rc == 0
     assert "hapax-glmcp-reviewer: ok" in captured.out
-    assert "glmcp/api-key" in captured.out
+    assert "secret=available" in captured.out
+    assert "glmcp/api-key" not in captured.out
     assert "test-secret-token" not in captured.out
     assert "test-secret-token" not in captured.err
 
