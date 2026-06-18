@@ -615,8 +615,10 @@ def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) 
     if namespace_claim and _line_literal_claim_refuted(finding, source):
         return False
     rdf_format = _rdf_parse_format(path)
-    if rdf_format is not None:
+    if rdf_format is not None and syntax_claim:
         return not _rdf_parses_clean(path, rdf_format)
+    if rdf_format is not None:
+        return True
     if path.suffix != ".py":
         return True  # cannot verify this syntax claim class — keep (conservative)
     if not syntax_claim:

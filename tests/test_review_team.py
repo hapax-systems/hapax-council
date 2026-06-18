@@ -1420,6 +1420,21 @@ class TestGoGate:
         f["detail"] = "The namespace directive was replaced by `@bad/path.py`."
         assert rt.verify_literal_defect_critical(f, tmp_path) is False
 
+    def test_parseable_rdf_namespace_contract_semantic_claim_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path,
+            "docs/semantic.ttl",
+            "@prefix wrong: <https://example.test/wrong/> .\nwrong:s wrong:p wrong:o .\n",
+        )
+        f = self._lit(
+            "Invalid RDF namespace contract",
+            file="docs/semantic.ttl",
+            line=1,
+        )
+        f["detail"] = "The namespace IRI violates the documented semantic contract."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
     def test_real_turtle_parse_error_is_verified(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         self._py(tmp_path, "docs/bad.ttl", "@prefix ex: <https://example.test/> .\nex:s ex:p\n")
