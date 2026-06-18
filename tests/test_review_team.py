@@ -1420,6 +1420,19 @@ class TestGoGate:
         f["detail"] = "The namespace directive was replaced by `@bad/path.py`."
         assert rt.verify_literal_defect_critical(f, tmp_path) is False
 
+    def test_malformed_turtle_namespace_claim_with_absent_literal_is_kept(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "docs/bad.ttl", "@prefix ex: <https://example.test/> .\nex:s ex:p\n")
+        f = self._lit(
+            "Corrupted RDF namespace directive",
+            file="docs/bad.ttl",
+            line=1,
+        )
+        f["detail"] = "The namespace directive was replaced by `@bad/path.py`."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
     def test_parseable_rdf_namespace_contract_semantic_claim_is_kept(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         self._py(
