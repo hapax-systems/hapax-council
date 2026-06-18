@@ -1,0 +1,93 @@
+{
+  "$id": "https://hapax.local/schema/system-dynamics-map/observation.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "expires_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "freshness": {
+      "enum": [
+        "fresh",
+        "stale",
+        "historical"
+      ],
+      "type": "string"
+    },
+    "id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "source_hash": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "source_ref": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "state": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "subject": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "transaction_time": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "valid_time": {
+      "additionalProperties": true,
+      "properties": {
+        "from": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "to": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "id",
+    "subject",
+    "state",
+    "observed_at",
+    "valid_time",
+    "transaction_time",
+    "expires_at",
+    "freshness",
+    "source_ref",
+    "source_hash"
+  ],
+  "title": "System dynamics temporal observation",
+  "type": "object"
+}

@@ -1,0 +1,185 @@
+{
+  "$id": "https://hapax.local/schema/system-dynamics-map/seed.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "authority_case": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "default_focus": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "edges": {
+      "items": {
+        "additionalProperties": true,
+        "properties": {
+          "confidence": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "docs": {
+            "minItems": 1,
+            "type": "array"
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "layer": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "relation": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "resolution": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "source": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "asserted",
+              "inferred",
+              "observed",
+              "simulated",
+              "rendered",
+              "candidate"
+            ],
+            "type": "string"
+          },
+          "target": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "target",
+          "relation",
+          "layer",
+          "resolution",
+          "status",
+          "confidence",
+          "docs"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "map_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "nodes": {
+      "items": {
+        "additionalProperties": true,
+        "properties": {
+          "docs": {
+            "items": {
+              "properties": {
+                "label": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "url": {
+                  "format": "uri",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label",
+                "url"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "label": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "layer": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "resolution": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "asserted",
+              "inferred",
+              "observed",
+              "simulated",
+              "rendered",
+              "candidate"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "kind",
+          "layer",
+          "resolution",
+          "status",
+          "docs"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "status_kinds": {
+      "items": {
+        "enum": [
+          "asserted",
+          "inferred",
+          "observed",
+          "simulated",
+          "rendered",
+          "candidate"
+        ],
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "version": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "map_id",
+    "version",
+    "generated_at",
+    "authority_case",
+    "default_focus",
+    "nodes",
+    "edges"
+  ],
+  "title": "System dynamics map seed",
+  "type": "object"
+}

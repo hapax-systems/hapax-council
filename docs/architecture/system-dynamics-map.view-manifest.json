@@ -1,5 +1,11 @@
 {
-  "authority_case": "CASE-SYSTEM-DYNAMICS-MAP-20260618",
+  "authority_case": "CASE-SYSTEM-DYNAMICS-MAP-V1-ENHANCEMENT-20260618",
+  "claim_contract": {
+    "claim_count": 77,
+    "claims": "system-dynamics-map.claims.json",
+    "observation_count": 6,
+    "relation_count": 36
+  },
   "claim_partitions": [
     "asserted",
     "inferred",
@@ -9,12 +15,64 @@
     "candidate"
   ],
   "default_projection": {
+    "aggregation": {
+      "lossy": false,
+      "mode": "none",
+      "reversible": true
+    },
     "default_focus": "rdf-owl-kg",
+    "hidden_edge_ids": [],
+    "hidden_node_ids": [],
     "layout": "cose",
+    "lens": "topology",
     "resolution": 5,
     "runtime_asset": "vendor/cytoscape-3.34.0.min.js",
     "runtime_asset_sri": "sha384-K+k+ywfDuvV9dwg+bwsVE0WGkrTnqFamaER+ydBgMFQTtlI0jdI9no9AjkQHwh/T",
     "viewer": "system-dynamics-map-viewer.html",
+    "visible_edge_ids": [
+      "api-to-cloudevents",
+      "api-to-otel",
+      "api-to-trace-context",
+      "archimate-to-kg",
+      "archimate-to-runtime-topology",
+      "bpmn-to-decision-service",
+      "bpmn-to-kg",
+      "c4-to-decision-api",
+      "claim-to-review-dossier",
+      "cmmn-to-decision-service",
+      "decision-service-to-api",
+      "decision-table-to-rule-engine",
+      "dmn-to-decision-service",
+      "dmn-to-decision-table",
+      "dmn-to-drd",
+      "dmn-to-feel",
+      "dmn-to-kg",
+      "dmn-to-sbvr",
+      "dmn-to-xml-di",
+      "feel-to-rule-engine",
+      "kg-to-jsonld",
+      "kg-to-prov",
+      "kg-to-shacl",
+      "kg-to-view-manifest",
+      "model-artifacts-to-decision-service",
+      "operating-lens-to-sdlc",
+      "otel-to-kg",
+      "pr-ci-to-merge-release",
+      "prov-to-review-dossier",
+      "prov-to-view-manifest",
+      "review-dossier-to-pr-ci",
+      "sdlc-intake-to-claim",
+      "shacl-to-view-manifest",
+      "state-to-kg",
+      "state-to-scxml",
+      "state-to-xes",
+      "sysml-to-kg",
+      "sysml-to-model-artifacts",
+      "temporal-state-to-sdlc",
+      "view-to-cytoscape",
+      "view-to-react-flow",
+      "view-to-sigma"
+    ],
     "visible_layers": [
       "source-models",
       "decision-modeling",
@@ -23,41 +81,129 @@
       "observation-state",
       "projection"
     ],
+    "visible_node_ids": [
+      "archimate",
+      "bpmn",
+      "c4-runtime",
+      "cc-task-claim",
+      "cloudevents",
+      "cmmn",
+      "cytoscape",
+      "decision-service",
+      "decision-table",
+      "dmn",
+      "dmn-xml-di",
+      "drd",
+      "feel",
+      "jsonld-trig",
+      "merge-release",
+      "model-artifacts",
+      "opentelemetry",
+      "operating-lens",
+      "pr-ci-checks",
+      "prov-o",
+      "rdf-owl-kg",
+      "react-flow",
+      "review-dossier",
+      "rule-engine",
+      "runtime-decision-api",
+      "sbvr",
+      "scxml-statecharts",
+      "sdlc-intake",
+      "shacl-contracts",
+      "sigma",
+      "sysml-v2",
+      "temporal-state-events",
+      "trace-context",
+      "view-manifest",
+      "xes-event-log"
+    ],
     "visible_statuses": [
       "asserted",
       "inferred",
-      "observed",
       "simulated",
       "rendered",
       "candidate"
     ]
   },
   "generated_at": "2026-06-18T00:00:00Z",
-  "map_id": "system-dynamics-map-v0",
+  "lenses": [
+    {
+      "aggregation": {
+        "lossy": false,
+        "mode": "none",
+        "reversible": true
+      },
+      "id": "topology",
+      "label": "Topology",
+      "layout": "cose",
+      "state_mode": "topology",
+      "visible_edge_count": 42,
+      "visible_node_count": 35
+    },
+    {
+      "aggregation": {
+        "lossy": false,
+        "mode": "path",
+        "reversible": true
+      },
+      "id": "operating-slice",
+      "label": "Operating Slice",
+      "layout": "breadthfirst",
+      "state_mode": "observed",
+      "visible_edge_count": 7,
+      "visible_node_count": 8
+    },
+    {
+      "aggregation": {
+        "lossy": false,
+        "mode": "evidence",
+        "reversible": true
+      },
+      "id": "evidence-risk",
+      "label": "Evidence Risk",
+      "layout": "cose",
+      "state_mode": "evidence",
+      "visible_edge_count": 7,
+      "visible_node_count": 7
+    }
+  ],
+  "map_id": "system-dynamics-map-v1",
   "provenance": {
-    "activity": "https://hapax.local/system-dynamics-map/v0/activity/materialize-v1",
+    "activity": "https://hapax.local/system-dynamics-map/v1/activity/materialize-v1",
     "agent": "scripts/system_dynamics_map_materialize.py",
     "generated": [
       "system-dynamics-map.canonical.trig",
       "system-dynamics-map.shacl.ttl",
-      "system-dynamics-map.view-manifest.json"
+      "system-dynamics-map.view-manifest.json",
+      "system-dynamics-map.claims.json",
+      "system-dynamics-map.package.json",
+      "system-dynamics-map.lock.json"
     ],
     "used": [
-      "system-dynamics-map.seed.json"
+      "system-dynamics-map.seed.json",
+      "system-dynamics-map.relations.json",
+      "system-dynamics-map.observations.jsonl",
+      "system-dynamics-map.lenses.json"
     ]
   },
   "schema": "system-dynamics-map-view-manifest-v1",
   "source_snapshot": {
     "canonical_graph": "system-dynamics-map.canonical.trig",
-    "edge_count": 35,
-    "node_count": 29,
+    "claims": "system-dynamics-map.claims.json",
+    "edge_count": 42,
+    "lenses": "system-dynamics-map.lenses.json",
+    "node_count": 35,
+    "observations": "system-dynamics-map.observations.jsonl",
+    "relations": "system-dynamics-map.relations.json",
     "seed": "system-dynamics-map.seed.json",
-    "seed_sha256": "3e76dd89ba001a306396f08ebb84d9a90d97eb74e3612f34fe05fc2bed8bd1b9",
+    "seed_sha256": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
     "shacl_shapes": "system-dynamics-map.shacl.ttl"
   },
   "validation": {
     "browser": "uv run --extra ci pytest tests/test_system_dynamics_map_viewer_playwright.py",
+    "package_gate": "scripts/system-dynamics-map-gate",
     "pytest": "uv run pytest tests/test_system_dynamics_map_artifacts.py"
   },
-  "version": "0.1.0"
+  "version": "1.0.0"
 }

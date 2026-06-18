@@ -1,0 +1,285 @@
+{
+  "$id": "https://hapax.local/schema/system-dynamics-map/view-manifest.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "claim_contract": {
+      "required": [
+        "claim_count",
+        "claims",
+        "observation_count",
+        "relation_count"
+      ],
+      "type": "object"
+    },
+    "default_projection": {
+      "additionalProperties": true,
+      "properties": {
+        "aggregation": {
+          "required": [
+            "mode",
+            "lossy",
+            "reversible"
+          ],
+          "type": "object"
+        },
+        "default_focus": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "hidden_edge_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "hidden_node_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "layout": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "lens": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "resolution": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "runtime_asset": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "runtime_asset_sri": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "viewer": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "visible_edge_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "visible_layers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "visible_node_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "visible_statuses": {
+          "items": {
+            "enum": [
+              "asserted",
+              "inferred",
+              "observed",
+              "simulated",
+              "rendered",
+              "candidate"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "lens",
+        "default_focus",
+        "visible_node_ids",
+        "hidden_node_ids",
+        "visible_edge_ids",
+        "hidden_edge_ids",
+        "visible_layers",
+        "visible_statuses",
+        "layout",
+        "resolution",
+        "aggregation",
+        "viewer",
+        "runtime_asset",
+        "runtime_asset_sri"
+      ],
+      "type": "object"
+    },
+    "lenses": {
+      "items": {
+        "additionalProperties": true,
+        "properties": {
+          "aggregation": {
+            "type": "object"
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "label": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "layout": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "state_mode": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "visible_edge_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "visible_node_count": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "layout",
+          "state_mode",
+          "visible_node_count",
+          "visible_edge_count",
+          "aggregation"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "map_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "provenance": {
+      "properties": {
+        "activity": {
+          "format": "uri",
+          "type": "string"
+        },
+        "agent": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "generated": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "used": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "activity",
+        "agent",
+        "generated",
+        "used"
+      ],
+      "type": "object"
+    },
+    "schema": {
+      "const": "system-dynamics-map-view-manifest-v1",
+      "type": "string"
+    },
+    "source_snapshot": {
+      "additionalProperties": true,
+      "properties": {
+        "canonical_graph": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "claims": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "edge_count": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "lenses": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "node_count": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "observations": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "relations": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "seed": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "seed_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "shacl_shapes": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "seed",
+        "seed_sha256",
+        "node_count",
+        "edge_count",
+        "canonical_graph",
+        "claims",
+        "observations",
+        "relations",
+        "lenses",
+        "shacl_shapes"
+      ],
+      "type": "object"
+    },
+    "validation": {
+      "required": [
+        "pytest",
+        "browser",
+        "package_gate"
+      ],
+      "type": "object"
+    },
+    "version": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "map_id",
+    "version",
+    "source_snapshot",
+    "default_projection",
+    "claim_contract",
+    "lenses",
+    "validation",
+    "provenance"
+  ],
+  "title": "System dynamics view manifest",
+  "type": "object"
+}

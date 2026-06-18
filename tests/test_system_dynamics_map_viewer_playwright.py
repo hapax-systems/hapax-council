@@ -69,9 +69,21 @@ def test_system_dynamics_viewer_core_interactions():
             page.locator("#cy canvas").first.wait_for(timeout=10_000)
             page.wait_for_function(
                 "window.systemDynamicsMapRuntime && "
-                "document.querySelector('#counts').textContent === '29 nodes / 35 edges'"
+                "document.querySelector('#counts').textContent === '35 nodes / 42 edges'"
             )
             page.wait_for_function(NONBLANK_CANVAS_SCRIPT, timeout=10_000)
+            assert page.evaluate("window.systemDynamicsMapRuntime.activeLens()") == "topology", (
+                "viewer did not load the persisted default topology lens. "
+                "Fix by loading system-dynamics-map.lenses.json before initializing filters."
+            )
+            assert set(page.evaluate("window.systemDynamicsMapRuntime.lensIds()")) == {
+                "topology",
+                "operating-slice",
+                "evidence-risk",
+            }, (
+                "viewer did not expose all persisted lenses. "
+                "Fix by keeping system-dynamics-map.lenses.json wired into renderLensControls()."
+            )
             assert page.evaluate("window.systemDynamicsMapRuntime.activeLayout()") == "cose", (
                 "viewer did not start on the force-directed overview layout. "
                 "Fix by keeping activeLayout initialized to cose."
@@ -90,7 +102,7 @@ def test_system_dynamics_viewer_core_interactions():
             )
 
             page.get_by_label("Search").fill("telemetry")
-            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes < 29")
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes < 35")
             filtered_counts = page.evaluate("window.systemDynamicsMapRuntime.visibleCounts()")
             assert filtered_counts["nodes"] >= 1, (
                 "search filter hid every telemetry match. "
@@ -108,9 +120,9 @@ def test_system_dynamics_viewer_core_interactions():
             )
 
             page.get_by_label("Search").fill("")
-            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 29")
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
             page.locator('input[data-filter="status"][value="candidate"]').uncheck()
-            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes < 29")
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes < 35")
             assert page.evaluate(
                 "window.systemDynamicsMapRuntime.visibleEdgesHaveVisibleEndpoints()"
             ), (
@@ -119,6 +131,34 @@ def test_system_dynamics_viewer_core_interactions():
             )
 
             page.locator('input[data-filter="status"][value="candidate"]').check()
+            page.get_by_label("Lens").select_option("operating-slice")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeLens() === 'operating-slice'"
+            )
+            operating_counts = page.evaluate("window.systemDynamicsMapRuntime.visibleCounts()")
+            assert operating_counts == {"nodes": 8, "edges": 7}, (
+                "operating-slice lens did not apply its persisted projection. "
+                "Fix by honoring visible_node_ids and visible_edge_ids in applyFilters()."
+            )
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.visibleEdgesHaveVisibleEndpoints()"
+            )
+            assert (
+                page.evaluate("window.systemDynamicsMapRuntime.observationsFor('cc-task-claim')")[
+                    0
+                ]["state"]
+                == "claimed"
+            ), (
+                "viewer did not load temporal observations for the SDLC claim node. "
+                "Fix by loading system-dynamics-map.observations.jsonl."
+            )
+            page.evaluate("window.systemDynamicsMapRuntime.selectNode('cc-task-claim')")
+            panel_text = page.locator("#panel").inner_text()
+            assert "STATE" in panel_text and "claimed" in panel_text
+            assert "CLAIMS" in panel_text and "declares_node" in panel_text
+
+            page.get_by_label("Lens").select_option("topology")
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
             page.get_by_role("button", name="Directed").click()
             page.wait_for_function(
                 "window.systemDynamicsMapRuntime.activeLayout() === 'breadthfirst'"

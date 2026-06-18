@@ -1,0 +1,113 @@
+{
+  "artifacts": [
+    {
+      "bytes": 53072,
+      "path": "docs/architecture/system-dynamics-map.seed.json",
+      "sha256": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e"
+    },
+    {
+      "bytes": 83184,
+      "path": "docs/architecture/system-dynamics-map-viewer.html",
+      "sha256": "f25d3e57908c1ee71416eb290a211830b477e5bf9c3af895d164edba7d08de25"
+    },
+    {
+      "bytes": 435328,
+      "path": "docs/architecture/vendor/cytoscape-3.34.0.min.js",
+      "sha256": "9c2a3bf2592e0b14a1f7bec07c03a54f16dedf32af9cd0af155c716aa6c87bc3"
+    },
+    {
+      "bytes": 1258,
+      "path": "docs/architecture/fixtures/system-dynamics-map/sdlc-operating-slice.json",
+      "sha256": "b405bf4be92d1a7e4fcecbb4ab640e3b9f9b2dedae73d22bcbcd2189b6b78c1f"
+    },
+    {
+      "bytes": 121880,
+      "path": "docs/architecture/system-dynamics-map.canonical.trig",
+      "sha256": "e193052bdd7f1cbfc4fe14dd65c311da54ebc7024ee3bc30e0916124204829dc"
+    },
+    {
+      "bytes": 85785,
+      "path": "docs/architecture/system-dynamics-map.claims.json",
+      "sha256": "b52f80e5eeb3b4cd8abf5b37e4a49b8e457bf823fa0ecdf838872b56ea1e641d"
+    },
+    {
+      "bytes": 9387,
+      "path": "docs/architecture/system-dynamics-map.lenses.json",
+      "sha256": "d7ef9c7773ad04c5d76597378414277089137028416e406559490e87512eef7f"
+    },
+    {
+      "bytes": 3375,
+      "path": "docs/architecture/system-dynamics-map.observations.jsonl",
+      "sha256": "ba0c66a9ba2f538642fd8629e45c04e93013d21b839051eb8506034335ee45dd"
+    },
+    {
+      "bytes": 24510,
+      "path": "docs/architecture/system-dynamics-map.relations.json",
+      "sha256": "382cdd0fa36e9a1cba9feea58d78d6c6280e1416092e704770d822fe912b0e9d"
+    },
+    {
+      "bytes": 4587,
+      "path": "docs/architecture/system-dynamics-map.shacl.ttl",
+      "sha256": "56c382e4afa373f2d989676e2f3d0c533d7fe91743b1893199cf19c4923e653b"
+    },
+    {
+      "bytes": 5602,
+      "path": "docs/architecture/system-dynamics-map.view-manifest.json",
+      "sha256": "eba1f4216f08012090ef9e381b1baa244b956be907cefcea3415c9bcae844ebc"
+    },
+    {
+      "bytes": 3369,
+      "path": "schemas/system-dynamics-map/claim-fragment.schema.json",
+      "sha256": "216e994c467405aecdc3f380184eae3915906e77f9cef909eceaf8ca96a19ccc"
+    },
+    {
+      "bytes": 2220,
+      "path": "schemas/system-dynamics-map/lens.schema.json",
+      "sha256": "e21cb9a38417749768eab11d0ce1fc847395cd3010883f61c04eab1ce2a5b9ee"
+    },
+    {
+      "bytes": 1757,
+      "path": "schemas/system-dynamics-map/observation.schema.json",
+      "sha256": "b67365b33792c5eaf991900fc3154e05cff8b434100585d5d418710ad5334422"
+    },
+    {
+      "bytes": 1335,
+      "path": "schemas/system-dynamics-map/package.schema.json",
+      "sha256": "7b76eed33b35cc845f2bdafd5e83baddf9ad51806e82817fb72125e24ff693b5"
+    },
+    {
+      "bytes": 2153,
+      "path": "schemas/system-dynamics-map/relation-vocabulary.schema.json",
+      "sha256": "ed48c46de224801cfe2c1c85383ee17313aded2eaad918064b799ef56344c888"
+    },
+    {
+      "bytes": 3967,
+      "path": "schemas/system-dynamics-map/seed.schema.json",
+      "sha256": "d90e150c456f4ebc38609039389c00073efb830dbb95bd02d5d302b6cb2fe933"
+    },
+    {
+      "bytes": 6101,
+      "path": "schemas/system-dynamics-map/view-manifest.schema.json",
+      "sha256": "002e805c4d832b5017aea204e6c62698c046785dbc722897157a501314bc7ad2"
+    }
+  ],
+  "authority_case": "CASE-SYSTEM-DYNAMICS-MAP-V1-ENHANCEMENT-20260618",
+  "generated_at": "2026-06-18T00:00:00Z",
+  "generator": {
+    "check_command": "python3 scripts/system_dynamics_map_materialize.py --check",
+    "command": "python3 scripts/system_dynamics_map_materialize.py"
+  },
+  "git_sha": "620990a7546e2630759c92d2427be0f6cead13b1",
+  "git_sha_policy": "Records git rev-parse HEAD at materializer invocation. Artifact commits cannot embed their own future commit SHA, so content hashes are the staleness key and git_sha is provenance.",
+  "git_sha_role": "generation_head",
+  "map_id": "system-dynamics-map-v1",
+  "schema": "system-dynamics-map-package-v1",
+  "validation": {
+    "package_gate": "scripts/system-dynamics-map-gate",
+    "rdf_parse": "rdflib Dataset.parse(format='trig')",
+    "seed_contract": "manual contract checks",
+    "shacl_parse": "rdflib Graph.parse(format='turtle')",
+    "viewer_smoke": "uv run --extra ci pytest tests/test_system_dynamics_map_viewer_playwright.py"
+  },
+  "version": "1.0.0"
+}
