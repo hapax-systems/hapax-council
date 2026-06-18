@@ -104,6 +104,10 @@ def _repo_with_recovery_installer_then_linear_commit(
     return repo, _git(repo, "rev-parse", "HEAD")
 
 
+def _recovery_bundle_dest(home: Path) -> Path:
+    return home / ".local" / "lib" / "hapax-recovery" / "council" / "current"
+
+
 def _repo_with_intake_units_then_preset_commit(tmp_path: Path) -> tuple[Path, str]:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -696,7 +700,7 @@ def test_recovery_bundle_changes_refresh_stable_installed_closure(tmp_path: Path
     assert result.returncode == 0, result.stderr
     assert "recovery bundle files changed (1)" in result.stdout
     assert install_calls.read_text(encoding="utf-8").splitlines() == [
-        f"--source {repo} --source-ref {sha}"
+        f"--source {repo} --source-ref {sha} --dest {_recovery_bundle_dest(home)}"
     ]
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
     assert record["deploy_groups"]["recovery_bundle"] == ["shared/p0_incident_intake.py"]
@@ -705,38 +709,6 @@ def test_recovery_bundle_changes_refresh_stable_installed_closure(tmp_path: Path
 
 def test_recovery_script_changes_refresh_stable_installed_closure(tmp_path: Path) -> None:
     repo, sha = _repo_with_recovery_script_change(tmp_path)
-    install_calls = tmp_path / "recovery-install-calls.txt"
-    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
-    env = {
-        **os.environ,
-        "HOME": str(tmp_path / "home"),
-        "REPO": str(repo),
-        "HAPAX_RECOVERY_INSTALL_CALLS": str(install_calls),
-        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
-    }
-
-    result = subprocess.run(
-        [str(SCRIPT), sha],
-        text=True,
-        capture_output=True,
-        check=False,
-        env=env,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "recovery bundle files changed (1)" in result.stdout
-    assert install_calls.read_text(encoding="utf-8").splitlines() == [
-        f"--source {repo} --source-ref {sha}"
-    ]
-    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
-    assert record["deploy_groups"]["recovery_bundle"] == ["scripts/hapax-coord-deploy"]
-
-
-def test_missing_recovery_bundle_self_heals_on_later_deploy(tmp_path: Path) -> None:
-    repo, sha = _repo_with_recovery_installer_then_linear_commit(
-        tmp_path,
-        {"docs/unrelated.md": "later deploy after old first rollout\n"},
-    )
     home = tmp_path / "home"
     install_calls = tmp_path / "recovery-install-calls.txt"
     trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
@@ -757,14 +729,47 @@ def test_missing_recovery_bundle_self_heals_on_later_deploy(tmp_path: Path) -> N
     )
 
     assert result.returncode == 0, result.stderr
-    assert "recovery bundle runtime missing/incomplete" in result.stdout
+    assert "recovery bundle files changed (1)" in result.stdout
     assert install_calls.read_text(encoding="utf-8").splitlines() == [
-        f"--source {repo} --source-ref {sha}"
+        f"--source {repo} --source-ref {sha} --dest {_recovery_bundle_dest(home)}"
     ]
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
-    assert record["deploy_groups"]["recovery_bundle"] == [
-        f"self-heal:{home}/.local/lib/hapax-recovery/council/current"
+    assert record["deploy_groups"]["recovery_bundle"] == ["scripts/hapax-coord-deploy"]
+
+
+def test_missing_recovery_bundle_self_heals_on_later_deploy(tmp_path: Path) -> None:
+    repo, sha = _repo_with_recovery_installer_then_linear_commit(
+        tmp_path,
+        {"docs/unrelated.md": "later deploy after old first rollout\n"},
+    )
+    home = tmp_path / "home"
+    custom_dest = tmp_path / "custom-recovery" / "current"
+    install_calls = tmp_path / "recovery-install-calls.txt"
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "REPO": str(repo),
+        "HAPAX_RECOVERY_INSTALL_CALLS": str(install_calls),
+        "HAPAX_RECOVERY_BUNDLE_DEST": str(custom_dest),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "recovery bundle runtime missing/incomplete" in result.stdout
+    assert install_calls.read_text(encoding="utf-8").splitlines() == [
+        f"--source {repo} --source-ref {sha} --dest {custom_dest}"
     ]
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["deploy_groups"]["recovery_bundle"] == [f"self-heal:{custom_dest}"]
     assert "recovery_bundle" in record["avsdlc"]["runtime_media_witness_groups"]
 
 
@@ -794,7 +799,9 @@ def test_d2_unit_only_change_refreshes_recovery_bundle_before_systemd(
 
     assert result.returncode == 0, result.stderr
     calls = deploy_calls.read_text(encoding="utf-8").splitlines()
-    install_call = f"--source {repo} --source-ref {sha}"
+    install_call = (
+        f"--source {repo} --source-ref {sha} --dest {_recovery_bundle_dest(tmp_path / 'home')}"
+    )
     assert install_call in calls
     assert "--user daemon-reload" in calls
     assert calls.index(install_call) < calls.index("--user daemon-reload")
@@ -847,16 +854,8 @@ def test_coord_service_deploy_stages_activation_before_active_restart(
         },
     )
     home = tmp_path / "home"
-    coord_deploy = (
-        home
-        / ".local"
-        / "lib"
-        / "hapax-recovery"
-        / "council"
-        / "current"
-        / "scripts"
-        / "hapax-coord-deploy"
-    )
+    custom_dest = tmp_path / "custom-recovery" / "current"
+    coord_deploy = custom_dest / "scripts" / "hapax-coord-deploy"
     coord_deploy.parent.mkdir(parents=True)
     bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
     coord_deploy.write_text(
@@ -881,6 +880,7 @@ def test_coord_service_deploy_stages_activation_before_active_restart(
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "REPO": str(repo),
         "HAPAX_RECOVERY_INSTALL_CALLS": str(systemctl_calls),
+        "HAPAX_RECOVERY_BUNDLE_DEST": str(custom_dest),
         "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
         "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
     }

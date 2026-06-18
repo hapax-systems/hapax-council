@@ -725,7 +725,7 @@ restart_user_unit() {
 }
 
 stage_coord_activation_before_restart() {
-    local deploy_bin="$HOME/.local/lib/hapax-recovery/council/current/scripts/hapax-coord-deploy"
+    local deploy_bin="$RECOVERY_BUNDLE_DEST/scripts/hapax-coord-deploy"
     if [ ! -x "$deploy_bin" ]; then
         echo "hapax-post-merge-deploy: refusing to restart hapax-coord.service before its activation worktree is staged; missing executable $deploy_bin; next: install the D2 recovery bundle, verify $deploy_bin exists, then rerun hapax-post-merge-deploy for this merge" >&2
         return 5
@@ -1003,7 +1003,7 @@ if [ "${#RECOVERY_BUNDLE[@]}" -gt 0 ] || [ "$RECOVERY_BUNDLE_SELF_HEAL" = "1" ];
     git show "$SHA:$RECOVERY_INSTALLER_PATH" > "$RECOVERY_INSTALLER"
     chmod +x "$RECOVERY_INSTALLER"
     set +e
-    "$RECOVERY_INSTALLER" --source "$REPO" --source-ref "$SHA"
+    "$RECOVERY_INSTALLER" --source "$REPO" --source-ref "$SHA" --dest "$RECOVERY_BUNDLE_DEST"
     recovery_installer_rc=$?
     set -e
     rm -f "$RECOVERY_INSTALLER"
