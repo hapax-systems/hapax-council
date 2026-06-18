@@ -2,6 +2,76 @@
   "$id": "https://hapax.local/schema/system-dynamics-map/lens.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": true,
+  "properties": {
+    "aggregation": {
+      "properties": {
+        "lossy": {
+          "type": "boolean"
+        },
+        "mode": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "reversible": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "mode",
+        "lossy",
+        "reversible"
+      ],
+      "type": "object"
+    },
+    "id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "label": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "layout": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "max_resolution": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "visible_edge_ids": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "visible_layers": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "visible_node_ids": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "visible_statuses": {
+      "items": {
+        "enum": [
+          "asserted",
+          "inferred",
+          "observed",
+          "simulated",
+          "rendered",
+          "candidate"
+        ],
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
   "required": [
     "id",
     "label",

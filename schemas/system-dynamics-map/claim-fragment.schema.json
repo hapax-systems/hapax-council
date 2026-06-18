@@ -2,6 +2,155 @@
   "$id": "https://hapax.local/schema/system-dynamics-map/claim-fragment.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": true,
+  "properties": {
+    "claim_type": {
+      "enum": [
+        "asserted",
+        "inferred",
+        "observed",
+        "simulated",
+        "rendered",
+        "candidate"
+      ],
+      "type": "string"
+    },
+    "confidence_basis": {
+      "additionalProperties": true,
+      "properties": {
+        "method": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "score": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "method",
+        "score"
+      ],
+      "type": "object"
+    },
+    "contradiction_state": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "freshness": {
+      "additionalProperties": true,
+      "properties": {
+        "expires_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "enum": [
+            "timeless",
+            "fresh",
+            "stale",
+            "historical"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "expires_at"
+      ],
+      "type": "object"
+    },
+    "id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "object": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "predicate": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "provenance": {
+      "additionalProperties": true,
+      "properties": {
+        "activity": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "agent": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "authority_ceiling": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "source_hash": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "source_ref": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "source_type": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_ref",
+        "source_hash",
+        "source_type",
+        "agent",
+        "activity",
+        "authority_ceiling"
+      ],
+      "type": "object"
+    },
+    "subject": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "transaction_time": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "valid_time": {
+      "additionalProperties": true,
+      "properties": {
+        "from": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "to": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    }
+  },
   "required": [
     "id",
     "claim_type",

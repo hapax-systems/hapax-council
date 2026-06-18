@@ -2,6 +2,52 @@
   "$id": "https://hapax.local/schema/system-dynamics-map/relation-vocabulary.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": true,
+  "properties": {
+    "relations": {
+      "items": {
+        "additionalProperties": true,
+        "properties": {
+          "category": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "directionality": {
+            "enum": [
+              "directed"
+            ],
+            "type": "string"
+          },
+          "edge_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "iri": {
+            "format": "uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "iri",
+          "category",
+          "directionality",
+          "edge_ids"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema": {
+      "const": "system-dynamics-map-relation-vocabulary-v1",
+      "type": "string"
+    }
+  },
   "required": [
     "schema",
     "relations"

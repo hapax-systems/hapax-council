@@ -67,6 +67,9 @@ OBSERVED_AT = "2026-06-18T14:56:02Z"
 DEFAULT_VALID_FROM = "2026-06-18T00:00:00Z"
 FRESH_EXPIRES_AT = "2026-06-18T20:56:02Z"
 STALE_EXPIRES_AT = "2026-06-18T01:00:00Z"
+STATUS_KINDS = ["asserted", "inferred", "observed", "simulated", "rendered", "candidate"]
+OBSERVATION_FRESHNESS = ["fresh", "stale", "historical"]
+CLAIM_FRESHNESS = ["timeless", *OBSERVATION_FRESHNESS]
 SEED_REQUIRED = [
     "map_id",
     "version",
@@ -685,43 +688,262 @@ def _schema_object(schema_id: str, title: str, required: list[str]) -> dict[str,
     }
 
 
+def _string_array_schema(*, enum: list[str] | None = None) -> dict[str, Any]:
+    items: dict[str, Any] = {"type": "string"}
+    if enum is not None:
+        items["enum"] = enum
+    return {"type": "array", "items": items}
+
+
+def _nullable_datetime_schema() -> dict[str, Any]:
+    return {
+        "anyOf": [
+            {"type": "string", "format": "date-time"},
+            {"type": "null"},
+        ]
+    }
+
+
+def _valid_time_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "required": ["from", "to"],
+        "additionalProperties": True,
+        "properties": {
+            "from": {"type": "string", "format": "date-time"},
+            "to": _nullable_datetime_schema(),
+        },
+    }
+
+
+def _provenance_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "required": [
+            "source_ref",
+            "source_hash",
+            "source_type",
+            "agent",
+            "activity",
+            "authority_ceiling",
+        ],
+        "additionalProperties": True,
+        "properties": {
+            "source_ref": {"type": "string", "minLength": 1},
+            "source_hash": {"type": "string", "minLength": 1},
+            "source_type": {"type": "string", "minLength": 1},
+            "agent": {"type": "string", "minLength": 1},
+            "activity": {"type": "string", "minLength": 1},
+            "authority_ceiling": {"type": "string", "minLength": 1},
+        },
+    }
+
+
 def generate_schema_artifacts() -> dict[Path, str]:
+    seed_schema = _schema_object("seed.schema.json", "System dynamics map seed", SEED_REQUIRED)
+    seed_schema["properties"] = {
+        "map_id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "generated_at": {"type": "string", "format": "date-time"},
+        "authority_case": {"type": "string", "minLength": 1},
+        "default_focus": {"type": "string", "minLength": 1},
+        "status_kinds": _string_array_schema(enum=STATUS_KINDS),
+        "nodes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["id", "label", "kind", "layer", "resolution", "status", "docs"],
+                "additionalProperties": True,
+                "properties": {
+                    "id": {"type": "string", "minLength": 1},
+                    "label": {"type": "string", "minLength": 1},
+                    "kind": {"type": "string", "minLength": 1},
+                    "layer": {"type": "string", "minLength": 1},
+                    "resolution": {"type": "integer", "minimum": 1},
+                    "status": {"type": "string", "enum": STATUS_KINDS},
+                    "docs": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["label", "url"],
+                            "properties": {
+                                "label": {"type": "string", "minLength": 1},
+                                "url": {"type": "string", "format": "uri"},
+                            },
+                        },
+                    },
+                },
+            },
+        },
+        "edges": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "source",
+                    "target",
+                    "relation",
+                    "layer",
+                    "resolution",
+                    "status",
+                    "confidence",
+                    "docs",
+                ],
+                "additionalProperties": True,
+                "properties": {
+                    "id": {"type": "string", "minLength": 1},
+                    "source": {"type": "string", "minLength": 1},
+                    "target": {"type": "string", "minLength": 1},
+                    "relation": {"type": "string", "minLength": 1},
+                    "layer": {"type": "string", "minLength": 1},
+                    "resolution": {"type": "integer", "minimum": 1},
+                    "status": {"type": "string", "enum": STATUS_KINDS},
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                    "docs": {"type": "array", "minItems": 1},
+                },
+            },
+        },
+    }
+
+    claim_schema = _schema_object(
+        "claim-fragment.schema.json", "System dynamics claim fragment", CLAIM_REQUIRED
+    )
+    claim_schema["properties"] = {
+        "id": {"type": "string", "minLength": 1},
+        "claim_type": {"type": "string", "enum": STATUS_KINDS},
+        "subject": {"type": "string", "minLength": 1},
+        "predicate": {"type": "string", "minLength": 1},
+        "object": {"type": "string", "minLength": 1},
+        "provenance": _provenance_schema(),
+        "valid_time": _valid_time_schema(),
+        "transaction_time": {"type": "string", "format": "date-time"},
+        "confidence_basis": {
+            "type": "object",
+            "required": ["method", "score"],
+            "additionalProperties": True,
+            "properties": {
+                "method": {"type": "string", "minLength": 1},
+                "score": {"type": "number", "minimum": 0, "maximum": 1},
+            },
+        },
+        "freshness": {
+            "type": "object",
+            "required": ["state", "expires_at"],
+            "additionalProperties": True,
+            "properties": {
+                "state": {"type": "string", "enum": CLAIM_FRESHNESS},
+                "expires_at": _nullable_datetime_schema(),
+            },
+        },
+        "contradiction_state": {"type": "string", "minLength": 1},
+    }
+
+    observation_schema = _schema_object(
+        "observation.schema.json", "System dynamics temporal observation", OBSERVATION_REQUIRED
+    )
+    observation_schema["properties"] = {
+        "id": {"type": "string", "minLength": 1},
+        "subject": {"type": "string", "minLength": 1},
+        "state": {"type": "string", "minLength": 1},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "valid_time": _valid_time_schema(),
+        "transaction_time": {"type": "string", "format": "date-time"},
+        "expires_at": _nullable_datetime_schema(),
+        "freshness": {"type": "string", "enum": OBSERVATION_FRESHNESS},
+        "source_ref": {"type": "string", "minLength": 1},
+        "source_hash": {"type": "string", "minLength": 1},
+    }
+
+    lens_schema = _schema_object("lens.schema.json", "System dynamics map lens", LENS_REQUIRED)
+    lens_schema["properties"] = {
+        "id": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1},
+        "visible_layers": _string_array_schema(),
+        "visible_statuses": _string_array_schema(enum=STATUS_KINDS),
+        "max_resolution": {"type": "integer", "minimum": 1},
+        "layout": {"type": "string", "minLength": 1},
+        "visible_node_ids": _string_array_schema(),
+        "visible_edge_ids": _string_array_schema(),
+        "aggregation": {
+            "type": "object",
+            "required": ["mode", "lossy", "reversible"],
+            "properties": {
+                "mode": {"type": "string", "minLength": 1},
+                "lossy": {"type": "boolean"},
+                "reversible": {"type": "boolean"},
+            },
+        },
+    }
+
+    relation_schema = _schema_object(
+        "relation-vocabulary.schema.json",
+        "System dynamics relation vocabulary",
+        RELATION_VOCABULARY_REQUIRED,
+    )
+    relation_schema["properties"] = {
+        "schema": {"type": "string", "const": "system-dynamics-map-relation-vocabulary-v1"},
+        "relations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["id", "iri", "category", "directionality", "edge_ids"],
+                "additionalProperties": True,
+                "properties": {
+                    "id": {"type": "string", "minLength": 1},
+                    "iri": {"type": "string", "format": "uri"},
+                    "category": {"type": "string", "minLength": 1},
+                    "directionality": {"type": "string", "enum": ["directed"]},
+                    "edge_ids": _string_array_schema(),
+                },
+            },
+        },
+    }
+
+    view_manifest_schema = _schema_object(
+        "view-manifest.schema.json", "System dynamics view manifest", VIEW_MANIFEST_REQUIRED
+    )
+    view_manifest_schema["properties"] = {
+        "schema": {"type": "string", "const": "system-dynamics-map-view-manifest-v1"},
+        "map_id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "source_snapshot": {"type": "object"},
+        "default_projection": {"type": "object"},
+        "provenance": {"type": "object"},
+    }
+
+    package_schema = _schema_object(
+        "package.schema.json", "System dynamics package", PACKAGE_REQUIRED
+    )
+    package_schema["properties"] = {
+        "schema": {"type": "string", "const": "system-dynamics-map-package-v1"},
+        "map_id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "artifacts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["path", "sha256", "bytes"],
+                "properties": {
+                    "path": {"type": "string", "minLength": 1},
+                    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                    "bytes": {"type": "integer", "minimum": 0},
+                },
+            },
+        },
+        "validation": {"type": "object"},
+        "git_sha": {"type": "string", "pattern": "^([0-9a-f]{40}|unknown)$"},
+        "git_sha_role": {"type": "string", "const": "generation_head"},
+    }
+
     schemas = {
-        SEED_SCHEMA_PATH: _schema_object(
-            "seed.schema.json",
-            "System dynamics map seed",
-            SEED_REQUIRED,
-        ),
-        CLAIM_SCHEMA_PATH: _schema_object(
-            "claim-fragment.schema.json",
-            "System dynamics claim fragment",
-            CLAIM_REQUIRED,
-        ),
-        OBSERVATION_SCHEMA_PATH: _schema_object(
-            "observation.schema.json",
-            "System dynamics temporal observation",
-            OBSERVATION_REQUIRED,
-        ),
-        LENS_SCHEMA_PATH: _schema_object(
-            "lens.schema.json",
-            "System dynamics map lens",
-            LENS_REQUIRED,
-        ),
-        RELATION_SCHEMA_PATH: _schema_object(
-            "relation-vocabulary.schema.json",
-            "System dynamics relation vocabulary",
-            RELATION_VOCABULARY_REQUIRED,
-        ),
-        VIEW_MANIFEST_SCHEMA_PATH: _schema_object(
-            "view-manifest.schema.json",
-            "System dynamics view manifest",
-            VIEW_MANIFEST_REQUIRED,
-        ),
-        PACKAGE_SCHEMA_PATH: _schema_object(
-            "package.schema.json",
-            "System dynamics package",
-            PACKAGE_REQUIRED,
-        ),
+        SEED_SCHEMA_PATH: seed_schema,
+        CLAIM_SCHEMA_PATH: claim_schema,
+        OBSERVATION_SCHEMA_PATH: observation_schema,
+        LENS_SCHEMA_PATH: lens_schema,
+        RELATION_SCHEMA_PATH: relation_schema,
+        VIEW_MANIFEST_SCHEMA_PATH: view_manifest_schema,
+        PACKAGE_SCHEMA_PATH: package_schema,
     }
     return {path: _json(schema) for path, schema in schemas.items()}
 
@@ -1238,7 +1460,10 @@ def _missing_required_errors(label: str, item: dict[str, Any], required: list[st
     missing = [field for field in required if field not in item]
     if not missing:
         return []
-    return [f"{label}: missing required fields {', '.join(missing)}."]
+    return [
+        f"{label}: missing required fields {', '.join(missing)}. "
+        "Fix by regenerating the artifact or adding the required contract fields."
+    ]
 
 
 def _contract_errors(

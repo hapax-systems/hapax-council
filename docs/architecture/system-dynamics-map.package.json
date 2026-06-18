@@ -56,39 +56,39 @@
       "sha256": "eba1f4216f08012090ef9e381b1baa244b956be907cefcea3415c9bcae844ebc"
     },
     {
-      "bytes": 469,
+      "bytes": 3369,
       "path": "schemas/system-dynamics-map/claim-fragment.schema.json",
-      "sha256": "a1dda93f756a9878a8ce3f81a9a71cffbff203887890f47ee4c85a30eaf4584d"
+      "sha256": "216e994c467405aecdc3f380184eae3915906e77f9cef909eceaf8ca96a19ccc"
     },
     {
-      "bytes": 423,
+      "bytes": 1670,
       "path": "schemas/system-dynamics-map/lens.schema.json",
-      "sha256": "9e9f2f1f3bab74bed5066447f03a2ac4c8a58e95d3f716044030c7e80432a4b9"
+      "sha256": "a11eb5a7d509df01557bceded2175068a6a6eb074c18625eda8866c2e42278b3"
     },
     {
-      "bytes": 441,
+      "bytes": 1757,
       "path": "schemas/system-dynamics-map/observation.schema.json",
-      "sha256": "034b4362c28e7e59948b06c7a44aca7374ab21539ec4fb10b8f5ded1cc68ad26"
+      "sha256": "b67365b33792c5eaf991900fc3154e05cff8b434100585d5d418710ad5334422"
     },
     {
-      "bytes": 346,
+      "bytes": 1335,
       "path": "schemas/system-dynamics-map/package.schema.json",
-      "sha256": "87aa1b2d7b3347a5b4e47b0e236feb64dc7e6b79598075b1f41e0de60f081658"
+      "sha256": "7b76eed33b35cc845f2bdafd5e83baddf9ad51806e82817fb72125e24ff693b5"
     },
     {
-      "bytes": 308,
+      "bytes": 1285,
       "path": "schemas/system-dynamics-map/relation-vocabulary.schema.json",
-      "sha256": "3d0040b172472c24bda97797c27493534cb0be7c8cb7f163c3571b51fc67cef3"
+      "sha256": "614cc03aa8e87f6da6572d9b0cd6a18ec54265b896016f0e18c77c5126e20476"
     },
     {
-      "bytes": 369,
+      "bytes": 3967,
       "path": "schemas/system-dynamics-map/seed.schema.json",
-      "sha256": "dabdbecca4b43d1855a1c56adb7c6cded9db8faa425ea5b3fc699e47aa819806"
+      "sha256": "d90e150c456f4ebc38609039389c00073efb830dbb95bd02d5d302b6cb2fe933"
     },
     {
-      "bytes": 375,
+      "bytes": 798,
       "path": "schemas/system-dynamics-map/view-manifest.schema.json",
-      "sha256": "4b50e379d4068a8df0059415b4c7fccebb0a6bd3dfcc93b7352f4ed10797159c"
+      "sha256": "51d91e6a2d3c093b024046147ac7705105cfc4ced464262a1de8de2cc04a748e"
     }
   ],
   "authority_case": "CASE-SYSTEM-DYNAMICS-MAP-V1-ENHANCEMENT-20260618",
@@ -97,7 +97,7 @@
     "check_command": "python3 scripts/system_dynamics_map_materialize.py --check",
     "command": "python3 scripts/system_dynamics_map_materialize.py"
   },
-  "git_sha": "89b8e1c15f76daa749e6becaabf18fb1c8e75133",
+  "git_sha": "70f8e65a8ae2c2dea1d6152162cbe56a595aebb8",
   "git_sha_policy": "Records git rev-parse HEAD at materializer invocation. Artifact commits cannot embed their own future commit SHA, so content hashes are the staleness key and git_sha is provenance.",
   "git_sha_role": "generation_head",
   "map_id": "system-dynamics-map-v1",

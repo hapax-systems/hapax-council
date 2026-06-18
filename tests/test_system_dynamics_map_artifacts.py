@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from jsonschema import Draft202012Validator, FormatChecker
 from rdflib import RDF, Dataset, Graph, Literal, Namespace, URIRef
 
 from scripts import system_dynamics_map_materialize as materialize
@@ -93,6 +94,16 @@ def _contract_error_text(
             lenses=lenses,
         )
     )
+
+
+def _schema_errors(instance: object, schema: dict) -> list[str]:
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    return [error.message for error in sorted(validator.iter_errors(instance), key=str)]
+
+
+def _assert_schema_valid(instance: object, schema: dict) -> None:
+    errors = _schema_errors(instance, schema)
+    assert not errors, "schema validation failed:\n" + "\n".join(errors)
 
 
 def _shape_property(shapes: Graph, shape: URIRef, path: URIRef):
@@ -489,14 +500,51 @@ def test_contract_rejects_schema_required_lens_fields_and_hidden_endpoints():
     assert "visible edge dmn-to-drd has hidden endpoint" in errors
 
 
-def test_generated_schemas_match_contract_required_fields():
+def test_generated_schemas_validate_artifacts_and_reject_bad_shapes():
     schemas = materialize.generate_schema_artifacts()
-    assert (
-        json.loads(schemas[materialize.LENS_SCHEMA_PATH])["required"] == materialize.LENS_REQUIRED
+    seed_schema = json.loads(schemas[materialize.SEED_SCHEMA_PATH])
+    claim_schema = json.loads(schemas[materialize.CLAIM_SCHEMA_PATH])
+    observation_schema = json.loads(schemas[materialize.OBSERVATION_SCHEMA_PATH])
+    lens_schema = json.loads(schemas[materialize.LENS_SCHEMA_PATH])
+    relation_schema = json.loads(schemas[materialize.RELATION_SCHEMA_PATH])
+    view_manifest_schema = json.loads(schemas[materialize.VIEW_MANIFEST_SCHEMA_PATH])
+    package_schema = json.loads(schemas[materialize.PACKAGE_SCHEMA_PATH])
+
+    assert lens_schema["required"] == materialize.LENS_REQUIRED
+    assert package_schema["title"] == "System dynamics package"
+
+    _assert_schema_valid(_load_seed(), seed_schema)
+    for claim in json.loads(CLAIMS_PATH.read_text(encoding="utf-8"))["claims"]:
+        _assert_schema_valid(claim, claim_schema)
+    for observation in _load_observations():
+        _assert_schema_valid(observation, observation_schema)
+    for lens in json.loads(LENSES_PATH.read_text(encoding="utf-8"))["lenses"]:
+        _assert_schema_valid(lens, lens_schema)
+    _assert_schema_valid(json.loads(RELATIONS_PATH.read_text(encoding="utf-8")), relation_schema)
+    _assert_schema_valid(
+        json.loads(MANIFEST_PATH.read_text(encoding="utf-8")), view_manifest_schema
     )
-    assert (
-        json.loads(schemas[materialize.PACKAGE_SCHEMA_PATH])["title"] == "System dynamics package"
-    )
+    _assert_schema_valid(json.loads(PACKAGE_PATH.read_text(encoding="utf-8")), package_schema)
+
+    bad_claim = copy.deepcopy(json.loads(CLAIMS_PATH.read_text(encoding="utf-8"))["claims"][0])
+    bad_claim["provenance"] = "not-an-object"
+    bad_claim["confidence_basis"]["score"] = 2
+    assert _schema_errors(bad_claim, claim_schema)
+
+    bad_observation = copy.deepcopy(_load_observations()[0])
+    bad_observation["freshness"] = "forever"
+    bad_observation["valid_time"] = "not-an-object"
+    assert _schema_errors(bad_observation, observation_schema)
+
+    bad_lens = copy.deepcopy(json.loads(LENSES_PATH.read_text(encoding="utf-8"))["lenses"][0])
+    bad_lens["visible_statuses"] = ["not-a-status"]
+    bad_lens["max_resolution"] = 0
+    assert _schema_errors(bad_lens, lens_schema)
+
+    bad_package = copy.deepcopy(json.loads(PACKAGE_PATH.read_text(encoding="utf-8")))
+    bad_package["artifacts"][0]["sha256"] = "not-a-sha"
+    bad_package["git_sha_role"] = "final_head"
+    assert _schema_errors(bad_package, package_schema)
 
 
 def test_materialized_rdf_artifacts_keep_valid_prefix_directives():

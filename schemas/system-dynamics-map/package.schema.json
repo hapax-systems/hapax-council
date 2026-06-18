@@ -2,6 +2,56 @@
   "$id": "https://hapax.local/schema/system-dynamics-map/package.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": true,
+  "properties": {
+    "artifacts": {
+      "items": {
+        "properties": {
+          "bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "sha256",
+          "bytes"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "git_sha": {
+      "pattern": "^([0-9a-f]{40}|unknown)$",
+      "type": "string"
+    },
+    "git_sha_role": {
+      "const": "generation_head",
+      "type": "string"
+    },
+    "map_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema": {
+      "const": "system-dynamics-map-package-v1",
+      "type": "string"
+    },
+    "validation": {
+      "type": "object"
+    },
+    "version": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
   "required": [
     "schema",
     "map_id",

@@ -2,6 +2,29 @@
   "$id": "https://hapax.local/schema/system-dynamics-map/view-manifest.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": true,
+  "properties": {
+    "default_projection": {
+      "type": "object"
+    },
+    "map_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "provenance": {
+      "type": "object"
+    },
+    "schema": {
+      "const": "system-dynamics-map-view-manifest-v1",
+      "type": "string"
+    },
+    "source_snapshot": {
+      "type": "object"
+    },
+    "version": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
   "required": [
     "schema",
     "map_id",
