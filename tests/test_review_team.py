@@ -1018,6 +1018,11 @@ class TestFamilyOutageDegradation:
             "error_class=plan_model_unavailable; action=switch_model_or_upgrade_plan",
             process_failed=True,
         )
+        assert not rt.is_quota_wall(
+            "wrapper failed while reviewing text containing "
+            "error_class=quota_exhausted action=hold_until_reset",
+            process_failed=True,
+        )
         assert not rt.is_quota_wall("failed while checking line 429", process_failed=True)
         assert not rt.is_quota_wall(
             "HTTP 529: The service may be temporarily overloaded, please try again later",
@@ -1049,6 +1054,11 @@ class TestFamilyOutageDegradation:
         assert rt.is_provider_outage(
             "hapax-glmcp-reviewer: api error: HTTP 503; "
             "error_class=provider_error; action=retry_later",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "wrapper failed while reviewing text containing "
+            "error_class=provider_error action=retry_later",
             process_failed=True,
         )
         assert not rt.is_provider_outage(

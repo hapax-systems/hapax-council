@@ -123,6 +123,10 @@ _STRUCTURED_TOKEN_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?P<key>error_class|action)="
     r"(?P<value>[A-Za-z0-9_:-]+)"
 )
+_STRUCTURED_ZAI_ENVELOPE_RE = re.compile(
+    r"\bhapax-glmcp-reviewer:\s+api error:\s+HTTP\s+\d{3}\b|\bzai_error_code=\d+\b",
+    re.IGNORECASE,
+)
 _STRUCTURED_QUOTA_ERROR_CLASSES = frozenset(
     {
         "account_balance_or_arrears",
@@ -192,6 +196,8 @@ def _structured_zai_error_matches(
     error_classes: frozenset[str],
     actions: frozenset[str],
 ) -> bool:
+    if _STRUCTURED_ZAI_ENVELOPE_RE.search(text) is None:
+        return False
     tokens: dict[str, set[str]] = {"error_class": set(), "action": set()}
     for match in _STRUCTURED_TOKEN_RE.finditer(text):
         tokens[match.group("key")].add(match.group("value"))

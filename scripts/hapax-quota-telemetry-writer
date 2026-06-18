@@ -239,10 +239,10 @@ def active_glmcp_admission_receipts(
             seen.add(path)
             try:
                 raw_receipt = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeError) as exc:
+            except (OSError, UnicodeDecodeError) as exc:
                 _warn_ignored_glmcp_admission(
                     path,
-                    f"unreadable receipt {type(exc).__name__}",
+                    f"unreadable receipt {type(exc).__name__}: {exc}",
                 )
                 continue
             fields, parse_error = _parse_flat_yaml_strict(raw_receipt)
