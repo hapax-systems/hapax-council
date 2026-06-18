@@ -4189,3 +4189,71 @@ from agents.hapax_daimonion.interview_conductor import (
 )
 
 _InterviewConductor
+
+# HKP validator-first slice — Pydantic invokes field/model validators
+# dynamically during bundle validation, and the extensionless
+# scripts/hapax-hkp-validate CLI imports validate_bundle outside vulture's
+# scanned Python-module call graph. S5-HKP-VALIDATOR-20260618.
+from shared.hkp_bundle_schema import (  # noqa: E402
+    HkpAuthority as _HkpAuthority,
+)
+from shared.hkp_bundle_schema import (
+    HkpChecksumEntry as _HkpChecksumEntry,
+)
+from shared.hkp_bundle_schema import (
+    HkpChecksumIndex as _HkpChecksumIndex,
+)
+from shared.hkp_bundle_schema import (
+    HkpConceptFrontmatter as _HkpConceptFrontmatter,
+)
+from shared.hkp_bundle_schema import (
+    HkpConsumerPolicy as _HkpConsumerPolicy,
+)
+from shared.hkp_bundle_schema import (
+    HkpConsumerPolicyRow as _HkpConsumerPolicyRow,
+)
+from shared.hkp_bundle_schema import (
+    HkpEdge as _HkpEdge,
+)
+from shared.hkp_bundle_schema import (
+    HkpManifest as _HkpManifest,
+)
+from shared.hkp_bundle_schema import (
+    HkpPosture as _HkpPosture,
+)
+from shared.hkp_bundle_schema import (
+    HkpProjectionEvent as _HkpProjectionEvent,
+)
+from shared.hkp_bundle_schema import (
+    HkpSnapshot as _HkpSnapshot,
+)
+from shared.hkp_bundle_schema import (
+    HkpSourceRef as _HkpSourceRef,
+)
+from shared.hkp_bundle_schema import (
+    HkpTombstone as _HkpTombstone,
+)
+from shared.hkp_bundle_schema import (
+    validate_bundle as _hkp_validate_bundle,
+)
+
+_HkpAuthority._never_authorizes
+_HkpChecksumIndex._artifact_keys_are_bundle_local
+_HkpConceptFrontmatter._concept_uid_shape
+_HkpConceptFrontmatter._concept_path_is_bundle_local
+_HkpConceptFrontmatter._tombstone_shape
+_HkpConsumerPolicy._required_consumers_present
+_HkpConsumerPolicyRow._known_consumer
+_HkpEdge._edge_shape
+_HkpEdge._target_path_is_bundle_local
+_HkpManifest._manifest_is_shadow_only
+_HkpPosture._fail_closed_on_ambiguity
+_HkpProjectionEvent._previous_hash_shape
+_HkpProjectionEvent._subject_uid_shape
+_HkpSourceRef._authority_refs_are_hashed
+_HkpSourceRef._hash_is_sha256
+_HkpSourceRef._uri_is_not_local_path_leak
+_HkpSnapshot._bundle_uid_shape
+_HkpTombstone._commitment_is_not_bare_hash
+_HkpChecksumEntry._hash_shape
+_hkp_validate_bundle
