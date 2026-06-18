@@ -8,6 +8,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WATCHDOG = REPO_ROOT / "systemd" / "watchdogs" / "health-watchdog"
+P0_INTAKE = REPO_ROOT / "scripts" / "hapax-p0-incident-intake"
 
 
 def _write_executable(path: Path, body: str) -> Path:
@@ -252,6 +253,20 @@ def test_mutable_dev_tree_override_is_rejected(tmp_path: Path) -> None:
     assert not (tmp_path / "uv.jsonl").exists()
 
 
+def test_release_override_rejected_when_releases_dir_missing(tmp_path: Path) -> None:
+    release = _make_checkout(tmp_path / "release-like")
+    env = _base_env(tmp_path)
+    env["HAPAX_SOURCE_ACTIVATION_RELEASES_DIR"] = str(tmp_path / "missing-releases")
+    env["HAPAX_HEALTH_MONITOR_REPO"] = str(release)
+    env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(tmp_path / "missing-activation")
+
+    result = _run_watchdog(env)
+
+    assert result.returncode == 1
+    assert "override must be a source-activation release" in result.stderr
+    assert not (tmp_path / "uv.jsonl").exists()
+
+
 def test_missing_activation_checkouts_fail_before_uv(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     env["HAPAX_HEALTH_MONITOR_REPO"] = str(tmp_path / "missing-runtime")
@@ -280,6 +295,21 @@ def test_default_history_file_uses_selected_activation_checkout(tmp_path: Path) 
     history = _jsonl(activation / "profiles" / "health-history.jsonl")
     assert history[0]["status"] == "healthy"
     assert not (tmp_path / "health-history.jsonl").exists()
+
+
+def test_history_directory_create_failure_warns(tmp_path: Path) -> None:
+    activation = _make_checkout(tmp_path / "source-activation")
+    not_a_dir = tmp_path / "not-a-dir"
+    not_a_dir.write_text("file blocks mkdir\n", encoding="utf-8")
+    env = _base_env(tmp_path)
+    env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(activation)
+    env["HAPAX_HEALTH_HISTORY_FILE"] = str(not_a_dir / "health-history.jsonl")
+
+    result = _run_watchdog(env)
+
+    assert result.returncode == 0, result.stderr
+    assert "WARN: Could not create history directory" in result.stderr
+    assert "WARN: Could not write history" in result.stderr
 
 
 def test_failed_stack_routes_through_intake_cli(tmp_path: Path) -> None:
@@ -322,6 +352,39 @@ def test_failed_stack_routes_through_intake_cli(tmp_path: Path) -> None:
     assert _jsonl(tmp_path / "notify.jsonl") == []
 
 
+def test_failed_stack_intake_args_match_real_cli_contract(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            str(P0_INTAKE),
+            "notification",
+            "--title",
+            "Stack Failed",
+            "--message",
+            "98/100 healthy, 0 degraded, 2 failed\n"
+            "Run: uv run python -m agents.health_monitor --verbose",
+            "--technical",
+            "--priority",
+            "high",
+            "--tag",
+            "rotating_light",
+            "--no-desktop",
+            "--task-root",
+            str(tmp_path / "tasks"),
+            "--state-path",
+            str(tmp_path / "state.json"),
+            "--ledger-path",
+            str(tmp_path / "events.jsonl"),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "created p0-incident-health-stack-failed-stack-failed" in result.stdout
+
+
 def test_failed_stack_default_intake_cli_uses_selected_activation_root(
     tmp_path: Path,
 ) -> None:
@@ -337,6 +400,38 @@ def test_failed_stack_default_intake_cli_uses_selected_activation_root(
     calls = _jsonl(intake_log)
     assert calls[0][0:3] == ["notification", "--title", "Stack Failed"]
     assert _jsonl(tmp_path / "notify.jsonl") == []
+
+
+def test_failed_stack_default_intake_timeout_is_exported_as_20(tmp_path: Path) -> None:
+    activation = _make_checkout(tmp_path / "source-activation")
+    cli = activation / "scripts" / "hapax-p0-incident-intake"
+    cli.parent.mkdir(parents=True)
+    intake_log = tmp_path / "intake-timeout.jsonl"
+    _write_executable(
+        cli,
+        f"""
+        #!/usr/bin/env python3
+        import json
+        import os
+        import sys
+        with open({str(intake_log)!r}, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({{
+                "args": sys.argv[1:],
+                "timeout": os.environ.get("HAPAX_P0_INTAKE_TIMEOUT_SECONDS"),
+            }}) + "\\n")
+        sys.exit(0)
+        """,
+    )
+    env = _base_env(tmp_path, status="failed")
+    env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(activation)
+    env.pop("HAPAX_P0_INTAKE_TIMEOUT_SECONDS", None)
+
+    result = _run_watchdog(env)
+
+    assert result.returncode == 2, result.stderr
+    calls = _jsonl(intake_log)
+    assert calls[0]["timeout"] == "20"
+    assert calls[0]["args"][0:3] == ["notification", "--title", "Stack Failed"]
 
 
 def test_failed_stack_default_intake_cli_uses_runtime_fallback_root(
@@ -365,6 +460,22 @@ def test_failed_stack_missing_default_intake_cli_falls_back_to_notification(
     activation = _make_checkout(tmp_path / "source-activation")
     env = _base_env(tmp_path, status="failed")
     env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(activation)
+
+    result = _run_watchdog(env)
+
+    assert result.returncode == 2, result.stderr
+    notifications = _jsonl(tmp_path / "notify.jsonl")
+    assert notifications[0]["title"] == "Stack Failed"
+
+
+def test_failed_stack_malformed_intake_timeout_falls_back_to_notification(
+    tmp_path: Path,
+) -> None:
+    activation = _make_checkout(tmp_path / "source-activation")
+    env = _base_env(tmp_path, status="failed")
+    env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(activation)
+    env["HAPAX_P0_INTAKE_CLI"] = str(tmp_path / "missing-intake")
+    env["HAPAX_P0_INTAKE_TIMEOUT_SECONDS"] = "not-a-number"
 
     result = _run_watchdog(env)
 

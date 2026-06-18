@@ -12,10 +12,11 @@ HEALTH_MONITOR_REPO=""
 is_source_activation_release() {
     local candidate="$1"
     [[ -n "$candidate" && -e "$candidate/.git" ]] || return 1
+    [[ -d "$SOURCE_ACTIVATION_RELEASES_DIR" ]] || return 1
 
     local candidate_real releases_real
-    candidate_real="$(realpath -m "$candidate" 2>/dev/null || true)"
-    releases_real="$(realpath -m "$SOURCE_ACTIVATION_RELEASES_DIR" 2>/dev/null || true)"
+    candidate_real="$(realpath "$candidate" 2>/dev/null || true)"
+    releases_real="$(realpath "$SOURCE_ACTIVATION_RELEASES_DIR" 2>/dev/null || true)"
     [[ -n "$candidate_real" && -n "$releases_real" ]] || return 1
     case "$candidate_real" in
         "$releases_real"/*) return 0 ;;
@@ -134,7 +135,11 @@ if status == 'failed':
     active_repo = os.environ.get('HAPAX_HEALTH_MONITOR_ACTIVE_REPO', '')
     default_cli = os.path.join(active_repo, 'scripts', 'hapax-p0-incident-intake')
     cli = os.path.expanduser(os.environ.get('HAPAX_P0_INTAKE_CLI') or default_cli)
-    intake_timeout_s = float(os.environ.get('HAPAX_P0_INTAKE_TIMEOUT_SECONDS', '20'))
+    intake_timeout_raw = os.environ.setdefault('HAPAX_P0_INTAKE_TIMEOUT_SECONDS', '20')
+    try:
+        intake_timeout_s = float(intake_timeout_raw)
+    except ValueError:
+        intake_timeout_s = 20.0
     try:
         rc = subprocess.run([
             cli, 'notification', '--title', 'Stack Failed',
@@ -157,7 +162,10 @@ esac
 
 # Append to health history (atomic via temp file + rename)
 HISTORY_FILE="${HAPAX_HEALTH_HISTORY_FILE:-$HEALTH_MONITOR_REPO/profiles/health-history.jsonl}"
-mkdir -p "$(dirname "$HISTORY_FILE")" 2>/dev/null || true
+HISTORY_DIR="$(dirname "$HISTORY_FILE")"
+if ! mkdir -p "$HISTORY_DIR"; then
+    echo "WARN: Could not create history directory: $HISTORY_DIR" >&2
+fi
 ENTRY=$(echo "$FINAL_REPORT" | python3 -c "
 import sys, json
 r = json.load(sys.stdin)
