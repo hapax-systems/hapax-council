@@ -73,6 +73,11 @@ SUBSCRIPTION_ROUTES = {
     "claude": "claude.headless.full",
     "codex": "codex.headless.full",
     "gemini": "gemini.headless.full",
+    "glmcp": "glmcp.review.direct",
+}
+
+SUBSCRIPTION_PROVIDERS = {
+    "glmcp": "z_ai-glm-coding-plan",
 }
 
 LOCAL_COMPUTE_ROUTE = "litellm.local.command-r-35b"
@@ -92,13 +97,22 @@ LOAD_YELLOW_PER_CPU = 4.0
 def role_platform(role: str) -> str:
     """Map a lane role (relay receipt filename stem) to its platform."""
 
-    if role.startswith("cx-") or role.startswith("codex"):
+    normalized = role.lower()
+    if (
+        normalized in {"cx-glmcp", "codex-glmcp", "glmcp"}
+        or normalized.startswith("cx-glmcp")
+        or normalized.startswith("codex-glmcp")
+        or normalized.startswith("glm-")
+        or normalized.startswith("glmcp-")
+    ):
+        return "glmcp"
+    if normalized.startswith("cx-") or normalized.startswith("codex"):
         return "codex"
-    if role.startswith("gemini") or role.startswith("gm-"):
+    if normalized.startswith("gemini") or normalized.startswith("gm-"):
         return "gemini"
-    if role.startswith("antigrav") or role.startswith("agy"):
+    if normalized.startswith("antigrav") or normalized.startswith("agy"):
         return "antigrav"
-    if role.startswith("vbe-") or role.startswith("vibe"):
+    if normalized.startswith("vbe-") or normalized.startswith("vibe"):
         return "vibe"
     return "claude"
 
@@ -154,6 +168,60 @@ def active_quota_walls(
             f"relay-receipt:{path.name}:resets_at:{fields.get('resets_at') or 'unknown'}"
         )
     return walls
+
+
+def active_glmcp_admission_receipts(
+    receipt_dir: Path,
+    *,
+    now: datetime,
+) -> list[str]:
+    """Return fresh positive GLMCP quota/admission receipt evidence refs.
+
+    GLM Coding Plan Max is finite quota. Unlike the older Claude/Codex/Gemini
+    subscription snapshots, absence of a wall is not enough to call GLMCP fresh:
+    a bakeoff or dispatcher must leave an explicit, time-bounded admission
+    witness first. This keeps GLMCP fail-closed until a supported-tool witness
+    exists, without making provider calls from this writer.
+    """
+
+    if not receipt_dir.is_dir():
+        return []
+    refs: list[str] = []
+    seen: set[Path] = set()
+    for pattern in ("glmcp-quota-admission*.yaml", "*-glmcp-quota-admission*.yaml"):
+        for path in sorted(receipt_dir.glob(pattern)):
+            if path in seen:
+                continue
+            seen.add(path)
+            fields = _parse_flat_yaml(path.read_text(encoding="utf-8"))
+            if fields.get("status") not in {"quota_available", "admitted"}:
+                continue
+            provider = fields.get("provider", "")
+            if provider and provider not in {"z_ai", "z.ai", "zai", "z_ai-glm-coding-plan"}:
+                continue
+            route_id = fields.get("route_id", "")
+            if route_id and route_id != SUBSCRIPTION_ROUTES["glmcp"]:
+                continue
+            observed_at = _parse_utc(
+                fields.get("observed_at", "")
+                or fields.get("captured_at", "")
+                or fields.get("detected_at", "")
+            )
+            if observed_at is None:
+                continue
+            try:
+                stale_after_seconds = int(fields.get("stale_after_seconds", "900"))
+            except ValueError:
+                continue
+            if stale_after_seconds <= 0:
+                continue
+            if now - observed_at > timedelta(seconds=stale_after_seconds):
+                continue
+            refs.append(
+                "relay-receipt:"
+                f"{path.name}:observed_at:{observed_at.isoformat().replace('+00:00', 'Z')}"
+            )
+    return refs
 
 
 def probe_local_resource_state(*, nvidia_smi: str = "nvidia-smi") -> tuple[str, list[str]]:
@@ -214,6 +282,7 @@ def build_live_ledger(
     *,
     now: datetime,
     walls: dict[str, list[str]],
+    glmcp_admissions: list[str],
     local_resource_state: str,
     local_resource_evidence: list[str],
 ) -> QuotaSpendLedger:
@@ -234,6 +303,21 @@ def build_live_ledger(
                 f"{platform} subscription lane hit an unexpired quota wall; "
                 "state from quota-wall relay receipt(s)"
             )
+        elif platform == "glmcp":
+            if glmcp_admissions:
+                state = "fresh"
+                evidence = [*glmcp_admissions, writer_ref]
+                reason = (
+                    "fresh GLMCP supported-tool quota admission receipt present; "
+                    "GLM Coding Plan Max remains finite and receipt-bounded"
+                )
+            else:
+                state = "unknown"
+                evidence = ["relay-receipt:glmcp:quota-admission:absent", writer_ref]
+                reason = (
+                    "no fresh GLMCP quota admission receipt; GLM Coding Plan Max is finite "
+                    "and unknown quota must hold/backoff rather than dispatch blind"
+                )
         else:
             state = "fresh"
             evidence = [f"relay-receipt:{platform}:quota-wall:absent", writer_ref]
@@ -247,7 +331,7 @@ def build_live_ledger(
                 "snapshot_id": f"quota-{platform}-subscription-live-{snapshot_stamp}",
                 "captured_at": now.isoformat().replace("+00:00", "Z"),
                 "route_id": route_id,
-                "provider": f"{platform}-subscription",
+                "provider": SUBSCRIPTION_PROVIDERS.get(platform, f"{platform}-subscription"),
                 "capacity_pool": "subscription_quota",
                 "subscription_quota_state": state,
                 "evidence_refs": evidence,
@@ -381,12 +465,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     walls = active_quota_walls(args.relay_receipt_dir, now=now)
+    glmcp_admissions = active_glmcp_admission_receipts(args.relay_receipt_dir, now=now)
     resource_state, resource_evidence = probe_local_resource_state(nvidia_smi=args.nvidia_smi)
     try:
         ledger = build_live_ledger(
             base,
             now=now,
             walls=walls,
+            glmcp_admissions=glmcp_admissions,
             local_resource_state=resource_state,
             local_resource_evidence=resource_evidence,
         )
@@ -407,6 +493,7 @@ def main(argv: list[str] | None = None) -> int:
         "out": str(out_path),
         "receipts_refreshed": receipts_ok,
         "local_resource_state": resource_state,
+        "glmcp_admissions": len(glmcp_admissions),
         "quota_walls": {platform: len(refs) for platform, refs in sorted(walls.items())},
         "snapshot_count": len(ledger.quota_snapshots),
     }

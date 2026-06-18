@@ -146,6 +146,81 @@ def test_http_error_redacts_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "check the Z.ai Coding Plan endpoint/status" in message
 
 
+def test_zai_quota_error_classifies_reset_without_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+
+    def fake_open(_request: object, *, timeout: float) -> object:
+        body = {
+            "error": {
+                "code": "1308",
+                "message": "Usage limit reached for test-secret-token. Your limit will reset at 2026-06-18T20:00:00Z.",
+                "next_flush_time": "2026-06-18T20:00:00Z",
+            }
+        }
+        raise urllib.error.HTTPError(
+            "url",
+            429,
+            "Too Many Requests",
+            {},
+            io.BytesIO(json.dumps(body).encode("utf-8")),
+        )
+
+    monkeypatch.setattr(module, "open_no_redirect", fake_open)
+    config = module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_BASE_URL,
+        model="glm-5.2",
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking="disabled",
+    )
+
+    with pytest.raises(module.ApiError) as excinfo:
+        module.call_glm("review prompt", config, "test-secret-token")
+
+    message = str(excinfo.value)
+    assert "HTTP 429" in message
+    assert "zai_error_code=1308" in message
+    assert "error_class=quota_exhausted" in message
+    assert "action=hold_until_reset" in message
+    assert "resets_at=2026-06-18T20:00:00Z" in message
+    assert "test-secret-token" not in message
+    assert "<redacted>" in message
+
+
+@pytest.mark.parametrize(
+    ("code", "expected_class", "expected_action"),
+    [
+        ("1302", "rate_limited_concurrency", "backoff_reduce_concurrency"),
+        ("1303", "rate_limited_frequency", "backoff_reduce_frequency"),
+        ("1305", "rate_limited", "backoff"),
+        ("1311", "plan_model_unavailable", "switch_model_or_upgrade_plan"),
+        ("1312", "provider_high_traffic", "backoff_or_switch_model"),
+        ("1313", "fair_use_restricted", "hold_until_manual_clear"),
+        ("1113", "account_balance_or_arrears", "hold_no_payg_fallback"),
+        ("1121", "account_hard_hold", "contact_provider"),
+    ],
+)
+def test_zai_business_error_code_classification(
+    code: str,
+    expected_class: str,
+    expected_action: str,
+) -> None:
+    module = _load_module()
+
+    info = module.classify_zai_error(
+        429,
+        json.dumps({"error": {"code": code, "message": "provider message"}}),
+    )
+
+    assert info.code == code
+    assert info.error_class == expected_class
+    assert info.action == expected_action
+
+
 def test_network_error_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_module()
 

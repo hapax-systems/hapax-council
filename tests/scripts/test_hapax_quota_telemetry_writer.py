@@ -70,6 +70,19 @@ action: exit_clean_await_restart
     )
 
 
+def _glmcp_admission(relay: Path, *, observed_at: str, stale_after_seconds: int = 900) -> None:
+    (relay / "glmcp-quota-admission.yaml").write_text(
+        f"""status: quota_available
+provider: z_ai
+route_id: glmcp.review.direct
+observed_at: {observed_at}
+stale_after_seconds: {stale_after_seconds}
+evidence_ref: supported-tool-usage-witness
+""",
+        encoding="utf-8",
+    )
+
+
 def test_writes_valid_live_ledger_with_fresh_captured_at(tmp_path: Path) -> None:
     result, out = _run_writer(tmp_path)
 
@@ -91,6 +104,7 @@ def test_writes_valid_live_ledger_with_fresh_captured_at(tmp_path: Path) -> None
     assert states["claude.headless.full"] == "fresh"
     assert states["codex.headless.full"] == "fresh"
     assert states["gemini.headless.full"] == "fresh"
+    assert states["glmcp.review.direct"] == "unknown"
     assert states["litellm.local.command-r-35b"] == "fresh"
 
 
@@ -131,6 +145,65 @@ def test_unexpired_quota_wall_marks_platform_exhausted(tmp_path: Path) -> None:
     assert states["codex.headless.full"] == "fresh"
     summary = json.loads(result.stdout)
     assert summary["quota_walls"] == {"claude": 1}
+
+
+def test_glmcp_role_quota_wall_maps_to_glmcp_not_codex(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _wall_receipt(relay, "cx-glmcp", "2026-06-10T06:00:00Z")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["glmcp.review.direct"] == "exhausted"
+    assert states["codex.headless.full"] == "fresh"
+    summary = json.loads(result.stdout)
+    assert summary["quota_walls"] == {"glmcp": 1}
+
+
+def test_fresh_glmcp_admission_receipt_marks_glmcp_fresh(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _glmcp_admission(relay, observed_at="2026-06-09T23:55:00Z")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["provider"] == "z_ai-glm-coding-plan"
+    assert glmcp_snapshot["subscription_quota_state"] == "fresh"
+    assert any("glmcp-quota-admission.yaml" in ref for ref in glmcp_snapshot["evidence_refs"])
+    assert "finite" in glmcp_snapshot["operator_visible_reason"]
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 1
+
+
+def test_stale_glmcp_admission_receipt_keeps_glmcp_unknown(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _glmcp_admission(relay, observed_at="2026-06-09T23:00:00Z", stale_after_seconds=60)
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["glmcp.review.direct"] == "unknown"
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
 
 
 def test_resource_probe_failure_fails_closed_to_unknown(tmp_path: Path) -> None:

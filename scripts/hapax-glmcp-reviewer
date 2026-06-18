@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -56,6 +57,15 @@ class ReviewConfig:
     max_tokens: int
     temperature: float
     thinking: str
+
+
+@dataclass(frozen=True)
+class ZaiErrorInfo:
+    code: str | None
+    error_class: str
+    action: str
+    resets_at: str | None
+    message: str | None
 
 
 class NoRedirectHTTPHandler(urllib.request.HTTPRedirectHandler):
@@ -229,6 +239,135 @@ def open_no_redirect(request: urllib.request.Request, *, timeout: float) -> Any:
     return opener.open(request, timeout=timeout)
 
 
+_RESET_RE = re.compile(
+    r"(?:reset|resets|will reset)\s+(?:at|on|in)?\s*([^.;,\n]+(?:T[^.;,\n]+)?)",
+    re.IGNORECASE,
+)
+
+
+_ZAI_ERROR_CLASS_BY_CODE = {
+    "1000": ("auth_failed", "check_api_key"),
+    "1001": ("auth_failed", "check_api_key"),
+    "1002": ("auth_failed", "check_api_key"),
+    "1003": ("auth_failed", "refresh_api_key"),
+    "1004": ("auth_failed", "check_api_key"),
+    "1110": ("account_hard_hold", "contact_provider"),
+    "1112": ("account_hard_hold", "contact_provider"),
+    "1113": ("account_balance_or_arrears", "hold_no_payg_fallback"),
+    "1121": ("account_hard_hold", "contact_provider"),
+    "1211": ("model_not_found", "check_model_configuration"),
+    "1261": ("prompt_too_long", "reduce_prompt_size"),
+    "1302": ("rate_limited_concurrency", "backoff_reduce_concurrency"),
+    "1303": ("rate_limited_frequency", "backoff_reduce_frequency"),
+    "1304": ("daily_limit_exhausted", "hold_until_limit_reset"),
+    "1305": ("rate_limited", "backoff"),
+    "1308": ("quota_exhausted", "hold_until_reset"),
+    "1309": ("subscription_expired", "hold_until_subscription_restored"),
+    "1310": ("quota_exhausted", "hold_until_reset"),
+    "1311": ("plan_model_unavailable", "switch_model_or_upgrade_plan"),
+    "1312": ("provider_high_traffic", "backoff_or_switch_model"),
+    "1313": ("fair_use_restricted", "hold_until_manual_clear"),
+}
+
+
+def _coerce_error_payload(detail: str) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(detail)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _first_string(*values: object) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, int):
+            return str(value)
+    return None
+
+
+def _extract_reset_hint(error_obj: dict[str, Any], message: str | None) -> str | None:
+    for key in ("next_flush_time", "nextFlushTime", "resets_at", "reset_at", "resetAt"):
+        value = error_obj.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, int):
+            return str(value)
+    if message:
+        match = _RESET_RE.search(message)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def classify_zai_error(status: int, detail: str) -> ZaiErrorInfo:
+    """Classify a Z.ai API failure into quota/admission language.
+
+    The official API returns an HTTP status plus an inner business error code.
+    Keep this local and string-based so tests can exercise it without live calls.
+    """
+
+    payload = _coerce_error_payload(detail)
+    error_obj: dict[str, Any] = {}
+    if payload is not None:
+        raw_error = payload.get("error")
+        if isinstance(raw_error, dict):
+            error_obj = raw_error
+        else:
+            error_obj = payload
+
+    message = _first_string(error_obj.get("message"), payload.get("message") if payload else None)
+    code = _first_string(error_obj.get("code"), payload.get("code") if payload else None)
+    resets_at = _extract_reset_hint(error_obj, message)
+
+    if code in _ZAI_ERROR_CLASS_BY_CODE:
+        error_class, action = _ZAI_ERROR_CLASS_BY_CODE[code]
+    elif status == 401:
+        error_class, action = "auth_failed", "check_api_key"
+    elif status == 429:
+        lower = (message or detail).lower()
+        if "insufficient balance" in lower or "arrears" in lower:
+            error_class, action = "account_balance_or_arrears", "hold_no_payg_fallback"
+        elif "account anomaly" in lower or "locked" in lower or "violation" in lower:
+            error_class, action = "account_hard_hold", "contact_provider"
+        elif "quota" in lower or "usage limit" in lower or "limit exhausted" in lower:
+            error_class, action = "quota_exhausted", "hold_until_reset"
+        elif "traffic" in lower or "overload" in lower or "temporarily" in lower:
+            error_class, action = "provider_high_traffic", "backoff_or_switch_model"
+        else:
+            error_class, action = "rate_limited", "backoff"
+    elif 500 <= status < 600:
+        error_class, action = "provider_error", "retry_later"
+    else:
+        error_class, action = "api_error", "inspect_provider_response"
+
+    return ZaiErrorInfo(
+        code=code,
+        error_class=error_class,
+        action=action,
+        resets_at=resets_at,
+        message=message,
+    )
+
+
+def format_zai_error(status: int, detail: str, *, secret: str) -> str:
+    info = classify_zai_error(status, detail)
+    redacted_detail = redact(detail, secret).strip()
+    parts = [f"HTTP {status}"]
+    if info.code:
+        parts.append(f"zai_error_code={info.code}")
+    parts.append(f"error_class={info.error_class}")
+    parts.append(f"action={info.action}")
+    if info.resets_at:
+        parts.append(f"resets_at={redact(info.resets_at, secret)[:120]}")
+    if info.message:
+        parts.append(f"message={redact(info.message, secret)[:240]}")
+    if redacted_detail and redacted_detail != (info.message or ""):
+        parts.append(f"detail={redacted_detail[:1000]}")
+    return "; ".join(parts)
+
+
 def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
     body = json.dumps(
         {
@@ -268,7 +407,7 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
             ) from exc
         detail = exc.read().decode("utf-8", errors="replace")
         raise ApiError(
-            f"HTTP {exc.code}: {redact(detail, api_key).strip()[:1000] or exc.reason}; "
+            f"{format_zai_error(exc.code, detail or str(exc.reason), secret=api_key)}; "
             "retry later or check the Z.ai Coding Plan endpoint/status"
         ) from exc
     except urllib.error.URLError as exc:
