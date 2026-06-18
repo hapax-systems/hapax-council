@@ -7,4 +7,4 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/lib/hapax-recovery/council/scripts/hapax-coord-deploy
+ExecStart=%h/.local/lib/hapax-recovery/council/current/scripts/hapax-coord-deploy

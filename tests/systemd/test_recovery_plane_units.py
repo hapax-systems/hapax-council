@@ -4,7 +4,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UNITS = REPO_ROOT / "systemd" / "units"
-STABLE_BUNDLE = "%h/.local/lib/hapax-recovery/council"
+STABLE_BUNDLE = "%h/.local/lib/hapax-recovery/council/current"
 VOLATILE_MARKERS = (
     ".cache/hapax/source-activation/worktree",
     "/data/cache/hapax/scratch",

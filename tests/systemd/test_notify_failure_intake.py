@@ -20,7 +20,7 @@ def test_notify_failure_routes_through_p0_intake():
     text = UNIT.read_text(encoding="utf-8")
 
     assert (
-        "ExecStart=%h/.local/lib/hapax-recovery/council/scripts/"
+        "ExecStart=%h/.local/lib/hapax-recovery/council/current/scripts/"
         "hapax-p0-incident-intake service-failed %i"
     ) in text
     assert ".cache/hapax/source-activation/worktree" not in text
@@ -30,7 +30,7 @@ def test_notify_failure_routes_through_p0_intake():
 
 def test_notify_failure_execstart_runs_intake_cli(tmp_path):
     home = tmp_path / "home"
-    recovery_dest = home / ".local" / "lib" / "hapax-recovery" / "council"
+    recovery_dest = home / ".local" / "lib" / "hapax-recovery" / "council" / "current"
     install = subprocess.run(
         [str(INSTALLER), "--source", str(REPO_ROOT), "--dest", str(recovery_dest)],
         text=True,

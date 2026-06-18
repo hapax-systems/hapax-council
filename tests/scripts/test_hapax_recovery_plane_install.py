@@ -57,7 +57,9 @@ def test_recovery_plane_install_materializes_minimal_bundle(tmp_path: Path) -> N
     assert manifest["schema_version"] == 1
     assert manifest["source_root"] == str(REPO_ROOT.resolve())
     assert manifest["bundle_root"] == str(dest)
+    assert Path(manifest["release_root"]).is_dir()
     assert {entry["path"] for entry in manifest["files"]} == BUNDLE_FILES
+    assert dest.is_symlink()
 
     for relative in BUNDLE_FILES:
         assert (dest / relative).is_file()
@@ -107,9 +109,47 @@ def test_recovery_plane_install_source_ref_ignores_dirty_worktree(tmp_path: Path
     )
 
 
+def test_recovery_plane_install_failed_materialization_keeps_prior_release(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    _git(source, "init", "-b", "main")
+    _git(source, "config", "user.email", "recovery-install-test@example.test")
+    _git(source, "config", "user.name", "Recovery Install Test")
+    _write_minimal_bundle(source, "stable")
+    _git(source, "add", ".")
+    _git(source, "commit", "-m", "stable bundle")
+    stable_sha = _git(source, "rev-parse", "HEAD")
+    dest = tmp_path / "council" / "current"
+    first = subprocess.run(
+        [str(SCRIPT), "--source", str(source), "--source-ref", stable_sha, "--dest", str(dest)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert first.returncode == 0, first.stderr
+    first_release = dest.resolve()
+
+    failed = subprocess.run(
+        [str(SCRIPT), "--source", str(source), "--source-ref", "missing-ref", "--dest", str(dest)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert failed.returncode == 1
+    assert dest.resolve() == first_release
+    assert (dest / "scripts" / "hapax-coord-deploy").read_text(encoding="utf-8") == (
+        "#!/bin/sh\necho coord stable\n"
+    )
+    manifest = json.loads((dest / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["source_ref"] == stable_sha
+
+
 def test_installed_p0_intake_runs_without_source_activation(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    dest = home / ".local" / "lib" / "hapax-recovery" / "council"
+    dest = home / ".local" / "lib" / "hapax-recovery" / "council" / "current"
     install = subprocess.run(
         [str(SCRIPT), "--source", str(REPO_ROOT), "--dest", str(dest)],
         text=True,

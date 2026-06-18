@@ -7,6 +7,8 @@ import argparse
 import hashlib
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,7 +26,7 @@ EXECUTABLE_FILES = {
     "scripts/hapax-p0-incident-intake",
     "scripts/hapax-coord-deploy",
 }
-DEFAULT_DEST = Path.home() / ".local" / "lib" / "hapax-recovery" / "council"
+DEFAULT_DEST = Path.home() / ".local" / "lib" / "hapax-recovery" / "council" / "current"
 
 
 def _repo_root_from_script() -> Path:
@@ -68,6 +70,11 @@ def _read_from_source(source: Path, relative: str, source_ref: str | None) -> by
     return (source / relative).read_bytes()
 
 
+def _safe_release_label(source_ref: str) -> str:
+    label = re.sub(r"[^A-Za-z0-9._-]+", "-", source_ref).strip(".-")
+    return label[:80] or "bundle"
+
+
 def _write_file(dest_root: Path, relative: str, content: bytes) -> dict[str, str | int]:
     target = dest_root / relative
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -90,27 +97,70 @@ def _write_file(dest_root: Path, relative: str, content: bytes) -> dict[str, str
     }
 
 
+def _publish_release(dest: Path, release_root: Path) -> None:
+    tmp_link = dest.with_name(f".{dest.name}.next-{os.getpid()}")
+    if tmp_link.exists() or tmp_link.is_symlink():
+        tmp_link.unlink()
+    tmp_link.symlink_to(release_root, target_is_directory=True)
+    backup: Path | None = None
+    try:
+        if dest.exists() and not dest.is_symlink():
+            if not dest.is_dir():
+                raise RuntimeError(f"destination exists and is not a directory or symlink: {dest}")
+            backup = dest.with_name(f".{dest.name}.pre-symlink-{os.getpid()}")
+            if backup.exists():
+                shutil.rmtree(backup)
+            dest.rename(backup)
+        os.replace(tmp_link, dest)
+    except Exception:
+        if tmp_link.exists() or tmp_link.is_symlink():
+            tmp_link.unlink()
+        if backup is not None and backup.exists() and not dest.exists():
+            backup.rename(dest)
+        raise
+
+
 def install_bundle(source: Path, dest: Path, source_ref: str | None) -> dict[str, object]:
     source = source.resolve()
     resolved_ref = _resolve_source_ref(source, source_ref)
-    dest.mkdir(parents=True, exist_ok=True)
-    installed = [
-        _write_file(dest, relative, _read_from_source(source, relative, source_ref))
-        for relative in BUNDLE_FILES
-    ]
-    manifest: dict[str, object] = {
-        "schema_version": 1,
-        "installed_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-        "source_root": str(source),
-        "source_ref": resolved_ref,
-        "bundle_root": str(dest),
-        "files": installed,
-    }
-    manifest_path = dest / "manifest.json"
-    tmp_manifest = manifest_path.with_name(f".{manifest_path.name}.tmp")
-    tmp_manifest.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp_manifest, manifest_path)
-    return manifest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    releases_dir = dest.parent / "releases"
+    releases_dir.mkdir(parents=True, exist_ok=True)
+    stage_root = Path(tempfile.mkdtemp(prefix=f".{dest.name}.stage.", dir=str(dest.parent)))
+    release_root = (
+        releases_dir / f"{_safe_release_label(resolved_ref)}-{stage_root.name.rsplit('.', 1)[-1]}"
+    )
+    stage_published = False
+    try:
+        installed = [
+            _write_file(stage_root, relative, _read_from_source(source, relative, source_ref))
+            for relative in BUNDLE_FILES
+        ]
+        manifest: dict[str, object] = {
+            "schema_version": 1,
+            "installed_at": datetime.now(UTC)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "source_root": str(source),
+            "source_ref": resolved_ref,
+            "bundle_root": str(dest),
+            "release_root": str(release_root),
+            "files": installed,
+        }
+        manifest_path = stage_root / "manifest.json"
+        tmp_manifest = manifest_path.with_name(f".{manifest_path.name}.tmp")
+        tmp_manifest.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        os.replace(tmp_manifest, manifest_path)
+        os.replace(stage_root, release_root)
+        stage_published = True
+        _publish_release(dest, release_root)
+        return manifest
+    finally:
+        if not stage_published and stage_root.exists():
+            shutil.rmtree(stage_root, ignore_errors=True)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

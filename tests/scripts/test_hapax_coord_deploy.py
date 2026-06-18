@@ -62,6 +62,18 @@ def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
         encoding="utf-8",
     )
     fake.chmod(0o755)
+    fake_mv = bin_dir / "mv"
+    fake_mv.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'if [ "${HAPAX_FAIL_RECEIPT_PROMOTE:-0}" = "1" ] '
+        '&& [ "${1:-}" = "-T" ] && [[ "${2:-}" == *.deployed-sha.tmp ]]; then\n'
+        "    exit 1\n"
+        "fi\n"
+        'exec /usr/bin/mv "$@"\n',
+        encoding="utf-8",
+    )
+    fake_mv.chmod(0o755)
     return bin_dir, calls
 
 
@@ -72,6 +84,7 @@ def _deploy(
     calls: Path,
     *,
     fail_restart: bool = False,
+    fail_receipt_promote: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
@@ -82,6 +95,8 @@ def _deploy(
     }
     if fail_restart:
         env["HAPAX_SYSTEMCTL_FAIL_RESTART"] = "1"
+    if fail_receipt_promote:
+        env["HAPAX_FAIL_RECEIPT_PROMOTE"] = "1"
     return subprocess.run(
         [str(SCRIPT)],
         cwd=REPO_ROOT,
@@ -197,4 +212,25 @@ def test_coord_deploy_rolls_activation_back_when_restart_fails(tmp_path: Path) -
     assert "restart failed; rolled activation worktree back" in result.stderr
     assert _activation_head(worktree) == sha_a
     assert (worktree / ".deployed-sha").read_text(encoding="utf-8").strip() == sha_a
+    assert len(_restart_calls(calls)) == 3
+
+
+def test_coord_deploy_rolls_service_back_when_receipt_promote_fails(
+    tmp_path: Path,
+) -> None:
+    repo, sha_a = _init_coord_repo(tmp_path)
+    act_root = tmp_path / "activation"
+    bin_dir, calls = _fake_systemctl(tmp_path)
+    first = _deploy(repo, act_root, bin_dir, calls)
+    assert first.returncode == 0, first.stderr
+    worktree = act_root / "worktree"
+
+    _commit_and_push(repo, "unreceipted update\n")
+    result = _deploy(repo, act_root, bin_dir, calls, fail_receipt_promote=True)
+
+    assert result.returncode == 1
+    assert "receipt write failed after restart; rolled activation worktree back" in result.stderr
+    assert _activation_head(worktree) == sha_a
+    assert (worktree / ".deployed-sha").read_text(encoding="utf-8").strip() == sha_a
+    assert not (worktree / ".deployed-sha.tmp").exists()
     assert len(_restart_calls(calls)) == 3

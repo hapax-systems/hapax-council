@@ -3,4 +3,4 @@ Description=Send failure notification for %i
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/lib/hapax-recovery/council/scripts/hapax-p0-incident-intake service-failed %i
+ExecStart=%h/.local/lib/hapax-recovery/council/current/scripts/hapax-p0-incident-intake service-failed %i
