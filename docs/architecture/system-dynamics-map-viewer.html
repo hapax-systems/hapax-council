@@ -5252,7 +5252,7 @@
     "expires_at": "2026-06-18T20:56:02Z",
     "freshness": "fresh",
     "source_ref": "docs/architecture/system-dynamics-map-v1.md",
-    "source_hash": "17d930f66f5c476237a40783a22c6b9de057e9253b2bb47fd6607da83d4ce1c0",
+    "source_hash": "0ded18003d4b0002df887941ce6110ae1159f55b7cc326a295495f9fe6f2b602",
     "source_type": "fixture",
     "evidence": [
       {
@@ -6675,13 +6675,15 @@
         group: "nodes",
         id: node.id(),
         label: node.data("label"),
-        meta: `${node.data("kind")} / ${node.data("layer")}`
+        meta: `${node.data("kind")} / ${node.data("layer")}`,
+        rank: search && elementText(node.data()).includes(search) ? 0 : 2
       }));
       const edgeItems = visibleEdges.map((edge) => ({
         group: "edges",
         id: edge.id(),
         label: relationLabel(edge.data("relation")),
-        meta: `${edge.source().data("label")} -> ${edge.target().data("label")}`
+        meta: `${edge.source().data("label")} -> ${edge.target().data("label")}`,
+        rank: search && elementText(edge.data()).includes(search) ? 0 : 1
       }));
       if (!search) {
         resultBox.innerHTML = `
@@ -6690,7 +6692,9 @@
         return;
       }
       const resultLimit = search ? 12 : 4;
-      const items = [...nodeItems, ...edgeItems].slice(0, resultLimit);
+      const items = [...nodeItems, ...edgeItems]
+        .sort((left, right) => left.rank - right.rank || left.label.localeCompare(right.label))
+        .slice(0, resultLimit);
       if (items.length === 0) {
         resultBox.innerHTML = `
           <p>No visible elements match the current filters.</p>
@@ -7091,7 +7095,9 @@
         return await response.json();
       } catch (error) {
         console.warn(`Falling back after ${path} failed.`, error);
-        dataHealthMessages.push(`${label || path} loaded from embedded fallback after fetch failed.`);
+        dataHealthMessages.push(
+          `${label || path} loaded from embedded fallback after fetch failed. Restore the companion data file or rerun scripts/system_dynamics_map_materialize.py.`
+        );
         return fallback;
       }
     }
@@ -7109,7 +7115,9 @@
         return text.split(/\n+/).filter(Boolean).map((line) => JSON.parse(line));
       } catch (error) {
         console.warn(`Falling back after ${path} failed.`, error);
-        dataHealthMessages.push(`${label || path} loaded from embedded fallback after fetch failed.`);
+        dataHealthMessages.push(
+          `${label || path} loaded from embedded fallback after fetch failed. Restore the companion data file or rerun scripts/system_dynamics_map_materialize.py.`
+        );
         return fallback;
       }
     }

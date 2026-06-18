@@ -303,13 +303,15 @@ The committed reference captures are:
 - `docs/architecture/system-dynamics-map-viewer-desktop.png`
 - `docs/architecture/system-dynamics-map-viewer-mobile.png`
 
-The AV-SDLC task evidence also carries copies under the closing task evidence
-directory.
+The portable recheck for committed reference captures is:
 
 ```bash
-test -f "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/_evidence/system-dynamics-map-viewer-ux-hardening-20260618/system-dynamics-map-viewer-ux-desktop.png"
-test -f "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/_evidence/system-dynamics-map-viewer-ux-hardening-20260618/system-dynamics-map-viewer-ux-mobile.png"
+test -f docs/architecture/system-dynamics-map-viewer-desktop.png
+test -f docs/architecture/system-dynamics-map-viewer-mobile.png
 ```
+
+The AV-SDLC task evidence also carries operator-local copies under the closing
+task evidence directory named in the cc-task dossier.
 
 ```bash
 (

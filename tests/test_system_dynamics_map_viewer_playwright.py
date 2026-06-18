@@ -153,12 +153,15 @@ def test_system_dynamics_viewer_core_interactions():
 
             page.get_by_label("Search").fill("advances_to")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().edges >= 1")
-            page.locator("#search-results").get_by_role(
-                "button", name=re.compile("Advances To")
-            ).click()
+            first_search_result = page.locator("#search-results [data-result-id]").first
+            assert "Advances To" in first_search_result.inner_text(), (
+                "relation-only search ranked a promoted endpoint before the matching edge. "
+                "Fix by ordering direct edge text matches ahead of endpoint promotions."
+            )
+            page.keyboard.press("Enter")
             assert page.locator("#panel").inner_text().startswith("SDLC Intake -> cc-task Claim"), (
-                "relation-only search did not surface the matching edge. "
-                "Fix by promoting endpoints for edge text matches before applying visibility."
+                "relation-only Enter search did not focus the matching edge. "
+                "Fix by ranking direct edge text matches before promoted endpoint nodes."
             )
             page.get_by_role("button", name="Copy View JSON").click()
             page.wait_for_function("window.__copiedViewJson")
