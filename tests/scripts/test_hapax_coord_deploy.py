@@ -247,6 +247,31 @@ def test_coord_deploy_materializes_activation_and_skips_up_to_date(
     ]
 
 
+def test_coord_deploy_reports_up_to_date_restart_failure(tmp_path: Path) -> None:
+    repo, _sha = _init_coord_repo(tmp_path)
+    act_root = tmp_path / "activation"
+    bin_dir, calls = _fake_systemctl(tmp_path)
+    first = _deploy(repo, act_root, bin_dir, calls)
+    assert first.returncode == 0, first.stderr
+
+    result = _deploy(
+        repo,
+        act_root,
+        bin_dir,
+        calls,
+        restart_if_up_to_date=True,
+        fail_restart=True,
+    )
+
+    assert result.returncode == 1
+    assert "coord-deploy: up-to-date restart failed (rc=1)" in result.stderr
+    assert "coord-deploy: reactivated" not in result.stdout
+    assert _restart_calls(calls) == [
+        "--user restart hapax-coord.service",
+        "--user restart hapax-coord.service",
+    ]
+
+
 def test_coord_deploy_refuses_when_single_writer_lock_is_held(tmp_path: Path) -> None:
     repo, _sha = _init_coord_repo(tmp_path)
     act_root = tmp_path / "activation"

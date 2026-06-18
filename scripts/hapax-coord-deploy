@@ -166,13 +166,14 @@ ACTIVATION_DIRTY="$(activation_dirty_entries)"
 if [ "$CURRENT_SHA" = "$TARGET_SHA" ] && [ "$DEPLOYED_SHA" = "$TARGET_SHA" ] && [ -z "$ACTIVATION_DIRTY" ]; then
     if [ "${HAPAX_COORD_DEPLOY_RESTART_IF_UP_TO_DATE:-0}" = "1" ]; then
         echo "coord-deploy: up to date at $TARGET_SHA; restarting hapax-coord"
-        if systemctl --user restart hapax-coord.service; then
+        restart_rc=0
+        systemctl --user restart hapax-coord.service || restart_rc=$?
+        if [ "$restart_rc" -eq 0 ]; then
             echo "coord-deploy: reactivated $TARGET_SHA"
             exit 0
         fi
-        rc=$?
-        echo "coord-deploy: up-to-date restart failed (rc=$rc); $RESTART_NEXT" >&2
-        exit "$rc"
+        echo "coord-deploy: up-to-date restart failed (rc=$restart_rc); $RESTART_NEXT" >&2
+        exit "$restart_rc"
     fi
     echo "coord-deploy: up to date at $TARGET_SHA"
     exit 0
