@@ -112,6 +112,20 @@ def test_active_phase_blocks_staged_live_ruler_change(
     assert frozen_path in output
 
 
+def test_active_phase_blocks_staged_research_record_prefix_change(tmp_path: Path) -> None:
+    repo = _repo_with_active_freeze(tmp_path)
+    frozen_path = "agents/hapax_daimonion/proofs/RESEARCH-STATE.md"
+    _write(repo, frozen_path, "changed\n")
+    _git(repo, "add", frozen_path)
+
+    result = _run_freeze_check(repo)
+
+    assert result.returncode == 1
+    output = result.stdout + result.stderr
+    assert "EXPERIMENT FREEZE" in output
+    assert frozen_path in output
+
+
 def test_active_phase_allows_staged_live_ruler_change_with_deviation(
     tmp_path: Path,
 ) -> None:
