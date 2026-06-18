@@ -231,13 +231,35 @@ git diff --check -- \
 For visual regression, serve `docs/architecture/` locally and capture the viewer:
 
 ```bash
-python3 -m http.server 8765 --bind 127.0.0.1 --directory docs/architecture
+(
+set -euo pipefail
+python3 -m http.server 8765 --bind 127.0.0.1 --directory docs/architecture \
+  >/tmp/system-dynamics-map-http.log 2>&1 &
+server_pid=$!
+trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+python3 - <<'PY'
+import socket
+import time
+
+deadline = time.time() + 5
+while time.time() < deadline:
+    try:
+        with socket.create_connection(("127.0.0.1", 8765), timeout=0.2):
+            raise SystemExit(0)
+    except OSError:
+        time.sleep(0.1)
+raise SystemExit("local docs server did not start on 127.0.0.1:8765")
+PY
+
 npx playwright screenshot --browser chromium --viewport-size 1440,960 \
   --wait-for-selector '#cy canvas' --wait-for-timeout 3000 --full-page \
   http://127.0.0.1:8765/system-dynamics-map-viewer.html /tmp/system-dynamics-map-viewer-desktop.png
 npx playwright screenshot --browser chromium --viewport-size 390,844 \
   --wait-for-selector '#cy canvas' --wait-for-timeout 3000 --full-page \
   http://127.0.0.1:8765/system-dynamics-map-viewer.html /tmp/system-dynamics-map-viewer-mobile.png
+kill "$server_pid" 2>/dev/null || true
+trap - EXIT
+)
 ```
 
 ## Source Notes

@@ -273,11 +273,13 @@ def test_materialized_rdf_artifacts_parse_and_match_seed_contract():
         assert (subject, SD.stableId, Literal(node["id"])) in partition
         assert (subject, RDFS.label, Literal(node["label"])) in partition
         assert (subject, SD.kind, Literal(node["kind"])) in partition
+        assert (subject, SD.layer, URIRef(BASE[f"layer/{node['layer']}"])) in partition
         assert (
             subject,
             SD.resolution,
             Literal(str(node["resolution"]), datatype=XSD_INTEGER),
         ) in partition
+        assert (subject, SD.status, Literal(node["status"])) in partition
         assert (subject, DCTERMS.description, Literal(node["summary"])) in partition
         assert (subject, SD.context, Literal(node["context"])) in partition
         assert (subject, SD.documentationLink, None) in partition
