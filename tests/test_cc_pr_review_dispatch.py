@@ -1251,14 +1251,22 @@ class TestFamilyOutageDegradation:
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
         self._isolate_state(monkeypatch, tmp_path)
+        mixed_diagnostic = (
+            "You've hit your weekly limit · resets Jun 19, 5pm "
+            "(America/Chicago)\nUNSUPPORTED_CLIENT"
+        )
+        assert dispatch.review_team.is_quota_wall(mixed_diagnostic, process_failed=True)
+        assert dispatch.review_team.is_reviewer_route_unavailable(
+            mixed_diagnostic,
+            process_failed=True,
+        )
 
         class MixedFailureRunner(RecordingReviewers):
             def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
                 self.invocations.append((seat.id, seat.family, prompt))
                 if seat.family == "claude":
                     raise dispatch.ReviewerProcessError(
-                        "You've hit your weekly limit · resets Jun 19, 5pm "
-                        "(America/Chicago)\nUNSUPPORTED_CLIENT",
+                        mixed_diagnostic,
                         returncode=1,
                     )
                 return GOOD_REPLY

@@ -336,6 +336,22 @@ def test_system_dynamics_viewer_core_interactions():
             )
             assert page.locator("#panel").inner_text().startswith("RDF / OWL Knowledge Graph")
 
+            page.evaluate("window.systemDynamicsMapRuntime.selectEdge('sdlc-intake-to-claim')")
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
+            page.get_by_label("Lens").focus()
+            page.get_by_label("Lens").press("Escape")
+            select_escape_payload = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload()"
+            )
+            assert select_escape_payload["selected"] is None, (
+                "focused-select Escape left stale selected edge state in current-view export. "
+                "Fix by handling Escape before the focused-control keyboard shortcut guard."
+            )
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 0, (
+                "focused-select Escape left a stale Cytoscape element selected. "
+                "Fix by routing focused select Escape through clearSelection()."
+            )
+
             page.get_by_label("Lens").select_option("topology")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
             page.evaluate("window.systemDynamicsMapRuntime.selectNode('dmn')")
