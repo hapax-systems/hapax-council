@@ -133,10 +133,10 @@ class TestLensRegistry:
         assert t1["require_all_families"] is True
         assert t1["criticals_must_resolve"] is True
 
-    def test_families_roster_covers_three_model_families(self) -> None:
+    def test_families_roster_covers_four_model_families(self) -> None:
         roster = _registry()["families"]
         families = {entry["family"] for entry in roster}
-        assert {"claude", "codex", "gemini"} <= families
+        assert {"claude", "codex", "gemini", "glm"} <= families
         for entry in roster:
             assert isinstance(entry["reviewer_command"], list) and entry["reviewer_command"]
             assert entry["timeout_seconds"] > 0
@@ -145,6 +145,8 @@ class TestLensRegistry:
         gemini_command = " ".join(str(part) for part in gemini["reviewer_command"])
         assert "fenced yaml code block" in gemini_command
         assert "ONLY the dossier YAML" not in gemini_command
+        glm = next(entry for entry in roster if entry["family"] == "glm")
+        assert glm["reviewer_command"] == ["scripts/hapax-glmcp-reviewer"]
 
     def test_claude_family_forces_bare_fence_output(self) -> None:
         """Claude (a reasoning model) must be given a bare-fence output directive,
@@ -176,7 +178,11 @@ class TestLensRegistry:
         lane_families = _registry()["lane_families"]
         assert lane_families["exact"]["zeta"] == "claude"
         assert lane_families["exact"]["iota"] == "gemini"
+        assert lane_families["exact"]["cx-glmcp"] == "glm"
+        assert lane_families["exact"]["codex-glmcp"] == "glm"
+        assert lane_families["exact"]["glmcp"] == "glm"
         assert lane_families["prefixes"]["cx-"] == "codex"
+        assert lane_families["prefixes"]["glm-"] == "glm"
         assert lane_families["default"] == "claude"
 
 
@@ -301,12 +307,19 @@ class TestConstitution:
         assert len(set(families)) >= 2
         assert families.count("claude") <= 1  # writer family never the majority alone
 
-    def test_t1_team_has_all_three_families(self) -> None:
+    def test_t1_team_has_all_registry_families(self) -> None:
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()
         team = rt.constitute_team("t1_critical", "claude", reg, pr_number=7)
         assert 4 <= len(team.seats) <= 5
-        assert {"claude", "codex", "gemini"} <= {seat.family for seat in team.seats}
+        roster = {entry["family"] for entry in reg["families"]}
+        assert roster <= {seat.family for seat in team.seats}
+
+    def test_t2_team_can_seat_glm_as_independent_family(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        team = rt.constitute_team("t2_standard", "claude", reg, pr_number=101)
+        assert "glm" in {seat.family for seat in team.seats}
 
     def test_t3_team_is_two_seats_two_families(self) -> None:
         rt = _load_review_team_module()
@@ -345,6 +358,9 @@ class TestConstitution:
         assert rt.writer_family_for_lane("zeta", reg) == "claude"
         assert rt.writer_family_for_lane("cx-gold", reg) == "codex"
         assert rt.writer_family_for_lane("iota", reg) == "gemini"
+        assert rt.writer_family_for_lane("cx-glmcp", reg) == "glm"
+        assert rt.writer_family_for_lane("codex-glmcp", reg) == "glm"
+        assert rt.writer_family_for_lane("glm-alpha", reg) == "glm"
         assert rt.writer_family_for_lane(None, reg) == "claude"
         assert rt.writer_family_for_lane("mystery-lane", reg) == "claude"
 
@@ -543,7 +559,7 @@ class TestSynthesizeDossier:
                 _review("codex-1", "codex", "accept"),
                 _review("gemini-1", "gemini", "accept"),
                 _review("claude-1", "claude", "accept"),
-                _review("codex-2", "codex", "accept-with-findings"),
+                _review("glm-1", "glm", "accept"),
             ],
             team_class="t1_critical",
         )
@@ -939,7 +955,85 @@ class TestFamilyOutageDegradation:
         assert rt.is_quota_wall("HTTP 429 Too Many Requests", process_failed=True)
         assert rt.is_quota_wall("RESOURCE_EXHAUSTED: Quota exceeded", process_failed=True)
         assert rt.is_quota_wall("rate limit reached for requests", process_failed=True)
+        assert rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 429: "
+            '{"error":{"message":"Quota exceeded"}}; retry later or check the '
+            "Z.ai Coding Plan endpoint/status",
+            process_failed=True,
+        )
+        assert rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 429: "
+            '{"error":{"message":"insufficient balance"}}; retry later or check the '
+            "Z.ai Coding Plan endpoint/status",
+            process_failed=True,
+        )
         assert not rt.is_quota_wall("failed while checking line 429", process_failed=True)
+        assert not rt.is_quota_wall(
+            "HTTP 529: The service may be temporarily overloaded, please try again later",
+            process_failed=True,
+        )
+
+    def test_provider_outage_variants_classify_on_process_failure(self) -> None:
+        rt = _load_review_team_module()
+        assert rt.is_provider_outage(
+            "HTTP 529: The service may be temporarily overloaded, please try again later",
+            process_failed=True,
+        )
+        assert rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 529: "
+            '{"error":"The service may be temporarily overloaded, please try again later"}',
+            process_failed=True,
+        )
+        assert rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 429: "
+            '{"error":{"code":"1305","message":"The service may be temporarily overloaded, '
+            'please try again later"}}; retry later or check the Z.ai Coding Plan endpoint/status',
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 429: "
+            '{"error":{"message":"Quota exceeded"}}; retry later or check the '
+            "Z.ai Coding Plan endpoint/status",
+            process_failed=True,
+        )
+        assert rt.is_provider_outage(
+            'hapax-glmcp-reviewer: api error: HTTP 529: {\n  "error": {\n'
+            '    "message": "The service may be temporarily overloaded, please try again later"\n'
+            "  }\n}",
+            process_failed=True,
+        )
+        assert rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 502: Bad Gateway; "
+            "retry later or check the Z.ai Coding Plan endpoint/status",
+            process_failed=True,
+        )
+        for status in ("500", "501", "520", "530", "599"):
+            assert rt.is_provider_outage(
+                f"hapax-glmcp-reviewer: api error: HTTP {status}: provider failure; "
+                "retry later or check the Z.ai Coding Plan endpoint/status",
+                process_failed=True,
+            )
+        assert rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: network error: connection reset; "
+            "retry later or check the Z.ai Coding Plan endpoint",
+            process_failed=True,
+        )
+        assert rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: request timed out after 900s; "
+            "retry later or reduce the review prompt size",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 529: "
+            '{"error":"The service may be temporarily overloaded, please try again later"}',
+            process_failed=False,
+        )
+        assert not rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 529: "
+            '{"error":"The service may be temporarily overloaded, please try again later"}',
+            process_failed=True,
+            model_stdout="```yaml\nverdict: block\n```",
+        )
 
     def test_clean_exit_text_never_counts_as_wall_evidence(self) -> None:
         # round-6 channel trust: model-influenced stdout cannot forge a wall,

@@ -24,7 +24,7 @@ Usage::
 
 Default mode is a dry-run constitution plan. ``--apply`` dispatches reviewers
 and writes the dossier; ``--force`` re-reviews an already-reviewed head sha.
-Reviewer CLIs (claude/codex/gemini) are configured in
+Reviewer CLIs (claude/codex/gemini/glm) are configured in
 ``config/review-lenses/registry.yaml`` ``families[].reviewer_command``.
 """
 
@@ -75,6 +75,11 @@ SEND_SCRIPTS = {
     "claude": "hapax-claude-send",
     "codex": "hapax-codex-send",
     "gemini": "hapax-gemini-send",
+    "glm": "hapax-codex-send",
+}
+SEND_SESSION_ALIASES = {
+    "codex-glmcp": "cx-glmcp",
+    "glmcp": "cx-glmcp",
 }
 YAML_FENCE_FULL_RE = re.compile(r"\A```ya?ml\s*\n(.*?)```\s*\Z", re.DOTALL)
 PARSEABLE_VERDICTS = {"accept", "accept-with-findings", "block"}
@@ -125,8 +130,8 @@ def update_family_outage(
     """Fold a round's seat verdicts into the outage state.
 
     All seats of a family walled -> family OUT (stamped now). Any parseable
-    verdict from a family -> family back (cleared). invalid-output alone is
-    ambiguous and leaves the state untouched.
+    verdict or invalid-output from a family -> family back (cleared), because
+    the family is responding even if its reply is unusable.
     """
 
     state_path = state_path or FAMILY_OUTAGE_STATE
@@ -144,10 +149,11 @@ def update_family_outage(
             by_family: dict[str, list[str]] = {}
             for r in reviews:
                 by_family.setdefault(str(r.get("family")), []).append(str(r.get("verdict")))
+            available_verdicts = PARSEABLE_VERDICTS | {"invalid-output"}
             for family, verdicts in by_family.items():
-                if all(v == "quota-wall" for v in verdicts):
+                if all(v in review_team.FAMILY_OUTAGE_VERDICTS for v in verdicts):
                     state[family] = now_iso
-                elif any(v in PARSEABLE_VERDICTS for v in verdicts):
+                elif any(v in available_verdicts for v in verdicts):
                     state.pop(family, None)
             with tempfile.NamedTemporaryFile(
                 "w",
@@ -552,8 +558,12 @@ def dispatch_reviews(
                 walled = review_team.is_quota_wall(
                     quota_wall_output, process_failed=True, model_stdout=quota_wall_stdout
                 )
+                provider_outage = review_team.is_provider_outage(
+                    quota_wall_output, process_failed=True, model_stdout=quota_wall_stdout
+                )
             else:
                 walled = False
+                provider_outage = False
             if walled:
                 LOG.warning(
                     "reviewer %s (%s) hit a provider quota wall -> verdict quota-wall",
@@ -561,6 +571,13 @@ def dispatch_reviews(
                     seat.family,
                 )
                 verdict = "quota-wall"
+            elif provider_outage:
+                LOG.warning(
+                    "reviewer %s (%s) hit provider availability failure -> verdict provider-outage",
+                    seat.id,
+                    seat.family,
+                )
+                verdict = "provider-outage"
             else:
                 LOG.warning("reviewer %s output unparseable -> verdict invalid-output", seat.id)
                 verdict = "invalid-output"
@@ -820,11 +837,12 @@ def auto_wake(
     lane = str(frontmatter.get("assigned_to") or "").strip().lower()
     family = review_team.writer_family_for_lane(lane, registry)
     send_script = SEND_SCRIPTS.get(family)
+    send_session = SEND_SESSION_ALIASES.get(lane, lane)
     if lane and send_script:
         cmd = [
             str(SCRIPTS_DIR / send_script),
             "--session",
-            lane,
+            send_session,
             "--",
             f"Review-team {dossier['review_team_verdict']} on PR #{dossier['pr']} "
             f"({task_id}): resolve findings at {wake_path}",
@@ -1134,7 +1152,7 @@ def review_pr(
             dead = [
                 str(r.get("id") or r.get("family"))
                 for r in reviews
-                if str(r.get("verdict")) in ("invalid-output", "quota-wall")
+                if str(r.get("verdict")) in ("invalid-output", "quota-wall", "provider-outage")
             ]
             dossier["no_quorum_cause"] = (
                 f"dead reviewers: {', '.join(dead)}" if dead else "verdict split below quorum"

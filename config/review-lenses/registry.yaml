@@ -98,6 +98,20 @@ families:
   - family: gemini
     reviewer_command: ["gemini", "--skip-trust", "--approval-mode", "plan", "--policy", "config/review-lenses/gemini-review-policy.json", "-p", "You are a blind PR reviewer invoked non-interactively, reviewing ONLY the UNIFIED DIFF on stdin. You have no repository access -- do not assume facts not visible in the diff. The leading plus/minus/space line prefixes, the @@ hunk headers, and diff --git / +++ / --- lines are DIFF SYNTAX, not source code. These changes ALREADY PASSED the repository required CI gates (lint, typecheck, compile, test), so a genuine syntax error cannot be present: do NOT raise IndentationError, SyntaxError, invalid-decorator, invalid-shell-expansion, or invalid-systemd-unit-syntax findings above minor severity (for example, systemd template references like notify-failure@%n.service are valid, and a doubled .service in an instantiated template name is correct). The %h/.cache/hapax/source-activation/worktree path is the canonical governed deploy tree pinned by source-activation, not a volatile cache -- do not flag units that reference it. Spend the review on logic correctness, security, error handling, and interface or contract issues visible in the diff. Reply with exactly one fenced yaml code block and no prose."]
     timeout_seconds: 1200
+  - family: glm
+    # Emergency outage procedure: GLM degrades out of a constitution only with
+    # a fresh family-outage witness in
+    # ~/.cache/hapax/review-team/family-outage.json, normally written when the
+    # seat returns quota-wall/provider-outage. For a hard GLM adapter/pass/
+    # provider failure outside those classifiers, open a governed incident
+    # note, seed {"glm": "<current ISO timestamp>"} in that witness file, and
+    # rerun dispatch; admission enforces the same FAMILY_OUTAGE_TTL_S expiry.
+    # Recheck witness: python -c 'import json,pathlib; p=pathlib.Path.home()/".cache/hapax/review-team/family-outage.json"; print(json.loads(p.read_text()).get("glm"))'
+    # Broad emergency stops remain HAPAX_REVIEW_TEAM_DISPATCH_OFF=1
+    # (stop writing dossiers) and HAPAX_REVIEW_TEAM_GATE_OFF=1 (admission
+    # bypass only under operator/governance authority).
+    reviewer_command: ["scripts/hapax-glmcp-reviewer"]
+    timeout_seconds: 1200
 
 # Authoring-lane -> model family (writer's family never holds the majority
 # alone). vibe lanes never review (off-limits surfaces per CLAUDE.md).
@@ -115,7 +129,11 @@ lane_families:
     kappa: gemini
     lambda: gemini
     mu: gemini
+    cx-glmcp: glm
+    codex-glmcp: glm
+    glmcp: glm
   prefixes:
     cx-: codex
+    glm-: glm
     vbe-: vibe
   default: claude

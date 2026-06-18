@@ -1,6 +1,6 @@
 """Tests for ``scripts/cc-pr-review-dispatch.py`` — the review-team dispatcher.
 
-Reviewer CLIs are stubbed via the injected ``reviewer_runner``; GitHub via the
+    Reviewer CLIs are stubbed via the injected ``reviewer_runner``; GitHub via the
 injected ``gh_runner``. The exit-predicate integration test at the bottom runs
 a test PR through the dispatcher and shows cc-pr-autoqueue blocks without the
 produced dossier and admits with it.
@@ -16,6 +16,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -36,6 +37,12 @@ def _load(name: str, filename: str) -> ModuleType:
 
 
 dispatch = _load("cc_pr_review_dispatch", "cc-pr-review-dispatch.py")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_outage_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(dispatch, "FAMILY_OUTAGE_STATE", tmp_path / "family-outage.json")
+    monkeypatch.setattr(dispatch, "DEGRADED_MERGES_LEDGER", tmp_path / "degraded-merges.jsonl")
 
 
 def _make_vault(tmp_path: Path) -> Path:
@@ -583,7 +590,7 @@ checklist: {}
         assert reviewers2.invocations == []
 
     def test_same_head_blocked_dossier_skips_without_force(self, tmp_path: Path) -> None:
-        first_reviewers = RecordingReviewers(replies={"claude": BLOCK_REPLY})
+        first_reviewers = RecordingReviewers(replies={"codex": BLOCK_REPLY})
         first, _, _, note = _review(tmp_path, reviewers=first_reviewers)
         assert first["dossier"]["review_team_verdict"] == "blocked"
 
@@ -778,7 +785,7 @@ class TestReceiptAndWake:
         assert (note.parent / "task-a.acceptance.yaml").is_file()
 
     def test_gate_rejected_dossier_does_not_write_acceptance_receipt(self, tmp_path: Path) -> None:
-        reviewers = RecordingReviewers(replies={"claude": BLOCK_REPLY})
+        reviewers = RecordingReviewers(replies={"codex": BLOCK_REPLY})
         result, _, _, note = _review(
             tmp_path,
             task_kwargs={"quality_floor": "frontier_review_required"},
@@ -873,7 +880,7 @@ class TestReceiptAndWake:
 
     def test_block_with_critical_fires_auto_wake(self, tmp_path: Path) -> None:
         sent: list[list[str]] = []
-        reviewers = RecordingReviewers(replies={"claude": BLOCK_REPLY})
+        reviewers = RecordingReviewers(replies={"codex": BLOCK_REPLY})
         result, _, _, note = _review(
             tmp_path,
             reviewers=reviewers,
@@ -892,9 +899,25 @@ class TestReceiptAndWake:
         assert sent, "auto-wake send was not attempted"
         assert "zeta" in " ".join(sent[0])
 
+    def test_glmcp_authoring_lane_auto_wakes_via_codex_sender(self, tmp_path: Path) -> None:
+        sent: list[list[str]] = []
+        reviewers = RecordingReviewers(replies={"codex": BLOCK_REPLY})
+        result, _, _, _ = _review(
+            tmp_path,
+            reviewers=reviewers,
+            send_runner=lambda cmd: sent.append(list(cmd)),
+            task_kwargs={"assigned_to": "codex-glmcp"},
+        )
+
+        assert result["dossier"]["writer_family"] == "glm"
+        assert result["dossier"]["review_team_verdict"] == "blocked"
+        assert sent, "auto-wake send was not attempted"
+        assert sent[0][0].endswith("hapax-codex-send")
+        assert sent[0][1:3] == ["--session", "cx-glmcp"]
+
     def test_existing_wake_payload_is_not_resent(self, tmp_path: Path) -> None:
         sent: list[list[str]] = []
-        reviewers = RecordingReviewers(replies={"claude": BLOCK_REPLY})
+        reviewers = RecordingReviewers(replies={"codex": BLOCK_REPLY})
         _, _, _, note = _review(
             tmp_path,
             reviewers=reviewers,
@@ -1001,6 +1024,37 @@ class TestNoQuorumRecovery:
         assert len(wake_files) == 1, "no-quorum must wake the orchestrating lane"
         assert sent, "auto-wake send was not attempted"
 
+    def test_no_quorum_cause_names_provider_outage_reviewers(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(dispatch, "FAMILY_OUTAGE_STATE", tmp_path / "family-outage.json")
+
+        class ProviderOutageRunner(RecordingReviewers):
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.invocations.append((seat.id, seat.family, prompt))
+                if seat.family == "codex":
+                    raise dispatch.ReviewerProcessError(
+                        "HTTP 500: Internal Server Error; retry later or check the provider status",
+                        returncode=1,
+                    )
+                if seat.family == "gemini":
+                    return "no yaml here"
+                return GOOD_REPLY
+
+        result, _, _, note = _review(tmp_path, reviewers=ProviderOutageRunner())
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        assert result["dossier"]["review_team_verdict"] == "no-quorum"
+        assert dossier["no_quorum_cause"].startswith("dead reviewers: ")
+        dead = {
+            reviewer.strip()
+            for reviewer in dossier["no_quorum_cause"].removeprefix("dead reviewers: ").split(",")
+        }
+        assert dead == {"codex-1", "gemini-1"}
+        codex_seats = [r for r in dossier["reviewers"] if r["family"] == "codex"]
+        assert codex_seats and codex_seats[0]["verdict"] == "provider-outage"
+
 
 class TestFamilyOutageDegradation:
     """Postmortem 2026-06-12 failure class #1 (REVIEW-FAMILY-WALL-BLINDNESS):
@@ -1032,7 +1086,11 @@ class TestFamilyOutageDegradation:
                 return GOOD_REPLY
 
         reviewers = StderrWallRunner()
-        result, _, _, _ = _review(tmp_path, reviewers=reviewers)
+        result, _, _, _ = _review(
+            tmp_path,
+            reviewers=reviewers,
+            task_kwargs={"assigned_to": "cx-gold"},
+        )
         dossier = result["dossier"]
         claude_seats = [r for r in dossier["reviewers"] if r["family"] == "claude"]
         assert claude_seats, "harness must seat a claude reviewer at t2"
@@ -1043,7 +1101,11 @@ class TestFamilyOutageDegradation:
     ) -> None:
         self._isolate_state(monkeypatch, tmp_path)
         reviewers = RecordingReviewers(replies={"claude": "HTTP 429 Too Many Requests"})
-        result, _, _, _ = _review(tmp_path, reviewers=reviewers)
+        result, _, _, _ = _review(
+            tmp_path,
+            reviewers=reviewers,
+            task_kwargs={"assigned_to": "cx-gold"},
+        )
         dossier = result["dossier"]
         claude_seats = [r for r in dossier["reviewers"] if r["family"] == "claude"]
         assert claude_seats, "harness must seat a claude reviewer at t2"
@@ -1065,13 +1127,17 @@ class TestFamilyOutageDegradation:
                     )
                 return GOOD_REPLY
 
-        result, _, _, _ = _review(tmp_path, reviewers=StdoutWallRunner())
+        result, _, _, _ = _review(
+            tmp_path,
+            reviewers=StdoutWallRunner(),
+            task_kwargs={"assigned_to": "cx-gold"},
+        )
         dossier = result["dossier"]
         claude_seats = [r for r in dossier["reviewers"] if r["family"] == "claude"]
         assert claude_seats, "harness must seat a claude reviewer at t2"
         assert all(r["verdict"] == "invalid-output" for r in claude_seats)
 
-    def test_nonzero_stdout_exact_provider_wall_does_not_forge(
+    def test_nonzero_stdout_exact_provider_wall_records_quota_wall(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
         self._isolate_state(monkeypatch, tmp_path)
@@ -1083,15 +1149,19 @@ class TestFamilyOutageDegradation:
                     raise dispatch.ReviewerProcessError(
                         "",
                         returncode=1,
-                        stdout="You've hit your session limit · resets 10pm (America/Chicago)",
+                        stdout="You've hit your weekly limit · resets Jun 19, 5pm (America/Chicago)",
                     )
                 return GOOD_REPLY
 
-        result, _, _, _ = _review(tmp_path, reviewers=StdoutWallRunner())
+        result, _, _, _ = _review(
+            tmp_path,
+            reviewers=StdoutWallRunner(),
+            task_kwargs={"assigned_to": "cx-gold"},
+        )
         dossier = result["dossier"]
         claude_seats = [r for r in dossier["reviewers"] if r["family"] == "claude"]
         assert claude_seats, "harness must seat a claude reviewer at t2"
-        assert all(r["verdict"] == "invalid-output" for r in claude_seats)
+        assert all(r["verdict"] == "quota-wall" for r in claude_seats)
 
     def test_walled_round_records_the_family_outage(self, monkeypatch: Any, tmp_path: Path) -> None:
         state, _ = self._isolate_state(monkeypatch, tmp_path)
@@ -1105,9 +1175,37 @@ class TestFamilyOutageDegradation:
                 return GOOD_REPLY
 
         reviewers = StderrWallRunner()
-        _review(tmp_path, reviewers=reviewers)
+        _review(tmp_path, reviewers=reviewers, task_kwargs={"assigned_to": "cx-gold"})
         recorded = json.loads(state.read_text(encoding="utf-8"))
         assert "claude" in recorded
+
+    def test_provider_outage_round_records_the_family_outage(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+
+        dispatch.update_family_outage(
+            [{"family": "glm", "verdict": "provider-outage"}],
+            "2026-06-12T21:00:00+00:00",
+            state,
+        )
+
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded == {"glm": "2026-06-12T21:00:00+00:00"}
+
+    def test_invalid_output_clears_stale_family_outage(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(json.dumps({"glm": "2026-06-12T20:00:00+00:00"}), encoding="utf-8")
+
+        dispatch.update_family_outage(
+            [{"family": "glm", "verdict": "invalid-output"}],
+            "2026-06-12T21:00:00+00:00",
+            state,
+        )
+
+        assert json.loads(state.read_text(encoding="utf-8")) == {}
 
     def test_family_outage_update_takes_exclusive_lock(
         self, monkeypatch: Any, tmp_path: Path
@@ -1254,3 +1352,31 @@ class TestFamilyOutageDegradation:
             raise AssertionError("nonzero exit must raise ReviewerProcessError")
         except dispatch.ReviewerProcessError as exc:
             assert dispatch.review_team.is_quota_wall(exc.output, process_failed=True)
+
+    def test_provider_outage_on_stderr_becomes_provider_outage(self) -> None:
+        constitution = dispatch.review_team.Constitution(
+            team_class="t2_standard",
+            quorum_required=2,
+            seats=(dispatch.review_team.Seat(id="glm-1", family="glm"),),
+            notes=(),
+        )
+        registry = {
+            "families": [
+                {
+                    "family": "glm",
+                    "reviewer_command": ["scripts/hapax-glmcp-reviewer"],
+                    "timeout_seconds": 30,
+                }
+            ]
+        }
+
+        def runner(_seat: Any, _family_cfg: dict[str, Any], _prompt: str) -> str:
+            raise dispatch.ReviewerProcessError(
+                "hapax-glmcp-reviewer: api error: HTTP 529: "
+                '{"error":"The service may be temporarily overloaded, please try again later"}',
+                returncode=1,
+            )
+
+        reviews = dispatch.dispatch_reviews(constitution, ["prompt"], registry, runner)
+
+        assert reviews[0]["verdict"] == "provider-outage"
