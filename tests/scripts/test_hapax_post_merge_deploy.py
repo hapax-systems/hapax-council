@@ -188,6 +188,33 @@ def _repo_with_recovery_bundle_change(tmp_path: Path) -> tuple[Path, str]:
     return repo, _git(repo, "rev-parse", "HEAD")
 
 
+def _repo_with_recovery_bundle_missing_installer(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "trace-test@example.test")
+    _git(repo, "config", "user.name", "Trace Test")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "base without recovery installer")
+    shared = repo / "shared" / "p0_incident_intake.py"
+    shared.parent.mkdir(parents=True)
+    shared.write_text("# changed intake closure\n", encoding="utf-8")
+    _git(repo, "add", "shared/p0_incident_intake.py")
+    _git(repo, "commit", "-m", "update recovery intake closure")
+    return repo, _git(repo, "rev-parse", "HEAD")
+
+
+def _repo_with_recovery_script_change(tmp_path: Path) -> tuple[Path, str]:
+    repo, _sha = _repo_with_recovery_bundle_change(tmp_path)
+    coord_deploy = repo / "scripts" / "hapax-coord-deploy"
+    coord_deploy.write_text("#!/usr/bin/env bash\necho coord deploy changed\n", encoding="utf-8")
+    coord_deploy.chmod(0o755)
+    _git(repo, "add", "scripts/hapax-coord-deploy")
+    _git(repo, "commit", "-m", "update recovery coord deploy")
+    return repo, _git(repo, "rev-parse", "HEAD")
+
+
 def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
     calls = tmp_path / "systemctl-calls.txt"
     bin_dir = tmp_path / "bin"
@@ -576,6 +603,11 @@ def test_quake_asset_changes_install_and_restart_active_darkplaces(tmp_path: Pat
 
 def test_recovery_bundle_changes_refresh_stable_installed_closure(tmp_path: Path) -> None:
     repo, sha = _repo_with_recovery_bundle_change(tmp_path)
+    (repo / "scripts" / "hapax-recovery-plane-install").write_text(
+        "#!/usr/bin/env bash\nexit 99\n",
+        encoding="utf-8",
+    )
+    (repo / "scripts" / "hapax-recovery-plane-install").chmod(0o644)
     home = tmp_path / "home"
     install_calls = tmp_path / "recovery-install-calls.txt"
     trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
@@ -605,9 +637,39 @@ def test_recovery_bundle_changes_refresh_stable_installed_closure(tmp_path: Path
     assert "recovery_bundle" in record["avsdlc"]["runtime_media_witness_groups"]
 
 
-def test_recovery_bundle_missing_installer_error_names_next_action(tmp_path: Path) -> None:
-    repo, sha = _repo_with_recovery_bundle_change(tmp_path)
-    (repo / "scripts" / "hapax-recovery-plane-install").chmod(0o644)
+def test_recovery_script_changes_refresh_stable_installed_closure(tmp_path: Path) -> None:
+    repo, sha = _repo_with_recovery_script_change(tmp_path)
+    install_calls = tmp_path / "recovery-install-calls.txt"
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path / "home"),
+        "REPO": str(repo),
+        "HAPAX_RECOVERY_INSTALL_CALLS": str(install_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "recovery bundle files changed (1)" in result.stdout
+    assert install_calls.read_text(encoding="utf-8").splitlines() == [
+        f"--source {repo} --source-ref {sha}"
+    ]
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["deploy_groups"]["recovery_bundle"] == ["scripts/hapax-coord-deploy"]
+
+
+def test_recovery_bundle_missing_installer_at_sha_error_names_next_action(
+    tmp_path: Path,
+) -> None:
+    repo, sha = _repo_with_recovery_bundle_missing_installer(tmp_path)
     env = {
         **os.environ,
         "HOME": str(tmp_path / "home"),
@@ -624,8 +686,8 @@ def test_recovery_bundle_missing_installer_error_names_next_action(tmp_path: Pat
     )
 
     assert result.returncode == 2
-    assert "missing executable recovery bundle installer" in result.stderr
-    assert "next: ensure scripts/hapax-recovery-plane-install" in result.stderr
+    assert "missing recovery bundle installer at" in result.stderr
+    assert "next: ensure scripts/hapax-recovery-plane-install exists" in result.stderr
     assert "rerun hapax-post-merge-deploy" in result.stderr
 
 

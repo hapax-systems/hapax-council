@@ -940,13 +940,22 @@ if [ "${#RECOVERY_BUNDLE[@]}" -gt 0 ]; then
     for f in "${RECOVERY_BUNDLE[@]}"; do
         echo "  $f"
     done
-    RECOVERY_INSTALLER="$REPO/scripts/hapax-recovery-plane-install"
-    if [ ! -x "$RECOVERY_INSTALLER" ]; then
-        echo "hapax-post-merge-deploy: missing executable recovery bundle installer: $RECOVERY_INSTALLER; next: ensure scripts/hapax-recovery-plane-install is present and executable at the deployed source-activation SHA, then rerun hapax-post-merge-deploy for this merge" \
-            >&2
+    RECOVERY_INSTALLER_PATH="scripts/hapax-recovery-plane-install"
+    if ! git cat-file -e "$SHA:$RECOVERY_INSTALLER_PATH" 2>/dev/null; then
+        echo "hapax-post-merge-deploy: missing recovery bundle installer at $SHA:$RECOVERY_INSTALLER_PATH; next: ensure scripts/hapax-recovery-plane-install exists at the deployed source-activation SHA, then rerun hapax-post-merge-deploy for this merge" >&2
         exit 2
     fi
+    RECOVERY_INSTALLER="$(mktemp)"
+    git show "$SHA:$RECOVERY_INSTALLER_PATH" > "$RECOVERY_INSTALLER"
+    chmod +x "$RECOVERY_INSTALLER"
+    set +e
     "$RECOVERY_INSTALLER" --source "$REPO" --source-ref "$SHA"
+    recovery_installer_rc=$?
+    set -e
+    rm -f "$RECOVERY_INSTALLER"
+    if [ "$recovery_installer_rc" -ne 0 ]; then
+        exit "$recovery_installer_rc"
+    fi
     DID_ANYTHING=1
 fi
 
