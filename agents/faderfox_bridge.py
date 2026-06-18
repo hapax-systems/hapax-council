@@ -46,6 +46,7 @@ DEFAULT_CONFIG = (
 # ALSA/mido port name fragments for the MX12.
 PORT_PATTERNS = ("MX12", "Faderfox")
 RECONNECT_S = 3.0
+PICKUP_TOLERANCE_CC = 2
 
 # node.name -> PipeWire object id cache (invalidated on a failed wpctl call).
 _id_cache: dict[str, int] = {}
@@ -159,6 +160,96 @@ def get_mute(node_name: str) -> bool | None:
     return "muted" in text
 
 
+def _parse_wpctl_volume(text: str) -> float | None:
+    match = re.search(r"\bVolume:\s*([0-9]+(?:\.[0-9]+)?)", text)
+    if match is None:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def get_volume(node_name: str) -> float | None:
+    proc = _wpctl(["get-volume"], node_name)
+    if proc is None:
+        return None
+    return _parse_wpctl_volume(f"{proc.stdout}\n{proc.stderr}")
+
+
+def _cc_to_volume(fader: dict, value: int) -> float:
+    scale = float(fader.get("scale", 1.0))
+    return (value / 127.0) * scale
+
+
+def _volume_to_cc(fader: dict, volume: float) -> int:
+    scale = max(float(fader.get("scale", 1.0)), 0.001)
+    normalized = max(0.0, min(volume / scale, 1.0))
+    return round(normalized * 127)
+
+
+def resync_faders(faders: dict[tuple[int, int], dict]) -> None:
+    """Seed pickup targets from current PipeWire volume without writing volume.
+
+    The MX12 sends absolute CC values. After a bridge restart, the physical
+    fader position can be stale relative to PipeWire; pickup mode ignores
+    fader moves until the hardware meets or crosses the current live value.
+    """
+    for fader in faders.values():
+        volume = get_volume(fader["target"])
+        if volume is None:
+            fader.pop("_pickup_target", None)
+            fader.pop("_pickup_last_value", None)
+            log.warning(
+                "fader %s -> %s resync skipped; volume state unavailable",
+                fader.get("label"),
+                fader["target"],
+            )
+            continue
+        fader["_pickup_target"] = _volume_to_cc(fader, volume)
+        fader["_pickup_last_value"] = None
+        log.info(
+            "fader %s -> %s pickup target=%s from volume=%.3f",
+            fader.get("label"),
+            fader["target"],
+            fader["_pickup_target"],
+            volume,
+        )
+
+
+def _pickup_ready(fader: dict, value: int) -> bool:
+    target = fader.get("_pickup_target")
+    if target is None:
+        return True
+    last_value = fader.get("_pickup_last_value")
+    within_tolerance = abs(value - int(target)) <= PICKUP_TOLERANCE_CC
+    crossed_target = last_value is not None and (
+        int(last_value) <= int(target) <= value or int(last_value) >= int(target) >= value
+    )
+    if within_tolerance or crossed_target:
+        fader.pop("_pickup_target", None)
+        fader.pop("_pickup_last_value", None)
+        return True
+    fader["_pickup_last_value"] = value
+    log.debug(
+        "fader %s -> %s pickup pending: value=%s target=%s",
+        fader.get("label"),
+        fader["target"],
+        value,
+        target,
+    )
+    return False
+
+
+def _handle_fader(fader: dict, value: int) -> bool:
+    if not _pickup_ready(fader, value):
+        return False
+    vol = _cc_to_volume(fader, value)
+    set_volume(fader["target"], vol)
+    log.debug("fader %s -> %s vol=%.3f", fader.get("label"), fader["target"], vol)
+    return True
+
+
 def load_map(path: str | Path) -> tuple[dict, dict]:
     """Load fader + button maps keyed by (0-indexed channel, cc)."""
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
@@ -187,6 +278,8 @@ def run(config_path: str | Path, *, learn: bool = False) -> None:
             time.sleep(RECONNECT_S)
             continue
         log.info("MX12 connected: %s", getattr(inport, "name", "?"))
+        if not learn:
+            resync_faders(faders)
         try:
             while True:
                 # Drain-and-coalesce: a fader sweep emits dozens of CCs; applying
@@ -211,10 +304,7 @@ def run(config_path: str | Path, *, learn: bool = False) -> None:
                     continue
                 for key, value in latest_fader.items():
                     fader = faders[key]
-                    scale = float(fader.get("scale", 1.0))
-                    vol = (value / 127.0) * scale
-                    set_volume(fader["target"], vol)
-                    log.debug("fader %s -> %s vol=%.3f", fader.get("label"), fader["target"], vol)
+                    _handle_fader(fader, value)
                 for key, value in button_events:
                     msg_value = value
                     _handle_button(buttons[key], msg_value)
