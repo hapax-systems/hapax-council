@@ -119,9 +119,17 @@ jobs:
             return 1
           }
 
+          is_system_dynamics_map_authority_path() {
+            local path="$1"
+            case "$path" in
+              docs/architecture/system-dynamics-map*|docs/architecture/vendor/cytoscape-*.js) return 0 ;;
+            esac
+            return 1
+          }
+
           docs_only_path() {
             local path="$1"
-            if is_audio_authority_path "$path"; then
+            if is_audio_authority_path "$path" || is_system_dynamics_map_authority_path "$path"; then
               return 1
             fi
             case "$path" in
@@ -429,6 +437,8 @@ jobs:
             || (echo "font install failed (fc-list)" >&2; exit 1)
       - name: Sync uv ci extras for full pytest
         run: uv sync --extra ci --frozen
+      - name: Install Playwright Chromium
+        run: uv run --no-sync playwright install chromium
       - name: Verify Pango can resolve Px437 IBM VGA 8x16
         # Pango consults fontconfig but has its own per-process cache; a
         # Pango-level probe confirms the HARDM render path will see the
@@ -751,6 +761,9 @@ jobs:
       - name: Sync uv ci extras for full pytest
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
         run: uv sync --extra ci --frozen
+      - name: Install Playwright Chromium
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
+        run: uv run --no-sync playwright install chromium
       - name: Verify Pango can resolve Px437 IBM VGA 8x16
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
         # Pango consults fontconfig but has its own per-process cache; a

@@ -119,6 +119,13 @@ class TestLensRegistry:
         referenced = set(re.findall(r"[a-z-]+(?= lens)", low))
         assert "trust-boundary" not in referenced, consent_line
 
+    def test_gemini_prompt_names_rdf_prefix_directives_as_valid_syntax(self) -> None:
+        reg = _registry()
+        gemini = next(row for row in reg["families"] if row["family"] == "gemini")
+        prompt = gemini["reviewer_command"][-1]
+        assert "RDF/Turtle/TriG `@prefix` directives are valid source syntax" in prompt
+        assert "path-like corruption" in prompt
+
     def test_sizing_matches_ratified_spec(self) -> None:
         sizing = _registry()["sizing"]
         assert sizing["t3_docs"]["team_size"] == 2
@@ -289,6 +296,19 @@ class TestTeamClassification:
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()
         cls = rt.team_class_for({"risk_tier": "T2"}, ["axioms/registry.yaml", "docs/x.md"], reg)
+        assert cls == "t1_critical"
+
+    def test_system_dynamics_map_surface_beats_docs_only(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        cls = rt.team_class_for(
+            {"risk_tier": "T2"},
+            [
+                "docs/architecture/system-dynamics-map-viewer.html",
+                "docs/architecture/vendor/cytoscape-3.34.0.min.js",
+            ],
+            reg,
+        )
         assert cls == "t1_critical"
 
     def test_default_is_t2(self) -> None:
@@ -949,6 +969,22 @@ class TestFamilyOutageDegradation:
             "You've hit your session limit · resets 10pm (America/Chicago)",
             process_failed=True,
         )
+        assert rt.is_quota_wall(
+            "You've hit your weekly limit · resets Jun 19, 5pm (America/Chicago)",
+            process_failed=True,
+        )
+        assert rt.is_quota_wall(
+            "You've hit your weekly limit · resets Jun 19, 5pm (America/Port-au-Prince)",
+            process_failed=True,
+        )
+        assert rt.is_quota_wall(
+            "You've hit your weekly limit · resets Jun 19, 5pm (America/Argentina/Buenos_Aires)",
+            process_failed=True,
+        )
+        assert not rt.is_quota_wall(
+            "You've hit your weekly limit · resets not a date and here is model prose",
+            process_failed=True,
+        )
 
     def test_wall_variants_classify_on_process_failure(self) -> None:
         rt = _load_review_team_module()
@@ -1453,10 +1489,202 @@ class TestGoGate:
         f = self._lit("syntax error: invalid syntax", file="bad.py", line=1)
         assert rt.verify_literal_defect_critical(f, tmp_path) is True
 
+    def test_clean_turtle_parse_claim_in_detail_is_phantom(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path,
+            "docs/ok.ttl",
+            "@prefix ex: <https://example.test/> .\nex:s ex:p ex:o .\n",
+        )
+        f = self._lit(
+            "corrupted namespace directive",
+            file="docs/ok.ttl",
+            line=1,
+        )
+        f["detail"] = "The file is unparseable Turtle because @prefix was corrupted."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
+    def test_clean_turtle_namespace_contract_claim_is_phantom(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path,
+            "docs/ok.ttl",
+            "@prefix ex: <https://example.test/> .\nex:s ex:p ex:o .\n",
+        )
+        f = self._lit(
+            "Corrupted RDF namespace directive",
+            file="docs/ok.ttl",
+            line=1,
+        )
+        f["detail"] = "The namespace directive was replaced by `@bad/path.py`."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
+    def test_path_like_at_literal_accepts_leading_space_before_at_path(self) -> None:
+        rt = _load_review_team_module()
+        assert rt._is_path_like_at_literal(" @bad/path.py") is True
+        assert rt._is_path_like_at_literal("@bad/path.py") is True
+        assert rt._is_path_like_at_literal("@prefix") is False
+
+    def test_malformed_turtle_namespace_claim_with_absent_literal_is_kept(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "docs/bad.ttl", "@prefix ex: <https://example.test/> .\nex:s ex:p\n")
+        f = self._lit(
+            "Corrupted RDF namespace directive",
+            file="docs/bad.ttl",
+            line=1,
+        )
+        f["detail"] = "The namespace directive was replaced by `@bad/path.py`."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_parseable_rdf_namespace_contract_semantic_claim_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path,
+            "docs/semantic.ttl",
+            "@prefix wrong: <https://example.test/wrong/> .\nwrong:s wrong:p wrong:o .\n",
+        )
+        f = self._lit(
+            "Invalid RDF namespace contract",
+            file="docs/semantic.ttl",
+            line=1,
+        )
+        f["detail"] = "The namespace IRI violates the documented semantic contract."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_real_turtle_parse_error_is_verified(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "docs/bad.ttl", "@prefix ex: <https://example.test/> .\nex:s ex:p\n")
+        f = self._lit("Turtle will not parse", file="docs/bad.ttl", line=2)
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_real_turtle_parse_error_with_absent_bad_literal_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "docs/bad.ttl", "@prefix ex: <https://example.test/> .\nex:s ex:p\n")
+        f = self._lit("Turtle will not parse", file="docs/bad.ttl", line=2)
+        f["detail"] = "The file contains `@bad/path.py` and will fail to parse."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_clean_trig_parse_claim_is_phantom(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path,
+            "docs/ok.trig",
+            "@prefix ex: <https://example.test/> .\nex:g { ex:s ex:p ex:o . }\n",
+        )
+        f = self._lit("TriG cannot be parsed", file="docs/ok.trig", line=1)
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
+    def test_absent_quoted_namespace_literal_on_cited_line_is_phantom(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "tests/test_fixture.py", 'value = "ordinary fixture"\n')
+        f = self._lit(
+            "Corrupted namespace directive in test data",
+            file="tests/test_fixture.py",
+            line=1,
+        )
+        f["detail"] = "The line uses `@bad/path.py` instead of `@prefix`."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
+    def test_absent_quoted_namespace_literal_split_across_title_detail_is_phantom(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "tests/test_fixture.py", 'value = "@prefix ex:"\n')
+        f = self._lit(
+            "Corrupted string literal",
+            file="tests/test_fixture.py",
+            line=1,
+        )
+        f["detail"] = "The line uses `@bad/path.py` instead of `@prefix`."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
+    def test_present_quoted_namespace_literal_on_cited_line_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "tests/test_fixture.py", 'value = "@bad/path.py"\n')
+        f = self._lit(
+            "Corrupted namespace directive in test data",
+            file="tests/test_fixture.py",
+            line=1,
+        )
+        f["detail"] = "The line uses `@bad/path.py` instead of `@prefix`."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_absent_expected_namespace_iri_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path,
+            "docs/semantic.ttl",
+            "@prefix wrong: <https://example.test/wrong/> .\nwrong:s wrong:p wrong:o .\n",
+        )
+        f = self._lit(
+            "Invalid RDF namespace contract",
+            file="docs/semantic.ttl",
+            line=1,
+        )
+        f["detail"] = "The expected namespace IRI `https://example.test/required/` is absent."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_absent_expected_prefix_directive_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path,
+            "docs/semantic.ttl",
+            "@prefix wrong: <https://example.test/wrong/> .\nwrong:s wrong:p wrong:o .\n",
+        )
+        f = self._lit(
+            "Missing required RDF namespace prefix",
+            file="docs/semantic.ttl",
+            line=1,
+        )
+        f["detail"] = "The expected directive `@prefix sd:` is absent."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_absent_expected_full_prefix_directive_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path,
+            "docs/semantic.ttl",
+            "@prefix wrong: <https://example.test/wrong/> .\nwrong:s wrong:p wrong:o .\n",
+        )
+        f = self._lit(
+            "Missing required RDF namespace prefix",
+            file="docs/semantic.ttl",
+            line=1,
+        )
+        f["detail"] = (
+            "The expected directive "
+            "`@prefix sd: <https://hapax.local/ns/system-dynamics-map#> .` is absent."
+        )
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
     def test_non_literal_critical_passes_through(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         self._py(tmp_path, "shared/foo.py", "x = 1\n")
         f = self._lit("no regression test covers the new reviewer path")
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_semantic_critical_with_negated_syntax_phrase_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "scripts/review_team.py", "x = 1\n")
+        f = self._lit(
+            "Semantic criticals can be invalidated by incidental syntax words",
+            file="scripts/review_team.py",
+            line=1,
+        )
+        f["detail"] = "A real semantic critical says this is not a syntax error."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_semantic_critical_with_negated_syntax_title_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "scripts/review_team.py", "x = 1\n")
+        f = self._lit(
+            "Not a syntax error: trust-boundary bypass",
+            file="scripts/review_team.py",
+            line=1,
+        )
+        f["detail"] = "A real semantic critical should not be invalidated on a clean file."
         assert rt.verify_literal_defect_critical(f, tmp_path) is True
 
     def test_syntax_claim_beyond_file_is_phantom(self, tmp_path: Path) -> None:
@@ -1556,6 +1784,148 @@ class TestGoGate:
         d = _synth(rt, reviews, repo_root=tmp_path)
         assert d["review_team_verdict"] != "blocked"
         assert any(e["kind"] == "invalidated-phantom-critical" for e in d["escalations"])
+        finding = d["reviewers"][0]["findings"][0]
+        assert finding["resolved"] is True
+        assert finding["resolution_source"] == "review-go-gate"
+
+    def test_phantom_only_block_counts_for_quorum(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
+        reviews = [
+            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("codex-1", "codex", "accept"),
+            _review("claude-1", "claude", "invalid-output"),
+        ]
+        dossier = _synth(rt, reviews, repo_root=tmp_path)
+
+        assert dossier["review_team_verdict"] == rt.QUORUM_ACCEPT
+        assert dossier["accept_count"] == 2
+        assert dossier["reviewers"][0]["verdict"] == "block"
+        assert dossier["reviewers"][0]["findings"][0]["resolution_source"] == "review-go-gate"
+
+    def test_admission_counts_phantom_only_block_for_quorum(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        (tmp_path / ".git").mkdir()
+        phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
+        reviews = [
+            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("codex-1", "codex", "accept"),
+            _review("claude-1", "claude", "invalid-output"),
+        ]
+        dossier = _synth(rt, reviews, repo_root=tmp_path)
+
+        monkeypatch.chdir(tmp_path)
+        blockers = rt._dossier_validity_blockers(
+            dossier,
+            pr_head_sha="a" * 40,
+            registry=reg,
+        )
+
+        assert "review_dossier_quorum_not_met:1/2" not in blockers
+        assert "review_dossier_family_diversity:accept_families=1/2" not in blockers
+        assert not any(b.startswith("review_team_verdict_not_quorum_accept:") for b in blockers)
+
+    def test_admission_blocks_recorded_go_gate_resolution_from_wrong_checkout(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        reviewed = tmp_path / "reviewed"
+        wrong_checkout = tmp_path / "wrong-checkout"
+        reviewed.mkdir()
+        wrong_checkout.mkdir()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._py(reviewed, "shared/foo.py", "x = 1\n")
+        phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
+        reviews = [
+            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("codex-1", "codex", "accept"),
+            _review("claude-1", "claude", "invalid-output"),
+        ]
+        dossier = _synth(rt, reviews, repo_root=reviewed)
+        assert dossier["reviewers"][0]["findings"][0]["resolution_source"] == "review-go-gate"
+
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: False)
+        monkeypatch.chdir(wrong_checkout)
+        blockers = rt._dossier_validity_blockers(
+            dossier,
+            pr_head_sha="a" * 40,
+            registry=reg,
+        )
+
+        assert "review_dossier_unresolved_critical:1" in blockers
+
+    def test_admission_uses_frontmatter_worktree_for_go_gate_from_wrong_checkout(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        reviewed = tmp_path / "reviewed"
+        wrong_checkout = tmp_path / "wrong-checkout"
+        reviewed.mkdir()
+        wrong_checkout.mkdir()
+        (reviewed / ".git").mkdir()
+        self._py(reviewed, "shared/foo.py", "x = 1\n")
+        monkeypatch.setattr(
+            rt, "_repo_head_matches", lambda root, *a, **k: Path(root).resolve() == reviewed
+        )
+        phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
+        reviews = [
+            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("codex-1", "codex", "accept"),
+            _review("claude-1", "claude", "invalid-output"),
+        ]
+        dossier = _synth(rt, reviews, repo_root=reviewed)
+
+        monkeypatch.chdir(wrong_checkout)
+        blockers = rt._dossier_validity_blockers(
+            dossier,
+            pr_head_sha="a" * 40,
+            registry=reg,
+            frontmatter={"mutation_scope_refs": [str(reviewed / "shared" / "foo.py")]},
+        )
+
+        assert "review_dossier_unresolved_critical:1" not in blockers
+        assert "review_dossier_quorum_not_met:1/2" not in blockers
+        assert "review_dossier_family_diversity:accept_families=1/2" not in blockers
+
+    def test_admission_rejects_recorded_go_gate_resolution_for_semantic_critical(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        wrong_checkout = tmp_path / "wrong-checkout"
+        wrong_checkout.mkdir()
+        semantic = _critical("logic error: trusted dossier can suppress semantic critical")
+        semantic["resolved"] = True
+        semantic["resolution_source"] = "review-go-gate"
+        semantic["resolution_detail"] = "literal-defect critical refuted by the file at head"
+        dossier = _synth(
+            rt,
+            [
+                _review("gemini-1", "gemini", "block", findings=[semantic]),
+                _review("codex-1", "codex", "accept"),
+                _review("claude-1", "claude", "accept"),
+            ],
+            repo_root=tmp_path,
+        )
+        dossier["review_team_verdict"] = rt.QUORUM_ACCEPT
+
+        monkeypatch.chdir(wrong_checkout)
+        blockers = rt._dossier_validity_blockers(
+            dossier,
+            pr_head_sha="a" * 40,
+            registry=reg,
+        )
+
+        assert "review_dossier_unresolved_critical:1" in blockers
 
     def test_real_literal_critical_still_blocks(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()

@@ -100,7 +100,7 @@ structured so it can be lifted into that backend:
 - `nodes[]`: stable identity, label, kind, layer, resolution, status, summary,
   context, hardening notes, aliases, tags, and documentation links.
 - `edges[]`: stable identity, source, target, relation, layer, resolution, status,
-  summary, confidence, and evidence links.
+  summary, confidence, and documentation/evidence links in `docs[]`.
 - `view_scales[]`: declared scales that explain why an element appears at a given
   resolution.
 - `status_kinds[]`: claim-type vocabulary that distinguishes asserted, inferred,
@@ -159,14 +159,23 @@ is the important artifact; Cytoscape is the current projection engine.
 - External documentation links from the graph data.
 
 This is enough to review the concept and refine the graph without committing to a
-backend or frontend framework. Production should pin and vendor browser assets,
-persist graph snapshots, add automated link checks, and validate graph snapshots
-against SHACL shapes.
+live backend or frontend framework. The viewer loads a committed local Cytoscape
+3.34.0 runtime asset from `vendor/cytoscape-3.34.0.min.js`, so basic rendering no
+longer depends on CDN egress.
 
-PR-visible visual witnesses:
+Persisted hardening artifacts:
 
-- Desktop: `system-dynamics-map-viewer-desktop.png`
-- Mobile: `system-dynamics-map-viewer-mobile.png`
+- `system-dynamics-map.canonical.trig`: named-graph RDF/TriG-style snapshot for
+  asserted graph content, rendered-view metadata, and provenance.
+- `system-dynamics-map.shacl.ttl`: SHACL shape contract for nodes, edges,
+  rendered views, and provenance activity records.
+- `system-dynamics-map.view-manifest.json`: versioned projection manifest with
+  source hashes, visible layers/statuses, runtime asset hash, and validation
+  commands.
+
+Browser verification lives in `tests/test_system_dynamics_map_viewer_playwright.py`.
+It exercises the static viewer through Playwright and asserts that Cytoscape
+draws nonblank canvas pixels after layout, not just that the seed data loaded.
 
 ## Recheck Commands
 
@@ -177,75 +186,26 @@ uv run pytest tests/test_system_dynamics_map_artifacts.py
 ```
 
 ```bash
+uv run --extra ci playwright install chromium
+uv run --extra ci pytest tests/test_system_dynamics_map_viewer_playwright.py
+```
+
+```bash
 python3 -m json.tool docs/architecture/system-dynamics-map.seed.json >/tmp/system-dynamics-map.seed.pretty.json
 ```
 
 ```bash
-python3 - <<'PY'
-import json
-import re
-from pathlib import Path
-
-root = Path("docs/architecture")
-seed = json.loads((root / "system-dynamics-map.seed.json").read_text())
-html = (root / "system-dynamics-map-viewer.html").read_text()
-embedded = json.loads(
-    re.search(
-        r'<script type="application/json" id="seed-data">\s*(.*?)\s*</script>',
-        html,
-        re.S,
-    ).group(1)
-)
-
-for name, data in [("seed", seed), ("embedded", embedded)]:
-    node_ids = [node["id"] for node in data["nodes"]]
-    edge_ids = [edge["id"] for edge in data["edges"]]
-    assert len(node_ids) == len(set(node_ids)), (
-        f"{name}: duplicate node IDs. Fix by assigning each node one stable ID."
-    )
-    assert len(edge_ids) == len(set(edge_ids)), (
-        f"{name}: duplicate edge IDs. Fix by assigning each edge one stable ID."
-    )
-    node_set = set(node_ids)
-    layers = {layer["id"] for layer in data["layers"]}
-    statuses = set(data["status_kinds"])
-    for node in data["nodes"]:
-        assert node["layer"] in layers, (
-            f"{name}: invalid node layer {node['id']}. Fix by using a declared layers[].id."
-        )
-        assert node["status"] in statuses, (
-            f"{name}: invalid node status {node['id']}. Fix by using a declared status_kinds value."
-        )
-        assert node.get("docs"), (
-            f"{name}: node missing docs {node['id']}. Fix by adding at least one docs[] link."
-        )
-    for edge in data["edges"]:
-        assert edge["source"] in node_set, (
-            f"{name}: missing edge source {edge['id']}. Fix by adding the source node or correcting source."
-        )
-        assert edge["target"] in node_set, (
-            f"{name}: missing edge target {edge['id']}. Fix by adding the target node or correcting target."
-        )
-        assert edge["layer"] in layers, (
-            f"{name}: invalid edge layer {edge['id']}. Fix by using a declared layers[].id."
-        )
-        assert edge["status"] in statuses, (
-            f"{name}: invalid edge status {edge['id']}. Fix by using a declared status_kinds value."
-        )
-assert seed == embedded, (
-    "embedded viewer fallback drifted from system-dynamics-map.seed.json. "
-    "Fix by updating both JSON copies from the same canonical seed."
-)
-print(f"seed nodes={len(seed['nodes'])} edges={len(seed['edges'])}")
-print(f"embedded nodes={len(embedded['nodes'])} edges={len(embedded['edges'])}")
-PY
+python3 scripts/system_dynamics_map_materialize.py --check
 ```
 
 ```bash
 rg -n '#[0-9A-Fa-f]{3,8}\b' \
   docs/architecture/system-dynamics-map-v0.md \
   docs/architecture/system-dynamics-map.seed.json \
-  docs/architecture/system-dynamics-map-viewer.html
+  docs/architecture/system-dynamics-map-viewer.html \
+  scripts/system_dynamics_map_materialize.py \
+  tests/test_system_dynamics_map_artifacts.py \
+  tests/test_system_dynamics_map_viewer_playwright.py
 ```
 
 The hardcoded-hex scan should return no matches. The viewer uses intrinsic flex
@@ -271,19 +231,42 @@ git diff --check -- \
 For visual regression, serve `docs/architecture/` locally and capture the viewer:
 
 ```bash
-python3 -m http.server 8765 --bind 127.0.0.1
+(
+set -euo pipefail
+python3 -m http.server 8765 --bind 127.0.0.1 --directory docs/architecture \
+  >/tmp/system-dynamics-map-http.log 2>&1 &
+server_pid=$!
+trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+python3 - <<'PY'
+import socket
+import time
+
+deadline = time.time() + 5
+while time.time() < deadline:
+    try:
+        with socket.create_connection(("127.0.0.1", 8765), timeout=0.2):
+            raise SystemExit(0)
+    except OSError:
+        time.sleep(0.1)
+raise SystemExit("local docs server did not start on 127.0.0.1:8765")
+PY
+
 npx playwright screenshot --browser chromium --viewport-size 1440,960 \
   --wait-for-selector '#cy canvas' --wait-for-timeout 3000 --full-page \
   http://127.0.0.1:8765/system-dynamics-map-viewer.html /tmp/system-dynamics-map-viewer-desktop.png
 npx playwright screenshot --browser chromium --viewport-size 390,844 \
   --wait-for-selector '#cy canvas' --wait-for-timeout 3000 --full-page \
   http://127.0.0.1:8765/system-dynamics-map-viewer.html /tmp/system-dynamics-map-viewer-mobile.png
+kill "$server_pid" 2>/dev/null || true
+trap - EXIT
+)
 ```
 
 ## Source Notes
 
 Primary standards and docs used for the v0 map. Date-sensitive release notes
-below were rechecked against the linked official pages on 2026-06-18.
+below were rechecked against the linked official pages on 2026-06-18 UTC
+(2026-06-17 America/Chicago).
 
 - OMG DMN 1.5 formal, August 2024: https://www.omg.org/spec/DMN/1.5/About-DMN
 - OMG DMN 1.6 beta: https://www.omg.org/spec/DMN/1.6/Beta1/About-DMN
@@ -291,8 +274,8 @@ below were rechecked against the linked official pages on 2026-06-18.
 - OMG CMMN 1.1 formal, December 2016: https://www.omg.org/spec/CMMN/1.1/About-CMMN
 - OMG SysML 2.0 formal, September 2025: https://www.omg.org/spec/SysML/2.0/About-SysML
 - OMG final-adoption press release for SysML v2.0, July 2025: https://www.omg.org/news/releases/pr2025/07-21-25.htm
-- The Open Group ArchiMate 4, released April 2026: https://www.opengroup.org/archimate-licensed-downloads
-- The Open Group ArchiMate 4 release announcement, April 27 2026: https://www.opengroup.org/The-Open-Group-Announces-ArchiMate%C2%AE-4-Specification
+- The Open Group ArchiMate 4 release announcement, dated April 27, 2026: https://www.opengroup.org/The-Open-Group-Announces-ArchiMate%C2%AE-4-Specification
+- The Open Group ArchiMate licensed downloads landing page: https://www.opengroup.org/archimate-licensed-downloads
 - W3C RDF 1.2 Concepts, Candidate Recommendation Snapshot, April 2026: https://www.w3.org/TR/rdf12-concepts/
 - W3C RDF 1.2 Concepts publication history, 7 April 2026 CRS: https://www.w3.org/standards/history/rdf12-concepts/
 - W3C SHACL and SHACL 1.2 Core: https://www.w3.org/TR/shacl/ and https://www.w3.org/TR/shacl12-core/
@@ -304,3 +287,6 @@ below were rechecked against the linked official pages on 2026-06-18.
 - CloudEvents: https://cloudevents.io/
 - Cytoscape.js documentation checked through Context7 for current initialization,
   element, style, layout, and event APIs: https://js.cytoscape.org/
+- Playwright documentation checked through Context7 for local web server,
+  locator, form interaction, and browser assertion patterns:
+  https://playwright.dev/

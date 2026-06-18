@@ -71,10 +71,16 @@ TEAM_CLASS_RANK = {"t3_docs": 0, "t2_standard": 1, "t1_critical": 2}
 
 #: Provider usage-wall shapes (the 2026-06-12 claude weekly-wall text is the
 #: canonical fixture; the rest cover the codex/gemini/glm families' phrasings).
+_RESET_TIME_SHAPE = (
+    r"(?:(?:[A-Z][a-z]{2}\s+\d{1,2},\s+)?"
+    r"\d{1,2}(?::\d{2})?\s*(?:am|pm)"
+    r"(?:\s+(?:\([A-Z][A-Za-z0-9._+-]*(?:/[A-Z][A-Za-z0-9._+-]*)+\)"
+    r"|[A-Z][A-Za-z0-9._+-]*(?:/[A-Z][A-Za-z0-9._+-]*)+|[A-Z]{2,5}))?)"
+)
 _QUOTA_WALL_SHAPE_RE = re.compile(
     r"\A("
     r"You('ve| have) hit your (weekly|usage|session|5-hour) limit"
-    r"(?:\s+·\s+resets\s+(?:[A-Za-z]{3}\s+\d{1,2},\s+)?\d{1,2}\s?[ap]m(?:\s+(?:\([A-Za-z/_-]+\)|[A-Za-z/_-]+))?)?"
+    rf"(?:\s+·\s+resets\s+{_RESET_TIME_SHAPE})?"
     r"|HTTP 429 Too Many Requests"
     r"|Too Many Requests"
     r"|RESOURCE_EXHAUSTED(?::\s+Quota (?:exceeded|exhausted))?"
@@ -98,13 +104,11 @@ _QUOTA_WALL_MAX_CHARS = 600
 #: Applied ONLY when model_stdout is empty (the anti-forge anchor: a real
 #: wall produces NO review output).
 _QUOTA_WALL_LINE_RE = re.compile(
-    r"(?:"
-    r"(?:ERROR:\s*)?"
+    r"\A(?:ERROR:\s*)?"
     r"You(?:'ve| have) hit your (?:weekly|usage|session|5-hour) (?:limit|cap)"
-    r"(?:\.\s+Visit\s+\S+)?"
-    r"(?:.*?(?:purchase more credits|upgrade your plan|try again))?"
-    r".*"
-    r")",
+    rf"(?:(?:\s+·\s+resets\s+{_RESET_TIME_SHAPE})"
+    r"|(?:\.\s+Visit\s+\S+.*(?:purchase more credits|upgrade your plan|try again).*))?"
+    r"\Z",
     re.IGNORECASE,
 )
 _QUOTA_WALL_HTTP_RE = re.compile(
@@ -552,11 +556,23 @@ def _unresolved_criticals(reviews: Sequence[Mapping[str, Any]]) -> list[tuple[st
 # — the go-gate must not suppress a real finding (claude-1, #4136 review v2).
 _SYNTAX_COMPILE_RE = re.compile(
     r"syntax\s*error|syntaxerror|invalid\s+syntax|fails?\s+to\s+(?:compile|parse)|"
-    r"won'?t\s+(?:compile|parse)|does\s*n'?t\s+(?:compile|parse)|cannot\s+be\s+parsed|"
+    r"won'?t\s+(?:compile|parse)|will\s+not\s+(?:compile|parse)|"
+    r"does\s*n'?t\s+(?:compile|parse)|cannot\s+be\s+parsed|"
     r"un(?:parse|parseable|parsable)|compile\s+(?:error|failure)|unterminated|"
     r"indentation\s+error|missing\s+(?:colon|paren|parenthes|brace|bracket)",
     re.IGNORECASE,
 )
+_NEGATED_SYNTAX_COMPILE_RE = re.compile(
+    r"\b(?:not|isn'?t|is\s+not)\s+(?:a\s+)?"
+    r"(?:syntax\s*error|parse\s+(?:failure|error)|compile\s+(?:failure|error))",
+    re.IGNORECASE,
+)
+_NAMESPACE_CORRUPTION_RE = re.compile(
+    r"(?:namespace|prefix|@prefix).*(?:corrupt|replac|invalid|violat)|"
+    r"(?:corrupt|replac|invalid|violat).*(?:namespace|prefix|@prefix)",
+    re.IGNORECASE,
+)
+_BACKTICK_LITERAL_RE = re.compile(r"`([^`\n]{3,200})`")
 
 #: Killswitch — set to "1" to disable the go-gate (every critical blocks; the pre-go-gate behaviour).
 _GO_GATE_OFF_ENV = "HAPAX_REVIEW_GO_GATE_OFF"
@@ -565,7 +581,59 @@ _GO_GATE_OFF_ENV = "HAPAX_REVIEW_GO_GATE_OFF"
 def _is_syntax_compile_claim(finding: Mapping[str, Any]) -> bool:
     """True iff the critical asserts a SYNTAX/COMPILE defect — the ONLY class the verifier may
     refute. Semantic claims ('corrupt state', off-by-one) are never matched, so never invalidated."""
-    return bool(_SYNTAX_COMPILE_RE.search(str(finding.get("title", ""))))
+    text = f"{finding.get('title', '')}\n{finding.get('detail', '')}"
+    if _NEGATED_SYNTAX_COMPILE_RE.search(text):
+        return False
+    return bool(_SYNTAX_COMPILE_RE.search(text))
+
+
+def _is_namespace_corruption_claim(finding: Mapping[str, Any]) -> bool:
+    text = f"{finding.get('title', '')} {finding.get('detail', '')}"
+    return bool(_NAMESPACE_CORRUPTION_RE.search(text))
+
+
+def _is_path_like_at_literal(literal: str) -> bool:
+    token = (literal.strip().split() or [""])[0]
+    return token.startswith("@") and "/" in token and token != "@prefix"
+
+
+def _line_literal_claim_refuted(finding: Mapping[str, Any], source: str) -> bool:
+    try:
+        line = int(finding.get("line") or 0)
+    except (TypeError, ValueError):
+        return False
+    lines = source.splitlines()
+    if line <= 0 or line > len(lines):
+        return False
+    current_line = lines[line - 1]
+    text = f"{finding.get('title', '')}\n{finding.get('detail', '')}"
+    suspect_literals = [
+        literal.strip()
+        for literal in _BACKTICK_LITERAL_RE.findall(text)
+        if _is_path_like_at_literal(literal)
+    ]
+    return bool(suspect_literals) and all(
+        literal not in current_line for literal in suspect_literals
+    )
+
+
+def _rdf_parse_format(path: Path) -> str | None:
+    if path.suffix == ".trig":
+        return "trig"
+    if path.suffix == ".ttl":
+        return "turtle"
+    return None
+
+
+def _rdf_parses_clean(path: Path, parse_format: str) -> bool:
+    try:
+        from rdflib import Dataset, Graph
+
+        graph = Dataset() if parse_format == "trig" else Graph()
+        graph.parse(path, format=parse_format)
+    except Exception:  # noqa: BLE001 - rdflib raises parser-specific exception types.
+        return False
+    return True
 
 
 def _discover_repo_root() -> Path | None:
@@ -573,6 +641,34 @@ def _discover_repo_root() -> Path | None:
     for d in (cur, *cur.parents):
         if (d / ".git").exists():
             return d
+    return None
+
+
+def _repo_root_for_path(path: Path) -> Path | None:
+    cur = path if path.is_dir() else path.parent
+    for d in (cur, *cur.parents):
+        if (d / ".git").exists():
+            return d
+    return None
+
+
+def _frontmatter_repo_root(frontmatter: Mapping[str, Any] | None, head_sha: str) -> Path | None:
+    if frontmatter is None:
+        return None
+    raw_refs = frontmatter.get("mutation_scope_refs") or frontmatter.get("paths") or ()
+    if not isinstance(raw_refs, Sequence) or isinstance(raw_refs, str):
+        raw_refs = (raw_refs,)
+    seen: set[Path] = set()
+    for raw in raw_refs:
+        text = str(raw or "").strip()
+        if not text or not (text.startswith("/") or text.startswith("~")):
+            continue
+        root = _repo_root_for_path(Path(text).expanduser())
+        if root is None or root in seen:
+            continue
+        seen.add(root)
+        if _repo_head_matches(root, head_sha):
+            return root
     return None
 
 
@@ -602,7 +698,9 @@ def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) 
     file ``ast.parse``-s clean. Every other case — not a syntax/compile claim (ALL semantic
     criticals), a missing/unreadable/non-Python file — KEEPS the critical. Uncertainty never
     suppresses."""
-    if not _is_syntax_compile_claim(finding):
+    syntax_claim = _is_syntax_compile_claim(finding)
+    namespace_claim = _is_namespace_corruption_claim(finding)
+    if not syntax_claim and not namespace_claim:
         return (
             True  # not a syntax/compile claim — never invalidate (every semantic critical is safe)
         )
@@ -616,8 +714,20 @@ def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) 
         source = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return True  # unreadable — cannot verify, keep
+    rdf_format = _rdf_parse_format(path)
+    if rdf_format is not None:
+        parses_clean = _rdf_parses_clean(path, rdf_format)
+        if syntax_claim:
+            return not parses_clean
+        return not (
+            namespace_claim and parses_clean and _line_literal_claim_refuted(finding, source)
+        )
+    if namespace_claim and _line_literal_claim_refuted(finding, source):
+        return False
     if path.suffix != ".py":
-        return True  # cannot verify a non-Python syntax claim — keep (conservative)
+        return True  # cannot verify this syntax claim class — keep (conservative)
+    if not syntax_claim:
+        return True
     try:
         ast.parse(source)
     except SyntaxError:
@@ -648,6 +758,78 @@ def _blocking_criticals(
         target = blocking if verify_literal_defect_critical(finding, root) else phantom
         target.append((reviewer_id, finding))
     return blocking, phantom
+
+
+def _finding_key(reviewer_id: str, finding: Mapping[str, Any]) -> tuple[str, str, str, str, str]:
+    return (
+        reviewer_id,
+        str(finding.get("file") or ""),
+        str(finding.get("line") or ""),
+        str(finding.get("title") or ""),
+        str(finding.get("lens") or ""),
+    )
+
+
+def _reviews_with_phantom_resolutions(
+    reviews: Sequence[Mapping[str, Any]], phantom_criticals: Sequence[tuple[str, dict]]
+) -> list[dict[str, Any]]:
+    phantom_keys = {
+        _finding_key(reviewer_id, finding) for reviewer_id, finding in phantom_criticals
+    }
+    out: list[dict[str, Any]] = []
+    for review in reviews:
+        reviewer_id = str(review.get("id"))
+        record = dict(review)
+        findings: list[Any] = []
+        for finding in review.get("findings") or []:
+            if not isinstance(finding, Mapping):
+                findings.append(finding)
+                continue
+            finding_record = dict(finding)
+            if _finding_key(reviewer_id, finding_record) in phantom_keys:
+                finding_record["resolved"] = True
+                finding_record["resolution_source"] = "review-go-gate"
+                finding_record["resolution_detail"] = (
+                    "literal-defect critical refuted by the file at head"
+                )
+            findings.append(finding_record)
+        record["findings"] = findings
+        out.append(record)
+    return out
+
+
+def _reviews_for_quorum(
+    reviews: Sequence[Mapping[str, Any]],
+    blocking_criticals: Sequence[tuple[str, dict]],
+    phantom_criticals: Sequence[tuple[str, dict]],
+) -> list[dict[str, Any]]:
+    blocking_keys = {
+        _finding_key(reviewer_id, finding) for reviewer_id, finding in blocking_criticals
+    }
+    phantom_keys = {
+        _finding_key(reviewer_id, finding) for reviewer_id, finding in phantom_criticals
+    }
+    out: list[dict[str, Any]] = []
+    for review in reviews:
+        record = dict(review)
+        if str(review.get("verdict", "")).lower() == "block":
+            reviewer_id = str(review.get("id"))
+            critical_keys = {
+                _finding_key(reviewer_id, finding)
+                for finding in review.get("findings") or []
+                if isinstance(finding, Mapping)
+                and str(finding.get("severity", "")).lower() == "critical"
+            }
+            if (
+                critical_keys
+                and not (critical_keys & blocking_keys)
+                and critical_keys <= phantom_keys
+            ):
+                record["verdict"] = "accept-with-findings"
+                record["raw_verdict"] = "block"
+                record["verdict_effective_reason"] = "all named criticals invalidated by go-gate"
+        out.append(record)
+    return out
 
 
 def _accepting(reviews: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
@@ -762,10 +944,11 @@ def synthesize_dossier(
         roster = [f for f in roster if f not in degraded_outage]
         if any(str(n) == "degraded_to:t2_standard" for n in constitution_notes):
             sizing = registry["sizing"]["t2_standard"]
-    accepts = _checklist_complete_accepts(reviews, lenses)
-    accept_families = {str(r.get("family")) for r in accepts}
     block_reviews = [r for r in reviews if str(r.get("verdict", "")).lower() == "block"]
     criticals, phantom_criticals = _blocking_criticals(reviews, repo_root, head_sha=head_sha)
+    quorum_reviews = _reviews_for_quorum(reviews, criticals, phantom_criticals)
+    accepts = _checklist_complete_accepts(quorum_reviews, lenses)
+    accept_families = {str(r.get("family")) for r in accepts}
     scoped_files = None if changed_files is None else [str(f) for f in changed_files]
     if changed_files is not None and changed_file_count is None:
         changed_file_count = len(scoped_files)
@@ -861,7 +1044,7 @@ def synthesize_dossier(
         "degraded_family_outage": degraded_outage,
         "post_recovery_rereview_required": bool(degraded_outage),
         "lenses": list(lenses),
-        "reviewers": [dict(r) for r in reviews],
+        "reviewers": _reviews_with_phantom_resolutions(reviews, phantom_criticals),
         "escalations": escalations,
         "accept_count": len(accepts),
         "review_team_verdict": verdict,
@@ -1057,10 +1240,12 @@ def _dossier_validity_blockers(
     if len(reviews) < required_size:
         blockers.append(f"review_dossier_team_undersized:{len(reviews)}/{required_size}")
 
-    # go-gate: drop literal-defect phantoms (repo discovered from cwd = the PR checkout in CI)
-    criticals, phantoms = _blocking_criticals(
-        reviews, None, head_sha=str(dossier.get("head_sha") or "")
-    )
+    # go-gate: drop literal-defect phantoms only against a checkout proven to be
+    # the reviewed head. Local autoqueue often runs outside the PR checkout, so
+    # prefer a declared task worktree when one is available and head-bound.
+    dossier_head_sha = str(dossier.get("head_sha") or "")
+    verification_root = _frontmatter_repo_root(frontmatter, dossier_head_sha)
+    criticals, phantoms = _blocking_criticals(reviews, verification_root, head_sha=dossier_head_sha)
     if phantoms:  # receipt: phantom invalidations are auditable in the CI log, never silent
         print(
             f"go-gate: invalidated {len(phantoms)} phantom literal-defect critical(s): "
@@ -1087,7 +1272,8 @@ def _dossier_validity_blockers(
     for review in reviews:
         blockers.extend(_review_checklist_blockers(review, lenses))
 
-    accepts = _checklist_complete_accepts(reviews, lenses)
+    quorum_reviews = _reviews_for_quorum(reviews, criticals, phantoms)
+    accepts = _checklist_complete_accepts(quorum_reviews, lenses)
     unknown_accept_families = {str(r.get("family")) for r in accepts} - roster
     if unknown_accept_families:
         blockers.append(

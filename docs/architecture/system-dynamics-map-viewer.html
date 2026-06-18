@@ -1838,11 +1838,7 @@
   ]
 }
   </script>
-  <script
-    src="https://unpkg.com/cytoscape@3.34.0/dist/cytoscape.min.js"
-    integrity="sha384-K+k+ywfDuvV9dwg+bwsVE0WGkrTnqFamaER+ydBgMFQTtlI0jdI9no9AjkQHwh/T"
-    crossorigin="anonymous"
-  ></script>
+  <script src="./vendor/cytoscape-3.34.0.min.js"></script>
   <script>
     const layerColors = {
       "context-up": "rgb(13, 148, 136)",
@@ -2179,7 +2175,7 @@
 
     async function init() {
       if (!window.cytoscape) {
-        document.getElementById("cy").innerHTML = '<div class="error">Cytoscape.js did not load. Check network access to the CDN or vendor the asset locally.</div>';
+        document.getElementById("cy").innerHTML = '<div class="error">Cytoscape.js did not load. Check that ./vendor/cytoscape-3.34.0.min.js is present.</div>';
         return;
       }
 
@@ -2204,6 +2200,24 @@
           renderInitialPanel();
         }
       });
+
+      window.systemDynamicsMapRuntime = {
+        activeLayout: () => activeLayout,
+        selectNode: (id) => {
+          const node = cy.$id(id);
+          if (node.empty()) {
+            throw new Error(`Unknown node: ${id}. Check system-dynamics-map.seed.json nodes[].id before selecting.`);
+          }
+          cy.elements().unselect();
+          node.select();
+          renderNodePanel(node.data());
+          return node.data();
+        },
+        visibleCounts: () => ({
+          edges: cy.edges().filter((edge) => !edge.hasClass("hidden")).length,
+          nodes: cy.nodes().filter((node) => !node.hasClass("hidden")).length
+        })
+      };
 
       document.getElementById("search").addEventListener("input", () => {
         applyFilters();
