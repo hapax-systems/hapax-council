@@ -1608,3 +1608,34 @@ def test_gemini_reviewer_prompt_has_diff_awareness():
     prompt = " ".join(str(part) for part in gemini["reviewer_command"])
     assert "UNIFIED DIFF" in prompt, "gemini reviewer prompt lost its diff-awareness guard"
     assert "DIFF SYNTAX" in prompt
+
+
+def test_gemini_reviewer_denies_repo_roaming_and_blocks_phantom_syntax():
+    """Durable fix for the gemini plan-mode hallucination (deadlocked PR #4167): in
+    plan-mode gemini ROAMED the repo (grep/read) and manufactured phantom syntax
+    criticals (notify-failure@%n.service read as invalid template syntax) AND a false
+    'volatile cache' critical on the canonical source-activation deploy path -- blocking a
+    PR that claude + codex accepted. The reviewer_command must (a) pass --policy
+    <deny-all-tools> so gemini reviews ONLY the stdin diff, and (b) tell gemini the diff
+    already passed CI so it does not block on phantom syntax findings."""
+    reg = _registry()
+    gemini = next(f for f in reg["families"] if (f.get("family") or f.get("name")) == "gemini")
+    cmd = [str(part) for part in gemini["reviewer_command"]]
+    assert "--policy" in cmd, "gemini must pass a tool-deny policy to stop repo roaming"
+    assert "gemini-review-policy" in cmd[cmd.index("--policy") + 1]
+    prompt = " ".join(cmd)
+    assert "ALREADY PASSED" in prompt and "CI" in prompt, "gemini prompt must cite the CI gates"
+    assert "source-activation" in prompt, "gemini prompt must whitelist the canonical deploy path"
+
+
+def test_gemini_review_policy_denies_all_tools():
+    """The policy file gemini --policy points at must deny ALL tools, so the reviewer
+    cannot grep/read the repo and conflate repo findings with the reviewed diff."""
+    import json
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    policy = json.loads((repo_root / "config/review-lenses/gemini-review-policy.json").read_text())
+    assert any(
+        r.get("toolName") == "*" and r.get("decision") == "deny" for r in policy.get("rules", [])
+    ), "gemini review policy must deny all tools (toolName '*' -> deny)"
