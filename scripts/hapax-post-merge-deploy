@@ -181,6 +181,14 @@ unit_content_auto_enable() {
     return 0
 }
 
+unit_content_timer_enable_only() {
+    local content="$1"
+    [ -n "$content" ] || return 1
+    grep -Eiq '^[#;][[:space:]]*Hapax-Timer-Enable-Only:[[:space:]]*(true|yes|1)[[:space:]]*$' <<< "$content" || return 1
+    grep -Eq '^\[Install\]' <<< "$content" || return 1
+    return 0
+}
+
 # --verify-auto-enable: post-deploy assertion that every unit in the repo's
 # systemd/units/ carrying `# Hapax-Auto-Enable: true` is actually `enabled`
 # (and, for timers, `active`). Exits 0 if all marked units pass, 1 if any
@@ -1151,7 +1159,13 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
     systemctl --user daemon-reload
     for f in "${SYSTEMD_INSTALLED[@]}"; do
         base="$(basename "$f")"
+        unit_content="$(git show "$SHA:$f" 2>/dev/null || true)"
         if systemctl --user is-active --quiet "$base"; then
+            if [[ "$base" == *.timer ]] && unit_content_timer_enable_only "$unit_content"; then
+                echo "leaving active $base running (Hapax-Timer-Enable-Only marker; not restarting during deploy)"
+                systemctl --user enable "$base"
+                continue
+            fi
             # Already running — restart to pick up the new unit definition.
             if [ "$base" = "hapax-coord.service" ]; then
                 stage_coord_activation_before_restart
@@ -1160,7 +1174,10 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
             fi
             echo "restarting $base"
             restart_user_unit "$base"
-        elif unit_content_auto_enable "$(git show "$SHA:$f" 2>/dev/null || true)"; then
+        elif [[ "$base" == *.timer ]] && unit_content_timer_enable_only "$unit_content"; then
+            echo "enabling $base (Hapax-Timer-Enable-Only marker; not starting during deploy)"
+            systemctl --user enable "$base"
+        elif unit_content_auto_enable "$unit_content"; then
             # Marked `# Hapax-Auto-Enable: true` (+ [Install]): enable+start so a
             # freshly-merged service OR timer goes live instead of sleeping.
             # try-restart is a no-op for a never-enabled unit (the FM-11 gap).

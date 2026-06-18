@@ -162,6 +162,13 @@ remove_decommissioned_unit() {
     [ "$removed" -eq 1 ]
 }
 
+timer_enable_only() {
+    local timer_file="$1"
+    grep -Eiq '^[#;][[:space:]]*Hapax-Timer-Enable-Only:[[:space:]]*(true|yes|1)[[:space:]]*$' "$timer_file" || return 1
+    grep -Eq '^\[Install\]' "$timer_file" || return 1
+    return 0
+}
+
 changed=0
 new_timers=()
 for retired_unit in "${DECOMMISSIONED_UNITS[@]}"; do
@@ -243,7 +250,13 @@ if [ "${SKIP_TIMER_ENABLE:-0}" != "1" ]; then
     # immediately. Existing dormant timers handled by the sweep above
     # do NOT get --now; they fire on their next natural schedule.
     for timer in "${new_timers[@]}"; do
-        if systemctl --user enable --now "$timer" 2>/dev/null; then
+        if timer_enable_only "$REPO_DIR/$timer"; then
+            if systemctl --user enable "$timer" 2>/dev/null; then
+                echo "enabled: $timer (Hapax-Timer-Enable-Only; not started)"
+            else
+                echo "WARN: failed to enable $timer (run manually)" >&2
+            fi
+        elif systemctl --user enable --now "$timer" 2>/dev/null; then
             echo "enabled: $timer"
         else
             echo "WARN: failed to enable $timer (run manually)" >&2

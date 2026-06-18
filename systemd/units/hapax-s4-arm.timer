@@ -1,3 +1,5 @@
+# Hapax-Timer-Enable-Only: true
+# Enable for the next user-manager startup; never start this timer during deploy.
 [Unit]
 Description=Run Torso S-4 witness-verified arm after user-manager boot
 

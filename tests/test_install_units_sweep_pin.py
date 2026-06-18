@@ -121,6 +121,14 @@ class TestTimerEnablementSweep:
             "first-install path still needs enable --now so freshly linked timers start immediately"
         )
 
+    def test_enable_only_timers_are_not_started_on_first_install(self) -> None:
+        body = INSTALL_SCRIPT.read_text(encoding="utf-8")
+
+        assert "Hapax-Timer-Enable-Only" in body
+        assert 'timer_enable_only "$REPO_DIR/$timer"' in body
+        assert 'systemctl --user enable "$timer"' in body
+        assert "Hapax-Timer-Enable-Only; not started" in body
+
 
 class TestServiceDropInInstall:
     """LRR Phase 3 regression pins for the ``*.service.d/`` drop-in

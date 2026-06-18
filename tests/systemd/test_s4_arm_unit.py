@@ -82,8 +82,10 @@ def test_s4_arm_service_uses_source_activation_environment() -> None:
 
 
 def test_s4_arm_timer_is_user_manager_startup_scoped_not_recurring_marker_loop() -> None:
+    body = TIMER.read_text(encoding="utf-8")
     timer = _read_unit(TIMER)
 
+    assert "# Hapax-Timer-Enable-Only: true" in body
     assert timer.get("Timer", "Unit") == "hapax-s4-arm.service"
     assert timer.get("Timer", "OnStartupSec") == "2min"
     assert timer.get("Timer", "Persistent") == "false"
