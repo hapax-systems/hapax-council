@@ -27,7 +27,10 @@ Each tick does two writes:
      written by ``shared.quota_wall`` on observed 429/quota-exhaustion). An
      unexpired wall marks the platform ``exhausted``; otherwise the established
      Claude/Codex/Gemini subscription routes are ``fresh``. GLMCP is stricter:
-     it is ``unknown`` unless a fresh Coding Plan admission receipt exists.
+     it is ``unknown`` unless a fresh, short-lived Coding Plan admission receipt
+     exists. Recheck admission evidence with
+     ``ls ~/.cache/hapax/relay/receipts/*glmcp-quota-admission*.yaml`` and this
+     writer's ``--json`` summary.
    - ``local_resource_state`` + local-compute snapshot: nvidia-smi VRAM
      pressure and load average, fail-closed to ``unknown`` when unprobeable.
 
@@ -89,6 +92,8 @@ GLMCP_ADMISSION_ENDPOINTS = frozenset(
     {"https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/anthropic"}
 )
 GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2", "glm-5.2[1m]"})
+GLMCP_ADMISSION_DEFAULT_STALE_AFTER_SECONDS = 900
+GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS = 3600
 
 LOCAL_COMPUTE_ROUTE = "litellm.local.command-r-35b"
 LOCAL_COMPUTE_PROVIDER = "tabbyapi"
@@ -317,7 +322,12 @@ def active_glmcp_admission_receipts(
                 )
                 continue
             try:
-                stale_after_seconds = int(fields.get("stale_after_seconds", "900"))
+                stale_after_seconds = int(
+                    fields.get(
+                        "stale_after_seconds",
+                        str(GLMCP_ADMISSION_DEFAULT_STALE_AFTER_SECONDS),
+                    )
+                )
             except ValueError:
                 _warn_ignored_glmcp_admission(
                     path,
@@ -328,6 +338,13 @@ def active_glmcp_admission_receipts(
                 _warn_ignored_glmcp_admission(
                     path,
                     f"non-positive stale_after_seconds {stale_after_seconds}",
+                )
+                continue
+            if stale_after_seconds > GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS:
+                _warn_ignored_glmcp_admission(
+                    path,
+                    f"stale_after_seconds {stale_after_seconds} exceeds maximum "
+                    f"{GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS}",
                 )
                 continue
             if now - observed_at > timedelta(seconds=stale_after_seconds):

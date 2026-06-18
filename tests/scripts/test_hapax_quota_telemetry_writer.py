@@ -456,6 +456,25 @@ def test_stale_glmcp_admission_receipt_keeps_glmcp_unknown(tmp_path: Path) -> No
     assert summary["glmcp_admissions"] == 0
 
 
+def test_overlong_glmcp_admission_ttl_keeps_glmcp_unknown(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _glmcp_admission(relay, observed_at="2026-06-09T23:55:00Z", stale_after_seconds=3601)
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["glmcp.review.direct"] == "unknown"
+    assert "stale_after_seconds 3601 exceeds maximum 3600" in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
+
+
 def test_future_glmcp_admission_receipt_keeps_glmcp_unknown(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
