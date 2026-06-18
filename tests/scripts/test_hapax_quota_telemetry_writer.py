@@ -173,7 +173,7 @@ def test_glmcp_role_quota_wall_maps_to_glmcp_not_codex(tmp_path: Path) -> None:
 def test_glmcp_role_aliases_map_to_glmcp_not_codex(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
-    for role in ("codex-glmcp", "glmcp", "glm-review", "glmcp-seat"):
+    for role in ("codex-glmcp", "codex_glmcp", "cx_glmcp", "glmcp", "glm-review", "glmcp-seat"):
         _wall_receipt(relay, role, "2026-06-10T06:00:00Z")
 
     result, out = _run_writer(tmp_path)
@@ -187,7 +187,7 @@ def test_glmcp_role_aliases_map_to_glmcp_not_codex(tmp_path: Path) -> None:
     assert states["glmcp.review.direct"] == "exhausted"
     assert states["codex.headless.full"] == "fresh"
     summary = json.loads(result.stdout)
-    assert summary["quota_walls"] == {"glmcp": 4}
+    assert summary["quota_walls"] == {"glmcp": 6}
 
 
 def test_fresh_glmcp_admission_receipt_marks_glmcp_fresh(tmp_path: Path) -> None:
@@ -245,6 +245,38 @@ stale_after_seconds: 900
     assert glmcp_snapshot["subscription_quota_state"] == "unknown"
     assert "provider missing" in result.stderr
     assert "route_id missing" in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
+
+
+def test_glmcp_admission_receipt_warns_on_unsupported_status(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    (relay / "glmcp-quota-admission-unsupported-status.yaml").write_text(
+        """status: ok
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5.2
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 900
+evidence_ref: supported-tool-usage-witness
+""",
+        encoding="utf-8",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["glmcp.review.direct"] == "unknown"
+    assert "status ok; expected quota_available or admitted" in result.stderr
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
 

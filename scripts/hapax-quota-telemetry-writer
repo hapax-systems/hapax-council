@@ -112,7 +112,7 @@ LOAD_YELLOW_PER_CPU = 4.0
 def role_platform(role: str) -> str:
     """Map a lane role (relay receipt filename stem) to its platform."""
 
-    normalized = role.lower()
+    normalized = role.lower().replace("_", "-")
     if (
         normalized in {"cx-glmcp", "codex-glmcp", "glmcp"}
         or normalized.startswith("cx-glmcp")
@@ -249,7 +249,12 @@ def active_glmcp_admission_receipts(
             if parse_error is not None:
                 _warn_ignored_glmcp_admission(path, parse_error)
                 continue
-            if fields.get("status") not in {"quota_available", "admitted"}:
+            status = fields.get("status", "")
+            if status not in {"quota_available", "admitted"}:
+                _warn_ignored_glmcp_admission(
+                    path,
+                    f"status {status or 'missing'}; expected quota_available or admitted",
+                )
                 continue
             provider = fields.get("provider", "")
             if provider != GLMCP_ADMISSION_PROVIDER:

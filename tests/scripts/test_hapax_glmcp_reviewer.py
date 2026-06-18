@@ -221,6 +221,29 @@ def test_zai_business_error_code_classification(
     assert info.action == expected_action
 
 
+@pytest.mark.parametrize(
+    ("status", "detail", "expected_class", "expected_action"),
+    [
+        (401, "missing token", "auth_failed", "check_api_key"),
+        (503, "upstream unavailable", "provider_error", "retry_later"),
+        (418, "unexpected provider response", "api_error", "inspect_provider_response"),
+    ],
+)
+def test_zai_http_status_fallback_classification(
+    status: int,
+    detail: str,
+    expected_class: str,
+    expected_action: str,
+) -> None:
+    module = _load_module()
+
+    info = module.classify_zai_error(status, detail)
+
+    assert info.code is None
+    assert info.error_class == expected_class
+    assert info.action == expected_action
+
+
 def test_network_error_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_module()
 

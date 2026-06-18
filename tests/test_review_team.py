@@ -1003,6 +1003,21 @@ class TestFamilyOutageDegradation:
             "Z.ai Coding Plan endpoint/status",
             process_failed=True,
         )
+        assert rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 429; zai_error_code=1313; "
+            "error_class=fair_use_restricted; action=hold_until_manual_clear",
+            process_failed=True,
+        )
+        assert rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 429; zai_error_code=1121; "
+            "error_class=account_hard_hold; action=contact_provider",
+            process_failed=True,
+        )
+        assert rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 429; zai_error_code=1311; "
+            "error_class=plan_model_unavailable; action=switch_model_or_upgrade_plan",
+            process_failed=True,
+        )
         assert not rt.is_quota_wall("failed while checking line 429", process_failed=True)
         assert not rt.is_quota_wall(
             "HTTP 529: The service may be temporarily overloaded, please try again later",
@@ -1024,6 +1039,16 @@ class TestFamilyOutageDegradation:
             "hapax-glmcp-reviewer: api error: HTTP 429: "
             '{"error":{"code":"1305","message":"The service may be temporarily overloaded, '
             'please try again later"}}; retry later or check the Z.ai Coding Plan endpoint/status',
+            process_failed=True,
+        )
+        assert rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 429; zai_error_code=1312; "
+            "error_class=provider_high_traffic; action=backoff_or_switch_model",
+            process_failed=True,
+        )
+        assert rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 503; "
+            "error_class=provider_error; action=retry_later",
             process_failed=True,
         )
         assert not rt.is_provider_outage(
