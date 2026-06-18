@@ -69,6 +69,20 @@ def _load_viewer() -> tuple[str, dict]:
     return html, json.loads(match.group(1))
 
 
+def _embedded_viewer_json(block_id: str) -> object:
+    html = VIEWER_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        rf'<script type="application/json" id="{re.escape(block_id)}">\s*(.*?)\s*</script>',
+        html,
+        re.S,
+    )
+    assert match, (
+        f"viewer must include embedded {block_id}. "
+        "Fix by restoring the supplemental data script tag or removing direct-open claims."
+    )
+    return json.loads(match.group(1))
+
+
 def _load_observations() -> list[dict]:
     return [
         json.loads(line)
@@ -137,6 +151,31 @@ def test_viewer_embedded_seed_matches_canonical_seed():
     assert embedded == _load_seed(), (
         "embedded viewer fallback drifted from system-dynamics-map.seed.json. "
         "Fix by regenerating the seed-data script block from the canonical seed file."
+    )
+
+
+def test_viewer_embedded_supplemental_data_matches_canonical_artifacts():
+    assert _embedded_viewer_json("claims-data") == json.loads(
+        CLAIMS_PATH.read_text(encoding="utf-8")
+    ), (
+        "embedded viewer claims fallback drifted from system-dynamics-map.claims.json. "
+        "Fix by regenerating the claims-data script block from the canonical claims file."
+    )
+    assert _embedded_viewer_json("lenses-data") == json.loads(
+        LENSES_PATH.read_text(encoding="utf-8")
+    ), (
+        "embedded viewer lenses fallback drifted from system-dynamics-map.lenses.json. "
+        "Fix by regenerating the lenses-data script block from the canonical lenses file."
+    )
+    assert _embedded_viewer_json("observations-data") == _load_observations(), (
+        "embedded viewer observations fallback drifted from system-dynamics-map.observations.jsonl. "
+        "Fix by regenerating the observations-data script block from the canonical observations file."
+    )
+    assert _embedded_viewer_json("relations-data") == json.loads(
+        RELATIONS_PATH.read_text(encoding="utf-8")
+    ), (
+        "embedded viewer relation fallback drifted from system-dynamics-map.relations.json. "
+        "Fix by regenerating the relations-data script block from the canonical relation vocabulary."
     )
 
 

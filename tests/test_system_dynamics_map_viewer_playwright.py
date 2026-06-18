@@ -1,6 +1,7 @@
 import contextlib
 import functools
 import http.server
+import re
 import threading
 from collections.abc import Iterator
 from pathlib import Path
@@ -13,6 +14,7 @@ sync_playwright = playwright_sync_api.sync_playwright
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ARCHITECTURE_DIR = REPO_ROOT / "docs" / "architecture"
+VIEWER_PATH = ARCHITECTURE_DIR / "system-dynamics-map-viewer.html"
 NONBLANK_CANVAS_SCRIPT = """
 () => Array.from(document.querySelectorAll("#cy canvas")).some((canvas) => {
   if (!canvas.width || !canvas.height) {
@@ -100,6 +102,17 @@ def test_system_dynamics_viewer_core_interactions():
             ), (
                 "Seed JSON link drifted. Fix by keeping the viewer linked to the canonical seed file."
             )
+            assert (
+                page.get_by_role("link", name="Claims")
+                .get_attribute("href")
+                .endswith("/system-dynamics-map.claims.json")
+            )
+            assert (
+                page.get_by_role("link", name="Observations")
+                .get_attribute("href")
+                .endswith("/system-dynamics-map.observations.jsonl")
+            )
+            assert "VISIBLE" in page.locator("#lens-summary").inner_text()
 
             page.get_by_label("Search").fill("telemetry")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes < 35")
@@ -140,6 +153,18 @@ def test_system_dynamics_viewer_core_interactions():
                 "operating-slice lens did not apply its persisted projection. "
                 "Fix by honoring visible_node_ids and visible_edge_ids in applyFilters()."
             )
+            lens_summary = page.locator("#lens-summary").inner_text()
+            assert "8 nodes / 7 edges" in lens_summary
+            assert "27 nodes / 35 edges" in lens_summary
+            assert "observed" in lens_summary
+            assert "false" in lens_summary and "true" in lens_summary
+            assert (
+                "Operating Slice / 5 in-scope observations / 0 stale in scope / 1 global stale"
+                in page.evaluate("window.systemDynamicsMapRuntime.stateSummary()")
+            ), (
+                "viewer reported hidden stale evidence as in-scope for the operating slice. "
+                "Fix by scoping freshness counts to currently visible node IDs."
+            )
             assert page.evaluate(
                 "window.systemDynamicsMapRuntime.visibleEdgesHaveVisibleEndpoints()"
             )
@@ -156,6 +181,20 @@ def test_system_dynamics_viewer_core_interactions():
             panel_text = page.locator("#panel").inner_text()
             assert "STATE" in panel_text and "claimed" in panel_text
             assert "CLAIMS" in panel_text and "declares_node" in panel_text
+            page.locator("details.evidence-row", has_text="claimed").locator("summary").click()
+            page.locator("details.evidence-row", has_text="declares_node").locator(
+                "summary"
+            ).click()
+            panel_text = page.locator("#panel").inner_text()
+            assert "SOURCE" in panel_text and "scripts/cc-claim" in panel_text
+            assert "AUTHORITY" in panel_text and "architecture_contract" in panel_text
+
+            page.evaluate("window.systemDynamicsMapRuntime.selectEdge('sdlc-intake-to-claim')")
+            edge_panel_text = page.locator("#panel").inner_text()
+            assert "Advances To" in edge_panel_text and "governance" in edge_panel_text
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.relationFor('advances_to').category"
+            ) == ("governance")
 
             page.get_by_label("Lens").select_option("topology")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
@@ -174,6 +213,9 @@ def test_system_dynamics_viewer_core_interactions():
             assert "active" in page.get_by_role("button", name="Directed").get_attribute("class"), (
                 "Directed layout button did not enter active state. "
                 "Fix by syncing data-layout button state in runLayout()."
+            )
+            assert (
+                page.get_by_role("button", name="Directed").get_attribute("aria-pressed") == "true"
             )
             page.get_by_role("button", name="Circle").click()
             page.wait_for_function("window.systemDynamicsMapRuntime.activeLayout() === 'circle'")
@@ -200,8 +242,84 @@ def test_system_dynamics_viewer_core_interactions():
                 "Fix by rendering node data in selectNode()."
             )
 
+            page.get_by_label("Search").fill("scripts/cc-claim")
+            page.get_by_label("Search").press("Enter")
+            page.wait_for_function(
+                "document.querySelector('#panel').innerText.startsWith('cc-task Claim')"
+            )
+            assert (
+                page.locator("#search-results")
+                .get_by_role("button", name=re.compile("cc-task Claim"))
+                .is_visible()
+            )
+
+            payload = page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload()")
+            assert payload["schema"] == "system-dynamics-map-current-view-v1"
+            assert payload["lens"] == "topology"
+            assert payload["visible_node_ids"], (
+                "current view export did not include visible nodes. "
+                "Fix by deriving export payload from the active Cytoscape visibility state."
+            )
+
             with pytest.raises(PlaywrightError, match="nodes\\[\\]\\.id"):
                 page.evaluate("window.systemDynamicsMapRuntime.selectNode('missing-node')")
+        finally:
+            browser.close()
+
+
+def test_system_dynamics_viewer_direct_file_mode_preserves_supplemental_data():
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        try:
+            page.goto(VIEWER_PATH.as_uri())
+            page.locator("#cy canvas").first.wait_for(timeout=10_000)
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime && "
+                "document.querySelector('#counts').textContent === '35 nodes / 42 edges'"
+            )
+            assert set(page.evaluate("window.systemDynamicsMapRuntime.lensIds()")) == {
+                "topology",
+                "operating-slice",
+                "evidence-risk",
+            }, (
+                "direct file-open mode dropped persisted lenses. "
+                "Fix by embedding supplemental lens data in the static viewer."
+            )
+            assert (
+                page.evaluate("window.systemDynamicsMapRuntime.observationsFor('cc-task-claim')")[
+                    0
+                ]["state"]
+                == "claimed"
+            ), (
+                "direct file-open mode dropped temporal observations. "
+                "Fix by embedding observations-data in the static viewer."
+            )
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.relationFor('advances_to').label"
+            ) == ("Advances To"), (
+                "direct file-open mode dropped relation vocabulary. "
+                "Fix by embedding relations-data in the static viewer."
+            )
+            assert not page.locator("#data-health.active").is_visible()
+        finally:
+            browser.close()
+
+
+def test_system_dynamics_viewer_respects_reduced_motion():
+    with _static_server() as base_url, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(
+            viewport={"width": 1280, "height": 900},
+            reduced_motion="reduce",
+        )
+        try:
+            page.goto(f"{base_url}/system-dynamics-map-viewer.html")
+            page.locator("#cy canvas").first.wait_for(timeout=10_000)
+            page.wait_for_function("window.systemDynamicsMapRuntime")
+            assert (
+                page.evaluate("window.systemDynamicsMapRuntime.layoutAnimationEnabled()") is False
+            )
         finally:
             browser.close()
 
