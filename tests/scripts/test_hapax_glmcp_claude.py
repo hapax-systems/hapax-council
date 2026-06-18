@@ -58,6 +58,7 @@ def test_check_mode_sets_glm_52_environment_without_printing_secret(tmp_path: Pa
           printf 'ANTHROPIC_DEFAULT_HAIKU_MODEL=%s\\n' "$ANTHROPIC_DEFAULT_HAIKU_MODEL" >> {env_file}
           printf 'CLAUDE_CODE_AUTO_COMPACT_WINDOW=%s\\n' "$CLAUDE_CODE_AUTO_COMPACT_WINDOW" >> {env_file}
           printf 'HAPAX_LLM_PROVIDER=%s\\n' "$HAPAX_LLM_PROVIDER" >> {env_file}
+          printf 'HAPAX_GLMCP_SECRET_ENTRY_PRESENT=%s\\n' "${{HAPAX_GLMCP_SECRET_ENTRY:+yes}}" >> {env_file}
           printf 'TOKEN_PRESENT=%s\\n' "${{ANTHROPIC_AUTH_TOKEN:+yes}}" >> {env_file}
           printf 'claude 0.0-test\\n'
           exit 0
@@ -87,6 +88,8 @@ def test_check_mode_sets_glm_52_environment_without_printing_secret(tmp_path: Pa
     assert "ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-4.5-air" in launched_env
     assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000" in launched_env
     assert "HAPAX_LLM_PROVIDER=zai-glm-coding-plan" in launched_env
+    assert "HAPAX_GLMCP_SECRET_ENTRY_PRESENT=\n" in launched_env
+    assert "HAPAX_GLMCP_SECRET_ENTRY_PRESENT=yes" not in launched_env
     assert "TOKEN_PRESENT=yes" in launched_env
 
 
@@ -264,7 +267,8 @@ def test_allows_reviewed_glmcp_secret_entry_override(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "secret_entry=glmcp/alt-key" in result.stdout
+    assert "secret=available" in result.stdout
+    assert "secret_entry=glmcp/alt-key" not in result.stdout
     assert "alt-secret-token" not in result.stdout
     assert "alt-secret-token" not in result.stderr
 

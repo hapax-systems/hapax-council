@@ -108,8 +108,14 @@ def load_family_outage_witness(now_iso: str, state_path: Path | None = None) -> 
     for family, observed in state.items():
         observed_iso = str(observed)
         try:
-            age = (now - datetime.fromisoformat(observed_iso)).total_seconds()
-        except ValueError:
+            observed_at = datetime.fromisoformat(observed_iso)
+            comparison_now = now
+            if comparison_now.tzinfo and observed_at.tzinfo is None:
+                observed_at = observed_at.replace(tzinfo=comparison_now.tzinfo)
+            elif observed_at.tzinfo and comparison_now.tzinfo is None:
+                comparison_now = comparison_now.replace(tzinfo=observed_at.tzinfo)
+            age = (comparison_now - observed_at).total_seconds()
+        except (TypeError, ValueError):
             continue
         if 0 <= age <= FAMILY_OUTAGE_TTL_S:
             out[str(family)] = observed_iso

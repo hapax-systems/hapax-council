@@ -416,6 +416,36 @@ def test_accepts_reviewed_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.temperature == 0.2
 
 
+def test_rejects_secret_entry_override_without_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_SECRET_ENTRY", "glmcp/alt-key")
+
+    with pytest.raises(module.ConfigError, match="refusing pass entry"):
+        module.load_config()
+
+
+def test_rejects_secret_entry_override_outside_glmcp_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_SECRET_ENTRY", "other/api-key")
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE", "1")
+
+    with pytest.raises(module.ConfigError, match="only reads glmcp/\\* secrets"):
+        module.load_config()
+
+
+def test_rejects_base_url_override_without_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_BASE_URL", "https://api.z.ai/api/coding/paas/v4-beta")
+
+    with pytest.raises(module.ConfigError, match="refusing base URL"):
+        module.load_config()
+
+
 def test_rejects_bad_env_values(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_module()
     _clean_env(monkeypatch)
@@ -494,6 +524,22 @@ def test_read_secret_pass_failure_has_next_action(monkeypatch: pytest.MonkeyPatc
     assert "run: pass show 'glmcp/api-key'" in message
     assert "pass stderr suppressed" in message
     assert "gpg: decryption failed" not in message
+
+
+def test_read_secret_pass_timeout_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_module()
+    monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/bin/pass")
+
+    def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(["pass", "show", "glmcp/api-key"], 20)
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    with pytest.raises(module.ConfigError) as excinfo:
+        module.read_secret("glmcp/api-key")
+    message = str(excinfo.value)
+    assert "failed to run pass show 'glmcp/api-key'" in message
+    assert "run: pass show 'glmcp/api-key'" in message
 
 
 def test_main_empty_stdin_reports_next_action(

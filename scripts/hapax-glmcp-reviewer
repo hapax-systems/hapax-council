@@ -183,7 +183,9 @@ def read_secret(secret_entry: str) -> str:
             timeout=20,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise ConfigError(f"failed to run pass show {secret_entry!r}: {exc}") from exc
+        raise ConfigError(
+            f"failed to run pass show {secret_entry!r}: {exc}; run: pass show {secret_entry!r}"
+        ) from exc
     if proc.returncode != 0:
         raise ConfigError(
             f"failed to read pass entry {secret_entry!r}; pass stderr suppressed to avoid "

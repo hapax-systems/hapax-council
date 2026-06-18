@@ -155,7 +155,6 @@ export ANTHROPIC_DEFAULT_OPUS_MODEL="$primary_model"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="$primary_model"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="$haiku_model"
 export HAPAX_LLM_PROVIDER="zai-glm-coding-plan"
-export HAPAX_GLMCP_SECRET_ENTRY="$secret_entry"
 
 unset auth_token
 
@@ -164,8 +163,8 @@ if [[ "$check_only" == true ]]; then
     echo "hapax-glmcp-claude: claude --version failed; verify Claude Code runs before using the GLMCP lane." >&2
     exit 9
   fi
-  printf 'hapax-glmcp-claude: ok secret_entry=%s base_url=%s primary_model=%s compact_window=%s\n' \
-    "$secret_entry" "$base_url" "$primary_model" "$CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+  printf 'hapax-glmcp-claude: ok secret=available base_url=%s primary_model=%s compact_window=%s\n' \
+    "$base_url" "$primary_model" "$CLAUDE_CODE_AUTO_COMPACT_WINDOW"
   printf '%s\n' "$claude_version"
   exit 0
 fi

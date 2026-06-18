@@ -205,7 +205,7 @@ def is_provider_outage(
         return False
     if len(stripped) > _PROVIDER_OUTAGE_MAX_CHARS:
         return False
-    normalized = re.sub(r"\Ahapax-glmcp-reviewer:\s+api error:\s*", "", stripped, flags=re.I)
+    normalized = re.sub(r"\A[-\w.]+:\s+api error:\s*", "", stripped, flags=re.I)
     http_429 = bool(re.search(r"\bHTTP\s+429\b", stripped, flags=re.IGNORECASE))
     http_5xx = bool(re.search(r"\bHTTP\s+5\d\d\b", stripped, flags=re.IGNORECASE))
     outage_terms = bool(_PROVIDER_OUTAGE_LINE_RE.search(stripped))

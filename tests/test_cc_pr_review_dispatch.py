@@ -1265,6 +1265,16 @@ class TestFamilyOutageDegradation:
         out = dispatch.load_family_outage("2026-06-12T21:00:00+00:00", state)
         assert out == frozenset()
 
+    def test_naive_outage_witness_timestamp_does_not_crash(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(json.dumps({"claude": "2026-06-12T20:59:00"}), encoding="utf-8")
+
+        witness = dispatch.load_family_outage_witness("2026-06-12T21:00:00+00:00", state)
+
+        assert witness == {"claude": "2026-06-12T20:59:00"}
+
     def test_family_offline_simulation_degrades_and_flows(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:

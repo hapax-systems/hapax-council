@@ -1007,6 +1007,11 @@ class TestFamilyOutageDegradation:
             "retry later or check the Z.ai Coding Plan endpoint/status",
             process_failed=True,
         )
+        assert rt.is_provider_outage(
+            "other-reviewer: api error: HTTP 502: Bad Gateway; "
+            "retry later or check the provider endpoint/status",
+            process_failed=True,
+        )
         for status in ("500", "501", "520", "530", "599"):
             assert rt.is_provider_outage(
                 f"hapax-glmcp-reviewer: api error: HTTP {status}: provider failure; "
