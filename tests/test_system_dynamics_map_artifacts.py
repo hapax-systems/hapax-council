@@ -236,13 +236,15 @@ def test_materializer_write_and_stale_detection_paths(tmp_path, monkeypatch):
 def test_materialized_rdf_artifacts_keep_valid_prefix_directives():
     for path in (TRIG_PATH, SHACL_PATH):
         text = path.read_text(encoding="utf-8")
+        prefix_lines = [line for line in text.splitlines() if line.startswith("@prefix ")]
         assert text.startswith("@prefix "), (
             f"{path}: expected RDF prefix declarations. Fix by regenerating the semantic artifact."
         )
-        assert "@tests/scripts/test_cc_close_prefix_collision.py" not in text, (
-            f"{path}: contains a corrupted prefix directive. "
+        assert len(prefix_lines) >= 5, (
+            f"{path}: expected namespace prefix declarations. "
             "Fix by regenerating the semantic artifact."
         )
+        assert all(line.endswith(" .") for line in prefix_lines)
 
 
 def test_materialized_rdf_artifacts_parse_and_match_seed_contract():
