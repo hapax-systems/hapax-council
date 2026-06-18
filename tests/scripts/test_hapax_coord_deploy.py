@@ -64,7 +64,11 @@ def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
         "        exit 3\n"
         "        ;;\n"
         '    "--user stop hapax-coord.service")\n'
-        '        if [ "${HAPAX_SYSTEMCTL_FAIL_STOP:-0}" = "1" ]; then exit 1; fi\n'
+        '        stop_count_file="${HAPAX_SYSTEMCTL_STOP_COUNT:?}"\n'
+        '        stop_count="$(cat "$stop_count_file" 2>/dev/null || printf "0")"\n'
+        '        stop_count="$((stop_count + 1))"\n'
+        '        printf "%s\\n" "$stop_count" > "$stop_count_file"\n'
+        '        if [ "${HAPAX_SYSTEMCTL_FAIL_STOP_NUMBER:-}" = "$stop_count" ]; then exit 1; fi\n'
         '        printf "inactive\\n" > "$state_file"\n'
         "        exit 0\n"
         "        ;;\n"
@@ -129,6 +133,7 @@ def _deploy(
     fail_receipt_promote: bool = False,
     fail_checkout_on_sha: str | None = None,
     fail_clean_on_sha: str | None = None,
+    fail_stop_number: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
@@ -137,6 +142,7 @@ def _deploy(
         "HAPAX_COORD_DEPLOY_ACT_ROOT": str(act_root),
         "HAPAX_SYSTEMCTL_CALLS": str(calls),
         "HAPAX_SYSTEMCTL_SERVICE_STATE": str(calls.with_name("systemctl-service-state.txt")),
+        "HAPAX_SYSTEMCTL_STOP_COUNT": str(calls.with_name("systemctl-stop-count.txt")),
         "HAPAX_FAIL_MUTATE_WHILE_ACTIVE": "1",
     }
     if fail_restart:
@@ -147,6 +153,8 @@ def _deploy(
         env["HAPAX_FAIL_CHECKOUT_ON_SHA"] = fail_checkout_on_sha
     if fail_clean_on_sha is not None:
         env["HAPAX_FAIL_CLEAN_ON_SHA"] = fail_clean_on_sha
+    if fail_stop_number is not None:
+        env["HAPAX_SYSTEMCTL_FAIL_STOP_NUMBER"] = str(fail_stop_number)
     return subprocess.run(
         [str(SCRIPT)],
         cwd=REPO_ROOT,
@@ -379,3 +387,28 @@ def test_coord_deploy_rolls_service_back_when_receipt_promote_fails(
     assert (worktree / ".deployed-sha").read_text(encoding="utf-8").strip() == sha_a
     assert not (worktree / ".deployed-sha.tmp").exists()
     assert len(_restart_calls(calls)) == 3
+
+
+def test_coord_deploy_refuses_rollback_mutation_when_stop_fails(tmp_path: Path) -> None:
+    repo, sha_a = _init_coord_repo(tmp_path)
+    act_root = tmp_path / "activation"
+    bin_dir, calls = _fake_systemctl(tmp_path)
+    first = _deploy(repo, act_root, bin_dir, calls)
+    assert first.returncode == 0, first.stderr
+    worktree = act_root / "worktree"
+
+    sha_b = _commit_and_push(repo, "unreceipted update with stop failure\n")
+    result = _deploy(
+        repo,
+        act_root,
+        bin_dir,
+        calls,
+        fail_receipt_promote=True,
+        fail_stop_number=2,
+    )
+
+    assert result.returncode == 1
+    assert "failed to stop hapax-coord.service before rollback worktree mutation" in result.stderr
+    assert "not mutating live activation worktree" in result.stderr
+    assert _activation_head(worktree) == sha_b
+    assert (worktree / ".deployed-sha").read_text(encoding="utf-8").strip() == sha_a

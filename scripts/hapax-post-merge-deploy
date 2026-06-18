@@ -1036,6 +1036,8 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
             # Already running — restart to pick up the new unit definition.
             if [ "$base" = "hapax-coord.service" ]; then
                 stage_coord_activation_before_restart
+                echo "hapax-coord.service restarted by hapax-coord-deploy"
+                continue
             fi
             echo "restarting $base"
             restart_user_unit "$base"

@@ -36,6 +36,15 @@ def test_coord_rebuild_runs_from_stable_recovery_bundle() -> None:
         assert marker not in text
 
 
+def test_recovery_plane_notify_failure_template_names_have_no_spaces() -> None:
+    assert not (UNITS / "notify-failure @.service").exists()
+
+    for unit in ("hapax-coord-rebuild.service", "notify-failure@.service"):
+        text = _read_unit(unit)
+        assert "notify-failure @" not in text
+        assert "OnFailure=notify-failure@%n.service" in text or unit == "notify-failure@.service"
+
+
 def test_coord_rebuild_timer_auto_enables() -> None:
     text = _read_unit("hapax-coord-rebuild.timer")
 

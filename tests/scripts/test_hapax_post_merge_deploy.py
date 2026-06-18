@@ -725,7 +725,8 @@ def test_coord_service_deploy_stages_activation_before_active_restart(
     coord_deploy.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
-        'printf "%s\\n" "coord-deploy" >> "$HAPAX_SYSTEMCTL_CALLS"\n',
+        'printf "%s\\n" "coord-deploy" >> "$HAPAX_SYSTEMCTL_CALLS"\n'
+        'printf "%s\\n" "--user restart hapax-coord.service" >> "$HAPAX_SYSTEMCTL_CALLS"\n',
         encoding="utf-8",
     )
     coord_deploy.chmod(0o755)
@@ -752,6 +753,7 @@ def test_coord_service_deploy_stages_activation_before_active_restart(
     calls = systemctl_calls.read_text(encoding="utf-8").splitlines()
     assert calls.index("--user is-active --quiet hapax-coord.service") < calls.index("coord-deploy")
     assert calls.index("coord-deploy") < calls.index("--user restart hapax-coord.service")
+    assert calls.count("--user restart hapax-coord.service") == 1
 
 
 def test_coord_service_active_restart_refuses_when_activation_deploy_missing(
