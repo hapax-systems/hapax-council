@@ -7,8 +7,8 @@
 <https://hapax.local/system-dynamics-map/v1/graph/asserted> {
 <https://hapax.local/system-dynamics-map/v1/map>
   a sd:SystemDynamicsMap ;
-  sd:mapId "system-dynamics-map-v0" ;
-  sd:version "0.1.0" ;
+  sd:mapId "system-dynamics-map-v1" ;
+  sd:version "1.0.0" ;
   sd:defaultFocus <https://hapax.local/system-dynamics-map/v1/node/rdf-owl-kg> ;
   sd:nodeCount "35"^^xsd:integer ;
   sd:edgeCount "42"^^xsd:integer ;
@@ -791,7 +791,7 @@
   sd:validFrom "2026-06-18T14:56:02Z"^^xsd:dateTime ;
   sd:transactionTime "2026-06-18T14:56:02Z"^^xsd:dateTime ;
   sd:freshness "fresh" ;
-  prov:wasDerivedFrom "docs/architecture/system-dynamics-map-v0.md" ;
+  prov:wasDerivedFrom "docs/architecture/system-dynamics-map-v1.md" ;
   sd:expiresAt "2026-06-18T20:56:02Z"^^xsd:dateTime .
 
 <https://hapax.local/system-dynamics-map/v1/observation/obs-cc-task-claimed>
@@ -894,7 +894,7 @@
   sd:layer <https://hapax.local/system-dynamics-map/v1/layer/projection> ;
   sd:resolution "3"^^xsd:integer ;
   sd:status "rendered" ;
-  dcterms:description "Interactive graph visualization engine for the v0 map." ;
+  dcterms:description "Interactive graph visualization engine for the v1 map." ;
   sd:context "Cytoscape.js provides graph elements, styles, layouts, and event handlers suitable for an exploratory topology viewer." ;
   sd:documentationLink <https://js.cytoscape.org/> ;
   sd:hardeningNote "Keep Cytoscape element data generated from the graph contract and view manifest." ;
@@ -955,7 +955,7 @@
   sd:resolution "3"^^xsd:integer ;
   sd:status "rendered" ;
   sd:confidence "0.96"^^xsd:decimal ;
-  dcterms:description "The v0 dynamic map is rendered with Cytoscape.js." ;
+  dcterms:description "The v1 dynamic map is rendered with Cytoscape.js." ;
   sd:documentationLink <https://js.cytoscape.org/> .
 
 <https://hapax.local/system-dynamics-map/v1/edge/operating-lens-to-sdlc>

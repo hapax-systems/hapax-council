@@ -252,7 +252,7 @@ scripts/system-dynamics-map-gate
 
 ```bash
 rg -n '#[0-9A-Fa-f]{3,8}\b' \
-  docs/architecture/system-dynamics-map-v0.md \
+  docs/architecture/system-dynamics-map-v1.md \
   docs/architecture/system-dynamics-map.seed.json \
   docs/architecture/system-dynamics-map-viewer.html \
   scripts/system_dynamics_map_materialize.py \
@@ -275,7 +275,7 @@ PY
 
 ```bash
 git diff --check -- \
-  docs/architecture/system-dynamics-map-v0.md \
+  docs/architecture/system-dynamics-map-v1.md \
   docs/architecture/system-dynamics-map.seed.json \
   docs/architecture/system-dynamics-map-viewer.html
 ```
@@ -316,7 +316,7 @@ trap - EXIT
 
 ## Source Notes
 
-Primary standards and docs used for the v0 map. Date-sensitive release notes
+Primary standards and docs used for the v1 map. Date-sensitive release notes
 below were rechecked against the linked official pages on 2026-06-18 UTC
 (2026-06-17 America/Chicago).
 

@@ -1,8 +1,8 @@
 {
-  "map_id": "system-dynamics-map-v0",
-  "version": "0.1.0",
+  "map_id": "system-dynamics-map-v1",
+  "version": "1.0.0",
   "generated_at": "2026-06-18T00:00:00Z",
-  "authority_case": "CASE-SYSTEM-DYNAMICS-MAP-20260618",
+  "authority_case": "CASE-SYSTEM-DYNAMICS-MAP-V1-ENHANCEMENT-20260618",
   "default_focus": "rdf-owl-kg",
   "thesis": "Faithful rendering of system dynamics requires a source-neutral semantic graph backbone with provenance, temporal state overlays, validation contracts, and reproducible view manifests. Modeling notations, runtime telemetry, event logs, and rendered views are inputs or projections, not the center.",
   "status_kinds": [
@@ -387,7 +387,7 @@
       "layer": "projection",
       "resolution": 3,
       "status": "rendered",
-      "summary": "Interactive graph visualization engine for the v0 map.",
+      "summary": "Interactive graph visualization engine for the v1 map.",
       "context": "Cytoscape.js provides graph elements, styles, layouts, and event handlers suitable for an exploratory topology viewer.",
       "docs": [
         {
@@ -1584,7 +1584,7 @@
       "layer": "projection",
       "resolution": 3,
       "status": "rendered",
-      "summary": "The v0 dynamic map is rendered with Cytoscape.js.",
+      "summary": "The v1 dynamic map is rendered with Cytoscape.js.",
       "confidence": 0.96,
       "docs": [
         {

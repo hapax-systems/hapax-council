@@ -1,3 +1,4 @@
+import copy
 import json
 import re
 import subprocess
@@ -22,6 +23,7 @@ LENSES_PATH = ARCHITECTURE_DIR / "system-dynamics-map.lenses.json"
 RELATIONS_PATH = ARCHITECTURE_DIR / "system-dynamics-map.relations.json"
 PACKAGE_PATH = ARCHITECTURE_DIR / "system-dynamics-map.package.json"
 LOCK_PATH = ARCHITECTURE_DIR / "system-dynamics-map.lock.json"
+DOC_PATH = ARCHITECTURE_DIR / "system-dynamics-map-v1.md"
 SDLC_FIXTURE_PATH = (
     ARCHITECTURE_DIR / "fixtures" / "system-dynamics-map" / "sdlc-operating-slice.json"
 )
@@ -74,6 +76,25 @@ def _load_observations() -> list[dict]:
     ]
 
 
+def _contract_error_text(
+    *,
+    seed: dict | None = None,
+    relation_vocabulary: dict | None = None,
+    claims: dict | None = None,
+    observations: list[dict] | None = None,
+    lenses: dict | None = None,
+) -> str:
+    return "\n".join(
+        materialize._contract_errors(
+            seed or _load_seed(),
+            relation_vocabulary=relation_vocabulary,
+            claims=claims,
+            observations=observations,
+            lenses=lenses,
+        )
+    )
+
+
 def _shape_property(shapes: Graph, shape: URIRef, path: URIRef):
     for property_shape in shapes.objects(shape, SH.property):
         if (property_shape, SH.path, path) in shapes:
@@ -118,12 +139,12 @@ def test_system_dynamics_seed_graph_is_referentially_valid():
         edge_ids = [edge["id"] for edge in data["edges"]]
         assert len(node_ids) == EXPECTED_NODE_COUNT, (
             f"{name}: expected {EXPECTED_NODE_COUNT} nodes, found {len(node_ids)}. "
-            "Fix by restoring the documented v0 graph shape or updating the count constant "
+            "Fix by restoring the documented v1 graph shape or updating the count constant "
             "with the intentional graph change."
         )
         assert len(edge_ids) == EXPECTED_EDGE_COUNT, (
             f"{name}: expected {EXPECTED_EDGE_COUNT} edges, found {len(edge_ids)}. "
-            "Fix by restoring the documented v0 graph shape or updating the count constant "
+            "Fix by restoring the documented v1 graph shape or updating the count constant "
             "with the intentional graph change."
         )
         assert len(node_ids) == len(set(node_ids)), (
@@ -137,9 +158,9 @@ def test_system_dynamics_seed_graph_is_referentially_valid():
         statuses = set(data["status_kinds"])
         node_set = set(node_ids)
         assert layers == EXPECTED_LAYER_IDS, (
-            f"{name}: layer IDs drifted from the source-neutral v0 contract. "
+            f"{name}: layer IDs drifted from the source-neutral v1 contract. "
             "Fix by using source-models, decision-modeling, execution-surfaces, "
-            "semantic-backbone, observation-state, and projection unless the v0 "
+            "semantic-backbone, observation-state, and projection unless the v1 "
             "contract and tests are intentionally updated together."
         )
         assert data["default_focus"] == "rdf-owl-kg", (
@@ -315,7 +336,7 @@ def test_viewer_layout_uses_intrinsic_wrapping_without_conditional_at_rules():
 
 def test_system_dynamics_artifacts_do_not_use_hardcoded_hex_colors():
     hex_color = re.compile(r"#[0-9A-Fa-f]{3,8}\b")
-    for path in (SEED_PATH, VIEWER_PATH, ARCHITECTURE_DIR / "system-dynamics-map-v0.md"):
+    for path in (SEED_PATH, VIEWER_PATH, DOC_PATH):
         match = hex_color.search(path.read_text(encoding="utf-8"))
         assert not match, (
             f"{path}: hardcoded hex color {match.group(0)}. "
@@ -407,6 +428,72 @@ def test_materializer_write_and_stale_detection_paths(tmp_path, monkeypatch):
     errors = materialize.check_artifacts()
     assert any("stale" in error for error in errors)
     assert any("missing" in error for error in errors)
+
+
+def test_contract_rejects_invalid_relation_and_orphan_edge():
+    seed = copy.deepcopy(_load_seed())
+    seed["edges"][0]["relation"] = "not_declared_by_relation_vocabulary"
+    relation_vocabulary = materialize.generate_relation_vocabulary(_load_seed())
+    assert "undeclared relation" in _contract_error_text(
+        seed=seed,
+        relation_vocabulary=relation_vocabulary,
+    )
+
+    seed = copy.deepcopy(_load_seed())
+    seed["edges"][0]["target"] = "missing-node"
+    errors = _contract_error_text(seed=seed)
+    assert "missing target" in errors
+
+
+def test_contract_rejects_missing_claim_provenance():
+    claims = materialize.generate_claims(_load_seed())
+    claims["claims"][0]["provenance"].pop("source_hash")
+    errors = _contract_error_text(claims=claims)
+    assert "provenance missing source_hash" in errors
+
+
+def test_contract_rejects_duplicate_slug_collisions_and_unsafe_docs():
+    seed = copy.deepcopy(_load_seed())
+    seed["nodes"][0]["id"] = "same value"
+    seed["nodes"][1]["id"] = "same/value"
+    seed["nodes"][2]["docs"][0]["url"] = "javascript:alert(1)"
+    errors = _contract_error_text(seed=seed)
+    assert "slug collision" in errors
+    assert "unsafe documentation URL" in errors
+
+
+def test_contract_rejects_invalid_observation_temporal_state():
+    observations = materialize.generate_observations(_load_seed())
+    observations[0]["valid_time"]["to"] = "2026-06-17T00:00:00Z"
+    observations[1]["expires_at"] = observations[1]["transaction_time"]
+    observations[1]["freshness"] = "fresh"
+    observations[2]["expires_at"] = "2026-06-19T00:00:00Z"
+    observations[2]["freshness"] = "stale"
+    errors = _contract_error_text(observations=observations)
+    assert "invalid valid_time interval" in errors
+    assert "fresh observation is expired" in errors
+    assert "stale observation expires after transaction_time" in errors
+
+
+def test_contract_rejects_schema_required_lens_fields_and_hidden_endpoints():
+    lenses = materialize.generate_lenses(_load_seed())
+    topology = next(lens for lens in lenses["lenses"] if lens["id"] == "topology")
+    topology.pop("visible_statuses")
+    topology["visible_node_ids"].remove("dmn")
+    topology["visible_edge_ids"] = ["dmn-to-drd"]
+    errors = _contract_error_text(lenses=lenses)
+    assert "missing required fields visible_statuses" in errors
+    assert "visible edge dmn-to-drd has hidden endpoint" in errors
+
+
+def test_generated_schemas_match_contract_required_fields():
+    schemas = materialize.generate_schema_artifacts()
+    assert (
+        json.loads(schemas[materialize.LENS_SCHEMA_PATH])["required"] == materialize.LENS_REQUIRED
+    )
+    assert (
+        json.loads(schemas[materialize.PACKAGE_SCHEMA_PATH])["title"] == "System dynamics package"
+    )
 
 
 def test_materialized_rdf_artifacts_keep_valid_prefix_directives():

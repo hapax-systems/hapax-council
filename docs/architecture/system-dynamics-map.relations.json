@@ -1,6 +1,6 @@
 {
   "generated_at": "2026-06-18T00:00:00Z",
-  "map_id": "system-dynamics-map-v0",
+  "map_id": "system-dynamics-map-v1",
   "relations": [
     {
       "allowed_claim_types": [
@@ -845,5 +845,5 @@
     }
   ],
   "schema": "system-dynamics-map-relation-vocabulary-v1",
-  "version": "0.1.0"
+  "version": "1.0.0"
 }

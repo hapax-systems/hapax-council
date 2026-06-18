@@ -1,5 +1,5 @@
 {
-  "authority_case": "CASE-SYSTEM-DYNAMICS-MAP-20260618",
+  "authority_case": "CASE-SYSTEM-DYNAMICS-MAP-V1-ENHANCEMENT-20260618",
   "claim_contract": {
     "claim_count": 77,
     "claims": "system-dynamics-map.claims.json",
@@ -168,7 +168,7 @@
       "visible_node_count": 7
     }
   ],
-  "map_id": "system-dynamics-map-v0",
+  "map_id": "system-dynamics-map-v1",
   "provenance": {
     "activity": "https://hapax.local/system-dynamics-map/v1/activity/materialize-v1",
     "agent": "scripts/system_dynamics_map_materialize.py",
@@ -197,7 +197,7 @@
     "observations": "system-dynamics-map.observations.jsonl",
     "relations": "system-dynamics-map.relations.json",
     "seed": "system-dynamics-map.seed.json",
-    "seed_sha256": "5fc813ddefee7634c70f553cd825f269f9c2d026df3836826cf169c23cbb70a4",
+    "seed_sha256": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
     "shacl_shapes": "system-dynamics-map.shacl.ttl"
   },
   "validation": {
@@ -205,5 +205,5 @@
     "package_gate": "scripts/system-dynamics-map-gate",
     "pytest": "uv run pytest tests/test_system_dynamics_map_artifacts.py"
   },
-  "version": "0.1.0"
+  "version": "1.0.0"
 }

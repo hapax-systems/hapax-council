@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -66,6 +67,61 @@ OBSERVED_AT = "2026-06-18T14:56:02Z"
 DEFAULT_VALID_FROM = "2026-06-18T00:00:00Z"
 FRESH_EXPIRES_AT = "2026-06-18T20:56:02Z"
 STALE_EXPIRES_AT = "2026-06-18T01:00:00Z"
+SEED_REQUIRED = [
+    "map_id",
+    "version",
+    "generated_at",
+    "authority_case",
+    "default_focus",
+    "nodes",
+    "edges",
+]
+CLAIM_REQUIRED = [
+    "id",
+    "claim_type",
+    "subject",
+    "predicate",
+    "object",
+    "provenance",
+    "valid_time",
+    "transaction_time",
+    "confidence_basis",
+    "freshness",
+    "contradiction_state",
+]
+OBSERVATION_REQUIRED = [
+    "id",
+    "subject",
+    "state",
+    "observed_at",
+    "valid_time",
+    "transaction_time",
+    "expires_at",
+    "freshness",
+    "source_ref",
+    "source_hash",
+]
+LENS_REQUIRED = [
+    "id",
+    "label",
+    "visible_layers",
+    "visible_statuses",
+    "max_resolution",
+    "layout",
+    "visible_node_ids",
+    "visible_edge_ids",
+    "aggregation",
+]
+RELATION_VOCABULARY_REQUIRED = ["schema", "relations"]
+VIEW_MANIFEST_REQUIRED = [
+    "schema",
+    "map_id",
+    "version",
+    "source_snapshot",
+    "default_projection",
+    "provenance",
+]
+PACKAGE_REQUIRED = ["schema", "map_id", "version", "artifacts", "validation", "git_sha"]
 
 
 def _load_seed() -> dict[str, Any]:
@@ -141,6 +197,15 @@ def _atomic_write_text(path: Path, content: str) -> None:
 
 def _date_time_or_none(value: str | None) -> str | None:
     return None if value is None else _date_time(value)
+
+
+def _parse_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 def _source_ref_hash(source_ref: str) -> str:
@@ -350,7 +415,7 @@ def generate_sdlc_fixture(seed: dict[str, Any]) -> dict[str, Any]:
             {
                 "id": "sdlc-intake",
                 "role": "intake",
-                "source_ref": "docs/architecture/system-dynamics-map-v0.md",
+                "source_ref": "docs/architecture/system-dynamics-map-v1.md",
             },
             {
                 "id": "cc-task-claim",
@@ -417,7 +482,7 @@ def generate_observations(seed: dict[str, Any]) -> list[dict[str, Any]]:
             observation_id="obs-sdlc-intake-offered",
             subject="sdlc-intake",
             state="offered",
-            source_ref="docs/architecture/system-dynamics-map-v0.md",
+            source_ref="docs/architecture/system-dynamics-map-v1.md",
             observed_at=OBSERVED_AT,
             valid_from=OBSERVED_AT,
             valid_to=None,
@@ -625,78 +690,37 @@ def generate_schema_artifacts() -> dict[Path, str]:
         SEED_SCHEMA_PATH: _schema_object(
             "seed.schema.json",
             "System dynamics map seed",
-            [
-                "map_id",
-                "version",
-                "generated_at",
-                "authority_case",
-                "default_focus",
-                "nodes",
-                "edges",
-            ],
+            SEED_REQUIRED,
         ),
         CLAIM_SCHEMA_PATH: _schema_object(
             "claim-fragment.schema.json",
             "System dynamics claim fragment",
-            [
-                "id",
-                "claim_type",
-                "subject",
-                "predicate",
-                "object",
-                "provenance",
-                "valid_time",
-                "transaction_time",
-                "confidence_basis",
-                "freshness",
-                "contradiction_state",
-            ],
+            CLAIM_REQUIRED,
         ),
         OBSERVATION_SCHEMA_PATH: _schema_object(
             "observation.schema.json",
             "System dynamics temporal observation",
-            [
-                "id",
-                "subject",
-                "state",
-                "observed_at",
-                "valid_time",
-                "transaction_time",
-                "expires_at",
-                "freshness",
-                "source_ref",
-                "source_hash",
-            ],
+            OBSERVATION_REQUIRED,
         ),
         LENS_SCHEMA_PATH: _schema_object(
             "lens.schema.json",
             "System dynamics map lens",
-            [
-                "id",
-                "label",
-                "visible_layers",
-                "visible_statuses",
-                "max_resolution",
-                "layout",
-                "visible_node_ids",
-                "visible_edge_ids",
-                "aggregation",
-            ],
+            LENS_REQUIRED,
         ),
         RELATION_SCHEMA_PATH: _schema_object(
             "relation-vocabulary.schema.json",
             "System dynamics relation vocabulary",
-            ["schema", "relations"],
+            RELATION_VOCABULARY_REQUIRED,
         ),
         VIEW_MANIFEST_SCHEMA_PATH: _schema_object(
             "view-manifest.schema.json",
             "System dynamics view manifest",
-            ["schema", "map_id", "version", "source_snapshot", "default_projection", "provenance"],
+            VIEW_MANIFEST_REQUIRED,
         ),
         PACKAGE_SCHEMA_PATH: _schema_object(
             "package.schema.json",
-            "System dynamics package lock",
-            ["schema", "map_id", "version", "artifacts", "validation", "git_sha"],
+            "System dynamics package",
+            PACKAGE_REQUIRED,
         ),
     }
     return {path: _json(schema) for path, schema in schemas.items()}
@@ -1146,7 +1170,7 @@ def generate_lock(seed: dict[str, Any], rendered: dict[Path, str], package_conte
         "git_sha": _git_sha(),
         "source_hashes": {
             "seed": _sha256(SEED_PATH),
-            "viewer": _sha256(VIEWER_PATH),
+            "viewer": _sha256_text(rendered[VIEWER_PATH]),
             "vendor": _sha256(VENDOR_PATH),
         },
         "generated_hashes": {
@@ -1198,6 +1222,13 @@ def _slug_collision_errors(label: str, values: list[str]) -> list[str]:
     return errors
 
 
+def _missing_required_errors(label: str, item: dict[str, Any], required: list[str]) -> list[str]:
+    missing = [field for field in required if field not in item]
+    if not missing:
+        return []
+    return [f"{label}: missing required fields {', '.join(missing)}."]
+
+
 def _contract_errors(
     seed: dict[str, Any],
     *,
@@ -1215,6 +1246,7 @@ def _contract_errors(
     edge_set = set(edge_ids)
     layer_set = set(layer_ids)
 
+    errors.extend(_missing_required_errors("seed", seed, SEED_REQUIRED))
     if "entrypoint" in seed:
         errors.append("seed: entrypoint is not allowed. Fix by using source-neutral default_focus.")
     if seed.get("default_focus") not in node_set:
@@ -1242,10 +1274,24 @@ def _contract_errors(
                     f"seed node {node.get('id')}: unsafe documentation URL {doc.get('url')!r}."
                 )
 
-    relation_ids = {
-        relation["id"]
-        for relation in (relation_vocabulary or generate_relation_vocabulary(seed))["relations"]
-    }
+    relation_bundle = relation_vocabulary
+    if relation_bundle is None:
+        try:
+            relation_bundle = generate_relation_vocabulary(seed)
+        except KeyError as exc:
+            relation_bundle = {
+                "schema": "system-dynamics-map-relation-vocabulary-v1",
+                "relations": [],
+            }
+            errors.append(
+                f"relation vocabulary: cannot derive from invalid seed edge endpoint {exc}."
+            )
+    errors.extend(
+        _missing_required_errors(
+            "relation vocabulary", relation_bundle, RELATION_VOCABULARY_REQUIRED
+        )
+    )
+    relation_ids = {relation["id"] for relation in relation_bundle.get("relations", [])}
     for edge in seed.get("edges", []):
         if edge.get("status") == "observed":
             errors.append(
@@ -1283,23 +1329,25 @@ def _contract_errors(
             "Fix by regenerating claim fragments from seed nodes and edges."
         )
     for claim in claim_items:
-        for field in (
-            "id",
-            "claim_type",
-            "subject",
-            "predicate",
-            "object",
-            "provenance",
-            "valid_time",
-            "transaction_time",
-            "confidence_basis",
-            "freshness",
-            "contradiction_state",
-        ):
-            if field not in claim:
-                errors.append(f"claim {claim.get('id', '<missing>')}: missing {field}.")
+        errors.extend(
+            _missing_required_errors(f"claim {claim.get('id', '<missing>')}", claim, CLAIM_REQUIRED)
+        )
         if claim.get("claim_type") != "asserted" and not claim.get("provenance"):
             errors.append(f"claim {claim.get('id')}: non-asserted claim lacks provenance.")
+        provenance = claim.get("provenance")
+        if not isinstance(provenance, dict):
+            errors.append(f"claim {claim.get('id')}: provenance must be an object.")
+        else:
+            for field in (
+                "source_ref",
+                "source_hash",
+                "source_type",
+                "agent",
+                "activity",
+                "authority_ceiling",
+            ):
+                if not provenance.get(field):
+                    errors.append(f"claim {claim.get('id')}: provenance missing {field}.")
         score = claim.get("confidence_basis", {}).get("score")
         if not isinstance(score, int | float) or isinstance(score, bool) or not 0 <= score <= 1:
             errors.append(f"claim {claim.get('id')}: confidence_basis.score must be 0..1.")
@@ -1310,49 +1358,86 @@ def _contract_errors(
     if not any(item.get("freshness") == "stale" for item in observation_items):
         errors.append("observations: stale-state canary missing.")
     for observation in observation_items:
+        observation_id = observation.get("id", "<missing>")
+        errors.extend(
+            _missing_required_errors(
+                f"observation {observation_id}", observation, OBSERVATION_REQUIRED
+            )
+        )
         subject = observation.get("subject")
         if subject not in node_set:
-            errors.append(
-                f"observation {observation.get('id')}: subject {subject!r} is not a seed node."
-            )
+            errors.append(f"observation {observation_id}: subject {subject!r} is not a seed node.")
         valid_time = observation.get("valid_time") or {}
         valid_from = valid_time.get("from")
         valid_to = valid_time.get("to")
         if not observation.get("observed_at"):
-            errors.append(f"observation {observation.get('id')}: missing observed_at.")
+            errors.append(f"observation {observation_id}: missing observed_at.")
         if not valid_from:
-            errors.append(f"observation {observation.get('id')}: missing valid_time.from.")
+            errors.append(f"observation {observation_id}: missing valid_time.from.")
         if valid_from and valid_to and valid_from > valid_to:
-            errors.append(f"observation {observation.get('id')}: invalid valid_time interval.")
+            errors.append(f"observation {observation_id}: invalid valid_time interval.")
         if observation.get("freshness") not in {"fresh", "stale", "historical"}:
-            errors.append(f"observation {observation.get('id')}: invalid freshness.")
+            errors.append(f"observation {observation_id}: invalid freshness.")
         if not observation.get("source_ref") or not observation.get("source_hash"):
-            errors.append(f"observation {observation.get('id')}: missing source reference/hash.")
+            errors.append(f"observation {observation_id}: missing source reference/hash.")
+        try:
+            observed_at = _parse_datetime(observation.get("observed_at"))
+            transaction_time = _parse_datetime(observation.get("transaction_time"))
+            parsed_valid_from = _parse_datetime(valid_from)
+            parsed_valid_to = _parse_datetime(valid_to)
+            expires_at = _parse_datetime(observation.get("expires_at"))
+        except ValueError as exc:
+            errors.append(f"observation {observation_id}: invalid timestamp {exc}.")
+            continue
+        if parsed_valid_from and observed_at and parsed_valid_from > observed_at:
+            errors.append(f"observation {observation_id}: valid_time.from is after observed_at.")
+        if parsed_valid_to and parsed_valid_from and parsed_valid_to < parsed_valid_from:
+            errors.append(f"observation {observation_id}: invalid parsed valid_time interval.")
+        if expires_at and parsed_valid_from and expires_at < parsed_valid_from:
+            errors.append(f"observation {observation_id}: expires_at is before valid_time.from.")
+        if observation.get("freshness") == "fresh":
+            if expires_at is None:
+                errors.append(
+                    f"observation {observation_id}: fresh observations require expires_at."
+                )
+            elif transaction_time and expires_at <= transaction_time:
+                errors.append(f"observation {observation_id}: fresh observation is expired.")
+        if observation.get("freshness") == "stale":
+            if expires_at is None:
+                errors.append(
+                    f"observation {observation_id}: stale observations require expires_at."
+                )
+            elif transaction_time and expires_at > transaction_time:
+                errors.append(
+                    f"observation {observation_id}: stale observation expires after transaction_time."
+                )
 
     lens_bundle = lenses or generate_lenses(seed)
     lens_ids = {lens["id"] for lens in lens_bundle["lenses"]}
     if lens_bundle.get("default_lens") not in lens_ids:
         errors.append("lenses: default_lens must name an existing lens.")
     for lens in lens_bundle["lenses"]:
+        lens_id = lens.get("id", "<missing>")
+        errors.extend(_missing_required_errors(f"lens {lens_id}", lens, LENS_REQUIRED))
         unknown_layers = set(lens.get("visible_layers", [])) - layer_set
         unknown_statuses = set(lens.get("visible_statuses", [])) - statuses
         unknown_nodes = set(lens.get("visible_node_ids", [])) - node_set
         unknown_edges = set(lens.get("visible_edge_ids", [])) - edge_set
         if unknown_layers:
-            errors.append(f"lens {lens['id']}: unknown layers {sorted(unknown_layers)}.")
+            errors.append(f"lens {lens_id}: unknown layers {sorted(unknown_layers)}.")
         if unknown_statuses:
-            errors.append(f"lens {lens['id']}: unknown statuses {sorted(unknown_statuses)}.")
+            errors.append(f"lens {lens_id}: unknown statuses {sorted(unknown_statuses)}.")
         if unknown_nodes:
-            errors.append(f"lens {lens['id']}: unknown nodes {sorted(unknown_nodes)}.")
+            errors.append(f"lens {lens_id}: unknown nodes {sorted(unknown_nodes)}.")
         if unknown_edges:
-            errors.append(f"lens {lens['id']}: unknown edges {sorted(unknown_edges)}.")
+            errors.append(f"lens {lens_id}: unknown edges {sorted(unknown_edges)}.")
         visible_nodes = set(lens.get("visible_node_ids", []))
         for edge in seed["edges"]:
             if edge["id"] in set(lens.get("visible_edge_ids", [])) and (
                 edge["source"] not in visible_nodes or edge["target"] not in visible_nodes
             ):
                 errors.append(
-                    f"lens {lens['id']}: visible edge {edge['id']} has hidden endpoint. "
+                    f"lens {lens_id}: visible edge {edge['id']} has hidden endpoint. "
                     "Fix by regenerating the lens projection."
                 )
     return errors

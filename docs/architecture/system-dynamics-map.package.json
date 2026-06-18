@@ -1,14 +1,14 @@
 {
   "artifacts": [
     {
-      "bytes": 53057,
+      "bytes": 53072,
       "path": "docs/architecture/system-dynamics-map.seed.json",
-      "sha256": "5fc813ddefee7634c70f553cd825f269f9c2d026df3836826cf169c23cbb70a4"
+      "sha256": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e"
     },
     {
-      "bytes": 83169,
+      "bytes": 83184,
       "path": "docs/architecture/system-dynamics-map-viewer.html",
-      "sha256": "29db69724632af2ad00d0a99835fcc80c953722124bec642daf473f32096d15d"
+      "sha256": "f25d3e57908c1ee71416eb290a211830b477e5bf9c3af895d164edba7d08de25"
     },
     {
       "bytes": 435328,
@@ -18,32 +18,32 @@
     {
       "bytes": 1258,
       "path": "docs/architecture/fixtures/system-dynamics-map/sdlc-operating-slice.json",
-      "sha256": "acecba8b9fd4b7ed0327b1a6f98e2565989f2ca7ce7df4eeeac248370562e161"
+      "sha256": "b405bf4be92d1a7e4fcecbb4ab640e3b9f9b2dedae73d22bcbcd2189b6b78c1f"
     },
     {
       "bytes": 121880,
       "path": "docs/architecture/system-dynamics-map.canonical.trig",
-      "sha256": "a1a772d0f054ac85405ec9bf2d761f90cfbd633343e8c3756c9dafc5e57c8780"
+      "sha256": "e193052bdd7f1cbfc4fe14dd65c311da54ebc7024ee3bc30e0916124204829dc"
     },
     {
       "bytes": 85785,
       "path": "docs/architecture/system-dynamics-map.claims.json",
-      "sha256": "fbddb8158cdd383b50e5e9b9f1444d0476530c2afd8ca80fabcf5449ac75c408"
+      "sha256": "b52f80e5eeb3b4cd8abf5b37e4a49b8e457bf823fa0ecdf838872b56ea1e641d"
     },
     {
       "bytes": 9387,
       "path": "docs/architecture/system-dynamics-map.lenses.json",
-      "sha256": "e328aeac8110905e80803f2673f9e77e7825043f1dad4d9b0732b3f349857262"
+      "sha256": "d7ef9c7773ad04c5d76597378414277089137028416e406559490e87512eef7f"
     },
     {
       "bytes": 3375,
       "path": "docs/architecture/system-dynamics-map.observations.jsonl",
-      "sha256": "2745ba6135f2d87818d5df71c86c72b433b3cd396222bfafd15bd895a24ebf20"
+      "sha256": "8ec5941269a3f20dc4434f28add0ce7b4748c104b792d870c08c51d85a30e7ae"
     },
     {
       "bytes": 24510,
       "path": "docs/architecture/system-dynamics-map.relations.json",
-      "sha256": "dad3674299582c73ae42852f6e35eefe6838ddfd7d0073e8ea2739ce8e82dc0f"
+      "sha256": "382cdd0fa36e9a1cba9feea58d78d6c6280e1416092e704770d822fe912b0e9d"
     },
     {
       "bytes": 4587,
@@ -51,9 +51,9 @@
       "sha256": "56c382e4afa373f2d989676e2f3d0c533d7fe91743b1893199cf19c4923e653b"
     },
     {
-      "bytes": 5587,
+      "bytes": 5602,
       "path": "docs/architecture/system-dynamics-map.view-manifest.json",
-      "sha256": "f352e52d741726164249d382f7084a22c4666ac446853e69de1a70c8f19c83cc"
+      "sha256": "eba1f4216f08012090ef9e381b1baa244b956be907cefcea3415c9bcae844ebc"
     },
     {
       "bytes": 469,
@@ -71,9 +71,9 @@
       "sha256": "034b4362c28e7e59948b06c7a44aca7374ab21539ec4fb10b8f5ded1cc68ad26"
     },
     {
-      "bytes": 351,
+      "bytes": 346,
       "path": "schemas/system-dynamics-map/package.schema.json",
-      "sha256": "75f40c10c2faf980375aa955110134c1274bf2b4d4d78b25b47286c30719bb79"
+      "sha256": "87aa1b2d7b3347a5b4e47b0e236feb64dc7e6b79598075b1f41e0de60f081658"
     },
     {
       "bytes": 308,
@@ -91,14 +91,14 @@
       "sha256": "4b50e379d4068a8df0059415b4c7fccebb0a6bd3dfcc93b7352f4ed10797159c"
     }
   ],
-  "authority_case": "CASE-SYSTEM-DYNAMICS-MAP-20260618",
+  "authority_case": "CASE-SYSTEM-DYNAMICS-MAP-V1-ENHANCEMENT-20260618",
   "generated_at": "2026-06-18T00:00:00Z",
   "generator": {
     "check_command": "python3 scripts/system_dynamics_map_materialize.py --check",
     "command": "python3 scripts/system_dynamics_map_materialize.py"
   },
-  "git_sha": "cfb058b04dc7d8d2e8dba67335a4f02a9a13739d",
-  "map_id": "system-dynamics-map-v0",
+  "git_sha": "1f500762ee0e0b4b9dfe19af453eec02eaff0ec9",
+  "map_id": "system-dynamics-map-v1",
   "schema": "system-dynamics-map-package-v1",
   "validation": {
     "package_gate": "scripts/system-dynamics-map-gate",
@@ -107,5 +107,5 @@
     "shacl_parse": "rdflib Graph.parse(format='turtle')",
     "viewer_smoke": "uv run --extra ci pytest tests/test_system_dynamics_map_viewer_playwright.py"
   },
-  "version": "0.1.0"
+  "version": "1.0.0"
 }

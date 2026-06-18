@@ -10,6 +10,6 @@
     "validation",
     "git_sha"
   ],
-  "title": "System dynamics package lock",
+  "title": "System dynamics package",
   "type": "object"
 }

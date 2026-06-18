@@ -358,7 +358,7 @@
       ]
     }
   ],
-  "map_id": "system-dynamics-map-v0",
+  "map_id": "system-dynamics-map-v1",
   "schema": "system-dynamics-map-lenses-v1",
-  "version": "0.1.0"
+  "version": "1.0.0"
 }

@@ -4,7 +4,7 @@
     {
       "id": "sdlc-intake",
       "role": "intake",
-      "source_ref": "docs/architecture/system-dynamics-map-v0.md"
+      "source_ref": "docs/architecture/system-dynamics-map-v1.md"
     },
     {
       "id": "cc-task-claim",
