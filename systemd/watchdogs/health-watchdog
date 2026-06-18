@@ -22,6 +22,7 @@ if [[ -z "$HEALTH_MONITOR_REPO" ]]; then
     exit 1
 fi
 cd "$HEALTH_MONITOR_REPO"
+export HAPAX_HEALTH_MONITOR_ACTIVE_REPO="$HEALTH_MONITOR_REPO"
 
 UV="${HAPAX_UV:-/home/hapax/.local/bin/uv}"
 
@@ -108,14 +109,13 @@ summary = r['summary']
 failed = r['failed_count']
 
 if status == 'failed':
-    # Route through source-activation P0 intake so the alert coalesces into one
-    # governed incident. Any CLI failure falls back to raw notify instead of
-    # silently suppressing the failed-stack alert.
+    # Route through the selected checkout's P0 intake so the alert coalesces
+    # into one governed incident. Any CLI failure falls back to raw notify
+    # instead of silently suppressing the failed-stack alert.
     import subprocess
-    cli = os.path.expanduser(os.environ.get(
-        'HAPAX_P0_INTAKE_CLI',
-        '~/.cache/hapax/source-activation/worktree/scripts/hapax-p0-incident-intake',
-    ))
+    active_repo = os.environ.get('HAPAX_HEALTH_MONITOR_ACTIVE_REPO', '')
+    default_cli = os.path.join(active_repo, 'scripts', 'hapax-p0-incident-intake')
+    cli = os.path.expanduser(os.environ.get('HAPAX_P0_INTAKE_CLI') or default_cli)
     intake_timeout_s = float(os.environ.get('HAPAX_P0_INTAKE_TIMEOUT_SECONDS', '20'))
     try:
         rc = subprocess.run([

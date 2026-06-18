@@ -22,6 +22,22 @@ def _make_checkout(path: Path) -> Path:
     return path
 
 
+def _write_fake_intake_cli(root: Path, log_path: Path) -> Path:
+    cli = root / "scripts" / "hapax-p0-incident-intake"
+    cli.parent.mkdir(parents=True, exist_ok=True)
+    return _write_executable(
+        cli,
+        f"""
+        #!/usr/bin/env python3
+        import json
+        import sys
+        with open({str(log_path)!r}, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(sys.argv[1:]) + "\\n")
+        sys.exit(0)
+        """,
+    )
+
+
 def _write_fake_uv(path: Path) -> Path:
     return _write_executable(
         path,
@@ -231,6 +247,9 @@ def test_missing_activation_checkouts_fail_before_uv(tmp_path: Path) -> None:
     assert "NEXT ACTION: run source activation" in result.stderr
     assert not (tmp_path / "uv.jsonl").exists()
     assert "/home/hapax/projects/hapax-council" not in result.stderr
+    notify_send = (tmp_path / "notify-send.log").read_text(encoding="utf-8")
+    assert "Health Monitor Failed" in notify_send
+    assert "No activation checkout available" in notify_send
 
 
 def test_default_history_file_uses_selected_activation_checkout(tmp_path: Path) -> None:
@@ -284,6 +303,41 @@ def test_failed_stack_routes_through_intake_cli(tmp_path: Path) -> None:
             "rotating_light",
         ]
     ]
+    assert _jsonl(tmp_path / "notify.jsonl") == []
+
+
+def test_failed_stack_default_intake_cli_uses_selected_activation_root(
+    tmp_path: Path,
+) -> None:
+    activation = _make_checkout(tmp_path / "source-activation")
+    intake_log = tmp_path / "default-intake.jsonl"
+    _write_fake_intake_cli(activation, intake_log)
+    env = _base_env(tmp_path, status="failed")
+    env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(activation)
+
+    result = _run_watchdog(env)
+
+    assert result.returncode == 2, result.stderr
+    calls = _jsonl(intake_log)
+    assert calls[0][0:3] == ["notification", "--title", "Stack Failed"]
+    assert _jsonl(tmp_path / "notify.jsonl") == []
+
+
+def test_failed_stack_default_intake_cli_uses_runtime_fallback_root(
+    tmp_path: Path,
+) -> None:
+    runtime = _make_checkout(tmp_path / "runtime")
+    intake_log = tmp_path / "runtime-intake.jsonl"
+    _write_fake_intake_cli(runtime, intake_log)
+    env = _base_env(tmp_path, status="failed")
+    env["HAPAX_HEALTH_MONITOR_REPO"] = str(runtime)
+    env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(tmp_path / "missing-activation")
+
+    result = _run_watchdog(env)
+
+    assert result.returncode == 2, result.stderr
+    calls = _jsonl(intake_log)
+    assert calls[0][0:3] == ["notification", "--title", "Stack Failed"]
     assert _jsonl(tmp_path / "notify.jsonl") == []
 
 
