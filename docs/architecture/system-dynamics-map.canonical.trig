@@ -792,7 +792,7 @@
   sd:transactionTime "2026-06-18T14:56:02Z"^^xsd:dateTime ;
   sd:freshness "fresh" ;
   prov:wasDerivedFrom "docs/architecture/system-dynamics-map-v1.md" ;
-  sd:expiresAt "2026-06-18T20:56:02Z"^^xsd:dateTime .
+  sd:expiresAt "2030-01-01T00:00:00Z"^^xsd:dateTime .
 
 <https://hapax.local/system-dynamics-map/v1/observation/obs-cc-task-claimed>
   a sd:Observation ;
@@ -804,7 +804,7 @@
   sd:transactionTime "2026-06-18T14:56:02Z"^^xsd:dateTime ;
   sd:freshness "fresh" ;
   prov:wasDerivedFrom "scripts/cc-claim" ;
-  sd:expiresAt "2026-06-18T20:56:02Z"^^xsd:dateTime .
+  sd:expiresAt "2030-01-01T00:00:00Z"^^xsd:dateTime .
 
 <https://hapax.local/system-dynamics-map/v1/observation/obs-review-pending>
   a sd:Observation ;
@@ -816,7 +816,7 @@
   sd:transactionTime "2026-06-18T14:56:02Z"^^xsd:dateTime ;
   sd:freshness "fresh" ;
   prov:wasDerivedFrom "scripts/review_team.py" ;
-  sd:expiresAt "2026-06-18T20:56:02Z"^^xsd:dateTime .
+  sd:expiresAt "2030-01-01T00:00:00Z"^^xsd:dateTime .
 
 <https://hapax.local/system-dynamics-map/v1/observation/obs-pr-ci-not-open>
   a sd:Observation ;
@@ -828,7 +828,7 @@
   sd:transactionTime "2026-06-18T14:56:02Z"^^xsd:dateTime ;
   sd:freshness "fresh" ;
   prov:wasDerivedFrom "https://github.com/hapax-systems/hapax-council/pull/4179" ;
-  sd:expiresAt "2026-06-18T20:56:02Z"^^xsd:dateTime .
+  sd:expiresAt "2030-01-01T00:00:00Z"^^xsd:dateTime .
 
 <https://hapax.local/system-dynamics-map/v1/observation/obs-release-not-ready>
   a sd:Observation ;
@@ -840,7 +840,7 @@
   sd:transactionTime "2026-06-18T14:56:02Z"^^xsd:dateTime ;
   sd:freshness "fresh" ;
   prov:wasDerivedFrom "https://github.com/hapax-systems/hapax-council/commit/1522faae8212ddbc63da64140a12f86117f30c2d" ;
-  sd:expiresAt "2026-06-18T20:56:02Z"^^xsd:dateTime .
+  sd:expiresAt "2030-01-01T00:00:00Z"^^xsd:dateTime .
 
 <https://hapax.local/system-dynamics-map/v1/observation/obs-view-manifest-stale-fixture>
   a sd:Observation ;

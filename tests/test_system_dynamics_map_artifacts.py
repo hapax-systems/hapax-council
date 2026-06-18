@@ -634,9 +634,24 @@ def test_generated_schemas_validate_artifacts_and_reject_bad_shapes():
 
     bad_package = copy.deepcopy(json.loads(PACKAGE_PATH.read_text(encoding="utf-8")))
     bad_package["artifacts"][0]["sha256"] = "not-a-sha"
-    bad_package["git_sha"] = "0" * 40
-    bad_package["git_sha_role"] = "final_head"
     assert _schema_errors(bad_package, package_schema)
+
+    package_with_recorded_sha = copy.deepcopy(json.loads(PACKAGE_PATH.read_text(encoding="utf-8")))
+    package_with_recorded_sha["git_sha"] = "0" * 40
+    sha_errors = "\n".join(_schema_errors(package_with_recorded_sha, package_schema))
+    assert "unknown" in sha_errors
+
+    package_with_wrong_sha_role = copy.deepcopy(
+        json.loads(PACKAGE_PATH.read_text(encoding="utf-8"))
+    )
+    package_with_wrong_sha_role["git_sha_role"] = "final_head"
+    role_errors = "\n".join(_schema_errors(package_with_wrong_sha_role, package_schema))
+    assert "not_recorded" in role_errors
+
+    package_missing_sha_role = copy.deepcopy(json.loads(PACKAGE_PATH.read_text(encoding="utf-8")))
+    package_missing_sha_role.pop("git_sha_role")
+    required_errors = "\n".join(_schema_errors(package_missing_sha_role, package_schema))
+    assert "git_sha_role" in required_errors
 
 
 def test_materialized_rdf_artifacts_keep_valid_prefix_directives():
