@@ -608,6 +608,44 @@ def _blocking_criticals(
     return blocking, phantom
 
 
+def _finding_key(reviewer_id: str, finding: Mapping[str, Any]) -> tuple[str, str, str, str, str]:
+    return (
+        reviewer_id,
+        str(finding.get("file") or ""),
+        str(finding.get("line") or ""),
+        str(finding.get("title") or ""),
+        str(finding.get("lens") or ""),
+    )
+
+
+def _reviews_with_phantom_resolutions(
+    reviews: Sequence[Mapping[str, Any]], phantom_criticals: Sequence[tuple[str, dict]]
+) -> list[dict[str, Any]]:
+    phantom_keys = {
+        _finding_key(reviewer_id, finding) for reviewer_id, finding in phantom_criticals
+    }
+    out: list[dict[str, Any]] = []
+    for review in reviews:
+        reviewer_id = str(review.get("id"))
+        record = dict(review)
+        findings: list[Any] = []
+        for finding in review.get("findings") or []:
+            if not isinstance(finding, Mapping):
+                findings.append(finding)
+                continue
+            finding_record = dict(finding)
+            if _finding_key(reviewer_id, finding_record) in phantom_keys:
+                finding_record["resolved"] = True
+                finding_record["resolution_source"] = "review-go-gate"
+                finding_record["resolution_detail"] = (
+                    "literal-defect critical refuted by the file at head"
+                )
+            findings.append(finding_record)
+        record["findings"] = findings
+        out.append(record)
+    return out
+
+
 def _accepting(reviews: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     return [r for r in reviews if str(r.get("verdict", "")).lower() in ACCEPT_VERDICTS]
 
@@ -819,7 +857,7 @@ def synthesize_dossier(
         "degraded_family_outage": degraded_outage,
         "post_recovery_rereview_required": bool(degraded_outage),
         "lenses": list(lenses),
-        "reviewers": [dict(r) for r in reviews],
+        "reviewers": _reviews_with_phantom_resolutions(reviews, phantom_criticals),
         "escalations": escalations,
         "accept_count": len(accepts),
         "review_team_verdict": verdict,

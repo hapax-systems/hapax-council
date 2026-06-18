@@ -1524,6 +1524,9 @@ class TestGoGate:
         d = _synth(rt, reviews, repo_root=tmp_path)
         assert d["review_team_verdict"] != "blocked"
         assert any(e["kind"] == "invalidated-phantom-critical" for e in d["escalations"])
+        finding = d["reviewers"][0]["findings"][0]
+        assert finding["resolved"] is True
+        assert finding["resolution_source"] == "review-go-gate"
 
     def test_real_literal_critical_still_blocks(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
