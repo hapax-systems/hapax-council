@@ -1674,7 +1674,7 @@ def test_auto_arms_release_unauthorized_pr_open_task(tmp_path: Path) -> None:
     assert record["task_id"] == "stranded-eligible"
 
 
-def test_auto_arms_governance_sensitive_task_after_automated_gates(tmp_path: Path) -> None:
+def test_does_not_auto_arm_governance_sensitive_task(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     note = _write_task(
         vault,
@@ -1696,15 +1696,14 @@ def test_auto_arms_governance_sensitive_task_after_automated_gates(tmp_path: Pat
         auto_arm_ledger_path=tmp_path / "ledger.jsonl",
     )
 
-    armed = note.read_text(encoding="utf-8")
-    assert "release_authorized: true" in armed
-    assert "stage: S7_RELEASE" in armed
-    assert ["gh", "pr", "merge", "702", "--repo", "owner/repo", "--auto", "--squash"] in (
-        runner.calls
-    )
+    # Sensitive task stays manual: never armed, never merged.
+    untouched = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in untouched
+    assert "stage: S7_RELEASE" not in untouched
+    assert not any(call[:4] == ["gh", "pr", "merge", "702"] for call in runner.calls)
     decision = next(d for d in report["decisions"] if d["pr"] == 702)
-    assert decision["action"] == "queue"
-    assert decision["auto_arm"] is True
+    assert decision["action"] == "blocked"
+    assert any(reason.startswith("release_auto_arm_ineligible:") for reason in decision["reasons"])
 
 
 def test_dry_run_reports_release_auto_arm_without_writing_note(tmp_path: Path) -> None:

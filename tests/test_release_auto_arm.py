@@ -3,9 +3,9 @@
 Reform improve (CASE-CAPACITY-ROUTING-001): a lane that dies after creating its
 PR but before flipping ``release_authorized: true`` strands a CLEAN, green,
 mergeable PR at ``pr_open`` forever. The autoqueue (running as the system,
-unclaimed — FM-20) must auto-arm such a task when its release was already
-authorized-in-principle by its ISAP and the automated quality gates pass. There
-is no separate human release authorization stop.
+unclaimed — FM-20) must auto-arm such a task — but only when its release was
+already authorized-in-principle by its ISAP and its risk profile carries no
+governance/public/audio-egress veto. Sensitive tasks stay manual.
 """
 
 from __future__ import annotations
@@ -69,106 +69,108 @@ def test_already_release_authorized_task_does_not_need_arming() -> None:
     assert assessment.eligible is False
 
 
-# ── sensitivity is handled by automated gates, not manual release ───────
+# ── governance / sensitivity veto (AC2: sensitive stays manual) ────────
 
 
-def test_explicit_governance_risk_flag_does_not_block_auto_arm() -> None:
+def test_ineligible_when_explicit_governance_risk_flag_set() -> None:
     fm = _eligible_frontmatter(risk_flags={"governance_sensitive": True})
     assessment = assess_release_auto_arm(fm)
     assert assessment.needs_arming is True
-    assert assessment.eligible is True
-    assert assessment.blockers == ()
+    assert assessment.eligible is False
+    assert any("governance" in blocker for blocker in assessment.blockers)
 
 
-def test_governance_keyword_in_title_does_not_block_auto_arm() -> None:
+def test_ineligible_when_governance_keyword_in_title_without_explicit_flags() -> None:
     fm = _eligible_frontmatter(
         title="Tighten governance policy enforcement on authority cases",
     )
     assessment = assess_release_auto_arm(fm)
-    assert assessment.eligible is True
-    assert assessment.blockers == ()
+    assert assessment.eligible is False
+    assert any("governance" in blocker for blocker in assessment.blockers)
 
 
-def test_audio_or_live_egress_sensitive_metadata_does_not_block_auto_arm() -> None:
+def test_ineligible_when_audio_or_live_egress_sensitive() -> None:
     fm = _eligible_frontmatter(
         title="Adjust broadcast audio loudnorm egress chain",
         tags=["cc-task", "audio", "egress"],
-        avsdlc_axes=[],
     )
     assessment = assess_release_auto_arm(fm)
-    assert assessment.eligible is True
-    assert assessment.blockers == ()
+    assert assessment.eligible is False
+    assert any("audio_or_live_egress" in blocker for blocker in assessment.blockers)
 
 
-def test_public_claim_sensitive_metadata_does_not_block_auto_arm() -> None:
+def test_ineligible_when_public_claim_sensitive() -> None:
     fm = _eligible_frontmatter(
         title="Publish public claim to external surface",
         tags=["cc-task", "publication", "public"],
     )
     assessment = assess_release_auto_arm(fm)
-    assert assessment.eligible is True
-    assert assessment.blockers == ()
+    assert assessment.eligible is False
+    assert any("public_claim" in blocker for blocker in assessment.blockers)
 
 
-def test_public_mutation_surface_does_not_create_manual_release_gate() -> None:
+def test_ineligible_when_mutation_surface_is_public() -> None:
     assessment = assess_release_auto_arm(_eligible_frontmatter(mutation_surface="public"))
-    assert assessment.eligible is True
-    assert assessment.blockers == ()
+    assert assessment.eligible is False
+    assert any("mutation_surface" in blocker for blocker in assessment.blockers)
 
 
-def test_provider_spend_mutation_surface_does_not_create_manual_release_gate() -> None:
+def test_ineligible_when_mutation_surface_is_provider_spend() -> None:
     assessment = assess_release_auto_arm(_eligible_frontmatter(mutation_surface="provider_spend"))
-    assert assessment.eligible is True
-    assert assessment.blockers == ()
+    assert assessment.eligible is False
+    assert any("mutation_surface" in blocker for blocker in assessment.blockers)
 
 
-def test_governance_protected_path_does_not_create_manual_release_gate() -> None:
+def test_ineligible_when_governance_protected_path_in_scope() -> None:
     fm = _eligible_frontmatter(
         mutation_scope_refs=["axioms/registry.yaml", "shared/foo.py"],
     )
     assessment = assess_release_auto_arm(fm)
-    assert assessment.eligible is True
-    assert assessment.blockers == ()
+    assert assessment.eligible is False
+    assert any("sensitive_path" in blocker for blocker in assessment.blockers)
 
 
-def test_sensitive_path_substring_does_not_block_auto_arm() -> None:
+def test_sensitive_path_does_not_false_match_substring_in_segment() -> None:
+    # 'codeowners' is a marker, but 'scripts/sync-codeowners.py' only CONTAINS
+    # it as a substring of a filename — it does not modify CODEOWNERS. The raw
+    # substring match false-vetoed such tasks from system auto-arm.
     fm = _eligible_frontmatter(mutation_scope_refs=["scripts/sync-codeowners.py"])
     assessment = assess_release_auto_arm(fm)
+    assert not any("sensitive_path" in blocker for blocker in assessment.blockers)
     assert assessment.eligible is True
-    assert assessment.blockers == ()
 
 
-def test_sensitive_path_dir_marker_substring_does_not_block_auto_arm() -> None:
+def test_sensitive_path_does_not_false_match_dir_marker_substring() -> None:
+    # Marker 'axioms/' must match the governed axioms/ directory, not a
+    # segment that merely ends in '...axioms'.
     fm = _eligible_frontmatter(mutation_scope_refs=["research/meta-axioms/notes.md"])
     assessment = assess_release_auto_arm(fm)
+    assert not any("sensitive_path" in blocker for blocker in assessment.blockers)
     assert assessment.eligible is True
-    assert assessment.blockers == ()
 
 
-def test_codeowners_path_segment_does_not_create_manual_release_gate() -> None:
+def test_sensitive_path_matches_codeowners_as_path_segment() -> None:
     fm = _eligible_frontmatter(mutation_scope_refs=[".github/CODEOWNERS"])
     assessment = assess_release_auto_arm(fm)
-    assert assessment.eligible is True
-    assert assessment.blockers == ()
+    assert any("sensitive_path" in blocker for blocker in assessment.blockers)
 
 
-def test_claude_md_path_segment_does_not_create_manual_release_gate() -> None:
+def test_sensitive_path_matches_claude_md_file_segment() -> None:
     fm = _eligible_frontmatter(mutation_scope_refs=["hapax-council/CLAUDE.md"])
     assessment = assess_release_auto_arm(fm)
-    assert assessment.eligible is True
-    assert assessment.blockers == ()
+    assert any("sensitive_path" in blocker for blocker in assessment.blockers)
 
 
-def test_public_current_does_not_create_manual_release_gate() -> None:
+def test_ineligible_when_public_current_already_true() -> None:
     assessment = assess_release_auto_arm(_eligible_frontmatter(public_current=True))
-    assert assessment.eligible is True
-    assert assessment.blockers == ()
+    assert assessment.eligible is False
+    assert any("public_current" in blocker for blocker in assessment.blockers)
 
 
-def test_risk_tier_t3_does_not_create_manual_release_gate() -> None:
+def test_ineligible_when_risk_tier_is_t3() -> None:
     assessment = assess_release_auto_arm(_eligible_frontmatter(risk_tier="T3"))
-    assert assessment.eligible is True
-    assert assessment.blockers == ()
+    assert assessment.eligible is False
+    assert any("risk_tier" in blocker for blocker in assessment.blockers)
 
 
 # ── ISAP authorization-in-principle precondition ──────────────────────

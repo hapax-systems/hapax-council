@@ -419,12 +419,44 @@ def task_closure_validity(
 # --- System release auto-arm (dispatch resilience to lane-death) -------------
 # CASE-CAPACITY-ROUTING-001. A headless lane exits after creating its PR. If it
 # dies after `gh pr create` but before flipping `release_authorized: true`, a
-# CLEAN, green, mergeable PR strands at `pr_open`. The autoqueue runs as the
-# system (unclaimed — master design FM-20: "auto-queue is the merge path (runs
-# as system, unclaimed)"), so it performs that release-arm step automatically
-# once the normal implementation/review/quality gates have passed. Sensitivity
-# is enforced by route metadata, review, AVSDLC, branch protection, and source
-# admission gates; it is not a separate human release-authorization stop.
+# CLEAN, green, mergeable PR strands at `pr_open` forever and needs manual
+# re-dispatch. The autoqueue runs as the system (unclaimed — master design
+# FM-20: "auto-queue is the merge path (runs as system, unclaimed)"), so it can
+# authorize release on behalf of a dead lane — but ONLY for tasks whose release
+# was already authorized-in-principle by their ISAP (`implementation_authorized`)
+# and whose risk profile carries no governance/public/audio-egress veto.
+# Sensitive tasks stay manual.
+
+#: Risk flags whose presence (explicit or keyword-derived) vetoes auto-arming.
+SENSITIVE_RISK_FLAGS = (
+    "governance_sensitive",
+    "public_claim_sensitive",
+    "audio_or_live_egress_sensitive",
+    "privacy_or_secret_sensitive",
+    "provider_billing_sensitive",
+)
+
+#: Mutation surfaces too high-stakes for the system to auto-authorize release.
+AUTO_ARM_INELIGIBLE_MUTATION_SURFACES = frozenset({"public", "provider_spend"})
+
+#: Governance-protected / off-limits path fragments (mirrors the workspace
+#: off-limits set + CODEOWNERS-governed surfaces). A task whose mutation scope
+#: touches any of these must be released by a human, never the system.
+SENSITIVE_PATH_MARKERS = (
+    "axioms/",
+    "shared/governance/",
+    "agents/hapax_daimonion/",
+    "config/pipewire/",
+    "codeowners",
+    "claude.md",
+    "hapax-constitution",
+    # Operator-coupled broadcast/visual surfaces (operator directive 2026-06-10):
+    # correctness depends on continuous operator aesthetic/directorial judgment,
+    # so release is ALWAYS human-armed — never system auto-arm.
+    "agents/studio_compositor/",
+    "screwm",
+    "darkplaces",
+)
 
 _AUTO_ARM_TRUTHY = {"1", "true", "yes", "y", "required"}
 _STAGE_PREFIX_RE = re.compile(r"^s(\d{1,2})", re.IGNORECASE)
@@ -456,7 +488,7 @@ class ReleaseAutoArmAssessment:
                      (carries a ``release_authorized`` field).
     ``armed``        ``release_authorized`` is already true.
     ``needs_arming`` subject and not yet armed.
-    ``eligible``     needs arming and clears automated release-arm gates.
+    ``eligible``     needs arming and carries no governance/sensitivity veto.
     ``blockers``     the reasons it is ineligible (empty iff eligible).
     """
 
@@ -475,6 +507,67 @@ def _auto_arm_truthy(value: object) -> bool:
     return str(value).strip().lower() in _AUTO_ARM_TRUTHY
 
 
+def _effective_sensitive_flags(frontmatter: Mapping[str, Any]) -> list[str]:
+    """Sensitive risk flags from explicit route metadata OR keyword derivation.
+
+    The derived (keyword) pass matters because an explicit-route-metadata task
+    can omit ``risk_flags`` entirely yet still be governance/audio/public by its
+    title or tags — those must not be auto-armed.
+    """
+
+    from shared.route_metadata_schema import _derive_risk_flags, assess_route_metadata
+
+    flags: set[str] = set()
+    derived = _derive_risk_flags(frontmatter)
+    for name in SENSITIVE_RISK_FLAGS:
+        if derived.get(name):
+            flags.add(name)
+    metadata = assess_route_metadata(frontmatter).metadata
+    if metadata is not None:
+        for name in SENSITIVE_RISK_FLAGS:
+            if getattr(metadata.risk_flags, name, False):
+                flags.add(name)
+    return sorted(flags)
+
+
+def _path_matches_sensitive_marker(ref: str, marker: str) -> bool:
+    """Path-segment match of a governance-sensitive marker against a ref.
+
+    Directory markers (e.g. ``axioms/``, ``shared/governance/``) match a
+    consecutive run of path segments; bare-file markers (``codeowners``,
+    ``claude.md``, ``hapax-constitution``) match a whole path segment. This
+    replaces a raw substring test that false-vetoed refs which merely contain a
+    marker as a substring — e.g. ``scripts/sync-codeowners.py`` (not the
+    CODEOWNERS file) or ``research/meta-axioms/notes.md`` (not axioms/).
+    """
+
+    segments = [seg for seg in ref.strip().lower().replace("\\", "/").split("/") if seg]
+    marker_segments = [seg for seg in marker.strip().lower().strip("/").split("/") if seg]
+    if not segments or not marker_segments:
+        return False
+    window = len(marker_segments)
+    return any(
+        segments[start : start + window] == marker_segments
+        for start in range(len(segments) - window + 1)
+    )
+
+
+def _sensitive_paths_in_scope(frontmatter: Mapping[str, Any]) -> list[str]:
+    refs = frontmatter.get("mutation_scope_refs")
+    if isinstance(refs, (list, tuple)):
+        values = [str(ref) for ref in refs]
+    elif refs:
+        values = [str(refs)]
+    else:
+        values = []
+    hits: list[str] = []
+    for ref in values:
+        text = ref.strip()
+        if any(_path_matches_sensitive_marker(text, marker) for marker in SENSITIVE_PATH_MARKERS):
+            hits.append(text)
+    return hits
+
+
 def _route_metadata_assessable(frontmatter: Mapping[str, Any]) -> bool:
     from shared.route_metadata_schema import assess_route_metadata
 
@@ -490,6 +583,20 @@ def _release_auto_arm_blockers(
     # ISAP authorization-in-principle precondition.
     if not _auto_arm_truthy(frontmatter.get("implementation_authorized")):
         blockers.append("not_implementation_authorized")
+    # Governance / sensitivity veto (explicit risk flags OR keyword-derived).
+    blockers.extend(f"risk_flag:{name}" for name in _effective_sensitive_flags(frontmatter))
+    # High-stakes mutation surfaces.
+    surface = str(frontmatter.get("mutation_surface") or "").strip().lower()
+    if surface in AUTO_ARM_INELIGIBLE_MUTATION_SURFACES:
+        blockers.append(f"mutation_surface:{surface}")
+    # Governance-protected / off-limits paths.
+    blockers.extend(f"sensitive_path:{path}" for path in _sensitive_paths_in_scope(frontmatter))
+    # Already a live public surface → human releases it.
+    if _auto_arm_truthy(frontmatter.get("public_current")):
+        blockers.append("public_current")
+    # Highest risk tier → human releases it.
+    if str(frontmatter.get("risk_tier") or "").strip().lower() == "t3":
+        blockers.append("risk_tier:t3")
     # AVSDLC aesthetic/quality axes must permit (evidence present, or no axes).
     gate = evaluate_avsdlc_release_gate(frontmatter, now=now)
     blockers.extend(f"avsdlc:{blocker}" for blocker in gate.blockers)
@@ -509,10 +616,10 @@ def assess_release_auto_arm(
     Only tasks that carry a ``release_authorized`` field participate (the
     reform-era model marker); legacy tasks without it are not subject and keep
     their prior autoqueue behavior. A subject task that is not yet armed
-    ``needs_arming``; it is ``eligible`` when its implementation was
-    authorized-in-principle (``implementation_authorized``), its route metadata
-    is assessable, and its AVSDLC quality axes permit. There is no separate
-    human release-authorization gate; autoqueue is the release path.
+    ``needs_arming``; it is ``eligible`` only when it carries no governance,
+    public, audio/live-egress, privacy, or provider-billing veto, its release
+    was authorized-in-principle (``implementation_authorized``), and its AVSDLC
+    quality axes permit.
     """
 
     subject = "release_authorized" in frontmatter
