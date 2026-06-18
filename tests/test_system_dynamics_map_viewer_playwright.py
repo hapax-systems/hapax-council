@@ -108,3 +108,21 @@ def test_system_dynamics_viewer_core_interactions():
                 page.evaluate("window.systemDynamicsMapRuntime.selectNode('missing-node')")
         finally:
             browser.close()
+
+
+def test_system_dynamics_viewer_reports_missing_local_cytoscape():
+    with _static_server() as base_url, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.route("**/vendor/cytoscape-3.34.0.min.js", lambda route: route.abort())
+        try:
+            page.goto(f"{base_url}/system-dynamics-map-viewer.html")
+            error = page.locator("#cy .error")
+            error.wait_for(timeout=10_000)
+            assert (
+                error.inner_text()
+                == "Cytoscape.js did not load. Check that ./vendor/cytoscape-3.34.0.min.js is present."
+            )
+            assert page.evaluate("window.systemDynamicsMapRuntime") is None
+        finally:
+            browser.close()
