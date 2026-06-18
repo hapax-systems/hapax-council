@@ -119,9 +119,17 @@ jobs:
             return 1
           }
 
+          is_system_dynamics_map_authority_path() {
+            local path="$1"
+            case "$path" in
+              docs/architecture/system-dynamics-map*|docs/architecture/vendor/cytoscape-*.js) return 0 ;;
+            esac
+            return 1
+          }
+
           docs_only_path() {
             local path="$1"
-            if is_audio_authority_path "$path"; then
+            if is_audio_authority_path "$path" || is_system_dynamics_map_authority_path "$path"; then
               return 1
             fi
             case "$path" in

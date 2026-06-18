@@ -75,6 +75,8 @@ t1_surface_globs:
   - "hooks/**"
   - "scripts/review_team.py"
   - "config/review-lenses/**"
+  - "docs/architecture/system-dynamics-map*"
+  - "docs/architecture/vendor/cytoscape-*.js"
 
 # A diff is docs-only (t3_docs candidate) when every changed file matches.
 docs_only_globs: ["docs/**", "*.md"]

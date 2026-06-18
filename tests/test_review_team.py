@@ -285,6 +285,19 @@ class TestTeamClassification:
         cls = rt.team_class_for({"risk_tier": "T2"}, ["axioms/registry.yaml", "docs/x.md"], reg)
         assert cls == "t1_critical"
 
+    def test_system_dynamics_map_surface_beats_docs_only(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        cls = rt.team_class_for(
+            {"risk_tier": "T2"},
+            [
+                "docs/architecture/system-dynamics-map-viewer.html",
+                "docs/architecture/vendor/cytoscape-3.34.0.min.js",
+            ],
+            reg,
+        )
+        assert cls == "t1_critical"
+
     def test_default_is_t2(self) -> None:
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()

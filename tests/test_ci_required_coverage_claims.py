@@ -151,6 +151,12 @@ def test_ci_docs_only_prs_trigger_required_jobs_with_sentinels() -> None:
     assert "docs|docs/*|lab-journal|lab-journal/*|research|research/*" in ci_text
     assert '[[ "$path" == *.md && "$path" != */* ]]' in ci_text
     assert '[[ "$path" == axioms/*.md ]]' in ci_text
+    assert "is_system_dynamics_map_authority_path()" in ci_text
+    assert "docs/architecture/system-dynamics-map*" in ci_text
+    assert "docs/architecture/vendor/cytoscape-*.js" in ci_text
+    assert (
+        'is_audio_authority_path "$path" || is_system_dynamics_map_authority_path "$path"'
+    ) in ci_text
 
     for job_name in REQUIRED_BRANCH_PROTECTION_JOBS:
         job_block = _workflow_job_block(ci_text, job_name)
