@@ -173,7 +173,7 @@ PR-visible visual witnesses:
 Run these from `~/projects/hapax-council` after changing the seed graph or viewer:
 
 ```bash
-pytest tests/test_system_dynamics_map_artifacts.py
+uv run pytest tests/test_system_dynamics_map_artifacts.py
 ```
 
 ```bash
