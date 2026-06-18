@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-quota-telemetry-writer"
 FIXTURES = REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json"
@@ -78,6 +80,7 @@ def _glmcp_admission(
     supported_tool: str = "hapax-glmcp-reviewer",
     endpoint: str = "https://api.z.ai/api/coding/paas/v4",
     name: str = "glmcp-quota-admission.yaml",
+    timestamp_field: str = "observed_at",
 ) -> None:
     (relay / name).write_text(
         f"""status: quota_available
@@ -87,7 +90,7 @@ route_id: glmcp.review.direct
 supported_tool: {supported_tool}
 endpoint: {endpoint}
 model: glm-5.2
-observed_at: {observed_at}
+{timestamp_field}: {observed_at}
 stale_after_seconds: {stale_after_seconds}
 evidence_ref: supported-tool-usage-witness
 """,
@@ -242,6 +245,37 @@ def test_glmcp_admission_scans_documented_recheck_glob(tmp_path: Path) -> None:
     assert glmcp_snapshot["subscription_quota_state"] == "fresh"
     assert any(
         "manual_glmcp-quota-admission.yaml" in ref for ref in glmcp_snapshot["evidence_refs"]
+    )
+
+
+@pytest.mark.parametrize("timestamp_field", ["captured_at", "detected_at"])
+def test_glmcp_admission_accepts_timestamp_fallback_fields(
+    tmp_path: Path,
+    timestamp_field: str,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _glmcp_admission(
+        relay,
+        observed_at="2026-06-09T23:55:00Z",
+        name=f"glmcp-quota-admission-{timestamp_field}.yaml",
+        timestamp_field=timestamp_field,
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["subscription_quota_state"] == "fresh"
+    assert glmcp_snapshot["fresh_until"] == "2026-06-10T00:10:00Z"
+    assert any(
+        f"glmcp-quota-admission-{timestamp_field}.yaml" in ref
+        for ref in glmcp_snapshot["evidence_refs"]
     )
 
 
