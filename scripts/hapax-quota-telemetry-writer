@@ -30,7 +30,7 @@ Each tick does two writes:
      it is ``unknown`` unless a fresh, short-lived Coding Plan admission receipt
      exists. Recheck admission evidence with
      ``find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*glmcp-quota-admission*.yaml' -print``
-     and this writer's ``--json`` summary.
+     and ``scripts/hapax-quota-telemetry-writer --json``.
      Admission receipts with ``stale_after_seconds`` above 3600 seconds are
      intentionally ignored; write a fresh short-lived witness instead.
      The emergency false-negative recovery path is to create a fresh
