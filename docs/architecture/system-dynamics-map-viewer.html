@@ -5252,7 +5252,7 @@
     "expires_at": "2026-06-18T20:56:02Z",
     "freshness": "fresh",
     "source_ref": "docs/architecture/system-dynamics-map-v1.md",
-    "source_hash": "37e7a16fb06cb621ad0e8b832d0b6cc433f5bfbf9c3e4c0ebd122534b7652b36",
+    "source_hash": "17d930f66f5c476237a40783a22c6b9de057e9253b2bb47fd6607da83d4ce1c0",
     "source_type": "fixture",
     "evidence": [
       {
@@ -6281,7 +6281,9 @@
       try {
         return JSON.parse(element.textContent);
       } catch (error) {
-        dataHealthMessages.push(`Embedded ${id} data is invalid; using empty fallback.`);
+        dataHealthMessages.push(
+          `Embedded ${id} data is invalid; using empty fallback. Restore the ${id} JSON script tag or rerun scripts/system_dynamics_map_materialize.py.`
+        );
         console.warn(`Invalid embedded ${id}.`, error);
         return fallback;
       }

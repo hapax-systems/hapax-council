@@ -307,6 +307,11 @@ The AV-SDLC task evidence also carries copies under the closing task evidence
 directory.
 
 ```bash
+test -f "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/_evidence/system-dynamics-map-viewer-ux-hardening-20260618/system-dynamics-map-viewer-ux-desktop.png"
+test -f "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/_evidence/system-dynamics-map-viewer-ux-hardening-20260618/system-dynamics-map-viewer-ux-mobile.png"
+```
+
+```bash
 (
 set -euo pipefail
 python3 -m http.server 8765 --bind 127.0.0.1 --directory docs/architecture \

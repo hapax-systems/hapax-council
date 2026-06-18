@@ -66,6 +66,25 @@ def test_system_dynamics_viewer_core_interactions():
     with _static_server() as base_url, sync_playwright() as playwright:
         browser = playwright.chromium.launch()
         page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.add_init_script(
+            """
+            Object.defineProperty(navigator, "clipboard", {
+              value: {
+                writeText: async (text) => {
+                  window.__copiedViewJson = text;
+                }
+              },
+              configurable: true
+            });
+            window.__downloadClicks = [];
+            HTMLAnchorElement.prototype.click = function () {
+              window.__downloadClicks.push({
+                download: this.download,
+                href: this.href
+              });
+            };
+            """
+        )
         try:
             page.goto(f"{base_url}/system-dynamics-map-viewer.html")
             page.locator("#cy canvas").first.wait_for(timeout=10_000)
@@ -141,6 +160,19 @@ def test_system_dynamics_viewer_core_interactions():
                 "relation-only search did not surface the matching edge. "
                 "Fix by promoting endpoints for edge text matches before applying visibility."
             )
+            page.get_by_role("button", name="Copy View JSON").click()
+            page.wait_for_function("window.__copiedViewJson")
+            copied_payload = page.evaluate("JSON.parse(window.__copiedViewJson)")
+            assert copied_payload["search"] == "advances_to"
+            assert "sdlc-intake-to-claim" in copied_payload["visible_edge_ids"]
+            assert (
+                "Current view JSON copied to clipboard."
+                in page.locator("#data-health").inner_text()
+            )
+            page.get_by_role("button", name="PNG").click()
+            download_click = page.evaluate("window.__downloadClicks.at(-1)")
+            assert download_click["download"] == "system-dynamics-current-view.png"
+            assert download_click["href"].startswith("data:image/png;base64,")
 
             page.get_by_label("Search").fill("")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
