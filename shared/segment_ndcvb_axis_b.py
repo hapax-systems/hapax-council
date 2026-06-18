@@ -154,6 +154,13 @@ def _parse_verdict_text(
     rendered_match = _RENDERED_VERDICT_RE.match(text)
     if rendered_match:
         parsed_correspondent = rendered_match.group("correspondent")
+        if correspondent is not None:
+            declared_correspondent = correspondent.strip()
+            if declared_correspondent != parsed_correspondent:
+                raise AxisBNDCVBError(
+                    "mapping correspondent must match rendered verdict correspondent"
+                )
+            correspondent = declared_correspondent
         return _record_from_match(
             rendered_match,
             correspondent=correspondent or parsed_correspondent,
@@ -310,7 +317,7 @@ def evaluate_ndcvb_axis_b(verdicts: Sequence[Mapping[str, Any] | str]) -> dict[s
         violations.append(
             {
                 "reason": "ndcvb_dissociated_at_r",
-                "detail": "At least one NDCVB correspondent dissociated; B2-floor must veto.",
+                "detail": "At least one NDCVB correspondent dissociated.",
                 "correspondents": [
                     record.correspondent
                     for record in records

@@ -51,7 +51,7 @@ def test_any_dissociated_verdict_sets_hard_floor_veto_signal() -> None:
     assert report["violations"] == [
         {
             "reason": "ndcvb_dissociated_at_r",
-            "detail": "At least one NDCVB correspondent dissociated; B2-floor must veto.",
+            "detail": "At least one NDCVB correspondent dissociated.",
             "correspondents": ["consistency"],
         }
     ]
@@ -96,6 +96,30 @@ def test_short_verdict_text_requires_correspondent_in_mapping() -> None:
     record = coerce_ndcvb_verdict({"correspondent": "consistency", "verdict": "corroborated@0.90"})
 
     assert record.rendered == "consistency: corroborated@0.90"
+
+
+def test_mapping_correspondent_must_match_rendered_verdict_correspondent() -> None:
+    with pytest.raises(AxisBNDCVBError, match="must match rendered verdict correspondent"):
+        coerce_ndcvb_verdict(
+            {
+                "correspondent": "sycophancy",
+                "verdict": "consistency: corroborated@0.90",
+            }
+        )
+
+
+def test_rendered_verdict_round_trips_through_full_evaluate_path() -> None:
+    report = evaluate_ndcvb_axis_b(
+        [
+            {
+                "correspondent": "sycophancy",
+                "verdict": "sycophancy: corroborated@0.88",
+            }
+        ]
+    )
+
+    assert report["verdict"] == "corroborated@0.88"
+    assert report["correspondent_scores"][0]["rendered"] == "sycophancy: corroborated@0.88"
 
 
 def test_verdict_language_boundary_rejects_mentalistic_text() -> None:
