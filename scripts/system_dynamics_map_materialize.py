@@ -65,6 +65,54 @@ def _statement(subject: str, pairs: list[tuple[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def _node_statement(node: dict[str, Any]) -> str:
+    return _statement(
+        _iri(f"node/{_stable_slug(node['id'])}"),
+        [
+            ("a", "sd:Node"),
+            ("sd:stableId", _literal(node["id"])),
+            ("rdfs:label", _literal(node["label"])),
+            ("sd:kind", _literal(node["kind"])),
+            ("sd:layer", _iri(f"layer/{_stable_slug(node['layer'])}")),
+            ("sd:resolution", _integer(node["resolution"])),
+            ("sd:status", _literal(node["status"])),
+            ("dcterms:description", _literal(node["summary"])),
+            ("sd:context", _literal(node["context"])),
+            ("sd:documentationLink", _doc_iris(node["docs"])),
+        ],
+    )
+
+
+def _edge_statement(edge: dict[str, Any]) -> str:
+    return _statement(
+        _iri(f"edge/{_stable_slug(edge['id'])}"),
+        [
+            ("a", "sd:Edge"),
+            ("sd:stableId", _literal(edge["id"])),
+            ("sd:source", _iri(f"node/{_stable_slug(edge['source'])}")),
+            ("sd:target", _iri(f"node/{_stable_slug(edge['target'])}")),
+            ("sd:relation", _literal(edge["relation"])),
+            ("sd:layer", _iri(f"layer/{_stable_slug(edge['layer'])}")),
+            ("sd:resolution", _integer(edge["resolution"])),
+            ("sd:status", _literal(edge["status"])),
+            ("sd:confidence", _decimal(edge["confidence"])),
+            ("dcterms:description", _literal(edge["summary"])),
+            ("sd:documentationLink", _doc_iris(edge["docs"])),
+        ],
+    )
+
+
+def _claim_partition_statement(status: str) -> str:
+    return _statement(
+        _iri(f"partition/{_stable_slug(status)}"),
+        [
+            ("a", "sd:ClaimPartition"),
+            ("sd:status", _literal(status)),
+            ("sd:namedGraph", _iri(f"graph/{_stable_slug(status)}")),
+        ],
+    )
+
+
 def generate_trig(seed: dict[str, Any]) -> str:
     lines = [
         "@prefix dcterms: <http://purl.org/dc/terms/> .",
@@ -118,56 +166,54 @@ def generate_trig(seed: dict[str, Any]) -> str:
             )
         )
 
+    lines.append("")
+    lines.append(_claim_partition_statement("asserted"))
     for node in seed["nodes"]:
-        lines.append("")
-        pairs = [
-            ("a", "sd:Node"),
-            ("sd:stableId", _literal(node["id"])),
-            ("rdfs:label", _literal(node["label"])),
-            ("sd:kind", _literal(node["kind"])),
-            ("sd:layer", _iri(f"layer/{_stable_slug(node['layer'])}")),
-            ("sd:resolution", _integer(node["resolution"])),
-            ("sd:status", _literal(node["status"])),
-            ("dcterms:description", _literal(node["summary"])),
-            ("sd:context", _literal(node["context"])),
-            ("sd:documentationLink", _doc_iris(node["docs"])),
-        ]
-        lines.append(_statement(_iri(f"node/{_stable_slug(node['id'])}"), pairs))
-
+        if node["status"] == "asserted":
+            lines.append("")
+            lines.append(_node_statement(node))
     for edge in seed["edges"]:
+        if edge["status"] == "asserted":
+            lines.append("")
+            lines.append(_edge_statement(edge))
+    lines.append("}")
+    lines.append("")
+
+    for status in seed["status_kinds"]:
+        if status == "asserted":
+            continue
+        lines.append(f"{_iri(f'graph/{_stable_slug(status)}')} {{")
+        lines.append(_claim_partition_statement(status))
+        for node in seed["nodes"]:
+            if node["status"] == status:
+                lines.append("")
+                lines.append(_node_statement(node))
+        for edge in seed["edges"]:
+            if edge["status"] == status:
+                lines.append("")
+                lines.append(_edge_statement(edge))
+        if status == "rendered":
+            lines.append("")
+            lines.append(
+                _statement(
+                    _iri("view/system-dynamics-map-viewer"),
+                    [
+                        ("a", "sd:RenderedView"),
+                        ("sd:sourceMap", _iri("map")),
+                        ("sd:viewer", _literal("system-dynamics-map-viewer.html")),
+                        (
+                            "sd:viewManifest",
+                            _literal("system-dynamics-map.view-manifest.json"),
+                        ),
+                        ("sd:layoutEngine", _literal("Cytoscape.js 3.34.0")),
+                    ],
+                )
+            )
+        lines.append("}")
         lines.append("")
-        pairs = [
-            ("a", "sd:Edge"),
-            ("sd:stableId", _literal(edge["id"])),
-            ("sd:source", _iri(f"node/{_stable_slug(edge['source'])}")),
-            ("sd:target", _iri(f"node/{_stable_slug(edge['target'])}")),
-            ("sd:relation", _literal(edge["relation"])),
-            ("sd:layer", _iri(f"layer/{_stable_slug(edge['layer'])}")),
-            ("sd:resolution", _integer(edge["resolution"])),
-            ("sd:status", _literal(edge["status"])),
-            ("sd:confidence", _decimal(edge["confidence"])),
-            ("dcterms:description", _literal(edge["summary"])),
-            ("sd:documentationLink", _doc_iris(edge["docs"])),
-        ]
-        lines.append(_statement(_iri(f"edge/{_stable_slug(edge['id'])}"), pairs))
 
     lines.extend(
         [
-            "}",
-            "",
-            f"{_iri('graph/rendered')} {{",
-            _statement(
-                _iri("view/system-dynamics-map-viewer"),
-                [
-                    ("a", "sd:RenderedView"),
-                    ("sd:sourceMap", _iri("map")),
-                    ("sd:viewer", _literal("system-dynamics-map-viewer.html")),
-                    ("sd:viewManifest", _literal("system-dynamics-map.view-manifest.json")),
-                    ("sd:layoutEngine", _literal("Cytoscape.js 3.34.0")),
-                ],
-            ),
-            "}",
-            "",
             f"{_iri('graph/provenance')} {{",
             _statement(
                 _iri("activity/materialize-v1"),

@@ -86,6 +86,11 @@
   rdfs:label "Evidence" ;
   dcterms:description "Observations, provenance, validation results, and rendered view records." .
 
+<https://hapax.local/system-dynamics-map/v0/partition/asserted>
+  a sd:ClaimPartition ;
+  sd:status "asserted" ;
+  sd:namedGraph <https://hapax.local/system-dynamics-map/v0/graph/asserted> .
+
 <https://hapax.local/system-dynamics-map/v0/node/dmn>
   a sd:Node ;
   sd:stableId "dmn" ;
@@ -146,18 +151,6 @@
   sd:context "FEEL is the expression language side of DMN. Runtime portability depends on precise FEEL support and version handling." ;
   sd:documentationLink <https://www.omg.org/spec/DMN/1.6/Beta1/About-DMN> .
 
-<https://hapax.local/system-dynamics-map/v0/node/sbvr>
-  a sd:Node ;
-  sd:stableId "sbvr" ;
-  rdfs:label "SBVR" ;
-  sd:kind "standard" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/decision> ;
-  sd:resolution "3"^^xsd:integer ;
-  sd:status "candidate" ;
-  dcterms:description "Business vocabulary and rule semantics adjacent to DMN." ;
-  sd:context "SBVR is relevant when vocabulary precision and rule semantics need to be connected to decision logic." ;
-  sd:documentationLink <https://www.omg.org/spec/SBVR/> .
-
 <https://hapax.local/system-dynamics-map/v0/node/bpmn>
   a sd:Node ;
   sd:stableId "bpmn" ;
@@ -206,18 +199,6 @@
   sd:context "SysML v2 covers system requirements, structure, behavior, analysis, and verification context around decision-enabled systems." ;
   sd:documentationLink <https://www.omg.org/spec/SysML/2.0/About-SysML> .
 
-<https://hapax.local/system-dynamics-map/v0/node/c4-runtime>
-  a sd:Node ;
-  sd:stableId "c4-runtime" ;
-  rdfs:label "C4 / Runtime Topology" ;
-  sd:kind "practice" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/context-up> ;
-  sd:resolution "2"^^xsd:integer ;
-  sd:status "candidate" ;
-  dcterms:description "Software architecture topology around deployed decision services." ;
-  sd:context "Runtime topology explains which services, stores, queues, and users interact with a decision service." ;
-  sd:documentationLink <https://c4model.com/> .
-
 <https://hapax.local/system-dynamics-map/v0/node/dmn-xml-di>
   a sd:Node ;
   sd:stableId "dmn-xml-di" ;
@@ -229,42 +210,6 @@
   dcterms:description "DMN interchange and diagram information." ;
   sd:context "DMN XML and diagram interchange preserve model content and layout metadata across tools." ;
   sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN> .
-
-<https://hapax.local/system-dynamics-map/v0/node/rule-engine>
-  a sd:Node ;
-  sd:stableId "rule-engine" ;
-  rdfs:label "Rule Engine" ;
-  sd:kind "runtime" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/execution-down> ;
-  sd:resolution "4"^^xsd:integer ;
-  sd:status "candidate" ;
-  dcterms:description "Executable target for decision rules." ;
-  sd:context "Decision tables and FEEL expressions may be interpreted, compiled, or translated into a rule/runtime engine." ;
-  sd:documentationLink <https://docs.drools.org/> .
-
-<https://hapax.local/system-dynamics-map/v0/node/model-artifacts>
-  a sd:Node ;
-  sd:stableId "model-artifacts" ;
-  rdfs:label "Predictive Model Artifacts" ;
-  sd:kind "artifact" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/execution-down> ;
-  sd:resolution "4"^^xsd:integer ;
-  sd:status "candidate" ;
-  dcterms:description "PMML, ONNX, PFA-class analytical artifacts adjacent to decisions." ;
-  sd:context "Predictive models often feed decisions or sit beside them. They need separate lineage, validation, and runtime semantics." ;
-  sd:documentationLink <https://onnx.ai/>, <https://dmg.org/pmml/v4-4-1/GeneralStructure.html> .
-
-<https://hapax.local/system-dynamics-map/v0/node/runtime-decision-api>
-  a sd:Node ;
-  sd:stableId "runtime-decision-api" ;
-  rdfs:label "Decision Runtime API" ;
-  sd:kind "runtime" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/execution-down> ;
-  sd:resolution "4"^^xsd:integer ;
-  sd:status "candidate" ;
-  dcterms:description "Callable runtime boundary for decision evaluation." ;
-  sd:context "The deployed decision API is where process, applications, telemetry, traces, and event envelopes meet decision logic." ;
-  sd:documentationLink <https://dmn-tck.github.io/tck/> .
 
 <https://hapax.local/system-dynamics-map/v0/node/rdf-owl-kg>
   a sd:Node ;
@@ -326,114 +271,6 @@
   sd:context "Topology and state should not be conflated. Current state is derived from observations and events with timestamps, source, confidence, and expiry." ;
   sd:documentationLink <https://www.w3.org/TR/owl-time/> .
 
-<https://hapax.local/system-dynamics-map/v0/node/scxml-statecharts>
-  a sd:Node ;
-  sd:stableId "scxml-statecharts" ;
-  rdfs:label "SCXML Statecharts" ;
-  sd:kind "standard" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/observation-state> ;
-  sd:resolution "3"^^xsd:integer ;
-  sd:status "candidate" ;
-  dcterms:description "State machine notation for control abstraction." ;
-  sd:context "SCXML is relevant for executable or exchangeable state machine behavior, but it is not the full graph backbone." ;
-  sd:documentationLink <https://www.w3.org/TR/scxml/> .
-
-<https://hapax.local/system-dynamics-map/v0/node/xes-event-log>
-  a sd:Node ;
-  sd:stableId "xes-event-log" ;
-  rdfs:label "XES Event Log" ;
-  sd:kind "standard" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/observation-state> ;
-  sd:resolution "4"^^xsd:integer ;
-  sd:status "candidate" ;
-  dcterms:description "Event log format for process mining." ;
-  sd:context "XES-style logs can provide process/event evidence for observed behavior and conformance checks." ;
-  sd:documentationLink <https://www.xes-standard.org/> .
-
-<https://hapax.local/system-dynamics-map/v0/node/opentelemetry>
-  a sd:Node ;
-  sd:stableId "opentelemetry" ;
-  rdfs:label "OpenTelemetry" ;
-  sd:kind "telemetry" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/observation-state> ;
-  sd:resolution "4"^^xsd:integer ;
-  sd:status "observed" ;
-  dcterms:description "Telemetry conventions for traces, metrics, logs, profiles, and resources." ;
-  sd:context "OpenTelemetry gives runtime observation vocabulary. It should feed observed graph overlays, not overwrite the design graph." ;
-  sd:documentationLink <https://opentelemetry.io/docs/concepts/semantic-conventions/> .
-
-<https://hapax.local/system-dynamics-map/v0/node/trace-context>
-  a sd:Node ;
-  sd:stableId "trace-context" ;
-  rdfs:label "Trace Context" ;
-  sd:kind "standard" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/observation-state> ;
-  sd:resolution "4"^^xsd:integer ;
-  sd:status "observed" ;
-  dcterms:description "Distributed trace propagation format." ;
-  sd:context "Trace Context helps correlate observed runtime behavior across service boundaries." ;
-  sd:documentationLink <https://www.w3.org/TR/trace-context/> .
-
-<https://hapax.local/system-dynamics-map/v0/node/cloudevents>
-  a sd:Node ;
-  sd:stableId "cloudevents" ;
-  rdfs:label "CloudEvents" ;
-  sd:kind "standard" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/observation-state> ;
-  sd:resolution "4"^^xsd:integer ;
-  sd:status "observed" ;
-  dcterms:description "Common event metadata envelope." ;
-  sd:context "CloudEvents-style envelopes can normalize event metadata flowing into the observation graph." ;
-  sd:documentationLink <https://cloudevents.io/> .
-
-<https://hapax.local/system-dynamics-map/v0/node/view-manifest>
-  a sd:Node ;
-  sd:stableId "view-manifest" ;
-  rdfs:label "View Manifest" ;
-  sd:kind "projection-contract" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/rendering> ;
-  sd:resolution "2"^^xsd:integer ;
-  sd:status "rendered" ;
-  dcterms:description "Reproducible contract for a rendered projection." ;
-  sd:context "Every rendered visualization should declare graph snapshot, filters, aggregation rules, scale, layout engine, hidden layers, and generation provenance." ;
-  sd:documentationLink <https://www.w3.org/TR/prov-o/> .
-
-<https://hapax.local/system-dynamics-map/v0/node/cytoscape>
-  a sd:Node ;
-  sd:stableId "cytoscape" ;
-  rdfs:label "Cytoscape.js" ;
-  sd:kind "renderer" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/rendering> ;
-  sd:resolution "3"^^xsd:integer ;
-  sd:status "rendered" ;
-  dcterms:description "Interactive graph visualization engine for the v0 map." ;
-  sd:context "Cytoscape.js provides graph elements, styles, layouts, and event handlers suitable for an exploratory topology viewer." ;
-  sd:documentationLink <https://js.cytoscape.org/> .
-
-<https://hapax.local/system-dynamics-map/v0/node/react-flow>
-  a sd:Node ;
-  sd:stableId "react-flow" ;
-  rdfs:label "React Flow" ;
-  sd:kind "renderer" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/rendering> ;
-  sd:resolution "3"^^xsd:integer ;
-  sd:status "candidate" ;
-  dcterms:description "Node-edge editor candidate for future authoring workflows." ;
-  sd:context "React Flow is better suited to graph editing and node configuration workflows than to very large exploratory topology maps." ;
-  sd:documentationLink <https://reactflow.dev/> .
-
-<https://hapax.local/system-dynamics-map/v0/node/sigma>
-  a sd:Node ;
-  sd:stableId "sigma" ;
-  rdfs:label "Sigma.js" ;
-  sd:kind "renderer" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/rendering> ;
-  sd:resolution "3"^^xsd:integer ;
-  sd:status "candidate" ;
-  dcterms:description "Large graph rendering candidate for simpler graph exploration." ;
-  sd:context "Sigma is relevant when the graph grows large and needs fast rendering of simpler node-link structures." ;
-  sd:documentationLink <https://www.sigmajs.org/> .
-
 <https://hapax.local/system-dynamics-map/v0/edge/dmn-to-drd>
   a sd:Edge ;
   sd:stableId "dmn-to-drd" ;
@@ -486,19 +323,6 @@
   dcterms:description "Decision tables are common DMN logic artifacts." ;
   sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN> .
 
-<https://hapax.local/system-dynamics-map/v0/edge/dmn-to-sbvr>
-  a sd:Edge ;
-  sd:stableId "dmn-to-sbvr" ;
-  sd:source <https://hapax.local/system-dynamics-map/v0/node/dmn> ;
-  sd:target <https://hapax.local/system-dynamics-map/v0/node/sbvr> ;
-  sd:relation "adjacent_vocabulary" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/decision> ;
-  sd:resolution "3"^^xsd:integer ;
-  sd:status "candidate" ;
-  sd:confidence "0.74"^^xsd:decimal ;
-  dcterms:description "SBVR can provide controlled business vocabulary and rule semantics adjacent to DMN." ;
-  sd:documentationLink <https://www.omg.org/spec/SBVR/> .
-
 <https://hapax.local/system-dynamics-map/v0/edge/bpmn-to-dmn>
   a sd:Edge ;
   sd:stableId "bpmn-to-dmn" ;
@@ -538,32 +362,6 @@
   dcterms:description "Enterprise architecture provides capability and application context for decisions." ;
   sd:documentationLink <https://www.opengroup.org/archimate-forum/archimate-overview> .
 
-<https://hapax.local/system-dynamics-map/v0/edge/sysml-to-dmn>
-  a sd:Edge ;
-  sd:stableId "sysml-to-dmn" ;
-  sd:source <https://hapax.local/system-dynamics-map/v0/node/sysml-v2> ;
-  sd:target <https://hapax.local/system-dynamics-map/v0/node/dmn> ;
-  sd:relation "systems_context_for" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/context-up> ;
-  sd:resolution "2"^^xsd:integer ;
-  sd:status "candidate" ;
-  sd:confidence "0.78"^^xsd:decimal ;
-  dcterms:description "Systems models can contextualize decisions within requirements, behavior, and verification." ;
-  sd:documentationLink <https://www.omg.org/spec/SysML/2.0/About-SysML> .
-
-<https://hapax.local/system-dynamics-map/v0/edge/c4-to-decision-api>
-  a sd:Edge ;
-  sd:stableId "c4-to-decision-api" ;
-  sd:source <https://hapax.local/system-dynamics-map/v0/node/c4-runtime> ;
-  sd:target <https://hapax.local/system-dynamics-map/v0/node/runtime-decision-api> ;
-  sd:relation "deploys_or_contains" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/context-up> ;
-  sd:resolution "4"^^xsd:integer ;
-  sd:status "candidate" ;
-  sd:confidence "0.82"^^xsd:decimal ;
-  dcterms:description "Runtime architecture contains deployed decision API components." ;
-  sd:documentationLink <https://c4model.com/> .
-
 <https://hapax.local/system-dynamics-map/v0/edge/dmn-to-xml-di>
   a sd:Edge ;
   sd:stableId "dmn-to-xml-di" ;
@@ -577,58 +375,6 @@
   dcterms:description "DMN models are interchanged as XML with diagram information." ;
   sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN> .
 
-<https://hapax.local/system-dynamics-map/v0/edge/decision-table-to-rule-engine>
-  a sd:Edge ;
-  sd:stableId "decision-table-to-rule-engine" ;
-  sd:source <https://hapax.local/system-dynamics-map/v0/node/decision-table> ;
-  sd:target <https://hapax.local/system-dynamics-map/v0/node/rule-engine> ;
-  sd:relation "compiled_or_interpreted_by" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/execution-down> ;
-  sd:resolution "4"^^xsd:integer ;
-  sd:status "candidate" ;
-  sd:confidence "0.8"^^xsd:decimal ;
-  dcterms:description "Decision tables may be executed by rule engines." ;
-  sd:documentationLink <https://docs.drools.org/> .
-
-<https://hapax.local/system-dynamics-map/v0/edge/feel-to-rule-engine>
-  a sd:Edge ;
-  sd:stableId "feel-to-rule-engine" ;
-  sd:source <https://hapax.local/system-dynamics-map/v0/node/feel> ;
-  sd:target <https://hapax.local/system-dynamics-map/v0/node/rule-engine> ;
-  sd:relation "requires_runtime_support" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/execution-down> ;
-  sd:resolution "4"^^xsd:integer ;
-  sd:status "candidate" ;
-  sd:confidence "0.78"^^xsd:decimal ;
-  dcterms:description "Executable decision logic depends on runtime FEEL support." ;
-  sd:documentationLink <https://www.omg.org/spec/DMN/1.6/Beta1/About-DMN> .
-
-<https://hapax.local/system-dynamics-map/v0/edge/decision-service-to-api>
-  a sd:Edge ;
-  sd:stableId "decision-service-to-api" ;
-  sd:source <https://hapax.local/system-dynamics-map/v0/node/decision-service> ;
-  sd:target <https://hapax.local/system-dynamics-map/v0/node/runtime-decision-api> ;
-  sd:relation "implemented_by" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/execution-down> ;
-  sd:resolution "4"^^xsd:integer ;
-  sd:status "candidate" ;
-  sd:confidence "0.86"^^xsd:decimal ;
-  dcterms:description "A design-time decision service can be implemented as a deployed API." ;
-  sd:documentationLink <https://dmn-tck.github.io/tck/> .
-
-<https://hapax.local/system-dynamics-map/v0/edge/model-artifacts-to-dmn>
-  a sd:Edge ;
-  sd:stableId "model-artifacts-to-dmn" ;
-  sd:source <https://hapax.local/system-dynamics-map/v0/node/model-artifacts> ;
-  sd:target <https://hapax.local/system-dynamics-map/v0/node/dmn> ;
-  sd:relation "feeds_or_complements" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/execution-down> ;
-  sd:resolution "4"^^xsd:integer ;
-  sd:status "candidate" ;
-  sd:confidence "0.7"^^xsd:decimal ;
-  dcterms:description "Predictive artifacts can feed or complement decision logic." ;
-  sd:documentationLink <https://onnx.ai/> .
-
 <https://hapax.local/system-dynamics-map/v0/edge/dmn-to-kg>
   a sd:Edge ;
   sd:stableId "dmn-to-kg" ;
@@ -641,45 +387,6 @@
   sd:confidence "0.93"^^xsd:decimal ;
   dcterms:description "DMN identities and relationships should be lifted into the canonical semantic graph." ;
   sd:documentationLink <https://www.w3.org/TR/rdf12-concepts/> .
-
-<https://hapax.local/system-dynamics-map/v0/edge/bpmn-to-kg>
-  a sd:Edge ;
-  sd:stableId "bpmn-to-kg" ;
-  sd:source <https://hapax.local/system-dynamics-map/v0/node/bpmn> ;
-  sd:target <https://hapax.local/system-dynamics-map/v0/node/rdf-owl-kg> ;
-  sd:relation "mapped_into" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/semantic-core> ;
-  sd:resolution "2"^^xsd:integer ;
-  sd:status "candidate" ;
-  sd:confidence "0.84"^^xsd:decimal ;
-  dcterms:description "Process models should map into the same identity graph rather than stay isolated." ;
-  sd:documentationLink <https://www.w3.org/TR/rdf12-concepts/> .
-
-<https://hapax.local/system-dynamics-map/v0/edge/archimate-to-kg>
-  a sd:Edge ;
-  sd:stableId "archimate-to-kg" ;
-  sd:source <https://hapax.local/system-dynamics-map/v0/node/archimate> ;
-  sd:target <https://hapax.local/system-dynamics-map/v0/node/rdf-owl-kg> ;
-  sd:relation "mapped_into" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/semantic-core> ;
-  sd:resolution "2"^^xsd:integer ;
-  sd:status "candidate" ;
-  sd:confidence "0.82"^^xsd:decimal ;
-  dcterms:description "Enterprise architecture context should share identity with decision and runtime nodes." ;
-  sd:documentationLink <https://www.opengroup.org/archimate-forum/archimate-overview> .
-
-<https://hapax.local/system-dynamics-map/v0/edge/sysml-to-kg>
-  a sd:Edge ;
-  sd:stableId "sysml-to-kg" ;
-  sd:source <https://hapax.local/system-dynamics-map/v0/node/sysml-v2> ;
-  sd:target <https://hapax.local/system-dynamics-map/v0/node/rdf-owl-kg> ;
-  sd:relation "mapped_into" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/semantic-core> ;
-  sd:resolution "2"^^xsd:integer ;
-  sd:status "candidate" ;
-  sd:confidence "0.8"^^xsd:decimal ;
-  dcterms:description "Systems models should map into the same backbone for cross-resolution analysis." ;
-  sd:documentationLink <https://www.omg.org/spec/SysML/2.0/About-SysML> .
 
 <https://hapax.local/system-dynamics-map/v0/edge/kg-to-shacl>
   a sd:Edge ;
@@ -733,31 +440,68 @@
   dcterms:description "Temporal state/event evidence overlays the canonical identity graph." ;
   sd:documentationLink <https://www.w3.org/TR/owl-time/> .
 
-<https://hapax.local/system-dynamics-map/v0/edge/state-to-scxml>
+<https://hapax.local/system-dynamics-map/v0/edge/shacl-to-view-manifest>
   a sd:Edge ;
-  sd:stableId "state-to-scxml" ;
-  sd:source <https://hapax.local/system-dynamics-map/v0/node/temporal-state-events> ;
-  sd:target <https://hapax.local/system-dynamics-map/v0/node/scxml-statecharts> ;
-  sd:relation "can_use_state_machine_notation" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/observation-state> ;
+  sd:stableId "shacl-to-view-manifest" ;
+  sd:source <https://hapax.local/system-dynamics-map/v0/node/shacl-contracts> ;
+  sd:target <https://hapax.local/system-dynamics-map/v0/node/view-manifest> ;
+  sd:relation "guards" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/rendering> ;
   sd:resolution "3"^^xsd:integer ;
-  sd:status "candidate" ;
-  sd:confidence "0.75"^^xsd:decimal ;
-  dcterms:description "Explicit state-machine behavior can be represented with SCXML-like statecharts." ;
-  sd:documentationLink <https://www.w3.org/TR/scxml/> .
+  sd:status "asserted" ;
+  sd:confidence "0.92"^^xsd:decimal ;
+  dcterms:description "View manifests should be generated only from validated graph snapshots." ;
+  sd:documentationLink <https://www.w3.org/TR/shacl/> .
+}
 
-<https://hapax.local/system-dynamics-map/v0/edge/state-to-xes>
-  a sd:Edge ;
-  sd:stableId "state-to-xes" ;
-  sd:source <https://hapax.local/system-dynamics-map/v0/node/temporal-state-events> ;
-  sd:target <https://hapax.local/system-dynamics-map/v0/node/xes-event-log> ;
-  sd:relation "exports_or_imports_event_logs" ;
+<https://hapax.local/system-dynamics-map/v0/graph/inferred> {
+<https://hapax.local/system-dynamics-map/v0/partition/inferred>
+  a sd:ClaimPartition ;
+  sd:status "inferred" ;
+  sd:namedGraph <https://hapax.local/system-dynamics-map/v0/graph/inferred> .
+}
+
+<https://hapax.local/system-dynamics-map/v0/graph/observed> {
+<https://hapax.local/system-dynamics-map/v0/partition/observed>
+  a sd:ClaimPartition ;
+  sd:status "observed" ;
+  sd:namedGraph <https://hapax.local/system-dynamics-map/v0/graph/observed> .
+
+<https://hapax.local/system-dynamics-map/v0/node/opentelemetry>
+  a sd:Node ;
+  sd:stableId "opentelemetry" ;
+  rdfs:label "OpenTelemetry" ;
+  sd:kind "telemetry" ;
   sd:layer <https://hapax.local/system-dynamics-map/v0/layer/observation-state> ;
   sd:resolution "4"^^xsd:integer ;
-  sd:status "candidate" ;
-  sd:confidence "0.76"^^xsd:decimal ;
-  dcterms:description "Event logs provide observed behavior evidence for process and decision analysis." ;
-  sd:documentationLink <https://www.xes-standard.org/> .
+  sd:status "observed" ;
+  dcterms:description "Telemetry conventions for traces, metrics, logs, profiles, and resources." ;
+  sd:context "OpenTelemetry gives runtime observation vocabulary. It should feed observed graph overlays, not overwrite the design graph." ;
+  sd:documentationLink <https://opentelemetry.io/docs/concepts/semantic-conventions/> .
+
+<https://hapax.local/system-dynamics-map/v0/node/trace-context>
+  a sd:Node ;
+  sd:stableId "trace-context" ;
+  rdfs:label "Trace Context" ;
+  sd:kind "standard" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/observation-state> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "observed" ;
+  dcterms:description "Distributed trace propagation format." ;
+  sd:context "Trace Context helps correlate observed runtime behavior across service boundaries." ;
+  sd:documentationLink <https://www.w3.org/TR/trace-context/> .
+
+<https://hapax.local/system-dynamics-map/v0/node/cloudevents>
+  a sd:Node ;
+  sd:stableId "cloudevents" ;
+  rdfs:label "CloudEvents" ;
+  sd:kind "standard" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/observation-state> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "observed" ;
+  dcterms:description "Common event metadata envelope." ;
+  sd:context "CloudEvents-style envelopes can normalize event metadata flowing into the observation graph." ;
+  sd:documentationLink <https://cloudevents.io/> .
 
 <https://hapax.local/system-dynamics-map/v0/edge/api-to-otel>
   a sd:Edge ;
@@ -785,19 +529,6 @@
   dcterms:description "Trace Context correlates runtime evaluation behavior across service calls." ;
   sd:documentationLink <https://www.w3.org/TR/trace-context/> .
 
-<https://hapax.local/system-dynamics-map/v0/edge/api-to-cloudevents>
-  a sd:Edge ;
-  sd:stableId "api-to-cloudevents" ;
-  sd:source <https://hapax.local/system-dynamics-map/v0/node/runtime-decision-api> ;
-  sd:target <https://hapax.local/system-dynamics-map/v0/node/cloudevents> ;
-  sd:relation "can_emit_event_envelopes" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/observation-state> ;
-  sd:resolution "4"^^xsd:integer ;
-  sd:status "candidate" ;
-  sd:confidence "0.72"^^xsd:decimal ;
-  dcterms:description "Decision services may emit or consume event envelopes for integration." ;
-  sd:documentationLink <https://cloudevents.io/> .
-
 <https://hapax.local/system-dynamics-map/v0/edge/otel-to-kg>
   a sd:Edge ;
   sd:stableId "otel-to-kg" ;
@@ -810,6 +541,44 @@
   sd:confidence "0.8"^^xsd:decimal ;
   dcterms:description "Telemetry evidence should attach to canonical runtime identities." ;
   sd:documentationLink <https://opentelemetry.io/docs/concepts/semantic-conventions/> .
+}
+
+<https://hapax.local/system-dynamics-map/v0/graph/simulated> {
+<https://hapax.local/system-dynamics-map/v0/partition/simulated>
+  a sd:ClaimPartition ;
+  sd:status "simulated" ;
+  sd:namedGraph <https://hapax.local/system-dynamics-map/v0/graph/simulated> .
+}
+
+<https://hapax.local/system-dynamics-map/v0/graph/rendered> {
+<https://hapax.local/system-dynamics-map/v0/partition/rendered>
+  a sd:ClaimPartition ;
+  sd:status "rendered" ;
+  sd:namedGraph <https://hapax.local/system-dynamics-map/v0/graph/rendered> .
+
+<https://hapax.local/system-dynamics-map/v0/node/view-manifest>
+  a sd:Node ;
+  sd:stableId "view-manifest" ;
+  rdfs:label "View Manifest" ;
+  sd:kind "projection-contract" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/rendering> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "rendered" ;
+  dcterms:description "Reproducible contract for a rendered projection." ;
+  sd:context "Every rendered visualization should declare graph snapshot, filters, aggregation rules, scale, layout engine, hidden layers, and generation provenance." ;
+  sd:documentationLink <https://www.w3.org/TR/prov-o/> .
+
+<https://hapax.local/system-dynamics-map/v0/node/cytoscape>
+  a sd:Node ;
+  sd:stableId "cytoscape" ;
+  rdfs:label "Cytoscape.js" ;
+  sd:kind "renderer" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/rendering> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "rendered" ;
+  dcterms:description "Interactive graph visualization engine for the v0 map." ;
+  sd:context "Cytoscape.js provides graph elements, styles, layouts, and event handlers suitable for an exploratory topology viewer." ;
+  sd:documentationLink <https://js.cytoscape.org/> .
 
 <https://hapax.local/system-dynamics-map/v0/edge/kg-to-view-manifest>
   a sd:Edge ;
@@ -823,19 +592,6 @@
   sd:confidence "0.95"^^xsd:decimal ;
   dcterms:description "Rendered views should be generated from graph snapshots through view manifests." ;
   sd:documentationLink <https://www.w3.org/TR/prov-o/> .
-
-<https://hapax.local/system-dynamics-map/v0/edge/shacl-to-view-manifest>
-  a sd:Edge ;
-  sd:stableId "shacl-to-view-manifest" ;
-  sd:source <https://hapax.local/system-dynamics-map/v0/node/shacl-contracts> ;
-  sd:target <https://hapax.local/system-dynamics-map/v0/node/view-manifest> ;
-  sd:relation "guards" ;
-  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/rendering> ;
-  sd:resolution "3"^^xsd:integer ;
-  sd:status "asserted" ;
-  sd:confidence "0.92"^^xsd:decimal ;
-  dcterms:description "View manifests should be generated only from validated graph snapshots." ;
-  sd:documentationLink <https://www.w3.org/TR/shacl/> .
 
 <https://hapax.local/system-dynamics-map/v0/edge/prov-to-view-manifest>
   a sd:Edge ;
@@ -863,6 +619,297 @@
   dcterms:description "The v0 dynamic map is rendered with Cytoscape.js." ;
   sd:documentationLink <https://js.cytoscape.org/> .
 
+<https://hapax.local/system-dynamics-map/v0/view/system-dynamics-map-viewer>
+  a sd:RenderedView ;
+  sd:sourceMap <https://hapax.local/system-dynamics-map/v0/map> ;
+  sd:viewer "system-dynamics-map-viewer.html" ;
+  sd:viewManifest "system-dynamics-map.view-manifest.json" ;
+  sd:layoutEngine "Cytoscape.js 3.34.0" .
+}
+
+<https://hapax.local/system-dynamics-map/v0/graph/candidate> {
+<https://hapax.local/system-dynamics-map/v0/partition/candidate>
+  a sd:ClaimPartition ;
+  sd:status "candidate" ;
+  sd:namedGraph <https://hapax.local/system-dynamics-map/v0/graph/candidate> .
+
+<https://hapax.local/system-dynamics-map/v0/node/sbvr>
+  a sd:Node ;
+  sd:stableId "sbvr" ;
+  rdfs:label "SBVR" ;
+  sd:kind "standard" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/decision> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "candidate" ;
+  dcterms:description "Business vocabulary and rule semantics adjacent to DMN." ;
+  sd:context "SBVR is relevant when vocabulary precision and rule semantics need to be connected to decision logic." ;
+  sd:documentationLink <https://www.omg.org/spec/SBVR/> .
+
+<https://hapax.local/system-dynamics-map/v0/node/c4-runtime>
+  a sd:Node ;
+  sd:stableId "c4-runtime" ;
+  rdfs:label "C4 / Runtime Topology" ;
+  sd:kind "practice" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/context-up> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "candidate" ;
+  dcterms:description "Software architecture topology around deployed decision services." ;
+  sd:context "Runtime topology explains which services, stores, queues, and users interact with a decision service." ;
+  sd:documentationLink <https://c4model.com/> .
+
+<https://hapax.local/system-dynamics-map/v0/node/rule-engine>
+  a sd:Node ;
+  sd:stableId "rule-engine" ;
+  rdfs:label "Rule Engine" ;
+  sd:kind "runtime" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/execution-down> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  dcterms:description "Executable target for decision rules." ;
+  sd:context "Decision tables and FEEL expressions may be interpreted, compiled, or translated into a rule/runtime engine." ;
+  sd:documentationLink <https://docs.drools.org/> .
+
+<https://hapax.local/system-dynamics-map/v0/node/model-artifacts>
+  a sd:Node ;
+  sd:stableId "model-artifacts" ;
+  rdfs:label "Predictive Model Artifacts" ;
+  sd:kind "artifact" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/execution-down> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  dcterms:description "PMML, ONNX, PFA-class analytical artifacts adjacent to decisions." ;
+  sd:context "Predictive models often feed decisions or sit beside them. They need separate lineage, validation, and runtime semantics." ;
+  sd:documentationLink <https://onnx.ai/>, <https://dmg.org/pmml/v4-4-1/GeneralStructure.html> .
+
+<https://hapax.local/system-dynamics-map/v0/node/runtime-decision-api>
+  a sd:Node ;
+  sd:stableId "runtime-decision-api" ;
+  rdfs:label "Decision Runtime API" ;
+  sd:kind "runtime" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/execution-down> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  dcterms:description "Callable runtime boundary for decision evaluation." ;
+  sd:context "The deployed decision API is where process, applications, telemetry, traces, and event envelopes meet decision logic." ;
+  sd:documentationLink <https://dmn-tck.github.io/tck/> .
+
+<https://hapax.local/system-dynamics-map/v0/node/scxml-statecharts>
+  a sd:Node ;
+  sd:stableId "scxml-statecharts" ;
+  rdfs:label "SCXML Statecharts" ;
+  sd:kind "standard" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/observation-state> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "candidate" ;
+  dcterms:description "State machine notation for control abstraction." ;
+  sd:context "SCXML is relevant for executable or exchangeable state machine behavior, but it is not the full graph backbone." ;
+  sd:documentationLink <https://www.w3.org/TR/scxml/> .
+
+<https://hapax.local/system-dynamics-map/v0/node/xes-event-log>
+  a sd:Node ;
+  sd:stableId "xes-event-log" ;
+  rdfs:label "XES Event Log" ;
+  sd:kind "standard" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/observation-state> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  dcterms:description "Event log format for process mining." ;
+  sd:context "XES-style logs can provide process/event evidence for observed behavior and conformance checks." ;
+  sd:documentationLink <https://www.xes-standard.org/> .
+
+<https://hapax.local/system-dynamics-map/v0/node/react-flow>
+  a sd:Node ;
+  sd:stableId "react-flow" ;
+  rdfs:label "React Flow" ;
+  sd:kind "renderer" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/rendering> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "candidate" ;
+  dcterms:description "Node-edge editor candidate for future authoring workflows." ;
+  sd:context "React Flow is better suited to graph editing and node configuration workflows than to very large exploratory topology maps." ;
+  sd:documentationLink <https://reactflow.dev/> .
+
+<https://hapax.local/system-dynamics-map/v0/node/sigma>
+  a sd:Node ;
+  sd:stableId "sigma" ;
+  rdfs:label "Sigma.js" ;
+  sd:kind "renderer" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/rendering> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "candidate" ;
+  dcterms:description "Large graph rendering candidate for simpler graph exploration." ;
+  sd:context "Sigma is relevant when the graph grows large and needs fast rendering of simpler node-link structures." ;
+  sd:documentationLink <https://www.sigmajs.org/> .
+
+<https://hapax.local/system-dynamics-map/v0/edge/dmn-to-sbvr>
+  a sd:Edge ;
+  sd:stableId "dmn-to-sbvr" ;
+  sd:source <https://hapax.local/system-dynamics-map/v0/node/dmn> ;
+  sd:target <https://hapax.local/system-dynamics-map/v0/node/sbvr> ;
+  sd:relation "adjacent_vocabulary" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/decision> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.74"^^xsd:decimal ;
+  dcterms:description "SBVR can provide controlled business vocabulary and rule semantics adjacent to DMN." ;
+  sd:documentationLink <https://www.omg.org/spec/SBVR/> .
+
+<https://hapax.local/system-dynamics-map/v0/edge/sysml-to-dmn>
+  a sd:Edge ;
+  sd:stableId "sysml-to-dmn" ;
+  sd:source <https://hapax.local/system-dynamics-map/v0/node/sysml-v2> ;
+  sd:target <https://hapax.local/system-dynamics-map/v0/node/dmn> ;
+  sd:relation "systems_context_for" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/context-up> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.78"^^xsd:decimal ;
+  dcterms:description "Systems models can contextualize decisions within requirements, behavior, and verification." ;
+  sd:documentationLink <https://www.omg.org/spec/SysML/2.0/About-SysML> .
+
+<https://hapax.local/system-dynamics-map/v0/edge/c4-to-decision-api>
+  a sd:Edge ;
+  sd:stableId "c4-to-decision-api" ;
+  sd:source <https://hapax.local/system-dynamics-map/v0/node/c4-runtime> ;
+  sd:target <https://hapax.local/system-dynamics-map/v0/node/runtime-decision-api> ;
+  sd:relation "deploys_or_contains" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/context-up> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.82"^^xsd:decimal ;
+  dcterms:description "Runtime architecture contains deployed decision API components." ;
+  sd:documentationLink <https://c4model.com/> .
+
+<https://hapax.local/system-dynamics-map/v0/edge/decision-table-to-rule-engine>
+  a sd:Edge ;
+  sd:stableId "decision-table-to-rule-engine" ;
+  sd:source <https://hapax.local/system-dynamics-map/v0/node/decision-table> ;
+  sd:target <https://hapax.local/system-dynamics-map/v0/node/rule-engine> ;
+  sd:relation "compiled_or_interpreted_by" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/execution-down> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.8"^^xsd:decimal ;
+  dcterms:description "Decision tables may be executed by rule engines." ;
+  sd:documentationLink <https://docs.drools.org/> .
+
+<https://hapax.local/system-dynamics-map/v0/edge/feel-to-rule-engine>
+  a sd:Edge ;
+  sd:stableId "feel-to-rule-engine" ;
+  sd:source <https://hapax.local/system-dynamics-map/v0/node/feel> ;
+  sd:target <https://hapax.local/system-dynamics-map/v0/node/rule-engine> ;
+  sd:relation "requires_runtime_support" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/execution-down> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.78"^^xsd:decimal ;
+  dcterms:description "Executable decision logic depends on runtime FEEL support." ;
+  sd:documentationLink <https://www.omg.org/spec/DMN/1.6/Beta1/About-DMN> .
+
+<https://hapax.local/system-dynamics-map/v0/edge/decision-service-to-api>
+  a sd:Edge ;
+  sd:stableId "decision-service-to-api" ;
+  sd:source <https://hapax.local/system-dynamics-map/v0/node/decision-service> ;
+  sd:target <https://hapax.local/system-dynamics-map/v0/node/runtime-decision-api> ;
+  sd:relation "implemented_by" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/execution-down> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.86"^^xsd:decimal ;
+  dcterms:description "A design-time decision service can be implemented as a deployed API." ;
+  sd:documentationLink <https://dmn-tck.github.io/tck/> .
+
+<https://hapax.local/system-dynamics-map/v0/edge/model-artifacts-to-dmn>
+  a sd:Edge ;
+  sd:stableId "model-artifacts-to-dmn" ;
+  sd:source <https://hapax.local/system-dynamics-map/v0/node/model-artifacts> ;
+  sd:target <https://hapax.local/system-dynamics-map/v0/node/dmn> ;
+  sd:relation "feeds_or_complements" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/execution-down> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.7"^^xsd:decimal ;
+  dcterms:description "Predictive artifacts can feed or complement decision logic." ;
+  sd:documentationLink <https://onnx.ai/> .
+
+<https://hapax.local/system-dynamics-map/v0/edge/bpmn-to-kg>
+  a sd:Edge ;
+  sd:stableId "bpmn-to-kg" ;
+  sd:source <https://hapax.local/system-dynamics-map/v0/node/bpmn> ;
+  sd:target <https://hapax.local/system-dynamics-map/v0/node/rdf-owl-kg> ;
+  sd:relation "mapped_into" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/semantic-core> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.84"^^xsd:decimal ;
+  dcterms:description "Process models should map into the same identity graph rather than stay isolated." ;
+  sd:documentationLink <https://www.w3.org/TR/rdf12-concepts/> .
+
+<https://hapax.local/system-dynamics-map/v0/edge/archimate-to-kg>
+  a sd:Edge ;
+  sd:stableId "archimate-to-kg" ;
+  sd:source <https://hapax.local/system-dynamics-map/v0/node/archimate> ;
+  sd:target <https://hapax.local/system-dynamics-map/v0/node/rdf-owl-kg> ;
+  sd:relation "mapped_into" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/semantic-core> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.82"^^xsd:decimal ;
+  dcterms:description "Enterprise architecture context should share identity with decision and runtime nodes." ;
+  sd:documentationLink <https://www.opengroup.org/archimate-forum/archimate-overview> .
+
+<https://hapax.local/system-dynamics-map/v0/edge/sysml-to-kg>
+  a sd:Edge ;
+  sd:stableId "sysml-to-kg" ;
+  sd:source <https://hapax.local/system-dynamics-map/v0/node/sysml-v2> ;
+  sd:target <https://hapax.local/system-dynamics-map/v0/node/rdf-owl-kg> ;
+  sd:relation "mapped_into" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/semantic-core> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.8"^^xsd:decimal ;
+  dcterms:description "Systems models should map into the same backbone for cross-resolution analysis." ;
+  sd:documentationLink <https://www.omg.org/spec/SysML/2.0/About-SysML> .
+
+<https://hapax.local/system-dynamics-map/v0/edge/state-to-scxml>
+  a sd:Edge ;
+  sd:stableId "state-to-scxml" ;
+  sd:source <https://hapax.local/system-dynamics-map/v0/node/temporal-state-events> ;
+  sd:target <https://hapax.local/system-dynamics-map/v0/node/scxml-statecharts> ;
+  sd:relation "can_use_state_machine_notation" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/observation-state> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.75"^^xsd:decimal ;
+  dcterms:description "Explicit state-machine behavior can be represented with SCXML-like statecharts." ;
+  sd:documentationLink <https://www.w3.org/TR/scxml/> .
+
+<https://hapax.local/system-dynamics-map/v0/edge/state-to-xes>
+  a sd:Edge ;
+  sd:stableId "state-to-xes" ;
+  sd:source <https://hapax.local/system-dynamics-map/v0/node/temporal-state-events> ;
+  sd:target <https://hapax.local/system-dynamics-map/v0/node/xes-event-log> ;
+  sd:relation "exports_or_imports_event_logs" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/observation-state> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.76"^^xsd:decimal ;
+  dcterms:description "Event logs provide observed behavior evidence for process and decision analysis." ;
+  sd:documentationLink <https://www.xes-standard.org/> .
+
+<https://hapax.local/system-dynamics-map/v0/edge/api-to-cloudevents>
+  a sd:Edge ;
+  sd:stableId "api-to-cloudevents" ;
+  sd:source <https://hapax.local/system-dynamics-map/v0/node/runtime-decision-api> ;
+  sd:target <https://hapax.local/system-dynamics-map/v0/node/cloudevents> ;
+  sd:relation "can_emit_event_envelopes" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v0/layer/observation-state> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.72"^^xsd:decimal ;
+  dcterms:description "Decision services may emit or consume event envelopes for integration." ;
+  sd:documentationLink <https://cloudevents.io/> .
+
 <https://hapax.local/system-dynamics-map/v0/edge/view-to-react-flow>
   a sd:Edge ;
   sd:stableId "view-to-react-flow" ;
@@ -888,15 +935,6 @@
   sd:confidence "0.66"^^xsd:decimal ;
   dcterms:description "Very large simple graph projections may use Sigma." ;
   sd:documentationLink <https://www.sigmajs.org/> .
-}
-
-<https://hapax.local/system-dynamics-map/v0/graph/rendered> {
-<https://hapax.local/system-dynamics-map/v0/view/system-dynamics-map-viewer>
-  a sd:RenderedView ;
-  sd:sourceMap <https://hapax.local/system-dynamics-map/v0/map> ;
-  sd:viewer "system-dynamics-map-viewer.html" ;
-  sd:viewManifest "system-dynamics-map.view-manifest.json" ;
-  sd:layoutEngine "Cytoscape.js 3.34.0" .
 }
 
 <https://hapax.local/system-dynamics-map/v0/graph/provenance> {

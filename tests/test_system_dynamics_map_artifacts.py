@@ -229,27 +229,15 @@ def test_materializer_write_and_stale_detection_paths(tmp_path, monkeypatch):
     assert any("stale" in error for error in materialize.check_artifacts())
 
 
-def test_materialized_trig_covers_seed_identity_and_named_graphs():
-    seed = _load_seed()
-    trig = TRIG_PATH.read_text(encoding="utf-8")
-    for graph_name in ("asserted", "rendered", "provenance"):
-        assert f"<https://hapax.local/system-dynamics-map/v0/graph/{graph_name}> {{" in trig, (
-            f"{TRIG_PATH}: missing named graph {graph_name}. "
-            "Fix by regenerating the canonical TriG artifact."
+def test_materialized_rdf_artifacts_keep_valid_prefix_directives():
+    for path in (TRIG_PATH, SHACL_PATH):
+        text = path.read_text(encoding="utf-8")
+        assert text.startswith("@prefix "), (
+            f"{path}: expected RDF prefix declarations. Fix by regenerating the semantic artifact."
         )
-    for node in seed["nodes"]:
-        assert f"<https://hapax.local/system-dynamics-map/v0/node/{node['id']}>" in trig, (
-            f"{TRIG_PATH}: missing node {node['id']}. "
-            "Fix by regenerating the canonical TriG artifact."
-        )
-    for edge in seed["edges"]:
-        assert f"<https://hapax.local/system-dynamics-map/v0/edge/{edge['id']}>" in trig, (
-            f"{TRIG_PATH}: missing edge {edge['id']}. "
-            "Fix by regenerating the canonical TriG artifact."
-        )
-        assert json.dumps(edge["relation"]) in trig, (
-            f"{TRIG_PATH}: missing relation {edge['relation']} for {edge['id']}. "
-            "Fix by regenerating the canonical TriG artifact."
+        assert "@tests/scripts/test_cc_close_prefix_collision.py" not in text, (
+            f"{path}: contains a corrupted prefix directive. "
+            "Fix by regenerating the semantic artifact."
         )
 
 
@@ -261,27 +249,30 @@ def test_materialized_rdf_artifacts_parse_and_match_seed_contract():
     shapes.parse(SHACL_PATH, format="turtle")
 
     graph_ids = {str(graph.identifier) for graph in dataset.graphs()}
-    for graph_name in ("asserted", "rendered", "provenance"):
+    for graph_name in (*seed["status_kinds"], "provenance"):
         assert str(BASE[f"graph/{graph_name}"]) in graph_ids, (
             f"{TRIG_PATH}: missing parseable named graph {graph_name}. "
             "Fix by regenerating the canonical TriG artifact."
         )
 
     asserted = dataset.graph(URIRef(BASE["graph/asserted"]))
+    assert (URIRef(BASE["map"]), RDF.type, SD.SystemDynamicsMap) in asserted
     for node in seed["nodes"]:
+        partition = dataset.graph(URIRef(BASE[f"graph/{node['status']}"]))
         subject = URIRef(BASE[f"node/{node['id']}"])
-        assert (subject, RDF.type, SD.Node) in asserted
-        assert (subject, SD.stableId, None) in asserted
-        assert (subject, SD.documentationLink, None) in asserted
+        assert (subject, RDF.type, SD.Node) in partition
+        assert (subject, SD.stableId, None) in partition
+        assert (subject, SD.documentationLink, None) in partition
 
     for edge in seed["edges"]:
+        partition = dataset.graph(URIRef(BASE[f"graph/{edge['status']}"]))
         subject = URIRef(BASE[f"edge/{edge['id']}"])
-        assert (subject, RDF.type, SD.Edge) in asserted
-        assert (subject, SD.source, URIRef(BASE[f"node/{edge['source']}"])) in asserted
-        assert (subject, SD.target, URIRef(BASE[f"node/{edge['target']}"])) in asserted
-        assert (subject, SD.relation, None) in asserted
-        assert (subject, SD.confidence, None) in asserted
-        assert (subject, SD.documentationLink, None) in asserted
+        assert (subject, RDF.type, SD.Edge) in partition
+        assert (subject, SD.source, URIRef(BASE[f"node/{edge['source']}"])) in partition
+        assert (subject, SD.target, URIRef(BASE[f"node/{edge['target']}"])) in partition
+        assert (subject, SD.relation, None) in partition
+        assert (subject, SD.confidence, None) in partition
+        assert (subject, SD.documentationLink, None) in partition
 
     provenance = dataset.graph(URIRef(BASE["graph/provenance"]))
     activity = URIRef(BASE["activity/materialize-v1"])
