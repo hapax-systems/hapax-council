@@ -7,7 +7,7 @@ CC chart is intentionally not used: both the official chart and the prior repo
 map were falsified on the live analog insert.
 
 Hardware path (operator):
-    MIDI: RK-006 OUT_2 DIN → A/B shim → S-4 MIDI IN
+    MIDI: S-4 USB-MIDI (preferred) or RK-006 OUT_2 DIN fallback
           - Program Change ON, CC Control ON
     Audio: mk5 OUT3/4 (AUX2/3) → S-4 line in; S-4 line out → mk5 IN3/4
 
@@ -27,31 +27,18 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.s4_midi import resolve_s4_midi_output_name
 from shared.s4_scenes import EMPIRICAL_S4_GAIN_LADDER
-
-PORT_PREFIXES = (
-    "RK-006",
-    "RK006",
-    "Retrokits",
-)
-
-
-def _resolve_port(mido_mod, configured: tuple[str, ...]) -> str | None:
-    names = list(mido_mod.get_output_names())
-    for name in names:
-        if any(pattern == name for pattern in configured):
-            return name
-    for name in names:
-        if any(pattern in name for pattern in configured):
-            return name
-    return None
 
 
 def main() -> int:
-    resolved = _resolve_port(mido, PORT_PREFIXES)
+    names = list(mido.get_output_names())
+    resolved = resolve_s4_midi_output_name(names)
     if resolved is None:
         print(
-            f"MIDI port matching {PORT_PREFIXES!r} not found among {mido.get_output_names()}",
+            f"S-4 MIDI port not found among {names}. "
+            "Next action: verify S-4 USB-MIDI enumeration or RK-006 fallback visibility, "
+            "then rerun this script.",
             file=sys.stderr,
         )
         return 1

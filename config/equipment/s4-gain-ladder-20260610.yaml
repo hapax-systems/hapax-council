@@ -5,7 +5,7 @@
 discovered_at: 2026-06-10
 method: marker(1397Hz)@playback_AUX2/3 -> live tap meter; +3dB-keep threshold
 scene_context: slot 1 (program 0, ZERO-BASED — program N recalls slot N+1)
-transport: RK006 OUT_2 (DIN star) + A/B shim; S-4 USB-MIDI gadget is decorative (no input path)
+transport: S-4 USB-MIDI preferred; RK006 OUT_2 DIN remains a fallback when enumerated
 result_dbfs_at_tap: -23.4
 ladder:
   - {channel: 16, cc: 48, value: 127}   # +11.3 dB
