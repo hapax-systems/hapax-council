@@ -493,6 +493,16 @@ def test_systemd_coverage_includes_slice_units() -> None:
     assert "ok: all systemd/** paths" in result.stdout
 
 
+def test_d2_recovery_unit_classifier_uses_canonical_notify_failure_path() -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    assert "notify-failure @.service" not in script
+    assert "systemd/units/notify-failure@.service|" in script
+    result = _coverage(["systemd/units/notify-failure@.service"])
+    assert result.returncode == 0, result.stderr
+    assert "ok: all systemd/** paths" in result.stdout
+
+
 def test_systemd_coverage_still_flags_unknown_systemd_paths() -> None:
     result = _coverage(["systemd/uncovered/example.conf"])
 
