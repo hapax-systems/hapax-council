@@ -174,6 +174,19 @@ def test_risk_flag_derivation_matches_token_inside_hyphenated_tag() -> None:
     assert flags.audio_or_live_egress_sensitive is True
 
 
+def test_risk_flag_derivation_does_not_treat_go_live_as_live_egress() -> None:
+    flags = _derived_risk_flags(
+        "Go-live D2 bootstrap: stable recovery bundle machinery",
+        tags=["go-live", "detection-plane", "recovery", "systemd"],
+    )
+    assert flags.audio_or_live_egress_sensitive is False
+
+
+def test_risk_flag_derivation_still_flags_go_live_with_real_egress_marker() -> None:
+    flags = _derived_risk_flags("Go-live broadcast egress guard", tags=["go-live"])
+    assert flags.audio_or_live_egress_sensitive is True
+
+
 def test_risk_flag_derivation_governance_substring_does_not_false_trip() -> None:
     # 'policy' must not match inside an unrelated compound like 'policyholder'.
     flags = _derived_risk_flags("policyholder records cleanup")
