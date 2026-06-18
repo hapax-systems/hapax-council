@@ -10,6 +10,7 @@ from shared.perception_registry import (
     DEFAULT_REGISTRY_PATH,
     ArchiveSpec,
     EdgeSource,
+    HwSource,
     PerceptChannel,
     PerceptionPoint,
     PerceptionRegistry,
@@ -21,6 +22,8 @@ from shared.percepts import GeometryClass
 
 _MODELS_UNDER_TEST = (
     ArchiveSpec,
+    EdgeSource,
+    HwSource,
     PerceptChannel,
     PerceptionPoint,
     SubscriptionSpec,
@@ -86,19 +89,48 @@ def test_ir_edge_must_be_quarantined() -> None:
 
 def test_ir_edge_requires_edge_source() -> None:
     with pytest.raises(ValidationError, match="edge_source"):
-        _point(geometry=GeometryClass.IR_EDGE, pipewire_node=None)
-
-
-def test_ir_edge_forbids_local_audio_capture() -> None:
-    """An edge cam has no local audio — pipewire_node/hw_source must be empty."""
-    with pytest.raises(ValidationError, match="no local audio"):
         _point(
-            geometry=GeometryClass.IR_EDGE, pipewire_node="alsa_input.test", edge_source=_IR_EDGE
+            geometry=GeometryClass.IR_EDGE,
+            exposure=ExposureDomain.QUARANTINE,
+            pipewire_node=None,
         )
 
 
+def test_ir_edge_forbids_local_pipewire_capture() -> None:
+    """An edge cam has no local audio — pipewire_node must be empty."""
+    with pytest.raises(ValidationError, match="no local audio"):
+        _point(
+            geometry=GeometryClass.IR_EDGE,
+            exposure=ExposureDomain.QUARANTINE,
+            pipewire_node="alsa_input.test",
+            edge_source=_IR_EDGE,
+        )
+
+
+def test_ir_edge_forbids_local_hw_capture() -> None:
+    """An edge cam has no local audio — hw_source must be empty."""
+    with pytest.raises(ValidationError, match="no local audio"):
+        _point(
+            geometry=GeometryClass.IR_EDGE,
+            exposure=ExposureDomain.QUARANTINE,
+            pipewire_node=None,
+            hw_source=HwSource(node_target="alsa_input.test", position="AUX1"),
+            edge_source=_IR_EDGE,
+        )
+
+
+def test_non_ir_points_reject_edge_source() -> None:
+    with pytest.raises(ValidationError, match="edge_source.*ir_edge"):
+        _point(edge_source=_IR_EDGE)
+
+
 def test_ir_edge_valid_point() -> None:
-    p = _point(geometry=GeometryClass.IR_EDGE, pipewire_node=None, edge_source=_IR_EDGE)
+    p = _point(
+        geometry=GeometryClass.IR_EDGE,
+        exposure=ExposureDomain.QUARANTINE,
+        pipewire_node=None,
+        edge_source=_IR_EDGE,
+    )
     assert p.geometry == GeometryClass.IR_EDGE
     assert p.edge_source is not None and p.edge_source.http_endpoint == "/api/pi/desk/ir"
 

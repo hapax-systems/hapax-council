@@ -157,6 +157,8 @@ class PerceptionPoint(BaseModel):
                 raise ValueError("av_paired points must declare av_pair")
         if self.geometry == GeometryClass.SPATIAL_ARRAY and "doa" not in self.channels:
             raise ValueError("spatial_array points must declare a 'doa' channel")
+        if self.geometry != GeometryClass.IR_EDGE and self.edge_source is not None:
+            raise ValueError("edge_source is only valid for ir_edge points")
         if self.geometry == GeometryClass.IR_EDGE:
             if self.exposure != ExposureDomain.QUARANTINE:
                 raise ValueError(
