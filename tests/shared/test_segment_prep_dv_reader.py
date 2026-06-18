@@ -34,6 +34,36 @@ def _row(
     }
 
 
+def _s2_row(
+    programme_id: str,
+    criterion: float | None,
+    accepted: bool | str,
+    ledgered_at: str,
+    *,
+    reason: str = "reason",
+    role: str = "tier_list",
+    topic: str = "topic",
+) -> dict:
+    return {
+        "schema_version": 1,
+        "record_type": reader.S2_COMPOSABILITY_LEDGER_RECORD_TYPE,
+        "ledgered_at": ledgered_at,
+        "programme_id": programme_id,
+        "terminal": accepted is False,
+        "terminal_status": "s2_composable" if accepted is True else "no_candidate",
+        "terminal_reason": None if accepted is True else "uncomposable_topic_type",
+        "producer_gate": {
+            "accepted": accepted,
+            "criterion": criterion,
+            "gate": reader.S2_COMPOSABILITY_GATE_NAME,
+            "reason": reason,
+            "role": role,
+            "segment_beats": ["a", "b"],
+            "topic": topic,
+        },
+    }
+
+
 def _write_ledger(base: Path, date: str, rows: list) -> Path:
     d = base / date
     d.mkdir(parents=True, exist_ok=True)
@@ -116,12 +146,57 @@ def test_skips_rows_without_a_pre_gate_score(tmp_path: Path) -> None:
             json.dumps(unavailable),  # criterion but no mean_score
             json.dumps(no_coherence),  # no coherence block
             json.dumps(bad_criterion),  # mean_score but no criterion
+            _s2_row("s2", 3.0, False, "2026-06-16T03:59:00Z"),  # non-numeric S2 row
             _row("good", 3.6, 3.0, "released", "2026-06-16T04:00:00Z"),
         ],
     )
 
     obs = reader.read_producer_observations(base)
     assert [o.programme_id for o in obs] == ["good"]
+
+
+def test_reads_and_summarizes_s2_composability_attempts(tmp_path: Path) -> None:
+    base = tmp_path / "segment-prep"
+    _write_ledger(
+        base,
+        "2026-06-16",
+        [
+            _row("scored", 4.0, 3.0, "released", "2026-06-16T04:00:00Z"),
+            _s2_row(
+                "reject-a",
+                3.0,
+                False,
+                "2026-06-16T04:01:00Z",
+                reason="un-composable parallel_list",
+                role="tier_list",
+                topic="ranked failures",
+            ),
+            _s2_row("accept-a", 3.0, True, "2026-06-16T04:02:00Z"),
+            _s2_row("accept-b", 3.5, True, "2026-06-16T04:03:00Z"),
+            _s2_row("bad-accepted", 3.5, "false", "2026-06-16T04:04:00Z"),
+            _s2_row("bad-criterion", None, False, "2026-06-16T04:05:00Z"),
+        ],
+    )
+
+    attempts = reader.read_s2_composability_attempts(base)
+
+    assert [attempt.programme_id for attempt in attempts] == ["reject-a", "accept-a", "accept-b"]
+    assert attempts[0].criterion == 3.0
+    assert attempts[0].accepted is False
+    assert attempts[0].terminal is True
+    assert attempts[0].terminal_status == "no_candidate"
+    assert attempts[0].terminal_reason == "uncomposable_topic_type"
+    assert attempts[0].role == "tier_list"
+    assert attempts[0].topic == "ranked failures"
+    assert attempts[0].reason == "un-composable parallel_list"
+
+    summaries = reader.summarize_s2_composability(attempts)
+    assert [(s.criterion, s.attempts, s.accepted, s.rejected) for s in summaries] == [
+        (3.0, 2, 1, 1),
+        (3.5, 1, 1, 0),
+    ]
+    assert summaries[0].rejected_fraction == 0.5
+    assert summaries[1].rejected_fraction == 0.0
 
 
 def test_baseline_intervention_scores_feed_baseline_corrected_tau(tmp_path: Path) -> None:
@@ -183,6 +258,14 @@ def test_cli_reports_phase_summary_and_bctau(tmp_path: Path, capsys) -> None:
         for i, v in enumerate([4.2, 4.0, 4.4, 4.1])
     ]
     _write_ledger(base, "2026-06-16", rows)
+    _write_ledger(
+        base,
+        "2026-06-16",
+        [
+            _s2_row("s2-a", 3.0, False, "2026-06-16T03:59:00Z"),
+            _s2_row("s2-b", 3.5, True, "2026-06-16T04:59:00Z"),
+        ],
+    )
 
     rc = reader._main(
         ["--prep-base", str(base), "--baseline", "3.0", "--intervention", "3.5", "--json"]
@@ -190,7 +273,24 @@ def test_cli_reports_phase_summary_and_bctau(tmp_path: Path, capsys) -> None:
     assert rc == 0
     report = json.loads(capsys.readouterr().out)
     assert report["n_observations"] == 8
+    assert report["n_s2_composability_attempts"] == 2
     assert [p["criterion"] for p in report["phases"]] == [3.0, 3.5]
+    assert report["s2_composability"] == [
+        {
+            "accepted": 0,
+            "attempts": 1,
+            "criterion": 3.0,
+            "rejected": 1,
+            "rejected_fraction": 1.0,
+        },
+        {
+            "accepted": 1,
+            "attempts": 1,
+            "criterion": 3.5,
+            "rejected": 0,
+            "rejected_fraction": 0.0,
+        },
+    ]
     assert report["baseline_corrected_tau"]["tau"] > 0.5
 
 
