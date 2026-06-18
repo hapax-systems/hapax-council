@@ -25,7 +25,9 @@ Each tick does two writes:
    - subscription ``quota_snapshots``: per-platform state from the quota-wall
      relay receipts (``~/.cache/hapax/relay/receipts/<role>-quota-wall.yaml``,
      written by ``shared.quota_wall`` on observed 429/quota-exhaustion). An
-     unexpired wall marks the platform ``exhausted``; otherwise ``fresh``.
+     unexpired wall marks the platform ``exhausted``; otherwise the established
+     Claude/Codex/Gemini subscription routes are ``fresh``. GLMCP is stricter:
+     it is ``unknown`` unless a fresh Coding Plan admission receipt exists.
    - ``local_resource_state`` + local-compute snapshot: nvidia-smi VRAM
      pressure and load average, fail-closed to ``unknown`` when unprobeable.
 
@@ -79,6 +81,9 @@ SUBSCRIPTION_ROUTES = {
 SUBSCRIPTION_PROVIDERS = {
     "glmcp": "z_ai-glm-coding-plan",
 }
+
+GLMCP_ADMISSION_PROVIDER = SUBSCRIPTION_PROVIDERS["glmcp"]
+GLMCP_ADMISSION_CAPACITY_POOL = "subscription_quota"
 
 LOCAL_COMPUTE_ROUTE = "litellm.local.command-r-35b"
 LOCAL_COMPUTE_PROVIDER = "tabbyapi"
@@ -140,6 +145,13 @@ def _parse_utc(value: str) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+def _warn_ignored_glmcp_admission(path: Path, reason: str) -> None:
+    print(
+        f"hapax-quota-telemetry-writer: ignoring GLMCP admission receipt {path.name}: {reason}",
+        file=sys.stderr,
+    )
+
+
 def active_quota_walls(
     receipt_dir: Path,
     *,
@@ -197,23 +209,55 @@ def active_glmcp_admission_receipts(
             if fields.get("status") not in {"quota_available", "admitted"}:
                 continue
             provider = fields.get("provider", "")
-            if provider not in {"z_ai", "z.ai", "zai", "z_ai-glm-coding-plan"}:
+            if provider != GLMCP_ADMISSION_PROVIDER:
+                if provider in {"z_ai", "z.ai", "zai"}:
+                    _warn_ignored_glmcp_admission(
+                        path,
+                        f"ambiguous provider {provider!r}; expected {GLMCP_ADMISSION_PROVIDER}",
+                    )
+                continue
+            capacity_pool = fields.get("capacity_pool", "")
+            if capacity_pool != GLMCP_ADMISSION_CAPACITY_POOL:
+                _warn_ignored_glmcp_admission(
+                    path,
+                    f"capacity_pool {capacity_pool or 'missing'}; "
+                    f"expected {GLMCP_ADMISSION_CAPACITY_POOL}",
+                )
                 continue
             route_id = fields.get("route_id", "")
             if route_id != SUBSCRIPTION_ROUTES["glmcp"]:
                 continue
-            observed_at = _parse_utc(
+            observed_raw = (
                 fields.get("observed_at", "")
                 or fields.get("captured_at", "")
                 or fields.get("detected_at", "")
             )
+            observed_at = _parse_utc(observed_raw)
             if observed_at is None:
+                _warn_ignored_glmcp_admission(
+                    path,
+                    f"missing or malformed observed_at/captured_at/detected_at {observed_raw!r}",
+                )
+                continue
+            if observed_at > now:
+                _warn_ignored_glmcp_admission(
+                    path,
+                    "observed_at is in the future",
+                )
                 continue
             try:
                 stale_after_seconds = int(fields.get("stale_after_seconds", "900"))
             except ValueError:
+                _warn_ignored_glmcp_admission(
+                    path,
+                    f"malformed stale_after_seconds {fields.get('stale_after_seconds')!r}",
+                )
                 continue
             if stale_after_seconds <= 0:
+                _warn_ignored_glmcp_admission(
+                    path,
+                    f"non-positive stale_after_seconds {stale_after_seconds}",
+                )
                 continue
             if now - observed_at > timedelta(seconds=stale_after_seconds):
                 continue

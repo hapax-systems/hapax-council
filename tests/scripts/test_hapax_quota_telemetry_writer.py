@@ -73,7 +73,8 @@ action: exit_clean_await_restart
 def _glmcp_admission(relay: Path, *, observed_at: str, stale_after_seconds: int = 900) -> None:
     (relay / "glmcp-quota-admission.yaml").write_text(
         f"""status: quota_available
-provider: z_ai
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 observed_at: {observed_at}
 stale_after_seconds: {stale_after_seconds}
@@ -221,7 +222,8 @@ stale_after_seconds: 900
     )
     (relay / "glmcp-quota-admission-missing-route.yaml").write_text(
         """status: quota_available
-provider: z_ai
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 """,
@@ -242,6 +244,61 @@ stale_after_seconds: 900
     assert summary["glmcp_admissions"] == 0
 
 
+def test_glmcp_admission_receipt_rejects_ambiguous_provider_alias(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    (relay / "glmcp-quota-admission-ambiguous-provider.yaml").write_text(
+        """status: quota_available
+provider: z_ai
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 900
+""",
+        encoding="utf-8",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["glmcp.review.direct"] == "unknown"
+    assert "ambiguous provider" in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
+
+
+def test_glmcp_admission_receipt_requires_subscription_capacity_pool(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    (relay / "glmcp-quota-admission-missing-capacity.yaml").write_text(
+        """status: quota_available
+provider: z_ai-glm-coding-plan
+route_id: glmcp.review.direct
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 900
+""",
+        encoding="utf-8",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["glmcp.review.direct"] == "unknown"
+    assert "capacity_pool missing" in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
+
+
 def test_stale_glmcp_admission_receipt_keeps_glmcp_unknown(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
@@ -256,6 +313,64 @@ def test_stale_glmcp_admission_receipt_keeps_glmcp_unknown(tmp_path: Path) -> No
         for snapshot in payload["quota_snapshots"]
     }
     assert states["glmcp.review.direct"] == "unknown"
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
+
+
+def test_future_glmcp_admission_receipt_keeps_glmcp_unknown(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _glmcp_admission(relay, observed_at="2026-06-10T00:05:00Z")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["glmcp.review.direct"] == "unknown"
+    assert "observed_at is in the future" in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
+
+
+def test_malformed_glmcp_admission_timestamps_are_operator_visible(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    (relay / "glmcp-quota-admission-bad-observed-at.yaml").write_text(
+        """status: quota_available
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+observed_at: definitely-not-a-date
+stale_after_seconds: 900
+""",
+        encoding="utf-8",
+    )
+    (relay / "glmcp-quota-admission-bad-stale-after.yaml").write_text(
+        """status: quota_available
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: soon
+""",
+        encoding="utf-8",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["glmcp.review.direct"] == "unknown"
+    assert "malformed observed_at" in result.stderr
+    assert "malformed stale_after_seconds" in result.stderr
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
 
