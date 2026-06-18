@@ -1420,6 +1420,12 @@ class TestGoGate:
         f["detail"] = "The namespace directive was replaced by `@bad/path.py`."
         assert rt.verify_literal_defect_critical(f, tmp_path) is False
 
+    def test_path_like_at_literal_accepts_leading_space_before_at_path(self) -> None:
+        rt = _load_review_team_module()
+        assert rt._is_path_like_at_literal(" @bad/path.py") is True
+        assert rt._is_path_like_at_literal("@bad/path.py") is True
+        assert rt._is_path_like_at_literal("@prefix") is False
+
     def test_malformed_turtle_namespace_claim_with_absent_literal_is_kept(
         self, tmp_path: Path
     ) -> None:
