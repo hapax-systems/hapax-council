@@ -1464,6 +1464,17 @@ class TestGoGate:
         f = self._lit("no regression test covers the new reviewer path")
         assert rt.verify_literal_defect_critical(f, tmp_path) is True
 
+    def test_semantic_critical_with_negated_syntax_phrase_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "scripts/review_team.py", "x = 1\n")
+        f = self._lit(
+            "Semantic criticals can be invalidated by incidental syntax words",
+            file="scripts/review_team.py",
+            line=1,
+        )
+        f["detail"] = "A real semantic critical says this is not a syntax error."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
     def test_syntax_claim_beyond_file_is_phantom(self, tmp_path: Path) -> None:
         # the documented gemini confabulation: a SYNTAX claim citing a line absent from the file
         rt = _load_review_team_module()
