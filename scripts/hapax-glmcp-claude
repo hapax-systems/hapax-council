@@ -64,6 +64,19 @@ exit_after_signal() {
   exit "$status"
 }
 
+valid_glmcp_secret_entry() {
+  local candidate="$1"
+  local segment
+  local -a segments
+  [[ "$candidate" == glmcp/* ]] || return 1
+  [[ "$candidate" != *[[:space:]]* ]] || return 1
+  IFS=/ read -r -a segments <<<"$candidate"
+  for segment in "${segments[@]}"; do
+    [[ -n "$segment" && "$segment" != "." && "$segment" != ".." ]] || return 1
+  done
+  return 0
+}
+
 trap cleanup EXIT
 trap 'exit_after_signal 129' HUP
 trap 'exit_after_signal 130' INT
@@ -86,14 +99,11 @@ if [[ "$secret_entry" != "$default_secret_entry" ]]; then
     echo "Set HAPAX_GLMCP_ALLOW_SECRET_ENTRY_OVERRIDE=1 only after reviewing the GLMCP-specific pass entry." >&2
     exit 8
   fi
-  case "$secret_entry" in
-    glmcp/*) ;;
-    *)
-      echo "hapax-glmcp-claude: refused pass entry '$secret_entry'; this launcher only reads glmcp/* secrets." >&2
-      echo "For other providers or experiments, use a separate launcher and secret entry." >&2
-      exit 8
-      ;;
-  esac
+  if ! valid_glmcp_secret_entry "$secret_entry"; then
+    echo "hapax-glmcp-claude: refused pass entry '$secret_entry'; this launcher only reads non-traversing glmcp/* secrets." >&2
+    echo "For other providers or experiments, use a separate launcher and secret entry." >&2
+    exit 8
+  fi
 fi
 
 case "$base_url" in

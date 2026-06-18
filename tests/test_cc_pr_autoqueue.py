@@ -1748,6 +1748,7 @@ def test_auto_arms_pass_backed_runtime_secret_subscription_task(tmp_path: Path) 
     record = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
     assert record["kind"] == "release_auto_arm"
     assert record["task_id"] == "stranded-glmcp-secret"
+    assert record["auto_arm_waivers"] == ["pass_backed_runtime_secret_waiver"]
 
 
 def test_dry_run_reports_release_auto_arm_without_writing_note(tmp_path: Path) -> None:

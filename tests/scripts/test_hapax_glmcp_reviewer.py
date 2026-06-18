@@ -436,7 +436,19 @@ def test_rejects_secret_entry_override_outside_glmcp_prefix(
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_SECRET_ENTRY", "other/api-key")
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE", "1")
 
-    with pytest.raises(module.ConfigError, match="only reads glmcp/\\* secrets"):
+    with pytest.raises(module.ConfigError, match="only reads non-traversing glmcp/\\* secrets"):
+        module.load_config()
+
+
+def test_rejects_secret_entry_override_with_traversal_segment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_SECRET_ENTRY", "glmcp/../other/api-key")
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE", "1")
+
+    with pytest.raises(module.ConfigError, match="only reads non-traversing glmcp/\\* secrets"):
         module.load_config()
 
 

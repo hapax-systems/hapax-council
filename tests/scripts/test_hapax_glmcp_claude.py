@@ -231,7 +231,7 @@ def test_secret_entry_override_is_limited_to_glmcp_prefix(tmp_path: Path) -> Non
     )
 
     assert result.returncode == 8
-    assert "only reads glmcp/* secrets" in result.stderr
+    assert "only reads non-traversing glmcp/* secrets" in result.stderr
 
 
 def test_secret_entry_override_requires_exact_glmcp_slash_prefix(tmp_path: Path) -> None:
@@ -251,7 +251,27 @@ def test_secret_entry_override_requires_exact_glmcp_slash_prefix(tmp_path: Path)
     )
 
     assert result.returncode == 8
-    assert "only reads glmcp/* secrets" in result.stderr
+    assert "only reads non-traversing glmcp/* secrets" in result.stderr
+
+
+def test_secret_entry_override_rejects_traversal_segments(tmp_path: Path) -> None:
+    env, bin_dir = _base_env(tmp_path)
+    _install_pass_stub(bin_dir, entry="glmcp/../other/api-key")
+    _write_executable(bin_dir / "claude", "printf 'claude 0.0-test\\n'\n")
+    env["HAPAX_GLMCP_SECRET_ENTRY"] = "glmcp/../other/api-key"
+    env["HAPAX_GLMCP_ALLOW_SECRET_ENTRY_OVERRIDE"] = "1"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--check"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 8
+    assert "only reads non-traversing glmcp/* secrets" in result.stderr
 
 
 def test_allows_reviewed_glmcp_secret_entry_override(tmp_path: Path) -> None:

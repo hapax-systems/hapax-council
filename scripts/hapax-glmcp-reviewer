@@ -112,6 +112,15 @@ def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
     return value
 
 
+def _valid_glmcp_secret_entry(secret_entry: str) -> bool:
+    if not secret_entry.startswith("glmcp/"):
+        return False
+    if any(char.isspace() for char in secret_entry):
+        return False
+    parts = secret_entry.split("/")
+    return not any(part in {"", ".", ".."} for part in parts)
+
+
 def load_config() -> ReviewConfig:
     secret_entry = os.environ.get("HAPAX_GLMCP_REVIEW_SECRET_ENTRY") or DEFAULT_SECRET_ENTRY
     base_url = os.environ.get("HAPAX_GLMCP_REVIEW_BASE_URL") or DEFAULT_BASE_URL
@@ -132,10 +141,11 @@ def load_config() -> ReviewConfig:
                 "Set HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE=1 only after "
                 "reviewing the alternate glmcp/* entry."
             )
-        if not secret_entry.startswith("glmcp/"):
+        if not _valid_glmcp_secret_entry(secret_entry):
             raise ConfigError(
-                "refused pass entry; this adapter only reads glmcp/* secrets. "
-                "Use a reviewed glmcp/* entry or a separate adapter for other providers."
+                "refused pass entry; this adapter only reads non-traversing glmcp/* "
+                "secrets. Use a reviewed glmcp/* entry or a separate adapter for "
+                "other providers."
             )
 
     normalized_base = base_url.rstrip("/")

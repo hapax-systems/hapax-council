@@ -548,10 +548,10 @@ def _pass_backed_runtime_secret_auto_arm_ok(frontmatter: Mapping[str, Any]) -> b
         return False
     if any(ch.isspace() for ch in secret_entry):
         return False
-    parts = [part for part in secret_entry.split("/") if part]
-    if not parts or any(part in {".", ".."} for part in parts):
-        return False
-    return not secret_entry.startswith(("/", "~"))
+    parts = secret_entry.split("/")
+    return not any(part in {"", ".", ".."} for part in parts) and not secret_entry.startswith(
+        ("/", "~")
+    )
 
 
 def _effective_sensitive_flags(frontmatter: Mapping[str, Any]) -> list[str]:
