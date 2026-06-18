@@ -135,7 +135,7 @@ esac
 
 pass_error_file="$(mktemp -t hapax-glmcp-pass.XXXXXX)"
 auth_token="$(pass show "$secret_entry" 2>"$pass_error_file" | sed -n '1p')" || {
-  echo "hapax-glmcp-claude: failed to read pass entry '$secret_entry'; run: pass show '$secret_entry'" >&2
+  echo "hapax-glmcp-claude: failed to read pass entry '$secret_entry'; check: pass show '$secret_entry' >/dev/null" >&2
   echo "hapax-glmcp-claude: pass returned an error; stderr was suppressed to avoid replaying secret-adjacent diagnostics." >&2
   rm -f "$pass_error_file"
   pass_error_file=""

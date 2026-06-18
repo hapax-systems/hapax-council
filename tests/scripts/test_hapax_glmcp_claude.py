@@ -445,7 +445,8 @@ def test_pass_failure_reports_next_action_without_pass_stderr(tmp_path: Path) ->
     )
 
     assert result.returncode == 5
-    assert "run: pass show 'glmcp/api-key'" in result.stderr
+    assert "check: pass show 'glmcp/api-key' >/dev/null" in result.stderr
+    assert "run: pass show 'glmcp/api-key'" not in result.stderr
     assert "pass returned an error" in result.stderr
     assert "gpg: decryption failed" not in result.stderr
     assert "pass said:" not in result.stderr

@@ -524,7 +524,8 @@ def test_read_secret_pass_failure_has_next_action(monkeypatch: pytest.MonkeyPatc
     with pytest.raises(module.ConfigError) as excinfo:
         module.read_secret("glmcp/api-key")
     message = str(excinfo.value)
-    assert "run: pass show 'glmcp/api-key'" in message
+    assert "check: pass show 'glmcp/api-key' >/dev/null" in message
+    assert "run: pass show 'glmcp/api-key'" not in message
     assert "pass stderr suppressed" in message
     assert "gpg: decryption failed" not in message
 
@@ -542,7 +543,8 @@ def test_read_secret_pass_timeout_has_next_action(monkeypatch: pytest.MonkeyPatc
         module.read_secret("glmcp/api-key")
     message = str(excinfo.value)
     assert "failed to run pass show 'glmcp/api-key'" in message
-    assert "run: pass show 'glmcp/api-key'" in message
+    assert "check: pass show 'glmcp/api-key' >/dev/null" in message
+    assert "run: pass show 'glmcp/api-key'" not in message
 
 
 def test_main_empty_stdin_reports_next_action(
