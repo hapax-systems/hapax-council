@@ -1390,6 +1390,37 @@ class TestGoGate:
         f = self._lit("syntax error: invalid syntax", file="bad.py", line=1)
         assert rt.verify_literal_defect_critical(f, tmp_path) is True
 
+    def test_clean_turtle_parse_claim_in_detail_is_phantom(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path,
+            "docs/ok.ttl",
+            "@prefix ex: <https://example.test/> .\nex:s ex:p ex:o .\n",
+        )
+        f = self._lit(
+            "corrupted namespace directive",
+            file="docs/ok.ttl",
+            line=1,
+        )
+        f["detail"] = "The file is unparseable Turtle because @prefix was corrupted."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
+    def test_real_turtle_parse_error_is_verified(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "docs/bad.ttl", "@prefix ex: <https://example.test/> .\nex:s ex:p\n")
+        f = self._lit("Turtle will not parse", file="docs/bad.ttl", line=2)
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_clean_trig_parse_claim_is_phantom(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path,
+            "docs/ok.trig",
+            "@prefix ex: <https://example.test/> .\nex:g { ex:s ex:p ex:o . }\n",
+        )
+        f = self._lit("TriG cannot be parsed", file="docs/ok.trig", line=1)
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
     def test_non_literal_critical_passes_through(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         self._py(tmp_path, "shared/foo.py", "x = 1\n")

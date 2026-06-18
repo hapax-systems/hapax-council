@@ -499,7 +499,27 @@ _GO_GATE_OFF_ENV = "HAPAX_REVIEW_GO_GATE_OFF"
 def _is_syntax_compile_claim(finding: Mapping[str, Any]) -> bool:
     """True iff the critical asserts a SYNTAX/COMPILE defect — the ONLY class the verifier may
     refute. Semantic claims ('corrupt state', off-by-one) are never matched, so never invalidated."""
-    return bool(_SYNTAX_COMPILE_RE.search(str(finding.get("title", ""))))
+    text = f"{finding.get('title', '')}\n{finding.get('detail', '')}"
+    return bool(_SYNTAX_COMPILE_RE.search(text))
+
+
+def _rdf_parse_format(path: Path) -> str | None:
+    if path.suffix == ".trig":
+        return "trig"
+    if path.suffix == ".ttl":
+        return "turtle"
+    return None
+
+
+def _rdf_parses_clean(path: Path, parse_format: str) -> bool:
+    try:
+        from rdflib import Dataset, Graph
+
+        graph = Dataset() if parse_format == "trig" else Graph()
+        graph.parse(path, format=parse_format)
+    except Exception:  # noqa: BLE001 - rdflib raises parser-specific exception types.
+        return False
+    return True
 
 
 def _discover_repo_root() -> Path | None:
@@ -550,8 +570,11 @@ def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) 
         source = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return True  # unreadable — cannot verify, keep
+    rdf_format = _rdf_parse_format(path)
+    if rdf_format is not None:
+        return not _rdf_parses_clean(path, rdf_format)
     if path.suffix != ".py":
-        return True  # cannot verify a non-Python syntax claim — keep (conservative)
+        return True  # cannot verify this syntax claim class — keep (conservative)
     try:
         ast.parse(source)
     except SyntaxError:

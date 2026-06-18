@@ -195,6 +195,13 @@ def _review(tmp_path: Path, **overrides: Any) -> tuple[dict, FakeGh, RecordingRe
     note = _write_task(vault, **overrides.pop("task_kwargs", {}))
     gh = overrides.pop("gh", FakeGh())
     reviewers = overrides.pop("reviewers", RecordingReviewers())
+    default_outage_state = dispatch.FAMILY_OUTAGE_STATE == dispatch.review_team.FAMILY_OUTAGE_STATE
+    if default_outage_state:
+        old_dispatch_outage_state = dispatch.FAMILY_OUTAGE_STATE
+        old_review_team_outage_state = dispatch.review_team.FAMILY_OUTAGE_STATE
+        test_outage_state = tmp_path / "family-outage.json"
+        dispatch.FAMILY_OUTAGE_STATE = test_outage_state
+        dispatch.review_team.FAMILY_OUTAGE_STATE = test_outage_state
     kwargs: dict[str, Any] = {
         "repo": "owner/repo",
         "repo_root": REPO_ROOT,
@@ -207,7 +214,12 @@ def _review(tmp_path: Path, **overrides: Any) -> tuple[dict, FakeGh, RecordingRe
         "now_iso": "2026-06-11T21:00:00+00:00",
     }
     kwargs.update(overrides)
-    result = dispatch.review_pr(42, **kwargs)
+    try:
+        result = dispatch.review_pr(42, **kwargs)
+    finally:
+        if default_outage_state:
+            dispatch.FAMILY_OUTAGE_STATE = old_dispatch_outage_state
+            dispatch.review_team.FAMILY_OUTAGE_STATE = old_review_team_outage_state
     return result, gh, reviewers, note
 
 
