@@ -245,6 +245,33 @@ def test_route_subscription_snapshot_fresh_until_expires_independently() -> None
     )
 
 
+def test_receipt_bounded_route_fresh_snapshot_requires_fresh_until() -> None:
+    payload = _active_budget_payload()
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-review-direct-fresh",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": ["relay-receipt:glmcp-quota-admission.yaml"],
+            "operator_visible_reason": "fixture GLMCP admission missing expiry",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "glmcp.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert "quota-snapshot:quota-glmcp-review-direct-fresh:fresh_until_missing" in refs
+
+
 def test_overdue_reconciliation_freezes_otherwise_valid_budget() -> None:
     payload = _active_budget_payload()
     payload["spend_receipts"] = [

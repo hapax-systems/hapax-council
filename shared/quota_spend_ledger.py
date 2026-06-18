@@ -25,6 +25,7 @@ DEFAULT_QUOTA_SPEND_LEDGER_LIVE = (
 )
 
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
+RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset({"glmcp.review.direct"})
 
 
 class QuotaSpendLedgerError(ValueError):
@@ -1097,9 +1098,15 @@ def subscription_quota_state_for_route(
         for snapshot in snapshots
         if _subscription_quota_fresh_until_expired(snapshot, now=checked_at)
     )
+    missing_fresh_until_refs = tuple(
+        f"quota-snapshot:{snapshot.snapshot_id}:fresh_until_missing"
+        for snapshot in snapshots
+        if _subscription_quota_missing_required_fresh_until(snapshot)
+    )
     return _strict_subscription_quota_state(snapshots, now=checked_at), (
         *evidence_refs,
         *expired_refs,
+        *missing_fresh_until_refs,
     )
 
 
@@ -1136,9 +1143,19 @@ def _effective_subscription_quota_state(
     *,
     now: datetime,
 ) -> SubscriptionQuotaState:
+    if _subscription_quota_missing_required_fresh_until(snapshot):
+        return SubscriptionQuotaState.UNKNOWN
     if _subscription_quota_fresh_until_expired(snapshot, now=now):
         return SubscriptionQuotaState.STALE
     return snapshot.subscription_quota_state
+
+
+def _subscription_quota_missing_required_fresh_until(snapshot: QuotaSnapshot) -> bool:
+    return (
+        snapshot.subscription_quota_state is SubscriptionQuotaState.FRESH
+        and _normalize_route_id(snapshot.route_id) in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
+        and snapshot.fresh_until is None
+    )
 
 
 def _subscription_quota_fresh_until_expired(

@@ -635,7 +635,9 @@ def test_glmcp_subscription_route_launches_with_fresh_route_quota() -> None:
         quota=_quota(
             subscription_quota_state="fresh",
             route_subscription_quota_state="fresh",
-            route_quota_evidence_refs=("relay-receipt:glmcp-quota-admission.yaml",),
+            route_quota_evidence_refs=(
+                "relay-receipt:glmcp-quota-admission.yaml:fresh_until:2026-05-09T23:00:00Z",
+            ),
         ),
     )
 
@@ -676,7 +678,7 @@ def test_build_dispatch_request_enforces_exact_route_subscription_quota() -> Non
     assert "subscription_route_quota_not_fresh" in missing_decision.reason_codes
     assert "route_subscription_quota_state:unknown" in missing_decision.reason_codes
 
-    fresh_request = build_dispatch_request(
+    unbounded_request = build_dispatch_request(
         task_id="policy-test",
         lane="cx-green",
         platform="glmcp",
@@ -685,6 +687,34 @@ def test_build_dispatch_request_enforces_exact_route_subscription_quota() -> Non
         task_fields=_task_fields(),
         registry=registry,
         quota_ledger=_ledger_with_route_subscription_state(route_id, "fresh"),
+        now=freshness_now,
+    )
+    assert unbounded_request.quota is not None
+    assert unbounded_request.quota.route_subscription_quota_state == "unknown"
+    assert (
+        "quota-snapshot:quota-glmcp-review-direct-fresh:fresh_until_missing"
+        in unbounded_request.quota.route_quota_evidence_refs
+    )
+
+    unbounded_decision = evaluate_dispatch_policy(unbounded_request, now=freshness_now)
+
+    assert unbounded_decision.action is DispatchAction.HOLD
+    assert "subscription_route_quota_not_fresh" in unbounded_decision.reason_codes
+    assert "route_subscription_quota_state:unknown" in unbounded_decision.reason_codes
+
+    fresh_request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        task_fields=_task_fields(),
+        registry=registry,
+        quota_ledger=_ledger_with_route_subscription_state(
+            route_id,
+            "fresh",
+            fresh_until="2026-05-09T23:00:00Z",
+        ),
         now=freshness_now,
     )
     assert fresh_request.quota is not None
