@@ -125,7 +125,9 @@ is alpha-gated: the node must exist live before the regenerated link map is appl
   public egress nodes only when `wpctl get-volume` reports zero-volume drift.
   It does not own Faderfox/manual-trim targets or content stems. Recheck with
   `scripts/hapax-audio-routing-check` and
-  `uv run pytest tests/scripts/test_hapax_audio_reconciler.py -q`.
+  `uv run pytest tests/scripts/test_hapax_audio_reconciler.py -q`; for live
+  volume state, resolve IDs with `wpctl status --name`, then run
+  `wpctl get-volume <id>`.
 - **Ducker** `hapax-audio-ducker.service` — writes the SSOT duck depth to the
   dedicated `hapax-music-duck-mk5` node under operator voice, broadcast TTS, or a
   live hosting segment (deepest-duck-wins). Single duck owner; no software TTS duck

@@ -223,7 +223,7 @@ def test_reconciler_sets_unity_volume_for_present_configured_nodes(tmp_path: Pat
         "#!/usr/bin/env bash\n"
         'if [ "$1" = "status" ] && [ "$2" = "--name" ]; then cat "$WPCTL_STATUS"; exit 0; fi\n'
         'if [ "$1" = "get-volume" ] && [ "$2" = "80" ]; then printf \'Volume: 0.00\\n\'; exit 0; fi\n'
-        'if [ "$1" = "get-volume" ] && [ "$2" = "107" ]; then printf \'Volume: 1.00\\n\'; exit 0; fi\n'
+        'if [ "$1" = "get-volume" ] && [ "$2" = "107" ]; then printf \'Volume: 0.73\\n\'; exit 0; fi\n'
         'if [ "$1" = "set-volume" ]; then printf \'set-volume %s %s\\n\' "$2" "$3" >> "$WPCTL_CALLS"; exit 0; fi\n'
         "exit 2\n",
         encoding="utf-8",
@@ -267,6 +267,88 @@ def test_reconciler_sets_unity_volume_for_present_configured_nodes(tmp_path: Pat
     log_text = log.read_text(encoding="utf-8")
     assert "rejected 2 disallowed zero-volume target(s)" in log_text
     assert "hapax-music-loudnorm" not in wpctl_calls.read_text(encoding="utf-8")
+
+
+def test_reconciler_uses_reviewed_default_volume_nodes_when_env_unset(
+    tmp_path: Path,
+) -> None:
+    graph = tmp_path / "graph.txt"
+    calls = tmp_path / "calls.txt"
+    wpctl_calls = tmp_path / "wpctl-calls.txt"
+    wpctl_status = tmp_path / "wpctl-status.txt"
+    link_map = tmp_path / "audio-link-map.conf"
+    forbidden = tmp_path / "audio-forbidden-links.conf"
+    log = tmp_path / "reconciler.log"
+    fake_pw_link = tmp_path / "pw-link"
+    fake_wpctl = tmp_path / "wpctl"
+
+    graph.write_text("", encoding="utf-8")
+    link_map.write_text("", encoding="utf-8")
+    forbidden.write_text("", encoding="utf-8")
+    wpctl_status.write_text(
+        "\n".join(
+            [
+                " │      56. hapax-livestream-tap                [vol: 0.00]",
+                " │      80. hapax-broadcast-master              [Audio/Source]",
+                " │      84. hapax-broadcast-normalized          [Audio/Source]",
+                " │     104. hapax-music-loudnorm                [Audio/Sink]",
+                " │     107. hapax-obs-broadcast-remap           [Audio/Source]",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    fake_pw_link.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = "-l" ]; then cat "$PW_LINK_GRAPH"; exit 0; fi\n'
+        'if [ "$1" = "-o" ]; then cat "$PW_LINK_OUTPUTS"; exit 0; fi\n'
+        'if [ "$1" = "-i" ]; then cat "$PW_LINK_INPUTS"; exit 0; fi\n'
+        'printf \'connect %s %s\\n\' "$1" "$2" >> "$PW_LINK_CALLS"\n',
+        encoding="utf-8",
+    )
+    fake_pw_link.chmod(0o755)
+    fake_wpctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = "status" ] && [ "$2" = "--name" ]; then cat "$WPCTL_STATUS"; exit 0; fi\n'
+        'if [ "$1" = "get-volume" ]; then printf \'Volume: 0.00\\n\'; exit 0; fi\n'
+        'if [ "$1" = "set-volume" ]; then printf \'set-volume %s %s\\n\' "$2" "$3" >> "$WPCTL_CALLS"; exit 0; fi\n'
+        "exit 2\n",
+        encoding="utf-8",
+    )
+    fake_wpctl.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "HAPAX_RECONCILER_ONCE": "1",
+        "HAPAX_RECONCILER_INTERVAL_S": "0",
+        "HAPAX_RECONCILER_LINK_MAP": str(link_map),
+        "HAPAX_RECONCILER_FORBIDDEN_LINKS": str(forbidden),
+        "HAPAX_RECONCILER_LOG": str(log),
+        "HAPAX_RECONCILER_PW_LINK": str(fake_pw_link),
+        "HAPAX_RECONCILER_WPCTL": str(fake_wpctl),
+        "PW_LINK_GRAPH": str(graph),
+        "PW_LINK_OUTPUTS": str(graph),
+        "PW_LINK_INPUTS": str(graph),
+        "PW_LINK_CALLS": str(calls),
+        "WPCTL_STATUS": str(wpctl_status),
+        "WPCTL_CALLS": str(wpctl_calls),
+    }
+    env.pop("HAPAX_RECONCILER_VOLUME_NODES", None)
+
+    result = subprocess.run(
+        [str(SCRIPT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert wpctl_calls.read_text(encoding="utf-8").splitlines() == [
+        "set-volume 80 1.0",
+        "set-volume 84 1.0",
+        "set-volume 107 1.0",
+    ]
 
 
 def test_reconciler_volume_guard_degrades_when_wpctl_status_unavailable(
