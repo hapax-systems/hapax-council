@@ -384,11 +384,46 @@ def test_coord_deploy_first_rollout_clean_failure_does_not_restart_unreceipted_t
     assert result.returncode == 1
     assert "clean untracked/ignored activation worktree" in result.stderr
     assert "activation worktree remains at" in result.stderr
-    assert "stopped hapax-coord.service to avoid serving unreceipted target" in result.stderr
+    assert (
+        "stopped hapax-coord.service to avoid serving unclean activation worktree" in result.stderr
+    )
     assert "restarted hapax-coord.service on rollback sha" not in result.stderr
     assert _activation_head(worktree) == sha
     assert not (worktree / ".deployed-sha").exists()
     assert _restart_calls(calls) == []
+    assert (
+        calls.with_name("systemctl-service-state.txt").read_text(encoding="utf-8").strip()
+        == "inactive"
+    )
+
+
+def test_coord_deploy_same_sha_clean_failure_stops_receipted_dirty_activation(
+    tmp_path: Path,
+) -> None:
+    repo, sha = _init_coord_repo(tmp_path)
+    act_root = tmp_path / "activation"
+    bin_dir, calls = _fake_systemctl(tmp_path)
+    first = _deploy(repo, act_root, bin_dir, calls)
+    assert first.returncode == 0, first.stderr
+    worktree = act_root / "worktree"
+    stale = worktree / "stale-runtime-copy.py"
+    stale.write_text("stale\n", encoding="utf-8")
+    assert _activation_head(worktree) == sha
+    assert (worktree / ".deployed-sha").read_text(encoding="utf-8").strip() == sha
+
+    result = _deploy(repo, act_root, bin_dir, calls, fail_clean_on_sha=sha)
+
+    assert result.returncode == 1
+    assert "clean untracked/ignored activation worktree" in result.stderr
+    assert "activation worktree remains at" in result.stderr
+    assert (
+        "stopped hapax-coord.service to avoid serving unclean activation worktree" in result.stderr
+    )
+    assert "restarted hapax-coord.service on rollback sha" not in result.stderr
+    assert _activation_head(worktree) == sha
+    assert (worktree / ".deployed-sha").read_text(encoding="utf-8").strip() == sha
+    assert stale.exists()
+    assert _restart_calls(calls) == ["--user restart hapax-coord.service"]
     assert (
         calls.with_name("systemctl-service-state.txt").read_text(encoding="utf-8").strip()
         == "inactive"

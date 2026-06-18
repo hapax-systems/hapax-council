@@ -232,6 +232,16 @@ stop_unreceipted_service_after_receipt_failure() {
     fi
 }
 
+stop_service_after_pre_restart_worktree_failure() {
+    local service_rc
+    if systemctl --user stop hapax-coord.service >/dev/null 2>&1; then
+        printf 'stopped hapax-coord.service to avoid serving unclean activation worktree'
+    else
+        service_rc=$?
+        printf 'failed to stop hapax-coord.service rc=%s after pre-restart worktree failure' "$service_rc"
+    fi
+}
+
 clean_rollback_or_stop() {
     local context="$1"
     local detail="$2"
@@ -294,7 +304,7 @@ pre_restart_worktree_fail() {
             echo "coord-deploy: $label failed before restart; rollback checkout to $ROLLBACK_SHA failed (rc=$rollback_rc): $rollback_detail; $service_detail; $detail; $CLEAN_NEXT" >&2
         fi
     elif [ -n "$ROLLBACK_SHA" ]; then
-        service_detail="$(resume_previous_service_after_pre_restart_failure)"
+        service_detail="$(stop_service_after_pre_restart_worktree_failure)"
         echo "coord-deploy: $label failed before restart; activation worktree remains at $ROLLBACK_SHA; $service_detail; $detail; $CLEAN_NEXT" >&2
     else
         service_detail="$(stop_unreceipted_service_after_receipt_failure)"
