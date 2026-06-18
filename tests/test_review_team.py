@@ -119,6 +119,13 @@ class TestLensRegistry:
         referenced = set(re.findall(r"[a-z-]+(?= lens)", low))
         assert "trust-boundary" not in referenced, consent_line
 
+    def test_gemini_prompt_names_rdf_prefix_directives_as_valid_syntax(self) -> None:
+        reg = _registry()
+        gemini = next(row for row in reg["families"] if row["family"] == "gemini")
+        prompt = gemini["reviewer_command"][-1]
+        assert "RDF/Turtle/TriG `@prefix` directives are valid source syntax" in prompt
+        assert "path-like corruption" in prompt
+
     def test_sizing_matches_ratified_spec(self) -> None:
         sizing = _registry()["sizing"]
         assert sizing["t3_docs"]["team_size"] == 2
@@ -944,6 +951,10 @@ class TestFamilyOutageDegradation:
         assert rt.is_quota_wall(self.WALL_2026_06_12, process_failed=True)
         assert rt.is_quota_wall(
             "You've hit your session limit · resets 10pm (America/Chicago)",
+            process_failed=True,
+        )
+        assert rt.is_quota_wall(
+            "You've hit your weekly limit · resets Jun 19, 5pm (America/Chicago)",
             process_failed=True,
         )
 

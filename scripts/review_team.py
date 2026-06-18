@@ -66,7 +66,7 @@ TEAM_CLASS_RANK = {"t3_docs": 0, "t2_standard": 1, "t1_critical": 2}
 _QUOTA_WALL_SHAPE_RE = re.compile(
     r"\A("
     r"You('ve| have) hit your (weekly|usage|session|5-hour) limit"
-    r"(?:\s+·\s+resets\s+\d{1,2}\s?[ap]m(?:\s+(?:\([A-Za-z/_-]+\)|[A-Za-z/_-]+))?)?"
+    r"(?:\s+·\s+resets\s+[^\r\n]+)?"
     r"|HTTP 429 Too Many Requests"
     r"|Too Many Requests"
     r"|RESOURCE_EXHAUSTED(?::\s+Quota (?:exceeded|exhausted))?"
