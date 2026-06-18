@@ -54,7 +54,11 @@ Trust boundaries: **security** (input validation at boundary, no secret leakage,
 - Create: `config/review-lenses/registry.yaml`
 - Test: `tests/test_review_team.py` (registry section)
 
-- [ ] **Step 1: Write failing registry tests** — registry parses; has `registry_schema: 1`; every `surface_lenses[].lenses` and `always_on_lenses` entry has a charter file; sizing has the 3 classes with spec quorums (t3: 2/2, t2: 2/3, t1: quorum 3 with all roster families unless outage-degraded); families roster covers all configured model families.
+- [ ] **Step 1: Write failing registry tests** — registry parses; has `registry_schema: 1`;
+  every `surface_lenses[].lenses` and `always_on_lenses` entry has a charter file;
+  sizing has the 3 classes with spec quorums (t3: 2/2, t2: 2/3, t1: quorum 3 with
+  all roster families unless outage-degraded); families roster covers all configured
+  model families.
 - [ ] **Step 2: Run, verify fails** (`uv run pytest tests/test_review_team.py -x -q` → file-not-found).
 - [ ] **Step 3: Write registry.yaml** with: `always_on_lenses`, `surface_lenses` rows mirroring spec §1 globs (`agents/hapax_daimonion/**`; `shared/governance/**`+`axioms/**`; `config/pipewire/**`+`config/audio-*`+`scripts/*audio*`; `systemd/**`+`scripts/*deploy*`; `scripts/cc-*`+`shared/sdlc_lifecycle.py`+`shared/release_gate.py`; tests-only special row; `*mcp*`+`*oauth*`+`*egress*`+`*publish*` trust row), `sizing` (t3_docs 2/2; t2_standard 3, quorum 2, block_on_named_critical; t1_critical 4-5, quorum 3, require_all_families, criticals_must_resolve), `families` (argv templates per design decision 8, timeout 1200), `lane_families` (greek→claude, `cx-*`→codex, iota/kappa/lambda/mu→gemini, `vbe-*`→vibe non-reviewing).
 - [ ] **Step 4: Tests pass.**  - [ ] **Step 5: Commit** `feat(review-team): lens registry — surfaces, sizing, families`.

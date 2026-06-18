@@ -307,6 +307,7 @@ def test_redirect_is_refused_before_replaying_authorization(
     assert "redirect refused" in message
     assert "test-secret-token" not in message
     assert "<redacted>" in message
+    assert "check HAPAX_GLMCP_REVIEW_BASE_URL" in message
 
 
 def test_real_no_redirect_opener_does_not_follow_redirect() -> None:

@@ -249,7 +249,9 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
                 location = str(exc.headers.get("Location", ""))
             raise ApiError(
                 f"HTTP {exc.code}: redirect refused before replaying Authorization; "
-                f"location={redact(location, api_key)[:300] or 'unknown'}"
+                f"location={redact(location, api_key)[:300] or 'unknown'}; "
+                "check HAPAX_GLMCP_REVIEW_BASE_URL and rerun with a reviewed "
+                "https://api.z.ai/ endpoint"
             ) from exc
         detail = exc.read().decode("utf-8", errors="replace")
         raise ApiError(
