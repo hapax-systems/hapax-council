@@ -36,6 +36,8 @@ Each tick does two writes:
      The emergency false-negative recovery path is to create a fresh
      short-lived admission receipt with supported-tool, endpoint, model, and
      evidence_ref fields, then rerun this writer so the live ledger is refreshed.
+     That receipt-plane refresh is the canonical emergency procedure for a
+     false negative.
      There is intentionally no environment-variable bypass for stale/unknown
      subscription quota.
    - ``local_resource_state`` + local-compute snapshot: nvidia-smi VRAM
