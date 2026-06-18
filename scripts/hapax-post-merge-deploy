@@ -153,12 +153,15 @@ TRACE_MAX_RECORDS="${HAPAX_POST_MERGE_TRACE_MAX_RECORDS:-200}"
 LAST_DEPLOYED_SHA_PATH="${HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH:-$(dirname "$TRACE_PATH")/last-deployed-sha}"
 RECOVERY_INSTALLER_PATH="scripts/hapax-recovery-plane-install"
 RECOVERY_BUNDLE_DEST="${HAPAX_RECOVERY_BUNDLE_DEST:-$HOME/.local/lib/hapax-recovery/council/current}"
-RECOVERY_BUNDLE_REQUIRED_FILES=(
+RECOVERY_BUNDLE_SOURCE_FILES=(
     scripts/hapax-p0-incident-intake
     scripts/hapax-coord-deploy
     shared/__init__.py
     shared/jsonl_append.py
     shared/p0_incident_intake.py
+)
+RECOVERY_BUNDLE_REQUIRED_FILES=(
+    "${RECOVERY_BUNDLE_SOURCE_FILES[@]}"
     manifest.json
 )
 
@@ -979,11 +982,67 @@ recovery_bundle_runtime_missing() {
     return 1
 }
 
+recovery_bundle_runtime_stale() {
+    python3 - "$RECOVERY_BUNDLE_DEST/manifest.json" "$REPO" "$SHA" "${RECOVERY_BUNDLE_SOURCE_FILES[@]}" <<'PY'
+import hashlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+repo = sys.argv[2]
+sha = sys.argv[3]
+source_files = sys.argv[4:]
+
+try:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(0)
+
+installed_files = manifest.get("files")
+if not isinstance(installed_files, list):
+    raise SystemExit(0)
+
+installed_sha256 = {}
+for entry in installed_files:
+    if not isinstance(entry, dict):
+        continue
+    path = entry.get("path")
+    sha256 = entry.get("sha256")
+    if isinstance(path, str) and isinstance(sha256, str):
+        installed_sha256[path] = sha256
+
+for relative in source_files:
+    expected_sha256 = installed_sha256.get(relative)
+    if expected_sha256 is None:
+        raise SystemExit(0)
+    result = subprocess.run(
+        ["git", "-C", repo, "show", f"{sha}:{relative}"],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise SystemExit(0)
+    if hashlib.sha256(result.stdout).hexdigest() != expected_sha256:
+        raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+}
+
 RECOVERY_BUNDLE_SELF_HEAL=0
+RECOVERY_BUNDLE_SELF_HEAL_REASON=""
 if [ "${#RECOVERY_BUNDLE[@]}" -eq 0 ] \
     && recovery_installer_exists_at_sha \
     && recovery_bundle_runtime_missing; then
     RECOVERY_BUNDLE_SELF_HEAL=1
+    RECOVERY_BUNDLE_SELF_HEAL_REASON="missing/incomplete"
+elif [ "${#RECOVERY_BUNDLE[@]}" -eq 0 ] \
+    && recovery_installer_exists_at_sha \
+    && recovery_bundle_runtime_stale; then
+    RECOVERY_BUNDLE_SELF_HEAL=1
+    RECOVERY_BUNDLE_SELF_HEAL_REASON="stale"
 fi
 
 if [ "${#RECOVERY_BUNDLE[@]}" -gt 0 ] || [ "$RECOVERY_BUNDLE_SELF_HEAL" = "1" ]; then
@@ -993,7 +1052,7 @@ if [ "${#RECOVERY_BUNDLE[@]}" -gt 0 ] || [ "$RECOVERY_BUNDLE_SELF_HEAL" = "1" ];
             echo "  $f"
         done
     else
-        echo "recovery bundle runtime missing/incomplete at $RECOVERY_BUNDLE_DEST; self-healing stable closure"
+        echo "recovery bundle runtime $RECOVERY_BUNDLE_SELF_HEAL_REASON at $RECOVERY_BUNDLE_DEST; self-healing stable closure"
     fi
     if ! git cat-file -e "$SHA:$RECOVERY_INSTALLER_PATH" 2>/dev/null; then
         echo "hapax-post-merge-deploy: missing recovery bundle installer at $SHA:$RECOVERY_INSTALLER_PATH; next: ensure scripts/hapax-recovery-plane-install exists at the deployed source-activation SHA, then rerun hapax-post-merge-deploy for this merge" >&2

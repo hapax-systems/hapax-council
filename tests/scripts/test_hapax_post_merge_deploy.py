@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -9,6 +10,13 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-post-merge-deploy"
+RECOVERY_BUNDLE_SOURCE_FILES = {
+    "scripts/hapax-p0-incident-intake": "#!/usr/bin/env bash\necho intake\n",
+    "scripts/hapax-coord-deploy": "#!/usr/bin/env bash\necho coord deploy\n",
+    "shared/__init__.py": "",
+    "shared/jsonl_append.py": "def append_jsonl(*_args, **_kwargs):\n    pass\n",
+    "shared/p0_incident_intake.py": "def main():\n    return 0\n",
+}
 
 
 def _coverage(paths: list[str]) -> subprocess.CompletedProcess[str]:
@@ -104,8 +112,79 @@ def _repo_with_recovery_installer_then_linear_commit(
     return repo, _git(repo, "rev-parse", "HEAD")
 
 
+def _repo_with_recovery_bundle_drift_then_unrelated_commit(
+    tmp_path: Path,
+) -> tuple[Path, str, str, dict[str, str]]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "trace-test@example.test")
+    _git(repo, "config", "user.name", "Trace Test")
+    installer = repo / "scripts" / "hapax-recovery-plane-install"
+    installer.parent.mkdir(parents=True)
+    installer.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'printf \'%s\\n\' "$*" >> "$HAPAX_RECOVERY_INSTALL_CALLS"\n',
+        encoding="utf-8",
+    )
+    installer.chmod(0o755)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    for relative, body in RECOVERY_BUNDLE_SOURCE_FILES.items():
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        if relative.startswith("scripts/"):
+            path.chmod(0o755)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "base recovery bundle")
+    stale_sha = _git(repo, "rev-parse", "HEAD")
+    stale_files = dict(RECOVERY_BUNDLE_SOURCE_FILES)
+
+    (repo / "shared" / "p0_incident_intake.py").write_text(
+        "def main():\n    return 42\n", encoding="utf-8"
+    )
+    _git(repo, "add", "shared/p0_incident_intake.py")
+    _git(repo, "commit", "-m", "update recovery intake")
+    (repo / "docs" / "unrelated.md").parent.mkdir(parents=True, exist_ok=True)
+    (repo / "docs" / "unrelated.md").write_text("later unrelated deploy\n", encoding="utf-8")
+    _git(repo, "add", "docs/unrelated.md")
+    _git(repo, "commit", "-m", "unrelated deploy")
+    return repo, _git(repo, "rev-parse", "HEAD"), stale_sha, stale_files
+
+
 def _recovery_bundle_dest(home: Path) -> Path:
     return home / ".local" / "lib" / "hapax-recovery" / "council" / "current"
+
+
+def _write_installed_recovery_bundle(dest: Path, source_ref: str, files: dict[str, str]) -> None:
+    manifest_files = []
+    for relative, body in files.items():
+        target = dest / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body, encoding="utf-8")
+        mode = "0o755" if relative.startswith("scripts/") else "0o644"
+        if relative.startswith("scripts/"):
+            target.chmod(0o755)
+        manifest_files.append(
+            {
+                "path": relative,
+                "mode": mode,
+                "sha256": hashlib.sha256(body.encode()).hexdigest(),
+                "bytes": len(body.encode()),
+            }
+        )
+    (dest / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_ref": source_ref,
+                "files": manifest_files,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _repo_with_intake_units_then_preset_commit(tmp_path: Path) -> tuple[Path, str]:
@@ -765,6 +844,42 @@ def test_missing_recovery_bundle_self_heals_on_later_deploy(tmp_path: Path) -> N
 
     assert result.returncode == 0, result.stderr
     assert "recovery bundle runtime missing/incomplete" in result.stdout
+    assert install_calls.read_text(encoding="utf-8").splitlines() == [
+        f"--source {repo} --source-ref {sha} --dest {custom_dest}"
+    ]
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["deploy_groups"]["recovery_bundle"] == [f"self-heal:{custom_dest}"]
+    assert "recovery_bundle" in record["avsdlc"]["runtime_media_witness_groups"]
+
+
+def test_stale_recovery_bundle_self_heals_on_later_deploy(tmp_path: Path) -> None:
+    repo, sha, stale_sha, stale_files = _repo_with_recovery_bundle_drift_then_unrelated_commit(
+        tmp_path
+    )
+    home = tmp_path / "home"
+    custom_dest = tmp_path / "custom-recovery" / "current"
+    _write_installed_recovery_bundle(custom_dest, stale_sha, stale_files)
+    install_calls = tmp_path / "recovery-install-calls.txt"
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "REPO": str(repo),
+        "HAPAX_RECOVERY_INSTALL_CALLS": str(install_calls),
+        "HAPAX_RECOVERY_BUNDLE_DEST": str(custom_dest),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "recovery bundle runtime stale" in result.stdout
     assert install_calls.read_text(encoding="utf-8").splitlines() == [
         f"--source {repo} --source-ref {sha} --dest {custom_dest}"
     ]
