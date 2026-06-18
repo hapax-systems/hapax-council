@@ -163,7 +163,9 @@ def test_emit_health_allows_fresh_in_progress_run(tmp_path: Path) -> None:
         {
             "status": "in_progress",
             "phase": "compose_segment_in_progress",
+            "started_at": "2026-06-18T06:00:00Z",
             "updated_at": "2026-06-18T06:10:00Z",
+            "pid": os.getpid(),
         },
     )
 
@@ -173,6 +175,8 @@ def test_emit_health_allows_fresh_in_progress_run(tmp_path: Path) -> None:
     payload = _json(result)
     assert payload["reason"] == "run_in_progress"
     assert payload["age_s"] == 1200.0
+    assert payload["run_age_s"] == 1800.0
+    assert payload["process_alive"] is True
 
 
 def test_emit_health_fails_stale_in_progress_run(tmp_path: Path) -> None:
@@ -199,7 +203,9 @@ def test_emit_health_fails_production_timeout_boundary(tmp_path: Path) -> None:
         {
             "status": "in_progress",
             "phase": "compose_segment_in_progress",
-            "updated_at": "2026-06-18T04:05:00Z",
+            "started_at": "2026-06-18T04:05:00Z",
+            "updated_at": "2026-06-18T06:04:00Z",
+            "pid": os.getpid(),
         },
     )
 
@@ -222,8 +228,32 @@ def test_emit_health_fails_production_timeout_boundary(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     payload = _json(result)
-    assert payload["reason"] == "stale_in_progress"
-    assert payload["age_s"] == 8100.0
+    assert payload["reason"] == "timed_out_in_progress"
+    assert payload["age_s"] == 960.0
+    assert payload["run_age_s"] == 8100.0
+    assert payload["process_alive"] is True
+
+
+def test_emit_health_fails_dead_in_progress_process(tmp_path: Path) -> None:
+    _write_status(
+        tmp_path,
+        {
+            "status": "in_progress",
+            "phase": "compose_segment_in_progress",
+            "started_at": "2026-06-18T06:00:00Z",
+            "updated_at": "2026-06-18T06:10:00Z",
+            "pid": 999999999,
+        },
+    )
+
+    result = _run(tmp_path, "--max-in-progress-age-s", "3600")
+
+    assert result.returncode == 1
+    payload = _json(result)
+    assert payload["reason"] == "dead_in_progress_process"
+    assert payload["age_s"] == 1200.0
+    assert payload["run_age_s"] == 1800.0
+    assert payload["process_alive"] is False
 
 
 def test_emit_health_fails_unreadable_status(tmp_path: Path) -> None:

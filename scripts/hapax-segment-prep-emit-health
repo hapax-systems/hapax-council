@@ -28,6 +28,8 @@ NEXT_ACTIONS = {
     "unreadable_status": "Inspect the prep-status.json payload and rerun hapax-segment-prep after repairing the status file.",
     "invalid_status_payload": "Replace the malformed prep-status.json with an object payload or rerun hapax-segment-prep.",
     "in_progress_missing_updated_at": "Check the producer logs for a wedged run and rerun hapax-segment-prep if no active process remains.",
+    "timed_out_in_progress": "Check journalctl --user -u hapax-segment-prep.service for TimeoutStartSec, then rerun the prep job.",
+    "dead_in_progress_process": "Check the producer journal for the dead in-progress run, then rerun hapax-segment-prep.",
     "stale_in_progress": "Check for a stuck hapax-segment-prep process, then clear or rerun the prep job.",
     "blocked_no_emit": "Inspect prep-status.json last_error and resolve the upstream block before rerunning prep.",
     "prep_failed": "Check journalctl --user -u hapax-segment-prep.service and fix the recorded prep failure.",
@@ -49,8 +51,12 @@ class EmitHealthResult:
     run_saved_count: int | None = None
     selected_release_ok: bool | None = None
     selected_release_count: int | None = None
+    started_at: str | None = None
     updated_at: str | None = None
     age_s: float | None = None
+    run_age_s: float | None = None
+    pid: int | None = None
+    process_alive: bool | None = None
     next_action: str | None = None
 
 
@@ -116,6 +122,15 @@ def _selected_release(payload: dict[str, Any]) -> tuple[bool | None, int | None]
     return (ok if isinstance(ok, bool) else None), selected_count
 
 
+def _pid_alive(pid: int | None) -> bool | None:
+    if pid is None or pid <= 0:
+        return None
+    proc_root = Path("/proc")
+    if not proc_root.exists():
+        return None
+    return (proc_root / str(pid)).exists()
+
+
 def _result(
     ok: bool,
     reason: str,
@@ -123,9 +138,12 @@ def _result(
     payload: dict[str, Any] | None = None,
     *,
     age_s: float | None = None,
+    run_age_s: float | None = None,
+    process_alive: bool | None = None,
 ) -> EmitHealthResult:
     payload = payload or {}
     selected_ok, selected_count = _selected_release(payload)
+    pid = _int_value(payload.get("pid"))
     return EmitHealthResult(
         ok=ok,
         reason=reason,
@@ -136,10 +154,16 @@ def _result(
         run_saved_count=_sequence_count(payload.get("run_saved_programmes")),
         selected_release_ok=selected_ok,
         selected_release_count=selected_count,
+        started_at=str(payload.get("started_at"))
+        if payload.get("started_at") is not None
+        else None,
         updated_at=str(payload.get("updated_at"))
         if payload.get("updated_at") is not None
         else None,
         age_s=round(age_s, 1) if age_s is not None else None,
+        run_age_s=round(run_age_s, 1) if run_age_s is not None else None,
+        pid=pid,
+        process_alive=process_alive,
         next_action=_next_action(reason, ok),
     )
 
@@ -190,8 +214,39 @@ def evaluate_status(
     if status == "in_progress":
         if age_s is None:
             return _result(False, "in_progress_missing_updated_at", status_path, payload)
+        started_at = _parse_datetime(payload.get("started_at"))
+        run_age_s = (now - started_at).total_seconds() if started_at else None
+        if run_age_s is not None and run_age_s > max_in_progress_age_s:
+            return _result(
+                False,
+                "timed_out_in_progress",
+                status_path,
+                payload,
+                age_s=age_s,
+                run_age_s=run_age_s,
+                process_alive=_pid_alive(_int_value(payload.get("pid"))),
+            )
+        process_alive = _pid_alive(_int_value(payload.get("pid")))
+        if process_alive is False:
+            return _result(
+                False,
+                "dead_in_progress_process",
+                status_path,
+                payload,
+                age_s=age_s,
+                run_age_s=run_age_s,
+                process_alive=process_alive,
+            )
         if age_s <= max_in_progress_age_s:
-            return _result(True, "run_in_progress", status_path, payload, age_s=age_s)
+            return _result(
+                True,
+                "run_in_progress",
+                status_path,
+                payload,
+                age_s=age_s,
+                run_age_s=run_age_s,
+                process_alive=process_alive,
+            )
         return _result(False, "stale_in_progress", status_path, payload, age_s=age_s)
 
     if status == "blocked":
