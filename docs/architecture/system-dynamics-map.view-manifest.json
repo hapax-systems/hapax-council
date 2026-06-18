@@ -1,0 +1,63 @@
+{
+  "authority_case": "CASE-SYSTEM-DYNAMICS-MAP-20260618",
+  "claim_partitions": [
+    "asserted",
+    "inferred",
+    "observed",
+    "simulated",
+    "rendered",
+    "candidate"
+  ],
+  "default_projection": {
+    "entrypoint": "dmn",
+    "layout": "cose",
+    "resolution": 5,
+    "runtime_asset": "vendor/cytoscape-3.34.0.min.js",
+    "runtime_asset_sri": "sha384-K+k+ywfDuvV9dwg+bwsVE0WGkrTnqFamaER+ydBgMFQTtlI0jdI9no9AjkQHwh/T",
+    "viewer": "system-dynamics-map-viewer.html",
+    "visible_layers": [
+      "context-up",
+      "decision",
+      "execution-down",
+      "semantic-core",
+      "observation-state",
+      "rendering"
+    ],
+    "visible_statuses": [
+      "asserted",
+      "inferred",
+      "observed",
+      "simulated",
+      "rendered",
+      "candidate"
+    ]
+  },
+  "generated_at": "2026-06-18T00:00:00Z",
+  "map_id": "system-dynamics-map-v0",
+  "provenance": {
+    "activity": "https://hapax.local/system-dynamics-map/v0/activity/materialize-v1",
+    "agent": "scripts/system_dynamics_map_materialize.py",
+    "generated": [
+      "system-dynamics-map.canonical.trig",
+      "system-dynamics-map.shacl.ttl",
+      "system-dynamics-map.view-manifest.json"
+    ],
+    "used": [
+      "system-dynamics-map.seed.json"
+    ]
+  },
+  "schema": "system-dynamics-map-view-manifest-v1",
+  "source_snapshot": {
+    "canonical_graph": "system-dynamics-map.canonical.trig",
+    "edge_count": 35,
+    "node_count": 29,
+    "seed": "system-dynamics-map.seed.json",
+    "seed_sha256": "b07e346d0102d5a34466794d3d6cccc0a6083f1a35d4c7af4c5c7260a20a206f",
+    "shacl_shapes": "system-dynamics-map.shacl.ttl"
+  },
+  "validation": {
+    "browser": "uv run --extra ci pytest tests/test_system_dynamics_map_viewer_playwright.py",
+    "pytest": "uv run pytest tests/test_system_dynamics_map_artifacts.py"
+  },
+  "version": "0.1.0"
+}

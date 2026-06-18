@@ -1,11 +1,21 @@
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
+
+from scripts import system_dynamics_map_materialize as materialize
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ARCHITECTURE_DIR = REPO_ROOT / "docs" / "architecture"
 SEED_PATH = ARCHITECTURE_DIR / "system-dynamics-map.seed.json"
 VIEWER_PATH = ARCHITECTURE_DIR / "system-dynamics-map-viewer.html"
+VENDOR_PATH = ARCHITECTURE_DIR / "vendor" / "cytoscape-3.34.0.min.js"
+TRIG_PATH = ARCHITECTURE_DIR / "system-dynamics-map.canonical.trig"
+SHACL_PATH = ARCHITECTURE_DIR / "system-dynamics-map.shacl.ttl"
+MANIFEST_PATH = ARCHITECTURE_DIR / "system-dynamics-map.view-manifest.json"
+EXPECTED_NODE_COUNT = 29
+EXPECTED_EDGE_COUNT = 35
 
 
 def _load_seed() -> dict:
@@ -38,6 +48,16 @@ def test_system_dynamics_seed_graph_is_referentially_valid():
     for name, data in (("seed", _load_seed()), ("embedded", _load_viewer()[1])):
         node_ids = [node["id"] for node in data["nodes"]]
         edge_ids = [edge["id"] for edge in data["edges"]]
+        assert len(node_ids) == EXPECTED_NODE_COUNT, (
+            f"{name}: expected {EXPECTED_NODE_COUNT} nodes, found {len(node_ids)}. "
+            "Fix by restoring the documented v0 graph shape or updating the count constant "
+            "with the intentional graph change."
+        )
+        assert len(edge_ids) == EXPECTED_EDGE_COUNT, (
+            f"{name}: expected {EXPECTED_EDGE_COUNT} edges, found {len(edge_ids)}. "
+            "Fix by restoring the documented v0 graph shape or updating the count constant "
+            "with the intentional graph change."
+        )
         assert len(node_ids) == len(set(node_ids)), (
             f"{name}: duplicate node IDs. Fix by assigning each node one stable ID."
         )
@@ -79,6 +99,37 @@ def test_system_dynamics_seed_graph_is_referentially_valid():
                 f"{name}: invalid edge status {edge['id']}. "
                 "Fix by using a declared status_kinds value."
             )
+            assert edge.get("relation"), (
+                f"{name}: edge missing relation {edge['id']}. "
+                "Fix by adding the relation field used by the viewer details panel."
+            )
+            assert "confidence" in edge, (
+                f"{name}: edge missing confidence {edge['id']}. "
+                "Fix by adding a numeric confidence value for the relation claim."
+            )
+            assert edge.get("docs"), (
+                f"{name}: edge missing docs/evidence links {edge['id']}. "
+                "Fix by adding at least one docs[] link for the relation source."
+            )
+
+
+def test_viewer_uses_committed_local_cytoscape_asset():
+    html, _ = _load_viewer()
+    assert "https://unpkg.com/cytoscape" not in html, (
+        "viewer still depends on CDN-hosted Cytoscape. "
+        "Fix by loading the committed ./vendor/cytoscape-3.34.0.min.js asset."
+    )
+    assert "./vendor/cytoscape-3.34.0.min.js" in html, (
+        "viewer does not reference the committed Cytoscape asset. "
+        "Fix by restoring the local script tag."
+    )
+    assert VENDOR_PATH.exists(), (
+        f"{VENDOR_PATH}: missing local Cytoscape asset. "
+        "Fix by restoring the vendored 3.34.0 minified file."
+    )
+    assert materialize._sha384_sri(VENDOR_PATH) == (
+        "sha384-K+k+ywfDuvV9dwg+bwsVE0WGkrTnqFamaER+ydBgMFQTtlI0jdI9no9AjkQHwh/T"
+    )
 
 
 def test_viewer_layout_uses_intrinsic_wrapping_without_conditional_at_rules():
@@ -105,3 +156,68 @@ def test_system_dynamics_artifacts_do_not_use_hardcoded_hex_colors():
             f"{path}: hardcoded hex color {match.group(0)}. "
             "Fix by using existing CSS tokens, rgb(), or color-mix() values."
         )
+
+
+def test_materialized_semantic_artifacts_are_current():
+    result = subprocess.run(
+        [sys.executable, "scripts/system_dynamics_map_materialize.py", "--check"],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        "system dynamics persisted artifacts are stale. "
+        "Fix by running scripts/system_dynamics_map_materialize.py.\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+
+
+def test_materialized_trig_covers_seed_identity_and_named_graphs():
+    seed = _load_seed()
+    trig = TRIG_PATH.read_text(encoding="utf-8")
+    for graph_name in ("asserted", "rendered", "provenance"):
+        assert f"<https://hapax.local/system-dynamics-map/v0/graph/{graph_name}> {{" in trig, (
+            f"{TRIG_PATH}: missing named graph {graph_name}. "
+            "Fix by regenerating the canonical TriG artifact."
+        )
+    for node in seed["nodes"]:
+        assert f"<https://hapax.local/system-dynamics-map/v0/node/{node['id']}>" in trig, (
+            f"{TRIG_PATH}: missing node {node['id']}. "
+            "Fix by regenerating the canonical TriG artifact."
+        )
+    for edge in seed["edges"]:
+        assert f"<https://hapax.local/system-dynamics-map/v0/edge/{edge['id']}>" in trig, (
+            f"{TRIG_PATH}: missing edge {edge['id']}. "
+            "Fix by regenerating the canonical TriG artifact."
+        )
+        assert json.dumps(edge["relation"]) in trig, (
+            f"{TRIG_PATH}: missing relation {edge['relation']} for {edge['id']}. "
+            "Fix by regenerating the canonical TriG artifact."
+        )
+
+
+def test_shacl_shapes_and_view_manifest_cover_the_durable_contract():
+    shapes = SHACL_PATH.read_text(encoding="utf-8")
+    for token in (
+        "sd:NodeShape",
+        "sd:EdgeShape",
+        "sd:RenderedViewShape",
+        "sd:ProvenanceActivityShape",
+    ):
+        assert token in shapes, (
+            f"{SHACL_PATH}: missing {token}. Fix by regenerating the SHACL shape file."
+        )
+
+    manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    assert manifest["schema"] == "system-dynamics-map-view-manifest-v1"
+    assert manifest["source_snapshot"]["node_count"] == EXPECTED_NODE_COUNT
+    assert manifest["source_snapshot"]["edge_count"] == EXPECTED_EDGE_COUNT
+    assert manifest["default_projection"]["runtime_asset"] == "vendor/cytoscape-3.34.0.min.js"
+    assert manifest["default_projection"]["runtime_asset_sri"] == materialize._sha384_sri(
+        VENDOR_PATH
+    )
+    assert (
+        manifest["validation"]["browser"]
+        == "uv run --extra ci pytest tests/test_system_dynamics_map_viewer_playwright.py"
+    )
