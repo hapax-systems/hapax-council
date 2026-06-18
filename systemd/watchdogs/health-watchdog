@@ -4,19 +4,37 @@
 # Sends to ntfy (mobile push) + notify-send (desktop) via shared.notify.
 set -euo pipefail
 
-SOURCE_ACTIVATION_REPO="${HAPAX_SOURCE_ACTIVATION_WORKTREE:-/home/hapax/.cache/hapax/source-activation/worktree}"
+SOURCE_ACTIVATION_STATE_DIR="${HAPAX_SOURCE_ACTIVATION_STATE_DIR:-/home/hapax/.cache/hapax/source-activation}"
+SOURCE_ACTIVATION_RELEASES_DIR="${HAPAX_SOURCE_ACTIVATION_RELEASES_DIR:-$SOURCE_ACTIVATION_STATE_DIR/releases}"
+SOURCE_ACTIVATION_REPO="${HAPAX_SOURCE_ACTIVATION_WORKTREE:-$SOURCE_ACTIVATION_STATE_DIR/worktree}"
 HEALTH_MONITOR_REPO=""
+
+is_source_activation_release() {
+    local candidate="$1"
+    [[ -n "$candidate" && -e "$candidate/.git" ]] || return 1
+
+    local candidate_real releases_real
+    candidate_real="$(realpath -m "$candidate" 2>/dev/null || true)"
+    releases_real="$(realpath -m "$SOURCE_ACTIVATION_RELEASES_DIR" 2>/dev/null || true)"
+    [[ -n "$candidate_real" && -n "$releases_real" ]] || return 1
+    case "$candidate_real" in
+        "$releases_real"/*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
 if [[ -e "$SOURCE_ACTIVATION_REPO/.git" ]]; then
     HEALTH_MONITOR_REPO="$SOURCE_ACTIVATION_REPO"
-elif [[ -n "${HAPAX_HEALTH_MONITOR_REPO:-}" && -e "${HAPAX_HEALTH_MONITOR_REPO}/.git" ]]; then
+elif is_source_activation_release "${HAPAX_HEALTH_MONITOR_REPO:-}"; then
     echo "WARN: source activation checkout missing at $SOURCE_ACTIVATION_REPO; using explicit HAPAX_HEALTH_MONITOR_REPO override" >&2
     HEALTH_MONITOR_REPO="$HAPAX_HEALTH_MONITOR_REPO"
+elif [[ -n "${HAPAX_HEALTH_MONITOR_REPO:-}" ]]; then
+    echo "WARN: ignoring HAPAX_HEALTH_MONITOR_REPO=${HAPAX_HEALTH_MONITOR_REPO}; override must be a source-activation release under $SOURCE_ACTIVATION_RELEASES_DIR" >&2
 fi
 
 if [[ -z "$HEALTH_MONITOR_REPO" ]]; then
     echo "ERROR: no health-monitor activation checkout available at $SOURCE_ACTIVATION_REPO" >&2
-    echo "NEXT ACTION: run source activation or set HAPAX_SOURCE_ACTIVATION_WORKTREE/HAPAX_HEALTH_MONITOR_REPO to a valid activation checkout" >&2
+    echo "NEXT ACTION: run source activation or set HAPAX_SOURCE_ACTIVATION_WORKTREE/HAPAX_HEALTH_MONITOR_REPO to a valid source-activation checkout" >&2
     notify-send --urgency=critical --app-name="Health Monitor" --icon=dialog-error \
         "Health Monitor Failed" "No activation checkout available; run source activation or set HAPAX_SOURCE_ACTIVATION_WORKTREE" 2>/dev/null || true
     exit 1
@@ -139,6 +157,7 @@ esac
 
 # Append to health history (atomic via temp file + rename)
 HISTORY_FILE="${HAPAX_HEALTH_HISTORY_FILE:-$HEALTH_MONITOR_REPO/profiles/health-history.jsonl}"
+mkdir -p "$(dirname "$HISTORY_FILE")" 2>/dev/null || true
 ENTRY=$(echo "$FINAL_REPORT" | python3 -c "
 import sys, json
 r = json.load(sys.stdin)

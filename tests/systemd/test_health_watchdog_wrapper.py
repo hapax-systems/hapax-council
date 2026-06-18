@@ -221,9 +221,11 @@ def test_source_activation_checkout_wins_over_runtime_override_by_default(tmp_pa
     assert "/home/hapax/projects/hapax-council" not in result.stderr
 
 
-def test_explicit_runtime_override_is_fallback_when_activation_missing(tmp_path: Path) -> None:
-    runtime = _make_checkout(tmp_path / "runtime")
+def test_explicit_release_override_is_fallback_when_activation_missing(tmp_path: Path) -> None:
+    state_dir = tmp_path / "source-activation-state"
+    runtime = _make_checkout(state_dir / "releases" / "runtime")
     env = _base_env(tmp_path)
+    env["HAPAX_SOURCE_ACTIVATION_STATE_DIR"] = str(state_dir)
     env["HAPAX_HEALTH_MONITOR_REPO"] = str(runtime)
     env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(tmp_path / "missing-activation")
 
@@ -233,6 +235,21 @@ def test_explicit_runtime_override_is_fallback_when_activation_missing(tmp_path:
     records = _jsonl(tmp_path / "uv.jsonl")
     assert records[0]["cwd"] == str(runtime)
     assert "using explicit HAPAX_HEALTH_MONITOR_REPO override" in result.stderr
+
+
+def test_mutable_dev_tree_override_is_rejected(tmp_path: Path) -> None:
+    dev_tree = _make_checkout(tmp_path / "projects" / "hapax-council")
+    env = _base_env(tmp_path)
+    env["HAPAX_SOURCE_ACTIVATION_STATE_DIR"] = str(tmp_path / "source-activation-state")
+    env["HAPAX_HEALTH_MONITOR_REPO"] = str(dev_tree)
+    env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(tmp_path / "missing-activation")
+
+    result = _run_watchdog(env)
+
+    assert result.returncode == 1
+    assert "ignoring HAPAX_HEALTH_MONITOR_REPO" in result.stderr
+    assert "override must be a source-activation release" in result.stderr
+    assert not (tmp_path / "uv.jsonl").exists()
 
 
 def test_missing_activation_checkouts_fail_before_uv(tmp_path: Path) -> None:
@@ -254,7 +271,6 @@ def test_missing_activation_checkouts_fail_before_uv(tmp_path: Path) -> None:
 
 def test_default_history_file_uses_selected_activation_checkout(tmp_path: Path) -> None:
     activation = _make_checkout(tmp_path / "source-activation")
-    (activation / "profiles").mkdir()
     env = _base_env(tmp_path, set_history_file=False)
     env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(activation)
 
@@ -326,10 +342,12 @@ def test_failed_stack_default_intake_cli_uses_selected_activation_root(
 def test_failed_stack_default_intake_cli_uses_runtime_fallback_root(
     tmp_path: Path,
 ) -> None:
-    runtime = _make_checkout(tmp_path / "runtime")
+    state_dir = tmp_path / "source-activation-state"
+    runtime = _make_checkout(state_dir / "releases" / "runtime")
     intake_log = tmp_path / "runtime-intake.jsonl"
     _write_fake_intake_cli(runtime, intake_log)
     env = _base_env(tmp_path, status="failed")
+    env["HAPAX_SOURCE_ACTIVATION_STATE_DIR"] = str(state_dir)
     env["HAPAX_HEALTH_MONITOR_REPO"] = str(runtime)
     env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(tmp_path / "missing-activation")
 
@@ -339,6 +357,20 @@ def test_failed_stack_default_intake_cli_uses_runtime_fallback_root(
     calls = _jsonl(intake_log)
     assert calls[0][0:3] == ["notification", "--title", "Stack Failed"]
     assert _jsonl(tmp_path / "notify.jsonl") == []
+
+
+def test_failed_stack_missing_default_intake_cli_falls_back_to_notification(
+    tmp_path: Path,
+) -> None:
+    activation = _make_checkout(tmp_path / "source-activation")
+    env = _base_env(tmp_path, status="failed")
+    env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(activation)
+
+    result = _run_watchdog(env)
+
+    assert result.returncode == 2, result.stderr
+    notifications = _jsonl(tmp_path / "notify.jsonl")
+    assert notifications[0]["title"] == "Stack Failed"
 
 
 def test_failed_stack_missing_intake_cli_falls_back_to_notification(tmp_path: Path) -> None:
