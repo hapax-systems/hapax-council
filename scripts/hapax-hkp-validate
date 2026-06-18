@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Validate a Hapax Knowledge Projection bundle."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.hkp_bundle_schema import ValidationMode, validate_bundle  # noqa: E402
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("bundle", type=Path, help="HKP bundle directory to validate")
+    parser.add_argument(
+        "--mode",
+        choices=[mode.value for mode in ValidationMode],
+        default=ValidationMode.GOVERNED.value,
+        help="validation mode; governed makes broken links errors",
+    )
+    parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    args = parser.parse_args(argv)
+
+    result = validate_bundle(args.bundle, mode=args.mode)
+    if args.json:
+        print(json.dumps(result.as_dict(), indent=2, sort_keys=True))
+    else:
+        status = "OK" if result.ok else "FAIL"
+        print(f"{status} {result.bundle_path} ({result.mode.value})")
+        if not result.ok:
+            print("next-action\tfix findings below or rerun with --json for structured output")
+        for finding in result.findings:
+            print(f"{finding.severity.value}\t{finding.code}\t{finding.path}\t{finding.message}")
+    return 0 if result.ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
