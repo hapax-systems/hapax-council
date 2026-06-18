@@ -13,7 +13,7 @@
     "schemas/system-dynamics-map/claim-fragment.schema.json": "216e994c467405aecdc3f380184eae3915906e77f9cef909eceaf8ca96a19ccc",
     "schemas/system-dynamics-map/lens.schema.json": "e21cb9a38417749768eab11d0ce1fc847395cd3010883f61c04eab1ce2a5b9ee",
     "schemas/system-dynamics-map/observation.schema.json": "b67365b33792c5eaf991900fc3154e05cff8b434100585d5d418710ad5334422",
-    "schemas/system-dynamics-map/package.schema.json": "8f29bc903c39ca6ab14030a3c1d370019d5e1048110d3aa92c308be43d7e7e1e",
+    "schemas/system-dynamics-map/package.schema.json": "762f25abc960fd7d214cea0c010cfd4a58f1bd9d8afc2d4e58195a448d6d0438",
     "schemas/system-dynamics-map/relation-vocabulary.schema.json": "ed48c46de224801cfe2c1c85383ee17313aded2eaad918064b799ef56344c888",
     "schemas/system-dynamics-map/seed.schema.json": "d90e150c456f4ebc38609039389c00073efb830dbb95bd02d5d302b6cb2fe933",
     "schemas/system-dynamics-map/view-manifest.schema.json": "002e805c4d832b5017aea204e6c62698c046785dbc722897157a501314bc7ad2"
@@ -21,7 +21,7 @@
   "git_sha": "unknown",
   "git_sha_role": "not_recorded",
   "map_id": "system-dynamics-map-v1",
-  "package_hash": "037762e31d4c64e3c2f3c35e4c5d1ba305db0c5f1e0f4cdb6918c80bde10378c",
+  "package_hash": "c178f183720f63463d538ed7d2562e981a35d29fbf5b8d63db4da87e608039ca",
   "schema": "system-dynamics-map-lock-v1",
   "source_hashes": {
     "seed": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",

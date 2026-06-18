@@ -71,9 +71,9 @@
       "sha256": "b67365b33792c5eaf991900fc3154e05cff8b434100585d5d418710ad5334422"
     },
     {
-      "bytes": 1332,
+      "bytes": 1333,
       "path": "schemas/system-dynamics-map/package.schema.json",
-      "sha256": "8f29bc903c39ca6ab14030a3c1d370019d5e1048110d3aa92c308be43d7e7e1e"
+      "sha256": "762f25abc960fd7d214cea0c010cfd4a58f1bd9d8afc2d4e58195a448d6d0438"
     },
     {
       "bytes": 2153,

@@ -634,6 +634,7 @@ def test_generated_schemas_validate_artifacts_and_reject_bad_shapes():
 
     bad_package = copy.deepcopy(json.loads(PACKAGE_PATH.read_text(encoding="utf-8")))
     bad_package["artifacts"][0]["sha256"] = "not-a-sha"
+    bad_package["git_sha"] = "0" * 40
     bad_package["git_sha_role"] = "final_head"
     assert _schema_errors(bad_package, package_schema)
 

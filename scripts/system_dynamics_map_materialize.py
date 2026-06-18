@@ -131,7 +131,15 @@ VIEW_MANIFEST_REQUIRED = [
     "validation",
     "provenance",
 ]
-PACKAGE_REQUIRED = ["schema", "map_id", "version", "artifacts", "validation", "git_sha"]
+PACKAGE_REQUIRED = [
+    "schema",
+    "map_id",
+    "version",
+    "artifacts",
+    "validation",
+    "git_sha",
+    "git_sha_role",
+]
 
 
 def _load_seed() -> dict[str, Any]:
@@ -1060,7 +1068,7 @@ def generate_schema_artifacts() -> dict[Path, str]:
             },
         },
         "validation": {"type": "object"},
-        "git_sha": {"type": "string", "pattern": "^([0-9a-f]{40}|unknown)$"},
+        "git_sha": {"type": "string", "const": "unknown"},
         "git_sha_role": {"type": "string", "const": "not_recorded"},
     }
 

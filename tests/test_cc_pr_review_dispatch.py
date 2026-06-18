@@ -1281,6 +1281,34 @@ class TestFamilyOutageDegradation:
         assert claude_seats
         assert all(r["verdict"] == "quota-wall" for r in claude_seats)
 
+    def test_route_unavailable_precedes_provider_outage_when_both_match(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        self._isolate_state(monkeypatch, tmp_path)
+        mixed_diagnostic = "HTTP 502 Bad Gateway\nUNSUPPORTED_CLIENT"
+        assert dispatch.review_team.is_provider_outage(mixed_diagnostic, process_failed=True)
+        assert dispatch.review_team.is_reviewer_route_unavailable(
+            mixed_diagnostic,
+            process_failed=True,
+        )
+
+        class MixedFailureRunner(RecordingReviewers):
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.invocations.append((seat.id, seat.family, prompt))
+                if seat.family == "gemini":
+                    raise dispatch.ReviewerProcessError(mixed_diagnostic, returncode=1)
+                return GOOD_REPLY
+
+        result, _, _, _ = _review(
+            tmp_path,
+            reviewers=MixedFailureRunner(),
+            task_kwargs={"risk_tier": "T1"},
+        )
+        dossier = result["dossier"]
+        gemini_seats = [r for r in dossier["reviewers"] if r["family"] == "gemini"]
+        assert gemini_seats
+        assert all(r["verdict"] == "reviewer-route-unavailable" for r in gemini_seats)
+
     def test_nonzero_stdout_malformed_reset_does_not_forge_quota_wall(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
