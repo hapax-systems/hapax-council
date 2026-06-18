@@ -83,6 +83,24 @@ def test_emit_health_fails_completed_no_segments_even_with_old_release_pool(
     assert payload["selected_release_count"] == 3
 
 
+def test_emit_health_fails_completed_no_programmes(tmp_path: Path) -> None:
+    _write_status(
+        tmp_path,
+        {
+            "status": "completed_no_programmes",
+            "phase": "completed_no_programmes",
+            "saved_count": 0,
+            "run_saved_programmes": [],
+            "updated_at": "2026-06-18T04:20:00Z",
+        },
+    )
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 1
+    assert _json(result)["reason"] == "zero_emit"
+
+
 def test_emit_health_fails_missing_status(tmp_path: Path) -> None:
     result = _run(tmp_path)
 
