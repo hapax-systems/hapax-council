@@ -2,7 +2,7 @@
 
 All production services run as systemd user units under `user@1000.service` with lingering enabled. No process supervisors (process-compose, supervisord) in the boot chain.
 
-**Topology:** <!-- topology-inventory:services -->283<!-- /topology-inventory:services --> services, <!-- topology-inventory:timers -->137<!-- /topology-inventory:timers --> timers, 4 paths, 3 targets. Verify with `uv run python scripts/hapax_topology_inventory.py --check`.
+**Topology:** <!-- topology-inventory:services -->291<!-- /topology-inventory:services --> services, <!-- topology-inventory:timers -->140<!-- /topology-inventory:timers --> timers, 4 paths, 3 targets. Verify with `uv run python scripts/hapax_topology_inventory.py --check`.
 
 `scripts/hapax_topology_inventory.py` is source-only: it verifies the
 git-tracked `systemd/units/` topology and does not prove what the live user
