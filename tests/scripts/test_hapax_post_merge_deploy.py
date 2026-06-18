@@ -737,11 +737,12 @@ def test_missing_recovery_bundle_self_heals_on_later_deploy(tmp_path: Path) -> N
         tmp_path,
         {"docs/unrelated.md": "later deploy after old first rollout\n"},
     )
+    home = tmp_path / "home"
     install_calls = tmp_path / "recovery-install-calls.txt"
     trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
     env = {
         **os.environ,
-        "HOME": str(tmp_path / "home"),
+        "HOME": str(home),
         "REPO": str(repo),
         "HAPAX_RECOVERY_INSTALL_CALLS": str(install_calls),
         "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
@@ -761,7 +762,10 @@ def test_missing_recovery_bundle_self_heals_on_later_deploy(tmp_path: Path) -> N
         f"--source {repo} --source-ref {sha}"
     ]
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
-    assert record["deploy_groups"]["recovery_bundle"] == []
+    assert record["deploy_groups"]["recovery_bundle"] == [
+        f"self-heal:{home}/.local/lib/hapax-recovery/council/current"
+    ]
+    assert "recovery_bundle" in record["avsdlc"]["runtime_media_witness_groups"]
 
 
 def test_d2_unit_only_change_refreshes_recovery_bundle_before_systemd(
