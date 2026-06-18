@@ -26,8 +26,10 @@ Documentation=file://%h/projects/hapax-council/docs/superpowers/specs/2026-04-13
 # trigger; the .service resolves origin/main so it is correct even if the ref lags.
 #
 # Loop-safety: hapax-post-merge-deploy writes deploy destinations under
-# ~/.config/systemd/user/, ~/.config/pipewire/, ~/.config/wireplumber/,
-# ~/.config/hapax/, ~/.local/bin/, ~/.local/lib/hapax-recovery/council/,
+# ~/.config/systemd/user/, ~/.config/systemd/user-preset/,
+# ~/.config/pipewire/, ~/.config/wireplumber/,
+# ~/.local/share/wireplumber/scripts/hapax/, ~/.config/hapax/,
+# ~/.local/bin/, ~/.local/lib/hapax-recovery/council/,
 # ~/.local/lib/hapax/hooks/, ~/.cache/hapax/post-merge-traces/, and
 # ~/.cache/hapax/deploy-symlink-drift/. When it delegates coord staging before
 # restarting hapax-coord.service, hapax-coord-deploy also writes

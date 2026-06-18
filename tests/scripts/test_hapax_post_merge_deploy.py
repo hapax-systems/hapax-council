@@ -495,10 +495,12 @@ def test_systemd_coverage_includes_slice_units() -> None:
 
 def test_d2_recovery_unit_classifier_uses_canonical_notify_failure_path() -> None:
     script = SCRIPT.read_text(encoding="utf-8")
+    canonical = "systemd/units/notify-failure@.service"
+    spaced_typo = canonical.replace("@", " @")
 
-    assert "notify-failure @.service" not in script
-    assert "systemd/units/notify-failure@.service|" in script
-    result = _coverage(["systemd/units/notify-failure@.service"])
+    assert spaced_typo not in script
+    assert f"{canonical}|" in script
+    result = _coverage([canonical])
     assert result.returncode == 0, result.stderr
     assert "ok: all systemd/** paths" in result.stdout
 
