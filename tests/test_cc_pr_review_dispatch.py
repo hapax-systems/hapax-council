@@ -1264,7 +1264,7 @@ class TestFamilyOutageDegradation:
         class MixedFailureRunner(RecordingReviewers):
             def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
                 self.invocations.append((seat.id, seat.family, prompt))
-                if seat.family == "claude":
+                if seat.family == "gemini":
                     raise dispatch.ReviewerProcessError(
                         mixed_diagnostic,
                         returncode=1,
@@ -1277,9 +1277,9 @@ class TestFamilyOutageDegradation:
             task_kwargs={"assigned_to": "cx-gold"},
         )
         dossier = result["dossier"]
-        claude_seats = [r for r in dossier["reviewers"] if r["family"] == "claude"]
-        assert claude_seats
-        assert all(r["verdict"] == "quota-wall" for r in claude_seats)
+        gemini_seats = [r for r in dossier["reviewers"] if r["family"] == "gemini"]
+        assert gemini_seats
+        assert all(r["verdict"] == "quota-wall" for r in gemini_seats)
 
     def test_route_unavailable_precedes_provider_outage_when_both_match(
         self, monkeypatch: Any, tmp_path: Path

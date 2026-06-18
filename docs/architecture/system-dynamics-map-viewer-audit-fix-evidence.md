@@ -27,14 +27,15 @@ artifact path and made the path fail existence checks.
 Run from the repository root:
 
 ```bash
-test -f scripts/cc-close-acceptance-receipt-check.py
+git ls-files --error-unmatch scripts/cc-close-acceptance-receipt-check.py >/dev/null
 python3 scripts/cc-close-acceptance-receipt-check.py \
   "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/closed/system-dynamics-map-viewer-ux-hardening-20260618.md"
 ```
 
-The repository script is pre-existing at this PR head. This command is the
-replayable witness for the external receipt repair; rerun it against the
-operator vault if the external receipt is edited again.
+The `git ls-files` guard makes the pre-existing repository script check
+self-verifying at this PR head. The receipt-check command is the replayable
+witness for the external receipt repair; rerun it against the operator vault if
+the external receipt is edited again.
 
 ## Related Viewer Evidence
 
