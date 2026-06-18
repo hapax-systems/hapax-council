@@ -203,8 +203,9 @@ def test_reconciler_sets_unity_volume_for_present_configured_nodes(tmp_path: Pat
                 " ├─ Sinks:",
                 " │      56. hapax-livestream-tap                [vol: 0.20]",
                 " ├─ Filters:",
+                " │      80. hapax-broadcast-master              [Audio/Source]",
                 " │     104. hapax-music-loudnorm                [Audio/Sink]",
-                " │  *  149. hapax-yt-loudnorm                   [Audio/Sink]",
+                " │  *  107. hapax-obs-broadcast-remap           [Audio/Source]",
                 "",
             ]
         ),
@@ -238,7 +239,8 @@ def test_reconciler_sets_unity_volume_for_present_configured_nodes(tmp_path: Pat
         "HAPAX_RECONCILER_PW_LINK": str(fake_pw_link),
         "HAPAX_RECONCILER_WPCTL": str(fake_wpctl),
         "HAPAX_RECONCILER_VOLUME_NODES": (
-            "hapax-livestream-tap hapax-music-loudnorm missing-volume-node hapax-yt-loudnorm"
+            "hapax-livestream-tap hapax-broadcast-master hapax-broadcast-normalized "
+            "hapax-music-loudnorm hapax-obs-broadcast-remap"
         ),
         "PW_LINK_GRAPH": str(graph),
         "PW_LINK_OUTPUTS": str(graph),
@@ -260,9 +262,12 @@ def test_reconciler_sets_unity_volume_for_present_configured_nodes(tmp_path: Pat
     assert not calls.exists()
     assert wpctl_calls.read_text(encoding="utf-8").splitlines() == [
         "set-volume 56 1.0",
-        "set-volume 104 1.0",
-        "set-volume 149 1.0",
+        "set-volume 80 1.0",
+        "set-volume 107 1.0",
     ]
+    log_text = log.read_text(encoding="utf-8")
+    assert "rejected 1 disallowed unity-volume target(s)" in log_text
+    assert "hapax-music-loudnorm" not in wpctl_calls.read_text(encoding="utf-8")
 
 
 def test_reconciler_volume_guard_degrades_when_wpctl_status_unavailable(
@@ -319,8 +324,91 @@ def test_reconciler_volume_guard_degrades_when_wpctl_status_unavailable(
     assert not calls.exists()
 
 
+def test_reconciler_volume_guard_degrades_when_set_volume_fails(tmp_path: Path) -> None:
+    graph = tmp_path / "graph.txt"
+    calls = tmp_path / "calls.txt"
+    wpctl_status = tmp_path / "wpctl-status.txt"
+    link_map = tmp_path / "audio-link-map.conf"
+    forbidden = tmp_path / "audio-forbidden-links.conf"
+    log = tmp_path / "reconciler.log"
+    fake_pw_link = tmp_path / "pw-link"
+    fake_wpctl = tmp_path / "wpctl"
+
+    graph.write_text("", encoding="utf-8")
+    link_map.write_text("", encoding="utf-8")
+    forbidden.write_text("", encoding="utf-8")
+    wpctl_status.write_text(
+        " │      56. hapax-livestream-tap                [vol: 0.00]\n",
+        encoding="utf-8",
+    )
+    fake_pw_link.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = "-l" ]; then cat "$PW_LINK_GRAPH"; exit 0; fi\n'
+        'if [ "$1" = "-o" ]; then cat "$PW_LINK_OUTPUTS"; exit 0; fi\n'
+        'if [ "$1" = "-i" ]; then cat "$PW_LINK_INPUTS"; exit 0; fi\n'
+        'printf \'connect %s %s\\n\' "$1" "$2" >> "$PW_LINK_CALLS"\n',
+        encoding="utf-8",
+    )
+    fake_pw_link.chmod(0o755)
+    fake_wpctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = "status" ] && [ "$2" = "--name" ]; then cat "$WPCTL_STATUS"; exit 0; fi\n'
+        'if [ "$1" = "set-volume" ]; then exit 9; fi\n'
+        "exit 2\n",
+        encoding="utf-8",
+    )
+    fake_wpctl.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "HAPAX_RECONCILER_ONCE": "1",
+        "HAPAX_RECONCILER_INTERVAL_S": "0",
+        "HAPAX_RECONCILER_LINK_MAP": str(link_map),
+        "HAPAX_RECONCILER_FORBIDDEN_LINKS": str(forbidden),
+        "HAPAX_RECONCILER_LOG": str(log),
+        "HAPAX_RECONCILER_PW_LINK": str(fake_pw_link),
+        "HAPAX_RECONCILER_WPCTL": str(fake_wpctl),
+        "HAPAX_RECONCILER_VOLUME_NODES": "hapax-livestream-tap",
+        "PW_LINK_GRAPH": str(graph),
+        "PW_LINK_OUTPUTS": str(graph),
+        "PW_LINK_INPUTS": str(graph),
+        "PW_LINK_CALLS": str(calls),
+        "WPCTL_STATUS": str(wpctl_status),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    log_text = log.read_text(encoding="utf-8")
+    assert "unity-volume target(s) could not be repaired" in log_text
+    assert "Next action:" in log_text
+
+
 def test_reconciler_volume_guard_does_not_restart_pipewire() -> None:
     text = SCRIPT.read_text(encoding="utf-8")
 
     assert "restart pipewire" not in text.lower()
     assert "systemctl --user restart" not in text
+
+
+def test_reconciler_default_volume_targets_stay_on_aggregate_nodes() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+    default_line = next(
+        line for line in text.splitlines() if line.startswith("DEFAULT_VOLUME_NODES=")
+    )
+
+    assert "hapax-livestream-tap" in default_line
+    assert "hapax-broadcast-master" in default_line
+    assert "hapax-broadcast-normalized" in default_line
+    assert "hapax-obs-broadcast-remap" in default_line
+    assert "hapax-music-loudnorm" not in default_line
+    assert "hapax-yt-loudnorm" not in default_line
+    assert "hapax-mic-rode-playback" not in default_line
+    assert "hapax-voice-wet-playback" not in default_line
+    assert "HAPAX_RECONCILER_VOLUME_LEVEL" not in text

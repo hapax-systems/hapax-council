@@ -17,9 +17,9 @@ LINK_MAP="${HAPAX_RECONCILER_LINK_MAP:-/home/hapax/.config/hapax/audio-link-map.
 FORBIDDEN_FILE="${HAPAX_RECONCILER_FORBIDDEN_LINKS:-/home/hapax/.config/hapax/audio-forbidden-links.conf}"
 PW_LINK="${HAPAX_RECONCILER_PW_LINK:-pw-link}"
 WPCTL="${HAPAX_RECONCILER_WPCTL:-wpctl}"
-DEFAULT_VOLUME_NODES="hapax-livestream-tap hapax-broadcast-master hapax-broadcast-normalized hapax-obs-broadcast-remap hapax-mic-rode-playback hapax-music-loudnorm hapax-voice-wet-playback hapax-yt-loudnorm"
+DEFAULT_VOLUME_NODES="hapax-livestream-tap hapax-broadcast-master hapax-broadcast-normalized hapax-obs-broadcast-remap"
 VOLUME_NODE_LIST="${HAPAX_RECONCILER_VOLUME_NODES-$DEFAULT_VOLUME_NODES}"
-VOLUME_LEVEL="${HAPAX_RECONCILER_VOLUME_LEVEL:-1.0}"
+UNITY_VOLUME_LEVEL="1.0"
 ONCE="${HAPAX_RECONCILER_ONCE:-0}"
 
 declare -a DESIRED_LINKS=()
@@ -27,6 +27,7 @@ declare -a FORBIDDEN_LINKS=()
 declare -a VOLUME_NODES=()
 declare -A PRESENT_LINKS=()
 declare -A PRESENT_PORTS=()
+declare -A ALLOWED_VOLUME_NODES=()
 GRAPH=""
 WPCTL_STATUS_TEXT=""
 
@@ -71,14 +72,30 @@ load_forbidden_links() {
     fi
 }
 
+init_allowed_volume_nodes() {
+    ALLOWED_VOLUME_NODES=()
+    local node
+    for node in $DEFAULT_VOLUME_NODES; do
+        ALLOWED_VOLUME_NODES["$node"]=1
+    done
+}
+
 load_volume_nodes() {
     VOLUME_NODES=()
     local node
+    local rejected=0
     for node in $VOLUME_NODE_LIST; do
-        VOLUME_NODES+=("$node")
+        if [[ -n "${ALLOWED_VOLUME_NODES["$node"]+x}" ]]; then
+            VOLUME_NODES+=("$node")
+        else
+            ((rejected += 1))
+        fi
     done
     if ((${#VOLUME_NODES[@]} > 0)); then
         log "loaded ${#VOLUME_NODES[@]} unity-volume node target(s)"
+    fi
+    if ((rejected > 0)); then
+        log "WARN: rejected $rejected disallowed unity-volume target(s); Next action: keep volume guard scoped to governed broadcast aggregate nodes or update DEFAULT_VOLUME_NODES through review"
     fi
 }
 
@@ -235,7 +252,7 @@ enforce_unity_volumes() {
     if ! WPCTL_STATUS_TEXT="$("$WPCTL" status --name 2>/dev/null)"; then
         WPCTL_STATUS_TEXT=""
         if ((tick % 60 == 0)); then
-            log "WARN: could not read WirePlumber node status for unity-volume guard"
+            log "WARN: could not read WirePlumber node status for unity-volume guard; Next action: run 'wpctl status --name' and confirm WirePlumber is active"
         fi
         return
     fi
@@ -249,7 +266,7 @@ enforce_unity_volumes() {
             ((missing += 1))
             continue
         fi
-        if "$WPCTL" set-volume "$id" "$VOLUME_LEVEL" 2>/dev/null; then
+        if "$WPCTL" set-volume "$id" "$UNITY_VOLUME_LEVEL" 2>/dev/null; then
             ((repaired += 1))
         else
             ((failures += 1))
@@ -260,18 +277,19 @@ enforce_unity_volumes() {
         log "set unity volume on $repaired broadcast node(s)"
     fi
     if ((missing > 0 && tick % 60 == 0)); then
-        log "deferred $missing/${#VOLUME_NODES[@]} unity-volume target(s) with absent node names"
+        log "deferred $missing/${#VOLUME_NODES[@]} unity-volume target(s) with absent node names; Next action: run 'wpctl status --name' and confirm broadcast aggregate node names"
     fi
     if ((failures > 0 && tick % 60 == 0)); then
-        log "WARN: $failures/${#VOLUME_NODES[@]} unity-volume target(s) could not be repaired"
+        log "WARN: $failures/${#VOLUME_NODES[@]} unity-volume target(s) could not be repaired; Next action: identify blocked target with 'wpctl status --name' and retry 'wpctl set-volume <id> 1.0'"
     fi
 }
 
 log "=== hapax-audio-reconciler starting ==="
-log "interval=${INTERVAL_S}s link_map=$LINK_MAP forbidden=$FORBIDDEN_FILE volume_level=$VOLUME_LEVEL"
+log "interval=${INTERVAL_S}s link_map=$LINK_MAP forbidden=$FORBIDDEN_FILE volume_level=$UNITY_VOLUME_LEVEL"
 
 load_link_map
 load_forbidden_links
+init_allowed_volume_nodes
 load_volume_nodes
 
 tick=0
