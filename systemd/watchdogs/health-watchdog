@@ -4,9 +4,21 @@
 # Sends to ntfy (mobile push) + notify-send (desktop) via shared.notify.
 set -euo pipefail
 
-cd /home/hapax/projects/hapax-council
+HEALTH_MONITOR_REPO="${HAPAX_HEALTH_MONITOR_REPO:-/home/hapax/.cache/hapax/runtime/health-monitor-source}"
+SOURCE_ACTIVATION_REPO="${HAPAX_SOURCE_ACTIVATION_WORKTREE:-/home/hapax/.cache/hapax/source-activation/worktree}"
+if [[ ! -e "$HEALTH_MONITOR_REPO/.git" ]]; then
+    echo "WARN: health-monitor source missing at $HEALTH_MONITOR_REPO; falling back to source activation worktree" >&2
+    HEALTH_MONITOR_REPO="$SOURCE_ACTIVATION_REPO"
+fi
+if [[ ! -e "$HEALTH_MONITOR_REPO/.git" ]]; then
+    echo "ERROR: health-monitor source missing at $HEALTH_MONITOR_REPO" >&2
+    notify-send --urgency=critical --app-name="Health Monitor" --icon=dialog-error \
+        "Health Monitor Failed" "health-monitor source missing at $HEALTH_MONITOR_REPO" 2>/dev/null || true
+    exit 1
+fi
+cd "$HEALTH_MONITOR_REPO"
 
-UV="/home/hapax/.local/bin/uv"
+UV="${HAPAX_UV:-/home/hapax/.local/bin/uv}"
 
 # Validate uv exists
 if [[ ! -x "$UV" ]]; then
@@ -91,7 +103,25 @@ summary = r['summary']
 failed = r['failed_count']
 
 if status == 'failed':
-    send_notification('Stack Failed', f'{summary}\nRun: uv run python -m agents.health_monitor --verbose', priority='high', tags=['rotating_light'], click_url=nudges_uri())
+    # Route through source-activation P0 intake so the alert coalesces into one
+    # governed incident. Any CLI failure falls back to raw notify instead of
+    # silently suppressing the failed-stack alert.
+    import subprocess
+    cli = os.path.expanduser(os.environ.get(
+        'HAPAX_P0_INTAKE_CLI',
+        '~/.cache/hapax/source-activation/worktree/scripts/hapax-p0-incident-intake',
+    ))
+    intake_timeout_s = float(os.environ.get('HAPAX_P0_INTAKE_TIMEOUT_SECONDS', '20'))
+    try:
+        rc = subprocess.run([
+            cli, 'notification', '--title', 'Stack Failed',
+            '--message', f'{summary}\nRun: uv run python -m agents.health_monitor --verbose',
+            '--technical', '--priority', 'high', '--tag', 'rotating_light',
+        ], check=False, timeout=intake_timeout_s).returncode
+    except (OSError, subprocess.TimeoutExpired):
+        rc = 1
+    if rc != 0:
+        send_notification('Stack Failed', f'{summary}\nRun: uv run python -m agents.health_monitor --verbose', priority='high', tags=['rotating_light'], click_url=nudges_uri())
 else:
     send_notification('Stack Degraded', summary, priority='default', tags=['warning'], click_url=nudges_uri())
 
@@ -103,7 +133,7 @@ if webhook:
 esac
 
 # Append to health history (atomic via temp file + rename)
-HISTORY_FILE="/home/hapax/projects/hapax-council/profiles/health-history.jsonl"
+HISTORY_FILE="${HAPAX_HEALTH_HISTORY_FILE:-/home/hapax/projects/hapax-council/profiles/health-history.jsonl}"
 ENTRY=$(echo "$FINAL_REPORT" | python3 -c "
 import sys, json
 r = json.load(sys.stdin)
