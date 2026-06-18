@@ -536,7 +536,9 @@ def _line_literal_claim_refuted(finding: Mapping[str, Any], source: str) -> bool
     suspect_literals = [
         literal.strip()
         for literal in _BACKTICK_LITERAL_RE.findall(text)
-        if literal.strip().startswith("@") and literal.strip() != "@prefix"
+        if literal.strip().startswith("@")
+        and "/" in literal.strip()
+        and literal.strip() != "@prefix"
     ]
     return bool(suspect_literals) and all(
         literal not in current_line for literal in suspect_literals
