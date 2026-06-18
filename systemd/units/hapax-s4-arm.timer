@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Torso S-4 witness-verified arm after user-manager boot
+
+[Timer]
+OnBootSec=2min
+AccuracySec=15s
+RandomizedDelaySec=30s
+Unit=hapax-s4-arm.service
+Persistent=false
+
+[Install]
+WantedBy=timers.target
