@@ -343,6 +343,7 @@ class RouteDecision(_PolicyModel):
     local_execution_target: str | None = None
     reason_codes: tuple[str, ...] = Field(default=())
     message: str
+    quota_evidence_refs: tuple[str, ...] = Field(default=())
     resource_state_refs: tuple[str, ...] = Field(default=())
     _dimensional_receipt: DimensionalRouteReceipt | None = PrivateAttr(default=None)
 
@@ -778,6 +779,7 @@ def route_decision_receipt_payload(decision: RouteDecision) -> dict[str, Any]:
         "route_policy_degraded_state": decision.degraded_state,
         "route_policy_registry_freshness_green": decision.registry_freshness_green,
         "route_policy_quota_freshness_green": decision.quota_freshness_green,
+        "route_policy_quota_evidence_refs": list(decision.quota_evidence_refs),
         "route_policy_resource_freshness_green": decision.resource_freshness_green,
         "route_policy_route_selection_authority": decision.route_selection_authority,
         "route_policy_quality_floor_satisfied": decision.quality_floor_satisfied,
@@ -1902,6 +1904,7 @@ def _decision(
         **cloud_burst_receipt,
         reason_codes=tuple(reason for reason in reasons if reason),
         message="; ".join(reason for reason in reasons if reason) or action.value,
+        quota_evidence_refs=_quota_evidence_refs(request.quota),
         resource_state_refs=request.resource_state_refs,
     )
     decision._dimensional_receipt = _build_dimensional_route_receipt(
@@ -2385,6 +2388,12 @@ def _resource_state_refs(
     if quota is not None and quota.local_resource_state:
         refs.append(f"quota.local_resource_state:{quota.local_resource_state}")
     return tuple(refs)
+
+
+def _quota_evidence_refs(quota: QuotaSpendState | None) -> tuple[str, ...]:
+    if quota is None:
+        return ()
+    return tuple(dict.fromkeys([*quota.route_quota_evidence_refs, *quota.evidence_refs]))
 
 
 def _task_class_for(metadata: RouteMetadataAssessment) -> str:

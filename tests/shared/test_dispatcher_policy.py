@@ -626,6 +626,7 @@ def test_glmcp_subscription_route_holds_when_live_quota_ledger_unknown() -> None
 
 
 def test_glmcp_subscription_route_launches_with_fresh_route_quota() -> None:
+    quota_ref = "relay-receipt:glmcp-quota-admission.yaml:fresh_until:2026-05-09T23:00:00Z"
     request = _request(
         platform="glmcp",
         mode="review",
@@ -635,9 +636,7 @@ def test_glmcp_subscription_route_launches_with_fresh_route_quota() -> None:
         quota=_quota(
             subscription_quota_state="fresh",
             route_subscription_quota_state="fresh",
-            route_quota_evidence_refs=(
-                "relay-receipt:glmcp-quota-admission.yaml:fresh_until:2026-05-09T23:00:00Z",
-            ),
+            route_quota_evidence_refs=(quota_ref,),
         ),
     )
 
@@ -646,6 +645,7 @@ def test_glmcp_subscription_route_launches_with_fresh_route_quota() -> None:
     assert decision.action is DispatchAction.LAUNCH
     assert decision.route_policy_green is True
     assert decision.quota_freshness_green is True
+    assert decision.quota_evidence_refs == (quota_ref,)
     assert "policy_launch" in decision.reason_codes
 
 
@@ -984,6 +984,31 @@ def test_writes_route_decision_jsonl_receipt(tmp_path: Path) -> None:
     assert '"route_policy_green": true' in line
     assert '"clog_state": "policy_green"' in line
     assert decision.decision_id in line
+
+
+def test_glmcp_launch_receipt_persists_quota_evidence(tmp_path: Path) -> None:
+    quota_ref = "relay-receipt:glmcp-quota-admission.yaml:fresh_until:2026-05-09T23:00:00Z"
+    request = _request(
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        route_id="glmcp.review.direct",
+        capability=_capability(route_id="glmcp.review.direct"),
+        quota=_quota(
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="fresh",
+            route_quota_evidence_refs=(quota_ref,),
+        ),
+    )
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.LAUNCH
+
+    path = write_route_decision_receipt(decision, ledger_dir=tmp_path)
+    line = path.read_text(encoding="utf-8").splitlines()[-1]
+
+    assert '"quota_evidence_refs": [' in line
+    assert quota_ref in line
 
 
 def test_dimensional_policy_holds_lower_scoring_requested_route() -> None:
