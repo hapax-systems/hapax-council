@@ -36,6 +36,11 @@ def test_s4_arm_service_invokes_pre_segment_witness_flow() -> None:
     exec_start = service.get("Service", "ExecStart")
 
     assert service.get("Unit", "OnFailure") == "notify-failure@%n.service"
+    assert (
+        service.get("Unit", "Requires")
+        == "pipewire.service pipewire-pulse.service wireplumber.service hapax-audio-reconciler.service"
+    )
+    assert not service.has_option("Unit", "Wants")
     assert service.get("Service", "Type") == "oneshot"
     assert (
         service.get("Service", "WorkingDirectory") == "%h/.cache/hapax/source-activation/worktree"
@@ -71,6 +76,9 @@ def test_s4_arm_service_uses_source_activation_environment() -> None:
         "%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin" in body
     )
     assert "Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree" in body
+    assert "Environment=XDG_RUNTIME_DIR=%t" in body
+    assert "Environment=XDG_RUNTIME_DIR=/run/user/1000" not in body
+    assert "ExecStartPre=/usr/bin/install -d -m 0755 /dev/shm/hapax-audio" in body
 
 
 def test_s4_arm_timer_is_user_manager_startup_scoped_not_recurring_marker_loop() -> None:
