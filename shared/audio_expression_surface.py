@@ -177,6 +177,7 @@ class FxDeviceWitness(BaseModel):
     s4_midi: bool = False
     s4_analog_insert_route: bool = False
     s4_wet_return_signal: bool = False
+    s4_wet_return_signal_observed_at: datetime | None = None
     # Legacy pre-mk5 fields retained so old witness JSON remains parseable.
     s4_audio: bool = False
     l12_route: bool = False

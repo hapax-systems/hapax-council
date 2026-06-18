@@ -54,6 +54,8 @@ def test_update_fx_device_witness_creates_file(tmp_path: Path) -> None:
         assert data["s4_midi"] is True
         assert data["s4_analog_insert_route"] is True
         assert data["s4_wet_return_signal"] is True
+        assert data["s4_wet_return_signal_observed_at"]
+        assert data["s4_wet_return_signal_observed_at"] == data["observed_at"]
         assert "s4_audio:usb_enumerated" in data["evidence_refs"]
         assert "s4_analog_insert_route:mk5_links_present" in data["evidence_refs"]
         assert "s4_wet_return_signal:runtime_probe" in data["evidence_refs"]
@@ -84,6 +86,33 @@ def test_update_fx_device_witness_merges_existing(tmp_path: Path) -> None:
         assert data["s4_audio"] is True
         assert data["evil_pet_midi"] is True
         assert data["l12_route"] is True
+
+
+def test_update_fx_device_witness_persists_red_wet_return_verdict_with_timestamp(
+    tmp_path: Path,
+) -> None:
+    witness_path = tmp_path / "fx-device-witness.json"
+    witness_path.write_text(
+        json.dumps(
+            {
+                "s4_audio": True,
+                "s4_midi": True,
+                "s4_analog_insert_route": True,
+                "s4_wet_return_signal": True,
+                "s4_wet_return_signal_observed_at": "2026-06-18T00:00:00+00:00",
+                "observed_at": "2026-06-18T00:00:00+00:00",
+                "max_age_s": 300.0,
+                "evidence_refs": ["s4_wet_return_signal:runtime_probe"],
+            }
+        )
+    )
+    with patch("shared.s4_audio_witness.FX_DEVICE_WITNESS_PATH", witness_path):
+        update_fx_device_witness(s4_wet_return_signal=False)
+        data = json.loads(witness_path.read_text())
+        assert data["s4_wet_return_signal"] is False
+        assert data["s4_wet_return_signal_observed_at"] != "2026-06-18T00:00:00+00:00"
+        assert data["s4_wet_return_signal_observed_at"] == data["observed_at"]
+        assert "s4_wet_return_signal:runtime_probe" not in data["evidence_refs"]
 
 
 def test_is_s4_analog_insert_route_present_when_mk5_links_exist() -> None:

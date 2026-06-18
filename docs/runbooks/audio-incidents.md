@@ -263,6 +263,61 @@ dmesg | grep -i -E 'L-?12|ZOOM' | tail -50 \
 
 ---
 
+## S-4 wet-return marker witness red
+
+**Anchor:** `s4-wet-return-red`
+
+### Symptoms
+
+- Hapax voice route links are present, but the S-4 wet-return marker
+  witness reports `s4_wet_return_signal=false`.
+- `/dev/shm/hapax-audio/fx-device-witness.json` has a stale or red
+  `s4_wet_return_signal` verdict.
+- Public voice is held because the wet-return evidence is missing,
+  stale, or red.
+
+### Detection
+
+```bash
+# This emits a short low-level marker and updates the FX witness.
+uv run scripts/hapax-s4-wet-return-probe --update-witness
+```
+
+The probe exits nonzero when playback completes but the wet-return verdict is
+red. For diagnostic JSON only, use `--allow-red-witness`; do not treat that
+flag as a green witness.
+
+### 1-command recovery
+
+```bash
+# Emits the S-4 gain ladder, runs the marker witness, and toggles monitor only
+# when the first marker witness is dark.
+uv run python -m shared.s4_arm --pre-segment-check
+```
+
+### Verification
+
+```bash
+uv run scripts/hapax-s4-wet-return-probe --update-witness
+jq '.s4_wet_return_signal, .s4_wet_return_signal_observed_at' \
+  /dev/shm/hapax-audio/fx-device-witness.json
+```
+
+Require `s4_wet_return_signal=true` and a fresh
+`s4_wet_return_signal_observed_at` timestamp before public voice relies on the
+S-4 wet-return path.
+
+### Postmortem evidence-collection
+
+```bash
+cp /dev/shm/hapax-audio/fx-device-witness.json \
+  /tmp/incident-s4-fx-witness-$(date -Iseconds).json
+journalctl --user --since '10 min ago' | grep -i -E 's4|wet-return|hapax-s4' \
+  > /tmp/incident-s4-wet-return-$(date -Iseconds).log
+```
+
+---
+
 ## PipeWire restart → Ryzen HDA pin glitch
 
 **Anchor:** `ryzen-hda-pin-glitch`

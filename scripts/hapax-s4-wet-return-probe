@@ -2,10 +2,11 @@
 """Bounded live S-4 wet-return signal probe.
 
 This script injects a short, low-level marker into the governed voice dry
-path, captures the dry send and S-4 wet return, and updates the FX witness
-only when the wet return carries a usable signal level. It intentionally
-does not run from the router tick loop; live marker playback is an explicit
-evidence collection action.
+path, captures the dry send and S-4 wet return, and can update the FX witness
+with the fresh green or red marker verdict. It intentionally does not run from
+the router tick loop; live marker playback is an explicit evidence collection
+action. By default the process exits nonzero when the wet-return marker verdict
+is red, even if marker playback itself completed.
 """
 
 from __future__ import annotations
@@ -446,6 +447,11 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--update-witness", action="store_true")
+    parser.add_argument(
+        "--allow-red-witness",
+        action="store_true",
+        help="diagnostic mode: exit 0 after a completed probe even when the wet-return verdict is red",
+    )
     parser.add_argument("--rate", type=int, default=DEFAULT_RATE)
     parser.add_argument("--tone-hz", type=float, default=DEFAULT_TONE_HZ)
     parser.add_argument("--tone-duration-s", type=float, default=DEFAULT_TONE_DURATION_S)
@@ -470,7 +476,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     result = run_probe(args)
     print(json.dumps(result, indent=2, sort_keys=True))
-    return 0 if result.get("ok") else 1
+    if not result.get("ok"):
+        return 1
+    if result.get("s4_wet_return_signal") or args.allow_red_witness:
+        return 0
+    return 1
 
 
 if __name__ == "__main__":
