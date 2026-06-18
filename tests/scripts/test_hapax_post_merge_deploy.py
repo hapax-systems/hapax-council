@@ -888,6 +888,47 @@ def test_stale_recovery_bundle_self_heals_on_later_deploy(tmp_path: Path) -> Non
     assert "recovery_bundle" in record["avsdlc"]["runtime_media_witness_groups"]
 
 
+def test_corrupt_recovery_bundle_file_self_heals_on_later_deploy(tmp_path: Path) -> None:
+    repo, sha, _stale_sha, stale_files = _repo_with_recovery_bundle_drift_then_unrelated_commit(
+        tmp_path
+    )
+    current_files = dict(stale_files)
+    current_files["shared/p0_incident_intake.py"] = "def main():\n    return 42\n"
+    home = tmp_path / "home"
+    custom_dest = tmp_path / "custom-recovery" / "current"
+    _write_installed_recovery_bundle(custom_dest, sha, current_files)
+    corrupt_script = custom_dest / "scripts" / "hapax-coord-deploy"
+    corrupt_script.write_text("#!/usr/bin/env bash\necho corrupt runtime\n", encoding="utf-8")
+    corrupt_script.chmod(0o755)
+    install_calls = tmp_path / "recovery-install-calls.txt"
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "REPO": str(repo),
+        "HAPAX_RECOVERY_INSTALL_CALLS": str(install_calls),
+        "HAPAX_RECOVERY_BUNDLE_DEST": str(custom_dest),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "recovery bundle runtime stale" in result.stdout
+    assert install_calls.read_text(encoding="utf-8").splitlines() == [
+        f"--source {repo} --source-ref {sha} --dest {custom_dest}"
+    ]
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["deploy_groups"]["recovery_bundle"] == [f"self-heal:{custom_dest}"]
+    assert "recovery_bundle" in record["avsdlc"]["runtime_media_witness_groups"]
+
+
 def test_d2_unit_only_change_refreshes_recovery_bundle_before_systemd(
     tmp_path: Path,
 ) -> None:
