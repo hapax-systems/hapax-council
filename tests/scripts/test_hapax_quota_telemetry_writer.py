@@ -387,8 +387,7 @@ evidence_ref: supported-tool-usage-witness
         if snapshot["route_id"] == "glmcp.review.direct"
     )
     assert glmcp_snapshot["subscription_quota_state"] == "unknown"
-    assert "supported_tool/endpoint mismatch claude_code" in result.stderr
-    assert "supported_tool/endpoint mismatch hapax-glmcp-reviewer" in result.stderr
+    assert result.stderr.count("supported_tool/endpoint mismatch") == 2
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
 
@@ -424,8 +423,8 @@ stale_after_seconds: 900
         if snapshot["route_id"] == "glmcp.review.direct"
     )
     assert glmcp_snapshot["subscription_quota_state"] == "unknown"
-    assert "provider missing" in result.stderr
-    assert "route_id missing" in result.stderr
+    assert "provider missing or unsupported" in result.stderr
+    assert "route_id missing or unsupported" in result.stderr
     assert "find ~/.cache/hapax/relay/receipts" in result.stderr
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
@@ -458,7 +457,7 @@ evidence_ref: supported-tool-usage-witness
         for snapshot in payload["quota_snapshots"]
     }
     assert states["glmcp.review.direct"] == "unknown"
-    assert "status ok; expected quota_available or admitted" in result.stderr
+    assert "status missing or unsupported; expected quota_available or admitted" in result.stderr
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
 
@@ -545,7 +544,7 @@ stale_after_seconds: 900
         for snapshot in payload["quota_snapshots"]
     }
     assert states["glmcp.review.direct"] == "unknown"
-    assert "ambiguous provider" in result.stderr
+    assert "provider ambiguous alias" in result.stderr
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
 
@@ -572,7 +571,64 @@ stale_after_seconds: 900
         for snapshot in payload["quota_snapshots"]
     }
     assert states["glmcp.review.direct"] == "unknown"
-    assert "capacity_pool missing" in result.stderr
+    assert "capacity_pool missing or unsupported" in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
+
+
+@pytest.mark.parametrize(
+    ("field_name", "expected_reason"),
+    [
+        ("provider", "provider missing or unsupported"),
+        ("capacity_pool", "capacity_pool missing or unsupported"),
+        ("route_id", "route_id missing or unsupported"),
+        ("supported_tool", "supported_tool missing or unsupported"),
+        ("endpoint", "endpoint missing or unsupported"),
+        ("model", "model missing or unsupported"),
+        ("observed_at", "missing or malformed observed_at/captured_at/detected_at"),
+        ("stale_after_seconds", "malformed stale_after_seconds"),
+    ],
+)
+def test_glmcp_admission_rejection_warnings_do_not_echo_untrusted_values(
+    tmp_path: Path,
+    field_name: str,
+    expected_reason: str,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    secretish_value = "sk-live-secret-token-000000000000000000000000"
+    fields = {
+        "status": "quota_available",
+        "provider": "z_ai-glm-coding-plan",
+        "capacity_pool": "subscription_quota",
+        "route_id": "glmcp.review.direct",
+        "supported_tool": "hapax-glmcp-reviewer",
+        "endpoint": "https://api.z.ai/api/coding/paas/v4",
+        "model": "glm-5.2",
+        "observed_at": "2026-06-09T23:55:00Z",
+        "stale_after_seconds": "900",
+        "evidence_ref": "supported-tool-usage-witness",
+    }
+    fields[field_name] = secretish_value
+    receipt_body = "".join(f"{key}: {value}\n" for key, value in fields.items())
+    (relay / f"glmcp-quota-admission-secretish-{field_name}.yaml").write_text(
+        receipt_body,
+        encoding="utf-8",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload_text = out.read_text(encoding="utf-8")
+    payload = json.loads(payload_text)
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["glmcp.review.direct"] == "unknown"
+    assert expected_reason in result.stderr
+    assert secretish_value not in result.stderr
+    assert secretish_value not in payload_text
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
 
@@ -642,10 +698,10 @@ stale_after_seconds: 900
         for snapshot in payload["quota_snapshots"]
     }
     assert states["glmcp.review.direct"] == "unknown"
-    assert "supported_tool missing" in result.stderr
+    assert "supported_tool missing or unsupported" in result.stderr
     assert "unsupported-endpoint" in result.stderr
     assert "expected official Z.ai Coding Plan endpoint" in result.stderr
-    assert "model glm-4.7" in result.stderr
+    assert "model missing or unsupported" in result.stderr
     assert "evidence_ref missing" in result.stderr
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
@@ -808,6 +864,7 @@ def test_glmcp_admission_receipt_rejects_secretish_evidence_ref(tmp_path: Path) 
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
     secretish_ref = "sk-live-secret-token-000000000000000000000000"
+    colon_ref = "relay:receipt:ambiguous"
     (relay / "glmcp-quota-admission-secretish-evidence.yaml").write_text(
         f"""status: quota_available
 provider: z_ai-glm-coding-plan
@@ -819,6 +876,20 @@ model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: {secretish_ref}
+""",
+        encoding="utf-8",
+    )
+    (relay / "glmcp-quota-admission-colon-evidence.yaml").write_text(
+        f"""status: quota_available
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5.2
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 900
+evidence_ref: {colon_ref}
 """,
         encoding="utf-8",
     )
@@ -836,6 +907,7 @@ evidence_ref: {secretish_ref}
     assert "evidence_ref unsafe" in result.stderr
     assert secretish_ref not in result.stderr
     assert secretish_ref not in payload_text
+    assert colon_ref not in payload_text
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
 
