@@ -240,6 +240,67 @@ stale_after_seconds: 900
         if snapshot["route_id"] == "glmcp.review.direct"
     )
     assert glmcp_snapshot["subscription_quota_state"] == "unknown"
+    assert "provider missing" in result.stderr
+    assert "route_id missing" in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
+
+
+def test_glmcp_admission_receipt_rejects_duplicate_keys(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    (relay / "glmcp-quota-admission-duplicate-provider.yaml").write_text(
+        """status: quota_available
+provider: not-glmcp
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 900
+""",
+        encoding="utf-8",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["glmcp.review.direct"] == "unknown"
+    assert "duplicate key 'provider'" in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
+
+
+def test_glmcp_admission_receipt_rejects_non_flat_yaml(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    (relay / "glmcp-quota-admission-nested.yaml").write_text(
+        """status: quota_available
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 900
+metadata:
+  endpoint: https://api.z.ai/api/coding/paas/v4
+""",
+        encoding="utf-8",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["glmcp.review.direct"] == "unknown"
+    assert "non-flat line" in result.stderr
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
 
@@ -313,6 +374,7 @@ def test_stale_glmcp_admission_receipt_keeps_glmcp_unknown(tmp_path: Path) -> No
         for snapshot in payload["quota_snapshots"]
     }
     assert states["glmcp.review.direct"] == "unknown"
+    assert "receipt expired" in result.stderr
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
 

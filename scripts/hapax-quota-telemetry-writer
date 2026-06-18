@@ -135,6 +135,28 @@ def _parse_flat_yaml(text: str) -> dict[str, str]:
     return fields
 
 
+def _parse_flat_yaml_strict(text: str) -> tuple[dict[str, str], str | None]:
+    """Parse flat admission receipts and reject ambiguous YAML-shaped input."""
+
+    fields: dict[str, str] = {}
+    for line_no, raw_line in enumerate(text.splitlines(), start=1):
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if raw_line[:1].isspace() or stripped.startswith("-"):
+            return {}, f"non-flat line {line_no}"
+        if ":" not in raw_line:
+            return {}, f"non key-value line {line_no}"
+        key, _, value = raw_line.partition(":")
+        normalized_key = key.strip()
+        if not normalized_key:
+            return {}, f"empty key on line {line_no}"
+        if normalized_key in fields:
+            return {}, f"duplicate key {normalized_key!r} on line {line_no}"
+        fields[normalized_key] = value.strip().strip("'\"")
+    return fields, None
+
+
 def _parse_utc(value: str) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -205,7 +227,10 @@ def active_glmcp_admission_receipts(
             if path in seen:
                 continue
             seen.add(path)
-            fields = _parse_flat_yaml(path.read_text(encoding="utf-8"))
+            fields, parse_error = _parse_flat_yaml_strict(path.read_text(encoding="utf-8"))
+            if parse_error is not None:
+                _warn_ignored_glmcp_admission(path, parse_error)
+                continue
             if fields.get("status") not in {"quota_available", "admitted"}:
                 continue
             provider = fields.get("provider", "")
@@ -214,6 +239,11 @@ def active_glmcp_admission_receipts(
                     _warn_ignored_glmcp_admission(
                         path,
                         f"ambiguous provider {provider!r}; expected {GLMCP_ADMISSION_PROVIDER}",
+                    )
+                else:
+                    _warn_ignored_glmcp_admission(
+                        path,
+                        f"provider {provider or 'missing'}; expected {GLMCP_ADMISSION_PROVIDER}",
                     )
                 continue
             capacity_pool = fields.get("capacity_pool", "")
@@ -226,6 +256,10 @@ def active_glmcp_admission_receipts(
                 continue
             route_id = fields.get("route_id", "")
             if route_id != SUBSCRIPTION_ROUTES["glmcp"]:
+                _warn_ignored_glmcp_admission(
+                    path,
+                    f"route_id {route_id or 'missing'}; expected {SUBSCRIPTION_ROUTES['glmcp']}",
+                )
                 continue
             observed_raw = (
                 fields.get("observed_at", "")
@@ -260,6 +294,10 @@ def active_glmcp_admission_receipts(
                 )
                 continue
             if now - observed_at > timedelta(seconds=stale_after_seconds):
+                _warn_ignored_glmcp_admission(
+                    path,
+                    "receipt expired",
+                )
                 continue
             refs.append(
                 "relay-receipt:"
