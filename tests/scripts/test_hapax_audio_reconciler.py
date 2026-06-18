@@ -304,7 +304,7 @@ def test_reconciler_volume_guard_degrades_when_wpctl_status_unavailable(
         "HAPAX_RECONCILER_LOG": str(log),
         "HAPAX_RECONCILER_PW_LINK": str(fake_pw_link),
         "HAPAX_RECONCILER_WPCTL": str(fake_wpctl),
-        "HAPAX_RECONCILER_VOLUME_NODES": "hapax-livestream-tap",
+        "HAPAX_RECONCILER_VOLUME_NODES": "hapax-broadcast-master",
         "PW_LINK_GRAPH": str(graph),
         "PW_LINK_OUTPUTS": str(graph),
         "PW_LINK_INPUTS": str(graph),
@@ -321,6 +321,143 @@ def test_reconciler_volume_guard_degrades_when_wpctl_status_unavailable(
 
     assert result.returncode == 0, result.stderr
     assert not calls.exists()
+
+
+def test_reconciler_volume_guard_skips_muted_zero_volume_nodes(tmp_path: Path) -> None:
+    graph = tmp_path / "graph.txt"
+    calls = tmp_path / "calls.txt"
+    wpctl_status = tmp_path / "wpctl-status.txt"
+    link_map = tmp_path / "audio-link-map.conf"
+    forbidden = tmp_path / "audio-forbidden-links.conf"
+    log = tmp_path / "reconciler.log"
+    fake_pw_link = tmp_path / "pw-link"
+    fake_wpctl = tmp_path / "wpctl"
+
+    graph.write_text("", encoding="utf-8")
+    link_map.write_text("", encoding="utf-8")
+    forbidden.write_text("", encoding="utf-8")
+    wpctl_status.write_text(
+        " │      80. hapax-broadcast-master              [Audio/Source]\n",
+        encoding="utf-8",
+    )
+    fake_pw_link.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = "-l" ]; then cat "$PW_LINK_GRAPH"; exit 0; fi\n'
+        'if [ "$1" = "-o" ]; then cat "$PW_LINK_OUTPUTS"; exit 0; fi\n'
+        'if [ "$1" = "-i" ]; then cat "$PW_LINK_INPUTS"; exit 0; fi\n'
+        'printf \'connect %s %s\\n\' "$1" "$2" >> "$PW_LINK_CALLS"\n',
+        encoding="utf-8",
+    )
+    fake_pw_link.chmod(0o755)
+    fake_wpctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = "status" ] && [ "$2" = "--name" ]; then cat "$WPCTL_STATUS"; exit 0; fi\n'
+        'if [ "$1" = "get-volume" ]; then printf \'Volume: 0.00 [MUTED]\\n\'; exit 0; fi\n'
+        'if [ "$1" = "set-volume" ]; then printf \'set-volume %s %s\\n\' "$2" "$3" >> "$WPCTL_CALLS"; exit 0; fi\n'
+        "exit 2\n",
+        encoding="utf-8",
+    )
+    fake_wpctl.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "HAPAX_RECONCILER_ONCE": "1",
+        "HAPAX_RECONCILER_INTERVAL_S": "0",
+        "HAPAX_RECONCILER_LINK_MAP": str(link_map),
+        "HAPAX_RECONCILER_FORBIDDEN_LINKS": str(forbidden),
+        "HAPAX_RECONCILER_LOG": str(log),
+        "HAPAX_RECONCILER_PW_LINK": str(fake_pw_link),
+        "HAPAX_RECONCILER_WPCTL": str(fake_wpctl),
+        "HAPAX_RECONCILER_VOLUME_NODES": "hapax-broadcast-master",
+        "PW_LINK_GRAPH": str(graph),
+        "PW_LINK_OUTPUTS": str(graph),
+        "PW_LINK_INPUTS": str(graph),
+        "PW_LINK_CALLS": str(calls),
+        "WPCTL_STATUS": str(wpctl_status),
+        "WPCTL_CALLS": str(tmp_path / "wpctl-calls.txt"),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not Path(env["WPCTL_CALLS"]).exists()
+
+
+def test_reconciler_volume_guard_degrades_when_get_volume_fails(
+    tmp_path: Path,
+) -> None:
+    graph = tmp_path / "graph.txt"
+    calls = tmp_path / "calls.txt"
+    wpctl_status = tmp_path / "wpctl-status.txt"
+    link_map = tmp_path / "audio-link-map.conf"
+    forbidden = tmp_path / "audio-forbidden-links.conf"
+    log = tmp_path / "reconciler.log"
+    fake_pw_link = tmp_path / "pw-link"
+    fake_wpctl = tmp_path / "wpctl"
+
+    graph.write_text("", encoding="utf-8")
+    link_map.write_text("", encoding="utf-8")
+    forbidden.write_text("", encoding="utf-8")
+    wpctl_status.write_text(
+        " │      80. hapax-broadcast-master              [Audio/Source]\n",
+        encoding="utf-8",
+    )
+    fake_pw_link.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = "-l" ]; then cat "$PW_LINK_GRAPH"; exit 0; fi\n'
+        'if [ "$1" = "-o" ]; then cat "$PW_LINK_OUTPUTS"; exit 0; fi\n'
+        'if [ "$1" = "-i" ]; then cat "$PW_LINK_INPUTS"; exit 0; fi\n'
+        'printf \'connect %s %s\\n\' "$1" "$2" >> "$PW_LINK_CALLS"\n',
+        encoding="utf-8",
+    )
+    fake_pw_link.chmod(0o755)
+    fake_wpctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = "status" ] && [ "$2" = "--name" ]; then cat "$WPCTL_STATUS"; exit 0; fi\n'
+        'if [ "$1" = "get-volume" ]; then exit 8; fi\n'
+        'if [ "$1" = "set-volume" ]; then printf \'set-volume %s %s\\n\' "$2" "$3" >> "$WPCTL_CALLS"; exit 0; fi\n'
+        "exit 2\n",
+        encoding="utf-8",
+    )
+    fake_wpctl.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "HAPAX_RECONCILER_ONCE": "1",
+        "HAPAX_RECONCILER_INTERVAL_S": "0",
+        "HAPAX_RECONCILER_LINK_MAP": str(link_map),
+        "HAPAX_RECONCILER_FORBIDDEN_LINKS": str(forbidden),
+        "HAPAX_RECONCILER_LOG": str(log),
+        "HAPAX_RECONCILER_PW_LINK": str(fake_pw_link),
+        "HAPAX_RECONCILER_WPCTL": str(fake_wpctl),
+        "HAPAX_RECONCILER_VOLUME_NODES": "hapax-broadcast-master",
+        "PW_LINK_GRAPH": str(graph),
+        "PW_LINK_OUTPUTS": str(graph),
+        "PW_LINK_INPUTS": str(graph),
+        "PW_LINK_CALLS": str(calls),
+        "WPCTL_STATUS": str(wpctl_status),
+        "WPCTL_CALLS": str(tmp_path / "wpctl-calls.txt"),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not Path(env["WPCTL_CALLS"]).exists()
+    log_text = log.read_text(encoding="utf-8")
+    assert "zero-volume target(s) could not be evaluated or repaired" in log_text
+    assert "wpctl get-volume <id>" in log_text
 
 
 def test_reconciler_volume_guard_degrades_when_set_volume_fails(tmp_path: Path) -> None:
