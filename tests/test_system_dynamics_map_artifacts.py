@@ -473,6 +473,9 @@ def test_contract_rejects_invalid_observation_temporal_state():
     assert "invalid valid_time interval" in errors
     assert "fresh observation is expired" in errors
     assert "stale observation expires after transaction_time" in errors
+    assert "Fix by setting valid_time.to after valid_time.from or null." in errors
+    assert "Fix by setting expires_at after transaction_time" in errors
+    assert "Fix by setting expires_at at or before transaction_time" in errors
 
 
 def test_contract_rejects_schema_required_lens_fields_and_hidden_endpoints():
@@ -798,6 +801,12 @@ def test_v1_contract_artifacts_cover_claims_observations_lenses_and_package():
     lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
     assert package["schema"] == "system-dynamics-map-package-v1"
     assert lock["schema"] == "system-dynamics-map-lock-v1"
+    assert package["git_sha_role"] == "generation_head"
+    assert lock["git_sha_role"] == "generation_head"
+    assert "content hashes are the staleness key" in package["git_sha_policy"]
+    assert "self-referential future commit SHA" in lock["staleness_policy"]
+    assert re.fullmatch(r"[0-9a-f]{40}|unknown", package["git_sha"])
+    assert re.fullmatch(r"[0-9a-f]{40}|unknown", lock["git_sha"])
     package_paths = {artifact["path"] for artifact in package["artifacts"]}
     for required in (
         "docs/architecture/system-dynamics-map.claims.json",
@@ -808,6 +817,17 @@ def test_v1_contract_artifacts_cover_claims_observations_lenses_and_package():
     ):
         assert required in package_paths
     assert lock["source_hashes"]["seed"] == materialize._sha256(SEED_PATH)
+
+    package_with_new_generation_head = copy.deepcopy(package)
+    package_with_new_generation_head["git_sha"] = "0" * 40
+    assert materialize._normalise_for_check(PACKAGE_PATH, json.dumps(package)) == (
+        materialize._normalise_for_check(PACKAGE_PATH, json.dumps(package_with_new_generation_head))
+    )
+    lock_with_new_generation_head = copy.deepcopy(lock)
+    lock_with_new_generation_head["git_sha"] = "0" * 40
+    assert materialize._normalise_for_check(LOCK_PATH, json.dumps(lock)) == (
+        materialize._normalise_for_check(LOCK_PATH, json.dumps(lock_with_new_generation_head))
+    )
 
     fixture = json.loads(SDLC_FIXTURE_PATH.read_text(encoding="utf-8"))
     assert fixture["schema"] == "system-dynamics-map-sdlc-operating-slice-fixture-v1"

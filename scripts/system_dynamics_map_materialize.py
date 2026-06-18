@@ -1145,6 +1145,12 @@ def generate_package(seed: dict[str, Any], rendered: dict[Path, str]) -> str:
         "authority_case": seed["authority_case"],
         "generated_at": seed["generated_at"],
         "git_sha": _git_sha(),
+        "git_sha_role": "generation_head",
+        "git_sha_policy": (
+            "Records git rev-parse HEAD at materializer invocation. Artifact commits "
+            "cannot embed their own future commit SHA, so content hashes are the "
+            "staleness key and git_sha is provenance."
+        ),
         "generator": {
             "command": "python3 scripts/system_dynamics_map_materialize.py",
             "check_command": "python3 scripts/system_dynamics_map_materialize.py --check",
@@ -1168,6 +1174,7 @@ def generate_lock(seed: dict[str, Any], rendered: dict[Path, str], package_conte
         "version": seed["version"],
         "generated_at": seed["generated_at"],
         "git_sha": _git_sha(),
+        "git_sha_role": "generation_head",
         "source_hashes": {
             "seed": _sha256(SEED_PATH),
             "viewer": _sha256_text(rendered[VIEWER_PATH]),
@@ -1179,7 +1186,12 @@ def generate_lock(seed: dict[str, Any], rendered: dict[Path, str], package_conte
             if path not in {PACKAGE_PATH, LOCK_PATH}
         },
         "package_hash": _sha256_text(package_content),
-        "staleness_policy": "Generated hashes must match rendered materializer output; git_sha is recorded evidence and is not a staleness key.",
+        "staleness_policy": (
+            "Generated hashes must match rendered materializer output. git_sha records "
+            "the generation-head provenance; it is not a staleness key because an "
+            "artifact committed to Git cannot contain its own self-referential future "
+            "commit SHA."
+        ),
     }
     return _json(lock)
 
@@ -1366,7 +1378,11 @@ def _contract_errors(
         )
         subject = observation.get("subject")
         if subject not in node_set:
-            errors.append(f"observation {observation_id}: subject {subject!r} is not a seed node.")
+            errors.append(
+                f"observation {observation_id}: subject {subject!r} is not a seed node. "
+                "Fix by using an existing nodes[].id or adding the observed subject "
+                "to system-dynamics-map.seed.json."
+            )
         valid_time = observation.get("valid_time") or {}
         valid_from = valid_time.get("from")
         valid_to = valid_time.get("to")
@@ -1375,11 +1391,20 @@ def _contract_errors(
         if not valid_from:
             errors.append(f"observation {observation_id}: missing valid_time.from.")
         if valid_from and valid_to and valid_from > valid_to:
-            errors.append(f"observation {observation_id}: invalid valid_time interval.")
+            errors.append(
+                f"observation {observation_id}: invalid valid_time interval. "
+                "Fix by setting valid_time.to after valid_time.from or null."
+            )
         if observation.get("freshness") not in {"fresh", "stale", "historical"}:
-            errors.append(f"observation {observation_id}: invalid freshness.")
+            errors.append(
+                f"observation {observation_id}: invalid freshness. "
+                "Fix by using fresh, stale, or historical."
+            )
         if not observation.get("source_ref") or not observation.get("source_hash"):
-            errors.append(f"observation {observation_id}: missing source reference/hash.")
+            errors.append(
+                f"observation {observation_id}: missing source reference/hash. "
+                "Fix by carrying source_ref and source_hash from the evidence source."
+            )
         try:
             observed_at = _parse_datetime(observation.get("observed_at"))
             transaction_time = _parse_datetime(observation.get("transaction_time"))
@@ -1387,29 +1412,49 @@ def _contract_errors(
             parsed_valid_to = _parse_datetime(valid_to)
             expires_at = _parse_datetime(observation.get("expires_at"))
         except ValueError as exc:
-            errors.append(f"observation {observation_id}: invalid timestamp {exc}.")
+            errors.append(
+                f"observation {observation_id}: invalid timestamp {exc}. "
+                "Fix by using ISO-8601 UTC timestamps with a Z suffix."
+            )
             continue
         if parsed_valid_from and observed_at and parsed_valid_from > observed_at:
-            errors.append(f"observation {observation_id}: valid_time.from is after observed_at.")
+            errors.append(
+                f"observation {observation_id}: valid_time.from is after observed_at. "
+                "Fix by moving valid_time.from to or before observed_at."
+            )
         if parsed_valid_to and parsed_valid_from and parsed_valid_to < parsed_valid_from:
-            errors.append(f"observation {observation_id}: invalid parsed valid_time interval.")
+            errors.append(
+                f"observation {observation_id}: invalid parsed valid_time interval. "
+                "Fix by setting valid_time.to after valid_time.from or null."
+            )
         if expires_at and parsed_valid_from and expires_at < parsed_valid_from:
-            errors.append(f"observation {observation_id}: expires_at is before valid_time.from.")
+            errors.append(
+                f"observation {observation_id}: expires_at is before valid_time.from. "
+                "Fix by setting expires_at at or after valid_time.from."
+            )
         if observation.get("freshness") == "fresh":
             if expires_at is None:
                 errors.append(
-                    f"observation {observation_id}: fresh observations require expires_at."
+                    f"observation {observation_id}: fresh observations require expires_at. "
+                    "Fix by adding the freshness expiry timestamp."
                 )
             elif transaction_time and expires_at <= transaction_time:
-                errors.append(f"observation {observation_id}: fresh observation is expired.")
+                errors.append(
+                    f"observation {observation_id}: fresh observation is expired. "
+                    "Fix by setting expires_at after transaction_time or marking the "
+                    "observation stale."
+                )
         if observation.get("freshness") == "stale":
             if expires_at is None:
                 errors.append(
-                    f"observation {observation_id}: stale observations require expires_at."
+                    f"observation {observation_id}: stale observations require expires_at. "
+                    "Fix by adding the timestamp that made the observation stale."
                 )
             elif transaction_time and expires_at > transaction_time:
                 errors.append(
-                    f"observation {observation_id}: stale observation expires after transaction_time."
+                    f"observation {observation_id}: stale observation expires after transaction_time. "
+                    "Fix by setting expires_at at or before transaction_time or marking "
+                    "the observation fresh."
                 )
 
     lens_bundle = lenses or generate_lenses(seed)

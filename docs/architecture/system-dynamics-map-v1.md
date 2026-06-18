@@ -125,7 +125,10 @@ claims, observations, relations, lenses, schemas, and reproducibility metadata:
   claims, observations, lenses, relations, view manifest, and package metadata.
 - `system-dynamics-map.package.json` and `system-dynamics-map.lock.json`:
   reproducibility contract with source hashes, generated hashes, generator
-  command, validation commands, and recorded git SHA evidence.
+  command, validation commands, and recorded git SHA evidence. The `git_sha`
+  field records the generation HEAD at materializer invocation time; an artifact
+  committed to Git cannot embed its own future commit SHA, so `--check` treats
+  generated content hashes as the staleness key and keeps `git_sha` as provenance.
 
 The viewer consumes this shape and should remain replaceable. The graph contract
 is the important artifact; Cytoscape is the current projection engine.
