@@ -183,9 +183,9 @@ def read_secret(secret_entry: str) -> str:
     except (OSError, subprocess.SubprocessError) as exc:
         raise ConfigError(f"failed to run pass show {secret_entry!r}: {exc}") from exc
     if proc.returncode != 0:
-        detail = proc.stderr.strip().splitlines()[0] if proc.stderr.strip() else "no detail"
         raise ConfigError(
-            f"failed to read pass entry {secret_entry!r}: {detail}; run: pass show {secret_entry!r}"
+            f"failed to read pass entry {secret_entry!r}; pass stderr suppressed to avoid "
+            f"replaying secret-adjacent diagnostics; run: pass show {secret_entry!r}"
         )
     token = proc.stdout.splitlines()[0] if proc.stdout.splitlines() else ""
     if not token:

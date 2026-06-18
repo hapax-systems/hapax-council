@@ -1299,9 +1299,21 @@ class TestFamilyOutageDegradation:
     def test_degraded_review_floor_accept_writes_receipt_against_dispatcher_witness(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
-        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state, ledger = self._isolate_state(monkeypatch, tmp_path)
         now = "2026-06-12T21:00:00+00:00"
         state.write_text(json.dumps({"claude": now}), encoding="utf-8")
+        real_update = dispatch.update_family_outage
+
+        def racing_update(
+            reviews: list[dict[str, Any]],
+            now_iso: str,
+            state_path: Path | None = None,
+        ) -> frozenset[str]:
+            out = real_update(reviews, now_iso, state_path)
+            state.write_text("{}", encoding="utf-8")
+            return out
+
+        monkeypatch.setattr(dispatch, "update_family_outage", racing_update)
 
         result, _, _, note = _review(
             tmp_path,
@@ -1318,6 +1330,12 @@ class TestFamilyOutageDegradation:
         receipt_path = note.parent / "task-a.acceptance.yaml"
         assert result["side_effects"]["receipt_path"] == str(receipt_path)
         assert receipt_path.is_file()
+        entries = [
+            json.loads(line)
+            for line in ledger.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert entries[0]["degraded_family_outage_witness"] == {"claude": now}
 
     def test_degraded_ledger_is_idempotent_for_same_head(
         self, monkeypatch: Any, tmp_path: Path

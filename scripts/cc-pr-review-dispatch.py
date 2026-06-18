@@ -188,11 +188,12 @@ def append_degraded_merge_record(
     now_iso: str,
     ledger_path: Path | None = None,
     outage_state_path: Path | None = None,
+    outage_witness: dict[str, str] | None = None,
 ) -> None:
     """Record a degraded accept once per task/PR/head under a file lock."""
 
     ledger_path = ledger_path or DEGRADED_MERGES_LEDGER
-    outage_witness = load_family_outage_witness(now_iso, outage_state_path)
+    outage_witness = outage_witness or load_family_outage_witness(now_iso, outage_state_path)
     ledger_record = {
         "ts": now_iso,
         "task_id": task_id,
@@ -749,6 +750,7 @@ def write_acceptance_receipt_if_due(
     changed_files: tuple[str, ...] | None = None,
     changed_file_count: int | None = None,
     outage_state_path: Path | None = None,
+    outage_witness: dict[str, str] | None = None,
 ) -> Path | None:
     """The dossier IS the acceptance receipt for review-floor tasks (spec §5).
 
@@ -758,16 +760,43 @@ def write_acceptance_receipt_if_due(
 
     if dossier["review_team_verdict"] != review_team.QUORUM_ACCEPT:
         return None
-    blockers = review_team.review_dossier_validity_blockers(
-        frontmatter,
-        note_path,
-        pr_head_sha=str(dossier.get("head_sha") or ""),
-        pr_number=pr_number,
-        changed_files=changed_files or (),
-        changed_file_count=changed_file_count,
-        outage_state_path=outage_state_path or FAMILY_OUTAGE_STATE,
-        admission_time=now_iso,
-    )
+    witness_snapshot_path: Path | None = None
+    validation_outage_state_path = outage_state_path or FAMILY_OUTAGE_STATE
+    degraded_families = [str(f) for f in (dossier.get("degraded_family_outage") or [])]
+    if degraded_families and outage_witness is not None:
+        witness_snapshot = {
+            family: str(outage_witness[family])
+            for family in degraded_families
+            if family in outage_witness
+        }
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=validation_outage_state_path.parent,
+            prefix=f"{validation_outage_state_path.name}.receipt.",
+            suffix=".json",
+            delete=False,
+        ) as tmp:
+            tmp.write(json.dumps(witness_snapshot, indent=1))
+            witness_snapshot_path = Path(tmp.name)
+        validation_outage_state_path = witness_snapshot_path
+    try:
+        blockers = review_team.review_dossier_validity_blockers(
+            frontmatter,
+            note_path,
+            pr_head_sha=str(dossier.get("head_sha") or ""),
+            pr_number=pr_number,
+            changed_files=changed_files or (),
+            changed_file_count=changed_file_count,
+            outage_state_path=validation_outage_state_path,
+            admission_time=now_iso,
+        )
+    finally:
+        if witness_snapshot_path is not None:
+            try:
+                witness_snapshot_path.unlink()
+            except OSError:
+                LOG.warning("failed to remove receipt witness snapshot: %s", witness_snapshot_path)
     if blockers:
         LOG.warning("acceptance receipt withheld; review-team gate blocks: %s", ",".join(blockers))
         return None
@@ -889,6 +918,7 @@ def replay_dossier_side_effects(
     changed_files: tuple[str, ...] | None = None,
     changed_file_count: int | None = None,
     outage_state_path: Path | None = None,
+    outage_witness: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Idempotently replay side effects derived from an already-written dossier."""
 
@@ -904,6 +934,7 @@ def replay_dossier_side_effects(
         changed_files=changed_files,
         changed_file_count=changed_file_count,
         outage_state_path=outage_state_path,
+        outage_witness=outage_witness,
     )
     wake_path = None
     has_block = any(str(r.get("verdict")) == "block" for r in dossier.get("reviewers") or [])
@@ -1084,7 +1115,8 @@ def review_pr(
         "",
     )
     writer_family = review_team.writer_family_for_lane(assigned_lane, registry)
-    outage_families = load_family_outage(now_iso)
+    outage_witness = load_family_outage_witness(now_iso)
+    outage_families = frozenset(outage_witness)
     if outage_families:
         LOG.warning(
             "family outage active (%s) — constitution may degrade (never seals)",
@@ -1182,6 +1214,7 @@ def review_pr(
                 head_sha=pr_info.head_sha,
                 degraded_families=list(dossier["degraded_family_outage"]),
                 now_iso=now_iso,
+                outage_witness=outage_witness,
             )
         target_dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
         LOG.info(
@@ -1203,6 +1236,7 @@ def review_pr(
             pr_number=pr_info.number,
             changed_files=pr_info.files,
             changed_file_count=pr_info.changed_file_count,
+            outage_witness=outage_witness,
         )
         results.append(
             {
