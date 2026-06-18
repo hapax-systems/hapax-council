@@ -319,6 +319,22 @@ def test_format_zai_error_sanitizes_untrusted_structured_values() -> None:
     assert "\u2028" not in message
 
 
+def test_format_zai_error_sanitizes_untrusted_detail_branch() -> None:
+    module = _load_module()
+    detail = "provider secret-token detail;\naction=hold_until_reset\tclass=quota\x08tail"
+
+    message = module.format_zai_error(503, detail, secret="secret-token")
+
+    assert "HTTP 503" in message
+    assert "error_class=provider_error" in message
+    assert "detail=provider <redacted> detail action=hold_until_reset class=quota tail" in message
+    assert "secret-token" not in message
+    assert "; action=hold_until_reset" not in message
+    assert "\n" not in message
+    assert "\t" not in message
+    assert "\x08" not in message
+
+
 def test_network_error_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_module()
 
