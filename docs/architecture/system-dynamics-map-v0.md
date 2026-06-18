@@ -1,0 +1,185 @@
+# System Dynamics Map v0
+
+Task: `system-dynamics-map-v0-20260618`
+
+Authority case: `CASE-SYSTEM-DYNAMICS-MAP-20260618`
+
+Parent spec: `~/Documents/Personal/20-projects/hapax-research/specs/2026-06-18-system-dynamics-map-v0-parent-spec.md`
+
+## Decision
+
+Use DMN as the entry point, not the center.
+
+The center should be a semantic graph backbone with validation, provenance,
+temporal overlays, and reproducible view manifests:
+
+```text
+source models + telemetry + event logs
+  -> canonical identity graph
+  -> named graph partitions for asserted/inferred/observed/simulated/rendered claims
+  -> SHACL-style validation gates
+  -> PROV-style transformation and evidence records
+  -> persisted snapshots
+  -> view manifests
+  -> interactive projections
+```
+
+This keeps the visualization honest. A DMN decision requirement diagram can show
+decision dependencies, but it cannot by itself represent runtime topology, current
+state, provenance, telemetry, simulation state, process history, and rendering
+projection. Those are different claim types and must remain separable.
+
+## Conceptual Map Around DMN
+
+DMN's directly related layer:
+
+- `DMN`: decision model and notation for decision requirements and executable
+  decision logic.
+- `DRD/DRG`: decision dependency surface inside DMN.
+- `Decision service`: packaging boundary for callable decision behavior.
+- `Decision table`: common tabular decision logic representation.
+- `FEEL`: DMN expression language.
+- `SBVR`: adjacent business vocabulary and rule semantics.
+
+One layer up:
+
+- `BPMN`: process flow can invoke or be routed by decisions.
+- `CMMN`: case plans can invoke decisions in less prescriptive work.
+- `ArchiMate`: enterprise architecture context for capabilities, applications,
+  processes, and motivation.
+- `SysML v2`: systems engineering structure, behavior, requirements, and
+  verification context.
+- `C4/runtime architecture`: implementation topology and deployable services.
+
+One layer down:
+
+- `DMN XML/DI`: interchange and diagram serialization.
+- `Rule engines`: executable target for decision tables and FEEL-compatible logic.
+- `Decision runtime API`: callable service boundary.
+- `PMML/ONNX/PFA-class model artifacts`: adjacent predictive/analytical model
+  artifacts that often feed or sit beside decisions.
+
+Adjacent systems required by the actual goal:
+
+- `RDF/OWL`: canonical identity and relationship graph.
+- `SHACL`: validation contracts and data quality gates.
+- `PROV-O`: provenance for imports, mappings, generated views, and evidence.
+- `JSON-LD/TriG`: portable graph exchange and named graph snapshots.
+- `Temporal state/events`: state is modeled as time-bounded observation or event
+  evidence, not as an overwrite of model topology.
+- `SCXML/XES/CloudEvents/OpenTelemetry/Trace Context`: state machine, event log,
+  event envelope, telemetry vocabulary, and distributed trace correlation inputs.
+- `Cytoscape.js/React Flow/Sigma`: different rendering targets driven by view
+  manifests, not by independent truth models.
+
+## Why Not Make DMN The Core?
+
+DMN is scoped to decisions. It is excellent for decision dependency and executable
+decision logic, but it is a lossy center for system dynamics. A faithful system
+map needs to represent at least five dimensions that DMN does not own:
+
+- Topology: components, processes, systems, people, data stores, queues, models,
+  and runtime edges.
+- Dynamics: state transitions, event streams, traces, logs, simulations, and
+  temporal validity.
+- Evidence: source documents, observations, generated outputs, confidence, and
+  stale/invalid states.
+- Projection: which nodes and edges were rendered, hidden, aggregated, or inferred.
+- Governance: versioned contracts, validation gates, review state, and provenance.
+
+Pushing those into DMN would produce a familiar diagram that lies by omission.
+The semantic backbone gives DMN a precise place without letting it flatten the
+rest of the system.
+
+## Canonical Data Contract
+
+V0 uses `system-dynamics-map.seed.json` as a portable seed shape. The eventual
+persisted form should be RDF named graphs plus SHACL shapes, but the seed file is
+structured so it can be lifted into that backend:
+
+- `nodes[]`: stable identity, label, kind, layer, resolution, status, summary,
+  context, hardening notes, aliases, tags, and documentation links.
+- `edges[]`: stable identity, source, target, relation, layer, resolution, status,
+  summary, confidence, and evidence links.
+- `view_scales[]`: declared scales that explain why an element appears at a given
+  resolution.
+- `status_kinds[]`: claim-type vocabulary that distinguishes asserted, inferred,
+  observed, simulated, rendered, and candidate elements.
+
+The viewer consumes this shape and should remain replaceable. The graph contract
+is the important artifact; Cytoscape is the current projection engine.
+
+## Hardening Rules
+
+1. Identity must be canonical before rendering.
+   Do not key nodes by display labels. Use stable IRIs or local IDs with a migration
+   path to IRIs.
+
+2. Graph partitions must remain explicit.
+   Asserted architecture, inferred relationships, observed telemetry, simulated
+   futures, and rendered projections belong in different named graphs.
+
+3. Every rendered view needs a manifest.
+   A view must record source snapshot, filters, aggregation rules, layout engine,
+   selected scale, hidden layers, and generation time.
+
+4. Validation runs before trust.
+   SHACL-style gates should catch missing identity, invalid relation types, broken
+   doc links, unsupported status values, stale observations, and orphaned render
+   elements.
+
+5. State is temporal evidence.
+   Current state should be derived from observations/events with timestamps,
+   confidence, source, and expiry. It should not overwrite the static topology.
+
+6. Provenance is not optional.
+   Imports, mappings, enrichments, generated edges, simulations, and view outputs
+   need explicit agent/activity/source records.
+
+7. Scale is a first-class property.
+   Overview, domain, artifact, runtime, and evidence views are separate projections
+   over shared identity. Aggregation must be declarative and reversible where
+   practical.
+
+8. Rendering is a product surface, not the model.
+   Cytoscape.js is appropriate for the first dynamic map. React Flow is better for
+   node/edge editing workflows. Sigma is a fallback for very large, simpler graphs.
+   Graphviz/Mermaid remain useful for deterministic static snapshots.
+
+## V0 Viewer
+
+`system-dynamics-map-viewer.html` is intentionally a static file. It provides:
+
+- Layer filters.
+- Status filters.
+- Resolution slider.
+- Search.
+- Layout switching.
+- Node and edge context panels.
+- External documentation links from the graph data.
+
+This is enough to review the concept and refine the graph without committing to a
+backend or frontend framework. Production should pin and vendor browser assets,
+persist graph snapshots, add automated link checks, and validate graph snapshots
+against SHACL shapes.
+
+## Source Notes
+
+Primary standards and docs used for the v0 map:
+
+- OMG DMN 1.5 formal, August 2024: https://www.omg.org/spec/DMN/1.5/About-DMN
+- OMG DMN 1.6 beta: https://www.omg.org/spec/DMN/1.6/Beta1/About-DMN
+- OMG BPMN 2.0.2 formal, January 2014: https://www.omg.org/spec/BPMN/2.0.2/
+- OMG CMMN 1.1 formal, December 2016: https://www.omg.org/spec/CMMN/1.1/About-CMMN
+- OMG SysML 2.0 formal, September 2025: https://www.omg.org/spec/SysML/2.0/About-SysML
+- The Open Group ArchiMate 4, released April 2026: https://www.opengroup.org/archimate-licensed-downloads
+- W3C RDF 1.2 Concepts, Candidate Recommendation Snapshot, April 2026: https://www.w3.org/TR/rdf12-concepts/
+- W3C SHACL and SHACL 1.2 Core: https://www.w3.org/TR/shacl/ and https://www.w3.org/TR/shacl12-core/
+- W3C PROV-O: https://www.w3.org/TR/prov-o/
+- W3C JSON-LD 1.1: https://www.w3.org/TR/json-ld11/
+- W3C SCXML: https://www.w3.org/TR/scxml/
+- W3C Trace Context: https://www.w3.org/TR/trace-context/
+- OpenTelemetry semantic conventions: https://opentelemetry.io/docs/concepts/semantic-conventions/
+- CloudEvents: https://cloudevents.io/
+- Cytoscape.js documentation checked through Context7 for current initialization,
+  element, style, layout, and event APIs: https://js.cytoscape.org/

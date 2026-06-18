@@ -1,0 +1,898 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>System Dynamics Map v0</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: Canvas;
+      --text: CanvasText;
+      --surface: color-mix(in oklab, Canvas 92%, CanvasText 8%);
+      --surface-strong: color-mix(in oklab, Canvas 86%, CanvasText 14%);
+      --line: color-mix(in oklab, CanvasText 20%, Canvas 80%);
+      --muted: color-mix(in oklab, CanvasText 62%, Canvas 38%);
+      --accent: rgb(37 99 235);
+      --accent-2: rgb(13 148 136);
+      --danger: rgb(185 28 28);
+      --focus: rgb(217 119 6);
+      --shadow: 0 18px 48px color-mix(in oklab, CanvasText 16%, transparent);
+      --radius: 8px;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    body {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      min-height: 100vh;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+      padding: 14px 18px;
+    }
+
+    .title-row {
+      align-items: baseline;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 14px;
+      justify-content: space-between;
+    }
+
+    h1 {
+      font-size: 1.05rem;
+      letter-spacing: 0;
+      line-height: 1.2;
+      margin: 0;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 0.86rem;
+      line-height: 1.35;
+      margin: 6px 0 0;
+      max-width: 78rem;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: minmax(280px, 360px) minmax(0, 1fr) minmax(300px, 390px);
+      min-height: 0;
+    }
+
+    aside,
+    .workspace {
+      min-height: 0;
+    }
+
+    .controls,
+    .details {
+      background: var(--surface);
+      overflow: auto;
+      padding: 14px;
+    }
+
+    .controls {
+      border-right: 1px solid var(--line);
+    }
+
+    .details {
+      border-left: 1px solid var(--line);
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      overflow: hidden;
+    }
+
+    .toolbar {
+      align-items: center;
+      background: var(--surface);
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 10px 12px;
+    }
+
+    #cy {
+      min-height: 420px;
+      width: 100%;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 14px;
+    }
+
+    label,
+    legend {
+      color: var(--muted);
+      font-size: 0.76rem;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    input[type="search"],
+    input[type="range"] {
+      accent-color: var(--accent);
+      width: 100%;
+    }
+
+    input[type="search"] {
+      background: var(--bg);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      color: var(--text);
+      font: inherit;
+      padding: 9px 10px;
+    }
+
+    fieldset {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      display: grid;
+      gap: 7px;
+      margin: 0 0 14px;
+      padding: 10px;
+    }
+
+    .check {
+      align-items: center;
+      display: grid;
+      font-size: 0.9rem;
+      gap: 8px;
+      grid-template-columns: 18px 1fr;
+    }
+
+    .check input {
+      accent-color: var(--accent);
+      height: 16px;
+      margin: 0;
+      width: 16px;
+    }
+
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    button,
+    .source-link {
+      align-items: center;
+      background: var(--surface-strong);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      color: var(--text);
+      cursor: pointer;
+      display: inline-flex;
+      font: inherit;
+      font-size: 0.86rem;
+      min-height: 34px;
+      padding: 7px 10px;
+      text-decoration: none;
+    }
+
+    button:hover,
+    .source-link:hover {
+      border-color: var(--accent);
+    }
+
+    button.active {
+      background: color-mix(in oklab, var(--accent) 16%, Canvas);
+      border-color: var(--accent);
+    }
+
+    .metric {
+      color: var(--muted);
+      font-size: 0.82rem;
+      margin-left: auto;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .pill {
+      background: var(--surface-strong);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 0.75rem;
+      padding: 3px 8px;
+    }
+
+    .panel-title {
+      font-size: 1rem;
+      line-height: 1.25;
+      margin: 0 0 4px;
+    }
+
+    .panel-meta {
+      color: var(--muted);
+      font-size: 0.8rem;
+      margin-bottom: 12px;
+    }
+
+    .section {
+      border-top: 1px solid var(--line);
+      margin-top: 12px;
+      padding-top: 12px;
+    }
+
+    .section h3 {
+      font-size: 0.8rem;
+      letter-spacing: 0;
+      margin: 0 0 8px;
+      text-transform: uppercase;
+    }
+
+    .section p,
+    .section li {
+      color: var(--text);
+      font-size: 0.9rem;
+      line-height: 1.45;
+    }
+
+    .section p {
+      margin: 0;
+    }
+
+    .section ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .doc-links {
+      display: grid;
+      gap: 6px;
+    }
+
+    .doc-links a {
+      color: var(--accent);
+      overflow-wrap: anywhere;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 2px;
+    }
+
+    .legend-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .legend-item {
+      align-items: center;
+      display: grid;
+      gap: 8px;
+      grid-template-columns: 14px 1fr;
+    }
+
+    .swatch {
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      height: 14px;
+      width: 14px;
+    }
+
+    .error {
+      border: 1px solid var(--danger);
+      border-radius: var(--radius);
+      color: var(--danger);
+      margin: 16px;
+      padding: 12px;
+    }
+
+    @media (max-width: 1100px) {
+      .app {
+        grid-template-columns: 310px minmax(0, 1fr);
+      }
+
+      .details {
+        border-left: 0;
+        border-top: 1px solid var(--line);
+        grid-column: 1 / -1;
+        max-height: 42vh;
+      }
+    }
+
+    @media (max-width: 760px) {
+      body {
+        min-height: 100dvh;
+      }
+
+      .app {
+        display: flex;
+        flex-direction: column;
+        overflow: auto;
+      }
+
+      .controls,
+      .details {
+        border: 0;
+        max-height: none;
+      }
+
+      .workspace {
+        order: 1;
+      }
+
+      .details {
+        order: 2;
+      }
+
+      .controls {
+        order: 3;
+      }
+
+      .workspace {
+        min-height: 72vh;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="title-row">
+      <h1>System Dynamics Map v0</h1>
+      <a class="source-link" href="./system-dynamics-map.seed.json">Seed JSON</a>
+    </div>
+    <p class="subtitle">DMN is the entry point. The map renders the surrounding standards, runtime surfaces, semantic backbone, evidence contracts, and projection engines needed for faithful system dynamics views.</p>
+  </header>
+
+  <main class="app">
+    <aside class="controls" aria-label="Map controls">
+      <div class="field">
+        <label for="search">Search</label>
+        <input id="search" type="search" placeholder="DMN, provenance, telemetry">
+      </div>
+
+      <div class="field">
+        <label for="resolution">Resolution <span id="resolution-label"></span></label>
+        <input id="resolution" type="range" min="1" max="5" step="1" value="5">
+      </div>
+
+      <fieldset>
+        <legend>Layers</legend>
+        <div id="layer-filters"></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Status</legend>
+        <div id="status-filters"></div>
+      </fieldset>
+
+      <div class="section">
+        <h3>Legend</h3>
+        <div class="legend-list" id="legend"></div>
+      </div>
+    </aside>
+
+    <section class="workspace" aria-label="Graph workspace">
+      <div class="toolbar">
+        <div class="button-row" aria-label="Layouts">
+          <button type="button" class="active" data-layout="cose">Force</button>
+          <button type="button" data-layout="breadthfirst">Flow</button>
+          <button type="button" data-layout="circle">Circle</button>
+          <button type="button" data-layout="grid">Grid</button>
+        </div>
+        <button type="button" id="fit">Fit</button>
+        <span class="metric" id="counts"></span>
+      </div>
+      <div id="cy"></div>
+    </section>
+
+    <aside class="details" aria-live="polite" aria-label="Selection details">
+      <div id="panel"></div>
+    </aside>
+  </main>
+
+  <script type="application/json" id="seed-data">
+{
+  "map_id": "system-dynamics-map-v0",
+  "version": "0.1.0",
+  "entrypoint": "dmn",
+  "thesis": "DMN is a decision-system entry point. Faithful rendering of system dynamics requires a validated semantic graph backbone with provenance, temporal state overlays, and reproducible view manifests.",
+  "status_kinds": ["asserted", "inferred", "observed", "simulated", "rendered", "candidate"],
+  "view_scales": [
+    {"id": "overview", "resolution": 1, "label": "Overview", "description": "System-level purpose, backbone, and major modeling families."},
+    {"id": "domain", "resolution": 2, "label": "Domain", "description": "Standards and modeling systems around the entry point."},
+    {"id": "artifact", "resolution": 3, "label": "Artifact", "description": "Concrete model artifacts, interchange formats, and contracts."},
+    {"id": "runtime", "resolution": 4, "label": "Runtime", "description": "Execution surfaces, event streams, telemetry, and service boundaries."},
+    {"id": "evidence", "resolution": 5, "label": "Evidence", "description": "Observations, provenance, validation results, and rendered view records."}
+  ],
+  "layers": [
+    {"id": "context-up", "label": "Layer Up", "description": "Process, case, enterprise, systems, and runtime architecture context above DMN."},
+    {"id": "decision", "label": "DMN Layer", "description": "Decision modeling concepts and directly adjacent decision semantics."},
+    {"id": "execution-down", "label": "Layer Down", "description": "Serialization, execution, model artifacts, APIs, and rule/runtime targets below DMN."},
+    {"id": "semantic-core", "label": "Semantic Core", "description": "Canonical graph identity, validation, provenance, and exchange contracts."},
+    {"id": "observation-state", "label": "Observation And State", "description": "State machines, event logs, telemetry, traces, and event envelopes."},
+    {"id": "rendering", "label": "Rendering", "description": "View manifests and visualization engines that project the graph."}
+  ],
+  "nodes": [
+    {"id": "dmn", "label": "DMN", "kind": "standard", "layer": "decision", "resolution": 1, "status": "asserted", "summary": "Decision Model and Notation, the entry point for the map.", "context": "DMN models decision requirements and executable decision logic. It is valuable for decision dependencies, but too narrow to be the universal representation for topology, state, telemetry, and provenance.", "docs": [{"label": "OMG DMN 1.5 formal", "url": "https://www.omg.org/spec/DMN/1.5/About-DMN"}, {"label": "OMG DMN 1.6 beta", "url": "https://www.omg.org/spec/DMN/1.6/Beta1/About-DMN"}], "hardening": ["Treat DMN decisions as one claim type in the graph, not as the global model.", "Preserve DMN version, namespace, source document, and import provenance."]},
+    {"id": "drd", "label": "DRD / DRG", "kind": "notation", "layer": "decision", "resolution": 2, "status": "asserted", "summary": "DMN decision requirement diagrams and decision requirement graphs.", "context": "DRDs show dependency between decisions, input data, business knowledge, and knowledge sources. They are not runtime event graphs.", "docs": [{"label": "OMG DMN 1.5", "url": "https://www.omg.org/spec/DMN/1.5/About-DMN"}], "hardening": ["Do not infer process sequence or runtime causality from a DRD edge without evidence."]},
+    {"id": "decision-service", "label": "Decision Service", "kind": "boundary", "layer": "decision", "resolution": 3, "status": "asserted", "summary": "A callable packaging boundary for decisions.", "context": "Decision services expose decisions for invocation by process, case, application, or runtime architecture components.", "docs": [{"label": "OMG DMN 1.5", "url": "https://www.omg.org/spec/DMN/1.5/About-DMN"}], "hardening": ["Separate design-time decision service boundaries from deployed API endpoints."]},
+    {"id": "decision-table", "label": "Decision Table", "kind": "artifact", "layer": "decision", "resolution": 3, "status": "asserted", "summary": "Tabular decision logic used by DMN.", "context": "Decision tables are common DMN logic artifacts and often become executable rule assets.", "docs": [{"label": "OMG DMN 1.5", "url": "https://www.omg.org/spec/DMN/1.5/About-DMN"}], "hardening": ["Track hit policy, type constraints, FEEL expressions, and test coverage."]},
+    {"id": "feel", "label": "FEEL", "kind": "language", "layer": "decision", "resolution": 3, "status": "asserted", "summary": "Friendly Enough Expression Language used by DMN.", "context": "FEEL is the expression language side of DMN. Runtime portability depends on precise FEEL support and version handling.", "docs": [{"label": "OMG DMN 1.6 beta", "url": "https://www.omg.org/spec/DMN/1.6/Beta1/About-DMN"}], "hardening": ["Record FEEL dialect/version support for each runtime before marking a decision executable."]},
+    {"id": "sbvr", "label": "SBVR", "kind": "standard", "layer": "decision", "resolution": 3, "status": "candidate", "summary": "Business vocabulary and rule semantics adjacent to DMN.", "context": "SBVR is relevant when vocabulary precision and rule semantics need to be connected to decision logic.", "docs": [{"label": "OMG SBVR catalog", "url": "https://www.omg.org/spec/SBVR/"}], "hardening": ["Use only where controlled vocabulary improves precision; avoid importing a parallel semantics stack by habit."]},
+    {"id": "bpmn", "label": "BPMN", "kind": "standard", "layer": "context-up", "resolution": 2, "status": "asserted", "summary": "Business Process Model and Notation for process flow.", "context": "BPMN process models can invoke, route to, or depend on decisions. It gives process context above DMN.", "docs": [{"label": "OMG BPMN 2.0.2", "url": "https://www.omg.org/spec/BPMN/2.0.2/"}], "hardening": ["Do not treat BPMN sequence flow as proof of actual runtime ordering without event evidence."]},
+    {"id": "cmmn", "label": "CMMN", "kind": "standard", "layer": "context-up", "resolution": 2, "status": "asserted", "summary": "Case Management Model and Notation for case plans.", "context": "CMMN covers less prescriptive, case-oriented work that can use decisions without fitting a strict process flow.", "docs": [{"label": "OMG CMMN 1.1", "url": "https://www.omg.org/spec/CMMN/1.1/About-CMMN"}], "hardening": ["Represent discretionary case behavior separately from deterministic process paths."]},
+    {"id": "archimate", "label": "ArchiMate", "kind": "standard", "layer": "context-up", "resolution": 2, "status": "asserted", "summary": "Enterprise architecture modeling language.", "context": "ArchiMate situates decisions in business, application, technology, motivation, strategy, and implementation context.", "docs": [{"label": "ArchiMate overview", "url": "https://www.opengroup.org/archimate-forum/archimate-overview"}, {"label": "ArchiMate 4 downloads", "url": "https://www.opengroup.org/archimate-licensed-downloads"}], "hardening": ["Use ArchiMate for enterprise context, not for low-level runtime state."]},
+    {"id": "sysml-v2", "label": "SysML v2", "kind": "standard", "layer": "context-up", "resolution": 2, "status": "asserted", "summary": "Systems modeling language for MBSE.", "context": "SysML v2 covers system requirements, structure, behavior, analysis, and verification context around decision-enabled systems.", "docs": [{"label": "OMG SysML 2.0", "url": "https://www.omg.org/spec/SysML/2.0/About-SysML"}], "hardening": ["Keep engineering requirement/verification evidence distinct from business decision dependencies."]},
+    {"id": "c4-runtime", "label": "C4 / Runtime Topology", "kind": "practice", "layer": "context-up", "resolution": 2, "status": "candidate", "summary": "Software architecture topology around deployed decision services.", "context": "Runtime topology explains which services, stores, queues, and users interact with a decision service.", "docs": [{"label": "C4 model", "url": "https://c4model.com/"}], "hardening": ["Treat runtime topology as observed or configured infrastructure evidence, not as a DMN extension."]},
+    {"id": "dmn-xml-di", "label": "DMN XML / DI", "kind": "interchange", "layer": "execution-down", "resolution": 3, "status": "asserted", "summary": "DMN interchange and diagram information.", "context": "DMN XML and diagram interchange preserve model content and layout metadata across tools.", "docs": [{"label": "OMG DMN 1.5", "url": "https://www.omg.org/spec/DMN/1.5/About-DMN"}], "hardening": ["Preserve namespace, schema version, diagram coordinates, and original bytes hash."]},
+    {"id": "rule-engine", "label": "Rule Engine", "kind": "runtime", "layer": "execution-down", "resolution": 4, "status": "candidate", "summary": "Executable target for decision rules.", "context": "Decision tables and FEEL expressions may be interpreted, compiled, or translated into a rule/runtime engine.", "docs": [{"label": "Drools DMN engine", "url": "https://docs.drools.org/"}], "hardening": ["Declare runtime conformance, unsupported FEEL features, and test result provenance."]},
+    {"id": "model-artifacts", "label": "Predictive Model Artifacts", "kind": "artifact", "layer": "execution-down", "resolution": 4, "status": "candidate", "summary": "PMML, ONNX, PFA-class analytical artifacts adjacent to decisions.", "context": "Predictive models often feed decisions or sit beside them. They need separate lineage, validation, and runtime semantics.", "docs": [{"label": "ONNX", "url": "https://onnx.ai/"}, {"label": "PMML", "url": "https://dmg.org/pmml/v4-4-1/GeneralStructure.html"}], "hardening": ["Do not collapse model score provenance into decision-rule provenance."]},
+    {"id": "runtime-decision-api", "label": "Decision Runtime API", "kind": "runtime", "layer": "execution-down", "resolution": 4, "status": "candidate", "summary": "Callable runtime boundary for decision evaluation.", "context": "The deployed decision API is where process, applications, telemetry, traces, and event envelopes meet decision logic.", "docs": [{"label": "DMN Technology Compatibility Kit", "url": "https://dmn-tck.github.io/tck/"}], "hardening": ["Expose versioned decision IDs, input schema, output schema, model hash, and evaluation trace IDs."]},
+    {"id": "rdf-owl-kg", "label": "RDF / OWL Knowledge Graph", "kind": "backbone", "layer": "semantic-core", "resolution": 1, "status": "asserted", "summary": "Canonical identity and relationship backbone.", "context": "The semantic graph is the durable center: it represents identities, relations, named graph partitions, and ontology commitments across model families.", "docs": [{"label": "W3C RDF 1.2 Concepts", "url": "https://www.w3.org/TR/rdf12-concepts/"}, {"label": "W3C OWL 2 Overview", "url": "https://www.w3.org/TR/owl2-overview/"}], "hardening": ["Use named graphs for asserted, inferred, observed, simulated, and rendered claims.", "Map source-model identifiers to stable IRIs."]},
+    {"id": "shacl-contracts", "label": "SHACL Contracts", "kind": "validation", "layer": "semantic-core", "resolution": 2, "status": "asserted", "summary": "Graph validation shapes and quality gates.", "context": "SHACL constrains the graph before data or projections are treated as trustworthy.", "docs": [{"label": "W3C SHACL", "url": "https://www.w3.org/TR/shacl/"}, {"label": "W3C SHACL 1.2 Core", "url": "https://www.w3.org/TR/shacl12-core/"}], "hardening": ["Validate relation vocabulary, required provenance, status values, temporal bounds, and render-manifest completeness."]},
+    {"id": "prov-o", "label": "PROV-O", "kind": "provenance", "layer": "semantic-core", "resolution": 2, "status": "asserted", "summary": "Provenance ontology for agents, activities, and entities.", "context": "PROV-O records where a claim came from, who or what generated it, and which source or transformation it depends on.", "docs": [{"label": "W3C PROV-O", "url": "https://www.w3.org/TR/prov-o/"}], "hardening": ["Require provenance for imports, inferred edges, simulated states, and rendered views."]},
+    {"id": "jsonld-trig", "label": "JSON-LD / TriG", "kind": "exchange", "layer": "semantic-core", "resolution": 3, "status": "asserted", "summary": "Portable graph and named graph exchange formats.", "context": "JSON-LD is useful for web-facing exchange. TriG is useful when named graph partitions need to be serialized directly.", "docs": [{"label": "W3C JSON-LD 1.1", "url": "https://www.w3.org/TR/json-ld11/"}, {"label": "W3C RDF 1.2 Concepts", "url": "https://www.w3.org/TR/rdf12-concepts/"}], "hardening": ["Version contexts and keep view data derivable from canonical graph snapshots."]},
+    {"id": "temporal-state-events", "label": "Temporal State / Events", "kind": "modeling-pattern", "layer": "observation-state", "resolution": 2, "status": "asserted", "summary": "Pattern for representing state as time-bounded evidence.", "context": "Topology and state should not be conflated. Current state is derived from observations and events with timestamps, source, confidence, and expiry.", "docs": [{"label": "OWL-Time", "url": "https://www.w3.org/TR/owl-time/"}], "hardening": ["Represent state transitions and observed state separately from static model structure."]},
+    {"id": "scxml-statecharts", "label": "SCXML Statecharts", "kind": "standard", "layer": "observation-state", "resolution": 3, "status": "candidate", "summary": "State machine notation for control abstraction.", "context": "SCXML is relevant for executable or exchangeable state machine behavior, but it is not the full graph backbone.", "docs": [{"label": "W3C SCXML", "url": "https://www.w3.org/TR/scxml/"}], "hardening": ["Use for explicit state-machine behavior; do not generalize it into all topology."]},
+    {"id": "xes-event-log", "label": "XES Event Log", "kind": "standard", "layer": "observation-state", "resolution": 4, "status": "candidate", "summary": "Event log format for process mining.", "context": "XES-style logs can provide process/event evidence for observed behavior and conformance checks.", "docs": [{"label": "XES Standard", "url": "https://www.xes-standard.org/"}], "hardening": ["Keep event log evidence separate from designed process or decision models."]},
+    {"id": "opentelemetry", "label": "OpenTelemetry", "kind": "telemetry", "layer": "observation-state", "resolution": 4, "status": "observed", "summary": "Telemetry conventions for traces, metrics, logs, profiles, and resources.", "context": "OpenTelemetry gives runtime observation vocabulary. It should feed observed graph overlays, not overwrite the design graph.", "docs": [{"label": "OpenTelemetry Semantic Conventions", "url": "https://opentelemetry.io/docs/concepts/semantic-conventions/"}], "hardening": ["Attach telemetry to runtime identities with time bounds, resource identity, sampling metadata, and confidence."]},
+    {"id": "trace-context", "label": "Trace Context", "kind": "standard", "layer": "observation-state", "resolution": 4, "status": "observed", "summary": "Distributed trace propagation format.", "context": "Trace Context helps correlate observed runtime behavior across service boundaries.", "docs": [{"label": "W3C Trace Context", "url": "https://www.w3.org/TR/trace-context/"}], "hardening": ["Use trace IDs as evidence correlation keys, not canonical architectural identity."]},
+    {"id": "cloudevents", "label": "CloudEvents", "kind": "standard", "layer": "observation-state", "resolution": 4, "status": "observed", "summary": "Common event metadata envelope.", "context": "CloudEvents-style envelopes can normalize event metadata flowing into the observation graph.", "docs": [{"label": "CloudEvents", "url": "https://cloudevents.io/"}], "hardening": ["Preserve original event payload, envelope attributes, source, subject, and schema references."]},
+    {"id": "view-manifest", "label": "View Manifest", "kind": "projection-contract", "layer": "rendering", "resolution": 2, "status": "rendered", "summary": "Reproducible contract for a rendered projection.", "context": "Every rendered visualization should declare graph snapshot, filters, aggregation rules, scale, layout engine, hidden layers, and generation provenance.", "docs": [{"label": "W3C PROV-O", "url": "https://www.w3.org/TR/prov-o/"}], "hardening": ["Treat rendered views as derived artifacts with their own provenance and validation status."]},
+    {"id": "cytoscape", "label": "Cytoscape.js", "kind": "renderer", "layer": "rendering", "resolution": 3, "status": "rendered", "summary": "Interactive graph visualization engine for the v0 map.", "context": "Cytoscape.js provides graph elements, styles, layouts, and event handlers suitable for an exploratory topology viewer.", "docs": [{"label": "Cytoscape.js docs", "url": "https://js.cytoscape.org/"}], "hardening": ["Keep Cytoscape element data generated from the graph contract and view manifest."]},
+    {"id": "react-flow", "label": "React Flow", "kind": "renderer", "layer": "rendering", "resolution": 3, "status": "candidate", "summary": "Node-edge editor candidate for future authoring workflows.", "context": "React Flow is better suited to graph editing and node configuration workflows than to very large exploratory topology maps.", "docs": [{"label": "React Flow", "url": "https://reactflow.dev/"}], "hardening": ["Use for controlled authoring surfaces; validate edits before committing to the semantic graph."]},
+    {"id": "sigma", "label": "Sigma.js", "kind": "renderer", "layer": "rendering", "resolution": 3, "status": "candidate", "summary": "Large graph rendering candidate for simpler graph exploration.", "context": "Sigma is relevant when the graph grows large and needs fast rendering of simpler node-link structures.", "docs": [{"label": "Sigma.js", "url": "https://www.sigmajs.org/"}], "hardening": ["Use only after defining aggregation and sampling contracts for large views."]}
+  ],
+  "edges": [
+    {"id": "dmn-to-drd", "source": "dmn", "target": "drd", "relation": "defines", "layer": "decision", "resolution": 2, "status": "asserted", "summary": "DMN includes decision requirement diagrams/graphs.", "confidence": 1},
+    {"id": "dmn-to-feel", "source": "dmn", "target": "feel", "relation": "uses_expression_language", "layer": "decision", "resolution": 3, "status": "asserted", "summary": "DMN uses FEEL for expressions.", "confidence": 1},
+    {"id": "dmn-to-decision-service", "source": "dmn", "target": "decision-service", "relation": "packages", "layer": "decision", "resolution": 3, "status": "asserted", "summary": "DMN can package decision behavior as decision services.", "confidence": 0.95},
+    {"id": "dmn-to-decision-table", "source": "dmn", "target": "decision-table", "relation": "contains_logic_artifact", "layer": "decision", "resolution": 3, "status": "asserted", "summary": "Decision tables are common DMN logic artifacts.", "confidence": 1},
+    {"id": "dmn-to-sbvr", "source": "dmn", "target": "sbvr", "relation": "adjacent_vocabulary", "layer": "decision", "resolution": 3, "status": "candidate", "summary": "SBVR can provide controlled business vocabulary and rule semantics adjacent to DMN.", "confidence": 0.74},
+    {"id": "bpmn-to-dmn", "source": "bpmn", "target": "dmn", "relation": "invokes_or_contextualizes", "layer": "context-up", "resolution": 2, "status": "asserted", "summary": "Business processes can invoke or depend on decisions.", "confidence": 0.95},
+    {"id": "cmmn-to-dmn", "source": "cmmn", "target": "dmn", "relation": "invokes_or_contextualizes", "layer": "context-up", "resolution": 2, "status": "asserted", "summary": "Case management contexts can use decisions without strict process sequencing.", "confidence": 0.9},
+    {"id": "archimate-to-dmn", "source": "archimate", "target": "dmn", "relation": "enterprise_context_for", "layer": "context-up", "resolution": 2, "status": "asserted", "summary": "Enterprise architecture provides capability and application context for decisions.", "confidence": 0.86},
+    {"id": "sysml-to-dmn", "source": "sysml-v2", "target": "dmn", "relation": "systems_context_for", "layer": "context-up", "resolution": 2, "status": "candidate", "summary": "Systems models can contextualize decisions within requirements, behavior, and verification.", "confidence": 0.78},
+    {"id": "c4-to-decision-api", "source": "c4-runtime", "target": "runtime-decision-api", "relation": "deploys_or_contains", "layer": "context-up", "resolution": 4, "status": "candidate", "summary": "Runtime architecture contains deployed decision API components.", "confidence": 0.82},
+    {"id": "dmn-to-xml-di", "source": "dmn", "target": "dmn-xml-di", "relation": "serialized_as", "layer": "execution-down", "resolution": 3, "status": "asserted", "summary": "DMN models are interchanged as XML with diagram information.", "confidence": 0.96},
+    {"id": "decision-table-to-rule-engine", "source": "decision-table", "target": "rule-engine", "relation": "compiled_or_interpreted_by", "layer": "execution-down", "resolution": 4, "status": "candidate", "summary": "Decision tables may be executed by rule engines.", "confidence": 0.8},
+    {"id": "feel-to-rule-engine", "source": "feel", "target": "rule-engine", "relation": "requires_runtime_support", "layer": "execution-down", "resolution": 4, "status": "candidate", "summary": "Executable decision logic depends on runtime FEEL support.", "confidence": 0.78},
+    {"id": "decision-service-to-api", "source": "decision-service", "target": "runtime-decision-api", "relation": "implemented_by", "layer": "execution-down", "resolution": 4, "status": "candidate", "summary": "A design-time decision service can be implemented as a deployed API.", "confidence": 0.86},
+    {"id": "model-artifacts-to-dmn", "source": "model-artifacts", "target": "dmn", "relation": "feeds_or_complements", "layer": "execution-down", "resolution": 4, "status": "candidate", "summary": "Predictive artifacts can feed or complement decision logic.", "confidence": 0.7},
+    {"id": "dmn-to-kg", "source": "dmn", "target": "rdf-owl-kg", "relation": "mapped_into", "layer": "semantic-core", "resolution": 1, "status": "asserted", "summary": "DMN identities and relationships should be lifted into the canonical semantic graph.", "confidence": 0.93},
+    {"id": "bpmn-to-kg", "source": "bpmn", "target": "rdf-owl-kg", "relation": "mapped_into", "layer": "semantic-core", "resolution": 2, "status": "candidate", "summary": "Process models should map into the same identity graph rather than stay isolated.", "confidence": 0.84},
+    {"id": "archimate-to-kg", "source": "archimate", "target": "rdf-owl-kg", "relation": "mapped_into", "layer": "semantic-core", "resolution": 2, "status": "candidate", "summary": "Enterprise architecture context should share identity with decision and runtime nodes.", "confidence": 0.82},
+    {"id": "sysml-to-kg", "source": "sysml-v2", "target": "rdf-owl-kg", "relation": "mapped_into", "layer": "semantic-core", "resolution": 2, "status": "candidate", "summary": "Systems models should map into the same backbone for cross-resolution analysis.", "confidence": 0.8},
+    {"id": "kg-to-shacl", "source": "rdf-owl-kg", "target": "shacl-contracts", "relation": "validated_by", "layer": "semantic-core", "resolution": 2, "status": "asserted", "summary": "Graph snapshots should pass shape validation before trusted rendering.", "confidence": 1},
+    {"id": "kg-to-prov", "source": "rdf-owl-kg", "target": "prov-o", "relation": "qualified_by", "layer": "semantic-core", "resolution": 2, "status": "asserted", "summary": "Graph claims need provenance for imports, mappings, observations, and render outputs.", "confidence": 1},
+    {"id": "kg-to-jsonld", "source": "rdf-owl-kg", "target": "jsonld-trig", "relation": "serialized_as", "layer": "semantic-core", "resolution": 3, "status": "asserted", "summary": "Graph snapshots should have portable exchange forms.", "confidence": 0.96},
+    {"id": "state-to-kg", "source": "temporal-state-events", "target": "rdf-owl-kg", "relation": "overlays", "layer": "observation-state", "resolution": 2, "status": "asserted", "summary": "Temporal state/event evidence overlays the canonical identity graph.", "confidence": 0.94},
+    {"id": "state-to-scxml", "source": "temporal-state-events", "target": "scxml-statecharts", "relation": "can_use_state_machine_notation", "layer": "observation-state", "resolution": 3, "status": "candidate", "summary": "Explicit state-machine behavior can be represented with SCXML-like statecharts.", "confidence": 0.75},
+    {"id": "state-to-xes", "source": "temporal-state-events", "target": "xes-event-log", "relation": "exports_or_imports_event_logs", "layer": "observation-state", "resolution": 4, "status": "candidate", "summary": "Event logs provide observed behavior evidence for process and decision analysis.", "confidence": 0.76},
+    {"id": "api-to-otel", "source": "runtime-decision-api", "target": "opentelemetry", "relation": "emits_telemetry", "layer": "observation-state", "resolution": 4, "status": "observed", "summary": "Runtime decision services should emit telemetry that can be correlated to decisions and topology.", "confidence": 0.82},
+    {"id": "api-to-trace-context", "source": "runtime-decision-api", "target": "trace-context", "relation": "propagates_trace_identity", "layer": "observation-state", "resolution": 4, "status": "observed", "summary": "Trace Context correlates runtime evaluation behavior across service calls.", "confidence": 0.82},
+    {"id": "api-to-cloudevents", "source": "runtime-decision-api", "target": "cloudevents", "relation": "can_emit_event_envelopes", "layer": "observation-state", "resolution": 4, "status": "candidate", "summary": "Decision services may emit or consume event envelopes for integration.", "confidence": 0.72},
+    {"id": "otel-to-kg", "source": "opentelemetry", "target": "rdf-owl-kg", "relation": "observes", "layer": "observation-state", "resolution": 5, "status": "observed", "summary": "Telemetry evidence should attach to canonical runtime identities.", "confidence": 0.8},
+    {"id": "kg-to-view-manifest", "source": "rdf-owl-kg", "target": "view-manifest", "relation": "projected_by", "layer": "rendering", "resolution": 2, "status": "rendered", "summary": "Rendered views should be generated from graph snapshots through view manifests.", "confidence": 0.95},
+    {"id": "shacl-to-view-manifest", "source": "shacl-contracts", "target": "view-manifest", "relation": "guards", "layer": "rendering", "resolution": 3, "status": "asserted", "summary": "View manifests should be generated only from validated graph snapshots.", "confidence": 0.92},
+    {"id": "prov-to-view-manifest", "source": "prov-o", "target": "view-manifest", "relation": "records_generation_of", "layer": "rendering", "resolution": 5, "status": "rendered", "summary": "View generation should itself be a provenance-bearing activity.", "confidence": 0.9},
+    {"id": "view-to-cytoscape", "source": "view-manifest", "target": "cytoscape", "relation": "renders_with", "layer": "rendering", "resolution": 3, "status": "rendered", "summary": "The v0 dynamic map is rendered with Cytoscape.js.", "confidence": 0.96},
+    {"id": "view-to-react-flow", "source": "view-manifest", "target": "react-flow", "relation": "future_authoring_projection", "layer": "rendering", "resolution": 3, "status": "candidate", "summary": "Future graph authoring or workflow editing could use React Flow.", "confidence": 0.68},
+    {"id": "view-to-sigma", "source": "view-manifest", "target": "sigma", "relation": "future_large_graph_projection", "layer": "rendering", "resolution": 3, "status": "candidate", "summary": "Very large simple graph projections may use Sigma.", "confidence": 0.66}
+  ]
+}
+  </script>
+  <script src="https://unpkg.com/cytoscape@3/dist/cytoscape.min.js"></script>
+  <script>
+    const layerColors = {
+      "context-up": "rgb(13, 148, 136)",
+      "decision": "rgb(37, 99, 235)",
+      "execution-down": "rgb(217, 119, 6)",
+      "semantic-core": "rgb(124, 58, 237)",
+      "observation-state": "rgb(220, 38, 38)",
+      "rendering": "rgb(22, 163, 74)"
+    };
+
+    const statusColors = {
+      asserted: "rgb(31, 41, 55)",
+      inferred: "rgb(79, 70, 229)",
+      observed: "rgb(220, 38, 38)",
+      simulated: "rgb(217, 119, 6)",
+      rendered: "rgb(22, 163, 74)",
+      candidate: "rgb(107, 114, 128)"
+    };
+
+    let cy;
+    let seed;
+    let activeLayout = "cose";
+
+    function className(value) {
+      return String(value).toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        "\"": "&quot;",
+        "'": "&#39;"
+      }[char]));
+    }
+
+    function docsHtml(docs) {
+      if (!docs || docs.length === 0) {
+        return "<p>No external documentation link recorded.</p>";
+      }
+      return `<div class="doc-links">${docs.map((doc) => `<a href="${escapeHtml(doc.url)}" target="_blank" rel="noreferrer">${escapeHtml(doc.label)}</a>`).join("")}</div>`;
+    }
+
+    function listHtml(items) {
+      if (!items || items.length === 0) {
+        return "<p>No hardening note recorded.</p>";
+      }
+      return `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+    }
+
+    function pillHtml(data) {
+      const values = [data.layer, data.status, data.kind, `resolution ${data.resolution}`].filter(Boolean);
+      return `<div class="pill-row">${values.map((value) => `<span class="pill">${escapeHtml(value)}</span>`).join("")}</div>`;
+    }
+
+    function renderNodePanel(data) {
+      document.getElementById("panel").innerHTML = `
+        <h2 class="panel-title">${escapeHtml(data.label)}</h2>
+        <div class="panel-meta">${escapeHtml(data.id)}</div>
+        ${pillHtml(data)}
+        <div class="section"><h3>Summary</h3><p>${escapeHtml(data.summary)}</p></div>
+        <div class="section"><h3>Context</h3><p>${escapeHtml(data.context)}</p></div>
+        <div class="section"><h3>Hardening</h3>${listHtml(data.hardening)}</div>
+        <div class="section"><h3>Documentation</h3>${docsHtml(data.docs)}</div>
+      `;
+    }
+
+    function renderEdgePanel(data) {
+      const source = seed.nodes.find((node) => node.id === data.source)?.label || data.source;
+      const target = seed.nodes.find((node) => node.id === data.target)?.label || data.target;
+      document.getElementById("panel").innerHTML = `
+        <h2 class="panel-title">${escapeHtml(source)} -> ${escapeHtml(target)}</h2>
+        <div class="panel-meta">${escapeHtml(data.id)}</div>
+        ${pillHtml(data)}
+        <div class="section"><h3>Relation</h3><p>${escapeHtml(data.relation)}</p></div>
+        <div class="section"><h3>Summary</h3><p>${escapeHtml(data.summary)}</p></div>
+        <div class="section"><h3>Confidence</h3><p>${escapeHtml(data.confidence ?? "unknown")}</p></div>
+        <div class="section"><h3>Documentation</h3>${docsHtml(data.docs)}</div>
+      `;
+    }
+
+    function renderInitialPanel() {
+      const dmn = seed.nodes.find((node) => node.id === seed.entrypoint) || seed.nodes[0];
+      renderNodePanel(dmn);
+    }
+
+    function renderCheckboxes() {
+      const layers = seed.layers.map((layer) => layer.id);
+      document.getElementById("layer-filters").innerHTML = layers.map((id) => {
+        const layer = seed.layers.find((item) => item.id === id);
+        return `<label class="check"><input type="checkbox" data-filter="layer" value="${escapeHtml(id)}" checked><span>${escapeHtml(layer?.label || id)}</span></label>`;
+      }).join("");
+
+      document.getElementById("status-filters").innerHTML = seed.status_kinds.map((id) => (
+        `<label class="check"><input type="checkbox" data-filter="status" value="${escapeHtml(id)}" checked><span>${escapeHtml(id)}</span></label>`
+      )).join("");
+    }
+
+    function renderLegend() {
+      document.getElementById("legend").innerHTML = seed.layers.map((layer) => `
+        <div class="legend-item">
+          <span class="swatch" style="background: ${layerColors[layer.id] || "rgb(107, 114, 128)"}"></span>
+          <span>${escapeHtml(layer.label)}</span>
+        </div>
+      `).join("");
+    }
+
+    function checkedValues(type) {
+      return new Set(Array.from(document.querySelectorAll(`input[data-filter="${type}"]:checked`)).map((input) => input.value));
+    }
+
+    function elementText(data) {
+      return [
+        data.id,
+        data.label,
+        data.kind,
+        data.layer,
+        data.status,
+        data.summary,
+        data.context,
+        data.relation,
+        ...(data.docs || []).map((doc) => `${doc.label} ${doc.url}`),
+        ...(data.hardening || [])
+      ].join(" ").toLowerCase();
+    }
+
+    function applyFilters() {
+      const maxResolution = Number(document.getElementById("resolution").value);
+      const scale = seed.view_scales.find((item) => item.resolution === maxResolution);
+      const search = document.getElementById("search").value.trim().toLowerCase();
+      const layers = checkedValues("layer");
+      const statuses = checkedValues("status");
+
+      document.getElementById("resolution-label").textContent = scale ? `- ${scale.label}` : "";
+
+      cy.batch(() => {
+        cy.nodes().forEach((node) => {
+          const data = node.data();
+          const visible = layers.has(data.layer)
+            && statuses.has(data.status)
+            && Number(data.resolution) <= maxResolution
+            && (!search || elementText(data).includes(search));
+          node.toggleClass("hidden", !visible);
+        });
+
+        cy.edges().forEach((edge) => {
+          const data = edge.data();
+          const edgeVisible = layers.has(data.layer)
+            && statuses.has(data.status)
+            && Number(data.resolution) <= maxResolution
+            && edge.source().visible()
+            && edge.target().visible()
+            && (!search || elementText(data).includes(search) || elementText(edge.source().data()).includes(search) || elementText(edge.target().data()).includes(search));
+          edge.toggleClass("hidden", !edgeVisible);
+        });
+      });
+
+      const visibleNodes = cy.nodes().filter((node) => !node.hasClass("hidden")).length;
+      const visibleEdges = cy.edges().filter((edge) => !edge.hasClass("hidden")).length;
+      document.getElementById("counts").textContent = `${visibleNodes} nodes / ${visibleEdges} edges`;
+    }
+
+    function layoutOptions(name) {
+      const common = {
+        name,
+        animate: true,
+        animationDuration: 280,
+        fit: true,
+        padding: 44
+      };
+      if (name === "cose") {
+        return {
+          ...common,
+          idealEdgeLength: 108,
+          nodeOverlap: 16,
+          refresh: 16,
+          randomize: false,
+          componentSpacing: 76
+        };
+      }
+      if (name === "breadthfirst") {
+        return {
+          ...common,
+          directed: true,
+          roots: cy.$id("dmn"),
+          spacingFactor: 1.28
+        };
+      }
+      return common;
+    }
+
+    function runLayout(name = activeLayout) {
+      activeLayout = name;
+      document.querySelectorAll("[data-layout]").forEach((button) => {
+        button.classList.toggle("active", button.dataset.layout === name);
+      });
+      cy.elements().not(".hidden").layout(layoutOptions(name)).run();
+    }
+
+    function buildElements(data) {
+      const nodes = data.nodes.map((node) => ({
+        group: "nodes",
+        data: node,
+        classes: [`layer-${className(node.layer)}`, `status-${className(node.status)}`].join(" ")
+      }));
+      const edges = data.edges.map((edge) => ({
+        group: "edges",
+        data: edge,
+        classes: [`layer-${className(edge.layer)}`, `status-${className(edge.status)}`].join(" ")
+      }));
+      return [...nodes, ...edges];
+    }
+
+    function stylesheet() {
+      const base = [
+        {
+          selector: "node",
+          style: {
+            "background-color": "rgb(75, 85, 99)",
+            "border-color": "rgb(17, 24, 39)",
+            "border-width": 2,
+            "color": "rgb(17, 24, 39)",
+            "font-size": 10,
+            "font-weight": 700,
+            "height": "mapData(resolution, 1, 5, 56, 30)",
+            "label": "data(label)",
+            "min-zoomed-font-size": 7,
+            "overlay-opacity": 0,
+            "text-background-color": "rgb(255, 255, 255)",
+            "text-background-opacity": 0.84,
+            "text-background-padding": 3,
+            "text-margin-y": -8,
+            "text-wrap": "wrap",
+            "text-max-width": 96,
+            "width": "mapData(resolution, 1, 5, 56, 30)"
+          }
+        },
+        {
+          selector: "edge",
+          style: {
+            "curve-style": "bezier",
+            "font-size": 8,
+            "label": "data(relation)",
+            "line-color": "rgb(107, 114, 128)",
+            "min-zoomed-font-size": 8,
+            "opacity": 0.76,
+            "target-arrow-color": "rgb(107, 114, 128)",
+            "target-arrow-shape": "triangle",
+            "text-background-color": "rgb(255, 255, 255)",
+            "text-background-opacity": 0.82,
+            "text-background-padding": 2,
+            "text-rotation": "autorotate",
+            "width": "mapData(confidence, 0.65, 1, 1, 3)"
+          }
+        },
+        {
+          selector: ".hidden",
+          style: {
+            "display": "none"
+          }
+        },
+        {
+          selector: ":selected",
+          style: {
+            "border-color": "rgb(217, 119, 6)",
+            "border-width": 5,
+            "line-color": "rgb(217, 119, 6)",
+            "target-arrow-color": "rgb(217, 119, 6)"
+          }
+        },
+        {
+          selector: ".status-candidate",
+          style: {
+            "border-style": "dashed"
+          }
+        },
+        {
+          selector: ".status-observed",
+          style: {
+            "shape": "round-rectangle"
+          }
+        },
+        {
+          selector: ".status-rendered",
+          style: {
+            "shape": "diamond"
+          }
+        }
+      ];
+
+      const layerStyles = Object.entries(layerColors).flatMap(([layer, color]) => ([
+        {
+          selector: `node.layer-${className(layer)}`,
+          style: {
+            "background-color": color
+          }
+        },
+        {
+          selector: `edge.layer-${className(layer)}`,
+          style: {
+            "line-color": color,
+            "target-arrow-color": color
+          }
+        }
+      ]));
+
+      const statusStyles = Object.entries(statusColors).map(([status, color]) => ({
+        selector: `.status-${className(status)}`,
+        style: {
+          "border-color": color
+        }
+      }));
+
+      return [...base, ...layerStyles, ...statusStyles];
+    }
+
+    async function loadSeed() {
+      const inlineSeed = JSON.parse(document.getElementById("seed-data").textContent);
+      if (location.protocol === "file:") {
+        return inlineSeed;
+      }
+      try {
+        const response = await fetch("./system-dynamics-map.seed.json", { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        return await response.json();
+      } catch (error) {
+        console.warn("Falling back to embedded seed data.", error);
+        return inlineSeed;
+      }
+    }
+
+    async function init() {
+      if (!window.cytoscape) {
+        document.getElementById("cy").innerHTML = '<div class="error">Cytoscape.js did not load. Check network access to the CDN or vendor the asset locally.</div>';
+        return;
+      }
+
+      seed = await loadSeed();
+      renderCheckboxes();
+      renderLegend();
+
+      cy = cytoscape({
+        container: document.getElementById("cy"),
+        elements: buildElements(seed),
+        layout: layoutOptions("cose"),
+        maxZoom: 2.4,
+        minZoom: 0.25,
+        style: stylesheet(),
+        wheelSensitivity: 0.18
+      });
+
+      cy.on("tap", "node", (event) => renderNodePanel(event.target.data()));
+      cy.on("tap", "edge", (event) => renderEdgePanel(event.target.data()));
+      cy.on("tap", (event) => {
+        if (event.target === cy) {
+          renderInitialPanel();
+        }
+      });
+
+      document.getElementById("search").addEventListener("input", () => {
+        applyFilters();
+      });
+      document.getElementById("resolution").addEventListener("input", () => {
+        applyFilters();
+      });
+      document.querySelectorAll("input[data-filter]").forEach((input) => {
+        input.addEventListener("change", () => {
+          applyFilters();
+          runLayout(activeLayout);
+        });
+      });
+      document.querySelectorAll("[data-layout]").forEach((button) => {
+        button.addEventListener("click", () => runLayout(button.dataset.layout));
+      });
+      document.getElementById("fit").addEventListener("click", () => {
+        cy.fit(cy.elements().not(".hidden"), 44);
+      });
+
+      renderInitialPanel();
+      applyFilters();
+      cy.ready(() => {
+        cy.$id(seed.entrypoint).select();
+        setTimeout(() => cy.fit(cy.elements().not(".hidden"), 44), 80);
+      });
+    }
+
+    init().catch((error) => {
+      document.getElementById("cy").innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
+    });
+  </script>
+</body>
+</html>
