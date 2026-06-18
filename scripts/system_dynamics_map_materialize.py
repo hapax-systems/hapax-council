@@ -1573,7 +1573,11 @@ def generate_viewer(seed: dict[str, Any]) -> str:
             flags=re.S,
         )
         if replacements != 1:
-            raise RuntimeError(f"viewer {block_id} script tag not found")
+            raise RuntimeError(
+                f"viewer {block_id} script tag not found. "
+                "Fix by restoring the supplemental JSON script tag in "
+                "system-dynamics-map-viewer.html before regenerating artifacts."
+            )
     return updated
 
 

@@ -6749,38 +6749,64 @@
       const lens = activeLensData();
       const lensNodeIds = new Set(lens?.visible_node_ids || []);
       const lensEdgeIds = new Set(lens?.visible_edge_ids || []);
+      const nodeBaseVisibility = new Map();
+      const nodeTextMatches = new Map();
+      const edgeBaseVisibility = new Map();
+      const edgeTextMatches = new Map();
+      const edgeMatchedEndpointIds = new Set();
 
       document.getElementById("resolution-label").textContent = scale ? `- ${scale.label}` : "";
       document.getElementById("resolution-description").textContent = scale ? scale.description : "";
       document.getElementById("resolution").setAttribute("aria-valuetext", scale ? `${scale.label}: ${scale.description}` : String(maxResolution));
 
+      cy.nodes().forEach((node) => {
+        const data = node.data();
+        const baseVisible = layers.has(data.layer)
+          && statuses.has(data.status)
+          && Number(data.resolution) <= maxResolution
+          && (lensNodeIds.size === 0 || lensNodeIds.has(data.id));
+        nodeBaseVisibility.set(node.id(), baseVisible);
+        nodeTextMatches.set(node.id(), !search || elementText(data).includes(search));
+      });
+
+      cy.edges().forEach((edge) => {
+        const data = edge.data();
+        const baseVisible = layers.has(data.layer)
+          && statuses.has(data.status)
+          && Number(data.resolution) <= maxResolution
+          && (lensEdgeIds.size === 0 || lensEdgeIds.has(data.id))
+          && nodeBaseVisibility.get(data.source)
+          && nodeBaseVisibility.get(data.target);
+        const edgeSelfMatches = elementText(data).includes(search);
+        const endpointMatches = nodeTextMatches.get(data.source) || nodeTextMatches.get(data.target);
+        edgeBaseVisibility.set(edge.id(), baseVisible);
+        edgeTextMatches.set(edge.id(), !search || edgeSelfMatches || endpointMatches);
+        if (search && baseVisible && edgeSelfMatches) {
+          edgeMatchedEndpointIds.add(data.source);
+          edgeMatchedEndpointIds.add(data.target);
+        }
+      });
+
       cy.batch(() => {
         cy.nodes().forEach((node) => {
-          const data = node.data();
-          const visible = layers.has(data.layer)
-            && statuses.has(data.status)
-            && Number(data.resolution) <= maxResolution
-            && (lensNodeIds.size === 0 || lensNodeIds.has(data.id))
-            && (!search || elementText(data).includes(search));
+          const visible = nodeBaseVisibility.get(node.id())
+            && (!search || nodeTextMatches.get(node.id()) || edgeMatchedEndpointIds.has(node.id()));
           node.toggleClass("hidden", !visible);
         });
 
-        const visibleNodeIds = new Set();
+        const visibleNodeIdSet = new Set();
         cy.nodes().forEach((node) => {
           if (!node.hasClass("hidden")) {
-            visibleNodeIds.add(node.id());
+            visibleNodeIdSet.add(node.id());
           }
         });
 
         cy.edges().forEach((edge) => {
           const data = edge.data();
-          const edgeVisible = layers.has(data.layer)
-            && statuses.has(data.status)
-            && Number(data.resolution) <= maxResolution
-            && visibleNodeIds.has(data.source)
-            && visibleNodeIds.has(data.target)
-            && (lensEdgeIds.size === 0 || lensEdgeIds.has(data.id))
-            && (!search || elementText(data).includes(search) || elementText(edge.source().data()).includes(search) || elementText(edge.target().data()).includes(search));
+          const edgeVisible = edgeBaseVisibility.get(edge.id())
+            && visibleNodeIdSet.has(data.source)
+            && visibleNodeIdSet.has(data.target)
+            && edgeTextMatches.get(edge.id());
           edge.toggleClass("hidden", !edgeVisible);
         });
       });
@@ -7179,6 +7205,7 @@
         layoutAnimationEnabled: () => layoutOptions(activeLayout).animate,
         lensIds: () => lenses.lenses.map((lens) => lens.id),
         observationsFor: (id) => observationRows(id),
+        pngDataUri: () => cy.png({ output: "base64uri", bg: "white", full: false }),
         relatedClaims: (id) => claimRows(id),
         relationFor: (id) => relationEntry(id),
         selectEdge: focusEdge,

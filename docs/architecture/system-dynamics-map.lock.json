@@ -2,7 +2,7 @@
   "generated_at": "2026-06-18T00:00:00Z",
   "generated_hashes": {
     "docs/architecture/fixtures/system-dynamics-map/sdlc-operating-slice.json": "b405bf4be92d1a7e4fcecbb4ab640e3b9f9b2dedae73d22bcbcd2189b6b78c1f",
-    "docs/architecture/system-dynamics-map-viewer.html": "68821bbb7ecad3b519d5cb8d8edbfa9b658722c38adc651fe328d5cf29b7ed56",
+    "docs/architecture/system-dynamics-map-viewer.html": "f3b5a07201699a7cd870a1fc0f1c96cd77c9c5a0e5829bddf6f090974692a035",
     "docs/architecture/system-dynamics-map.canonical.trig": "e193052bdd7f1cbfc4fe14dd65c311da54ebc7024ee3bc30e0916124204829dc",
     "docs/architecture/system-dynamics-map.claims.json": "b52f80e5eeb3b4cd8abf5b37e4a49b8e457bf823fa0ecdf838872b56ea1e641d",
     "docs/architecture/system-dynamics-map.lenses.json": "d7ef9c7773ad04c5d76597378414277089137028416e406559490e87512eef7f",
@@ -18,15 +18,15 @@
     "schemas/system-dynamics-map/seed.schema.json": "d90e150c456f4ebc38609039389c00073efb830dbb95bd02d5d302b6cb2fe933",
     "schemas/system-dynamics-map/view-manifest.schema.json": "002e805c4d832b5017aea204e6c62698c046785dbc722897157a501314bc7ad2"
   },
-  "git_sha": "407d2554a89452d7eb2aecb777b9cb09d3883f9c",
+  "git_sha": "85101cdd595ba4a1e621b5561a068b51dffecfa4",
   "git_sha_role": "generation_head",
   "map_id": "system-dynamics-map-v1",
-  "package_hash": "28771722b7388199d708b85d54f8e3e5c441e9a07b32276b55aadae11b0c3712",
+  "package_hash": "246688a87c3fe41318a35e951a95002f6476836701e8a918f077e534e675f47e",
   "schema": "system-dynamics-map-lock-v1",
   "source_hashes": {
     "seed": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
     "vendor": "9c2a3bf2592e0b14a1f7bec07c03a54f16dedf32af9cd0af155c716aa6c87bc3",
-    "viewer": "68821bbb7ecad3b519d5cb8d8edbfa9b658722c38adc651fe328d5cf29b7ed56"
+    "viewer": "f3b5a07201699a7cd870a1fc0f1c96cd77c9c5a0e5829bddf6f090974692a035"
   },
   "staleness_policy": "Generated hashes must match rendered materializer output. git_sha records the generation-head provenance; it is not a staleness key because an artifact committed to Git cannot contain its own self-referential future commit SHA.",
   "version": "1.0.0"

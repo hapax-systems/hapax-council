@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 from rdflib import RDF, Dataset, Graph, Literal, Namespace, URIRef
 
@@ -478,6 +479,20 @@ def test_materializer_write_and_stale_detection_paths(tmp_path, monkeypatch):
     errors = materialize.check_artifacts()
     assert any("stale" in error for error in errors)
     assert any("missing" in error for error in errors)
+
+
+def test_materializer_reports_next_action_for_missing_embedded_viewer_block(tmp_path, monkeypatch):
+    viewer_path = tmp_path / "system-dynamics-map-viewer.html"
+    viewer_path.write_text(
+        VIEWER_PATH.read_text(encoding="utf-8").replace(
+            'id="claims-data"', 'id="missing-claims-data"', 1
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(materialize, "VIEWER_PATH", viewer_path)
+
+    with pytest.raises(RuntimeError, match="Fix by restoring the supplemental JSON script tag"):
+        materialize.generate_viewer(_load_seed())
 
 
 def test_contract_rejects_invalid_relation_and_orphan_edge():

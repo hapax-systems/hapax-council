@@ -6,9 +6,9 @@
       "sha256": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e"
     },
     {
-      "bytes": 230489,
+      "bytes": 231676,
       "path": "docs/architecture/system-dynamics-map-viewer.html",
-      "sha256": "68821bbb7ecad3b519d5cb8d8edbfa9b658722c38adc651fe328d5cf29b7ed56"
+      "sha256": "f3b5a07201699a7cd870a1fc0f1c96cd77c9c5a0e5829bddf6f090974692a035"
     },
     {
       "bytes": 435328,
@@ -97,7 +97,7 @@
     "check_command": "python3 scripts/system_dynamics_map_materialize.py --check",
     "command": "python3 scripts/system_dynamics_map_materialize.py"
   },
-  "git_sha": "407d2554a89452d7eb2aecb777b9cb09d3883f9c",
+  "git_sha": "85101cdd595ba4a1e621b5561a068b51dffecfa4",
   "git_sha_policy": "Records git rev-parse HEAD at materializer invocation. Artifact commits cannot embed their own future commit SHA, so content hashes are the staleness key and git_sha is provenance.",
   "git_sha_role": "generation_head",
   "map_id": "system-dynamics-map-v1",

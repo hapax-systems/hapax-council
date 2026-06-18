@@ -132,6 +132,16 @@ def test_system_dynamics_viewer_core_interactions():
                 "Fix by recomputing visible edge state from the explicit visible node set."
             )
 
+            page.get_by_label("Search").fill("advances_to")
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().edges >= 1")
+            page.locator("#search-results").get_by_role(
+                "button", name=re.compile("Advances To")
+            ).click()
+            assert page.locator("#panel").inner_text().startswith("SDLC Intake -> cc-task Claim"), (
+                "relation-only search did not surface the matching edge. "
+                "Fix by promoting endpoints for edge text matches before applying visibility."
+            )
+
             page.get_by_label("Search").fill("")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
             page.locator('input[data-filter="status"][value="candidate"]').uncheck()
@@ -300,6 +310,17 @@ def test_system_dynamics_viewer_direct_file_mode_preserves_supplemental_data():
             ) == ("Advances To"), (
                 "direct file-open mode dropped relation vocabulary. "
                 "Fix by embedding relations-data in the static viewer."
+            )
+            page.get_by_label("Search").fill("advances_to")
+            page.locator("#search-results").get_by_role(
+                "button", name=re.compile("Advances To")
+            ).click()
+            assert page.locator("#panel").inner_text().startswith("SDLC Intake -> cc-task Claim")
+            payload = page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload()")
+            assert payload["search"] == "advances_to"
+            assert "sdlc-intake-to-claim" in payload["visible_edge_ids"]
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.pngDataUri().startsWith('data:image/png;base64,')"
             )
             assert not page.locator("#data-health.active").is_visible()
         finally:
