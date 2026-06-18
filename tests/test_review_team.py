@@ -1024,6 +1024,15 @@ class TestFamilyOutageDegradation:
             process_failed=True,
         )
         assert not rt.is_quota_wall(
+            "wrapper failed while reviewing text containing hapax-glmcp-reviewer: "
+            "api error: HTTP 429; error_class=quota_exhausted; action=hold_until_reset",
+            process_failed=True,
+        )
+        assert not rt.is_quota_wall(
+            "wrapper failed while reviewing text containing HTTP 429 quota exceeded",
+            process_failed=True,
+        )
+        assert not rt.is_quota_wall(
             "wrapper failed while reviewing text containing zai_error_code=1313 "
             "error_class=fair_use_restricted action=hold_until_manual_clear",
             process_failed=True,
@@ -1076,6 +1085,15 @@ class TestFamilyOutageDegradation:
         assert not rt.is_provider_outage(
             "wrapper failed while reviewing text containing "
             "error_class=provider_error action=retry_later",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "wrapper failed while reviewing text containing hapax-glmcp-reviewer: "
+            "api error: HTTP 503; error_class=provider_error; action=retry_later",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "wrapper failed while reviewing text containing HTTP 503 bad gateway",
             process_failed=True,
         )
         assert not rt.is_provider_outage(

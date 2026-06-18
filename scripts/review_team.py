@@ -114,13 +114,13 @@ _QUOTA_WALL_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 _QUOTA_WALL_HTTP_RE = re.compile(
-    r"\bHTTP\s+429\b.*"
+    r"\A(?:[-\w.]+:\s+api error:\s+)?HTTP\s+429\b.*"
     r"(?:quota|usage limit|rate.?limit|too many requests|insufficient balance|"
     r"RESOURCE_EXHAUSTED)",
     re.IGNORECASE | re.DOTALL,
 )
 _STRUCTURED_ZAI_ENVELOPE_RE = re.compile(
-    r"\bhapax-glmcp-reviewer:\s+api error:\s+HTTP\s+\d{3}\b",
+    r"\A\s*hapax-glmcp-reviewer:\s+api error:\s+HTTP\s+\d{3}\b",
     re.IGNORECASE,
 )
 _STRUCTURED_FIELD_VALUE_RE = re.compile(r"\A[A-Za-z0-9_:-]+\Z")
@@ -300,8 +300,8 @@ def is_provider_outage(
         actions=_STRUCTURED_PROVIDER_OUTAGE_ACTIONS,
     ):
         return True
-    http_429 = bool(re.search(r"\bHTTP\s+429\b", stripped, flags=re.IGNORECASE))
-    http_5xx = bool(re.search(r"\bHTTP\s+5\d\d\b", stripped, flags=re.IGNORECASE))
+    http_429 = bool(re.match(r"\AHTTP\s+429\b", normalized, flags=re.IGNORECASE))
+    http_5xx = bool(re.match(r"\AHTTP\s+5\d\d\b", normalized, flags=re.IGNORECASE))
     outage_terms = bool(_PROVIDER_OUTAGE_LINE_RE.search(stripped))
     provider_detail = re.split(r";\s*retry later\b", normalized, maxsplit=1, flags=re.IGNORECASE)[0]
     provider_detail_outage_terms = bool(_PROVIDER_OUTAGE_LINE_RE.search(provider_detail))
