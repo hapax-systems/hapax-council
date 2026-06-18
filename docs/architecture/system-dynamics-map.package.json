@@ -6,9 +6,9 @@
       "sha256": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e"
     },
     {
-      "bytes": 83184,
+      "bytes": 232248,
       "path": "docs/architecture/system-dynamics-map-viewer.html",
-      "sha256": "f25d3e57908c1ee71416eb290a211830b477e5bf9c3af895d164edba7d08de25"
+      "sha256": "77a5de7f03be0ec186259d349893b2a5849e423254f8d7d527cd527b634c1419"
     },
     {
       "bytes": 435328,
@@ -38,7 +38,7 @@
     {
       "bytes": 3375,
       "path": "docs/architecture/system-dynamics-map.observations.jsonl",
-      "sha256": "ba0c66a9ba2f538642fd8629e45c04e93013d21b839051eb8506034335ee45dd"
+      "sha256": "c645394a59f884ef18cdb2db66b824624c7da3c90ecf775d5e61f1acccacc3c5"
     },
     {
       "bytes": 24510,
@@ -97,7 +97,7 @@
     "check_command": "python3 scripts/system_dynamics_map_materialize.py --check",
     "command": "python3 scripts/system_dynamics_map_materialize.py"
   },
-  "git_sha": "620990a7546e2630759c92d2427be0f6cead13b1",
+  "git_sha": "f0c314c3a59c0aa23c3f87516d963120887adcc1",
   "git_sha_policy": "Records git rev-parse HEAD at materializer invocation. Artifact commits cannot embed their own future commit SHA, so content hashes are the staleness key and git_sha is provenance.",
   "git_sha_role": "generation_head",
   "map_id": "system-dynamics-map-v1",

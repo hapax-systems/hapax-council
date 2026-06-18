@@ -70,7 +70,7 @@
     }
 
     .app {
-      align-items: stretch;
+      align-items: flex-start;
       display: flex;
       flex-wrap: wrap;
       min-height: 0;
@@ -96,21 +96,25 @@
     .controls {
       border-right: 1px solid var(--line);
       flex: 1 1 280px;
-      order: 3;
+      max-height: clamp(320px, 38vh, 720px);
+      order: 1;
     }
 
     .details {
       border-left: 1px solid var(--line);
       flex: 1 1 320px;
-      order: 2;
+      max-height: 760px;
+      order: 3;
     }
 
     .workspace {
       display: grid;
       flex: 999 1 min(520px, 100%);
       grid-template-rows: auto 1fr;
-      min-height: 72vh;
-      order: 1;
+      height: 72vh;
+      max-height: 760px;
+      min-height: 520px;
+      order: 2;
       overflow: hidden;
       width: 100%;
     }
@@ -177,13 +181,14 @@
       font-size: 0.9rem;
       gap: 8px;
       grid-template-columns: 18px 1fr;
+      min-height: 36px;
     }
 
     .check input {
       accent-color: var(--accent);
-      height: 16px;
+      height: 20px;
       margin: 0;
-      width: 16px;
+      width: 20px;
     }
 
     .button-row {
@@ -203,8 +208,8 @@
       display: inline-flex;
       font: inherit;
       font-size: 0.86rem;
-      min-height: 34px;
-      padding: 7px 10px;
+      min-height: 44px;
+      padding: 9px 12px;
       text-decoration: none;
     }
 
@@ -231,6 +236,101 @@
       line-height: 1.35;
       min-width: 0;
       overflow-wrap: anywhere;
+    }
+
+    .data-health {
+      background: color-mix(in oklab, var(--focus) 12%, Canvas);
+      border-bottom: 1px solid var(--line);
+      color: var(--text);
+      display: none;
+      font-size: 0.86rem;
+      padding: 8px 18px;
+    }
+
+    .data-health.active {
+      display: block;
+    }
+
+    .helper {
+      color: var(--muted);
+      font-size: 0.78rem;
+      line-height: 1.35;
+      margin: 0;
+    }
+
+    .lens-summary,
+    .finder-results,
+    .encoding-list {
+      background: color-mix(in oklab, Canvas 96%, CanvasText 4%);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+    }
+
+    .lens-summary {
+      margin-bottom: 14px;
+      max-height: 190px;
+      overflow: auto;
+    }
+
+    .finder-results {
+      max-height: 180px;
+      overflow: auto;
+    }
+
+    .lens-summary p,
+    .finder-results p,
+    .encoding-list p {
+      color: var(--muted);
+      font-size: 0.82rem;
+      line-height: 1.35;
+      margin: 0;
+    }
+
+    .kv-grid {
+      display: grid;
+      gap: 6px;
+      grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    }
+
+    .kv {
+      border-top: 1px solid var(--line);
+      display: grid;
+      gap: 2px;
+      padding-top: 6px;
+    }
+
+    .kv span:first-child {
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .kv span:last-child {
+      font-size: 0.86rem;
+      overflow-wrap: anywhere;
+    }
+
+    .result-list {
+      display: grid;
+      gap: 6px;
+      margin: 0;
+      padding: 0;
+    }
+
+    .result-list li {
+      list-style: none;
+      margin: 0;
+    }
+
+    .result-button {
+      justify-content: flex-start;
+      min-height: 38px;
+      text-align: left;
+      width: 100%;
     }
 
     .pill-row {
@@ -290,6 +390,44 @@
       padding-left: 18px;
     }
 
+    details.evidence-row {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      margin: 6px 0;
+      padding: 8px;
+    }
+
+    details.evidence-row summary {
+      cursor: pointer;
+      font-size: 0.88rem;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+
+    .fact-list {
+      display: grid;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .fact {
+      display: grid;
+      gap: 2px;
+    }
+
+    .fact dt {
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .fact dd {
+      font-size: 0.84rem;
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+
     .doc-links {
       display: grid;
       gap: 6px;
@@ -321,6 +459,23 @@
       width: 14px;
     }
 
+    .swatch.dashed {
+      background: transparent;
+      border: 2px dashed var(--muted);
+    }
+
+    .swatch.diamond {
+      transform: rotate(45deg);
+    }
+
+    .swatch.line {
+      align-self: center;
+      border: 0;
+      border-top: 3px solid var(--muted);
+      border-radius: 0;
+      height: 0;
+    }
+
     .error {
       border: 1px solid var(--danger);
       border-radius: var(--radius);
@@ -336,12 +491,17 @@
       <h1>System Dynamics Map v1</h1>
       <div class="button-row">
         <a class="source-link" href="./system-dynamics-map.seed.json">Seed JSON</a>
+        <a class="source-link" href="./system-dynamics-map.claims.json">Claims</a>
+        <a class="source-link" href="./system-dynamics-map.observations.jsonl">Observations</a>
+        <a class="source-link" href="./system-dynamics-map.lenses.json">Lenses</a>
+        <a class="source-link" href="./system-dynamics-map.relations.json">Relations</a>
         <a class="source-link" href="./system-dynamics-map.package.json">Package</a>
         <a class="source-link" href="./system-dynamics-map.view-manifest.json">Manifest</a>
       </div>
     </div>
     <p class="subtitle">A source-neutral semantic backbone anchors the map. Modeling notations, runtime topology, telemetry, state evidence, provenance, validation, and projection engines are rendered as separable claim types.</p>
   </header>
+  <div class="data-health" id="data-health" role="status" aria-live="polite"></div>
 
   <main class="app">
     <aside class="controls" aria-label="Map controls">
@@ -349,15 +509,19 @@
         <label for="lens">Lens</label>
         <select id="lens"></select>
       </div>
+      <div class="lens-summary" id="lens-summary" aria-live="polite"></div>
 
       <div class="field">
         <label for="search">Search</label>
         <input id="search" type="search" placeholder="provenance, telemetry">
+        <p class="helper">Search includes labels, aliases, tags, claims, observations, relation vocabulary, and documentation links.</p>
       </div>
+      <div class="finder-results" id="search-results" aria-label="Visible element results"></div>
 
       <div class="field">
         <label for="resolution">Resolution <span id="resolution-label"></span></label>
-        <input id="resolution" type="range" min="1" max="5" step="1" value="5">
+        <input id="resolution" type="range" min="1" max="5" step="1" value="5" aria-valuemin="1" aria-valuemax="5">
+        <p class="helper" id="resolution-description"></p>
       </div>
 
       <fieldset>
@@ -366,29 +530,37 @@
       </fieldset>
 
       <fieldset>
-        <legend>Status</legend>
+        <legend>Claim Partition</legend>
+        <p class="helper">Topology claim partition is separate from temporal observations and live state evidence.</p>
         <div id="status-filters"></div>
       </fieldset>
 
       <div class="section">
-        <h3>Legend</h3>
+        <h3>Layer Legend</h3>
         <div class="legend-list" id="legend"></div>
+      </div>
+
+      <div class="section">
+        <h3>Encoding</h3>
+        <div class="encoding-list" id="encoding-legend"></div>
       </div>
     </aside>
 
     <section class="workspace" aria-label="Graph workspace">
       <div class="toolbar">
-        <div class="button-row" aria-label="Layouts">
-          <button type="button" class="active" data-layout="cose">Force</button>
-          <button type="button" data-layout="breadthfirst">Directed</button>
-          <button type="button" data-layout="circle">Circle</button>
-          <button type="button" data-layout="grid">Grid</button>
+        <div class="button-row" aria-label="Layouts" role="group">
+          <button type="button" class="active" data-layout="cose" aria-pressed="true">Force</button>
+          <button type="button" data-layout="breadthfirst" aria-pressed="false">Directed</button>
+          <button type="button" data-layout="circle" aria-pressed="false">Circle</button>
+          <button type="button" data-layout="grid" aria-pressed="false">Grid</button>
         </div>
         <button type="button" id="fit">Fit</button>
-        <span class="state-summary" id="state-summary"></span>
-        <span class="metric" id="counts"></span>
+        <button type="button" id="copy-view">Copy View JSON</button>
+        <button type="button" id="export-png">PNG</button>
+        <span class="state-summary" id="state-summary" role="status" aria-live="polite"></span>
+        <span class="metric" id="counts" role="status" aria-live="polite"></span>
       </div>
-      <div id="cy"></div>
+      <div id="cy" role="img" tabindex="0" aria-label="Interactive system dynamics graph. Use the result buttons in Map controls for keyboard selection."></div>
     </section>
 
     <aside class="details" aria-live="polite" aria-label="Selection details">
@@ -2148,31 +2320,3941 @@
   ]
 }
   </script>
+  <script type="application/json" id="claims-data">
+{
+  "schema": "system-dynamics-map-claims-v1",
+  "map_id": "system-dynamics-map-v1",
+  "version": "1.0.0",
+  "generated_at": "2026-06-18T00:00:00Z",
+  "claims": [
+    {
+      "id": "claim-node-rdf-owl-kg",
+      "claim_type": "asserted",
+      "subject": "rdf-owl-kg",
+      "predicate": "declares_node",
+      "object": "backbone",
+      "element_id": "rdf-owl-kg",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/0",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-shacl-contracts",
+      "claim_type": "asserted",
+      "subject": "shacl-contracts",
+      "predicate": "declares_node",
+      "object": "validation",
+      "element_id": "shacl-contracts",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/1",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-prov-o",
+      "claim_type": "asserted",
+      "subject": "prov-o",
+      "predicate": "declares_node",
+      "object": "provenance",
+      "element_id": "prov-o",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/2",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-jsonld-trig",
+      "claim_type": "asserted",
+      "subject": "jsonld-trig",
+      "predicate": "declares_node",
+      "object": "exchange",
+      "element_id": "jsonld-trig",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/3",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-temporal-state-events",
+      "claim_type": "asserted",
+      "subject": "temporal-state-events",
+      "predicate": "declares_node",
+      "object": "modeling-pattern",
+      "element_id": "temporal-state-events",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/4",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-opentelemetry",
+      "claim_type": "asserted",
+      "subject": "opentelemetry",
+      "predicate": "declares_node",
+      "object": "telemetry",
+      "element_id": "opentelemetry",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/5",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-trace-context",
+      "claim_type": "asserted",
+      "subject": "trace-context",
+      "predicate": "declares_node",
+      "object": "standard",
+      "element_id": "trace-context",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/6",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-cloudevents",
+      "claim_type": "asserted",
+      "subject": "cloudevents",
+      "predicate": "declares_node",
+      "object": "standard",
+      "element_id": "cloudevents",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/7",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-xes-event-log",
+      "claim_type": "candidate",
+      "subject": "xes-event-log",
+      "predicate": "declares_node",
+      "object": "standard",
+      "element_id": "xes-event-log",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 0.75,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/8",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-scxml-statecharts",
+      "claim_type": "candidate",
+      "subject": "scxml-statecharts",
+      "predicate": "declares_node",
+      "object": "standard",
+      "element_id": "scxml-statecharts",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 0.75,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/9",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-view-manifest",
+      "claim_type": "rendered",
+      "subject": "view-manifest",
+      "predicate": "declares_node",
+      "object": "projection-contract",
+      "element_id": "view-manifest",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 0.75,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/10",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-cytoscape",
+      "claim_type": "rendered",
+      "subject": "cytoscape",
+      "predicate": "declares_node",
+      "object": "renderer",
+      "element_id": "cytoscape",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 0.75,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/11",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-react-flow",
+      "claim_type": "candidate",
+      "subject": "react-flow",
+      "predicate": "declares_node",
+      "object": "renderer",
+      "element_id": "react-flow",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 0.75,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/12",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-sigma",
+      "claim_type": "candidate",
+      "subject": "sigma",
+      "predicate": "declares_node",
+      "object": "renderer",
+      "element_id": "sigma",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 0.75,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/13",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-decision-service",
+      "claim_type": "asserted",
+      "subject": "decision-service",
+      "predicate": "declares_node",
+      "object": "boundary",
+      "element_id": "decision-service",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/14",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-decision-table",
+      "claim_type": "asserted",
+      "subject": "decision-table",
+      "predicate": "declares_node",
+      "object": "artifact",
+      "element_id": "decision-table",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/15",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-dmn",
+      "claim_type": "asserted",
+      "subject": "dmn",
+      "predicate": "declares_node",
+      "object": "standard",
+      "element_id": "dmn",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/16",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-drd",
+      "claim_type": "asserted",
+      "subject": "drd",
+      "predicate": "declares_node",
+      "object": "notation",
+      "element_id": "drd",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/17",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-feel",
+      "claim_type": "asserted",
+      "subject": "feel",
+      "predicate": "declares_node",
+      "object": "language",
+      "element_id": "feel",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/18",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-sbvr",
+      "claim_type": "candidate",
+      "subject": "sbvr",
+      "predicate": "declares_node",
+      "object": "standard",
+      "element_id": "sbvr",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 0.75,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/19",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-dmn-xml-di",
+      "claim_type": "asserted",
+      "subject": "dmn-xml-di",
+      "predicate": "declares_node",
+      "object": "interchange",
+      "element_id": "dmn-xml-di",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/20",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-model-artifacts",
+      "claim_type": "candidate",
+      "subject": "model-artifacts",
+      "predicate": "declares_node",
+      "object": "artifact",
+      "element_id": "model-artifacts",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 0.75,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/21",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-rule-engine",
+      "claim_type": "candidate",
+      "subject": "rule-engine",
+      "predicate": "declares_node",
+      "object": "runtime",
+      "element_id": "rule-engine",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 0.75,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/22",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-runtime-decision-api",
+      "claim_type": "candidate",
+      "subject": "runtime-decision-api",
+      "predicate": "declares_node",
+      "object": "runtime",
+      "element_id": "runtime-decision-api",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 0.75,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/23",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-archimate",
+      "claim_type": "asserted",
+      "subject": "archimate",
+      "predicate": "declares_node",
+      "object": "standard",
+      "element_id": "archimate",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/24",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-bpmn",
+      "claim_type": "asserted",
+      "subject": "bpmn",
+      "predicate": "declares_node",
+      "object": "standard",
+      "element_id": "bpmn",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/25",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-c4-runtime",
+      "claim_type": "candidate",
+      "subject": "c4-runtime",
+      "predicate": "declares_node",
+      "object": "practice",
+      "element_id": "c4-runtime",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 0.75,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/26",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-cmmn",
+      "claim_type": "asserted",
+      "subject": "cmmn",
+      "predicate": "declares_node",
+      "object": "standard",
+      "element_id": "cmmn",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/27",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-sysml-v2",
+      "claim_type": "asserted",
+      "subject": "sysml-v2",
+      "predicate": "declares_node",
+      "object": "standard",
+      "element_id": "sysml-v2",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/28",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-sdlc-intake",
+      "claim_type": "asserted",
+      "subject": "sdlc-intake",
+      "predicate": "declares_node",
+      "object": "operating-slice",
+      "element_id": "sdlc-intake",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/29",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-cc-task-claim",
+      "claim_type": "asserted",
+      "subject": "cc-task-claim",
+      "predicate": "declares_node",
+      "object": "state-transition",
+      "element_id": "cc-task-claim",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/30",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-review-dossier",
+      "claim_type": "asserted",
+      "subject": "review-dossier",
+      "predicate": "declares_node",
+      "object": "evidence-artifact",
+      "element_id": "review-dossier",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/31",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-pr-ci-checks",
+      "claim_type": "asserted",
+      "subject": "pr-ci-checks",
+      "predicate": "declares_node",
+      "object": "release-signal",
+      "element_id": "pr-ci-checks",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/32",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-merge-release",
+      "claim_type": "asserted",
+      "subject": "merge-release",
+      "predicate": "declares_node",
+      "object": "state-transition",
+      "element_id": "merge-release",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 1.0,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/33",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-node-operating-lens",
+      "claim_type": "rendered",
+      "subject": "operating-lens",
+      "predicate": "declares_node",
+      "object": "projection-contract",
+      "element_id": "operating-lens",
+      "element_kind": "node",
+      "confidence_basis": {
+        "method": "curated_seed",
+        "score": 0.75,
+        "directness": "curated architecture source",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/nodes/34",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-dmn-to-drd",
+      "claim_type": "asserted",
+      "subject": "dmn",
+      "predicate": "defines",
+      "object": "drd",
+      "element_id": "dmn-to-drd",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 1.0,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/0",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-dmn-to-feel",
+      "claim_type": "asserted",
+      "subject": "dmn",
+      "predicate": "uses_expression_language",
+      "object": "feel",
+      "element_id": "dmn-to-feel",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 1.0,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/1",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-dmn-to-decision-service",
+      "claim_type": "asserted",
+      "subject": "dmn",
+      "predicate": "packages",
+      "object": "decision-service",
+      "element_id": "dmn-to-decision-service",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.95,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/2",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-dmn-to-decision-table",
+      "claim_type": "asserted",
+      "subject": "dmn",
+      "predicate": "contains_logic_artifact",
+      "object": "decision-table",
+      "element_id": "dmn-to-decision-table",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 1.0,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/3",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-dmn-to-sbvr",
+      "claim_type": "candidate",
+      "subject": "dmn",
+      "predicate": "adjacent_vocabulary",
+      "object": "sbvr",
+      "element_id": "dmn-to-sbvr",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.74,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/4",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-bpmn-to-decision-service",
+      "claim_type": "asserted",
+      "subject": "bpmn",
+      "predicate": "invokes_or_contextualizes",
+      "object": "decision-service",
+      "element_id": "bpmn-to-decision-service",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.95,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/5",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-cmmn-to-decision-service",
+      "claim_type": "asserted",
+      "subject": "cmmn",
+      "predicate": "invokes_or_contextualizes",
+      "object": "decision-service",
+      "element_id": "cmmn-to-decision-service",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.9,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/6",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-archimate-to-runtime-topology",
+      "claim_type": "asserted",
+      "subject": "archimate",
+      "predicate": "enterprise_context_for",
+      "object": "c4-runtime",
+      "element_id": "archimate-to-runtime-topology",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.86,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/7",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-sysml-to-model-artifacts",
+      "claim_type": "candidate",
+      "subject": "sysml-v2",
+      "predicate": "systems_context_for",
+      "object": "model-artifacts",
+      "element_id": "sysml-to-model-artifacts",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.78,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/8",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-c4-to-decision-api",
+      "claim_type": "candidate",
+      "subject": "c4-runtime",
+      "predicate": "deploys_or_contains",
+      "object": "runtime-decision-api",
+      "element_id": "c4-to-decision-api",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.82,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/9",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-dmn-to-xml-di",
+      "claim_type": "asserted",
+      "subject": "dmn",
+      "predicate": "serialized_as",
+      "object": "dmn-xml-di",
+      "element_id": "dmn-to-xml-di",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.96,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/10",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-decision-table-to-rule-engine",
+      "claim_type": "candidate",
+      "subject": "decision-table",
+      "predicate": "compiled_or_interpreted_by",
+      "object": "rule-engine",
+      "element_id": "decision-table-to-rule-engine",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.8,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/11",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-feel-to-rule-engine",
+      "claim_type": "candidate",
+      "subject": "feel",
+      "predicate": "requires_runtime_support",
+      "object": "rule-engine",
+      "element_id": "feel-to-rule-engine",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.78,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/12",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-decision-service-to-api",
+      "claim_type": "candidate",
+      "subject": "decision-service",
+      "predicate": "implemented_by",
+      "object": "runtime-decision-api",
+      "element_id": "decision-service-to-api",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.86,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/13",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-model-artifacts-to-decision-service",
+      "claim_type": "candidate",
+      "subject": "model-artifacts",
+      "predicate": "feeds_or_complements",
+      "object": "decision-service",
+      "element_id": "model-artifacts-to-decision-service",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.7,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/14",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-dmn-to-kg",
+      "claim_type": "asserted",
+      "subject": "dmn",
+      "predicate": "mapped_into",
+      "object": "rdf-owl-kg",
+      "element_id": "dmn-to-kg",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.93,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/15",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-bpmn-to-kg",
+      "claim_type": "candidate",
+      "subject": "bpmn",
+      "predicate": "mapped_into",
+      "object": "rdf-owl-kg",
+      "element_id": "bpmn-to-kg",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.84,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/16",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-archimate-to-kg",
+      "claim_type": "candidate",
+      "subject": "archimate",
+      "predicate": "mapped_into",
+      "object": "rdf-owl-kg",
+      "element_id": "archimate-to-kg",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.82,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/17",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-sysml-to-kg",
+      "claim_type": "candidate",
+      "subject": "sysml-v2",
+      "predicate": "mapped_into",
+      "object": "rdf-owl-kg",
+      "element_id": "sysml-to-kg",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.8,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/18",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-kg-to-shacl",
+      "claim_type": "asserted",
+      "subject": "rdf-owl-kg",
+      "predicate": "validated_by",
+      "object": "shacl-contracts",
+      "element_id": "kg-to-shacl",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 1.0,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/19",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-kg-to-prov",
+      "claim_type": "asserted",
+      "subject": "rdf-owl-kg",
+      "predicate": "qualified_by",
+      "object": "prov-o",
+      "element_id": "kg-to-prov",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 1.0,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/20",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-kg-to-jsonld",
+      "claim_type": "asserted",
+      "subject": "rdf-owl-kg",
+      "predicate": "serialized_as",
+      "object": "jsonld-trig",
+      "element_id": "kg-to-jsonld",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.96,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/21",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-state-to-kg",
+      "claim_type": "asserted",
+      "subject": "temporal-state-events",
+      "predicate": "overlays",
+      "object": "rdf-owl-kg",
+      "element_id": "state-to-kg",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.94,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/22",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-state-to-scxml",
+      "claim_type": "candidate",
+      "subject": "temporal-state-events",
+      "predicate": "can_use_state_machine_notation",
+      "object": "scxml-statecharts",
+      "element_id": "state-to-scxml",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.75,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/23",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-state-to-xes",
+      "claim_type": "candidate",
+      "subject": "temporal-state-events",
+      "predicate": "exports_or_imports_event_logs",
+      "object": "xes-event-log",
+      "element_id": "state-to-xes",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.76,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/24",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-api-to-otel",
+      "claim_type": "asserted",
+      "subject": "runtime-decision-api",
+      "predicate": "emits_telemetry",
+      "object": "opentelemetry",
+      "element_id": "api-to-otel",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.82,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/25",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-api-to-trace-context",
+      "claim_type": "asserted",
+      "subject": "runtime-decision-api",
+      "predicate": "propagates_trace_identity",
+      "object": "trace-context",
+      "element_id": "api-to-trace-context",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.82,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/26",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-api-to-cloudevents",
+      "claim_type": "candidate",
+      "subject": "runtime-decision-api",
+      "predicate": "can_emit_event_envelopes",
+      "object": "cloudevents",
+      "element_id": "api-to-cloudevents",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.72,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/27",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-otel-to-kg",
+      "claim_type": "asserted",
+      "subject": "opentelemetry",
+      "predicate": "observes",
+      "object": "rdf-owl-kg",
+      "element_id": "otel-to-kg",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.8,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/28",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-kg-to-view-manifest",
+      "claim_type": "rendered",
+      "subject": "rdf-owl-kg",
+      "predicate": "projected_by",
+      "object": "view-manifest",
+      "element_id": "kg-to-view-manifest",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.95,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/29",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-shacl-to-view-manifest",
+      "claim_type": "asserted",
+      "subject": "shacl-contracts",
+      "predicate": "guards",
+      "object": "view-manifest",
+      "element_id": "shacl-to-view-manifest",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.92,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/30",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-prov-to-view-manifest",
+      "claim_type": "rendered",
+      "subject": "prov-o",
+      "predicate": "records_generation_of",
+      "object": "view-manifest",
+      "element_id": "prov-to-view-manifest",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.9,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/31",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-view-to-cytoscape",
+      "claim_type": "rendered",
+      "subject": "view-manifest",
+      "predicate": "renders_with",
+      "object": "cytoscape",
+      "element_id": "view-to-cytoscape",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.96,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/32",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-view-to-react-flow",
+      "claim_type": "candidate",
+      "subject": "view-manifest",
+      "predicate": "future_authoring_projection",
+      "object": "react-flow",
+      "element_id": "view-to-react-flow",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.68,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/33",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-view-to-sigma",
+      "claim_type": "candidate",
+      "subject": "view-manifest",
+      "predicate": "future_large_graph_projection",
+      "object": "sigma",
+      "element_id": "view-to-sigma",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.66,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/34",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-sdlc-intake-to-claim",
+      "claim_type": "asserted",
+      "subject": "sdlc-intake",
+      "predicate": "advances_to",
+      "object": "cc-task-claim",
+      "element_id": "sdlc-intake-to-claim",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.95,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/35",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-claim-to-review-dossier",
+      "claim_type": "asserted",
+      "subject": "cc-task-claim",
+      "predicate": "produces_evidence",
+      "object": "review-dossier",
+      "element_id": "claim-to-review-dossier",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.9,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/36",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-review-dossier-to-pr-ci",
+      "claim_type": "asserted",
+      "subject": "review-dossier",
+      "predicate": "guards_release",
+      "object": "pr-ci-checks",
+      "element_id": "review-dossier-to-pr-ci",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.9,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/37",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-pr-ci-to-merge-release",
+      "claim_type": "asserted",
+      "subject": "pr-ci-checks",
+      "predicate": "admits_release",
+      "object": "merge-release",
+      "element_id": "pr-ci-to-merge-release",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.88,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/38",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-operating-lens-to-sdlc",
+      "claim_type": "rendered",
+      "subject": "operating-lens",
+      "predicate": "projects_operating_slice",
+      "object": "sdlc-intake",
+      "element_id": "operating-lens-to-sdlc",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.86,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/39",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-temporal-state-to-sdlc",
+      "claim_type": "asserted",
+      "subject": "temporal-state-events",
+      "predicate": "models_observed_state",
+      "object": "sdlc-intake",
+      "element_id": "temporal-state-to-sdlc",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.88,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/40",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    },
+    {
+      "id": "claim-edge-prov-to-review-dossier",
+      "claim_type": "asserted",
+      "subject": "prov-o",
+      "predicate": "records_generation_of",
+      "object": "review-dossier",
+      "element_id": "prov-to-review-dossier",
+      "element_kind": "edge",
+      "confidence_basis": {
+        "method": "curated_seed_edge",
+        "score": 0.9,
+        "directness": "source documentation plus architecture judgment",
+        "recency": "seed generation timestamp"
+      },
+      "valid_time": {
+        "from": "2026-06-18T00:00:00Z",
+        "to": null
+      },
+      "transaction_time": "2026-06-18T00:00:00Z",
+      "freshness": {
+        "state": "timeless",
+        "expires_at": null
+      },
+      "contradiction_state": "none",
+      "provenance": {
+        "source_ref": "system-dynamics-map.seed.json#/edges/41",
+        "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+        "source_type": "manual_seed",
+        "agent": "scripts/system_dynamics_map_materialize.py",
+        "activity": "seed_claim_projection",
+        "authority_ceiling": "architecture_contract"
+      }
+    }
+  ]
+}
+  </script>
+  <script type="application/json" id="lenses-data">
+{
+  "schema": "system-dynamics-map-lenses-v1",
+  "map_id": "system-dynamics-map-v1",
+  "version": "1.0.0",
+  "generated_at": "2026-06-18T00:00:00Z",
+  "default_lens": "topology",
+  "lenses": [
+    {
+      "id": "topology",
+      "label": "Topology",
+      "description": "Source-neutral topology and modeling context.",
+      "visible_layers": [
+        "source-models",
+        "decision-modeling",
+        "execution-surfaces",
+        "semantic-backbone",
+        "observation-state",
+        "projection"
+      ],
+      "visible_statuses": [
+        "asserted",
+        "inferred",
+        "simulated",
+        "rendered",
+        "candidate"
+      ],
+      "max_resolution": 5,
+      "layout": "cose",
+      "state_mode": "topology",
+      "aggregation": {
+        "mode": "none",
+        "lossy": false,
+        "reversible": true
+      },
+      "visible_node_ids": [
+        "archimate",
+        "bpmn",
+        "c4-runtime",
+        "cc-task-claim",
+        "cloudevents",
+        "cmmn",
+        "cytoscape",
+        "decision-service",
+        "decision-table",
+        "dmn",
+        "dmn-xml-di",
+        "drd",
+        "feel",
+        "jsonld-trig",
+        "merge-release",
+        "model-artifacts",
+        "opentelemetry",
+        "operating-lens",
+        "pr-ci-checks",
+        "prov-o",
+        "rdf-owl-kg",
+        "react-flow",
+        "review-dossier",
+        "rule-engine",
+        "runtime-decision-api",
+        "sbvr",
+        "scxml-statecharts",
+        "sdlc-intake",
+        "shacl-contracts",
+        "sigma",
+        "sysml-v2",
+        "temporal-state-events",
+        "trace-context",
+        "view-manifest",
+        "xes-event-log"
+      ],
+      "hidden_node_ids": [],
+      "visible_edge_ids": [
+        "api-to-cloudevents",
+        "api-to-otel",
+        "api-to-trace-context",
+        "archimate-to-kg",
+        "archimate-to-runtime-topology",
+        "bpmn-to-decision-service",
+        "bpmn-to-kg",
+        "c4-to-decision-api",
+        "claim-to-review-dossier",
+        "cmmn-to-decision-service",
+        "decision-service-to-api",
+        "decision-table-to-rule-engine",
+        "dmn-to-decision-service",
+        "dmn-to-decision-table",
+        "dmn-to-drd",
+        "dmn-to-feel",
+        "dmn-to-kg",
+        "dmn-to-sbvr",
+        "dmn-to-xml-di",
+        "feel-to-rule-engine",
+        "kg-to-jsonld",
+        "kg-to-prov",
+        "kg-to-shacl",
+        "kg-to-view-manifest",
+        "model-artifacts-to-decision-service",
+        "operating-lens-to-sdlc",
+        "otel-to-kg",
+        "pr-ci-to-merge-release",
+        "prov-to-review-dossier",
+        "prov-to-view-manifest",
+        "review-dossier-to-pr-ci",
+        "sdlc-intake-to-claim",
+        "shacl-to-view-manifest",
+        "state-to-kg",
+        "state-to-scxml",
+        "state-to-xes",
+        "sysml-to-kg",
+        "sysml-to-model-artifacts",
+        "temporal-state-to-sdlc",
+        "view-to-cytoscape",
+        "view-to-react-flow",
+        "view-to-sigma"
+      ],
+      "hidden_edge_ids": [],
+      "validation_status": "generated",
+      "source_snapshot": "system-dynamics-map.seed.json"
+    },
+    {
+      "id": "operating-slice",
+      "label": "Operating Slice",
+      "description": "SDLC intake, claim, review, PR/CI, and release evidence path.",
+      "visible_layers": [
+        "observation-state",
+        "semantic-backbone",
+        "execution-surfaces",
+        "projection"
+      ],
+      "visible_statuses": [
+        "asserted",
+        "rendered"
+      ],
+      "max_resolution": 5,
+      "layout": "breadthfirst",
+      "state_mode": "observed",
+      "focus_node_ids": [
+        "temporal-state-events",
+        "prov-o",
+        "sdlc-intake",
+        "cc-task-claim",
+        "review-dossier",
+        "pr-ci-checks",
+        "merge-release",
+        "operating-lens"
+      ],
+      "aggregation": {
+        "mode": "path",
+        "lossy": false,
+        "reversible": true
+      },
+      "visible_node_ids": [
+        "cc-task-claim",
+        "merge-release",
+        "operating-lens",
+        "pr-ci-checks",
+        "prov-o",
+        "review-dossier",
+        "sdlc-intake",
+        "temporal-state-events"
+      ],
+      "hidden_node_ids": [
+        "archimate",
+        "bpmn",
+        "c4-runtime",
+        "cloudevents",
+        "cmmn",
+        "cytoscape",
+        "decision-service",
+        "decision-table",
+        "dmn",
+        "dmn-xml-di",
+        "drd",
+        "feel",
+        "jsonld-trig",
+        "model-artifacts",
+        "opentelemetry",
+        "rdf-owl-kg",
+        "react-flow",
+        "rule-engine",
+        "runtime-decision-api",
+        "sbvr",
+        "scxml-statecharts",
+        "shacl-contracts",
+        "sigma",
+        "sysml-v2",
+        "trace-context",
+        "view-manifest",
+        "xes-event-log"
+      ],
+      "visible_edge_ids": [
+        "claim-to-review-dossier",
+        "operating-lens-to-sdlc",
+        "pr-ci-to-merge-release",
+        "prov-to-review-dossier",
+        "review-dossier-to-pr-ci",
+        "sdlc-intake-to-claim",
+        "temporal-state-to-sdlc"
+      ],
+      "hidden_edge_ids": [
+        "api-to-cloudevents",
+        "api-to-otel",
+        "api-to-trace-context",
+        "archimate-to-kg",
+        "archimate-to-runtime-topology",
+        "bpmn-to-decision-service",
+        "bpmn-to-kg",
+        "c4-to-decision-api",
+        "cmmn-to-decision-service",
+        "decision-service-to-api",
+        "decision-table-to-rule-engine",
+        "dmn-to-decision-service",
+        "dmn-to-decision-table",
+        "dmn-to-drd",
+        "dmn-to-feel",
+        "dmn-to-kg",
+        "dmn-to-sbvr",
+        "dmn-to-xml-di",
+        "feel-to-rule-engine",
+        "kg-to-jsonld",
+        "kg-to-prov",
+        "kg-to-shacl",
+        "kg-to-view-manifest",
+        "model-artifacts-to-decision-service",
+        "otel-to-kg",
+        "prov-to-view-manifest",
+        "shacl-to-view-manifest",
+        "state-to-kg",
+        "state-to-scxml",
+        "state-to-xes",
+        "sysml-to-kg",
+        "sysml-to-model-artifacts",
+        "view-to-cytoscape",
+        "view-to-react-flow",
+        "view-to-sigma"
+      ],
+      "validation_status": "generated",
+      "source_snapshot": "system-dynamics-map.seed.json"
+    },
+    {
+      "id": "evidence-risk",
+      "label": "Evidence Risk",
+      "description": "Provenance, validation, rendered views, and stale observation cues.",
+      "visible_layers": [
+        "semantic-backbone",
+        "observation-state",
+        "projection"
+      ],
+      "visible_statuses": [
+        "asserted",
+        "inferred",
+        "observed",
+        "simulated",
+        "rendered",
+        "candidate"
+      ],
+      "max_resolution": 5,
+      "layout": "cose",
+      "state_mode": "evidence",
+      "focus_node_ids": [
+        "rdf-owl-kg",
+        "shacl-contracts",
+        "prov-o",
+        "temporal-state-events",
+        "view-manifest",
+        "operating-lens",
+        "review-dossier"
+      ],
+      "aggregation": {
+        "mode": "evidence",
+        "lossy": false,
+        "reversible": true
+      },
+      "visible_node_ids": [
+        "operating-lens",
+        "prov-o",
+        "rdf-owl-kg",
+        "review-dossier",
+        "shacl-contracts",
+        "temporal-state-events",
+        "view-manifest"
+      ],
+      "hidden_node_ids": [
+        "archimate",
+        "bpmn",
+        "c4-runtime",
+        "cc-task-claim",
+        "cloudevents",
+        "cmmn",
+        "cytoscape",
+        "decision-service",
+        "decision-table",
+        "dmn",
+        "dmn-xml-di",
+        "drd",
+        "feel",
+        "jsonld-trig",
+        "merge-release",
+        "model-artifacts",
+        "opentelemetry",
+        "pr-ci-checks",
+        "react-flow",
+        "rule-engine",
+        "runtime-decision-api",
+        "sbvr",
+        "scxml-statecharts",
+        "sdlc-intake",
+        "sigma",
+        "sysml-v2",
+        "trace-context",
+        "xes-event-log"
+      ],
+      "visible_edge_ids": [
+        "kg-to-prov",
+        "kg-to-shacl",
+        "kg-to-view-manifest",
+        "prov-to-review-dossier",
+        "prov-to-view-manifest",
+        "shacl-to-view-manifest",
+        "state-to-kg"
+      ],
+      "hidden_edge_ids": [
+        "api-to-cloudevents",
+        "api-to-otel",
+        "api-to-trace-context",
+        "archimate-to-kg",
+        "archimate-to-runtime-topology",
+        "bpmn-to-decision-service",
+        "bpmn-to-kg",
+        "c4-to-decision-api",
+        "claim-to-review-dossier",
+        "cmmn-to-decision-service",
+        "decision-service-to-api",
+        "decision-table-to-rule-engine",
+        "dmn-to-decision-service",
+        "dmn-to-decision-table",
+        "dmn-to-drd",
+        "dmn-to-feel",
+        "dmn-to-kg",
+        "dmn-to-sbvr",
+        "dmn-to-xml-di",
+        "feel-to-rule-engine",
+        "kg-to-jsonld",
+        "model-artifacts-to-decision-service",
+        "operating-lens-to-sdlc",
+        "otel-to-kg",
+        "pr-ci-to-merge-release",
+        "review-dossier-to-pr-ci",
+        "sdlc-intake-to-claim",
+        "state-to-scxml",
+        "state-to-xes",
+        "sysml-to-kg",
+        "sysml-to-model-artifacts",
+        "temporal-state-to-sdlc",
+        "view-to-cytoscape",
+        "view-to-react-flow",
+        "view-to-sigma"
+      ],
+      "validation_status": "generated",
+      "source_snapshot": "system-dynamics-map.seed.json"
+    }
+  ]
+}
+  </script>
+  <script type="application/json" id="observations-data">
+[
+  {
+    "id": "obs-sdlc-intake-offered",
+    "subject": "sdlc-intake",
+    "state": "offered",
+    "observed_at": "2026-06-18T14:56:02Z",
+    "valid_time": {
+      "from": "2026-06-18T14:56:02Z",
+      "to": null
+    },
+    "transaction_time": "2026-06-18T14:56:02Z",
+    "expires_at": "2026-06-18T20:56:02Z",
+    "freshness": "fresh",
+    "source_ref": "docs/architecture/system-dynamics-map-v1.md",
+    "source_hash": "0ded18003d4b0002df887941ce6110ae1159f55b7cc326a295495f9fe6f2b602",
+    "source_type": "fixture",
+    "evidence": [
+      {
+        "label": "v1 enhancement task intake",
+        "url": null
+      }
+    ]
+  },
+  {
+    "id": "obs-cc-task-claimed",
+    "subject": "cc-task-claim",
+    "state": "claimed",
+    "observed_at": "2026-06-18T14:56:02Z",
+    "valid_time": {
+      "from": "2026-06-18T14:56:02Z",
+      "to": null
+    },
+    "transaction_time": "2026-06-18T14:56:02Z",
+    "expires_at": "2026-06-18T20:56:02Z",
+    "freshness": "fresh",
+    "source_ref": "scripts/cc-claim",
+    "source_hash": "1d148eeb7e169f3e72fc11bd741668ad7511f9aa76206b0e65235ae58db3f0d5",
+    "source_type": "external_evidence",
+    "evidence": [
+      {
+        "label": "claim gate script",
+        "url": null
+      }
+    ]
+  },
+  {
+    "id": "obs-review-pending",
+    "subject": "review-dossier",
+    "state": "pending",
+    "observed_at": "2026-06-18T14:56:02Z",
+    "valid_time": {
+      "from": "2026-06-18T14:56:02Z",
+      "to": null
+    },
+    "transaction_time": "2026-06-18T14:56:02Z",
+    "expires_at": "2026-06-18T20:56:02Z",
+    "freshness": "fresh",
+    "source_ref": "scripts/review_team.py",
+    "source_hash": "598501171010cfed08ec5f9b592ee82315bfe323c0f32d957a9c88ada817f2c5",
+    "source_type": "external_evidence",
+    "evidence": [
+      {
+        "label": "review team script",
+        "url": null
+      }
+    ]
+  },
+  {
+    "id": "obs-pr-ci-not-open",
+    "subject": "pr-ci-checks",
+    "state": "not_open",
+    "observed_at": "2026-06-18T14:56:02Z",
+    "valid_time": {
+      "from": "2026-06-18T14:56:02Z",
+      "to": null
+    },
+    "transaction_time": "2026-06-18T14:56:02Z",
+    "expires_at": "2026-06-18T20:56:02Z",
+    "freshness": "fresh",
+    "source_ref": "https://github.com/hapax-systems/hapax-council/pull/4179",
+    "source_hash": "848b7565f203657eb27395c308b65f380211309b34d08a3ae5ca157e83efad2e",
+    "source_type": "external_evidence",
+    "evidence": [
+      {
+        "label": "prior landed PR as slice reference",
+        "url": "https://github.com/hapax-systems/hapax-council/pull/4179"
+      }
+    ]
+  },
+  {
+    "id": "obs-release-not-ready",
+    "subject": "merge-release",
+    "state": "not_released",
+    "observed_at": "2026-06-18T14:56:02Z",
+    "valid_time": {
+      "from": "2026-06-18T14:56:02Z",
+      "to": null
+    },
+    "transaction_time": "2026-06-18T14:56:02Z",
+    "expires_at": "2026-06-18T20:56:02Z",
+    "freshness": "fresh",
+    "source_ref": "https://github.com/hapax-systems/hapax-council/commit/1522faae8212ddbc63da64140a12f86117f30c2d",
+    "source_hash": "6e85b9e959c0c77a7cbd05b5023e84762885f8ee950d01a88f60471dfde641cd",
+    "source_type": "external_evidence",
+    "evidence": [
+      {
+        "label": "prior merge commit as release evidence reference",
+        "url": "https://github.com/hapax-systems/hapax-council/commit/1522faae8212ddbc63da64140a12f86117f30c2d"
+      }
+    ]
+  },
+  {
+    "id": "obs-view-manifest-stale-fixture",
+    "subject": "view-manifest",
+    "state": "stale_fixture",
+    "observed_at": "2026-06-18T00:00:00Z",
+    "valid_time": {
+      "from": "2026-06-18T00:00:00Z",
+      "to": "2026-06-18T01:00:00Z"
+    },
+    "transaction_time": "2026-06-18T14:56:02Z",
+    "expires_at": "2026-06-18T01:00:00Z",
+    "freshness": "stale",
+    "source_ref": "docs/architecture/system-dynamics-map.seed.json",
+    "source_hash": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+    "source_type": "fixture",
+    "evidence": [
+      {
+        "label": "stale observation canary",
+        "url": null
+      }
+    ]
+  }
+]
+  </script>
+  <script type="application/json" id="relations-data">
+{
+  "schema": "system-dynamics-map-relation-vocabulary-v1",
+  "map_id": "system-dynamics-map-v1",
+  "version": "1.0.0",
+  "generated_at": "2026-06-18T00:00:00Z",
+  "relations": [
+    {
+      "id": "adjacent_vocabulary",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/adjacent_vocabulary",
+      "label": "Adjacent Vocabulary",
+      "category": "structural",
+      "directionality": "directed",
+      "source_kinds": [
+        "standard"
+      ],
+      "target_kinds": [
+        "standard"
+      ],
+      "layers": [
+        "decision-modeling"
+      ],
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "edge_ids": [
+        "dmn-to-sbvr"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "admits_release",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/admits_release",
+      "label": "Admits Release",
+      "category": "governance",
+      "directionality": "directed",
+      "source_kinds": [
+        "release-signal"
+      ],
+      "target_kinds": [
+        "state-transition"
+      ],
+      "layers": [
+        "execution-surfaces"
+      ],
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "edge_ids": [
+        "pr-ci-to-merge-release"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "advances_to",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/advances_to",
+      "label": "Advances To",
+      "category": "governance",
+      "directionality": "directed",
+      "source_kinds": [
+        "operating-slice"
+      ],
+      "target_kinds": [
+        "state-transition"
+      ],
+      "layers": [
+        "observation-state"
+      ],
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "edge_ids": [
+        "sdlc-intake-to-claim"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "can_emit_event_envelopes",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/can_emit_event_envelopes",
+      "label": "Can Emit Event Envelopes",
+      "category": "observational",
+      "directionality": "directed",
+      "source_kinds": [
+        "runtime"
+      ],
+      "target_kinds": [
+        "standard"
+      ],
+      "layers": [
+        "observation-state"
+      ],
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "edge_ids": [
+        "api-to-cloudevents"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "can_use_state_machine_notation",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/can_use_state_machine_notation",
+      "label": "Can Use State Machine Notation",
+      "category": "structural",
+      "directionality": "directed",
+      "source_kinds": [
+        "modeling-pattern"
+      ],
+      "target_kinds": [
+        "standard"
+      ],
+      "layers": [
+        "observation-state"
+      ],
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "edge_ids": [
+        "state-to-scxml"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "compiled_or_interpreted_by",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/compiled_or_interpreted_by",
+      "label": "Compiled Or Interpreted By",
+      "category": "execution",
+      "directionality": "directed",
+      "source_kinds": [
+        "artifact"
+      ],
+      "target_kinds": [
+        "runtime"
+      ],
+      "layers": [
+        "execution-surfaces"
+      ],
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "edge_ids": [
+        "decision-table-to-rule-engine"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "contains_logic_artifact",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/contains_logic_artifact",
+      "label": "Contains Logic Artifact",
+      "category": "structural",
+      "directionality": "directed",
+      "source_kinds": [
+        "standard"
+      ],
+      "target_kinds": [
+        "artifact"
+      ],
+      "layers": [
+        "decision-modeling"
+      ],
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "edge_ids": [
+        "dmn-to-decision-table"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "defines",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/defines",
+      "label": "Defines",
+      "category": "structural",
+      "directionality": "directed",
+      "source_kinds": [
+        "standard"
+      ],
+      "target_kinds": [
+        "notation"
+      ],
+      "layers": [
+        "decision-modeling"
+      ],
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "edge_ids": [
+        "dmn-to-drd"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "deploys_or_contains",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/deploys_or_contains",
+      "label": "Deploys Or Contains",
+      "category": "execution",
+      "directionality": "directed",
+      "source_kinds": [
+        "practice"
+      ],
+      "target_kinds": [
+        "runtime"
+      ],
+      "layers": [
+        "source-models"
+      ],
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "edge_ids": [
+        "c4-to-decision-api"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "emits_telemetry",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/emits_telemetry",
+      "label": "Emits Telemetry",
+      "category": "observational",
+      "directionality": "directed",
+      "source_kinds": [
+        "runtime"
+      ],
+      "target_kinds": [
+        "telemetry"
+      ],
+      "layers": [
+        "observation-state"
+      ],
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "edge_ids": [
+        "api-to-otel"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "enterprise_context_for",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/enterprise_context_for",
+      "label": "Enterprise Context For",
+      "category": "structural",
+      "directionality": "directed",
+      "source_kinds": [
+        "standard"
+      ],
+      "target_kinds": [
+        "practice"
+      ],
+      "layers": [
+        "source-models"
+      ],
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "edge_ids": [
+        "archimate-to-runtime-topology"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "exports_or_imports_event_logs",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/exports_or_imports_event_logs",
+      "label": "Exports Or Imports Event Logs",
+      "category": "observational",
+      "directionality": "directed",
+      "source_kinds": [
+        "modeling-pattern"
+      ],
+      "target_kinds": [
+        "standard"
+      ],
+      "layers": [
+        "observation-state"
+      ],
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "edge_ids": [
+        "state-to-xes"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "feeds_or_complements",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/feeds_or_complements",
+      "label": "Feeds Or Complements",
+      "category": "structural",
+      "directionality": "directed",
+      "source_kinds": [
+        "artifact"
+      ],
+      "target_kinds": [
+        "boundary"
+      ],
+      "layers": [
+        "execution-surfaces"
+      ],
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "edge_ids": [
+        "model-artifacts-to-decision-service"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "future_authoring_projection",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/future_authoring_projection",
+      "label": "Future Authoring Projection",
+      "category": "projection",
+      "directionality": "directed",
+      "source_kinds": [
+        "projection-contract"
+      ],
+      "target_kinds": [
+        "renderer"
+      ],
+      "layers": [
+        "projection"
+      ],
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "edge_ids": [
+        "view-to-react-flow"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "future_large_graph_projection",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/future_large_graph_projection",
+      "label": "Future Large Graph Projection",
+      "category": "projection",
+      "directionality": "directed",
+      "source_kinds": [
+        "projection-contract"
+      ],
+      "target_kinds": [
+        "renderer"
+      ],
+      "layers": [
+        "projection"
+      ],
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "edge_ids": [
+        "view-to-sigma"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "guards",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/guards",
+      "label": "Guards",
+      "category": "governance",
+      "directionality": "directed",
+      "source_kinds": [
+        "validation"
+      ],
+      "target_kinds": [
+        "projection-contract"
+      ],
+      "layers": [
+        "projection"
+      ],
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "edge_ids": [
+        "shacl-to-view-manifest"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "guards_release",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/guards_release",
+      "label": "Guards Release",
+      "category": "governance",
+      "directionality": "directed",
+      "source_kinds": [
+        "evidence-artifact"
+      ],
+      "target_kinds": [
+        "release-signal"
+      ],
+      "layers": [
+        "execution-surfaces"
+      ],
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "edge_ids": [
+        "review-dossier-to-pr-ci"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "implemented_by",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/implemented_by",
+      "label": "Implemented By",
+      "category": "structural",
+      "directionality": "directed",
+      "source_kinds": [
+        "boundary"
+      ],
+      "target_kinds": [
+        "runtime"
+      ],
+      "layers": [
+        "execution-surfaces"
+      ],
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "edge_ids": [
+        "decision-service-to-api"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "invokes_or_contextualizes",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/invokes_or_contextualizes",
+      "label": "Invokes Or Contextualizes",
+      "category": "structural",
+      "directionality": "directed",
+      "source_kinds": [
+        "standard"
+      ],
+      "target_kinds": [
+        "boundary"
+      ],
+      "layers": [
+        "source-models"
+      ],
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "edge_ids": [
+        "bpmn-to-decision-service",
+        "cmmn-to-decision-service"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "mapped_into",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/mapped_into",
+      "label": "Mapped Into",
+      "category": "structural",
+      "directionality": "directed",
+      "source_kinds": [
+        "standard"
+      ],
+      "target_kinds": [
+        "backbone"
+      ],
+      "layers": [
+        "semantic-backbone"
+      ],
+      "allowed_claim_types": [
+        "asserted",
+        "candidate"
+      ],
+      "edge_ids": [
+        "archimate-to-kg",
+        "bpmn-to-kg",
+        "dmn-to-kg",
+        "sysml-to-kg"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "models_observed_state",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/models_observed_state",
+      "label": "Models Observed State",
+      "category": "observational",
+      "directionality": "directed",
+      "source_kinds": [
+        "modeling-pattern"
+      ],
+      "target_kinds": [
+        "operating-slice"
+      ],
+      "layers": [
+        "observation-state"
+      ],
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "edge_ids": [
+        "temporal-state-to-sdlc"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "observes",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/observes",
+      "label": "Observes",
+      "category": "observational",
+      "directionality": "directed",
+      "source_kinds": [
+        "telemetry"
+      ],
+      "target_kinds": [
+        "backbone"
+      ],
+      "layers": [
+        "observation-state"
+      ],
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "edge_ids": [
+        "otel-to-kg"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "overlays",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/overlays",
+      "label": "Overlays",
+      "category": "structural",
+      "directionality": "directed",
+      "source_kinds": [
+        "modeling-pattern"
+      ],
+      "target_kinds": [
+        "backbone"
+      ],
+      "layers": [
+        "observation-state"
+      ],
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "edge_ids": [
+        "state-to-kg"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "packages",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/packages",
+      "label": "Packages",
+      "category": "structural",
+      "directionality": "directed",
+      "source_kinds": [
+        "standard"
+      ],
+      "target_kinds": [
+        "boundary"
+      ],
+      "layers": [
+        "decision-modeling"
+      ],
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "edge_ids": [
+        "dmn-to-decision-service"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "produces_evidence",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/produces_evidence",
+      "label": "Produces Evidence",
+      "category": "governance",
+      "directionality": "directed",
+      "source_kinds": [
+        "state-transition"
+      ],
+      "target_kinds": [
+        "evidence-artifact"
+      ],
+      "layers": [
+        "semantic-backbone"
+      ],
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "edge_ids": [
+        "claim-to-review-dossier"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "projected_by",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/projected_by",
+      "label": "Projected By",
+      "category": "projection",
+      "directionality": "directed",
+      "source_kinds": [
+        "backbone"
+      ],
+      "target_kinds": [
+        "projection-contract"
+      ],
+      "layers": [
+        "projection"
+      ],
+      "allowed_claim_types": [
+        "rendered"
+      ],
+      "edge_ids": [
+        "kg-to-view-manifest"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "projects_operating_slice",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/projects_operating_slice",
+      "label": "Projects Operating Slice",
+      "category": "projection",
+      "directionality": "directed",
+      "source_kinds": [
+        "projection-contract"
+      ],
+      "target_kinds": [
+        "operating-slice"
+      ],
+      "layers": [
+        "projection"
+      ],
+      "allowed_claim_types": [
+        "rendered"
+      ],
+      "edge_ids": [
+        "operating-lens-to-sdlc"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "propagates_trace_identity",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/propagates_trace_identity",
+      "label": "Propagates Trace Identity",
+      "category": "observational",
+      "directionality": "directed",
+      "source_kinds": [
+        "runtime"
+      ],
+      "target_kinds": [
+        "standard"
+      ],
+      "layers": [
+        "observation-state"
+      ],
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "edge_ids": [
+        "api-to-trace-context"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "qualified_by",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/qualified_by",
+      "label": "Qualified By",
+      "category": "structural",
+      "directionality": "directed",
+      "source_kinds": [
+        "backbone"
+      ],
+      "target_kinds": [
+        "provenance"
+      ],
+      "layers": [
+        "semantic-backbone"
+      ],
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "edge_ids": [
+        "kg-to-prov"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "records_generation_of",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/records_generation_of",
+      "label": "Records Generation Of",
+      "category": "structural",
+      "directionality": "directed",
+      "source_kinds": [
+        "provenance"
+      ],
+      "target_kinds": [
+        "evidence-artifact",
+        "projection-contract"
+      ],
+      "layers": [
+        "projection",
+        "semantic-backbone"
+      ],
+      "allowed_claim_types": [
+        "asserted",
+        "rendered"
+      ],
+      "edge_ids": [
+        "prov-to-review-dossier",
+        "prov-to-view-manifest"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "renders_with",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/renders_with",
+      "label": "Renders With",
+      "category": "projection",
+      "directionality": "directed",
+      "source_kinds": [
+        "projection-contract"
+      ],
+      "target_kinds": [
+        "renderer"
+      ],
+      "layers": [
+        "projection"
+      ],
+      "allowed_claim_types": [
+        "rendered"
+      ],
+      "edge_ids": [
+        "view-to-cytoscape"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "requires_runtime_support",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/requires_runtime_support",
+      "label": "Requires Runtime Support",
+      "category": "execution",
+      "directionality": "directed",
+      "source_kinds": [
+        "language"
+      ],
+      "target_kinds": [
+        "runtime"
+      ],
+      "layers": [
+        "execution-surfaces"
+      ],
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "edge_ids": [
+        "feel-to-rule-engine"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "serialized_as",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/serialized_as",
+      "label": "Serialized As",
+      "category": "structural",
+      "directionality": "directed",
+      "source_kinds": [
+        "backbone",
+        "standard"
+      ],
+      "target_kinds": [
+        "exchange",
+        "interchange"
+      ],
+      "layers": [
+        "execution-surfaces",
+        "semantic-backbone"
+      ],
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "edge_ids": [
+        "dmn-to-xml-di",
+        "kg-to-jsonld"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "systems_context_for",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/systems_context_for",
+      "label": "Systems Context For",
+      "category": "structural",
+      "directionality": "directed",
+      "source_kinds": [
+        "standard"
+      ],
+      "target_kinds": [
+        "artifact"
+      ],
+      "layers": [
+        "source-models"
+      ],
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "edge_ids": [
+        "sysml-to-model-artifacts"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "uses_expression_language",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/uses_expression_language",
+      "label": "Uses Expression Language",
+      "category": "structural",
+      "directionality": "directed",
+      "source_kinds": [
+        "standard"
+      ],
+      "target_kinds": [
+        "language"
+      ],
+      "layers": [
+        "decision-modeling"
+      ],
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "edge_ids": [
+        "dmn-to-feel"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    },
+    {
+      "id": "validated_by",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/validated_by",
+      "label": "Validated By",
+      "category": "structural",
+      "directionality": "directed",
+      "source_kinds": [
+        "backbone"
+      ],
+      "target_kinds": [
+        "validation"
+      ],
+      "layers": [
+        "semantic-backbone"
+      ],
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "edge_ids": [
+        "kg-to-shacl"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract."
+    }
+  ]
+}
+  </script>
   <script src="./vendor/cytoscape-3.34.0.min.js"></script>
   <script>
     const layerColors = {
-      "source-models": "rgb(13, 148, 136)",
-      "decision-modeling": "rgb(37, 99, 235)",
-      "execution-surfaces": "rgb(217, 119, 6)",
-      "semantic-backbone": "rgb(124, 58, 237)",
-      "observation-state": "rgb(220, 38, 38)",
-      "projection": "rgb(22, 163, 74)"
+      "source-models": "rgb(20, 121, 113)",
+      "decision-modeling": "rgb(58, 104, 177)",
+      "execution-surfaces": "rgb(184, 112, 26)",
+      "semantic-backbone": "rgb(112, 81, 169)",
+      "observation-state": "rgb(26, 127, 141)",
+      "projection": "rgb(48, 140, 83)"
     };
 
     const statusColors = {
       asserted: "rgb(31, 41, 55)",
       inferred: "rgb(79, 70, 229)",
-      observed: "rgb(220, 38, 38)",
-      simulated: "rgb(217, 119, 6)",
+      observed: "rgb(14, 116, 144)",
+      simulated: "rgb(184, 112, 26)",
       rendered: "rgb(22, 163, 74)",
       candidate: "rgb(107, 114, 128)"
     };
+
+    const staleColor = "rgb(185, 28, 28)";
+    const freshColor = "rgb(13, 148, 136)";
 
     let cy;
     let seed;
     let claims = [];
     let lenses = { default_lens: "topology", lenses: [] };
     let observations = [];
+    let relations = { relations: [] };
+    let dataHealthMessages = [];
+    let selectedElement = null;
     let activeLayout = "cose";
     let activeLens = "topology";
     let resizeTimer;
@@ -2189,6 +6271,71 @@
         "\"": "&quot;",
         "'": "&#39;"
       }[char]));
+    }
+
+    function inlineJson(id, fallback) {
+      const element = document.getElementById(id);
+      if (!element) {
+        return fallback;
+      }
+      try {
+        return JSON.parse(element.textContent);
+      } catch (error) {
+        dataHealthMessages.push(
+          `Embedded ${id} data is invalid; using empty fallback. Restore the ${id} JSON script tag or rerun scripts/system_dynamics_map_materialize.py.`
+        );
+        console.warn(`Invalid embedded ${id}.`, error);
+        return fallback;
+      }
+    }
+
+    function setDataHealth() {
+      const banner = document.getElementById("data-health");
+      if (!banner) {
+        return;
+      }
+      if (dataHealthMessages.length === 0) {
+        banner.classList.remove("active");
+        banner.textContent = "";
+        return;
+      }
+      banner.classList.add("active");
+      banner.textContent = dataHealthMessages.join(" ");
+    }
+
+    function relationEntry(id) {
+      return (relations.relations || []).find((relation) => relation.id === id) || null;
+    }
+
+    function relationLabel(id) {
+      const relation = relationEntry(id);
+      if (relation?.label) {
+        return relation.label;
+      }
+      return String(id || "").replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+    }
+
+    function linkOrText(value) {
+      if (!value) {
+        return "not recorded";
+      }
+      const text = String(value);
+      if (/^https?:\/\//.test(text)) {
+        return `<a href="${escapeHtml(text)}" target="_blank" rel="noreferrer">${escapeHtml(text)}</a>`;
+      }
+      return escapeHtml(text);
+    }
+
+    function shortHash(value) {
+      if (!value) {
+        return "not recorded";
+      }
+      return String(value).length > 16 ? `${String(value).slice(0, 12)}...` : String(value);
+    }
+
+    function factHtml(label, value, { link = false, hash = false } = {}) {
+      const body = link ? linkOrText(value) : escapeHtml(hash ? shortHash(value) : (value ?? "not recorded"));
+      return `<div class="fact"><dt>${escapeHtml(label)}</dt><dd>${body}</dd></div>`;
     }
 
     function docsHtml(docs) {
@@ -2222,19 +6369,60 @@
 
     function observationsHtml(id) {
       const rows = observationRows(id).map((item) => (
-        `${escapeHtml(item.state)} <span class="pill">${escapeHtml(item.freshness)}</span> ` +
-        `<span class="panel-meta">${escapeHtml(item.observed_at)}</span>`
+        `<details class="evidence-row">
+          <summary>${escapeHtml(item.state)} <span class="pill">${escapeHtml(item.freshness)}</span> ${escapeHtml(item.observed_at)}</summary>
+          <dl class="fact-list">
+            ${factHtml("source", item.source_ref, { link: true })}
+            ${factHtml("source type", item.source_type)}
+            ${factHtml("source hash", item.source_hash, { hash: true })}
+            ${factHtml("valid from", item.valid_time?.from)}
+            ${factHtml("valid to", item.valid_time?.to)}
+            ${factHtml("transaction", item.transaction_time)}
+            ${factHtml("expires", item.expires_at)}
+            ${factHtml("evidence", item.evidence?.[0]?.url || item.evidence?.[0]?.label, { link: true })}
+          </dl>
+        </details>`
       ));
       return compactListHtml(rows, "No temporal observation recorded for this element.");
     }
 
     function claimsHtml(id) {
-      const rows = claimRows(id).slice(0, 8).map((item) => (
-        `${escapeHtml(item.claim_type)}: ${escapeHtml(item.subject)} ` +
-        `${escapeHtml(item.predicate)} ${escapeHtml(item.object)} ` +
-        `<span class="pill">${escapeHtml(item.contradiction_state)}</span>`
+      const rows = claimRows(id).map((item) => (
+        `<details class="evidence-row">
+          <summary>${escapeHtml(item.claim_type)}: ${escapeHtml(item.subject)} ${escapeHtml(item.predicate)} ${escapeHtml(item.object)} <span class="pill">${escapeHtml(item.contradiction_state)}</span></summary>
+          <dl class="fact-list">
+            ${factHtml("authority", item.provenance?.authority_ceiling)}
+            ${factHtml("source", item.provenance?.source_ref, { link: true })}
+            ${factHtml("source type", item.provenance?.source_type)}
+            ${factHtml("source hash", item.provenance?.source_hash, { hash: true })}
+            ${factHtml("confidence", item.confidence_basis?.score)}
+            ${factHtml("method", item.confidence_basis?.method)}
+            ${factHtml("valid from", item.valid_time?.from)}
+            ${factHtml("valid to", item.valid_time?.to)}
+            ${factHtml("transaction", item.transaction_time)}
+            ${factHtml("freshness", item.freshness)}
+          </dl>
+        </details>`
       ));
       return compactListHtml(rows, "No claim fragment loaded for this element.");
+    }
+
+    function relationHtml(relationId) {
+      const relation = relationEntry(relationId);
+      if (!relation) {
+        return `<p>${escapeHtml(relationId)} is not present in the loaded relation vocabulary.</p>`;
+      }
+      return `
+        <dl class="fact-list">
+          ${factHtml("label", relation.label)}
+          ${factHtml("category", relation.category)}
+          ${factHtml("direction", relation.directionality)}
+          ${factHtml("semantics", relation.semantics)}
+          ${factHtml("source kinds", (relation.source_kinds || []).join(", "))}
+          ${factHtml("target kinds", (relation.target_kinds || []).join(", "))}
+          ${factHtml("claim types", (relation.allowed_claim_types || []).join(", "))}
+        </dl>
+      `;
     }
 
     function pillHtml(data) {
@@ -2263,7 +6451,7 @@
         <h2 class="panel-title">${escapeHtml(source)} -> ${escapeHtml(target)}</h2>
         <div class="panel-meta">${escapeHtml(data.id)}</div>
         ${pillHtml(data)}
-        <div class="section"><h3>Relation</h3><p>${escapeHtml(data.relation)}</p></div>
+        <div class="section"><h3>Relation</h3>${relationHtml(data.relation)}</div>
         <div class="section"><h3>Summary</h3><p>${escapeHtml(data.summary)}</p></div>
         <div class="section"><h3>Confidence</h3><p>${escapeHtml(data.confidence ?? "unknown")}</p></div>
         <div class="section"><h3>Claims</h3>${claimsHtml(data.id)}</div>
@@ -2329,11 +6517,41 @@
       `).join("");
     }
 
+    function renderEncodingLegend() {
+      document.getElementById("encoding-legend").innerHTML = `
+        <div class="legend-item"><span class="swatch dashed"></span><span>Dashed border: candidate claim partition</span></div>
+        <div class="legend-item"><span class="swatch diamond" style="background: ${layerColors.projection}"></span><span>Diamond node: rendered projection artifact</span></div>
+        <div class="legend-item"><span class="swatch" style="border-color: ${freshColor}; border-width: 3px;"></span><span>Teal ring: element has fresh temporal evidence</span></div>
+        <div class="legend-item"><span class="swatch" style="border-color: ${staleColor}; border-width: 3px;"></span><span>Red ring: element has stale temporal evidence</span></div>
+        <div class="legend-item"><span class="swatch line"></span><span>Edge width: relation confidence</span></div>
+        <p>Edge labels appear on hover or selection; relation semantics remain in the details panel.</p>
+      `;
+    }
+
     function checkedValues(type) {
       return new Set(Array.from(document.querySelectorAll(`input[data-filter="${type}"]:checked`)).map((input) => input.value));
     }
 
     function elementText(data) {
+      const relation = data.relation ? relationEntry(data.relation) : null;
+      const relatedClaims = claimRows(data.id).flatMap((claim) => [
+        claim.id,
+        claim.claim_type,
+        claim.subject,
+        claim.predicate,
+        claim.object,
+        claim.provenance?.source_ref,
+        claim.provenance?.authority_ceiling,
+        claim.confidence_basis?.method
+      ]);
+      const relatedObservations = observationRows(data.id).flatMap((observation) => [
+        observation.id,
+        observation.state,
+        observation.freshness,
+        observation.source_ref,
+        observation.source_type,
+        ...(observation.evidence || []).flatMap((evidence) => [evidence.label, evidence.url])
+      ]);
       return [
         data.id,
         data.label,
@@ -2343,6 +6561,14 @@
         data.summary,
         data.context,
         data.relation,
+        ...(data.aliases || []),
+        ...(data.tags || []),
+        relation?.label,
+        relation?.category,
+        relation?.semantics,
+        ...(relation?.allowed_claim_types || []),
+        ...relatedClaims,
+        ...relatedObservations,
         ...(data.docs || []).map((doc) => `${doc.label} ${doc.url}`),
         ...(data.hardening || [])
       ].join(" ").toLowerCase();
@@ -2358,11 +6584,147 @@
       });
     }
 
+    function visibleNodeIds() {
+      if (cy) {
+        return new Set(cy.nodes().filter((node) => !node.hasClass("hidden")).map((node) => node.id()));
+      }
+      const lens = activeLensData();
+      return new Set(lens?.visible_node_ids || seed.nodes.map((node) => node.id));
+    }
+
+    function visibleEdgeIds() {
+      if (cy) {
+        return new Set(cy.edges().filter((edge) => !edge.hasClass("hidden")).map((edge) => edge.id()));
+      }
+      const lens = activeLensData();
+      return new Set(lens?.visible_edge_ids || seed.edges.map((edge) => edge.id));
+    }
+
+    function renderLensSummary() {
+      const lens = activeLensData();
+      if (!lens) {
+        document.getElementById("lens-summary").innerHTML = "<p>No lens contract loaded.</p>";
+        return;
+      }
+      const hiddenNodes = lens.hidden_node_ids?.length ?? 0;
+      const hiddenEdges = lens.hidden_edge_ids?.length ?? 0;
+      document.getElementById("lens-summary").innerHTML = `
+        <p>${escapeHtml(lens.description || "No lens description recorded.")}</p>
+        <div class="kv-grid">
+          <div class="kv"><span>Mode</span><span>${escapeHtml(lens.state_mode || "unknown")}</span></div>
+          <div class="kv"><span>Visible</span><span>${escapeHtml((lens.visible_node_ids || []).length)} nodes / ${escapeHtml((lens.visible_edge_ids || []).length)} edges</span></div>
+          <div class="kv"><span>Hidden</span><span>${escapeHtml(hiddenNodes)} nodes / ${escapeHtml(hiddenEdges)} edges</span></div>
+          <div class="kv"><span>Aggregation</span><span>${escapeHtml(lens.aggregation?.mode || "none")}</span></div>
+          <div class="kv"><span>Lossy</span><span>${escapeHtml(Boolean(lens.aggregation?.lossy))}</span></div>
+          <div class="kv"><span>Reversible</span><span>${escapeHtml(Boolean(lens.aggregation?.reversible))}</span></div>
+          <div class="kv"><span>Validation</span><span>${escapeHtml(lens.validation_status || "unknown")}</span></div>
+          <div class="kv"><span>Snapshot</span><span>${escapeHtml(lens.source_snapshot || "not recorded")}</span></div>
+        </div>
+      `;
+    }
+
     function updateStateSummary() {
       const lens = activeLensData();
-      const staleCount = observations.filter((item) => item.freshness === "stale").length;
+      const scopeIds = visibleNodeIds();
+      const scopedObservations = observations.filter((item) => scopeIds.has(item.subject));
+      const staleScoped = scopedObservations.filter((item) => item.freshness === "stale").length;
+      const staleGlobal = observations.filter((item) => item.freshness === "stale").length;
       const label = lens ? lens.label : activeLens;
-      document.getElementById("state-summary").textContent = `${label} / ${observations.length} observations / ${staleCount} stale`;
+      document.getElementById("state-summary").textContent = `${label} / ${scopedObservations.length} in-scope observations / ${staleScoped} stale in scope / ${staleGlobal} global stale`;
+      renderLensSummary();
+    }
+
+    function focusNode(id) {
+      const node = cy.$id(id);
+      if (node.empty()) {
+        throw new Error(`Unknown node: ${id}. Check system-dynamics-map.seed.json nodes[].id before selecting.`);
+      }
+      cy.elements().unselect();
+      node.select();
+      selectedElement = { group: "nodes", id };
+      renderNodePanel(node.data());
+      if (!node.hasClass("hidden")) {
+        cy.animate({ center: { eles: node }, zoom: Math.max(cy.zoom(), 1) }, { duration: prefersReducedMotion() ? 0 : 180 });
+      }
+      return node.data();
+    }
+
+    function focusEdge(id) {
+      const edge = cy.$id(id);
+      if (edge.empty()) {
+        throw new Error(`Unknown edge: ${id}. Check system-dynamics-map.seed.json edges[].id before selecting.`);
+      }
+      cy.elements().unselect();
+      edge.select();
+      selectedElement = { group: "edges", id };
+      renderEdgePanel(edge.data());
+      if (!edge.hasClass("hidden")) {
+        cy.animate({ center: { eles: edge }, zoom: Math.max(cy.zoom(), 1) }, { duration: prefersReducedMotion() ? 0 : 180 });
+      }
+      return edge.data();
+    }
+
+    function renderFinderResults(search = "") {
+      if (!cy) {
+        return;
+      }
+      const resultBox = document.getElementById("search-results");
+      const visibleNodes = cy.nodes().filter((node) => !node.hasClass("hidden"));
+      const visibleEdges = cy.edges().filter((edge) => !edge.hasClass("hidden"));
+      const nodeItems = visibleNodes.map((node) => ({
+        group: "nodes",
+        id: node.id(),
+        label: node.data("label"),
+        meta: `${node.data("kind")} / ${node.data("layer")}`,
+        rank: search && elementText(node.data()).includes(search) ? 0 : 2
+      }));
+      const edgeItems = visibleEdges.map((edge) => ({
+        group: "edges",
+        id: edge.id(),
+        label: relationLabel(edge.data("relation")),
+        meta: `${edge.source().data("label")} -> ${edge.target().data("label")}`,
+        rank: search && elementText(edge.data()).includes(search) ? 0 : 1
+      }));
+      if (!search) {
+        resultBox.innerHTML = `
+          <p>${escapeHtml(visibleNodes.length + visibleEdges.length)} visible elements. Type to filter, then press Enter or choose a result.</p>
+        `;
+        return;
+      }
+      const resultLimit = search ? 12 : 4;
+      const items = [...nodeItems, ...edgeItems]
+        .sort((left, right) => left.rank - right.rank || left.label.localeCompare(right.label))
+        .slice(0, resultLimit);
+      if (items.length === 0) {
+        resultBox.innerHTML = `
+          <p>No visible elements match the current filters.</p>
+          <button type="button" class="result-button" id="reset-filters">Reset to topology</button>
+        `;
+        document.getElementById("reset-filters").addEventListener("click", () => applyLens("topology"));
+        return;
+      }
+      const heading = search ? `${visibleNodes.length + visibleEdges.length} matching visible elements` : `${visibleNodes.length + visibleEdges.length} visible elements`;
+      resultBox.innerHTML = `
+        <p>${escapeHtml(heading)}. Showing ${escapeHtml(items.length)} keyboard-selectable results.</p>
+        <ul class="result-list">
+          ${items.map((item) => `
+            <li>
+              <button type="button" class="result-button" data-result-group="${escapeHtml(item.group)}" data-result-id="${escapeHtml(item.id)}">
+                ${escapeHtml(item.label)} <span class="panel-meta">${escapeHtml(item.meta)}</span>
+              </button>
+            </li>
+          `).join("")}
+        </ul>
+      `;
+      resultBox.querySelectorAll("[data-result-id]").forEach((button) => {
+        button.addEventListener("click", () => {
+          if (button.dataset.resultGroup === "edges") {
+            focusEdge(button.dataset.resultId);
+          } else {
+            focusNode(button.dataset.resultId);
+          }
+        });
+      });
     }
 
     function applyLens(lensId, { run = true } = {}) {
@@ -2393,36 +6755,64 @@
       const lens = activeLensData();
       const lensNodeIds = new Set(lens?.visible_node_ids || []);
       const lensEdgeIds = new Set(lens?.visible_edge_ids || []);
+      const nodeBaseVisibility = new Map();
+      const nodeTextMatches = new Map();
+      const edgeBaseVisibility = new Map();
+      const edgeTextMatches = new Map();
+      const edgeMatchedEndpointIds = new Set();
 
       document.getElementById("resolution-label").textContent = scale ? `- ${scale.label}` : "";
+      document.getElementById("resolution-description").textContent = scale ? scale.description : "";
+      document.getElementById("resolution").setAttribute("aria-valuetext", scale ? `${scale.label}: ${scale.description}` : String(maxResolution));
+
+      cy.nodes().forEach((node) => {
+        const data = node.data();
+        const baseVisible = layers.has(data.layer)
+          && statuses.has(data.status)
+          && Number(data.resolution) <= maxResolution
+          && (lensNodeIds.size === 0 || lensNodeIds.has(data.id));
+        nodeBaseVisibility.set(node.id(), baseVisible);
+        nodeTextMatches.set(node.id(), !search || elementText(data).includes(search));
+      });
+
+      cy.edges().forEach((edge) => {
+        const data = edge.data();
+        const baseVisible = layers.has(data.layer)
+          && statuses.has(data.status)
+          && Number(data.resolution) <= maxResolution
+          && (lensEdgeIds.size === 0 || lensEdgeIds.has(data.id))
+          && nodeBaseVisibility.get(data.source)
+          && nodeBaseVisibility.get(data.target);
+        const edgeSelfMatches = elementText(data).includes(search);
+        const endpointMatches = nodeTextMatches.get(data.source) || nodeTextMatches.get(data.target);
+        edgeBaseVisibility.set(edge.id(), baseVisible);
+        edgeTextMatches.set(edge.id(), !search || edgeSelfMatches || endpointMatches);
+        if (search && baseVisible && edgeSelfMatches) {
+          edgeMatchedEndpointIds.add(data.source);
+          edgeMatchedEndpointIds.add(data.target);
+        }
+      });
 
       cy.batch(() => {
         cy.nodes().forEach((node) => {
-          const data = node.data();
-          const visible = layers.has(data.layer)
-            && statuses.has(data.status)
-            && Number(data.resolution) <= maxResolution
-            && (lensNodeIds.size === 0 || lensNodeIds.has(data.id))
-            && (!search || elementText(data).includes(search));
+          const visible = nodeBaseVisibility.get(node.id())
+            && (!search || nodeTextMatches.get(node.id()) || edgeMatchedEndpointIds.has(node.id()));
           node.toggleClass("hidden", !visible);
         });
 
-        const visibleNodeIds = new Set();
+        const visibleNodeIdSet = new Set();
         cy.nodes().forEach((node) => {
           if (!node.hasClass("hidden")) {
-            visibleNodeIds.add(node.id());
+            visibleNodeIdSet.add(node.id());
           }
         });
 
         cy.edges().forEach((edge) => {
           const data = edge.data();
-          const edgeVisible = layers.has(data.layer)
-            && statuses.has(data.status)
-            && Number(data.resolution) <= maxResolution
-            && visibleNodeIds.has(data.source)
-            && visibleNodeIds.has(data.target)
-            && (lensEdgeIds.size === 0 || lensEdgeIds.has(data.id))
-            && (!search || elementText(data).includes(search) || elementText(edge.source().data()).includes(search) || elementText(edge.target().data()).includes(search));
+          const edgeVisible = edgeBaseVisibility.get(edge.id())
+            && visibleNodeIdSet.has(data.source)
+            && visibleNodeIdSet.has(data.target)
+            && edgeTextMatches.get(edge.id());
           edge.toggleClass("hidden", !edgeVisible);
         });
       });
@@ -2430,14 +6820,39 @@
       const visibleNodes = cy.nodes().filter((node) => !node.hasClass("hidden")).length;
       const visibleEdges = cy.edges().filter((edge) => !edge.hasClass("hidden")).length;
       document.getElementById("counts").textContent = `${visibleNodes} nodes / ${visibleEdges} edges`;
+      renderFinderResults(search);
       updateStateSummary();
     }
 
+    function prefersReducedMotion() {
+      return Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
+    }
+
+    function directedLayoutRoots() {
+      if (!cy) {
+        return null;
+      }
+      const lens = activeLensData();
+      const candidates = [
+        ...(lens?.focus_node_ids || []),
+        seed.default_focus,
+        selectedElement?.group === "nodes" ? selectedElement.id : null
+      ].filter(Boolean);
+      for (const id of candidates) {
+        const node = cy.$id(id);
+        if (!node.empty() && !node.hasClass("hidden")) {
+          return node;
+        }
+      }
+      return cy.nodes().filter((node) => !node.hasClass("hidden")).first();
+    }
+
     function layoutOptions(name) {
+      const reduceMotion = prefersReducedMotion();
       const common = {
         name,
-        animate: true,
-        animationDuration: 280,
+        animate: !reduceMotion,
+        animationDuration: reduceMotion ? 0 : 280,
         fit: true,
         padding: 44
       };
@@ -2455,7 +6870,7 @@
         return {
           ...common,
           directed: true,
-          roots: cy.$id(seed.default_focus),
+          roots: directedLayoutRoots(),
           spacingFactor: 1.28
         };
       }
@@ -2466,6 +6881,7 @@
       activeLayout = name;
       document.querySelectorAll("[data-layout]").forEach((button) => {
         button.classList.toggle("active", button.dataset.layout === name);
+        button.setAttribute("aria-pressed", String(button.dataset.layout === name));
       });
       cy.elements().not(".hidden").layout(layoutOptions(name)).run();
     }
@@ -2478,15 +6894,31 @@
       cy.fit(cy.elements().not(".hidden"), 44);
     }
 
+    function observationFreshnessFor(id) {
+      const rows = observationRows(id);
+      if (rows.some((item) => item.freshness === "stale")) {
+        return "stale";
+      }
+      if (rows.some((item) => item.freshness === "fresh")) {
+        return "fresh";
+      }
+      return rows.length ? "historical" : null;
+    }
+
     function buildElements(data) {
       const nodes = data.nodes.map((node) => ({
         group: "nodes",
         data: node,
-        classes: [`layer-${className(node.layer)}`, `status-${className(node.status)}`].join(" ")
+        classes: [
+          `layer-${className(node.layer)}`,
+          `status-${className(node.status)}`,
+          observationFreshnessFor(node.id) ? "has-observation" : "",
+          observationFreshnessFor(node.id) ? `${observationFreshnessFor(node.id)}-observation` : ""
+        ].filter(Boolean).join(" ")
       }));
       const edges = data.edges.map((edge) => ({
         group: "edges",
-        data: edge,
+        data: { ...edge, display_relation: relationLabel(edge.relation) },
         classes: [`layer-${className(edge.layer)}`, `status-${className(edge.status)}`].join(" ")
       }));
       return [...nodes, ...edges];
@@ -2521,7 +6953,7 @@
           style: {
             "curve-style": "bezier",
             "font-size": 8,
-            "label": "data(relation)",
+            "label": "",
             "line-color": "rgb(107, 114, 128)",
             "min-zoomed-font-size": 8,
             "opacity": 0.76,
@@ -2532,6 +6964,14 @@
             "text-background-padding": 2,
             "text-rotation": "autorotate",
             "width": "mapData(confidence, 0.65, 1, 1, 3)"
+          }
+        },
+        {
+          selector: "edge.hovered, edge:selected",
+          style: {
+            "label": "data(display_relation)",
+            "opacity": 0.96,
+            "z-index": 10
           }
         },
         {
@@ -2566,6 +7006,20 @@
           style: {
             "shape": "diamond"
           }
+        },
+        {
+          selector: ".fresh-observation",
+          style: {
+            "border-color": freshColor,
+            "border-width": 4
+          }
+        },
+        {
+          selector: ".stale-observation",
+          style: {
+            "border-color": staleColor,
+            "border-width": 5
+          }
         }
       ];
 
@@ -2592,11 +7046,28 @@
         }
       }));
 
-      return [...base, ...layerStyles, ...statusStyles];
+      const observationStyles = [
+        {
+          selector: ".fresh-observation",
+          style: {
+            "border-color": freshColor,
+            "border-width": 4
+          }
+        },
+        {
+          selector: ".stale-observation",
+          style: {
+            "border-color": staleColor,
+            "border-width": 5
+          }
+        }
+      ];
+
+      return [...base, ...layerStyles, ...statusStyles, ...observationStyles];
     }
 
     async function loadSeed() {
-      const inlineSeed = JSON.parse(document.getElementById("seed-data").textContent);
+      const inlineSeed = inlineJson("seed-data", {});
       if (location.protocol === "file:") {
         return inlineSeed;
       }
@@ -2612,7 +7083,7 @@
       }
     }
 
-    async function loadJson(path, fallback) {
+    async function loadJson(path, fallback, label) {
       if (location.protocol === "file:") {
         return fallback;
       }
@@ -2624,11 +7095,14 @@
         return await response.json();
       } catch (error) {
         console.warn(`Falling back after ${path} failed.`, error);
+        dataHealthMessages.push(
+          `${label || path} loaded from embedded fallback after fetch failed. Restore the companion data file or rerun scripts/system_dynamics_map_materialize.py.`
+        );
         return fallback;
       }
     }
 
-    async function loadJsonl(path, fallback) {
+    async function loadJsonl(path, fallback, label) {
       if (location.protocol === "file:") {
         return fallback;
       }
@@ -2641,19 +7115,28 @@
         return text.split(/\n+/).filter(Boolean).map((line) => JSON.parse(line));
       } catch (error) {
         console.warn(`Falling back after ${path} failed.`, error);
+        dataHealthMessages.push(
+          `${label || path} loaded from embedded fallback after fetch failed. Restore the companion data file or rerun scripts/system_dynamics_map_materialize.py.`
+        );
         return fallback;
       }
     }
 
     async function loadSupplemental() {
-      const [claimBundle, lensBundle, observationRows] = await Promise.all([
-        loadJson("./system-dynamics-map.claims.json", { claims: [] }),
-        loadJson("./system-dynamics-map.lenses.json", fallbackLenses()),
-        loadJsonl("./system-dynamics-map.observations.jsonl", [])
+      const inlineClaims = inlineJson("claims-data", { claims: [] });
+      const inlineLenses = inlineJson("lenses-data", fallbackLenses());
+      const inlineObservations = inlineJson("observations-data", []);
+      const inlineRelations = inlineJson("relations-data", { relations: [] });
+      const [claimBundle, lensBundle, observationRows, relationBundle] = await Promise.all([
+        loadJson("./system-dynamics-map.claims.json", inlineClaims, "claims"),
+        loadJson("./system-dynamics-map.lenses.json", inlineLenses, "lenses"),
+        loadJsonl("./system-dynamics-map.observations.jsonl", inlineObservations, "observations"),
+        loadJson("./system-dynamics-map.relations.json", inlineRelations, "relations")
       ]);
       claims = claimBundle.claims || [];
       lenses = lensBundle;
       observations = observationRows;
+      relations = relationBundle;
     }
 
     async function init() {
@@ -2667,7 +7150,9 @@
       renderCheckboxes();
       renderLensControls();
       renderLegend();
+      renderEncodingLegend();
       applyLens(activeLens, { run: false });
+      setDataHealth();
 
       cy = cytoscape({
         container: document.getElementById("cy"),
@@ -2679,32 +7164,63 @@
         wheelSensitivity: 0.18
       });
 
-      cy.on("tap", "node", (event) => renderNodePanel(event.target.data()));
-      cy.on("tap", "edge", (event) => renderEdgePanel(event.target.data()));
+      cy.on("tap", "node", (event) => focusNode(event.target.id()));
+      cy.on("tap", "edge", (event) => focusEdge(event.target.id()));
+      cy.on("mouseover", "edge", (event) => event.target.addClass("hovered"));
+      cy.on("mouseout", "edge", (event) => event.target.removeClass("hovered"));
       cy.on("tap", (event) => {
         if (event.target === cy) {
+          selectedElement = null;
+          cy.elements().unselect();
           renderInitialPanel();
         }
       });
+
+      function currentViewPayload() {
+        return {
+          schema: "system-dynamics-map-current-view-v1",
+          map_id: seed.map_id,
+          version: seed.version,
+          generated_at: new Date().toISOString(),
+          lens: activeLens,
+          layout: activeLayout,
+          resolution: Number(document.getElementById("resolution").value),
+          search: document.getElementById("search").value,
+          visible_layers: Array.from(checkedValues("layer")).sort(),
+          visible_statuses: Array.from(checkedValues("status")).sort(),
+          visible_node_ids: Array.from(visibleNodeIds()).sort(),
+          visible_edge_ids: Array.from(visibleEdgeIds()).sort(),
+          selected: selectedElement
+        };
+      }
+
+      function downloadText(filename, text, type) {
+        const blob = new Blob([text], { type });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      }
 
       window.systemDynamicsMapRuntime = {
         activeLens: () => activeLens,
         activeLayout: () => activeLayout,
         applyLens,
+        currentViewPayload,
         directedLayoutRootId: () => layoutOptions("breadthfirst").roots.id(),
+        layoutAnimationEnabled: () => layoutOptions(activeLayout).animate,
         lensIds: () => lenses.lenses.map((lens) => lens.id),
         observationsFor: (id) => observationRows(id),
+        pngDataUri: () => cy.png({ output: "base64uri", bg: "white", full: false }),
         relatedClaims: (id) => claimRows(id),
-        selectNode: (id) => {
-          const node = cy.$id(id);
-          if (node.empty()) {
-            throw new Error(`Unknown node: ${id}. Check system-dynamics-map.seed.json nodes[].id before selecting.`);
-          }
-          cy.elements().unselect();
-          node.select();
-          renderNodePanel(node.data());
-          return node.data();
-        },
+        relationFor: (id) => relationEntry(id),
+        selectEdge: focusEdge,
+        selectNode: focusNode,
+        stateSummary: () => document.getElementById("state-summary").textContent,
         visibleCounts: () => ({
           edges: cy.edges().filter((edge) => !edge.hasClass("hidden")).length,
           nodes: cy.nodes().filter((node) => !node.hasClass("hidden")).length
@@ -2716,6 +7232,15 @@
 
       document.getElementById("search").addEventListener("input", () => {
         applyFilters();
+      });
+      document.getElementById("search").addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          const firstResult = document.querySelector("#search-results [data-result-id]");
+          if (firstResult) {
+            event.preventDefault();
+            firstResult.click();
+          }
+        }
       });
       document.getElementById("resolution").addEventListener("input", () => {
         applyFilters();
@@ -2734,6 +7259,42 @@
       });
       document.getElementById("fit").addEventListener("click", () => {
         fitVisibleGraph();
+      });
+      document.getElementById("copy-view").addEventListener("click", async () => {
+        const payload = JSON.stringify(currentViewPayload(), null, 2);
+        try {
+          await navigator.clipboard.writeText(payload);
+          dataHealthMessages.push("Current view JSON copied to clipboard.");
+          setDataHealth();
+        } catch {
+          downloadText("system-dynamics-current-view.json", payload, "application/json");
+        }
+      });
+      document.getElementById("export-png").addEventListener("click", () => {
+        const link = document.createElement("a");
+        link.href = cy.png({ output: "base64uri", bg: "white", full: false });
+        link.download = "system-dynamics-current-view.png";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLButtonElement) {
+          return;
+        }
+        if (event.key === "/") {
+          event.preventDefault();
+          document.getElementById("search").focus();
+        } else if (event.key === "f") {
+          fitVisibleGraph();
+        } else if (/^[1-5]$/.test(event.key)) {
+          document.getElementById("resolution").value = event.key;
+          applyFilters();
+        } else if (event.key === "Escape") {
+          document.getElementById("search").value = "";
+          applyFilters();
+          renderInitialPanel();
+        }
       });
       window.addEventListener("resize", () => {
         window.clearTimeout(resizeTimer);

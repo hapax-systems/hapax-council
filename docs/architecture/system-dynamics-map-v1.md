@@ -191,15 +191,25 @@ writer of task, PR, CI, or release truth. The fixture lives at
 
 `system-dynamics-map-viewer.html` is intentionally a static file. It provides:
 
-- Persisted lens selection.
+- Embedded seed, claim, observation, lens, and relation-vocabulary fallbacks so
+  direct file-open mode does not silently degrade the projection contract.
+- Persisted lens selection with visible/hidden scope, state mode,
+  lossiness/reversibility, validation state, and source snapshot.
 - Layer filters.
-- Status filters.
-- Resolution slider.
-- Search.
+- Claim-partition filters, distinct from temporal observation state.
+- Resolution slider with scale descriptions.
+- Search/finder controls over labels, aliases, tags, claims, observations,
+  relation vocabulary, and documentation links.
 - Layout switching.
 - Node and edge context panels.
-- Claim/evidence drilldown.
-- Temporal observation state summaries and stale observation visibility.
+- Claim/evidence/relation drilldown with source refs, source hashes,
+  confidence, authority ceiling, valid time, transaction time, expiry, relation
+  category, directionality, and allowed claim types.
+- Lens-scoped temporal observation summaries that distinguish in-scope stale
+  evidence from hidden/global stale evidence.
+- Keyboard-selectable visible-element result controls, ARIA button state,
+  reduced-motion layout handling, and larger touch targets.
+- Current-view JSON export and PNG export from the active projection.
 - External documentation links from the graph data.
 
 This is enough to review the concept and refine the graph without committing to a
@@ -222,11 +232,15 @@ Persisted hardening artifacts:
   reproducible package metadata and generated-file hash lock.
 - `system-dynamics-map.claims.json`, `system-dynamics-map.observations.jsonl`,
   `system-dynamics-map.lenses.json`, and `system-dynamics-map.relations.json`:
-  companion semantic artifacts consumed by tests and the served viewer.
+  companion semantic artifacts consumed by tests, the served viewer, and embedded
+  direct-open fallbacks.
 
 Browser verification lives in `tests/test_system_dynamics_map_viewer_playwright.py`.
 It exercises the static viewer through Playwright and asserts that Cytoscape
 draws nonblank canvas pixels after layout, not just that the seed data loaded.
+The viewer tests also cover direct file-open supplemental data, lens-scoped
+freshness, relation-vocabulary detail panels, finder-driven keyboard selection,
+current-view export payloads, ARIA layout state, and reduced-motion behavior.
 
 ## Recheck Commands
 
@@ -283,7 +297,21 @@ git diff --check -- \
   docs/architecture/system-dynamics-map-viewer.html
 ```
 
-For visual regression, serve `docs/architecture/` locally and capture the viewer:
+For visual regression, serve `docs/architecture/` locally and capture the viewer.
+The committed reference captures are:
+
+- `docs/architecture/system-dynamics-map-viewer-desktop.png`
+- `docs/architecture/system-dynamics-map-viewer-mobile.png`
+
+The portable recheck for committed reference captures is:
+
+```bash
+test -f docs/architecture/system-dynamics-map-viewer-desktop.png
+test -f docs/architecture/system-dynamics-map-viewer-mobile.png
+```
+
+The AV-SDLC task evidence also carries operator-local copies under the closing
+task evidence directory named in the cc-task dossier.
 
 ```bash
 (
@@ -308,10 +336,10 @@ PY
 
 npx playwright screenshot --browser chromium --viewport-size 1440,960 \
   --wait-for-selector '#cy canvas' --wait-for-timeout 3000 --full-page \
-  http://127.0.0.1:8765/system-dynamics-map-viewer.html /tmp/system-dynamics-map-viewer-desktop.png
+  http://127.0.0.1:8765/system-dynamics-map-viewer.html docs/architecture/system-dynamics-map-viewer-desktop.png
 npx playwright screenshot --browser chromium --viewport-size 390,844 \
   --wait-for-selector '#cy canvas' --wait-for-timeout 3000 --full-page \
-  http://127.0.0.1:8765/system-dynamics-map-viewer.html /tmp/system-dynamics-map-viewer-mobile.png
+  http://127.0.0.1:8765/system-dynamics-map-viewer.html docs/architecture/system-dynamics-map-viewer-mobile.png
 kill "$server_pid" 2>/dev/null || true
 trap - EXIT
 )

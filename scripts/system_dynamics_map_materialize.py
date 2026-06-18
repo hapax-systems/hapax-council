@@ -1554,17 +1554,30 @@ def generate_lock(seed: dict[str, Any], rendered: dict[Path, str], package_conte
 
 def generate_viewer(seed: dict[str, Any]) -> str:
     html = VIEWER_PATH.read_text(encoding="utf-8")
-    seed_json = json.dumps(seed, indent=2, sort_keys=False)
-    replacement = f'<script type="application/json" id="seed-data">\n{seed_json}\n  </script>'
-    updated, replacements = re.subn(
-        r'<script type="application/json" id="seed-data">\s*.*?\s*</script>',
-        replacement,
-        html,
-        count=1,
-        flags=re.S,
-    )
-    if replacements != 1:
-        raise RuntimeError("viewer seed-data script tag not found")
+    embedded_blocks = {
+        "seed-data": seed,
+        "claims-data": generate_claims(seed),
+        "lenses-data": generate_lenses(seed),
+        "observations-data": generate_observations(seed),
+        "relations-data": generate_relation_vocabulary(seed),
+    }
+    updated = html
+    for block_id, payload in embedded_blocks.items():
+        block_json = json.dumps(payload, indent=2, sort_keys=False)
+        replacement = f'<script type="application/json" id="{block_id}">\n{block_json}\n  </script>'
+        updated, replacements = re.subn(
+            rf'<script type="application/json" id="{re.escape(block_id)}">\s*.*?\s*</script>',
+            replacement,
+            updated,
+            count=1,
+            flags=re.S,
+        )
+        if replacements != 1:
+            raise RuntimeError(
+                f"viewer {block_id} script tag not found. "
+                "Fix by restoring the supplemental JSON script tag in "
+                "system-dynamics-map-viewer.html before regenerating artifacts."
+            )
     return updated
 
 

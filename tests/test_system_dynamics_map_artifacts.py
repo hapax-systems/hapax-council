@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 from rdflib import RDF, Dataset, Graph, Literal, Namespace, URIRef
 
@@ -67,6 +68,20 @@ def _load_viewer() -> tuple[str, dict]:
         "Fix by restoring the seed-data script tag or removing the file-open fallback claim."
     )
     return html, json.loads(match.group(1))
+
+
+def _embedded_viewer_json(block_id: str) -> object:
+    html = VIEWER_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        rf'<script type="application/json" id="{re.escape(block_id)}">\s*(.*?)\s*</script>',
+        html,
+        re.S,
+    )
+    assert match, (
+        f"viewer must include embedded {block_id}. "
+        "Fix by restoring the supplemental data script tag or removing direct-open claims."
+    )
+    return json.loads(match.group(1))
 
 
 def _load_observations() -> list[dict]:
@@ -137,6 +152,31 @@ def test_viewer_embedded_seed_matches_canonical_seed():
     assert embedded == _load_seed(), (
         "embedded viewer fallback drifted from system-dynamics-map.seed.json. "
         "Fix by regenerating the seed-data script block from the canonical seed file."
+    )
+
+
+def test_viewer_embedded_supplemental_data_matches_canonical_artifacts():
+    assert _embedded_viewer_json("claims-data") == json.loads(
+        CLAIMS_PATH.read_text(encoding="utf-8")
+    ), (
+        "embedded viewer claims fallback drifted from system-dynamics-map.claims.json. "
+        "Fix by regenerating the claims-data script block from the canonical claims file."
+    )
+    assert _embedded_viewer_json("lenses-data") == json.loads(
+        LENSES_PATH.read_text(encoding="utf-8")
+    ), (
+        "embedded viewer lenses fallback drifted from system-dynamics-map.lenses.json. "
+        "Fix by regenerating the lenses-data script block from the canonical lenses file."
+    )
+    assert _embedded_viewer_json("observations-data") == _load_observations(), (
+        "embedded viewer observations fallback drifted from system-dynamics-map.observations.jsonl. "
+        "Fix by regenerating the observations-data script block from the canonical observations file."
+    )
+    assert _embedded_viewer_json("relations-data") == json.loads(
+        RELATIONS_PATH.read_text(encoding="utf-8")
+    ), (
+        "embedded viewer relation fallback drifted from system-dynamics-map.relations.json. "
+        "Fix by regenerating the relations-data script block from the canonical relation vocabulary."
     )
 
 
@@ -439,6 +479,20 @@ def test_materializer_write_and_stale_detection_paths(tmp_path, monkeypatch):
     errors = materialize.check_artifacts()
     assert any("stale" in error for error in errors)
     assert any("missing" in error for error in errors)
+
+
+def test_materializer_reports_next_action_for_missing_embedded_viewer_block(tmp_path, monkeypatch):
+    viewer_path = tmp_path / "system-dynamics-map-viewer.html"
+    viewer_path.write_text(
+        VIEWER_PATH.read_text(encoding="utf-8").replace(
+            'id="claims-data"', 'id="missing-claims-data"', 1
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(materialize, "VIEWER_PATH", viewer_path)
+
+    with pytest.raises(RuntimeError, match="Fix by restoring the supplemental JSON script tag"):
+        materialize.generate_viewer(_load_seed())
 
 
 def test_contract_rejects_invalid_relation_and_orphan_edge():
