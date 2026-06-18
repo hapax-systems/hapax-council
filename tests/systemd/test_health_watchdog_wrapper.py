@@ -61,6 +61,8 @@ def _write_fake_uv(path: Path) -> Path:
                 ],
             }
             if "--json" in args:
+                if os.environ.get("FAKE_HEALTH_EMPTY_STDOUT"):
+                    sys.exit(int(os.environ.get("FAKE_HEALTH_EMPTY_RC", "0")))
                 print(json.dumps(report))
                 sys.exit(2 if status == "failed" else 0)
             if "--apply" in args:
@@ -188,10 +190,11 @@ def _jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
-def test_uses_source_activation_checkout_by_default(tmp_path: Path) -> None:
+def test_source_activation_checkout_wins_over_runtime_override_by_default(tmp_path: Path) -> None:
     activation = _make_checkout(tmp_path / "source-activation")
+    runtime = _make_checkout(tmp_path / "runtime")
     env = _base_env(tmp_path)
-    env["HAPAX_HEALTH_MONITOR_REPO"] = str(tmp_path / "missing-runtime")
+    env["HAPAX_HEALTH_MONITOR_REPO"] = str(runtime)
     env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(activation)
 
     result = _run_watchdog(env)
@@ -200,6 +203,20 @@ def test_uses_source_activation_checkout_by_default(tmp_path: Path) -> None:
     records = _jsonl(tmp_path / "uv.jsonl")
     assert records[0]["cwd"] == str(activation)
     assert "/home/hapax/projects/hapax-council" not in result.stderr
+
+
+def test_explicit_runtime_override_is_fallback_when_activation_missing(tmp_path: Path) -> None:
+    runtime = _make_checkout(tmp_path / "runtime")
+    env = _base_env(tmp_path)
+    env["HAPAX_HEALTH_MONITOR_REPO"] = str(runtime)
+    env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(tmp_path / "missing-activation")
+
+    result = _run_watchdog(env)
+
+    assert result.returncode == 0, result.stderr
+    records = _jsonl(tmp_path / "uv.jsonl")
+    assert records[0]["cwd"] == str(runtime)
+    assert "using explicit HAPAX_HEALTH_MONITOR_REPO override" in result.stderr
 
 
 def test_missing_activation_checkouts_fail_before_uv(tmp_path: Path) -> None:
@@ -285,6 +302,26 @@ def test_failed_stack_missing_intake_cli_falls_back_to_notification(tmp_path: Pa
     assert notifications[0]["kwargs"]["tags"] == ["rotating_light"]
 
 
+def test_failed_stack_nonzero_intake_cli_falls_back_to_notification(tmp_path: Path) -> None:
+    activation = _make_checkout(tmp_path / "source-activation")
+    intake_cli = _write_executable(
+        tmp_path / "rejecting-intake",
+        """
+        #!/usr/bin/env sh
+        exit 3
+        """,
+    )
+    env = _base_env(tmp_path, status="failed")
+    env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(activation)
+    env["HAPAX_P0_INTAKE_CLI"] = str(intake_cli)
+
+    result = _run_watchdog(env)
+
+    assert result.returncode == 2, result.stderr
+    notifications = _jsonl(tmp_path / "notify.jsonl")
+    assert notifications[0]["title"] == "Stack Failed"
+
+
 def test_failed_stack_timed_out_intake_cli_falls_back_to_notification(tmp_path: Path) -> None:
     activation = _make_checkout(tmp_path / "source-activation")
     intake_cli = _write_executable(
@@ -323,3 +360,17 @@ def test_failed_stack_auto_fix_success_notifies_auto_fixed(tmp_path: Path) -> No
     ]
     notifications = _jsonl(tmp_path / "notify.jsonl")
     assert notifications[0]["title"] == "Auto-Fixed"
+
+
+def test_empty_health_report_stdout_alerts_before_history_write(tmp_path: Path) -> None:
+    activation = _make_checkout(tmp_path / "source-activation")
+    env = _base_env(tmp_path)
+    env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(activation)
+    env["FAKE_HEALTH_EMPTY_STDOUT"] = "1"
+
+    result = _run_watchdog(env)
+
+    assert result.returncode == 1, result.stderr
+    notifications = _jsonl(tmp_path / "notify.jsonl")
+    assert notifications[0]["title"] == "Health Monitor Failed"
+    assert not (tmp_path / "health-history.jsonl").exists()
