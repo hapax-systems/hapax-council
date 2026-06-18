@@ -473,6 +473,12 @@ def _unresolved_criticals(reviews: Sequence[Mapping[str, Any]]) -> list[tuple[st
     return out
 
 
+def _recorded_go_gate_resolution(finding: Mapping[str, Any]) -> bool:
+    return bool(finding.get("resolved")) and str(finding.get("resolution_source") or "") == (
+        "review-go-gate"
+    )
+
+
 # --- The go-gate: fail-closed literal-defect verifier -------------------------
 # A reviewer's "syntax error / compile failure / corruption at line N" critical is INVALIDATED
 # (does not block quorum) when the actual file at head refutes it — verified deterministically,
@@ -639,6 +645,8 @@ def _blocking_criticals(
     reviews: Sequence[Mapping[str, Any]],
     repo_root: Path | None,
     head_sha: str | None = None,
+    *,
+    honor_recorded_go_gate_resolutions: bool = False,
 ) -> tuple[list[tuple[str, dict]], list[tuple[str, dict]]]:
     """Partition unresolved criticals into (blocking, phantom). ``repo_root=None`` discovers the repo
     from cwd. The verifier runs ONLY when the checkout is confirmed to be the reviewed commit
@@ -647,13 +655,22 @@ def _blocking_criticals(
     criticals = _unresolved_criticals(reviews)
     if os.environ.get(_GO_GATE_OFF_ENV) == "1":
         return criticals, []  # killswitch: every critical blocks (pre-go-gate behaviour)
+    recorded_phantoms: list[tuple[str, dict]] = []
+    if honor_recorded_go_gate_resolutions:
+        pending: list[tuple[str, dict]] = []
+        for reviewer_id, finding in criticals:
+            if _recorded_go_gate_resolution(finding):
+                recorded_phantoms.append((reviewer_id, finding))
+            else:
+                pending.append((reviewer_id, finding))
+        criticals = pending
     root = repo_root if repo_root is not None else _discover_repo_root()
     if root is None:
-        return criticals, []
+        return criticals, recorded_phantoms
     if not head_sha or not _repo_head_matches(root, head_sha):
-        return criticals, []  # no commit to bind to, or wrong checkout -> do not verify (keep all)
+        return criticals, recorded_phantoms  # wrong/unknown checkout -> keep unresolved criticals
     blocking: list[tuple[str, dict]] = []
-    phantom: list[tuple[str, dict]] = []
+    phantom: list[tuple[str, dict]] = list(recorded_phantoms)
     for reviewer_id, finding in criticals:
         target = blocking if verify_literal_defect_critical(finding, root) else phantom
         target.append((reviewer_id, finding))
@@ -1142,7 +1159,10 @@ def _dossier_validity_blockers(
 
     # go-gate: drop literal-defect phantoms (repo discovered from cwd = the PR checkout in CI)
     criticals, phantoms = _blocking_criticals(
-        reviews, None, head_sha=str(dossier.get("head_sha") or "")
+        reviews,
+        None,
+        head_sha=str(dossier.get("head_sha") or ""),
+        honor_recorded_go_gate_resolutions=True,
     )
     if phantoms:  # receipt: phantom invalidations are auditable in the CI log, never silent
         print(
