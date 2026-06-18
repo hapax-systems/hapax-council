@@ -197,10 +197,10 @@ def active_glmcp_admission_receipts(
             if fields.get("status") not in {"quota_available", "admitted"}:
                 continue
             provider = fields.get("provider", "")
-            if provider and provider not in {"z_ai", "z.ai", "zai", "z_ai-glm-coding-plan"}:
+            if provider not in {"z_ai", "z.ai", "zai", "z_ai-glm-coding-plan"}:
                 continue
             route_id = fields.get("route_id", "")
-            if route_id and route_id != SUBSCRIPTION_ROUTES["glmcp"]:
+            if route_id != SUBSCRIPTION_ROUTES["glmcp"]:
                 continue
             observed_at = _parse_utc(
                 fields.get("observed_at", "")

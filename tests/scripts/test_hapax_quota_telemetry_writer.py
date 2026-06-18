@@ -166,6 +166,26 @@ def test_glmcp_role_quota_wall_maps_to_glmcp_not_codex(tmp_path: Path) -> None:
     assert summary["quota_walls"] == {"glmcp": 1}
 
 
+def test_glmcp_role_aliases_map_to_glmcp_not_codex(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    for role in ("codex-glmcp", "glmcp", "glm-review", "glmcp-seat"):
+        _wall_receipt(relay, role, "2026-06-10T06:00:00Z")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["glmcp.review.direct"] == "exhausted"
+    assert states["codex.headless.full"] == "fresh"
+    summary = json.loads(result.stdout)
+    assert summary["quota_walls"] == {"glmcp": 4}
+
+
 def test_fresh_glmcp_admission_receipt_marks_glmcp_fresh(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
@@ -186,6 +206,40 @@ def test_fresh_glmcp_admission_receipt_marks_glmcp_fresh(tmp_path: Path) -> None
     assert "finite" in glmcp_snapshot["operator_visible_reason"]
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 1
+
+
+def test_glmcp_admission_receipt_requires_provider_and_route(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    (relay / "glmcp-quota-admission-missing-provider.yaml").write_text(
+        """status: quota_available
+route_id: glmcp.review.direct
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 900
+""",
+        encoding="utf-8",
+    )
+    (relay / "glmcp-quota-admission-missing-route.yaml").write_text(
+        """status: quota_available
+provider: z_ai
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 900
+""",
+        encoding="utf-8",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["subscription_quota_state"] == "unknown"
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
 
 
 def test_stale_glmcp_admission_receipt_keeps_glmcp_unknown(tmp_path: Path) -> None:
