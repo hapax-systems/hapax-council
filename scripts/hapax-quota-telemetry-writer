@@ -38,7 +38,7 @@ Each tick does two writes:
      intentionally ignored; write a fresh short-lived witness instead.
      The emergency false-negative recovery path is to create a fresh
      short-lived admission receipt with status, provider, capacity_pool,
-     route_id, supported_tool, endpoint, model, observed_at/captured_at/
+     route_id, supported_tool, endpoint, model, one of observed_at/captured_at/
      detected_at, stale_after_seconds, and evidence_ref fields, then rerun this
      writer so the live ledger is refreshed.
      That receipt-plane refresh is the canonical emergency procedure for a
@@ -122,7 +122,7 @@ GLMCP_ADMISSION_RECHECK_COMMAND = (
 GLMCP_ADMISSION_RECOVERY_HINT = (
     "false-negative recovery: repair receipt permissions/encoding or create a fresh "
     "short-lived admission receipt with status, provider, capacity_pool, route_id, "
-    "supported_tool, endpoint, model, observed_at/captured_at/detected_at, "
+    "supported_tool, endpoint, model, one of observed_at/captured_at/detected_at, "
     "stale_after_seconds, and evidence_ref, then rerun writer"
 )
 
