@@ -1140,9 +1140,9 @@ def classify_pr(
 
     # Dispatch resilience to lane-death (CASE-CAPACITY-ROUTING-001). A CLEAN,
     # green PR whose single linked task is pr_open but never had its release
-    # authorized (the lane died after `gh pr create`) strands forever. Running
-    # as the system (FM-20), the autoqueue may auto-arm an eligible task; a
-    # governance/public/audio-egress-sensitive one is held so it stays manual.
+    # armed (the lane died after `gh pr create`) strands forever. Running as the
+    # system (FM-20), the autoqueue performs that release-arm step once the
+    # normal automated implementation/review/quality gates have passed.
     auto_arm = False
     if task is not None and not reasons:
         arm = assess_release_auto_arm(task.frontmatter)
