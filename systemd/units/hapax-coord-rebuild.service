@@ -3,6 +3,7 @@
 Description=Hapax coord deploy - fetch main, refresh the activation worktree, restart the yard on change
 Wants=network-online.target
 After=network-online.target
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot

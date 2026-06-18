@@ -5,6 +5,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UNIT = REPO_ROOT / "systemd" / "units" / "hapax-coord.service"
+ACTIVATION_WORKTREE = "%h/.cache/hapax/coord-activation/worktree"
 
 
 def _read_unit() -> configparser.ConfigParser:
@@ -14,18 +15,18 @@ def _read_unit() -> configparser.ConfigParser:
     return parser
 
 
-def test_hapax_coord_unit_is_source_only_shape() -> None:
+def test_hapax_coord_unit_runs_from_coord_activation_worktree() -> None:
     parser = _read_unit()
 
     assert parser.get("Service", "Type") == "simple"
-    assert parser.get("Service", "WorkingDirectory") == "/home/hapax/projects/hapax-coord"
+    assert parser.get("Service", "WorkingDirectory") == ACTIVATION_WORKTREE
     assert (
-        parser.get("Service", "ExecStart")
-        == "/home/hapax/projects/hapax-coord/scripts/run-dev.sh --daemon"
+        parser.get("Service", "ExecStart") == f"{ACTIVATION_WORKTREE}/scripts/run-dev.sh --daemon"
     )
     assert parser.get("Unit", "ConditionPathExists") == (
-        "/home/hapax/projects/hapax-coord/scripts/run-dev.sh"
+        f"{ACTIVATION_WORKTREE}/scripts/run-dev.sh"
     )
+    assert parser.get("Unit", "OnFailure") == "notify-failure@%n.service"
 
 
 def test_hapax_coord_unit_does_not_install_or_expose_secrets() -> None:
@@ -34,3 +35,4 @@ def test_hapax_coord_unit_does_not_install_or_expose_secrets() -> None:
     assert "systemctl" not in text
     assert "Environment=" not in text
     assert "0.0.0.0" not in text
+    assert "/home/hapax/projects/hapax-coord/scripts/run-dev.sh" not in text

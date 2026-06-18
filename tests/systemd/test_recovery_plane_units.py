@@ -30,6 +30,7 @@ def test_coord_rebuild_runs_from_stable_recovery_bundle() -> None:
     assert "# Hapax-Auto-Enable: true" in text
     assert "Wants=network-online.target" in text
     assert "After=network-online.target" in text
+    assert "OnFailure=notify-failure@%n.service" in text
     assert f"ExecStart={STABLE_BUNDLE}/scripts/hapax-coord-deploy" in text
     for marker in VOLATILE_MARKERS:
         assert marker not in text
