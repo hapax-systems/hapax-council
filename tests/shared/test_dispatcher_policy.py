@@ -13,11 +13,13 @@ from shared.dispatcher_policy import (
     DispatchRequest,
     QuotaSpendState,
     RouteCapabilityState,
+    build_dispatch_request,
     evaluate_dispatch_policy,
     load_dispatch_policy_sources,
     write_route_decision_receipt,
 )
 from shared.platform_capability_registry import (
+    PlatformCapabilityRegistry,
     PlatformCapabilityRoute,
     build_supply_vector,
     load_platform_capability_registry,
@@ -25,6 +27,7 @@ from shared.platform_capability_registry import (
 from shared.quota_spend_ledger import (
     QUOTA_SPEND_LEDGER_FIXTURES,
     QUOTA_SPEND_LEDGER_LIVE_ENV,
+    QuotaSpendLedger,
 )
 from shared.route_metadata_schema import DemandVector, build_demand_vector
 
@@ -195,6 +198,46 @@ def _route_with_scores(
     for tool in payload["tool_state"]:
         tool["observed_at"] = "2026-05-09T22:00:00Z"
     return PlatformCapabilityRoute.model_validate(payload)
+
+
+def _registry_with_fresh_route(route_id: str) -> PlatformCapabilityRegistry:
+    registry = load_platform_capability_registry()
+    payload = registry.model_dump(mode="json")
+    route_payload = _route_with_scores(route_id, score=5).model_dump(mode="json")
+    payload["routes"] = [
+        route_payload if route["route_id"] == route_id else route for route in payload["routes"]
+    ]
+    return PlatformCapabilityRegistry.model_validate(payload)
+
+
+def _ledger_with_route_subscription_state(route_id: str, state: str) -> QuotaSpendLedger:
+    payload = json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": f"quota-{route_id.replace('.', '-')}-{state}",
+            "captured_at": "2026-05-09T22:00:00Z",
+            "route_id": route_id,
+            "provider": "test-subscription",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": state,
+            "evidence_refs": [f"relay-receipt:{route_id}:quota:{state}"],
+            "operator_visible_reason": f"test route quota {state}",
+        }
+    )
+    return QuotaSpendLedger.model_validate(payload)
+
+
+def _task_fields() -> dict[str, object]:
+    payload = _demand().model_dump(mode="json")
+    payload.update(
+        {
+            "status": "claimed",
+            "assigned_to": "cx-green",
+            "authority_case": "CASE-TEST-001",
+        }
+    )
+    return payload
 
 
 def _dimensional_request(
@@ -516,6 +559,52 @@ def test_glmcp_subscription_route_launches_with_fresh_route_quota() -> None:
     assert decision.route_policy_green is True
     assert decision.quota_freshness_green is True
     assert "policy_launch" in decision.reason_codes
+
+
+def test_build_dispatch_request_enforces_exact_route_subscription_quota() -> None:
+    route_id = "codex.headless.full"
+    registry = _registry_with_fresh_route(route_id)
+    freshness_now = datetime(2026, 5, 9, 22, 10, tzinfo=UTC)
+
+    unknown_request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=registry,
+        quota_ledger=_ledger_with_route_subscription_state(route_id, "unknown"),
+        now=freshness_now,
+    )
+    assert unknown_request.quota is not None
+    assert unknown_request.quota.route_subscription_quota_state == "unknown"
+
+    unknown_decision = evaluate_dispatch_policy(unknown_request, now=freshness_now)
+
+    assert unknown_decision.action is DispatchAction.HOLD
+    assert "subscription_route_quota_not_fresh" in unknown_decision.reason_codes
+    assert "route_subscription_quota_state:unknown" in unknown_decision.reason_codes
+
+    fresh_request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=registry,
+        quota_ledger=_ledger_with_route_subscription_state(route_id, "fresh"),
+        now=freshness_now,
+    )
+    assert fresh_request.quota is not None
+    assert fresh_request.quota.route_subscription_quota_state == "fresh"
+
+    fresh_decision = evaluate_dispatch_policy(fresh_request, now=freshness_now)
+
+    assert fresh_decision.action is DispatchAction.LAUNCH
+    assert fresh_decision.quota_freshness_green is True
+    assert "policy_launch" in fresh_decision.reason_codes
 
 
 def test_spike_workload_refuses_local_fleet_and_points_to_cloud_burst() -> None:
