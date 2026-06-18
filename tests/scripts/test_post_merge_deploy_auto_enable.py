@@ -24,6 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-post-merge-deploy"
 
 MARKER = "# Hapax-Auto-Enable: true"
+ENABLE_ONLY_MARKER = "# Hapax-Timer-Enable-Only: true"
 
 SVC_AUTOENABLE = f"""
 {MARKER}
@@ -70,6 +71,16 @@ TIMER_AUTOENABLE = f"""
 Description=Marked timer (the lane-supervisor shape)
 [Timer]
 OnUnitActiveSec=60
+[Install]
+WantedBy=timers.target
+"""
+
+TIMER_ENABLE_ONLY = f"""
+{ENABLE_ONLY_MARKER}
+[Unit]
+Description=Enable-only timer (no deploy-time start)
+[Timer]
+OnStartupSec=2min
 [Install]
 WantedBy=timers.target
 """
@@ -211,6 +222,37 @@ def test_deploy_enables_plain_timer_backcompat(tmp_path: Path) -> None:
     res = _run([sha], repo=repo, bin_dir=bin_dir, tmp_path=tmp_path)
     assert res.returncode == 0, res.stderr
     assert "enable --now test-plain.timer" in calls.read_text(encoding="utf-8")
+
+
+def test_deploy_enable_only_timer_does_not_start_during_deploy(tmp_path: Path) -> None:
+    """A timer carrying Hapax-Timer-Enable-Only is enabled for future startup,
+    but deploy must not start/restart it with --now."""
+    repo, sha = _make_repo(tmp_path, {"test-enable-only.timer": TIMER_ENABLE_ONLY})
+    bin_dir, calls = _make_fake_systemctl(tmp_path)
+    res = _run([sha], repo=repo, bin_dir=bin_dir, tmp_path=tmp_path)
+    assert res.returncode == 0, res.stderr
+    text = calls.read_text(encoding="utf-8")
+    assert "enable test-enable-only.timer" in text
+    assert "enable --now test-enable-only.timer" not in text
+
+
+def test_deploy_enable_only_active_timer_does_not_restart(tmp_path: Path) -> None:
+    """An already-active enable-only timer must stay active, not be restarted
+    into a deploy-relative firing window."""
+    repo, sha = _make_repo(tmp_path, {"test-enable-only.timer": TIMER_ENABLE_ONLY})
+    bin_dir, calls = _make_fake_systemctl(tmp_path)
+    res = _run(
+        [sha],
+        repo=repo,
+        bin_dir=bin_dir,
+        tmp_path=tmp_path,
+        extra_env={"FAKE_IS_ACTIVE_QUIET_RC": "0"},
+    )
+    assert res.returncode == 0, res.stderr
+    text = calls.read_text(encoding="utf-8")
+    assert "enable test-enable-only.timer" in text
+    assert "restart test-enable-only.timer" not in text
+    assert "enable --now test-enable-only.timer" not in text
 
 
 def test_verify_auto_enable_passes_when_marked_units_enabled(tmp_path: Path) -> None:
