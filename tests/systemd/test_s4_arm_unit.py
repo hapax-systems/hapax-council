@@ -31,6 +31,7 @@ def test_s4_arm_wrapper_delegates_to_shared_arm_main() -> None:
 
 
 def test_s4_arm_service_invokes_pre_segment_witness_flow() -> None:
+    body = SERVICE.read_text(encoding="utf-8")
     service = _read_unit(SERVICE)
     exec_start_pre = service.get("Service", "ExecStartPre")
     exec_start = service.get("Service", "ExecStart")
@@ -66,6 +67,8 @@ def test_s4_arm_service_invokes_pre_segment_witness_flow() -> None:
     )
     assert "--receipt-path /dev/shm/hapax-audio/s4-boot-arm-receipt.json" in exec_start
     assert service.get("Service", "TimeoutStartSec") == "180s"
+    assert not service.has_section("Install")
+    assert "WantedBy=default.target" not in body
 
 
 def test_s4_arm_service_uses_source_activation_environment() -> None:
@@ -83,6 +86,9 @@ def test_s4_arm_service_uses_source_activation_environment() -> None:
 
 def test_s4_arm_timer_is_user_manager_startup_scoped_not_recurring_marker_loop() -> None:
     body = TIMER.read_text(encoding="utf-8")
+    active_lines = "\n".join(
+        line for line in body.splitlines() if not line.lstrip().startswith(("#", ";"))
+    )
     timer = _read_unit(TIMER)
 
     assert "# Hapax-Timer-Enable-Only: true" in body
@@ -93,6 +99,9 @@ def test_s4_arm_timer_is_user_manager_startup_scoped_not_recurring_marker_loop()
     assert not timer.has_option("Timer", "OnBootSec")
     assert not timer.has_option("Timer", "OnUnitActiveSec")
     assert not timer.has_option("Timer", "OnCalendar")
+    assert "OnBootSec" not in active_lines
+    assert "OnUnitActiveSec" not in active_lines
+    assert "OnCalendar" not in active_lines
 
 
 def test_s4_arm_timer_is_preset_enabled() -> None:

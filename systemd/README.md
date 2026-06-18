@@ -46,7 +46,7 @@ n8n, open-webui, minio, ntfy       visual-layer-agg  → perception pipeline
                                     studio-compositor → camera tiling (GPU)
 Managed by:                         studio-fx-output  → ffmpeg /dev/video50
   llm-stack.service (oneshot)       hapax-watch-recv  → Wear OS biometrics
-  llm-stack-analytics.service       114 timers        → sync, health, backups
+  llm-stack-analytics.service       141 timers        → sync, health, backups
 ```
 
 ## Grouping Targets

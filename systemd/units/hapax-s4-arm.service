@@ -19,6 +19,3 @@ TimeoutStartSec=180s
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=hapax-s4-arm
-
-[Install]
-WantedBy=default.target
