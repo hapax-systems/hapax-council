@@ -269,6 +269,12 @@ def test_materialized_rdf_artifacts_parse_and_match_seed_contract():
         assert (subject, SD.documentationLink, None) in partition
         for doc in node["docs"]:
             assert (subject, SD.documentationLink, URIRef(doc["url"])) in partition
+        for note in node.get("hardening", []):
+            assert (subject, SD.hardeningNote, Literal(note)) in partition
+        for alias in node.get("aliases", []):
+            assert (subject, SD.alias, Literal(alias)) in partition
+        for tag in node.get("tags", []):
+            assert (subject, SD.tag, Literal(tag)) in partition
 
     for edge in seed["edges"]:
         partition = dataset.graph(URIRef(BASE[f"graph/{edge['status']}"]))
@@ -341,6 +347,10 @@ def test_materialized_rdf_artifacts_parse_and_match_seed_contract():
 
     for path in (PROV.used, PROV.generated, PROV.wasAssociatedWith):
         _assert_shape_property(shapes, SD.ProvenanceActivityShape, path)
+
+    for path in (SD.hardeningNote, SD.alias, SD.tag):
+        property_shape = _shape_property(shapes, SD.NodeShape, path)
+        assert (property_shape, SH.datatype, XSD_STRING) in shapes
 
 
 def test_shacl_shapes_and_view_manifest_cover_the_durable_contract():

@@ -101,7 +101,12 @@
   sd:status "asserted" ;
   dcterms:description "Decision Model and Notation, the entry point for the map." ;
   sd:context "DMN models decision requirements and executable decision logic. It is valuable for decision dependencies, but it is too narrow to be the universal representation for topology, state, telemetry, and provenance." ;
-  sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN>, <https://www.omg.org/spec/DMN/1.6/Beta1/About-DMN> .
+  sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN>, <https://www.omg.org/spec/DMN/1.6/Beta1/About-DMN> ;
+  sd:hardeningNote "Treat DMN decisions as one claim type in the graph, not as the global model." ;
+  sd:hardeningNote "Preserve DMN version, namespace, source document, and import provenance." ;
+  sd:alias "Decision Model and Notation" ;
+  sd:tag "entrypoint" ;
+  sd:tag "decision" .
 
 <https://hapax.local/system-dynamics-map/v0/node/drd>
   a sd:Node ;
@@ -113,7 +118,12 @@
   sd:status "asserted" ;
   dcterms:description "DMN decision requirement diagrams and decision requirement graphs." ;
   sd:context "DRDs show dependency between decisions, input data, business knowledge, and knowledge sources. They are not runtime event graphs." ;
-  sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN> .
+  sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN> ;
+  sd:hardeningNote "Do not infer process sequence or runtime causality from a DRD edge without evidence." ;
+  sd:alias "Decision Requirements Diagram" ;
+  sd:alias "Decision Requirements Graph" ;
+  sd:tag "decision" ;
+  sd:tag "dependency" .
 
 <https://hapax.local/system-dynamics-map/v0/node/decision-service>
   a sd:Node ;
@@ -125,7 +135,11 @@
   sd:status "asserted" ;
   dcterms:description "A callable packaging boundary for decisions." ;
   sd:context "Decision services expose decisions for invocation by process, case, application, or runtime architecture components." ;
-  sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN> .
+  sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN> ;
+  sd:hardeningNote "Separate design-time decision service boundaries from deployed API endpoints." ;
+  sd:alias "DMN decision service" ;
+  sd:tag "decision" ;
+  sd:tag "service" .
 
 <https://hapax.local/system-dynamics-map/v0/node/decision-table>
   a sd:Node ;
@@ -137,7 +151,11 @@
   sd:status "asserted" ;
   dcterms:description "Tabular decision logic used by DMN." ;
   sd:context "Decision tables are common DMN logic artifacts and often become executable rule assets." ;
-  sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN> .
+  sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN> ;
+  sd:hardeningNote "Track hit policy, type constraints, FEEL expressions, and test coverage." ;
+  sd:alias "DMN table" ;
+  sd:tag "decision" ;
+  sd:tag "rules" .
 
 <https://hapax.local/system-dynamics-map/v0/node/feel>
   a sd:Node ;
@@ -149,7 +167,11 @@
   sd:status "asserted" ;
   dcterms:description "Friendly Enough Expression Language used by DMN." ;
   sd:context "FEEL is the expression language side of DMN. Runtime portability depends on precise FEEL support and version handling." ;
-  sd:documentationLink <https://www.omg.org/spec/DMN/1.6/Beta1/About-DMN> .
+  sd:documentationLink <https://www.omg.org/spec/DMN/1.6/Beta1/About-DMN> ;
+  sd:hardeningNote "Record FEEL dialect/version support for each runtime before marking a decision executable." ;
+  sd:alias "Friendly Enough Expression Language" ;
+  sd:tag "language" ;
+  sd:tag "expression" .
 
 <https://hapax.local/system-dynamics-map/v0/node/bpmn>
   a sd:Node ;
@@ -161,7 +183,11 @@
   sd:status "asserted" ;
   dcterms:description "Business Process Model and Notation for process flow." ;
   sd:context "BPMN process models can invoke, route to, or depend on decisions. It gives process context above DMN." ;
-  sd:documentationLink <https://www.omg.org/spec/BPMN/2.0.2/> .
+  sd:documentationLink <https://www.omg.org/spec/BPMN/2.0.2/> ;
+  sd:hardeningNote "Do not treat BPMN sequence flow as proof of actual runtime ordering without event evidence." ;
+  sd:alias "Business Process Model and Notation" ;
+  sd:tag "process" ;
+  sd:tag "layer-up" .
 
 <https://hapax.local/system-dynamics-map/v0/node/cmmn>
   a sd:Node ;
@@ -173,7 +199,11 @@
   sd:status "asserted" ;
   dcterms:description "Case Management Model and Notation for case plans." ;
   sd:context "CMMN covers less prescriptive, case-oriented work that can use decisions without fitting a strict process flow." ;
-  sd:documentationLink <https://www.omg.org/spec/CMMN/1.1/About-CMMN> .
+  sd:documentationLink <https://www.omg.org/spec/CMMN/1.1/About-CMMN> ;
+  sd:hardeningNote "Represent discretionary case behavior separately from deterministic process paths." ;
+  sd:alias "Case Management Model and Notation" ;
+  sd:tag "case" ;
+  sd:tag "layer-up" .
 
 <https://hapax.local/system-dynamics-map/v0/node/archimate>
   a sd:Node ;
@@ -185,7 +215,11 @@
   sd:status "asserted" ;
   dcterms:description "Enterprise architecture modeling language." ;
   sd:context "ArchiMate situates decisions in business, application, technology, motivation, strategy, and implementation context." ;
-  sd:documentationLink <https://www.opengroup.org/archimate-forum/archimate-overview>, <https://www.opengroup.org/archimate-licensed-downloads> .
+  sd:documentationLink <https://www.opengroup.org/archimate-forum/archimate-overview>, <https://www.opengroup.org/archimate-licensed-downloads> ;
+  sd:hardeningNote "Use ArchiMate for enterprise context, not for low-level runtime state." ;
+  sd:alias "ArchiMate enterprise architecture" ;
+  sd:tag "enterprise" ;
+  sd:tag "layer-up" .
 
 <https://hapax.local/system-dynamics-map/v0/node/sysml-v2>
   a sd:Node ;
@@ -197,7 +231,11 @@
   sd:status "asserted" ;
   dcterms:description "Systems modeling language for MBSE." ;
   sd:context "SysML v2 covers system requirements, structure, behavior, analysis, and verification context around decision-enabled systems." ;
-  sd:documentationLink <https://www.omg.org/spec/SysML/2.0/About-SysML> .
+  sd:documentationLink <https://www.omg.org/spec/SysML/2.0/About-SysML> ;
+  sd:hardeningNote "Keep engineering requirement/verification evidence distinct from business decision dependencies." ;
+  sd:alias "OMG System Modeling Language" ;
+  sd:tag "systems" ;
+  sd:tag "layer-up" .
 
 <https://hapax.local/system-dynamics-map/v0/node/dmn-xml-di>
   a sd:Node ;
@@ -209,7 +247,11 @@
   sd:status "asserted" ;
   dcterms:description "DMN interchange and diagram information." ;
   sd:context "DMN XML and diagram interchange preserve model content and layout metadata across tools." ;
-  sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN> .
+  sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN> ;
+  sd:hardeningNote "Preserve namespace, schema version, diagram coordinates, and original bytes hash." ;
+  sd:alias "DMN interchange" ;
+  sd:tag "interchange" ;
+  sd:tag "layer-down" .
 
 <https://hapax.local/system-dynamics-map/v0/node/rdf-owl-kg>
   a sd:Node ;
@@ -221,7 +263,13 @@
   sd:status "asserted" ;
   dcterms:description "Canonical identity and relationship backbone." ;
   sd:context "The semantic graph is the durable center: it represents identities, relations, named graph partitions, and ontology commitments across model families." ;
-  sd:documentationLink <https://www.w3.org/TR/rdf12-concepts/>, <https://www.w3.org/TR/owl2-overview/> .
+  sd:documentationLink <https://www.w3.org/TR/rdf12-concepts/>, <https://www.w3.org/TR/owl2-overview/> ;
+  sd:hardeningNote "Use named graphs for asserted, inferred, observed, simulated, and rendered claims." ;
+  sd:hardeningNote "Map source-model identifiers to stable IRIs." ;
+  sd:alias "semantic backbone" ;
+  sd:alias "knowledge graph" ;
+  sd:tag "semantic-core" ;
+  sd:tag "identity" .
 
 <https://hapax.local/system-dynamics-map/v0/node/shacl-contracts>
   a sd:Node ;
@@ -233,7 +281,11 @@
   sd:status "asserted" ;
   dcterms:description "Graph validation shapes and quality gates." ;
   sd:context "SHACL constrains the graph before data or projections are treated as trustworthy." ;
-  sd:documentationLink <https://www.w3.org/TR/shacl/>, <https://www.w3.org/TR/shacl12-core/> .
+  sd:documentationLink <https://www.w3.org/TR/shacl/>, <https://www.w3.org/TR/shacl12-core/> ;
+  sd:hardeningNote "Validate relation vocabulary, required provenance, status values, temporal bounds, and render-manifest completeness." ;
+  sd:alias "shape constraints" ;
+  sd:tag "validation" ;
+  sd:tag "contracts" .
 
 <https://hapax.local/system-dynamics-map/v0/node/prov-o>
   a sd:Node ;
@@ -245,7 +297,11 @@
   sd:status "asserted" ;
   dcterms:description "Provenance ontology for agents, activities, and entities." ;
   sd:context "PROV-O records where a claim came from, who or what generated it, and which source or transformation it depends on." ;
-  sd:documentationLink <https://www.w3.org/TR/prov-o/> .
+  sd:documentationLink <https://www.w3.org/TR/prov-o/> ;
+  sd:hardeningNote "Require provenance for imports, inferred edges, simulated states, and rendered views." ;
+  sd:alias "provenance ontology" ;
+  sd:tag "provenance" ;
+  sd:tag "evidence" .
 
 <https://hapax.local/system-dynamics-map/v0/node/jsonld-trig>
   a sd:Node ;
@@ -257,7 +313,11 @@
   sd:status "asserted" ;
   dcterms:description "Portable graph and named graph exchange formats." ;
   sd:context "JSON-LD is useful for web-facing exchange. TriG is useful when named graph partitions need to be serialized directly." ;
-  sd:documentationLink <https://www.w3.org/TR/json-ld11/>, <https://www.w3.org/TR/rdf12-concepts/> .
+  sd:documentationLink <https://www.w3.org/TR/json-ld11/>, <https://www.w3.org/TR/rdf12-concepts/> ;
+  sd:hardeningNote "Version contexts and keep view data derivable from canonical graph snapshots." ;
+  sd:alias "graph exchange" ;
+  sd:tag "exchange" ;
+  sd:tag "serialization" .
 
 <https://hapax.local/system-dynamics-map/v0/node/temporal-state-events>
   a sd:Node ;
@@ -269,7 +329,12 @@
   sd:status "asserted" ;
   dcterms:description "Pattern for representing state as time-bounded evidence." ;
   sd:context "Topology and state should not be conflated. Current state is derived from observations and events with timestamps, source, confidence, and expiry." ;
-  sd:documentationLink <https://www.w3.org/TR/owl-time/> .
+  sd:documentationLink <https://www.w3.org/TR/owl-time/> ;
+  sd:hardeningNote "Represent state transitions and observed state separately from static model structure." ;
+  sd:alias "state overlay" ;
+  sd:alias "event overlay" ;
+  sd:tag "state" ;
+  sd:tag "time" .
 
 <https://hapax.local/system-dynamics-map/v0/edge/dmn-to-drd>
   a sd:Edge ;
@@ -477,7 +542,11 @@
   sd:status "observed" ;
   dcterms:description "Telemetry conventions for traces, metrics, logs, profiles, and resources." ;
   sd:context "OpenTelemetry gives runtime observation vocabulary. It should feed observed graph overlays, not overwrite the design graph." ;
-  sd:documentationLink <https://opentelemetry.io/docs/concepts/semantic-conventions/> .
+  sd:documentationLink <https://opentelemetry.io/docs/concepts/semantic-conventions/> ;
+  sd:hardeningNote "Attach telemetry to runtime identities with time bounds, resource identity, sampling metadata, and confidence." ;
+  sd:alias "OTel" ;
+  sd:tag "telemetry" ;
+  sd:tag "observability" .
 
 <https://hapax.local/system-dynamics-map/v0/node/trace-context>
   a sd:Node ;
@@ -489,7 +558,12 @@
   sd:status "observed" ;
   dcterms:description "Distributed trace propagation format." ;
   sd:context "Trace Context helps correlate observed runtime behavior across service boundaries." ;
-  sd:documentationLink <https://www.w3.org/TR/trace-context/> .
+  sd:documentationLink <https://www.w3.org/TR/trace-context/> ;
+  sd:hardeningNote "Use trace IDs as evidence correlation keys, not canonical architectural identity." ;
+  sd:alias "traceparent" ;
+  sd:alias "tracestate" ;
+  sd:tag "trace" ;
+  sd:tag "observability" .
 
 <https://hapax.local/system-dynamics-map/v0/node/cloudevents>
   a sd:Node ;
@@ -501,7 +575,11 @@
   sd:status "observed" ;
   dcterms:description "Common event metadata envelope." ;
   sd:context "CloudEvents-style envelopes can normalize event metadata flowing into the observation graph." ;
-  sd:documentationLink <https://cloudevents.io/> .
+  sd:documentationLink <https://cloudevents.io/> ;
+  sd:hardeningNote "Preserve original event payload, envelope attributes, source, subject, and schema references." ;
+  sd:alias "event envelope" ;
+  sd:tag "event" ;
+  sd:tag "interoperability" .
 
 <https://hapax.local/system-dynamics-map/v0/edge/api-to-otel>
   a sd:Edge ;
@@ -566,7 +644,12 @@
   sd:status "rendered" ;
   dcterms:description "Reproducible contract for a rendered projection." ;
   sd:context "Every rendered visualization should declare graph snapshot, filters, aggregation rules, scale, layout engine, hidden layers, and generation provenance." ;
-  sd:documentationLink <https://www.w3.org/TR/prov-o/> .
+  sd:documentationLink <https://www.w3.org/TR/prov-o/> ;
+  sd:hardeningNote "Treat rendered views as derived artifacts with their own provenance and validation status." ;
+  sd:alias "projection manifest" ;
+  sd:alias "view definition" ;
+  sd:tag "rendering" ;
+  sd:tag "contract" .
 
 <https://hapax.local/system-dynamics-map/v0/node/cytoscape>
   a sd:Node ;
@@ -578,7 +661,11 @@
   sd:status "rendered" ;
   dcterms:description "Interactive graph visualization engine for the v0 map." ;
   sd:context "Cytoscape.js provides graph elements, styles, layouts, and event handlers suitable for an exploratory topology viewer." ;
-  sd:documentationLink <https://js.cytoscape.org/> .
+  sd:documentationLink <https://js.cytoscape.org/> ;
+  sd:hardeningNote "Keep Cytoscape element data generated from the graph contract and view manifest." ;
+  sd:alias "cy.js" ;
+  sd:tag "viewer" ;
+  sd:tag "graph" .
 
 <https://hapax.local/system-dynamics-map/v0/edge/kg-to-view-manifest>
   a sd:Edge ;
@@ -643,7 +730,11 @@
   sd:status "candidate" ;
   dcterms:description "Business vocabulary and rule semantics adjacent to DMN." ;
   sd:context "SBVR is relevant when vocabulary precision and rule semantics need to be connected to decision logic." ;
-  sd:documentationLink <https://www.omg.org/spec/SBVR/> .
+  sd:documentationLink <https://www.omg.org/spec/SBVR/> ;
+  sd:hardeningNote "Use only where controlled vocabulary improves precision; avoid importing a parallel semantics stack by habit." ;
+  sd:alias "Semantics of Business Vocabulary and Rules" ;
+  sd:tag "vocabulary" ;
+  sd:tag "rules" .
 
 <https://hapax.local/system-dynamics-map/v0/node/c4-runtime>
   a sd:Node ;
@@ -655,7 +746,11 @@
   sd:status "candidate" ;
   dcterms:description "Software architecture topology around deployed decision services." ;
   sd:context "Runtime topology explains which services, stores, queues, and users interact with a decision service." ;
-  sd:documentationLink <https://c4model.com/> .
+  sd:documentationLink <https://c4model.com/> ;
+  sd:hardeningNote "Treat runtime topology as observed or configured infrastructure evidence, not as a DMN extension." ;
+  sd:alias "software architecture topology" ;
+  sd:tag "topology" ;
+  sd:tag "runtime" .
 
 <https://hapax.local/system-dynamics-map/v0/node/rule-engine>
   a sd:Node ;
@@ -667,7 +762,12 @@
   sd:status "candidate" ;
   dcterms:description "Executable target for decision rules." ;
   sd:context "Decision tables and FEEL expressions may be interpreted, compiled, or translated into a rule/runtime engine." ;
-  sd:documentationLink <https://docs.drools.org/> .
+  sd:documentationLink <https://docs.drools.org/> ;
+  sd:hardeningNote "Declare runtime conformance, unsupported FEEL features, and test result provenance." ;
+  sd:alias "rules runtime" ;
+  sd:alias "decision engine" ;
+  sd:tag "runtime" ;
+  sd:tag "layer-down" .
 
 <https://hapax.local/system-dynamics-map/v0/node/model-artifacts>
   a sd:Node ;
@@ -679,7 +779,13 @@
   sd:status "candidate" ;
   dcterms:description "PMML, ONNX, PFA-class analytical artifacts adjacent to decisions." ;
   sd:context "Predictive models often feed decisions or sit beside them. They need separate lineage, validation, and runtime semantics." ;
-  sd:documentationLink <https://onnx.ai/>, <https://dmg.org/pmml/v4-4-1/GeneralStructure.html> .
+  sd:documentationLink <https://onnx.ai/>, <https://dmg.org/pmml/v4-4-1/GeneralStructure.html> ;
+  sd:hardeningNote "Do not collapse model score provenance into decision-rule provenance." ;
+  sd:alias "PMML" ;
+  sd:alias "ONNX" ;
+  sd:alias "PFA" ;
+  sd:tag "model" ;
+  sd:tag "analytics" .
 
 <https://hapax.local/system-dynamics-map/v0/node/runtime-decision-api>
   a sd:Node ;
@@ -691,7 +797,11 @@
   sd:status "candidate" ;
   dcterms:description "Callable runtime boundary for decision evaluation." ;
   sd:context "The deployed decision API is where process, applications, telemetry, traces, and event envelopes meet decision logic." ;
-  sd:documentationLink <https://dmn-tck.github.io/tck/> .
+  sd:documentationLink <https://dmn-tck.github.io/tck/> ;
+  sd:hardeningNote "Expose versioned decision IDs, input schema, output schema, model hash, and evaluation trace IDs." ;
+  sd:alias "decision endpoint" ;
+  sd:tag "runtime" ;
+  sd:tag "api" .
 
 <https://hapax.local/system-dynamics-map/v0/node/scxml-statecharts>
   a sd:Node ;
@@ -703,7 +813,10 @@
   sd:status "candidate" ;
   dcterms:description "State machine notation for control abstraction." ;
   sd:context "SCXML is relevant for executable or exchangeable state machine behavior, but it is not the full graph backbone." ;
-  sd:documentationLink <https://www.w3.org/TR/scxml/> .
+  sd:documentationLink <https://www.w3.org/TR/scxml/> ;
+  sd:hardeningNote "Use for explicit state-machine behavior; do not generalize it into all topology." ;
+  sd:alias "State Chart XML" ;
+  sd:tag "state-machine" .
 
 <https://hapax.local/system-dynamics-map/v0/node/xes-event-log>
   a sd:Node ;
@@ -715,7 +828,11 @@
   sd:status "candidate" ;
   dcterms:description "Event log format for process mining." ;
   sd:context "XES-style logs can provide process/event evidence for observed behavior and conformance checks." ;
-  sd:documentationLink <https://www.xes-standard.org/> .
+  sd:documentationLink <https://www.xes-standard.org/> ;
+  sd:hardeningNote "Keep event log evidence separate from designed process or decision models." ;
+  sd:alias "eXtensible Event Stream" ;
+  sd:tag "event-log" ;
+  sd:tag "process-mining" .
 
 <https://hapax.local/system-dynamics-map/v0/node/react-flow>
   a sd:Node ;
@@ -727,7 +844,11 @@
   sd:status "candidate" ;
   dcterms:description "Node-edge editor candidate for future authoring workflows." ;
   sd:context "React Flow is better suited to graph editing and node configuration workflows than to very large exploratory topology maps." ;
-  sd:documentationLink <https://reactflow.dev/> .
+  sd:documentationLink <https://reactflow.dev/> ;
+  sd:hardeningNote "Use for controlled authoring surfaces; validate edits before committing to the semantic graph." ;
+  sd:alias "XYFlow" ;
+  sd:tag "editor" ;
+  sd:tag "viewer" .
 
 <https://hapax.local/system-dynamics-map/v0/node/sigma>
   a sd:Node ;
@@ -739,7 +860,11 @@
   sd:status "candidate" ;
   dcterms:description "Large graph rendering candidate for simpler graph exploration." ;
   sd:context "Sigma is relevant when the graph grows large and needs fast rendering of simpler node-link structures." ;
-  sd:documentationLink <https://www.sigmajs.org/> .
+  sd:documentationLink <https://www.sigmajs.org/> ;
+  sd:hardeningNote "Use only after defining aggregation and sampling contracts for large views." ;
+  sd:alias "sigma" ;
+  sd:tag "viewer" ;
+  sd:tag "large-graph" .
 
 <https://hapax.local/system-dynamics-map/v0/edge/dmn-to-sbvr>
   a sd:Edge ;

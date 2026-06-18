@@ -12,7 +12,10 @@ sd:NodeShape
   sh:property [ sh:path rdfs:label ; sh:minCount 1 ; sh:datatype xsd:string ] ;
   sh:property [ sh:path sd:layer ; sh:minCount 1 ; sh:nodeKind sh:IRI ] ;
   sh:property [ sh:path sd:status ; sh:minCount 1 ; sh:datatype xsd:string ] ;
-  sh:property [ sh:path sd:documentationLink ; sh:minCount 1 ; sh:nodeKind sh:IRI ] .
+  sh:property [ sh:path sd:documentationLink ; sh:minCount 1 ; sh:nodeKind sh:IRI ] ;
+  sh:property [ sh:path sd:hardeningNote ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path sd:alias ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path sd:tag ; sh:datatype xsd:string ] .
 
 sd:EdgeShape
   a sh:NodeShape ;

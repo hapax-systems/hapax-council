@@ -66,20 +66,24 @@ def _statement(subject: str, pairs: list[tuple[str, str]]) -> str:
 
 
 def _node_statement(node: dict[str, Any]) -> str:
+    pairs = [
+        ("a", "sd:Node"),
+        ("sd:stableId", _literal(node["id"])),
+        ("rdfs:label", _literal(node["label"])),
+        ("sd:kind", _literal(node["kind"])),
+        ("sd:layer", _iri(f"layer/{_stable_slug(node['layer'])}")),
+        ("sd:resolution", _integer(node["resolution"])),
+        ("sd:status", _literal(node["status"])),
+        ("dcterms:description", _literal(node["summary"])),
+        ("sd:context", _literal(node["context"])),
+        ("sd:documentationLink", _doc_iris(node["docs"])),
+    ]
+    pairs.extend(("sd:hardeningNote", _literal(note)) for note in node.get("hardening", []))
+    pairs.extend(("sd:alias", _literal(alias)) for alias in node.get("aliases", []))
+    pairs.extend(("sd:tag", _literal(tag)) for tag in node.get("tags", []))
     return _statement(
         _iri(f"node/{_stable_slug(node['id'])}"),
-        [
-            ("a", "sd:Node"),
-            ("sd:stableId", _literal(node["id"])),
-            ("rdfs:label", _literal(node["label"])),
-            ("sd:kind", _literal(node["kind"])),
-            ("sd:layer", _iri(f"layer/{_stable_slug(node['layer'])}")),
-            ("sd:resolution", _integer(node["resolution"])),
-            ("sd:status", _literal(node["status"])),
-            ("dcterms:description", _literal(node["summary"])),
-            ("sd:context", _literal(node["context"])),
-            ("sd:documentationLink", _doc_iris(node["docs"])),
-        ],
+        pairs,
     )
 
 
@@ -252,7 +256,10 @@ sd:NodeShape
   sh:property [ sh:path rdfs:label ; sh:minCount 1 ; sh:datatype xsd:string ] ;
   sh:property [ sh:path sd:layer ; sh:minCount 1 ; sh:nodeKind sh:IRI ] ;
   sh:property [ sh:path sd:status ; sh:minCount 1 ; sh:datatype xsd:string ] ;
-  sh:property [ sh:path sd:documentationLink ; sh:minCount 1 ; sh:nodeKind sh:IRI ] .
+  sh:property [ sh:path sd:documentationLink ; sh:minCount 1 ; sh:nodeKind sh:IRI ] ;
+  sh:property [ sh:path sd:hardeningNote ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path sd:alias ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path sd:tag ; sh:datatype xsd:string ] .
 
 sd:EdgeShape
   a sh:NodeShape ;
