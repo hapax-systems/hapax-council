@@ -2042,6 +2042,15 @@ def prep_segment(
     if deadline_monotonic is not None:
         _gate_timeout = max(5.0, min(60.0, deadline_monotonic - time.monotonic()))
     _composability = assess_composability(role, topic, list(beats), timeout=_gate_timeout)
+    _append_s2_composability_ledger(
+        prep_dir,
+        programme_id=prog_id,
+        role=role,
+        topic=topic,
+        segment_beats=list(beats),
+        accepted=_composability.accept,
+        reason=_composability.reason,
+    )
     if not _composability.accept:
         log.info(
             "prep_segment: %s un-composable topic+type, skipping: %s",
@@ -3836,6 +3845,8 @@ def _extract_topic_string(programme: Any) -> str | None:
 
 
 COUNCIL_DECISIONS_LEDGER_FILENAME = "council-decisions.ndjson"
+S2_COMPOSABILITY_LEDGER_RECORD_TYPE = "producer_s2_composability_ledger_entry"
+S2_COMPOSABILITY_GATE_NAME = "s2_composability"
 
 
 def _emit_council_degradation_signal(
@@ -3909,6 +3920,48 @@ def _append_council_decisions_ledger(
         append_jsonl(ledger_path, row, sort_keys=True, raising=True)
     except Exception:
         log.debug("council decisions ledger append failed", exc_info=True)
+
+
+def _append_s2_composability_ledger(
+    prep_dir: Path,
+    *,
+    programme_id: str,
+    role: str,
+    topic: str,
+    segment_beats: list[Any],
+    accepted: bool,
+    reason: str,
+) -> None:
+    """Append the S2 topic/type composability attempt to the producer-DV ledger.
+
+    S2 rejects happen before coherence, so they must not masquerade as numeric
+    pre-gate scores. They still belong in the producer DV as attempt/reject
+    population records; otherwise the producer-vs-filter contrast loses the
+    plans the producer could not make composable.
+    """
+    row = {
+        "schema_version": PREP_DIAGNOSTIC_SCHEMA_VERSION,
+        "record_type": S2_COMPOSABILITY_LEDGER_RECORD_TYPE,
+        "ledgered_at": datetime.now(tz=UTC).isoformat(),
+        "programme_id": programme_id,
+        "terminal": not accepted,
+        "terminal_status": "s2_composable" if accepted else "no_candidate",
+        "terminal_reason": None if accepted else "uncomposable_topic_type",
+        "producer_gate": {
+            "gate": S2_COMPOSABILITY_GATE_NAME,
+            "accepted": bool(accepted),
+            "criterion": _COHERENCE_CRITERION,
+            "reason": str(reason or ""),
+            "role": role,
+            "topic": topic,
+            "segment_beats": list(segment_beats or []),
+        },
+    }
+    ledger_path = prep_dir / COUNCIL_DECISIONS_LEDGER_FILENAME
+    try:
+        append_jsonl(ledger_path, row, sort_keys=True, raising=True)
+    except Exception:
+        log.debug("S2 composability ledger append failed", exc_info=True)
 
 
 def _prep_deadline_exceeded(

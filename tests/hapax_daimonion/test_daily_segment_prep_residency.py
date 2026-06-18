@@ -1296,6 +1296,75 @@ def test_prep_segment_uncomposable_gate_reject_writes_diagnostic_and_feedback(
     dossier = json.loads(Path(ledger_row["dossier_ref"]).read_text(encoding="utf-8"))
     assert dossier["no_candidate_metadata"]["candidate_source"] == "segment_composability_gate"
     assert dossier["no_candidate_metadata"]["candidate_count"] == 0
+    s2_row = json.loads((tmp_path / prep.COUNCIL_DECISIONS_LEDGER_FILENAME).read_text())
+    assert s2_row["record_type"] == prep.S2_COMPOSABILITY_LEDGER_RECORD_TYPE
+    assert s2_row["programme_id"] == "prog-uncomposable"
+    assert s2_row["terminal"] is True
+    assert s2_row["terminal_status"] == "no_candidate"
+    assert s2_row["terminal_reason"] == "uncomposable_topic_type"
+    assert s2_row["producer_gate"] == {
+        "accepted": False,
+        "criterion": prep._COHERENCE_CRITERION,
+        "gate": prep.S2_COMPOSABILITY_GATE_NAME,
+        "reason": reason,
+        "role": "tier_list",
+        "segment_beats": ["least severe", "more severe", "most severe"],
+        "topic": "Ranking governance enforcement failures",
+    }
+
+
+def test_prep_segment_s2_accept_writes_nonterminal_attempt_before_later_reject(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """G12 captures S2 successes too, so the producer-vs-filter readout can see
+    the S2 denominator even when a later gate rejects the programme."""
+    import agents.hapax_daimonion.segment_composability_gate as gate
+
+    programme = SimpleNamespace(
+        programme_id="prog-composable",
+        role=SimpleNamespace(value="mini_case"),
+        content=_ready_content(
+            narrative_beat="A source-visible claim breaks when the receipt is checked",
+            segment_beats=["claim seems plausible", "receipt conflicts", "claim is repaired"],
+            role="mini_case",
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+    }
+    reason = "composable arc: hook -> conflict -> repaired payoff"
+    monkeypatch.setattr(
+        gate,
+        "assess_composability",
+        lambda *_a, **_k: gate.CompositionGateResult(True, reason),
+    )
+    monkeypatch.setattr(
+        prep,
+        "programme_source_readiness",
+        lambda _programme: {"ok": False, "violations": [{"reason": "forced later reject"}]},
+    )
+
+    saved = prep.prep_segment(programme, tmp_path, prep_session=session)
+
+    assert saved is None
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / prep.COUNCIL_DECISIONS_LEDGER_FILENAME)
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+    assert len(rows) == 1
+    assert rows[0]["record_type"] == prep.S2_COMPOSABILITY_LEDGER_RECORD_TYPE
+    assert rows[0]["terminal"] is False
+    assert rows[0]["terminal_status"] == "s2_composable"
+    assert rows[0]["terminal_reason"] is None
+    assert rows[0]["producer_gate"]["accepted"] is True
+    assert rows[0]["producer_gate"]["criterion"] == prep._COHERENCE_CRITERION
+    assert rows[0]["producer_gate"]["reason"] == reason
 
 
 def test_prep_segment_no_beats_writes_non_loadable_diagnostic_dossier(

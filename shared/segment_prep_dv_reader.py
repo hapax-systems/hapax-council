@@ -18,6 +18,9 @@ ledger files, parses each row, and emits the per-phase producer pre-gate score
 distribution so the changing-criterion analysis (``stats.baseline_corrected_tau``)
 can compare phases — and so curriculum (the producer distribution rises with C_k)
 is distinguishable from sieve (flat distribution, the gate just rejects more).
+S2 topic/type composability attempts are exposed separately: they are part of
+the producer-vs-filter crux population, but rejects occur before coherence and
+therefore must not be fabricated into numeric ``mean_score`` rows.
 
 It is deliberately lightweight — no pydantic-ai / council imports — so it can run
 in plain analysis contexts. The writer-side constants it mirrors are drift-guarded
@@ -37,6 +40,8 @@ from pathlib import Path
 # DEFAULT_PREP_DIR. Re-declared (not imported) to keep this reader free of the heavy
 # daimonion import; a drift guard test asserts they stay equal.
 COUNCIL_DECISIONS_LEDGER_FILENAME = "council-decisions.ndjson"
+S2_COMPOSABILITY_LEDGER_RECORD_TYPE = "producer_s2_composability_ledger_entry"
+S2_COMPOSABILITY_GATE_NAME = "s2_composability"
 _RELEASED_TERMINAL_STATUS = "released"
 # C_k is a float read from an env var; round the grouping key so float-repr noise
 # (3.0000000001) can never split one phase into two.
@@ -66,6 +71,23 @@ class ProducerObservation:
 
 
 @dataclass(frozen=True)
+class S2ComposabilityAttempt:
+    """One S2 topic/type composability attempt from the producer DV ledger."""
+
+    programme_id: str
+    ledgered_at: str
+    criterion: float
+    accepted: bool
+    terminal: bool
+    terminal_status: str
+    terminal_reason: str | None
+    role: str
+    topic: str
+    reason: str
+    source: str
+
+
+@dataclass(frozen=True)
 class PhaseSummary:
     """Per-phase (per-C_k) view of the producer DV.
 
@@ -81,6 +103,17 @@ class PhaseSummary:
     released: int
     released_fraction: float
     mean_pre_gate: float | None
+
+
+@dataclass(frozen=True)
+class S2ComposabilitySummary:
+    """Per-phase view of S2 producer-gate attempts and rejects."""
+
+    criterion: float
+    attempts: int
+    accepted: int
+    rejected: int
+    rejected_fraction: float
 
 
 def iter_ledger_files(prep_base: Path | None = None) -> Iterator[Path]:
@@ -140,6 +173,37 @@ def _observation_from_row(row: dict, *, source: str) -> ProducerObservation | No
     )
 
 
+def _s2_attempt_from_row(row: dict, *, source: str) -> S2ComposabilityAttempt | None:
+    """Extract an S2 composability attempt, or None for non-S2 rows."""
+    if row.get("record_type") != S2_COMPOSABILITY_LEDGER_RECORD_TYPE:
+        return None
+    producer_gate = row.get("producer_gate")
+    if not isinstance(producer_gate, dict):
+        return None
+    if producer_gate.get("gate") != S2_COMPOSABILITY_GATE_NAME:
+        return None
+    accepted = producer_gate.get("accepted")
+    criterion = producer_gate.get("criterion")
+    if not isinstance(accepted, bool):
+        return None
+    if not isinstance(criterion, (int, float)) or isinstance(criterion, bool):
+        return None
+    terminal_reason_raw = row.get("terminal_reason")
+    return S2ComposabilityAttempt(
+        programme_id=str(row.get("programme_id", "")),
+        ledgered_at=str(row.get("ledgered_at", "")),
+        criterion=float(criterion),
+        accepted=accepted,
+        terminal=bool(row.get("terminal")),
+        terminal_status=str(row.get("terminal_status", "")),
+        terminal_reason=str(terminal_reason_raw) if terminal_reason_raw is not None else None,
+        role=str(producer_gate.get("role", "")),
+        topic=str(producer_gate.get("topic", "")),
+        reason=str(producer_gate.get("reason", "")),
+        source=source,
+    )
+
+
 def read_producer_observations(prep_base: Path | None = None) -> list[ProducerObservation]:
     """All pre-gate producer observations, in ledger (chronological) read order."""
     out: list[ProducerObservation] = []
@@ -148,6 +212,19 @@ def read_producer_observations(prep_base: Path | None = None) -> list[ProducerOb
             obs = _observation_from_row(row, source=str(path))
             if obs is not None:
                 out.append(obs)
+    return out
+
+
+def read_s2_composability_attempts(
+    prep_base: Path | None = None,
+) -> list[S2ComposabilityAttempt]:
+    """All S2 topic/type composability attempts, in ledger read order."""
+    out: list[S2ComposabilityAttempt] = []
+    for path in iter_ledger_files(prep_base):
+        for row in _iter_rows_in_file(path):
+            attempt = _s2_attempt_from_row(row, source=str(path))
+            if attempt is not None:
+                out.append(attempt)
     return out
 
 
@@ -180,6 +257,32 @@ def summarize_phases(observations: list[ProducerObservation]) -> list[PhaseSumma
                 released=released,
                 released_fraction=(released / n) if n else 0.0,
                 mean_pre_gate=(sum(scores) / n) if n else None,
+            )
+        )
+    return summaries
+
+
+def summarize_s2_composability(
+    attempts: list[S2ComposabilityAttempt],
+) -> list[S2ComposabilitySummary]:
+    """Group S2 composability attempts by C_k (phase)."""
+    by_phase: dict[float, list[S2ComposabilityAttempt]] = defaultdict(list)
+    for attempt in attempts:
+        by_phase[_criterion_key(attempt.criterion)].append(attempt)
+
+    summaries: list[S2ComposabilitySummary] = []
+    for criterion in sorted(by_phase):
+        rows = by_phase[criterion]
+        attempts_n = len(rows)
+        accepted = sum(1 for row in rows if row.accepted)
+        rejected = attempts_n - accepted
+        summaries.append(
+            S2ComposabilitySummary(
+                criterion=criterion,
+                attempts=attempts_n,
+                accepted=accepted,
+                rejected=rejected,
+                rejected_fraction=(rejected / attempts_n) if attempts_n else 0.0,
             )
         )
     return summaries
@@ -234,9 +337,12 @@ def _main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     observations = read_producer_observations(args.prep_base)
+    s2_attempts = read_s2_composability_attempts(args.prep_base)
     phases = summarize_phases(observations)
+    s2_phases = summarize_s2_composability(s2_attempts)
     report: dict = {
         "n_observations": len(observations),
+        "n_s2_composability_attempts": len(s2_attempts),
         "phases": [
             {
                 "criterion": ph.criterion,
@@ -248,6 +354,16 @@ def _main(argv: list[str] | None = None) -> int:
                 ),
             }
             for ph in phases
+        ],
+        "s2_composability": [
+            {
+                "criterion": ph.criterion,
+                "attempts": ph.attempts,
+                "accepted": ph.accepted,
+                "rejected": ph.rejected,
+                "rejected_fraction": round(ph.rejected_fraction, 4),
+            }
+            for ph in s2_phases
         ],
     }
     if args.baseline is not None and args.intervention is not None:
@@ -266,11 +382,18 @@ def _main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
         print(f"producer-DV observations: {report['n_observations']}")
+        print(f"S2 composability attempts: {report['n_s2_composability_attempts']}")
         for ph in report["phases"]:
             print(
                 f"  C_k={ph['criterion']}: n={ph['n']} "
                 f"released={ph['released']} ({ph['released_fraction']:.0%}) "
                 f"mean_pre_gate={ph['mean_pre_gate']}"
+            )
+        for ph in report["s2_composability"]:
+            print(
+                f"  S2 C_k={ph['criterion']}: attempts={ph['attempts']} "
+                f"accepted={ph['accepted']} rejected={ph['rejected']} "
+                f"({ph['rejected_fraction']:.0%})"
             )
         if "baseline_corrected_tau" in report:
             print(
