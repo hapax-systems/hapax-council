@@ -8,7 +8,7 @@ Parent spec: `~/Documents/Personal/20-projects/hapax-research/specs/2026-06-18-s
 
 ## Decision
 
-Use DMN as the entry point, not the center.
+Use a source-neutral semantic backbone as the default focus.
 
 The center should be a semantic graph backbone with validation, provenance,
 temporal overlays, and reproducible view manifests:
@@ -24,34 +24,36 @@ source models + telemetry + event logs
   -> interactive projections
 ```
 
-This keeps the visualization honest. A DMN decision requirement diagram can show
-decision dependencies, but it cannot by itself represent runtime topology, current
-state, provenance, telemetry, simulation state, process history, and rendering
-projection. Those are different claim types and must remain separable.
+This keeps the visualization honest. DMN, BPMN, CMMN, SysML, ArchiMate,
+runtime topology, telemetry, event logs, traces, state observations, simulations,
+and rendered views are source inputs or projections over shared identity. None
+of them is the global model. Those are different claim types and must remain
+separable.
 
-## Conceptual Map Around DMN
+## Conceptual Map
 
-DMN's directly related layer:
+Source-model families:
 
 - `DMN`: decision model and notation for decision requirements and executable
   decision logic.
+- `BPMN`: process flow can invoke or be routed by decisions and produce
+  process/event evidence.
+- `CMMN`: case plans can invoke decisions in less prescriptive work.
+- `ArchiMate`: enterprise architecture context for capabilities, applications,
+  processes, motivation, and implementation.
+- `SysML v2`: systems engineering structure, behavior, requirements, analysis,
+  and verification context.
+- `C4/runtime architecture`: implementation topology and deployable services.
+
+Decision-modeling source details:
+
 - `DRD/DRG`: decision dependency surface inside DMN.
 - `Decision service`: packaging boundary for callable decision behavior.
 - `Decision table`: common tabular decision logic representation.
 - `FEEL`: DMN expression language.
 - `SBVR`: adjacent business vocabulary and rule semantics.
 
-One layer up:
-
-- `BPMN`: process flow can invoke or be routed by decisions.
-- `CMMN`: case plans can invoke decisions in less prescriptive work.
-- `ArchiMate`: enterprise architecture context for capabilities, applications,
-  processes, and motivation.
-- `SysML v2`: systems engineering structure, behavior, requirements, and
-  verification context.
-- `C4/runtime architecture`: implementation topology and deployable services.
-
-One layer down:
+Execution surfaces and artifacts:
 
 - `DMN XML/DI`: interchange and diagram serialization.
 - `Rule engines`: executable target for decision tables and FEEL-compatible logic.
@@ -59,7 +61,7 @@ One layer down:
 - `PMML/ONNX/PFA-class model artifacts`: adjacent predictive/analytical model
   artifacts that often feed or sit beside decisions.
 
-Adjacent systems required by the actual goal:
+Semantic backbone and dynamic evidence:
 
 - `RDF/OWL`: canonical identity and relationship graph.
 - `SHACL`: validation contracts and data quality gates.
@@ -72,11 +74,13 @@ Adjacent systems required by the actual goal:
 - `Cytoscape.js/React Flow/Sigma`: different rendering targets driven by view
   manifests, not by independent truth models.
 
-## Why Not Make DMN The Core?
+## Why No Single Notation Is The Core
 
-DMN is scoped to decisions. It is excellent for decision dependency and executable
-decision logic, but it is a lossy center for system dynamics. A faithful system
-map needs to represent at least five dimensions that DMN does not own:
+DMN is scoped to decisions. BPMN is scoped to processes. SysML is scoped to
+systems modeling. ArchiMate is scoped to enterprise architecture. OpenTelemetry
+is scoped to telemetry. Each is useful, and each becomes lossy if treated as the
+center for system dynamics. A faithful system map needs to represent at least
+five dimensions that no single notation owns:
 
 - Topology: components, processes, systems, people, data stores, queues, models,
   and runtime edges.
@@ -87,9 +91,9 @@ map needs to represent at least five dimensions that DMN does not own:
 - Projection: which nodes and edges were rendered, hidden, aggregated, or inferred.
 - Governance: versioned contracts, validation gates, review state, and provenance.
 
-Pushing those into DMN would produce a familiar diagram that lies by omission.
-The semantic backbone gives DMN a precise place without letting it flatten the
-rest of the system.
+Pushing those into any one notation would produce a familiar diagram that lies
+by omission. The semantic backbone gives every source a precise place without
+letting any one source flatten the rest of the system.
 
 ## Canonical Data Contract
 
@@ -97,6 +101,8 @@ V0 uses `system-dynamics-map.seed.json` as a portable seed shape. The eventual
 persisted form should be RDF named graphs plus SHACL shapes, but the seed file is
 structured so it can be lifted into that backend:
 
+- `default_focus`: neutral initial focus for the viewer; currently the
+  canonical semantic backbone.
 - `nodes[]`: stable identity, label, kind, layer, resolution, status, summary,
   context, hardening notes, aliases, tags, and documentation links.
 - `edges[]`: stable identity, source, target, relation, layer, resolution, status,
@@ -159,7 +165,8 @@ is the important artifact; Cytoscape is the current projection engine.
 - External documentation links from the graph data.
 
 This is enough to review the concept and refine the graph without committing to a
-live backend or frontend framework. The viewer loads a committed local Cytoscape
+live backend or frontend framework. The viewer defaults to the semantic backbone,
+not to any source notation. It loads a committed local Cytoscape
 3.34.0 runtime asset from `vendor/cytoscape-3.34.0.min.js`, so basic rendering no
 longer depends on CDN egress.
 

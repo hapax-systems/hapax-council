@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "generated_at": "2026-06-18T00:00:00Z",
   "authority_case": "CASE-SYSTEM-DYNAMICS-MAP-20260618",
-  "entrypoint": "dmn",
-  "thesis": "DMN is a decision-system entry point. Faithful rendering of system dynamics requires a validated semantic graph backbone with provenance, temporal state overlays, and reproducible view manifests.",
+  "default_focus": "rdf-owl-kg",
+  "thesis": "Faithful rendering of system dynamics requires a source-neutral semantic graph backbone with provenance, temporal state overlays, validation contracts, and reproducible view manifests. Modeling notations, runtime telemetry, event logs, and rendered views are inputs or projections, not the center.",
   "status_kinds": [
     "asserted",
     "inferred",
@@ -24,7 +24,7 @@
       "id": "domain",
       "resolution": 2,
       "label": "Domain",
-      "description": "Standards and modeling systems around the entry point."
+      "description": "Source-model families, runtime surfaces, and semantic contracts."
     },
     {
       "id": "artifact",
@@ -47,453 +47,46 @@
   ],
   "layers": [
     {
-      "id": "context-up",
-      "label": "Layer Up",
-      "description": "Process, case, enterprise, systems, and runtime architecture context above DMN."
+      "id": "source-models",
+      "label": "Source Models",
+      "description": "Modeling languages and architecture views that can be lifted into the semantic backbone."
     },
     {
-      "id": "decision",
-      "label": "DMN Layer",
-      "description": "Decision modeling concepts and directly adjacent decision semantics."
+      "id": "decision-modeling",
+      "label": "Decision Modeling Source",
+      "description": "Decision modeling concepts are one source-model family, not the global map center."
     },
     {
-      "id": "execution-down",
-      "label": "Layer Down",
-      "description": "Serialization, execution, model artifacts, APIs, and rule/runtime targets below DMN."
+      "id": "execution-surfaces",
+      "label": "Execution And Artifacts",
+      "description": "Interchange formats, model artifacts, rule/runtime targets, and callable service boundaries."
     },
     {
-      "id": "semantic-core",
-      "label": "Semantic Core",
+      "id": "semantic-backbone",
+      "label": "Semantic Backbone",
       "description": "Canonical graph identity, validation, provenance, and exchange contracts."
     },
     {
       "id": "observation-state",
       "label": "Observation And State",
-      "description": "State machines, event logs, telemetry, traces, and event envelopes."
+      "description": "State machines, event logs, telemetry, traces, temporal evidence, and event envelopes."
     },
     {
-      "id": "rendering",
-      "label": "Rendering",
-      "description": "View manifests and visualization engines that project the graph."
+      "id": "projection",
+      "label": "Projection",
+      "description": "View manifests and visualization engines that project validated graph snapshots."
     }
   ],
   "nodes": [
     {
-      "id": "dmn",
-      "label": "DMN",
-      "kind": "standard",
-      "layer": "decision",
-      "resolution": 1,
-      "status": "asserted",
-      "summary": "Decision Model and Notation, the entry point for the map.",
-      "context": "DMN models decision requirements and executable decision logic. It is valuable for decision dependencies, but it is too narrow to be the universal representation for topology, state, telemetry, and provenance.",
-      "docs": [
-        {
-          "label": "OMG DMN 1.5 formal",
-          "url": "https://www.omg.org/spec/DMN/1.5/About-DMN"
-        },
-        {
-          "label": "OMG DMN 1.6 beta",
-          "url": "https://www.omg.org/spec/DMN/1.6/Beta1/About-DMN"
-        }
-      ],
-      "hardening": [
-        "Treat DMN decisions as one claim type in the graph, not as the global model.",
-        "Preserve DMN version, namespace, source document, and import provenance."
-      ],
-      "aliases": [
-        "Decision Model and Notation"
-      ],
-      "tags": [
-        "entrypoint",
-        "decision"
-      ]
-    },
-    {
-      "id": "drd",
-      "label": "DRD / DRG",
-      "kind": "notation",
-      "layer": "decision",
-      "resolution": 2,
-      "status": "asserted",
-      "summary": "DMN decision requirement diagrams and decision requirement graphs.",
-      "context": "DRDs show dependency between decisions, input data, business knowledge, and knowledge sources. They are not runtime event graphs.",
-      "docs": [
-        {
-          "label": "OMG DMN 1.5",
-          "url": "https://www.omg.org/spec/DMN/1.5/About-DMN"
-        }
-      ],
-      "hardening": [
-        "Do not infer process sequence or runtime causality from a DRD edge without evidence."
-      ],
-      "aliases": [
-        "Decision Requirements Diagram",
-        "Decision Requirements Graph"
-      ],
-      "tags": [
-        "decision",
-        "dependency"
-      ]
-    },
-    {
-      "id": "decision-service",
-      "label": "Decision Service",
-      "kind": "boundary",
-      "layer": "decision",
-      "resolution": 3,
-      "status": "asserted",
-      "summary": "A callable packaging boundary for decisions.",
-      "context": "Decision services expose decisions for invocation by process, case, application, or runtime architecture components.",
-      "docs": [
-        {
-          "label": "OMG DMN 1.5",
-          "url": "https://www.omg.org/spec/DMN/1.5/About-DMN"
-        }
-      ],
-      "hardening": [
-        "Separate design-time decision service boundaries from deployed API endpoints."
-      ],
-      "aliases": [
-        "DMN decision service"
-      ],
-      "tags": [
-        "decision",
-        "service"
-      ]
-    },
-    {
-      "id": "decision-table",
-      "label": "Decision Table",
-      "kind": "artifact",
-      "layer": "decision",
-      "resolution": 3,
-      "status": "asserted",
-      "summary": "Tabular decision logic used by DMN.",
-      "context": "Decision tables are common DMN logic artifacts and often become executable rule assets.",
-      "docs": [
-        {
-          "label": "OMG DMN 1.5",
-          "url": "https://www.omg.org/spec/DMN/1.5/About-DMN"
-        }
-      ],
-      "hardening": [
-        "Track hit policy, type constraints, FEEL expressions, and test coverage."
-      ],
-      "aliases": [
-        "DMN table"
-      ],
-      "tags": [
-        "decision",
-        "rules"
-      ]
-    },
-    {
-      "id": "feel",
-      "label": "FEEL",
-      "kind": "language",
-      "layer": "decision",
-      "resolution": 3,
-      "status": "asserted",
-      "summary": "Friendly Enough Expression Language used by DMN.",
-      "context": "FEEL is the expression language side of DMN. Runtime portability depends on precise FEEL support and version handling.",
-      "docs": [
-        {
-          "label": "OMG DMN 1.6 beta",
-          "url": "https://www.omg.org/spec/DMN/1.6/Beta1/About-DMN"
-        }
-      ],
-      "hardening": [
-        "Record FEEL dialect/version support for each runtime before marking a decision executable."
-      ],
-      "aliases": [
-        "Friendly Enough Expression Language"
-      ],
-      "tags": [
-        "language",
-        "expression"
-      ]
-    },
-    {
-      "id": "sbvr",
-      "label": "SBVR",
-      "kind": "standard",
-      "layer": "decision",
-      "resolution": 3,
-      "status": "candidate",
-      "summary": "Business vocabulary and rule semantics adjacent to DMN.",
-      "context": "SBVR is relevant when vocabulary precision and rule semantics need to be connected to decision logic.",
-      "docs": [
-        {
-          "label": "OMG SBVR catalog",
-          "url": "https://www.omg.org/spec/SBVR/"
-        }
-      ],
-      "hardening": [
-        "Use only where controlled vocabulary improves precision; avoid importing a parallel semantics stack by habit."
-      ],
-      "aliases": [
-        "Semantics of Business Vocabulary and Rules"
-      ],
-      "tags": [
-        "vocabulary",
-        "rules"
-      ]
-    },
-    {
-      "id": "bpmn",
-      "label": "BPMN",
-      "kind": "standard",
-      "layer": "context-up",
-      "resolution": 2,
-      "status": "asserted",
-      "summary": "Business Process Model and Notation for process flow.",
-      "context": "BPMN process models can invoke, route to, or depend on decisions. It gives process context above DMN.",
-      "docs": [
-        {
-          "label": "OMG BPMN 2.0.2",
-          "url": "https://www.omg.org/spec/BPMN/2.0.2/"
-        }
-      ],
-      "hardening": [
-        "Do not treat BPMN sequence flow as proof of actual runtime ordering without event evidence."
-      ],
-      "aliases": [
-        "Business Process Model and Notation"
-      ],
-      "tags": [
-        "process",
-        "layer-up"
-      ]
-    },
-    {
-      "id": "cmmn",
-      "label": "CMMN",
-      "kind": "standard",
-      "layer": "context-up",
-      "resolution": 2,
-      "status": "asserted",
-      "summary": "Case Management Model and Notation for case plans.",
-      "context": "CMMN covers less prescriptive, case-oriented work that can use decisions without fitting a strict process flow.",
-      "docs": [
-        {
-          "label": "OMG CMMN 1.1",
-          "url": "https://www.omg.org/spec/CMMN/1.1/About-CMMN"
-        }
-      ],
-      "hardening": [
-        "Represent discretionary case behavior separately from deterministic process paths."
-      ],
-      "aliases": [
-        "Case Management Model and Notation"
-      ],
-      "tags": [
-        "case",
-        "layer-up"
-      ]
-    },
-    {
-      "id": "archimate",
-      "label": "ArchiMate",
-      "kind": "standard",
-      "layer": "context-up",
-      "resolution": 2,
-      "status": "asserted",
-      "summary": "Enterprise architecture modeling language.",
-      "context": "ArchiMate situates decisions in business, application, technology, motivation, strategy, and implementation context.",
-      "docs": [
-        {
-          "label": "ArchiMate overview",
-          "url": "https://www.opengroup.org/archimate-forum/archimate-overview"
-        },
-        {
-          "label": "ArchiMate 4 downloads",
-          "url": "https://www.opengroup.org/archimate-licensed-downloads"
-        }
-      ],
-      "hardening": [
-        "Use ArchiMate for enterprise context, not for low-level runtime state."
-      ],
-      "aliases": [
-        "ArchiMate enterprise architecture"
-      ],
-      "tags": [
-        "enterprise",
-        "layer-up"
-      ]
-    },
-    {
-      "id": "sysml-v2",
-      "label": "SysML v2",
-      "kind": "standard",
-      "layer": "context-up",
-      "resolution": 2,
-      "status": "asserted",
-      "summary": "Systems modeling language for MBSE.",
-      "context": "SysML v2 covers system requirements, structure, behavior, analysis, and verification context around decision-enabled systems.",
-      "docs": [
-        {
-          "label": "OMG SysML 2.0",
-          "url": "https://www.omg.org/spec/SysML/2.0/About-SysML"
-        }
-      ],
-      "hardening": [
-        "Keep engineering requirement/verification evidence distinct from business decision dependencies."
-      ],
-      "aliases": [
-        "OMG System Modeling Language"
-      ],
-      "tags": [
-        "systems",
-        "layer-up"
-      ]
-    },
-    {
-      "id": "c4-runtime",
-      "label": "C4 / Runtime Topology",
-      "kind": "practice",
-      "layer": "context-up",
-      "resolution": 2,
-      "status": "candidate",
-      "summary": "Software architecture topology around deployed decision services.",
-      "context": "Runtime topology explains which services, stores, queues, and users interact with a decision service.",
-      "docs": [
-        {
-          "label": "C4 model",
-          "url": "https://c4model.com/"
-        }
-      ],
-      "hardening": [
-        "Treat runtime topology as observed or configured infrastructure evidence, not as a DMN extension."
-      ],
-      "aliases": [
-        "software architecture topology"
-      ],
-      "tags": [
-        "topology",
-        "runtime"
-      ]
-    },
-    {
-      "id": "dmn-xml-di",
-      "label": "DMN XML / DI",
-      "kind": "interchange",
-      "layer": "execution-down",
-      "resolution": 3,
-      "status": "asserted",
-      "summary": "DMN interchange and diagram information.",
-      "context": "DMN XML and diagram interchange preserve model content and layout metadata across tools.",
-      "docs": [
-        {
-          "label": "OMG DMN 1.5",
-          "url": "https://www.omg.org/spec/DMN/1.5/About-DMN"
-        }
-      ],
-      "hardening": [
-        "Preserve namespace, schema version, diagram coordinates, and original bytes hash."
-      ],
-      "aliases": [
-        "DMN interchange"
-      ],
-      "tags": [
-        "interchange",
-        "layer-down"
-      ]
-    },
-    {
-      "id": "rule-engine",
-      "label": "Rule Engine",
-      "kind": "runtime",
-      "layer": "execution-down",
-      "resolution": 4,
-      "status": "candidate",
-      "summary": "Executable target for decision rules.",
-      "context": "Decision tables and FEEL expressions may be interpreted, compiled, or translated into a rule/runtime engine.",
-      "docs": [
-        {
-          "label": "Drools DMN engine",
-          "url": "https://docs.drools.org/"
-        }
-      ],
-      "hardening": [
-        "Declare runtime conformance, unsupported FEEL features, and test result provenance."
-      ],
-      "aliases": [
-        "rules runtime",
-        "decision engine"
-      ],
-      "tags": [
-        "runtime",
-        "layer-down"
-      ]
-    },
-    {
-      "id": "model-artifacts",
-      "label": "Predictive Model Artifacts",
-      "kind": "artifact",
-      "layer": "execution-down",
-      "resolution": 4,
-      "status": "candidate",
-      "summary": "PMML, ONNX, PFA-class analytical artifacts adjacent to decisions.",
-      "context": "Predictive models often feed decisions or sit beside them. They need separate lineage, validation, and runtime semantics.",
-      "docs": [
-        {
-          "label": "ONNX",
-          "url": "https://onnx.ai/"
-        },
-        {
-          "label": "PMML",
-          "url": "https://dmg.org/pmml/v4-4-1/GeneralStructure.html"
-        }
-      ],
-      "hardening": [
-        "Do not collapse model score provenance into decision-rule provenance."
-      ],
-      "aliases": [
-        "PMML",
-        "ONNX",
-        "PFA"
-      ],
-      "tags": [
-        "model",
-        "analytics"
-      ]
-    },
-    {
-      "id": "runtime-decision-api",
-      "label": "Decision Runtime API",
-      "kind": "runtime",
-      "layer": "execution-down",
-      "resolution": 4,
-      "status": "candidate",
-      "summary": "Callable runtime boundary for decision evaluation.",
-      "context": "The deployed decision API is where process, applications, telemetry, traces, and event envelopes meet decision logic.",
-      "docs": [
-        {
-          "label": "DMN Technology Compatibility Kit",
-          "url": "https://dmn-tck.github.io/tck/"
-        }
-      ],
-      "hardening": [
-        "Expose versioned decision IDs, input schema, output schema, model hash, and evaluation trace IDs."
-      ],
-      "aliases": [
-        "decision endpoint"
-      ],
-      "tags": [
-        "runtime",
-        "api"
-      ]
-    },
-    {
       "id": "rdf-owl-kg",
       "label": "RDF / OWL Knowledge Graph",
       "kind": "backbone",
-      "layer": "semantic-core",
+      "layer": "semantic-backbone",
       "resolution": 1,
       "status": "asserted",
-      "summary": "Canonical identity and relationship backbone.",
-      "context": "The semantic graph is the durable center: it represents identities, relations, named graph partitions, and ontology commitments across model families.",
+      "summary": "Canonical semantic backbone for system identity, topology, claims, and cross-source relationships.",
+      "context": "RDF/OWL-style identity gives the map a source-neutral backbone. Source models, observations, simulations, and rendered views attach to shared identities without making any notation the center.",
       "docs": [
         {
           "label": "W3C RDF 1.2 Concepts",
@@ -521,7 +114,7 @@
       "id": "shacl-contracts",
       "label": "SHACL Contracts",
       "kind": "validation",
-      "layer": "semantic-core",
+      "layer": "semantic-backbone",
       "resolution": 2,
       "status": "asserted",
       "summary": "Graph validation shapes and quality gates.",
@@ -551,7 +144,7 @@
       "id": "prov-o",
       "label": "PROV-O",
       "kind": "provenance",
-      "layer": "semantic-core",
+      "layer": "semantic-backbone",
       "resolution": 2,
       "status": "asserted",
       "summary": "Provenance ontology for agents, activities, and entities.",
@@ -577,7 +170,7 @@
       "id": "jsonld-trig",
       "label": "JSON-LD / TriG",
       "kind": "exchange",
-      "layer": "semantic-core",
+      "layer": "semantic-backbone",
       "resolution": 3,
       "status": "asserted",
       "summary": "Portable graph and named graph exchange formats.",
@@ -628,57 +221,6 @@
       "tags": [
         "state",
         "time"
-      ]
-    },
-    {
-      "id": "scxml-statecharts",
-      "label": "SCXML Statecharts",
-      "kind": "standard",
-      "layer": "observation-state",
-      "resolution": 3,
-      "status": "candidate",
-      "summary": "State machine notation for control abstraction.",
-      "context": "SCXML is relevant for executable or exchangeable state machine behavior, but it is not the full graph backbone.",
-      "docs": [
-        {
-          "label": "W3C SCXML",
-          "url": "https://www.w3.org/TR/scxml/"
-        }
-      ],
-      "hardening": [
-        "Use for explicit state-machine behavior; do not generalize it into all topology."
-      ],
-      "aliases": [
-        "State Chart XML"
-      ],
-      "tags": [
-        "state-machine"
-      ]
-    },
-    {
-      "id": "xes-event-log",
-      "label": "XES Event Log",
-      "kind": "standard",
-      "layer": "observation-state",
-      "resolution": 4,
-      "status": "candidate",
-      "summary": "Event log format for process mining.",
-      "context": "XES-style logs can provide process/event evidence for observed behavior and conformance checks.",
-      "docs": [
-        {
-          "label": "XES Standard",
-          "url": "https://www.xes-standard.org/"
-        }
-      ],
-      "hardening": [
-        "Keep event log evidence separate from designed process or decision models."
-      ],
-      "aliases": [
-        "eXtensible Event Stream"
-      ],
-      "tags": [
-        "event-log",
-        "process-mining"
       ]
     },
     {
@@ -761,10 +303,61 @@
       ]
     },
     {
+      "id": "xes-event-log",
+      "label": "XES Event Log",
+      "kind": "standard",
+      "layer": "observation-state",
+      "resolution": 4,
+      "status": "candidate",
+      "summary": "Event log format for process mining.",
+      "context": "XES-style logs can provide process/event evidence for observed behavior and conformance checks.",
+      "docs": [
+        {
+          "label": "XES Standard",
+          "url": "https://www.xes-standard.org/"
+        }
+      ],
+      "hardening": [
+        "Keep event log evidence separate from designed process or decision models."
+      ],
+      "aliases": [
+        "eXtensible Event Stream"
+      ],
+      "tags": [
+        "event-log",
+        "process-mining"
+      ]
+    },
+    {
+      "id": "scxml-statecharts",
+      "label": "SCXML Statecharts",
+      "kind": "standard",
+      "layer": "observation-state",
+      "resolution": 3,
+      "status": "candidate",
+      "summary": "State machine notation for control abstraction.",
+      "context": "SCXML is relevant for executable or exchangeable state machine behavior, but it is not the full graph backbone.",
+      "docs": [
+        {
+          "label": "W3C SCXML",
+          "url": "https://www.w3.org/TR/scxml/"
+        }
+      ],
+      "hardening": [
+        "Use for explicit state-machine behavior; do not generalize it into all topology."
+      ],
+      "aliases": [
+        "State Chart XML"
+      ],
+      "tags": [
+        "state-machine"
+      ]
+    },
+    {
       "id": "view-manifest",
       "label": "View Manifest",
       "kind": "projection-contract",
-      "layer": "rendering",
+      "layer": "projection",
       "resolution": 2,
       "status": "rendered",
       "summary": "Reproducible contract for a rendered projection.",
@@ -791,7 +384,7 @@
       "id": "cytoscape",
       "label": "Cytoscape.js",
       "kind": "renderer",
-      "layer": "rendering",
+      "layer": "projection",
       "resolution": 3,
       "status": "rendered",
       "summary": "Interactive graph visualization engine for the v0 map.",
@@ -817,7 +410,7 @@
       "id": "react-flow",
       "label": "React Flow",
       "kind": "renderer",
-      "layer": "rendering",
+      "layer": "projection",
       "resolution": 3,
       "status": "candidate",
       "summary": "Node-edge editor candidate for future authoring workflows.",
@@ -843,7 +436,7 @@
       "id": "sigma",
       "label": "Sigma.js",
       "kind": "renderer",
-      "layer": "rendering",
+      "layer": "projection",
       "resolution": 3,
       "status": "candidate",
       "summary": "Large graph rendering candidate for simpler graph exploration.",
@@ -864,6 +457,412 @@
         "viewer",
         "large-graph"
       ]
+    },
+    {
+      "id": "decision-service",
+      "label": "Decision Service",
+      "kind": "boundary",
+      "layer": "decision-modeling",
+      "resolution": 3,
+      "status": "asserted",
+      "summary": "A callable packaging boundary for decisions.",
+      "context": "Decision services expose decisions for invocation by process, case, application, or runtime architecture components.",
+      "docs": [
+        {
+          "label": "OMG DMN 1.5",
+          "url": "https://www.omg.org/spec/DMN/1.5/About-DMN"
+        }
+      ],
+      "hardening": [
+        "Separate design-time decision service boundaries from deployed API endpoints."
+      ],
+      "aliases": [
+        "DMN decision service"
+      ],
+      "tags": [
+        "decision",
+        "service"
+      ]
+    },
+    {
+      "id": "decision-table",
+      "label": "Decision Table",
+      "kind": "artifact",
+      "layer": "decision-modeling",
+      "resolution": 3,
+      "status": "asserted",
+      "summary": "Tabular decision logic used by DMN.",
+      "context": "Decision tables are common DMN logic artifacts and often become executable rule assets.",
+      "docs": [
+        {
+          "label": "OMG DMN 1.5",
+          "url": "https://www.omg.org/spec/DMN/1.5/About-DMN"
+        }
+      ],
+      "hardening": [
+        "Track hit policy, type constraints, FEEL expressions, and test coverage."
+      ],
+      "aliases": [
+        "DMN table"
+      ],
+      "tags": [
+        "decision",
+        "rules"
+      ]
+    },
+    {
+      "id": "dmn",
+      "label": "DMN",
+      "kind": "standard",
+      "layer": "decision-modeling",
+      "resolution": 2,
+      "status": "asserted",
+      "summary": "Decision Model and Notation as one decision-modeling source family.",
+      "context": "DMN models decision requirements and executable decision logic. It is valuable as a source model for decision dependencies, but it is not the default focus, layout root, or universal representation for topology, state, telemetry, and provenance.",
+      "docs": [
+        {
+          "label": "OMG DMN 1.5 formal",
+          "url": "https://www.omg.org/spec/DMN/1.5/About-DMN"
+        },
+        {
+          "label": "OMG DMN 1.6 beta",
+          "url": "https://www.omg.org/spec/DMN/1.6/Beta1/About-DMN"
+        }
+      ],
+      "hardening": [
+        "Treat DMN decisions as one claim type in the graph, not as the global model.",
+        "Preserve DMN version, namespace, source document, and import provenance."
+      ],
+      "aliases": [
+        "Decision Model and Notation"
+      ],
+      "tags": [
+        "decision"
+      ]
+    },
+    {
+      "id": "drd",
+      "label": "DRD / DRG",
+      "kind": "notation",
+      "layer": "decision-modeling",
+      "resolution": 2,
+      "status": "asserted",
+      "summary": "DMN decision requirement diagrams and decision requirement graphs.",
+      "context": "DRDs show dependency between decisions, input data, business knowledge, and knowledge sources. They are not runtime event graphs.",
+      "docs": [
+        {
+          "label": "OMG DMN 1.5",
+          "url": "https://www.omg.org/spec/DMN/1.5/About-DMN"
+        }
+      ],
+      "hardening": [
+        "Do not infer process sequence or runtime causality from a DRD edge without evidence."
+      ],
+      "aliases": [
+        "Decision Requirements Diagram",
+        "Decision Requirements Graph"
+      ],
+      "tags": [
+        "decision",
+        "dependency"
+      ]
+    },
+    {
+      "id": "feel",
+      "label": "FEEL",
+      "kind": "language",
+      "layer": "decision-modeling",
+      "resolution": 3,
+      "status": "asserted",
+      "summary": "Friendly Enough Expression Language used by DMN.",
+      "context": "FEEL is the expression language side of DMN. Runtime portability depends on precise FEEL support and version handling.",
+      "docs": [
+        {
+          "label": "OMG DMN 1.6 beta",
+          "url": "https://www.omg.org/spec/DMN/1.6/Beta1/About-DMN"
+        }
+      ],
+      "hardening": [
+        "Record FEEL dialect/version support for each runtime before marking a decision executable."
+      ],
+      "aliases": [
+        "Friendly Enough Expression Language"
+      ],
+      "tags": [
+        "language",
+        "expression"
+      ]
+    },
+    {
+      "id": "sbvr",
+      "label": "SBVR",
+      "kind": "standard",
+      "layer": "decision-modeling",
+      "resolution": 3,
+      "status": "candidate",
+      "summary": "Business vocabulary and rule semantics adjacent to DMN.",
+      "context": "SBVR is relevant when vocabulary precision and rule semantics need to be connected to decision logic.",
+      "docs": [
+        {
+          "label": "OMG SBVR catalog",
+          "url": "https://www.omg.org/spec/SBVR/"
+        }
+      ],
+      "hardening": [
+        "Use only where controlled vocabulary improves precision; avoid importing a parallel semantics stack by habit."
+      ],
+      "aliases": [
+        "Semantics of Business Vocabulary and Rules"
+      ],
+      "tags": [
+        "vocabulary",
+        "rules"
+      ]
+    },
+    {
+      "id": "dmn-xml-di",
+      "label": "DMN XML / DI",
+      "kind": "interchange",
+      "layer": "execution-surfaces",
+      "resolution": 3,
+      "status": "asserted",
+      "summary": "DMN interchange and diagram information for a decision-modeling source.",
+      "context": "DMN XML and diagram interchange preserve model content and layout metadata across tools.",
+      "docs": [
+        {
+          "label": "OMG DMN 1.5",
+          "url": "https://www.omg.org/spec/DMN/1.5/About-DMN"
+        }
+      ],
+      "hardening": [
+        "Preserve namespace, schema version, diagram coordinates, and original bytes hash."
+      ],
+      "aliases": [
+        "DMN interchange"
+      ],
+      "tags": [
+        "interchange",
+        "execution-surface"
+      ]
+    },
+    {
+      "id": "model-artifacts",
+      "label": "Predictive Model Artifacts",
+      "kind": "artifact",
+      "layer": "execution-surfaces",
+      "resolution": 4,
+      "status": "candidate",
+      "summary": "PMML, ONNX, PFA-class analytical artifacts adjacent to decisions.",
+      "context": "Predictive models often feed decisions or sit beside them. They need separate lineage, validation, and runtime semantics.",
+      "docs": [
+        {
+          "label": "ONNX",
+          "url": "https://onnx.ai/"
+        },
+        {
+          "label": "PMML",
+          "url": "https://dmg.org/pmml/v4-4-1/GeneralStructure.html"
+        }
+      ],
+      "hardening": [
+        "Do not collapse model score provenance into decision-rule provenance."
+      ],
+      "aliases": [
+        "PMML",
+        "ONNX",
+        "PFA"
+      ],
+      "tags": [
+        "model",
+        "analytics"
+      ]
+    },
+    {
+      "id": "rule-engine",
+      "label": "Rule Engine",
+      "kind": "runtime",
+      "layer": "execution-surfaces",
+      "resolution": 4,
+      "status": "candidate",
+      "summary": "Executable target for decision rules.",
+      "context": "Decision tables and FEEL expressions may be interpreted, compiled, or translated into a rule/runtime engine.",
+      "docs": [
+        {
+          "label": "Drools DMN engine",
+          "url": "https://docs.drools.org/"
+        }
+      ],
+      "hardening": [
+        "Declare runtime conformance, unsupported FEEL features, and test result provenance."
+      ],
+      "aliases": [
+        "rules runtime",
+        "decision engine"
+      ],
+      "tags": [
+        "runtime",
+        "execution-surface"
+      ]
+    },
+    {
+      "id": "runtime-decision-api",
+      "label": "Decision Runtime API",
+      "kind": "runtime",
+      "layer": "execution-surfaces",
+      "resolution": 4,
+      "status": "candidate",
+      "summary": "Callable runtime boundary for decision evaluation.",
+      "context": "A deployed decision API is one runtime boundary where processes, applications, telemetry, traces, and event envelopes may meet decision logic.",
+      "docs": [
+        {
+          "label": "DMN Technology Compatibility Kit",
+          "url": "https://dmn-tck.github.io/tck/"
+        }
+      ],
+      "hardening": [
+        "Expose versioned decision IDs, input schema, output schema, model hash, and evaluation trace IDs."
+      ],
+      "aliases": [
+        "decision endpoint"
+      ],
+      "tags": [
+        "runtime",
+        "api"
+      ]
+    },
+    {
+      "id": "archimate",
+      "label": "ArchiMate",
+      "kind": "standard",
+      "layer": "source-models",
+      "resolution": 2,
+      "status": "asserted",
+      "summary": "Enterprise architecture modeling language.",
+      "context": "ArchiMate contributes business, application, technology, motivation, strategy, and implementation context to the semantic backbone.",
+      "docs": [
+        {
+          "label": "ArchiMate overview",
+          "url": "https://www.opengroup.org/archimate-forum/archimate-overview"
+        },
+        {
+          "label": "ArchiMate 4 downloads",
+          "url": "https://www.opengroup.org/archimate-licensed-downloads"
+        }
+      ],
+      "hardening": [
+        "Use ArchiMate for enterprise context, not for low-level runtime state."
+      ],
+      "aliases": [
+        "ArchiMate enterprise architecture"
+      ],
+      "tags": [
+        "enterprise",
+        "source-model"
+      ]
+    },
+    {
+      "id": "bpmn",
+      "label": "BPMN",
+      "kind": "standard",
+      "layer": "source-models",
+      "resolution": 2,
+      "status": "asserted",
+      "summary": "Business Process Model and Notation for process flow.",
+      "context": "BPMN process models can invoke or route through decision services, produce event evidence, and supply process context for the semantic backbone.",
+      "docs": [
+        {
+          "label": "OMG BPMN 2.0.2",
+          "url": "https://www.omg.org/spec/BPMN/2.0.2/"
+        }
+      ],
+      "hardening": [
+        "Do not treat BPMN sequence flow as proof of actual runtime ordering without event evidence."
+      ],
+      "aliases": [
+        "Business Process Model and Notation"
+      ],
+      "tags": [
+        "process",
+        "source-model"
+      ]
+    },
+    {
+      "id": "c4-runtime",
+      "label": "C4 / Runtime Topology",
+      "kind": "practice",
+      "layer": "source-models",
+      "resolution": 2,
+      "status": "candidate",
+      "summary": "Software architecture topology around deployed components and services.",
+      "context": "Runtime topology explains which services, stores, queues, users, and external systems interact. It is observed or configured infrastructure evidence, not a notation extension.",
+      "docs": [
+        {
+          "label": "C4 model",
+          "url": "https://c4model.com/"
+        }
+      ],
+      "hardening": [
+        "Treat runtime topology as observed or configured infrastructure evidence, not as a DMN extension."
+      ],
+      "aliases": [
+        "software architecture topology"
+      ],
+      "tags": [
+        "topology",
+        "runtime"
+      ]
+    },
+    {
+      "id": "cmmn",
+      "label": "CMMN",
+      "kind": "standard",
+      "layer": "source-models",
+      "resolution": 2,
+      "status": "asserted",
+      "summary": "Case Management Model and Notation for case plans.",
+      "context": "CMMN covers less prescriptive, case-oriented work that can use decisions without fitting a strict process flow or becoming the global map center.",
+      "docs": [
+        {
+          "label": "OMG CMMN 1.1",
+          "url": "https://www.omg.org/spec/CMMN/1.1/About-CMMN"
+        }
+      ],
+      "hardening": [
+        "Represent discretionary case behavior separately from deterministic process paths."
+      ],
+      "aliases": [
+        "Case Management Model and Notation"
+      ],
+      "tags": [
+        "case",
+        "source-model"
+      ]
+    },
+    {
+      "id": "sysml-v2",
+      "label": "SysML v2",
+      "kind": "standard",
+      "layer": "source-models",
+      "resolution": 2,
+      "status": "asserted",
+      "summary": "Systems modeling language for MBSE.",
+      "context": "SysML v2 contributes requirements, structure, behavior, analysis, and verification context to system dynamics views.",
+      "docs": [
+        {
+          "label": "OMG SysML 2.0",
+          "url": "https://www.omg.org/spec/SysML/2.0/About-SysML"
+        }
+      ],
+      "hardening": [
+        "Keep engineering requirement/verification evidence distinct from business decision dependencies."
+      ],
+      "aliases": [
+        "OMG System Modeling Language"
+      ],
+      "tags": [
+        "systems",
+        "source-model"
+      ]
     }
   ],
   "edges": [
@@ -872,7 +871,7 @@
       "source": "dmn",
       "target": "drd",
       "relation": "defines",
-      "layer": "decision",
+      "layer": "decision-modeling",
       "resolution": 2,
       "status": "asserted",
       "summary": "DMN includes decision requirement diagrams/graphs.",
@@ -889,7 +888,7 @@
       "source": "dmn",
       "target": "feel",
       "relation": "uses_expression_language",
-      "layer": "decision",
+      "layer": "decision-modeling",
       "resolution": 3,
       "status": "asserted",
       "summary": "DMN uses FEEL for expressions.",
@@ -906,7 +905,7 @@
       "source": "dmn",
       "target": "decision-service",
       "relation": "packages",
-      "layer": "decision",
+      "layer": "decision-modeling",
       "resolution": 3,
       "status": "asserted",
       "summary": "DMN can package decision behavior as decision services.",
@@ -923,7 +922,7 @@
       "source": "dmn",
       "target": "decision-table",
       "relation": "contains_logic_artifact",
-      "layer": "decision",
+      "layer": "decision-modeling",
       "resolution": 3,
       "status": "asserted",
       "summary": "Decision tables are common DMN logic artifacts.",
@@ -940,7 +939,7 @@
       "source": "dmn",
       "target": "sbvr",
       "relation": "adjacent_vocabulary",
-      "layer": "decision",
+      "layer": "decision-modeling",
       "resolution": 3,
       "status": "candidate",
       "summary": "SBVR can provide controlled business vocabulary and rule semantics adjacent to DMN.",
@@ -953,14 +952,14 @@
       ]
     },
     {
-      "id": "bpmn-to-dmn",
+      "id": "bpmn-to-decision-service",
       "source": "bpmn",
-      "target": "dmn",
+      "target": "decision-service",
       "relation": "invokes_or_contextualizes",
-      "layer": "context-up",
+      "layer": "source-models",
       "resolution": 2,
       "status": "asserted",
-      "summary": "Business processes can invoke or depend on decisions.",
+      "summary": "Business processes can invoke or depend on decision service boundaries.",
       "confidence": 0.95,
       "docs": [
         {
@@ -970,14 +969,14 @@
       ]
     },
     {
-      "id": "cmmn-to-dmn",
+      "id": "cmmn-to-decision-service",
       "source": "cmmn",
-      "target": "dmn",
+      "target": "decision-service",
       "relation": "invokes_or_contextualizes",
-      "layer": "context-up",
+      "layer": "source-models",
       "resolution": 2,
       "status": "asserted",
-      "summary": "Case management contexts can use decisions without strict process sequencing.",
+      "summary": "Case management contexts can invoke decisions without strict process sequencing.",
       "confidence": 0.9,
       "docs": [
         {
@@ -987,14 +986,14 @@
       ]
     },
     {
-      "id": "archimate-to-dmn",
+      "id": "archimate-to-runtime-topology",
       "source": "archimate",
-      "target": "dmn",
+      "target": "c4-runtime",
       "relation": "enterprise_context_for",
-      "layer": "context-up",
+      "layer": "source-models",
       "resolution": 2,
       "status": "asserted",
-      "summary": "Enterprise architecture provides capability and application context for decisions.",
+      "summary": "Enterprise architecture contextualizes capabilities, applications, and runtime topology.",
       "confidence": 0.86,
       "docs": [
         {
@@ -1004,14 +1003,14 @@
       ]
     },
     {
-      "id": "sysml-to-dmn",
+      "id": "sysml-to-model-artifacts",
       "source": "sysml-v2",
-      "target": "dmn",
+      "target": "model-artifacts",
       "relation": "systems_context_for",
-      "layer": "context-up",
+      "layer": "source-models",
       "resolution": 2,
       "status": "candidate",
-      "summary": "Systems models can contextualize decisions within requirements, behavior, and verification.",
+      "summary": "Systems models contextualize requirements, behavior, verification, and adjacent model artifacts.",
       "confidence": 0.78,
       "docs": [
         {
@@ -1025,7 +1024,7 @@
       "source": "c4-runtime",
       "target": "runtime-decision-api",
       "relation": "deploys_or_contains",
-      "layer": "context-up",
+      "layer": "source-models",
       "resolution": 4,
       "status": "candidate",
       "summary": "Runtime architecture contains deployed decision API components.",
@@ -1042,7 +1041,7 @@
       "source": "dmn",
       "target": "dmn-xml-di",
       "relation": "serialized_as",
-      "layer": "execution-down",
+      "layer": "execution-surfaces",
       "resolution": 3,
       "status": "asserted",
       "summary": "DMN models are interchanged as XML with diagram information.",
@@ -1059,7 +1058,7 @@
       "source": "decision-table",
       "target": "rule-engine",
       "relation": "compiled_or_interpreted_by",
-      "layer": "execution-down",
+      "layer": "execution-surfaces",
       "resolution": 4,
       "status": "candidate",
       "summary": "Decision tables may be executed by rule engines.",
@@ -1076,7 +1075,7 @@
       "source": "feel",
       "target": "rule-engine",
       "relation": "requires_runtime_support",
-      "layer": "execution-down",
+      "layer": "execution-surfaces",
       "resolution": 4,
       "status": "candidate",
       "summary": "Executable decision logic depends on runtime FEEL support.",
@@ -1093,7 +1092,7 @@
       "source": "decision-service",
       "target": "runtime-decision-api",
       "relation": "implemented_by",
-      "layer": "execution-down",
+      "layer": "execution-surfaces",
       "resolution": 4,
       "status": "candidate",
       "summary": "A design-time decision service can be implemented as a deployed API.",
@@ -1106,14 +1105,14 @@
       ]
     },
     {
-      "id": "model-artifacts-to-dmn",
+      "id": "model-artifacts-to-decision-service",
       "source": "model-artifacts",
-      "target": "dmn",
+      "target": "decision-service",
       "relation": "feeds_or_complements",
-      "layer": "execution-down",
+      "layer": "execution-surfaces",
       "resolution": 4,
       "status": "candidate",
-      "summary": "Predictive artifacts can feed or complement decision logic.",
+      "summary": "Predictive artifacts can feed or complement callable decision behavior.",
       "confidence": 0.7,
       "docs": [
         {
@@ -1127,10 +1126,10 @@
       "source": "dmn",
       "target": "rdf-owl-kg",
       "relation": "mapped_into",
-      "layer": "semantic-core",
+      "layer": "semantic-backbone",
       "resolution": 1,
       "status": "asserted",
-      "summary": "DMN identities and relationships should be lifted into the canonical semantic graph.",
+      "summary": "DMN source-model identities and relationships should be lifted into the canonical semantic graph.",
       "confidence": 0.93,
       "docs": [
         {
@@ -1144,7 +1143,7 @@
       "source": "bpmn",
       "target": "rdf-owl-kg",
       "relation": "mapped_into",
-      "layer": "semantic-core",
+      "layer": "semantic-backbone",
       "resolution": 2,
       "status": "candidate",
       "summary": "Process models should map into the same identity graph rather than stay isolated.",
@@ -1161,7 +1160,7 @@
       "source": "archimate",
       "target": "rdf-owl-kg",
       "relation": "mapped_into",
-      "layer": "semantic-core",
+      "layer": "semantic-backbone",
       "resolution": 2,
       "status": "candidate",
       "summary": "Enterprise architecture context should share identity with decision and runtime nodes.",
@@ -1178,7 +1177,7 @@
       "source": "sysml-v2",
       "target": "rdf-owl-kg",
       "relation": "mapped_into",
-      "layer": "semantic-core",
+      "layer": "semantic-backbone",
       "resolution": 2,
       "status": "candidate",
       "summary": "Systems models should map into the same backbone for cross-resolution analysis.",
@@ -1195,7 +1194,7 @@
       "source": "rdf-owl-kg",
       "target": "shacl-contracts",
       "relation": "validated_by",
-      "layer": "semantic-core",
+      "layer": "semantic-backbone",
       "resolution": 2,
       "status": "asserted",
       "summary": "Graph snapshots should pass shape validation before trusted rendering.",
@@ -1212,7 +1211,7 @@
       "source": "rdf-owl-kg",
       "target": "prov-o",
       "relation": "qualified_by",
-      "layer": "semantic-core",
+      "layer": "semantic-backbone",
       "resolution": 2,
       "status": "asserted",
       "summary": "Graph claims need provenance for imports, mappings, observations, and render outputs.",
@@ -1229,7 +1228,7 @@
       "source": "rdf-owl-kg",
       "target": "jsonld-trig",
       "relation": "serialized_as",
-      "layer": "semantic-core",
+      "layer": "semantic-backbone",
       "resolution": 3,
       "status": "asserted",
       "summary": "Graph snapshots should have portable exchange forms.",
@@ -1300,7 +1299,7 @@
       "layer": "observation-state",
       "resolution": 4,
       "status": "observed",
-      "summary": "Runtime decision services should emit telemetry that can be correlated to decisions and topology.",
+      "summary": "Runtime services should emit telemetry that can be correlated to system topology and claims.",
       "confidence": 0.82,
       "docs": [
         {
@@ -1334,7 +1333,7 @@
       "layer": "observation-state",
       "resolution": 4,
       "status": "candidate",
-      "summary": "Decision services may emit or consume event envelopes for integration.",
+      "summary": "Runtime services may emit or consume event envelopes for integration.",
       "confidence": 0.72,
       "docs": [
         {
@@ -1365,10 +1364,10 @@
       "source": "rdf-owl-kg",
       "target": "view-manifest",
       "relation": "projected_by",
-      "layer": "rendering",
+      "layer": "projection",
       "resolution": 2,
       "status": "rendered",
-      "summary": "Rendered views should be generated from graph snapshots through view manifests.",
+      "summary": "Rendered views should be generated from graph snapshots through explicit view manifests.",
       "confidence": 0.95,
       "docs": [
         {
@@ -1382,7 +1381,7 @@
       "source": "shacl-contracts",
       "target": "view-manifest",
       "relation": "guards",
-      "layer": "rendering",
+      "layer": "projection",
       "resolution": 3,
       "status": "asserted",
       "summary": "View manifests should be generated only from validated graph snapshots.",
@@ -1399,7 +1398,7 @@
       "source": "prov-o",
       "target": "view-manifest",
       "relation": "records_generation_of",
-      "layer": "rendering",
+      "layer": "projection",
       "resolution": 5,
       "status": "rendered",
       "summary": "View generation should itself be a provenance-bearing activity.",
@@ -1416,7 +1415,7 @@
       "source": "view-manifest",
       "target": "cytoscape",
       "relation": "renders_with",
-      "layer": "rendering",
+      "layer": "projection",
       "resolution": 3,
       "status": "rendered",
       "summary": "The v0 dynamic map is rendered with Cytoscape.js.",
@@ -1433,7 +1432,7 @@
       "source": "view-manifest",
       "target": "react-flow",
       "relation": "future_authoring_projection",
-      "layer": "rendering",
+      "layer": "projection",
       "resolution": 3,
       "status": "candidate",
       "summary": "Future graph authoring or workflow editing could use React Flow.",
@@ -1450,7 +1449,7 @@
       "source": "view-manifest",
       "target": "sigma",
       "relation": "future_large_graph_projection",
-      "layer": "rendering",
+      "layer": "projection",
       "resolution": 3,
       "status": "candidate",
       "summary": "Very large simple graph projections may use Sigma.",
