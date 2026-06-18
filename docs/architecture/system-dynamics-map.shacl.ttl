@@ -1,0 +1,50 @@
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sd: <https://hapax.local/ns/system-dynamics-map#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+sd:NodeShape
+  a sh:NodeShape ;
+  sh:targetClass sd:Node ;
+  sh:property [ sh:path sd:stableId ; sh:minCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path rdfs:label ; sh:minCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path sd:kind ; sh:minCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path sd:layer ; sh:minCount 1 ; sh:nodeKind sh:IRI ] ;
+  sh:property [ sh:path sd:resolution ; sh:minCount 1 ; sh:datatype xsd:integer ] ;
+  sh:property [ sh:path sd:status ; sh:minCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path dcterms:description ; sh:minCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path sd:context ; sh:minCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path sd:documentationLink ; sh:minCount 1 ; sh:nodeKind sh:IRI ] ;
+  sh:property [ sh:path sd:hardeningNote ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path sd:alias ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path sd:tag ; sh:datatype xsd:string ] .
+
+sd:EdgeShape
+  a sh:NodeShape ;
+  sh:targetClass sd:Edge ;
+  sh:property [ sh:path sd:stableId ; sh:minCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path sd:source ; sh:minCount 1 ; sh:nodeKind sh:IRI ] ;
+  sh:property [ sh:path sd:target ; sh:minCount 1 ; sh:nodeKind sh:IRI ] ;
+  sh:property [ sh:path sd:relation ; sh:minCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path sd:layer ; sh:minCount 1 ; sh:nodeKind sh:IRI ] ;
+  sh:property [ sh:path sd:resolution ; sh:minCount 1 ; sh:datatype xsd:integer ] ;
+  sh:property [ sh:path sd:status ; sh:minCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path sd:confidence ; sh:minCount 1 ; sh:datatype xsd:decimal ] ;
+  sh:property [ sh:path dcterms:description ; sh:minCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path sd:documentationLink ; sh:minCount 1 ; sh:nodeKind sh:IRI ] .
+
+sd:RenderedViewShape
+  a sh:NodeShape ;
+  sh:targetClass sd:RenderedView ;
+  sh:property [ sh:path sd:sourceMap ; sh:minCount 1 ; sh:nodeKind sh:IRI ] ;
+  sh:property [ sh:path sd:viewer ; sh:minCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path sd:viewManifest ; sh:minCount 1 ; sh:datatype xsd:string ] .
+
+sd:ProvenanceActivityShape
+  a sh:NodeShape ;
+  sh:targetClass prov:Activity ;
+  sh:property [ sh:path prov:used ; sh:minCount 1 ] ;
+  sh:property [ sh:path prov:generated ; sh:minCount 1 ] ;
+  sh:property [ sh:path prov:wasAssociatedWith ; sh:minCount 1 ] .
