@@ -57,6 +57,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -117,6 +118,13 @@ GLMCP_ADMISSION_RECOVERY_HINT = (
     "false-negative recovery: repair receipt permissions/encoding or create a fresh "
     "short-lived supported-tool admission receipt with evidence_ref, then rerun writer"
 )
+
+
+@dataclass(frozen=True)
+class GlmcpAdmission:
+    evidence_ref: str
+    fresh_until: datetime
+
 
 LOCAL_COMPUTE_ROUTE = "litellm.local.command-r-35b"
 LOCAL_COMPUTE_PROVIDER = "tabbyapi"
@@ -243,7 +251,7 @@ def active_glmcp_admission_receipts(
     receipt_dir: Path,
     *,
     now: datetime,
-) -> list[str]:
+) -> list[GlmcpAdmission]:
     """Return fresh positive GLMCP quota/admission receipt evidence refs.
 
     GLM Coding Plan Max is finite quota. Unlike the older Claude/Codex/Gemini
@@ -380,15 +388,22 @@ def active_glmcp_admission_receipts(
                 f"{GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS}",
             )
             continue
-        if now - observed_at > timedelta(seconds=stale_after_seconds):
+        fresh_until = observed_at + timedelta(seconds=stale_after_seconds)
+        if now >= fresh_until:
             _warn_ignored_glmcp_admission(
                 path,
                 "receipt expired",
             )
             continue
         refs.append(
-            "relay-receipt:"
-            f"{path.name}:observed_at:{observed_at.isoformat().replace('+00:00', 'Z')}"
+            GlmcpAdmission(
+                evidence_ref=(
+                    "relay-receipt:"
+                    f"{path.name}:observed_at:{observed_at.isoformat().replace('+00:00', 'Z')}:"
+                    f"fresh_until:{fresh_until.isoformat().replace('+00:00', 'Z')}"
+                ),
+                fresh_until=fresh_until,
+            )
         )
     return refs
 
@@ -451,7 +466,7 @@ def build_live_ledger(
     *,
     now: datetime,
     walls: dict[str, list[str]],
-    glmcp_admissions: list[str],
+    glmcp_admissions: list[GlmcpAdmission],
     local_resource_state: str,
     local_resource_evidence: list[str],
 ) -> QuotaSpendLedger:
@@ -468,6 +483,7 @@ def build_live_ledger(
         if platform_walls:
             state = "exhausted"
             evidence = [*platform_walls, writer_ref]
+            fresh_until = None
             reason = (
                 f"{platform} subscription lane hit an unexpired quota wall; "
                 "state from quota-wall relay receipt(s)"
@@ -475,7 +491,8 @@ def build_live_ledger(
         elif platform == "glmcp":
             if glmcp_admissions:
                 state = "fresh"
-                evidence = [*glmcp_admissions, writer_ref]
+                evidence = [*(admission.evidence_ref for admission in glmcp_admissions), writer_ref]
+                fresh_until = max(admission.fresh_until for admission in glmcp_admissions)
                 reason = (
                     "fresh GLMCP supported-tool quota admission receipt present; "
                     "GLM Coding Plan Max remains finite and receipt-bounded"
@@ -483,6 +500,7 @@ def build_live_ledger(
             else:
                 state = "unknown"
                 evidence = ["relay-receipt:glmcp:quota-admission:absent", writer_ref]
+                fresh_until = None
                 reason = (
                     "no fresh GLMCP quota admission receipt; GLM Coding Plan Max is finite "
                     "and unknown quota must hold/backoff rather than dispatch blind"
@@ -490,23 +508,25 @@ def build_live_ledger(
         else:
             state = "fresh"
             evidence = [f"relay-receipt:{platform}:quota-wall:absent", writer_ref]
+            fresh_until = None
             reason = (
                 f"no unexpired quota-wall relay receipt for {platform}; "
                 "subscription lanes observed dispatchable"
             )
-        snapshots.append(
-            {
-                "quota_snapshot_schema": 1,
-                "snapshot_id": f"quota-{platform}-subscription-live-{snapshot_stamp}",
-                "captured_at": now.isoformat().replace("+00:00", "Z"),
-                "route_id": route_id,
-                "provider": SUBSCRIPTION_PROVIDERS.get(platform, f"{platform}-subscription"),
-                "capacity_pool": "subscription_quota",
-                "subscription_quota_state": state,
-                "evidence_refs": evidence,
-                "operator_visible_reason": reason,
-            }
-        )
+        snapshot = {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": f"quota-{platform}-subscription-live-{snapshot_stamp}",
+            "captured_at": now.isoformat().replace("+00:00", "Z"),
+            "route_id": route_id,
+            "provider": SUBSCRIPTION_PROVIDERS.get(platform, f"{platform}-subscription"),
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": state,
+            "evidence_refs": evidence,
+            "operator_visible_reason": reason,
+        }
+        if fresh_until is not None:
+            snapshot["fresh_until"] = fresh_until.isoformat().replace("+00:00", "Z")
+        snapshots.append(snapshot)
 
     snapshots.append(
         {

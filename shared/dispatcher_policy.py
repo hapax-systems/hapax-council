@@ -1810,7 +1810,11 @@ def _quota_state(
     route_subscription_state: str | None = None
     route_quota_evidence_refs: tuple[str, ...] = ()
     if capability is not None and capability.capacity_pool == "subscription_quota":
-        state, refs = subscription_quota_state_for_route(quota_ledger, capability.route_id)
+        state, refs = subscription_quota_state_for_route(
+            quota_ledger,
+            capability.route_id,
+            now=checked_at,
+        )
         missing_ref = f"quota-snapshot:{normalize_route_id(capability.route_id)}:missing"
         if refs != (missing_ref,) or _requires_route_specific_subscription_quota(
             capability.route_id

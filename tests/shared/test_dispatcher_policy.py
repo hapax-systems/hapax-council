@@ -221,21 +221,30 @@ def _registry_with_fresh_route(route_id: str) -> PlatformCapabilityRegistry:
     return registry.model_copy(update={"routes": [*registry.routes, route]})
 
 
-def _ledger_with_route_subscription_state(route_id: str, state: str) -> QuotaSpendLedger:
+def _ledger_with_route_subscription_state(
+    route_id: str,
+    state: str,
+    *,
+    fresh_until: str | None = None,
+    ledger_captured_at: str | None = None,
+) -> QuotaSpendLedger:
     payload = json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
-    payload["quota_snapshots"].append(
-        {
-            "quota_snapshot_schema": 1,
-            "snapshot_id": f"quota-{route_id.replace('.', '-')}-{state}",
-            "captured_at": "2026-05-09T22:00:00Z",
-            "route_id": route_id,
-            "provider": "test-subscription",
-            "capacity_pool": "subscription_quota",
-            "subscription_quota_state": state,
-            "evidence_refs": [f"relay-receipt:{route_id}:quota:{state}"],
-            "operator_visible_reason": f"test route quota {state}",
-        }
-    )
+    if ledger_captured_at is not None:
+        payload["captured_at"] = ledger_captured_at
+    snapshot = {
+        "quota_snapshot_schema": 1,
+        "snapshot_id": f"quota-{route_id.replace('.', '-')}-{state}",
+        "captured_at": "2026-05-09T22:00:00Z",
+        "route_id": route_id,
+        "provider": "test-subscription",
+        "capacity_pool": "subscription_quota",
+        "subscription_quota_state": state,
+        "evidence_refs": [f"relay-receipt:{route_id}:quota:{state}"],
+        "operator_visible_reason": f"test route quota {state}",
+    }
+    if fresh_until is not None:
+        snapshot["fresh_until"] = fresh_until
+    payload["quota_snapshots"].append(snapshot)
     return QuotaSpendLedger.model_validate(payload)
 
 
@@ -686,6 +695,43 @@ def test_build_dispatch_request_enforces_exact_route_subscription_quota() -> Non
     assert fresh_decision.action is DispatchAction.LAUNCH
     assert fresh_decision.quota_freshness_green is True
     assert "policy_launch" in fresh_decision.reason_codes
+
+
+def test_glmcp_expired_admission_snapshot_holds_even_when_ledger_fresh() -> None:
+    route_id = "glmcp.review.direct"
+    registry = _registry_with_fresh_route(route_id)
+    freshness_now = datetime(2026, 5, 9, 22, 10, tzinfo=UTC)
+
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        task_fields=_task_fields(),
+        registry=registry,
+        quota_ledger=_ledger_with_route_subscription_state(
+            route_id,
+            "fresh",
+            fresh_until="2026-05-09T22:05:00Z",
+            ledger_captured_at="2026-05-09T22:00:00Z",
+        ),
+        now=freshness_now,
+    )
+
+    assert request.quota is not None
+    assert request.quota.budget_ledger_stale is False
+    assert request.quota.route_subscription_quota_state == "stale"
+    assert any(
+        ref.startswith("quota-snapshot:quota-glmcp-review-direct-fresh:fresh_until_expired")
+        for ref in request.quota.route_quota_evidence_refs
+    )
+
+    decision = evaluate_dispatch_policy(request, now=freshness_now)
+
+    assert decision.action is DispatchAction.HOLD
+    assert "subscription_route_quota_not_fresh" in decision.reason_codes
+    assert "route_subscription_quota_state:stale" in decision.reason_codes
 
 
 def test_glmcp_missing_capability_still_surfaces_route_quota_requirement() -> None:

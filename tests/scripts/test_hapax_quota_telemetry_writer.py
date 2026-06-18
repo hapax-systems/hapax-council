@@ -214,6 +214,7 @@ def test_fresh_glmcp_admission_receipt_marks_glmcp_fresh(tmp_path: Path) -> None
     )
     assert glmcp_snapshot["provider"] == "z_ai-glm-coding-plan"
     assert glmcp_snapshot["subscription_quota_state"] == "fresh"
+    assert glmcp_snapshot["fresh_until"] == "2026-06-10T00:10:00Z"
     assert any("glmcp-quota-admission.yaml" in ref for ref in glmcp_snapshot["evidence_refs"])
     assert "finite" in glmcp_snapshot["operator_visible_reason"]
     summary = json.loads(result.stdout)

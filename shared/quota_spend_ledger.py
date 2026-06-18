@@ -484,6 +484,7 @@ class QuotaSnapshot(StrictModel):
     quota_snapshot_schema: Literal[1] = 1
     snapshot_id: str = Field(pattern=r"^quota-[a-z0-9_.:-]+$")
     captured_at: datetime
+    fresh_until: datetime | None = None
     route_id: str = Field(min_length=1)
     provider: str = Field(min_length=1)
     capacity_pool: CapacityPool
@@ -494,6 +495,10 @@ class QuotaSnapshot(StrictModel):
     @model_validator(mode="after")
     def _quota_snapshot_contract(self) -> Self:
         _require_aware(self.captured_at, "captured_at")
+        if self.fresh_until is not None:
+            _require_aware(self.fresh_until, "fresh_until")
+            if self.fresh_until <= self.captured_at:
+                raise ValueError(f"{self.snapshot_id} fresh_until must be after captured_at")
         _reject_private_or_identity_refs(
             [
                 self.snapshot_id,
@@ -854,7 +859,7 @@ def build_dashboard(
     ledger_stale = ledger.ledger_stale(when)
     paid_state = _paid_api_budget_state(ledger, when)
     bootstrap_state = _bootstrap_dependency_state(ledger, when)
-    subscription_state = _subscription_quota_state(ledger)
+    subscription_state = _subscription_quota_state(ledger, now=when)
     support_waiting = tuple(
         record for record in ledger.artifact_provenance if record.waiting_for_review()
     )
@@ -1028,7 +1033,11 @@ def _bootstrap_dependency_state(
     return BootstrapDependencyState.ACTIVE
 
 
-def _subscription_quota_state(ledger: QuotaSpendLedger) -> SubscriptionQuotaState:
+def _subscription_quota_state(
+    ledger: QuotaSpendLedger,
+    *,
+    now: datetime,
+) -> SubscriptionQuotaState:
     snapshots = tuple(
         snapshot
         for snapshot in ledger.quota_snapshots
@@ -1037,16 +1046,18 @@ def _subscription_quota_state(ledger: QuotaSpendLedger) -> SubscriptionQuotaStat
     if not snapshots:
         return SubscriptionQuotaState.UNKNOWN
     if any(
-        snapshot.subscription_quota_state is SubscriptionQuotaState.FRESH for snapshot in snapshots
+        _effective_subscription_quota_state(snapshot, now=now) is SubscriptionQuotaState.FRESH
+        for snapshot in snapshots
     ):
         return SubscriptionQuotaState.FRESH
     if any(
-        snapshot.subscription_quota_state is SubscriptionQuotaState.EXHAUSTED
+        _effective_subscription_quota_state(snapshot, now=now) is SubscriptionQuotaState.EXHAUSTED
         for snapshot in snapshots
     ):
         return SubscriptionQuotaState.EXHAUSTED
     if any(
-        snapshot.subscription_quota_state is SubscriptionQuotaState.STALE for snapshot in snapshots
+        _effective_subscription_quota_state(snapshot, now=now) is SubscriptionQuotaState.STALE
+        for snapshot in snapshots
     ):
         return SubscriptionQuotaState.STALE
     return SubscriptionQuotaState.UNKNOWN
@@ -1055,6 +1066,8 @@ def _subscription_quota_state(ledger: QuotaSpendLedger) -> SubscriptionQuotaStat
 def subscription_quota_state_for_route(
     ledger: QuotaSpendLedger,
     route_id: str,
+    *,
+    now: datetime | None = None,
 ) -> tuple[SubscriptionQuotaState, tuple[str, ...]]:
     """Return route-specific subscription quota state and evidence refs.
 
@@ -1063,6 +1076,7 @@ def subscription_quota_state_for_route(
     such as GLMCP: "is this exact route's quota fresh?"
     """
 
+    checked_at = _coerce_now(now)
     normalized_route_id = _normalize_route_id(route_id)
     snapshots = tuple(
         snapshot
@@ -1078,31 +1092,65 @@ def subscription_quota_state_for_route(
     evidence_refs = tuple(ref for snapshot in snapshots for ref in snapshot.evidence_refs) or (
         f"quota-snapshot:{normalized_route_id}:no-evidence",
     )
-    return _strict_subscription_quota_state(snapshots), evidence_refs
+    expired_refs = tuple(
+        f"quota-snapshot:{snapshot.snapshot_id}:fresh_until_expired:{snapshot.fresh_until.isoformat().replace('+00:00', 'Z')}"
+        for snapshot in snapshots
+        if _subscription_quota_fresh_until_expired(snapshot, now=checked_at)
+    )
+    return _strict_subscription_quota_state(snapshots, now=checked_at), (
+        *evidence_refs,
+        *expired_refs,
+    )
 
 
 def _strict_subscription_quota_state(
     snapshots: tuple[QuotaSnapshot, ...],
+    *,
+    now: datetime,
 ) -> SubscriptionQuotaState:
     if any(
-        snapshot.subscription_quota_state is SubscriptionQuotaState.EXHAUSTED
+        _effective_subscription_quota_state(snapshot, now=now) is SubscriptionQuotaState.EXHAUSTED
         for snapshot in snapshots
     ):
         return SubscriptionQuotaState.EXHAUSTED
     if any(
-        snapshot.subscription_quota_state is SubscriptionQuotaState.STALE for snapshot in snapshots
+        _effective_subscription_quota_state(snapshot, now=now) is SubscriptionQuotaState.STALE
+        for snapshot in snapshots
     ):
         return SubscriptionQuotaState.STALE
     if any(
-        snapshot.subscription_quota_state is SubscriptionQuotaState.UNKNOWN
+        _effective_subscription_quota_state(snapshot, now=now) is SubscriptionQuotaState.UNKNOWN
         for snapshot in snapshots
     ):
         return SubscriptionQuotaState.UNKNOWN
     if any(
-        snapshot.subscription_quota_state is SubscriptionQuotaState.FRESH for snapshot in snapshots
+        _effective_subscription_quota_state(snapshot, now=now) is SubscriptionQuotaState.FRESH
+        for snapshot in snapshots
     ):
         return SubscriptionQuotaState.FRESH
     return SubscriptionQuotaState.UNKNOWN
+
+
+def _effective_subscription_quota_state(
+    snapshot: QuotaSnapshot,
+    *,
+    now: datetime,
+) -> SubscriptionQuotaState:
+    if _subscription_quota_fresh_until_expired(snapshot, now=now):
+        return SubscriptionQuotaState.STALE
+    return snapshot.subscription_quota_state
+
+
+def _subscription_quota_fresh_until_expired(
+    snapshot: QuotaSnapshot,
+    *,
+    now: datetime,
+) -> bool:
+    return (
+        snapshot.subscription_quota_state is SubscriptionQuotaState.FRESH
+        and snapshot.fresh_until is not None
+        and now >= snapshot.fresh_until
+    )
 
 
 def _paid_api_blocking_reasons(

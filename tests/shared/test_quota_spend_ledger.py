@@ -207,6 +207,44 @@ def test_cap_exhaustion_refuses_paid_route() -> None:
     assert decision.state == "refused_exhausted_budget"
 
 
+def test_route_subscription_snapshot_fresh_until_expires_independently() -> None:
+    payload = _active_budget_payload()
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-review-direct-fresh",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": ["relay-receipt:glmcp-quota-admission.yaml"],
+            "operator_visible_reason": "fixture GLMCP admission",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    fresh_state, fresh_refs = subscription_quota_state_for_route(
+        ledger,
+        "glmcp.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+    stale_state, stale_refs = subscription_quota_state_for_route(
+        ledger,
+        "glmcp.review.direct",
+        now=datetime(2026, 5, 17, 8, 6, tzinfo=UTC),
+    )
+
+    assert fresh_state is SubscriptionQuotaState.FRESH
+    assert fresh_refs == ("relay-receipt:glmcp-quota-admission.yaml",)
+    assert stale_state is SubscriptionQuotaState.STALE
+    assert (
+        "quota-snapshot:quota-glmcp-review-direct-fresh:fresh_until_expired:2026-05-17T08:05:00Z"
+        in stale_refs
+    )
+
+
 def test_overdue_reconciliation_freezes_otherwise_valid_budget() -> None:
     payload = _active_budget_payload()
     payload["spend_receipts"] = [
