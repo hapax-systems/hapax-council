@@ -201,7 +201,6 @@ def test_reconciler_sets_unity_volume_for_present_configured_nodes(tmp_path: Pat
             [
                 "Audio",
                 " ├─ Sinks:",
-                " │      56. hapax-livestream-tap                [vol: 0.20]",
                 " ├─ Filters:",
                 " │      80. hapax-broadcast-master              [Audio/Source]",
                 " │     104. hapax-music-loudnorm                [Audio/Sink]",
@@ -223,6 +222,8 @@ def test_reconciler_sets_unity_volume_for_present_configured_nodes(tmp_path: Pat
     fake_wpctl.write_text(
         "#!/usr/bin/env bash\n"
         'if [ "$1" = "status" ] && [ "$2" = "--name" ]; then cat "$WPCTL_STATUS"; exit 0; fi\n'
+        'if [ "$1" = "get-volume" ] && [ "$2" = "80" ]; then printf \'Volume: 0.00\\n\'; exit 0; fi\n'
+        'if [ "$1" = "get-volume" ] && [ "$2" = "107" ]; then printf \'Volume: 1.00\\n\'; exit 0; fi\n'
         'if [ "$1" = "set-volume" ]; then printf \'set-volume %s %s\\n\' "$2" "$3" >> "$WPCTL_CALLS"; exit 0; fi\n'
         "exit 2\n",
         encoding="utf-8",
@@ -261,12 +262,10 @@ def test_reconciler_sets_unity_volume_for_present_configured_nodes(tmp_path: Pat
     assert result.returncode == 0, result.stderr
     assert not calls.exists()
     assert wpctl_calls.read_text(encoding="utf-8").splitlines() == [
-        "set-volume 56 1.0",
         "set-volume 80 1.0",
-        "set-volume 107 1.0",
     ]
     log_text = log.read_text(encoding="utf-8")
-    assert "rejected 1 disallowed unity-volume target(s)" in log_text
+    assert "rejected 2 disallowed zero-volume target(s)" in log_text
     assert "hapax-music-loudnorm" not in wpctl_calls.read_text(encoding="utf-8")
 
 
@@ -338,7 +337,7 @@ def test_reconciler_volume_guard_degrades_when_set_volume_fails(tmp_path: Path) 
     link_map.write_text("", encoding="utf-8")
     forbidden.write_text("", encoding="utf-8")
     wpctl_status.write_text(
-        " │      56. hapax-livestream-tap                [vol: 0.00]\n",
+        " │      80. hapax-broadcast-master              [Audio/Source]\n",
         encoding="utf-8",
     )
     fake_pw_link.write_text(
@@ -353,6 +352,7 @@ def test_reconciler_volume_guard_degrades_when_set_volume_fails(tmp_path: Path) 
     fake_wpctl.write_text(
         "#!/usr/bin/env bash\n"
         'if [ "$1" = "status" ] && [ "$2" = "--name" ]; then cat "$WPCTL_STATUS"; exit 0; fi\n'
+        'if [ "$1" = "get-volume" ]; then printf \'Volume: 0.00\\n\'; exit 0; fi\n'
         'if [ "$1" = "set-volume" ]; then exit 9; fi\n'
         "exit 2\n",
         encoding="utf-8",
@@ -368,7 +368,7 @@ def test_reconciler_volume_guard_degrades_when_set_volume_fails(tmp_path: Path) 
         "HAPAX_RECONCILER_LOG": str(log),
         "HAPAX_RECONCILER_PW_LINK": str(fake_pw_link),
         "HAPAX_RECONCILER_WPCTL": str(fake_wpctl),
-        "HAPAX_RECONCILER_VOLUME_NODES": "hapax-livestream-tap",
+        "HAPAX_RECONCILER_VOLUME_NODES": "hapax-broadcast-master",
         "PW_LINK_GRAPH": str(graph),
         "PW_LINK_OUTPUTS": str(graph),
         "PW_LINK_INPUTS": str(graph),
@@ -386,7 +386,7 @@ def test_reconciler_volume_guard_degrades_when_set_volume_fails(tmp_path: Path) 
 
     assert result.returncode == 0, result.stderr
     log_text = log.read_text(encoding="utf-8")
-    assert "unity-volume target(s) could not be repaired" in log_text
+    assert "zero-volume target(s) could not be evaluated or repaired" in log_text
     assert "Next action:" in log_text
 
 
@@ -403,10 +403,10 @@ def test_reconciler_default_volume_targets_stay_on_aggregate_nodes() -> None:
         line for line in text.splitlines() if line.startswith("DEFAULT_VOLUME_NODES=")
     )
 
-    assert "hapax-livestream-tap" in default_line
     assert "hapax-broadcast-master" in default_line
     assert "hapax-broadcast-normalized" in default_line
     assert "hapax-obs-broadcast-remap" in default_line
+    assert "hapax-livestream-tap" not in default_line
     assert "hapax-music-loudnorm" not in default_line
     assert "hapax-yt-loudnorm" not in default_line
     assert "hapax-mic-rode-playback" not in default_line
