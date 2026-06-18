@@ -522,6 +522,25 @@ evidence_ref: supported-tool-usage-witness
     assert summary["glmcp_admissions"] == 0
 
 
+def test_unreadable_glmcp_admission_receipt_keeps_glmcp_unknown(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    (relay / "glmcp-quota-admission-invalid-utf8.yaml").write_bytes(b"\xff\xfe\xfa")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["glmcp.review.direct"] == "unknown"
+    assert "unreadable receipt UnicodeDecodeError" in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
+
+
 def test_resource_probe_failure_fails_closed_to_unknown(tmp_path: Path) -> None:
     result, out = _run_writer(tmp_path, nvidia_body="exit 9")
 

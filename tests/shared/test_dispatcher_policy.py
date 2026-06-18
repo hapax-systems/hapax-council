@@ -202,12 +202,23 @@ def _route_with_scores(
 
 def _registry_with_fresh_route(route_id: str) -> PlatformCapabilityRegistry:
     registry = load_platform_capability_registry()
-    payload = registry.model_dump(mode="json")
-    route_payload = _route_with_scores(route_id, score=5).model_dump(mode="json")
-    payload["routes"] = [
-        route_payload if route["route_id"] == route_id else route for route in payload["routes"]
-    ]
-    return PlatformCapabilityRegistry.model_validate(payload)
+    if route_id in registry.route_map():
+        payload = registry.model_dump(mode="json")
+        route_payload = _route_with_scores(route_id, score=5).model_dump(mode="json")
+        payload["routes"] = [
+            route_payload if route["route_id"] == route_id else route for route in payload["routes"]
+        ]
+        return PlatformCapabilityRegistry.model_validate(payload)
+
+    route = _route_with_scores("codex.headless.full", score=5).model_copy(
+        update={
+            "route_id": route_id,
+            "launcher": f"test-only synthetic route for {route_id}",
+            "summary": f"Test-only synthetic route for {route_id}",
+            "notes": "Synthetic test route; production registration is covered by a later slice.",
+        }
+    )
+    return registry.model_copy(update={"routes": [*registry.routes, route]})
 
 
 def _ledger_with_route_subscription_state(route_id: str, state: str) -> QuotaSpendLedger:
@@ -562,36 +573,40 @@ def test_glmcp_subscription_route_launches_with_fresh_route_quota() -> None:
 
 
 def test_build_dispatch_request_enforces_exact_route_subscription_quota() -> None:
-    route_id = "codex.headless.full"
+    route_id = "glmcp.review.direct"
     registry = _registry_with_fresh_route(route_id)
     freshness_now = datetime(2026, 5, 9, 22, 10, tzinfo=UTC)
 
-    unknown_request = build_dispatch_request(
+    missing_request = build_dispatch_request(
         task_id="policy-test",
         lane="cx-green",
-        platform="codex",
-        mode="headless",
-        profile="full",
+        platform="glmcp",
+        mode="review",
+        profile="direct",
         task_fields=_task_fields(),
         registry=registry,
-        quota_ledger=_ledger_with_route_subscription_state(route_id, "unknown"),
+        quota_ledger=_ledger_with_route_subscription_state("codex.headless.full", "fresh"),
         now=freshness_now,
     )
-    assert unknown_request.quota is not None
-    assert unknown_request.quota.route_subscription_quota_state == "unknown"
+    assert missing_request.quota is not None
+    assert missing_request.quota.subscription_quota_state == "fresh"
+    assert missing_request.quota.route_subscription_quota_state == "unknown"
+    assert missing_request.quota.route_quota_evidence_refs == (
+        "quota-snapshot:glmcp.review.direct:missing",
+    )
 
-    unknown_decision = evaluate_dispatch_policy(unknown_request, now=freshness_now)
+    missing_decision = evaluate_dispatch_policy(missing_request, now=freshness_now)
 
-    assert unknown_decision.action is DispatchAction.HOLD
-    assert "subscription_route_quota_not_fresh" in unknown_decision.reason_codes
-    assert "route_subscription_quota_state:unknown" in unknown_decision.reason_codes
+    assert missing_decision.action is DispatchAction.HOLD
+    assert "subscription_route_quota_not_fresh" in missing_decision.reason_codes
+    assert "route_subscription_quota_state:unknown" in missing_decision.reason_codes
 
     fresh_request = build_dispatch_request(
         task_id="policy-test",
         lane="cx-green",
-        platform="codex",
-        mode="headless",
-        profile="full",
+        platform="glmcp",
+        mode="review",
+        profile="direct",
         task_fields=_task_fields(),
         registry=registry,
         quota_ledger=_ledger_with_route_subscription_state(route_id, "fresh"),
