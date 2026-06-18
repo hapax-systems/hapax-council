@@ -275,6 +275,9 @@
     "version",
     "source_snapshot",
     "default_projection",
+    "claim_contract",
+    "lenses",
+    "validation",
     "provenance"
   ],
   "title": "System dynamics view manifest",

@@ -127,6 +127,9 @@ VIEW_MANIFEST_REQUIRED = [
     "version",
     "source_snapshot",
     "default_projection",
+    "claim_contract",
+    "lenses",
+    "validation",
     "provenance",
 ]
 PACKAGE_REQUIRED = ["schema", "map_id", "version", "artifacts", "validation", "git_sha"]

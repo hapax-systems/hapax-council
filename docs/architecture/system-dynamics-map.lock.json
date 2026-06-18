@@ -16,12 +16,12 @@
     "schemas/system-dynamics-map/package.schema.json": "7b76eed33b35cc845f2bdafd5e83baddf9ad51806e82817fb72125e24ff693b5",
     "schemas/system-dynamics-map/relation-vocabulary.schema.json": "ed48c46de224801cfe2c1c85383ee17313aded2eaad918064b799ef56344c888",
     "schemas/system-dynamics-map/seed.schema.json": "d90e150c456f4ebc38609039389c00073efb830dbb95bd02d5d302b6cb2fe933",
-    "schemas/system-dynamics-map/view-manifest.schema.json": "79a9bed7f43358f37dbbae6b86242286365d8f6c62cc90e118137936bc0b1388"
+    "schemas/system-dynamics-map/view-manifest.schema.json": "002e805c4d832b5017aea204e6c62698c046785dbc722897157a501314bc7ad2"
   },
-  "git_sha": "997ea72ec003455c77133ecd27071b6c6b845ec7",
+  "git_sha": "620990a7546e2630759c92d2427be0f6cead13b1",
   "git_sha_role": "generation_head",
   "map_id": "system-dynamics-map-v1",
-  "package_hash": "4961624fdc05f2264c2d6525fb8695cef8324f8c468a28b9762d3adc87468240",
+  "package_hash": "6b6447e510eb85052914069efbbc26e5b40027fd3308ca8e7eb4ed70d3afaece",
   "schema": "system-dynamics-map-lock-v1",
   "source_hashes": {
     "seed": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",

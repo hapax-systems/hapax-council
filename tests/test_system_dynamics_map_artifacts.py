@@ -566,10 +566,16 @@ def test_generated_schemas_validate_artifacts_and_reject_bad_shapes():
     bad_manifest["source_snapshot"] = {}
     bad_manifest["default_projection"] = {}
     bad_manifest["provenance"] = {}
+    bad_manifest.pop("claim_contract")
+    bad_manifest.pop("lenses")
+    bad_manifest.pop("validation")
     manifest_errors = "\n".join(_schema_errors(bad_manifest, view_manifest_schema))
     assert "seed_sha256" in manifest_errors
     assert "visible_node_ids" in manifest_errors
     assert "hidden_node_ids" in manifest_errors
+    assert "claim_contract" in manifest_errors
+    assert "lenses" in manifest_errors
+    assert "validation" in manifest_errors
     assert "generated" in manifest_errors
 
     bad_package = copy.deepcopy(json.loads(PACKAGE_PATH.read_text(encoding="utf-8")))
