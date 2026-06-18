@@ -2,6 +2,7 @@
 Description=Hapax SBCL+CLOG coordination dashboard (activation worktree)
 Documentation=file:/home/hapax/projects/hapax-coord/README.md
 ConditionPathExists=%h/.cache/hapax/coord-activation/worktree/scripts/run-dev.sh
+ConditionPathExists=%h/.cache/hapax/coord-activation/worktree/.deployed-sha
 OnFailure=notify-failure@%n.service
 
 [Service]

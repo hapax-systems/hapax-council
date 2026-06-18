@@ -75,6 +75,35 @@ def _repo_with_linear_commit(tmp_path: Path, files: dict[str, str]) -> tuple[Pat
     return repo, _git(repo, "rev-parse", "HEAD")
 
 
+def _repo_with_recovery_installer_then_linear_commit(
+    tmp_path: Path, files: dict[str, str]
+) -> tuple[Path, str]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "trace-test@example.test")
+    _git(repo, "config", "user.name", "Trace Test")
+    installer = repo / "scripts" / "hapax-recovery-plane-install"
+    installer.parent.mkdir(parents=True)
+    installer.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'printf \'%s\\n\' "$*" >> "$HAPAX_RECOVERY_INSTALL_CALLS"\n',
+        encoding="utf-8",
+    )
+    installer.chmod(0o755)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "README.md", "scripts/hapax-recovery-plane-install")
+    _git(repo, "commit", "-m", "base with recovery installer")
+    for relative, body in files.items():
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "add deployable files")
+    return repo, _git(repo, "rev-parse", "HEAD")
+
+
 def _repo_with_intake_units_then_preset_commit(tmp_path: Path) -> tuple[Path, str]:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -213,6 +242,25 @@ def _repo_with_recovery_script_change(tmp_path: Path) -> tuple[Path, str]:
     _git(repo, "add", "scripts/hapax-coord-deploy")
     _git(repo, "commit", "-m", "update recovery coord deploy")
     return repo, _git(repo, "rev-parse", "HEAD")
+
+
+def _repo_with_d2_unit_only_change(tmp_path: Path) -> tuple[Path, str, str]:
+    unit_path = "systemd/units/notify-failure@.service"
+    repo, sha = _repo_with_recovery_installer_then_linear_commit(
+        tmp_path,
+        {
+            unit_path: (
+                "[Unit]\n"
+                "Description=Notify failure\n"
+                "ConditionPathExists=%h/.local/lib/hapax-recovery/council/current/scripts/hapax-p0-incident-intake\n"
+                "\n"
+                "[Service]\n"
+                "Type=oneshot\n"
+                "ExecStart=%h/.local/lib/hapax-recovery/council/current/scripts/hapax-p0-incident-intake service-failed %i\n"
+            )
+        },
+    )
+    return repo, sha, unit_path
 
 
 def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
@@ -684,6 +732,41 @@ def test_recovery_script_changes_refresh_stable_installed_closure(tmp_path: Path
     assert record["deploy_groups"]["recovery_bundle"] == ["scripts/hapax-coord-deploy"]
 
 
+def test_d2_unit_only_change_refreshes_recovery_bundle_before_systemd(
+    tmp_path: Path,
+) -> None:
+    repo, sha, unit_path = _repo_with_d2_unit_only_change(tmp_path)
+    bin_dir, deploy_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path / "home"),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_RECOVERY_INSTALL_CALLS": str(deploy_calls),
+        "HAPAX_SYSTEMCTL_CALLS": str(deploy_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = deploy_calls.read_text(encoding="utf-8").splitlines()
+    install_call = f"--source {repo} --source-ref {sha}"
+    assert install_call in calls
+    assert "--user daemon-reload" in calls
+    assert calls.index(install_call) < calls.index("--user daemon-reload")
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["deploy_groups"]["recovery_bundle"] == [unit_path]
+    assert record["deploy_groups"]["systemd_units"] == [unit_path]
+
+
 def test_recovery_bundle_missing_installer_at_sha_error_names_next_action(
     tmp_path: Path,
 ) -> None:
@@ -712,7 +795,7 @@ def test_recovery_bundle_missing_installer_at_sha_error_names_next_action(
 def test_coord_service_deploy_stages_activation_before_active_restart(
     tmp_path: Path,
 ) -> None:
-    repo, sha = _repo_with_linear_commit(
+    repo, sha = _repo_with_recovery_installer_then_linear_commit(
         tmp_path,
         {
             "systemd/units/hapax-coord.service": (
@@ -761,6 +844,7 @@ def test_coord_service_deploy_stages_activation_before_active_restart(
         "HOME": str(home),
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "REPO": str(repo),
+        "HAPAX_RECOVERY_INSTALL_CALLS": str(systemctl_calls),
         "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
         "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
     }
@@ -789,7 +873,7 @@ def test_coord_service_deploy_stages_activation_before_active_restart(
 def test_coord_service_auto_enable_stages_activation_before_enable(
     tmp_path: Path,
 ) -> None:
-    repo, sha = _repo_with_linear_commit(
+    repo, sha = _repo_with_recovery_installer_then_linear_commit(
         tmp_path,
         {
             "systemd/units/hapax-coord.service": (
@@ -842,6 +926,7 @@ def test_coord_service_auto_enable_stages_activation_before_enable(
         "HOME": str(home),
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "REPO": str(repo),
+        "HAPAX_RECOVERY_INSTALL_CALLS": str(systemctl_calls),
         "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
         "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
     }
@@ -872,7 +957,7 @@ def test_coord_service_auto_enable_stages_activation_before_enable(
 def test_coord_service_active_restart_refuses_when_activation_deploy_missing(
     tmp_path: Path,
 ) -> None:
-    repo, sha = _repo_with_linear_commit(
+    repo, sha = _repo_with_recovery_installer_then_linear_commit(
         tmp_path,
         {
             "systemd/units/hapax-coord.service": (
@@ -895,6 +980,7 @@ def test_coord_service_active_restart_refuses_when_activation_deploy_missing(
         "HOME": str(home),
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "REPO": str(repo),
+        "HAPAX_RECOVERY_INSTALL_CALLS": str(systemctl_calls),
         "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
         "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
     }
@@ -917,7 +1003,7 @@ def test_coord_service_active_restart_refuses_when_activation_deploy_missing(
 def test_coord_service_auto_enable_refuses_when_activation_deploy_missing(
     tmp_path: Path,
 ) -> None:
-    repo, sha = _repo_with_linear_commit(
+    repo, sha = _repo_with_recovery_installer_then_linear_commit(
         tmp_path,
         {
             "systemd/units/hapax-coord.service": (
@@ -944,6 +1030,7 @@ def test_coord_service_auto_enable_refuses_when_activation_deploy_missing(
         "HOME": str(home),
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "REPO": str(repo),
+        "HAPAX_RECOVERY_INSTALL_CALLS": str(systemctl_calls),
         "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
         "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
     }

@@ -754,6 +754,14 @@ while IFS= read -r f; do
         config/hapax/*.conf)              HAPAX_CONF+=("$f") ;;
         config/wireplumber/scripts/hapax/*.lua) WP_LUA+=("$f") ;;
         config/wireplumber/*.conf)        WP+=("$f") ;;
+        systemd/units/notify-failure@.service|systemd/units/hapax-coord.service|systemd/units/hapax-coord-rebuild.service|systemd/units/hapax-coord-rebuild.timer)
+            RECOVERY_BUNDLE+=("$f")
+            if [ "$(unit_install_scope "$f")" = "system" ]; then
+                SYSTEMD_SYSTEM+=("$f")
+            else
+                SYSTEMD+=("$f")
+            fi
+            ;;
         systemd/units/*.service|systemd/units/*.timer|systemd/units/*.path|systemd/units/*.target|systemd/units/*.slice)
             if [ "$(unit_install_scope "$f")" = "system" ]; then
                 SYSTEMD_SYSTEM+=("$f")

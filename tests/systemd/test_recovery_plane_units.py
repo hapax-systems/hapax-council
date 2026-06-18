@@ -19,6 +19,7 @@ def _read_unit(name: str) -> str:
 def test_notify_failure_runs_from_stable_recovery_bundle() -> None:
     text = _read_unit("notify-failure@.service")
 
+    assert f"ConditionPathExists={STABLE_BUNDLE}/scripts/hapax-p0-incident-intake" in text
     assert (f"ExecStart={STABLE_BUNDLE}/scripts/hapax-p0-incident-intake service-failed %i") in text
     for marker in VOLATILE_MARKERS:
         assert marker not in text
@@ -30,6 +31,7 @@ def test_coord_rebuild_runs_from_stable_recovery_bundle() -> None:
     assert "# Hapax-Auto-Enable: true" in text
     assert "Wants=network-online.target" in text
     assert "After=network-online.target" in text
+    assert f"ConditionPathExists={STABLE_BUNDLE}/scripts/hapax-coord-deploy" in text
     assert "OnFailure=notify-failure@%n.service" in text
     assert f"ExecStart={STABLE_BUNDLE}/scripts/hapax-coord-deploy" in text
     for marker in VOLATILE_MARKERS:

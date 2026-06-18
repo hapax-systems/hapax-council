@@ -20,6 +20,10 @@ def test_notify_failure_routes_through_p0_intake():
     text = UNIT.read_text(encoding="utf-8")
 
     assert (
+        "ConditionPathExists=%h/.local/lib/hapax-recovery/council/current/scripts/"
+        "hapax-p0-incident-intake"
+    ) in text
+    assert (
         "ExecStart=%h/.local/lib/hapax-recovery/council/current/scripts/"
         "hapax-p0-incident-intake service-failed %i"
     ) in text

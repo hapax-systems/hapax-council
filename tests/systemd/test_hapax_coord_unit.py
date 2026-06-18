@@ -17,6 +17,12 @@ def _read_unit() -> configparser.ConfigParser:
 
 def test_hapax_coord_unit_runs_from_coord_activation_worktree() -> None:
     parser = _read_unit()
+    text = UNIT.read_text(encoding="utf-8")
+    conditions = [
+        line.removeprefix("ConditionPathExists=")
+        for line in text.splitlines()
+        if line.startswith("ConditionPathExists=")
+    ]
 
     assert parser.get("Service", "Type") == "simple"
     assert parser.get("Service", "Environment") == f"HAPAX_COORD_ROOT={ACTIVATION_WORKTREE}"
@@ -24,9 +30,10 @@ def test_hapax_coord_unit_runs_from_coord_activation_worktree() -> None:
     assert (
         parser.get("Service", "ExecStart") == f"{ACTIVATION_WORKTREE}/scripts/run-dev.sh --daemon"
     )
-    assert parser.get("Unit", "ConditionPathExists") == (
-        f"{ACTIVATION_WORKTREE}/scripts/run-dev.sh"
-    )
+    assert conditions == [
+        f"{ACTIVATION_WORKTREE}/scripts/run-dev.sh",
+        f"{ACTIVATION_WORKTREE}/.deployed-sha",
+    ]
     assert parser.get("Unit", "OnFailure") == "notify-failure@%n.service"
 
 
