@@ -228,6 +228,24 @@ def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
     return bin_dir, calls
 
 
+def _fake_systemctl_with_inactive_coord(tmp_path: Path) -> tuple[Path, Path]:
+    calls = tmp_path / "systemctl-calls.txt"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "systemctl"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$*" >> "$HAPAX_SYSTEMCTL_CALLS"\n'
+        'case "$*" in\n'
+        '    "--user is-active --quiet hapax-coord.service") exit 3 ;;\n'
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return bin_dir, calls
+
+
 def _fake_audio_safe_restart(
     bin_dir: Path, tmp_path: Path, *, exit_code: int = 0
 ) -> tuple[Path, Path]:
@@ -749,11 +767,84 @@ def test_coord_service_deploy_stages_activation_before_active_restart(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "staging hapax-coord activation before restarting hapax-coord.service" in result.stdout
+    assert "staging hapax-coord activation before activating hapax-coord.service" in result.stdout
     calls = systemctl_calls.read_text(encoding="utf-8").splitlines()
     assert calls.index("--user is-active --quiet hapax-coord.service") < calls.index("coord-deploy")
     assert calls.index("coord-deploy") < calls.index("--user restart hapax-coord.service")
     assert calls.count("--user restart hapax-coord.service") == 1
+    assert "--user enable hapax-coord.service" not in calls
+
+
+def test_coord_service_auto_enable_stages_activation_before_enable(
+    tmp_path: Path,
+) -> None:
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            "systemd/units/hapax-coord.service": (
+                "# Hapax-Auto-Enable: true\n"
+                "[Unit]\n"
+                "Description=Coord\n"
+                "OnFailure=notify-failure@%n.service\n"
+                "\n"
+                "[Service]\n"
+                "Type=simple\n"
+                "WorkingDirectory=%h/.cache/hapax/coord-activation/worktree\n"
+                "ExecStart=%h/.cache/hapax/coord-activation/worktree/scripts/run-dev.sh --daemon\n"
+                "\n"
+                "[Install]\n"
+                "WantedBy=default.target\n"
+            ),
+        },
+    )
+    home = tmp_path / "home"
+    coord_deploy = (
+        home
+        / ".local"
+        / "lib"
+        / "hapax-recovery"
+        / "council"
+        / "current"
+        / "scripts"
+        / "hapax-coord-deploy"
+    )
+    coord_deploy.parent.mkdir(parents=True)
+    bin_dir, systemctl_calls = _fake_systemctl_with_inactive_coord(tmp_path)
+    coord_deploy.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'printf "%s\\n" "coord-deploy" >> "$HAPAX_SYSTEMCTL_CALLS"\n'
+        'printf "%s\\n" "--user restart hapax-coord.service" >> "$HAPAX_SYSTEMCTL_CALLS"\n',
+        encoding="utf-8",
+    )
+    coord_deploy.chmod(0o755)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "staging hapax-coord activation before activating hapax-coord.service" in result.stdout
+    calls = systemctl_calls.read_text(encoding="utf-8").splitlines()
+    assert calls.index("--user is-active --quiet hapax-coord.service") < calls.index("coord-deploy")
+    assert calls.index("coord-deploy") < calls.index("--user restart hapax-coord.service")
+    assert calls.index("--user restart hapax-coord.service") < calls.index(
+        "--user enable hapax-coord.service"
+    )
+    assert "--user enable --now hapax-coord.service" not in calls
 
 
 def test_coord_service_active_restart_refuses_when_activation_deploy_missing(
@@ -799,6 +890,56 @@ def test_coord_service_active_restart_refuses_when_activation_deploy_missing(
     assert "install the D2 recovery bundle" in result.stderr
     calls = systemctl_calls.read_text(encoding="utf-8").splitlines()
     assert "--user restart hapax-coord.service" not in calls
+
+
+def test_coord_service_auto_enable_refuses_when_activation_deploy_missing(
+    tmp_path: Path,
+) -> None:
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            "systemd/units/hapax-coord.service": (
+                "# Hapax-Auto-Enable: true\n"
+                "[Unit]\n"
+                "Description=Coord\n"
+                "OnFailure=notify-failure@%n.service\n"
+                "\n"
+                "[Service]\n"
+                "Type=simple\n"
+                "WorkingDirectory=%h/.cache/hapax/coord-activation/worktree\n"
+                "ExecStart=%h/.cache/hapax/coord-activation/worktree/scripts/run-dev.sh --daemon\n"
+                "\n"
+                "[Install]\n"
+                "WantedBy=default.target\n"
+            ),
+        },
+    )
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl_with_inactive_coord(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 5
+    assert "refusing to restart hapax-coord.service" in result.stderr
+    assert "install the D2 recovery bundle" in result.stderr
+    calls = systemctl_calls.read_text(encoding="utf-8").splitlines()
+    assert "--user enable hapax-coord.service" not in calls
+    assert "--user enable --now hapax-coord.service" not in calls
 
 
 def test_obs_audio_bind_unit_deploy_removes_stale_audio_l12_dropin(tmp_path: Path) -> None:

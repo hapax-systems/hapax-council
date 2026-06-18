@@ -714,7 +714,7 @@ stage_coord_activation_before_restart() {
         echo "hapax-post-merge-deploy: refusing to restart hapax-coord.service before its activation worktree is staged; missing executable $deploy_bin; next: install the D2 recovery bundle, verify $deploy_bin exists, then rerun hapax-post-merge-deploy for this merge" >&2
         return 5
     fi
-    echo "staging hapax-coord activation before restarting hapax-coord.service"
+    echo "staging hapax-coord activation before activating hapax-coord.service"
     "$deploy_bin"
 }
 
@@ -1045,8 +1045,14 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
             # Marked `# Hapax-Auto-Enable: true` (+ [Install]): enable+start so a
             # freshly-merged service OR timer goes live instead of sleeping.
             # try-restart is a no-op for a never-enabled unit (the FM-11 gap).
-            echo "auto-enabling $base (Hapax-Auto-Enable marker)"
-            systemctl --user enable --now "$base"
+            if [ "$base" = "hapax-coord.service" ]; then
+                stage_coord_activation_before_restart
+                echo "auto-enabling $base (Hapax-Auto-Enable marker; activation staged by hapax-coord-deploy)"
+                systemctl --user enable "$base"
+            else
+                echo "auto-enabling $base (Hapax-Auto-Enable marker)"
+                systemctl --user enable --now "$base"
+            fi
         elif [[ "$base" == *.timer ]]; then
             # Back-compat: an unmarked NEW timer still auto-enables — timers are
             # inert until started, and this has been the behaviour since #3475.
