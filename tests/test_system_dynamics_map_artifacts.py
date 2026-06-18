@@ -384,6 +384,7 @@ def test_materialized_rdf_artifacts_parse_and_match_seed_contract():
 
 
 def test_shacl_shapes_and_view_manifest_cover_the_durable_contract():
+    seed = _load_seed()
     shapes = SHACL_PATH.read_text(encoding="utf-8")
     for token in (
         "sd:NodeShape",
@@ -399,6 +400,7 @@ def test_shacl_shapes_and_view_manifest_cover_the_durable_contract():
     assert manifest["schema"] == "system-dynamics-map-view-manifest-v1"
     assert manifest["source_snapshot"]["node_count"] == EXPECTED_NODE_COUNT
     assert manifest["source_snapshot"]["edge_count"] == EXPECTED_EDGE_COUNT
+    assert manifest["claim_partitions"] == seed["status_kinds"]
     assert manifest["default_projection"]["runtime_asset"] == "vendor/cytoscape-3.34.0.min.js"
     assert manifest["default_projection"]["runtime_asset_sri"] == materialize._sha384_sri(
         VENDOR_PATH

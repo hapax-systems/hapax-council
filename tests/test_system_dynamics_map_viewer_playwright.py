@@ -6,8 +6,10 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import sync_playwright
+
+playwright_sync_api = pytest.importorskip("playwright.sync_api", reason="playwright not installed")
+PlaywrightError = playwright_sync_api.Error
+sync_playwright = playwright_sync_api.sync_playwright
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ARCHITECTURE_DIR = REPO_ROOT / "docs" / "architecture"

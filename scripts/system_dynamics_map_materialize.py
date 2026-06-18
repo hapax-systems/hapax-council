@@ -319,14 +319,7 @@ def generate_manifest(seed: dict[str, Any]) -> str:
             "node_count": len(seed["nodes"]),
             "edge_count": len(seed["edges"]),
         },
-        "claim_partitions": [
-            "asserted",
-            "inferred",
-            "observed",
-            "simulated",
-            "rendered",
-            "candidate",
-        ],
+        "claim_partitions": seed["status_kinds"],
         "default_projection": {
             "viewer": "system-dynamics-map-viewer.html",
             "runtime_asset": "vendor/cytoscape-3.34.0.min.js",
