@@ -30,10 +30,8 @@ def test_hapax_coord_unit_runs_from_coord_activation_worktree() -> None:
     assert (
         parser.get("Service", "ExecStart") == f"{ACTIVATION_WORKTREE}/scripts/run-dev.sh --daemon"
     )
-    assert conditions == [
-        f"{ACTIVATION_WORKTREE}/scripts/run-dev.sh",
-        f"{ACTIVATION_WORKTREE}/.deployed-sha",
-    ]
+    assert conditions == [f"{ACTIVATION_WORKTREE}/scripts/run-dev.sh"]
+    assert f"ConditionPathExists={ACTIVATION_WORKTREE}/.deployed-sha" not in text
     assert parser.get("Unit", "OnFailure") == "notify-failure@%n.service"
 
 

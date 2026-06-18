@@ -151,6 +151,16 @@ TRACE_MAX_RECORDS="${HAPAX_POST_MERGE_TRACE_MAX_RECORDS:-200}"
 # trace file by default so a test override of HAPAX_POST_MERGE_TRACE_PATH
 # isolates it automatically.
 LAST_DEPLOYED_SHA_PATH="${HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH:-$(dirname "$TRACE_PATH")/last-deployed-sha}"
+RECOVERY_INSTALLER_PATH="scripts/hapax-recovery-plane-install"
+RECOVERY_BUNDLE_DEST="${HAPAX_RECOVERY_BUNDLE_DEST:-$HOME/.local/lib/hapax-recovery/council/current}"
+RECOVERY_BUNDLE_REQUIRED_FILES=(
+    scripts/hapax-p0-incident-intake
+    scripts/hapax-coord-deploy
+    shared/__init__.py
+    shared/jsonl_append.py
+    shared/p0_incident_intake.py
+    manifest.json
+)
 
 # --- auto-enable marker (reform-improve-deploy-activation-20260601) ---
 # A systemd unit may declare it wants to be enabled+started on deploy by
@@ -943,12 +953,42 @@ if [ "${#WATCHDOGS[@]}" -gt 0 ]; then
 fi
 
 # --- D2 recovery-plane stable bundle ---
-if [ "${#RECOVERY_BUNDLE[@]}" -gt 0 ]; then
-    echo "recovery bundle files changed (${#RECOVERY_BUNDLE[@]}):"
-    for f in "${RECOVERY_BUNDLE[@]}"; do
-        echo "  $f"
+recovery_installer_exists_at_sha() {
+    git cat-file -e "$SHA:$RECOVERY_INSTALLER_PATH" 2>/dev/null
+}
+
+recovery_bundle_runtime_missing() {
+    local f target
+    for f in "${RECOVERY_BUNDLE_REQUIRED_FILES[@]}"; do
+        target="$RECOVERY_BUNDLE_DEST/$f"
+        case "$f" in
+            scripts/*)
+                [ -x "$target" ] || return 0
+                ;;
+            *)
+                [ -f "$target" ] || return 0
+                ;;
+        esac
     done
-    RECOVERY_INSTALLER_PATH="scripts/hapax-recovery-plane-install"
+    return 1
+}
+
+RECOVERY_BUNDLE_SELF_HEAL=0
+if [ "${#RECOVERY_BUNDLE[@]}" -eq 0 ] \
+    && recovery_installer_exists_at_sha \
+    && recovery_bundle_runtime_missing; then
+    RECOVERY_BUNDLE_SELF_HEAL=1
+fi
+
+if [ "${#RECOVERY_BUNDLE[@]}" -gt 0 ] || [ "$RECOVERY_BUNDLE_SELF_HEAL" = "1" ]; then
+    if [ "${#RECOVERY_BUNDLE[@]}" -gt 0 ]; then
+        echo "recovery bundle files changed (${#RECOVERY_BUNDLE[@]}):"
+        for f in "${RECOVERY_BUNDLE[@]}"; do
+            echo "  $f"
+        done
+    else
+        echo "recovery bundle runtime missing/incomplete at $RECOVERY_BUNDLE_DEST; self-healing stable closure"
+    fi
     if ! git cat-file -e "$SHA:$RECOVERY_INSTALLER_PATH" 2>/dev/null; then
         echo "hapax-post-merge-deploy: missing recovery bundle installer at $SHA:$RECOVERY_INSTALLER_PATH; next: ensure scripts/hapax-recovery-plane-install exists at the deployed source-activation SHA, then rerun hapax-post-merge-deploy for this merge" >&2
         exit 2
