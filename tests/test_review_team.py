@@ -1469,6 +1469,19 @@ class TestGoGate:
         f["detail"] = "The line uses `@bad/path.py` instead of `@prefix`."
         assert rt.verify_literal_defect_critical(f, tmp_path) is False
 
+    def test_absent_quoted_namespace_literal_split_across_title_detail_is_phantom(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "tests/test_fixture.py", 'value = "@prefix ex:"\n')
+        f = self._lit(
+            "Corrupted string literal",
+            file="tests/test_fixture.py",
+            line=1,
+        )
+        f["detail"] = "The line uses `@bad/path.py` instead of `@prefix`."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
     def test_present_quoted_namespace_literal_on_cited_line_is_kept(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         self._py(tmp_path, "tests/test_fixture.py", 'value = "@bad/path.py"\n')

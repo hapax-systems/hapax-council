@@ -519,7 +519,7 @@ def _is_syntax_compile_claim(finding: Mapping[str, Any]) -> bool:
 
 
 def _is_namespace_corruption_claim(finding: Mapping[str, Any]) -> bool:
-    text = f"{finding.get('title', '')}\n{finding.get('detail', '')}"
+    text = f"{finding.get('title', '')} {finding.get('detail', '')}"
     return bool(_NAMESPACE_CORRUPTION_RE.search(text))
 
 
