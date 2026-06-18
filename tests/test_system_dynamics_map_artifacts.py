@@ -18,6 +18,14 @@ SHACL_PATH = ARCHITECTURE_DIR / "system-dynamics-map.shacl.ttl"
 MANIFEST_PATH = ARCHITECTURE_DIR / "system-dynamics-map.view-manifest.json"
 EXPECTED_NODE_COUNT = 29
 EXPECTED_EDGE_COUNT = 35
+EXPECTED_LAYER_IDS = {
+    "source-models",
+    "decision-modeling",
+    "execution-surfaces",
+    "semantic-backbone",
+    "observation-state",
+    "projection",
+}
 BASE = Namespace("https://hapax.local/system-dynamics-map/v0/")
 SD = Namespace("https://hapax.local/ns/system-dynamics-map#")
 SH = Namespace("http://www.w3.org/ns/shacl#")
@@ -83,6 +91,10 @@ def test_viewer_embedded_seed_matches_canonical_seed():
 
 def test_system_dynamics_seed_graph_is_referentially_valid():
     for name, data in (("seed", _load_seed()), ("embedded", _load_viewer()[1])):
+        assert "entrypoint" not in data, (
+            f"{name}: graph contract reintroduced entrypoint. "
+            "Fix by using default_focus for a neutral initial viewer focus."
+        )
         node_ids = [node["id"] for node in data["nodes"]]
         edge_ids = [edge["id"] for edge in data["edges"]]
         assert len(node_ids) == EXPECTED_NODE_COUNT, (
@@ -105,6 +117,42 @@ def test_system_dynamics_seed_graph_is_referentially_valid():
         layers = {layer["id"] for layer in data["layers"]}
         statuses = set(data["status_kinds"])
         node_set = set(node_ids)
+        assert layers == EXPECTED_LAYER_IDS, (
+            f"{name}: layer IDs drifted from the source-neutral v0 contract. "
+            "Fix by using source-models, decision-modeling, execution-surfaces, "
+            "semantic-backbone, observation-state, and projection unless the v0 "
+            "contract and tests are intentionally updated together."
+        )
+        assert data["default_focus"] == "rdf-owl-kg", (
+            f"{name}: default focus must stay on the semantic backbone, not a source notation. "
+            "Fix by setting default_focus to rdf-owl-kg."
+        )
+        assert data["default_focus"] in node_set, (
+            f"{name}: default_focus does not name a node. "
+            "Fix by adding the default_focus node or correcting default_focus."
+        )
+        layer_labels = {layer["label"] for layer in data["layers"]}
+        assert "DMN Layer" not in layer_labels, (
+            f"{name}: layer labels still frame the map as DMN-centered. "
+            "Fix by using source-neutral layer labels."
+        )
+        assert "Layer Up" not in layer_labels, (
+            f"{name}: layer labels still describe topology relative to DMN. "
+            "Fix by naming the actual source-model layer."
+        )
+        assert "Layer Down" not in layer_labels, (
+            f"{name}: layer labels still describe topology relative to DMN. "
+            "Fix by naming the actual execution/artifact layer."
+        )
+        for layer in data["layers"]:
+            assert "above DMN" not in layer["description"], (
+                f"{name}: layer {layer['id']} still describes itself as above DMN. "
+                "Fix by describing its role in the source-neutral graph."
+            )
+            assert "below DMN" not in layer["description"], (
+                f"{name}: layer {layer['id']} still describes itself as below DMN. "
+                "Fix by describing its role in the source-neutral graph."
+            )
 
         for node in data["nodes"]:
             assert node["layer"] in layers, (
@@ -118,6 +166,23 @@ def test_system_dynamics_seed_graph_is_referentially_valid():
             assert node.get("docs"), (
                 f"{name}: node missing docs {node['id']}. Fix by adding at least one docs[] link."
             )
+            assert "layer-up" not in node.get("tags", []), (
+                f"{name}: node {node['id']} still uses a DMN-relative layer-up tag. "
+                "Fix by replacing it with a neutral source-model tag."
+            )
+            assert "layer-down" not in node.get("tags", []), (
+                f"{name}: node {node['id']} still uses a DMN-relative layer-down tag. "
+                "Fix by replacing it with a neutral execution-surface tag."
+            )
+            if node["id"] == "dmn":
+                assert "entrypoint" not in node.get("tags", []), (
+                    f"{name}: DMN still carries the entrypoint tag. "
+                    "Fix by keeping the graph default on default_focus and source-neutral backbone tags."
+                )
+                assert node["resolution"] > 1, (
+                    f"{name}: DMN must not be the only overview/default-focus node. "
+                    "Fix by keeping a neutral backbone node at overview resolution."
+                )
 
         for edge in data["edges"]:
             assert edge["source"] in node_set, (
@@ -157,6 +222,13 @@ def test_system_dynamics_seed_graph_is_referentially_valid():
                 f"{name}: edge missing docs/evidence links {edge['id']}. "
                 "Fix by adding at least one docs[] link for the relation source."
             )
+            assert not (
+                edge["target"] == "dmn"
+                and edge["source"] in {"bpmn", "cmmn", "archimate", "sysml-v2"}
+            ), (
+                f"{name}: {edge['id']} recenters source-model context on DMN. "
+                "Fix by mapping source models into the semantic backbone or a specific source cluster."
+            )
 
 
 def test_viewer_uses_committed_local_cytoscape_asset():
@@ -175,6 +247,14 @@ def test_viewer_uses_committed_local_cytoscape_asset():
     )
     assert materialize._sha384_sri(VENDOR_PATH) == (
         "sha384-K+k+ywfDuvV9dwg+bwsVE0WGkrTnqFamaER+ydBgMFQTtlI0jdI9no9AjkQHwh/T"
+    )
+    assert "DMN is the entry point" not in html, (
+        "viewer still contains DMN-entrypoint framing. "
+        "Fix by describing the source-neutral semantic backbone as the default focus."
+    )
+    assert "seed.entrypoint" not in html, (
+        "viewer still references the removed entrypoint contract. "
+        "Fix by using seed.default_focus for initial selection and directed layout roots."
     )
 
 
@@ -278,6 +358,11 @@ def test_materialized_rdf_artifacts_parse_and_match_seed_contract():
 
     asserted = dataset.graph(URIRef(BASE["graph/asserted"]))
     assert (URIRef(BASE["map"]), RDF.type, SD.SystemDynamicsMap) in asserted
+    assert (
+        URIRef(BASE["map"]),
+        SD.defaultFocus,
+        URIRef(BASE[f"node/{seed['default_focus']}"]),
+    ) in asserted
     for node in seed["nodes"]:
         partition = dataset.graph(URIRef(BASE[f"graph/{node['status']}"]))
         subject = URIRef(BASE[f"node/{node['id']}"])
@@ -415,6 +500,7 @@ def test_shacl_shapes_and_view_manifest_cover_the_durable_contract():
     assert manifest["source_snapshot"]["node_count"] == EXPECTED_NODE_COUNT
     assert manifest["source_snapshot"]["edge_count"] == EXPECTED_EDGE_COUNT
     assert manifest["claim_partitions"] == seed["status_kinds"]
+    assert manifest["default_projection"]["default_focus"] == seed["default_focus"]
     assert manifest["default_projection"]["runtime_asset"] == "vendor/cytoscape-3.34.0.min.js"
     assert manifest["default_projection"]["runtime_asset_sri"] == materialize._sha384_sri(
         VENDOR_PATH

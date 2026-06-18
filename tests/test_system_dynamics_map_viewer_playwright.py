@@ -72,39 +72,93 @@ def test_system_dynamics_viewer_core_interactions():
                 "document.querySelector('#counts').textContent === '29 nodes / 35 edges'"
             )
             page.wait_for_function(NONBLANK_CANVAS_SCRIPT, timeout=10_000)
-            assert page.evaluate("window.systemDynamicsMapRuntime.activeLayout()") == "cose"
+            assert page.evaluate("window.systemDynamicsMapRuntime.activeLayout()") == "cose", (
+                "viewer did not start on the force-directed overview layout. "
+                "Fix by keeping activeLayout initialized to cose."
+            )
 
-            assert page.locator("#panel").inner_text().startswith("DMN")
+            assert page.locator("#panel").inner_text().startswith("RDF / OWL Knowledge Graph"), (
+                "viewer initial panel is not focused on the semantic backbone. "
+                "Fix by rendering seed.default_focus before any user selection."
+            )
             assert (
                 page.get_by_role("link", name="Seed JSON")
                 .get_attribute("href")
                 .endswith("/system-dynamics-map.seed.json")
+            ), (
+                "Seed JSON link drifted. Fix by keeping the viewer linked to the canonical seed file."
             )
 
             page.get_by_label("Search").fill("telemetry")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes < 29")
             filtered_counts = page.evaluate("window.systemDynamicsMapRuntime.visibleCounts()")
-            assert filtered_counts["nodes"] >= 1
-            assert filtered_counts["edges"] >= 0
+            assert filtered_counts["nodes"] >= 1, (
+                "search filter hid every telemetry match. "
+                "Fix by keeping search wired to node labels, summaries, aliases, and contexts."
+            )
+            assert filtered_counts["edges"] >= 0, (
+                "filtered edge count became invalid. "
+                "Fix by deriving visible edge counts from non-hidden Cytoscape edges."
+            )
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.visibleEdgesHaveVisibleEndpoints()"
+            ), (
+                "search filter left visible edges attached to hidden nodes. "
+                "Fix by recomputing visible edge state from the explicit visible node set."
+            )
 
             page.get_by_label("Search").fill("")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 29")
             page.locator('input[data-filter="status"][value="candidate"]').uncheck()
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes < 29")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.visibleEdgesHaveVisibleEndpoints()"
+            ), (
+                "status filter left visible edges attached to hidden nodes. "
+                "Fix by recomputing visible edge state after checkbox changes."
+            )
 
             page.locator('input[data-filter="status"][value="candidate"]').check()
+            page.get_by_role("button", name="Directed").click()
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeLayout() === 'breadthfirst'"
+            )
+            assert (
+                page.evaluate("window.systemDynamicsMapRuntime.directedLayoutRootId()")
+                == "rdf-owl-kg"
+            ), (
+                "Directed layout is not rooted at the source-neutral default focus. "
+                "Fix by passing cy.$id(seed.default_focus) as the breadthfirst roots option."
+            )
+            page.wait_for_function(NONBLANK_CANVAS_SCRIPT, timeout=10_000)
+            assert "active" in page.get_by_role("button", name="Directed").get_attribute("class"), (
+                "Directed layout button did not enter active state. "
+                "Fix by syncing data-layout button state in runLayout()."
+            )
             page.get_by_role("button", name="Circle").click()
             page.wait_for_function("window.systemDynamicsMapRuntime.activeLayout() === 'circle'")
             page.wait_for_function(NONBLANK_CANVAS_SCRIPT, timeout=10_000)
-            assert "active" in page.get_by_role("button", name="Circle").get_attribute("class")
+            assert "active" in page.get_by_role("button", name="Circle").get_attribute("class"), (
+                "Circle layout button did not enter active state. "
+                "Fix by syncing data-layout button state in runLayout()."
+            )
             page.get_by_role("button", name="Grid").click()
             page.wait_for_function("window.systemDynamicsMapRuntime.activeLayout() === 'grid'")
             page.wait_for_function(NONBLANK_CANVAS_SCRIPT, timeout=10_000)
-            assert "active" in page.get_by_role("button", name="Grid").get_attribute("class")
+            assert "active" in page.get_by_role("button", name="Grid").get_attribute("class"), (
+                "Grid layout button did not enter active state. "
+                "Fix by syncing data-layout button state in runLayout()."
+            )
 
             selected = page.evaluate("window.systemDynamicsMapRuntime.selectNode('opentelemetry')")
-            assert selected["id"] == "opentelemetry"
-            assert page.locator("#panel").inner_text().startswith("OpenTelemetry")
+            assert selected["id"] == "opentelemetry", (
+                "runtime node selection returned the wrong node. "
+                "Fix by selecting nodes by exact nodes[].id."
+            )
+            assert page.locator("#panel").inner_text().startswith("OpenTelemetry"), (
+                "details panel did not update after node selection. "
+                "Fix by rendering node data in selectNode()."
+            )
 
             with pytest.raises(PlaywrightError, match="nodes\\[\\]\\.id"):
                 page.evaluate("window.systemDynamicsMapRuntime.selectNode('missing-node')")
@@ -125,6 +179,9 @@ def test_system_dynamics_viewer_reports_missing_local_cytoscape():
                 error.inner_text()
                 == "Cytoscape.js did not load. Check that ./vendor/cytoscape-3.34.0.min.js is present."
             )
-            assert page.evaluate("window.systemDynamicsMapRuntime") is None
+            assert page.evaluate("window.systemDynamicsMapRuntime") is None, (
+                "viewer exposed runtime APIs after Cytoscape failed to load. "
+                "Fix by returning before runtime initialization when the local asset is missing."
+            )
         finally:
             browser.close()

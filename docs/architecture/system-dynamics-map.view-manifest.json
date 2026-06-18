@@ -9,19 +9,19 @@
     "candidate"
   ],
   "default_projection": {
-    "entrypoint": "dmn",
+    "default_focus": "rdf-owl-kg",
     "layout": "cose",
     "resolution": 5,
     "runtime_asset": "vendor/cytoscape-3.34.0.min.js",
     "runtime_asset_sri": "sha384-K+k+ywfDuvV9dwg+bwsVE0WGkrTnqFamaER+ydBgMFQTtlI0jdI9no9AjkQHwh/T",
     "viewer": "system-dynamics-map-viewer.html",
     "visible_layers": [
-      "context-up",
-      "decision",
-      "execution-down",
-      "semantic-core",
+      "source-models",
+      "decision-modeling",
+      "execution-surfaces",
+      "semantic-backbone",
       "observation-state",
-      "rendering"
+      "projection"
     ],
     "visible_statuses": [
       "asserted",
@@ -52,7 +52,7 @@
     "edge_count": 35,
     "node_count": 29,
     "seed": "system-dynamics-map.seed.json",
-    "seed_sha256": "b07e346d0102d5a34466794d3d6cccc0a6083f1a35d4c7af4c5c7260a20a206f",
+    "seed_sha256": "3e76dd89ba001a306396f08ebb84d9a90d97eb74e3612f34fe05fc2bed8bd1b9",
     "shacl_shapes": "system-dynamics-map.shacl.ttl"
   },
   "validation": {
