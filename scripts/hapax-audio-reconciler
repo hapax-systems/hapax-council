@@ -3,9 +3,12 @@
 #
 # The reconciler owns broadcast-critical PipeWire links from
 # ~/.config/hapax/audio-link-map.conf and privacy/safety disconnects from
-# ~/.config/hapax/audio-forbidden-links.conf. It samples the graph once per
-# tick and only mutates missing/present edges; this keeps the control plane
-# quiet while preserving fast repair.
+# ~/.config/hapax/audio-forbidden-links.conf. It also keeps public broadcast
+# source/filter nodes from zero-volume drift so controller or UI restore does
+# not silently attenuate the emitted segment. It samples the graph once per tick
+# and only mutates missing/present edges, forbidden links, and present egress
+# nodes that currently report zero volume; this keeps the control plane quiet
+# while preserving fast repair.
 
 set -euo pipefail
 
@@ -14,13 +17,20 @@ LOGFILE="${HAPAX_RECONCILER_LOG:-/tmp/hapax-audio-reconciler.log}"
 LINK_MAP="${HAPAX_RECONCILER_LINK_MAP:-/home/hapax/.config/hapax/audio-link-map.conf}"
 FORBIDDEN_FILE="${HAPAX_RECONCILER_FORBIDDEN_LINKS:-/home/hapax/.config/hapax/audio-forbidden-links.conf}"
 PW_LINK="${HAPAX_RECONCILER_PW_LINK:-pw-link}"
+WPCTL="${HAPAX_RECONCILER_WPCTL:-wpctl}"
+DEFAULT_VOLUME_NODES="hapax-broadcast-master hapax-broadcast-normalized hapax-obs-broadcast-remap"
+VOLUME_NODE_LIST="${HAPAX_RECONCILER_VOLUME_NODES-$DEFAULT_VOLUME_NODES}"
+UNITY_VOLUME_LEVEL="1.0"
 ONCE="${HAPAX_RECONCILER_ONCE:-0}"
 
 declare -a DESIRED_LINKS=()
 declare -a FORBIDDEN_LINKS=()
+declare -a VOLUME_NODES=()
 declare -A PRESENT_LINKS=()
 declare -A PRESENT_PORTS=()
+declare -A ALLOWED_VOLUME_NODES=()
 GRAPH=""
+WPCTL_STATUS_TEXT=""
 
 log() {
     printf '%s [reconciler] %s\n' "$(date -Iseconds)" "$*" >> "$LOGFILE"
@@ -60,6 +70,33 @@ load_forbidden_links() {
     done < "$FORBIDDEN_FILE"
     if ((${#FORBIDDEN_LINKS[@]} > 0)); then
         log "loaded ${#FORBIDDEN_LINKS[@]} forbidden link patterns"
+    fi
+}
+
+init_allowed_volume_nodes() {
+    ALLOWED_VOLUME_NODES=()
+    local node
+    for node in $DEFAULT_VOLUME_NODES; do
+        ALLOWED_VOLUME_NODES["$node"]=1
+    done
+}
+
+load_volume_nodes() {
+    VOLUME_NODES=()
+    local node
+    local rejected=0
+    for node in $VOLUME_NODE_LIST; do
+        if [[ -n "${ALLOWED_VOLUME_NODES["$node"]+x}" ]]; then
+            VOLUME_NODES+=("$node")
+        else
+            ((rejected += 1))
+        fi
+    done
+    if ((${#VOLUME_NODES[@]} > 0)); then
+        log "loaded ${#VOLUME_NODES[@]} unity-volume node target(s)"
+    fi
+    if ((rejected > 0)); then
+        log "WARN: rejected $rejected disallowed zero-volume target(s); Next action: keep volume guard scoped to governed egress nodes or update DEFAULT_VOLUME_NODES through review"
     fi
 }
 
@@ -190,22 +227,103 @@ enforce_forbidden() {
     fi
 }
 
+node_id_from_wpctl_status() {
+    local wanted="$1"
+    local raw line id name
+    while IFS= read -r raw; do
+        line="$(trim_policy_line "$raw")"
+        [[ -z "$line" ]] && continue
+        # ``wpctl status --name`` renders a tree prefix, an optional default
+        # marker, then ``<id>. <node.name> [metadata]``.
+        if [[ "$line" =~ ^[^0-9]*\*?[[:space:]]*([0-9]+)\.[[:space:]]+([^[]+)[[:space:]]+\[ ]]; then
+            id="${BASH_REMATCH[1]}"
+            name="$(trim_policy_line "${BASH_REMATCH[2]}")"
+            if [[ "$name" == "$wanted" ]]; then
+                printf '%s\n' "$id"
+                return 0
+            fi
+        fi
+    done <<< "$WPCTL_STATUS_TEXT"
+    return 1
+}
+
+volume_state_needs_repair() {
+    local state="$1"
+    local volume
+    [[ "$state" == *"MUTED"* ]] && return 1
+    if [[ "$state" =~ Volume:[[:space:]]*([0-9]+([.][0-9]+)?) ]]; then
+        volume="${BASH_REMATCH[1]}"
+        [[ "$volume" =~ ^0([.]0+)?$ ]]
+        return
+    fi
+    return 1
+}
+
+enforce_unity_volumes() {
+    ((${#VOLUME_NODES[@]} == 0)) && return
+
+    if ! WPCTL_STATUS_TEXT="$("$WPCTL" status --name 2>/dev/null)"; then
+        WPCTL_STATUS_TEXT=""
+        if ((tick % 60 == 0)); then
+            log "WARN: could not read WirePlumber node status for zero-volume guard; Next action: run 'wpctl status --name' and confirm WirePlumber is active"
+        fi
+        return
+    fi
+
+    local node id volume_state
+    local repaired=0
+    local missing=0
+    local failures=0
+    for node in "${VOLUME_NODES[@]}"; do
+        if ! id="$(node_id_from_wpctl_status "$node")"; then
+            ((missing += 1))
+            continue
+        fi
+        if ! volume_state="$("$WPCTL" get-volume "$id" 2>/dev/null)"; then
+            ((failures += 1))
+            continue
+        fi
+        if ! volume_state_needs_repair "$volume_state"; then
+            continue
+        fi
+        if "$WPCTL" set-volume "$id" "$UNITY_VOLUME_LEVEL" 2>/dev/null; then
+            ((repaired += 1))
+        else
+            ((failures += 1))
+        fi
+    done
+
+    if ((repaired > 0)); then
+        log "restored $repaired zero-volume broadcast egress node(s) to unity"
+    fi
+    if ((missing > 0 && tick % 60 == 0)); then
+        log "deferred $missing/${#VOLUME_NODES[@]} zero-volume target(s) with absent node names; Next action: run 'wpctl status --name' and confirm broadcast egress node names"
+    fi
+    if ((failures > 0 && tick % 60 == 0)); then
+        log "WARN: $failures/${#VOLUME_NODES[@]} zero-volume target(s) could not be evaluated or repaired; Next action: identify blocked target with 'wpctl status --name' and inspect it with 'wpctl get-volume <id>'"
+    fi
+}
+
 log "=== hapax-audio-reconciler starting ==="
-log "interval=${INTERVAL_S}s link_map=$LINK_MAP forbidden=$FORBIDDEN_FILE"
+log "interval=${INTERVAL_S}s link_map=$LINK_MAP forbidden=$FORBIDDEN_FILE zero_volume_restore=$UNITY_VOLUME_LEVEL"
 
 load_link_map
 load_forbidden_links
+init_allowed_volume_nodes
+load_volume_nodes
 
 tick=0
 while true; do
     refresh_graph || true
     enforce_links
     enforce_forbidden
+    enforce_unity_volumes
 
     ((tick += 1))
     if ((tick % 60 == 0)); then
         load_link_map
         load_forbidden_links
+        load_volume_nodes
     fi
 
     if [[ "$ONCE" == "1" ]]; then
