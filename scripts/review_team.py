@@ -492,6 +492,12 @@ _SYNTAX_COMPILE_RE = re.compile(
     r"indentation\s+error|missing\s+(?:colon|paren|parenthes|brace|bracket)",
     re.IGNORECASE,
 )
+_NAMESPACE_CORRUPTION_RE = re.compile(
+    r"(?:namespace|prefix|@prefix).*(?:corrupt|replac|invalid|violat)|"
+    r"(?:corrupt|replac|invalid|violat).*(?:namespace|prefix|@prefix)",
+    re.IGNORECASE,
+)
+_BACKTICK_LITERAL_RE = re.compile(r"`([^`\n]{3,200})`")
 
 #: Killswitch — set to "1" to disable the go-gate (every critical blocks; the pre-go-gate behaviour).
 _GO_GATE_OFF_ENV = "HAPAX_REVIEW_GO_GATE_OFF"
@@ -502,6 +508,31 @@ def _is_syntax_compile_claim(finding: Mapping[str, Any]) -> bool:
     refute. Semantic claims ('corrupt state', off-by-one) are never matched, so never invalidated."""
     text = f"{finding.get('title', '')}\n{finding.get('detail', '')}"
     return bool(_SYNTAX_COMPILE_RE.search(text))
+
+
+def _is_namespace_corruption_claim(finding: Mapping[str, Any]) -> bool:
+    text = f"{finding.get('title', '')}\n{finding.get('detail', '')}"
+    return bool(_NAMESPACE_CORRUPTION_RE.search(text))
+
+
+def _line_literal_claim_refuted(finding: Mapping[str, Any], source: str) -> bool:
+    try:
+        line = int(finding.get("line") or 0)
+    except (TypeError, ValueError):
+        return False
+    lines = source.splitlines()
+    if line <= 0 or line > len(lines):
+        return False
+    current_line = lines[line - 1]
+    text = f"{finding.get('title', '')}\n{finding.get('detail', '')}"
+    suspect_literals = [
+        literal
+        for literal in _BACKTICK_LITERAL_RE.findall(text)
+        if "/" in literal or (literal.startswith("@") and literal != "@prefix")
+    ]
+    return bool(suspect_literals) and all(
+        literal not in current_line for literal in suspect_literals
+    )
 
 
 def _rdf_parse_format(path: Path) -> str | None:
@@ -557,7 +588,9 @@ def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) 
     file ``ast.parse``-s clean. Every other case — not a syntax/compile claim (ALL semantic
     criticals), a missing/unreadable/non-Python file — KEEPS the critical. Uncertainty never
     suppresses."""
-    if not _is_syntax_compile_claim(finding):
+    syntax_claim = _is_syntax_compile_claim(finding)
+    namespace_claim = _is_namespace_corruption_claim(finding)
+    if not syntax_claim and not namespace_claim:
         return (
             True  # not a syntax/compile claim — never invalidate (every semantic critical is safe)
         )
@@ -571,11 +604,15 @@ def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) 
         source = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return True  # unreadable — cannot verify, keep
+    if namespace_claim and _line_literal_claim_refuted(finding, source):
+        return False
     rdf_format = _rdf_parse_format(path)
     if rdf_format is not None:
         return not _rdf_parses_clean(path, rdf_format)
     if path.suffix != ".py":
         return True  # cannot verify this syntax claim class — keep (conservative)
+    if not syntax_claim:
+        return True
     try:
         ast.parse(source)
     except SyntaxError:

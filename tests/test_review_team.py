@@ -1405,6 +1405,21 @@ class TestGoGate:
         f["detail"] = "The file is unparseable Turtle because @prefix was corrupted."
         assert rt.verify_literal_defect_critical(f, tmp_path) is False
 
+    def test_clean_turtle_namespace_contract_claim_is_phantom(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path,
+            "docs/ok.ttl",
+            "@prefix ex: <https://example.test/> .\nex:s ex:p ex:o .\n",
+        )
+        f = self._lit(
+            "Corrupted RDF namespace directive",
+            file="docs/ok.ttl",
+            line=1,
+        )
+        f["detail"] = "The namespace directive was replaced by `@bad/path.py`."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
     def test_real_turtle_parse_error_is_verified(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         self._py(tmp_path, "docs/bad.ttl", "@prefix ex: <https://example.test/> .\nex:s ex:p\n")
@@ -1420,6 +1435,28 @@ class TestGoGate:
         )
         f = self._lit("TriG cannot be parsed", file="docs/ok.trig", line=1)
         assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
+    def test_absent_quoted_namespace_literal_on_cited_line_is_phantom(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "tests/test_fixture.py", 'value = "ordinary fixture"\n')
+        f = self._lit(
+            "Corrupted namespace directive in test data",
+            file="tests/test_fixture.py",
+            line=1,
+        )
+        f["detail"] = "The line uses `@bad/path.py` instead of `@prefix`."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
+    def test_present_quoted_namespace_literal_on_cited_line_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "tests/test_fixture.py", 'value = "@bad/path.py"\n')
+        f = self._lit(
+            "Corrupted namespace directive in test data",
+            file="tests/test_fixture.py",
+            line=1,
+        )
+        f["detail"] = "The line uses `@bad/path.py` instead of `@prefix`."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
 
     def test_non_literal_critical_passes_through(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
