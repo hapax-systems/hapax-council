@@ -2299,8 +2299,10 @@ def _subscription_quota_hold_reasons(
     quota = request.quota
     if quota is None or not quota.available:
         return ("subscription_route_quota_unavailable",)
-    if quota.budget_ledger_stale is not False:
+    if quota.budget_ledger_stale is True:
         return ("subscription_quota_ledger_stale",)
+    if quota.budget_ledger_stale is not False:
+        return ("subscription_quota_ledger_unknown",)
     route_state = quota.route_subscription_quota_state
     if route_state is None:
         if _requires_route_specific_subscription_quota(capability.route_id):

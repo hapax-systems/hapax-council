@@ -96,6 +96,9 @@ GLMCP_ADMISSION_ENDPOINTS = frozenset(
 GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2", "glm-5.2[1m]"})
 GLMCP_ADMISSION_DEFAULT_STALE_AFTER_SECONDS = 900
 GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS = 3600
+GLMCP_ADMISSION_RECHECK_COMMAND = (
+    "find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*glmcp-quota-admission*.yaml' -print"
+)
 
 LOCAL_COMPUTE_ROUTE = "litellm.local.command-r-35b"
 LOCAL_COMPUTE_PROVIDER = "tabbyapi"
@@ -181,7 +184,8 @@ def _parse_utc(value: str) -> datetime | None:
 
 def _warn_ignored_glmcp_admission(path: Path, reason: str) -> None:
     print(
-        f"hapax-quota-telemetry-writer: ignoring GLMCP admission receipt {path.name}: {reason}",
+        f"hapax-quota-telemetry-writer: ignoring GLMCP admission receipt {path.name}: "
+        f"{reason}; recheck: {GLMCP_ADMISSION_RECHECK_COMMAND}",
         file=sys.stderr,
     )
 

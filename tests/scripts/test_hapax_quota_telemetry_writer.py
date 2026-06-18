@@ -245,6 +245,7 @@ stale_after_seconds: 900
     assert glmcp_snapshot["subscription_quota_state"] == "unknown"
     assert "provider missing" in result.stderr
     assert "route_id missing" in result.stderr
+    assert "find ~/.cache/hapax/relay/receipts" in result.stderr
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
 
