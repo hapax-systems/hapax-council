@@ -585,9 +585,13 @@ def dispatch_reviews(
                 provider_outage = review_team.is_provider_outage(
                     quota_wall_output, process_failed=True, model_stdout=quota_wall_stdout
                 )
+                route_unavailable = review_team.is_reviewer_route_unavailable(
+                    quota_wall_output, process_failed=True, model_stdout=quota_wall_stdout
+                )
             else:
                 walled = False
                 provider_outage = False
+                route_unavailable = False
             if walled:
                 LOG.warning(
                     "reviewer %s (%s) hit a provider quota wall -> verdict quota-wall",
@@ -595,6 +599,14 @@ def dispatch_reviews(
                     seat.family,
                 )
                 verdict = "quota-wall"
+            elif route_unavailable:
+                LOG.warning(
+                    "reviewer %s (%s) reviewer route unavailable -> verdict "
+                    "reviewer-route-unavailable",
+                    seat.id,
+                    seat.family,
+                )
+                verdict = "reviewer-route-unavailable"
             elif provider_outage:
                 LOG.warning(
                     "reviewer %s (%s) hit provider availability failure -> verdict provider-outage",
@@ -1213,7 +1225,13 @@ def review_pr(
             dead = [
                 str(r.get("id") or r.get("family"))
                 for r in reviews
-                if str(r.get("verdict")) in ("invalid-output", "quota-wall", "provider-outage")
+                if str(r.get("verdict"))
+                in (
+                    "invalid-output",
+                    "quota-wall",
+                    "provider-outage",
+                    "reviewer-route-unavailable",
+                )
             ]
             dossier["no_quorum_cause"] = (
                 f"dead reviewers: {', '.join(dead)}" if dead else "verdict split below quorum"

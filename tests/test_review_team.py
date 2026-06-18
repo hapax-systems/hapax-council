@@ -1064,13 +1064,6 @@ class TestFamilyOutageDegradation:
             "retry later or reduce the review prompt size",
             process_failed=True,
         )
-        assert rt.is_provider_outage(
-            "Error authenticating: IneligibleTierError: This client is no longer "
-            "supported for Gemini Code Assist for individuals. To continue using "
-            "Gemini, please migrate to the Antigravity suite of products.\n"
-            "reasonCode: 'UNSUPPORTED_CLIENT'",
-            process_failed=True,
-        )
         assert not rt.is_provider_outage(
             "hapax-glmcp-reviewer: api error: HTTP 529: "
             '{"error":"The service may be temporarily overloaded, please try again later"}',
@@ -1087,6 +1080,22 @@ class TestFamilyOutageDegradation:
             '{"error":"The service may be temporarily overloaded, please try again later"}',
             process_failed=True,
             model_stdout="```yaml\nverdict: block\n```",
+        )
+
+    def test_reviewer_route_unavailable_classifies_on_process_failure(self) -> None:
+        rt = _load_review_team_module()
+        unsupported_client = (
+            "Error authenticating: IneligibleTierError: This client is no longer "
+            "supported for Gemini Code Assist for individuals. To continue using "
+            "Gemini, please migrate to the Antigravity suite of products.\n"
+            "reasonCode: 'UNSUPPORTED_CLIENT'"
+        )
+        assert rt.is_reviewer_route_unavailable(unsupported_client, process_failed=True)
+        assert not rt.is_reviewer_route_unavailable(unsupported_client, process_failed=False)
+        assert not rt.is_reviewer_route_unavailable(
+            unsupported_client,
+            process_failed=True,
+            model_stdout="```yaml\nverdict: accept\n```",
         )
 
     def test_clean_exit_text_never_counts_as_wall_evidence(self) -> None:
