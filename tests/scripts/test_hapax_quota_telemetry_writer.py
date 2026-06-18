@@ -77,8 +77,9 @@ def _glmcp_admission(
     stale_after_seconds: int = 900,
     supported_tool: str = "hapax-glmcp-reviewer",
     endpoint: str = "https://api.z.ai/api/coding/paas/v4",
+    name: str = "glmcp-quota-admission.yaml",
 ) -> None:
-    (relay / "glmcp-quota-admission.yaml").write_text(
+    (relay / name).write_text(
         f"""status: quota_available
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
@@ -217,6 +218,30 @@ def test_fresh_glmcp_admission_receipt_marks_glmcp_fresh(tmp_path: Path) -> None
     assert "finite" in glmcp_snapshot["operator_visible_reason"]
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 1
+
+
+def test_glmcp_admission_scans_documented_recheck_glob(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _glmcp_admission(
+        relay,
+        observed_at="2026-06-09T23:55:00Z",
+        name="manual_glmcp-quota-admission.yaml",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["subscription_quota_state"] == "fresh"
+    assert any(
+        "manual_glmcp-quota-admission.yaml" in ref for ref in glmcp_snapshot["evidence_refs"]
+    )
 
 
 def test_glmcp_admission_accepts_claude_code_with_anthropic_endpoint(tmp_path: Path) -> None:

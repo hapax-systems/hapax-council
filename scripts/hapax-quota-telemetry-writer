@@ -252,145 +252,140 @@ def active_glmcp_admission_receipts(
     if not receipt_dir.is_dir():
         return []
     refs: list[str] = []
-    seen: set[Path] = set()
-    for pattern in ("glmcp-quota-admission*.yaml", "*-glmcp-quota-admission*.yaml"):
-        for path in sorted(receipt_dir.glob(pattern)):
-            if path in seen:
-                continue
-            seen.add(path)
-            try:
-                raw_receipt = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError) as exc:
-                _warn_ignored_glmcp_admission(
-                    path,
-                    f"unreadable receipt {type(exc).__name__}: {exc}",
-                )
-                continue
-            fields, parse_error = _parse_flat_yaml_strict(raw_receipt)
-            if parse_error is not None:
-                _warn_ignored_glmcp_admission(path, parse_error)
-                continue
-            status = fields.get("status", "")
-            if status not in {"quota_available", "admitted"}:
-                _warn_ignored_glmcp_admission(
-                    path,
-                    f"status {status or 'missing'}; expected quota_available or admitted",
-                )
-                continue
-            provider = fields.get("provider", "")
-            if provider != GLMCP_ADMISSION_PROVIDER:
-                if provider in {"z_ai", "z.ai", "zai"}:
-                    _warn_ignored_glmcp_admission(
-                        path,
-                        f"ambiguous provider {provider!r}; expected {GLMCP_ADMISSION_PROVIDER}",
-                    )
-                else:
-                    _warn_ignored_glmcp_admission(
-                        path,
-                        f"provider {provider or 'missing'}; expected {GLMCP_ADMISSION_PROVIDER}",
-                    )
-                continue
-            capacity_pool = fields.get("capacity_pool", "")
-            if capacity_pool != GLMCP_ADMISSION_CAPACITY_POOL:
-                _warn_ignored_glmcp_admission(
-                    path,
-                    f"capacity_pool {capacity_pool or 'missing'}; "
-                    f"expected {GLMCP_ADMISSION_CAPACITY_POOL}",
-                )
-                continue
-            route_id = fields.get("route_id", "")
-            if route_id != SUBSCRIPTION_ROUTES["glmcp"]:
-                _warn_ignored_glmcp_admission(
-                    path,
-                    f"route_id {route_id or 'missing'}; expected {SUBSCRIPTION_ROUTES['glmcp']}",
-                )
-                continue
-            supported_tool = fields.get("supported_tool", "")
-            if supported_tool not in GLMCP_ADMISSION_SUPPORTED_TOOLS:
-                _warn_ignored_glmcp_admission(
-                    path,
-                    f"supported_tool {supported_tool or 'missing'}; expected supported Coding Plan tool",
-                )
-                continue
-            endpoint = fields.get("endpoint", "").rstrip("/")
-            if endpoint not in GLMCP_ADMISSION_ENDPOINTS:
-                _warn_ignored_glmcp_admission(
-                    path,
-                    f"endpoint {endpoint or 'missing'}; expected official Z.ai Coding Plan endpoint",
-                )
-                continue
-            if endpoint not in GLMCP_ADMISSION_TOOL_ENDPOINTS[supported_tool]:
-                expected = ", ".join(sorted(GLMCP_ADMISSION_TOOL_ENDPOINTS[supported_tool]))
-                _warn_ignored_glmcp_admission(
-                    path,
-                    f"supported_tool/endpoint mismatch {supported_tool}:{endpoint}; "
-                    f"expected endpoint {expected}",
-                )
-                continue
-            model = fields.get("model", "")
-            if model not in GLMCP_ADMISSION_MODELS:
-                _warn_ignored_glmcp_admission(
-                    path,
-                    f"model {model or 'missing'}; expected GLM-5.2",
-                )
-                continue
-            if not fields.get("evidence_ref", "").strip():
-                _warn_ignored_glmcp_admission(path, "evidence_ref missing")
-                continue
-            observed_raw = (
-                fields.get("observed_at", "")
-                or fields.get("captured_at", "")
-                or fields.get("detected_at", "")
+    for path in sorted(receipt_dir.glob("*glmcp-quota-admission*.yaml")):
+        try:
+            raw_receipt = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            _warn_ignored_glmcp_admission(
+                path,
+                f"unreadable receipt {type(exc).__name__}: {exc}",
             )
-            observed_at = _parse_utc(observed_raw)
-            if observed_at is None:
-                _warn_ignored_glmcp_admission(
-                    path,
-                    f"missing or malformed observed_at/captured_at/detected_at {observed_raw!r}",
-                )
-                continue
-            if observed_at > now:
-                _warn_ignored_glmcp_admission(
-                    path,
-                    "observed_at is in the future",
-                )
-                continue
-            try:
-                stale_after_seconds = int(
-                    fields.get(
-                        "stale_after_seconds",
-                        str(GLMCP_ADMISSION_DEFAULT_STALE_AFTER_SECONDS),
-                    )
-                )
-            except ValueError:
-                _warn_ignored_glmcp_admission(
-                    path,
-                    f"malformed stale_after_seconds {fields.get('stale_after_seconds')!r}",
-                )
-                continue
-            if stale_after_seconds <= 0:
-                _warn_ignored_glmcp_admission(
-                    path,
-                    f"non-positive stale_after_seconds {stale_after_seconds}",
-                )
-                continue
-            if stale_after_seconds > GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS:
-                _warn_ignored_glmcp_admission(
-                    path,
-                    f"stale_after_seconds {stale_after_seconds} exceeds maximum "
-                    f"{GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS}",
-                )
-                continue
-            if now - observed_at > timedelta(seconds=stale_after_seconds):
-                _warn_ignored_glmcp_admission(
-                    path,
-                    "receipt expired",
-                )
-                continue
-            refs.append(
-                "relay-receipt:"
-                f"{path.name}:observed_at:{observed_at.isoformat().replace('+00:00', 'Z')}"
+            continue
+        fields, parse_error = _parse_flat_yaml_strict(raw_receipt)
+        if parse_error is not None:
+            _warn_ignored_glmcp_admission(path, parse_error)
+            continue
+        status = fields.get("status", "")
+        if status not in {"quota_available", "admitted"}:
+            _warn_ignored_glmcp_admission(
+                path,
+                f"status {status or 'missing'}; expected quota_available or admitted",
             )
+            continue
+        provider = fields.get("provider", "")
+        if provider != GLMCP_ADMISSION_PROVIDER:
+            if provider in {"z_ai", "z.ai", "zai"}:
+                _warn_ignored_glmcp_admission(
+                    path,
+                    f"ambiguous provider {provider!r}; expected {GLMCP_ADMISSION_PROVIDER}",
+                )
+            else:
+                _warn_ignored_glmcp_admission(
+                    path,
+                    f"provider {provider or 'missing'}; expected {GLMCP_ADMISSION_PROVIDER}",
+                )
+            continue
+        capacity_pool = fields.get("capacity_pool", "")
+        if capacity_pool != GLMCP_ADMISSION_CAPACITY_POOL:
+            _warn_ignored_glmcp_admission(
+                path,
+                f"capacity_pool {capacity_pool or 'missing'}; "
+                f"expected {GLMCP_ADMISSION_CAPACITY_POOL}",
+            )
+            continue
+        route_id = fields.get("route_id", "")
+        if route_id != SUBSCRIPTION_ROUTES["glmcp"]:
+            _warn_ignored_glmcp_admission(
+                path,
+                f"route_id {route_id or 'missing'}; expected {SUBSCRIPTION_ROUTES['glmcp']}",
+            )
+            continue
+        supported_tool = fields.get("supported_tool", "")
+        if supported_tool not in GLMCP_ADMISSION_SUPPORTED_TOOLS:
+            _warn_ignored_glmcp_admission(
+                path,
+                f"supported_tool {supported_tool or 'missing'}; expected supported Coding Plan tool",
+            )
+            continue
+        endpoint = fields.get("endpoint", "").rstrip("/")
+        if endpoint not in GLMCP_ADMISSION_ENDPOINTS:
+            _warn_ignored_glmcp_admission(
+                path,
+                f"endpoint {endpoint or 'missing'}; expected official Z.ai Coding Plan endpoint",
+            )
+            continue
+        if endpoint not in GLMCP_ADMISSION_TOOL_ENDPOINTS[supported_tool]:
+            expected = ", ".join(sorted(GLMCP_ADMISSION_TOOL_ENDPOINTS[supported_tool]))
+            _warn_ignored_glmcp_admission(
+                path,
+                f"supported_tool/endpoint mismatch {supported_tool}:{endpoint}; "
+                f"expected endpoint {expected}",
+            )
+            continue
+        model = fields.get("model", "")
+        if model not in GLMCP_ADMISSION_MODELS:
+            _warn_ignored_glmcp_admission(
+                path,
+                f"model {model or 'missing'}; expected GLM-5.2",
+            )
+            continue
+        if not fields.get("evidence_ref", "").strip():
+            _warn_ignored_glmcp_admission(path, "evidence_ref missing")
+            continue
+        observed_raw = (
+            fields.get("observed_at", "")
+            or fields.get("captured_at", "")
+            or fields.get("detected_at", "")
+        )
+        observed_at = _parse_utc(observed_raw)
+        if observed_at is None:
+            _warn_ignored_glmcp_admission(
+                path,
+                f"missing or malformed observed_at/captured_at/detected_at {observed_raw!r}",
+            )
+            continue
+        if observed_at > now:
+            _warn_ignored_glmcp_admission(
+                path,
+                "observed_at is in the future",
+            )
+            continue
+        try:
+            stale_after_seconds = int(
+                fields.get(
+                    "stale_after_seconds",
+                    str(GLMCP_ADMISSION_DEFAULT_STALE_AFTER_SECONDS),
+                )
+            )
+        except ValueError:
+            _warn_ignored_glmcp_admission(
+                path,
+                f"malformed stale_after_seconds {fields.get('stale_after_seconds')!r}",
+            )
+            continue
+        if stale_after_seconds <= 0:
+            _warn_ignored_glmcp_admission(
+                path,
+                f"non-positive stale_after_seconds {stale_after_seconds}",
+            )
+            continue
+        if stale_after_seconds > GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS:
+            _warn_ignored_glmcp_admission(
+                path,
+                f"stale_after_seconds {stale_after_seconds} exceeds maximum "
+                f"{GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS}",
+            )
+            continue
+        if now - observed_at > timedelta(seconds=stale_after_seconds):
+            _warn_ignored_glmcp_admission(
+                path,
+                "receipt expired",
+            )
+            continue
+        refs.append(
+            "relay-receipt:"
+            f"{path.name}:observed_at:{observed_at.isoformat().replace('+00:00', 'Z')}"
+        )
     return refs
 
 
