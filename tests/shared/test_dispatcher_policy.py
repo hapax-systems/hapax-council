@@ -473,6 +473,51 @@ def test_provider_gateway_route_ignores_subscription_quota_when_paid_api_is_elig
     assert "paid_route_without_active_budget" not in decision.reason_codes
 
 
+def test_glmcp_subscription_route_holds_when_route_quota_unknown() -> None:
+    request = _request(
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        route_id="glmcp.review.direct",
+        capability=_capability(route_id="glmcp.review.direct"),
+        quota=_quota(
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="unknown",
+            route_quota_evidence_refs=("relay-receipt:glmcp:quota-admission:absent",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.route_policy_green is False
+    assert decision.quota_freshness_green is False
+    assert "subscription_route_quota_not_fresh" in decision.reason_codes
+    assert "route_subscription_quota_state:unknown" in decision.reason_codes
+
+
+def test_glmcp_subscription_route_launches_with_fresh_route_quota() -> None:
+    request = _request(
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        route_id="glmcp.review.direct",
+        capability=_capability(route_id="glmcp.review.direct"),
+        quota=_quota(
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="fresh",
+            route_quota_evidence_refs=("relay-receipt:glmcp-quota-admission.yaml",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.route_policy_green is True
+    assert decision.quota_freshness_green is True
+    assert "policy_launch" in decision.reason_codes
+
+
 def test_spike_workload_refuses_local_fleet_and_points_to_cloud_burst() -> None:
     request = _request(
         cloud_burst={

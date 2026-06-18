@@ -31,6 +31,7 @@ from shared.quota_spend_ledger import (
     evaluate_paid_route_eligibility,
     load_quota_spend_ledger,
     load_quota_spend_ledger_resolved,
+    subscription_quota_state_for_route,
 )
 
 NOW = datetime(2026, 5, 17, 8, 0, 0, tzinfo=UTC)
@@ -344,6 +345,42 @@ def test_claude_code_subscription_exhaustion_does_not_block_api_budget() -> None
     assert decision.eligible is True
     assert decision.state == "eligible_active_budget"
     assert decision.budget_id == "tb-20260510-anthropic-api-steady-state"
+
+
+def test_subscription_quota_state_for_route_uses_exact_route_snapshot() -> None:
+    payload = _payload()
+    payload["quota_snapshots"].extend(
+        [
+            {
+                "quota_snapshot_schema": 1,
+                "snapshot_id": "quota-glmcp-review-direct-unknown",
+                "captured_at": "2026-06-10T00:00:00Z",
+                "route_id": "glmcp.review.direct",
+                "provider": "z_ai-glm-coding-plan",
+                "capacity_pool": "subscription_quota",
+                "subscription_quota_state": "unknown",
+                "evidence_refs": ["relay-receipt:glmcp:quota-admission:absent"],
+                "operator_visible_reason": "fixture glmcp unknown",
+            },
+            {
+                "quota_snapshot_schema": 1,
+                "snapshot_id": "quota-codex-headless-full-fresh",
+                "captured_at": "2026-06-10T00:00:00Z",
+                "route_id": "codex.headless.full",
+                "provider": "codex-subscription",
+                "capacity_pool": "subscription_quota",
+                "subscription_quota_state": "fresh",
+                "evidence_refs": ["relay-receipt:codex:quota-wall:absent"],
+                "operator_visible_reason": "fixture codex fresh",
+            },
+        ]
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(ledger, "glmcp/review/direct")
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert refs == ("relay-receipt:glmcp:quota-admission:absent",)
 
 
 def test_module_has_no_provider_or_runtime_imports() -> None:

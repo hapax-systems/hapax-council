@@ -1052,6 +1052,59 @@ def _subscription_quota_state(ledger: QuotaSpendLedger) -> SubscriptionQuotaStat
     return SubscriptionQuotaState.UNKNOWN
 
 
+def subscription_quota_state_for_route(
+    ledger: QuotaSpendLedger,
+    route_id: str,
+) -> tuple[SubscriptionQuotaState, tuple[str, ...]]:
+    """Return route-specific subscription quota state and evidence refs.
+
+    Aggregate subscription freshness answers "does any subscription lane have
+    capacity?" Route dispatch needs a stricter question for receipt-bound routes
+    such as GLMCP: "is this exact route's quota fresh?"
+    """
+
+    normalized_route_id = _normalize_route_id(route_id)
+    snapshots = tuple(
+        snapshot
+        for snapshot in ledger.quota_snapshots
+        if snapshot.capacity_pool is CapacityPool.SUBSCRIPTION_QUOTA
+        and _normalize_route_id(snapshot.route_id) == normalized_route_id
+    )
+    if not snapshots:
+        return (
+            SubscriptionQuotaState.UNKNOWN,
+            (f"quota-snapshot:{normalized_route_id}:missing",),
+        )
+    evidence_refs = tuple(ref for snapshot in snapshots for ref in snapshot.evidence_refs) or (
+        f"quota-snapshot:{normalized_route_id}:no-evidence",
+    )
+    return _strict_subscription_quota_state(snapshots), evidence_refs
+
+
+def _strict_subscription_quota_state(
+    snapshots: tuple[QuotaSnapshot, ...],
+) -> SubscriptionQuotaState:
+    if any(
+        snapshot.subscription_quota_state is SubscriptionQuotaState.EXHAUSTED
+        for snapshot in snapshots
+    ):
+        return SubscriptionQuotaState.EXHAUSTED
+    if any(
+        snapshot.subscription_quota_state is SubscriptionQuotaState.STALE for snapshot in snapshots
+    ):
+        return SubscriptionQuotaState.STALE
+    if any(
+        snapshot.subscription_quota_state is SubscriptionQuotaState.UNKNOWN
+        for snapshot in snapshots
+    ):
+        return SubscriptionQuotaState.UNKNOWN
+    if any(
+        snapshot.subscription_quota_state is SubscriptionQuotaState.FRESH for snapshot in snapshots
+    ):
+        return SubscriptionQuotaState.FRESH
+    return SubscriptionQuotaState.UNKNOWN
+
+
 def _paid_api_blocking_reasons(
     non_green_states: list[str],
     *,
@@ -1120,6 +1173,10 @@ def _coerce_now(now: datetime | None) -> datetime:
         return datetime.now(tz=UTC)
     _require_aware(now, "now")
     return now.astimezone(UTC)
+
+
+def _normalize_route_id(route_id: str) -> str:
+    return route_id.strip().replace("/", ".")
 
 
 def _require_aware(value: datetime, label: str) -> None:
@@ -1192,4 +1249,5 @@ __all__ = [
     "evaluate_paid_route_eligibility",
     "load_quota_spend_ledger",
     "load_quota_spend_ledger_resolved",
+    "subscription_quota_state_for_route",
 ]

@@ -76,6 +76,9 @@ def _glmcp_admission(relay: Path, *, observed_at: str, stale_after_seconds: int 
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5.2
 observed_at: {observed_at}
 stale_after_seconds: {stale_after_seconds}
 evidence_ref: supported-tool-usage-witness
@@ -360,6 +363,80 @@ stale_after_seconds: 900
     assert summary["glmcp_admissions"] == 0
 
 
+def test_glmcp_admission_receipt_requires_supported_tool_evidence(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    (relay / "glmcp-quota-admission-missing-supported-tool.yaml").write_text(
+        """status: quota_available
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 900
+evidence_ref: supported-tool-usage-witness
+""",
+        encoding="utf-8",
+    )
+    (relay / "glmcp-quota-admission-unsupported-endpoint.yaml").write_text(
+        """status: quota_available
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/v1
+model: glm-5.2
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 900
+evidence_ref: supported-tool-usage-witness
+""",
+        encoding="utf-8",
+    )
+    (relay / "glmcp-quota-admission-unsupported-model.yaml").write_text(
+        """status: quota_available
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-4.7
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 900
+evidence_ref: supported-tool-usage-witness
+""",
+        encoding="utf-8",
+    )
+    (relay / "glmcp-quota-admission-missing-evidence.yaml").write_text(
+        """status: quota_available
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5.2
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 900
+""",
+        encoding="utf-8",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["glmcp.review.direct"] == "unknown"
+    assert "supported_tool missing" in result.stderr
+    assert "unsupported-endpoint" in result.stderr
+    assert "expected official Z.ai Coding Plan endpoint" in result.stderr
+    assert "model glm-4.7" in result.stderr
+    assert "evidence_ref missing" in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
+
+
 def test_stale_glmcp_admission_receipt_keeps_glmcp_unknown(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
@@ -406,8 +483,12 @@ def test_malformed_glmcp_admission_timestamps_are_operator_visible(tmp_path: Pat
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5.2
 observed_at: definitely-not-a-date
 stale_after_seconds: 900
+evidence_ref: supported-tool-usage-witness
 """,
         encoding="utf-8",
     )
@@ -416,8 +497,12 @@ stale_after_seconds: 900
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: soon
+evidence_ref: supported-tool-usage-witness
 """,
         encoding="utf-8",
     )

@@ -84,6 +84,11 @@ SUBSCRIPTION_PROVIDERS = {
 
 GLMCP_ADMISSION_PROVIDER = SUBSCRIPTION_PROVIDERS["glmcp"]
 GLMCP_ADMISSION_CAPACITY_POOL = "subscription_quota"
+GLMCP_ADMISSION_SUPPORTED_TOOLS = frozenset({"hapax-glmcp-reviewer", "claude_code"})
+GLMCP_ADMISSION_ENDPOINTS = frozenset(
+    {"https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/anthropic"}
+)
+GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2", "glm-5.2[1m]"})
 
 LOCAL_COMPUTE_ROUTE = "litellm.local.command-r-35b"
 LOCAL_COMPUTE_PROVIDER = "tabbyapi"
@@ -260,6 +265,30 @@ def active_glmcp_admission_receipts(
                     path,
                     f"route_id {route_id or 'missing'}; expected {SUBSCRIPTION_ROUTES['glmcp']}",
                 )
+                continue
+            supported_tool = fields.get("supported_tool", "")
+            if supported_tool not in GLMCP_ADMISSION_SUPPORTED_TOOLS:
+                _warn_ignored_glmcp_admission(
+                    path,
+                    f"supported_tool {supported_tool or 'missing'}; expected supported Coding Plan tool",
+                )
+                continue
+            endpoint = fields.get("endpoint", "").rstrip("/")
+            if endpoint not in GLMCP_ADMISSION_ENDPOINTS:
+                _warn_ignored_glmcp_admission(
+                    path,
+                    f"endpoint {endpoint or 'missing'}; expected official Z.ai Coding Plan endpoint",
+                )
+                continue
+            model = fields.get("model", "")
+            if model not in GLMCP_ADMISSION_MODELS:
+                _warn_ignored_glmcp_admission(
+                    path,
+                    f"model {model or 'missing'}; expected GLM-5.2",
+                )
+                continue
+            if not fields.get("evidence_ref", "").strip():
+                _warn_ignored_glmcp_admission(path, "evidence_ref missing")
                 continue
             observed_raw = (
                 fields.get("observed_at", "")
