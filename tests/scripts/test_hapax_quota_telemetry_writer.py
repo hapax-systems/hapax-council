@@ -558,6 +558,20 @@ evidence_ref: supported-tool-usage-witness
 """,
         encoding="utf-8",
     )
+    (relay / "glmcp-quota-admission-zero-stale-after.yaml").write_text(
+        """status: quota_available
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5.2
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 0
+evidence_ref: supported-tool-usage-witness
+""",
+        encoding="utf-8",
+    )
 
     result, out = _run_writer(tmp_path)
 
@@ -570,6 +584,8 @@ evidence_ref: supported-tool-usage-witness
     assert states["glmcp.review.direct"] == "unknown"
     assert "malformed observed_at" in result.stderr
     assert "malformed stale_after_seconds" in result.stderr
+    assert "non-positive stale_after_seconds 0" in result.stderr
+    assert "false-negative recovery" in result.stderr
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
 

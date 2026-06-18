@@ -74,6 +74,9 @@ NON_MUTATING_SURFACES = frozenset({"none"})
 CLOUD_BURST_ROUTE_IDS = frozenset({"api.headless.api_frontier"})
 LOCAL_DEV_PLATFORMS = frozenset({"antigrav", "claude", "codex", "gemini", "vibe"})
 LOCAL_DEV_TARGET = "appendix"
+# GLMCP false-negative recovery is receipt-plane: create a fresh short-lived
+# supported-tool admission receipt and rerun quota telemetry. There is no
+# environment kill switch for stale/unknown subscription quota.
 ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED = frozenset({"glmcp.review.direct"})
 
 

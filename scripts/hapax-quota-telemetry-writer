@@ -31,6 +31,11 @@ Each tick does two writes:
      exists. Recheck admission evidence with
      ``find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*glmcp-quota-admission*.yaml' -print``
      and this writer's ``--json`` summary.
+     The emergency false-negative recovery path is to create a fresh
+     short-lived admission receipt with supported-tool, endpoint, model, and
+     evidence_ref fields, then rerun this writer so the live ledger is refreshed.
+     There is intentionally no environment-variable bypass for stale/unknown
+     subscription quota.
    - ``local_resource_state`` + local-compute snapshot: nvidia-smi VRAM
      pressure and load average, fail-closed to ``unknown`` when unprobeable.
 
@@ -87,8 +92,9 @@ SUBSCRIPTION_PROVIDERS = {
 
 GLMCP_ADMISSION_PROVIDER = SUBSCRIPTION_PROVIDERS["glmcp"]
 GLMCP_ADMISSION_CAPACITY_POOL = "subscription_quota"
-# ``claude_code`` is valid only when paired with the official Z.ai Coding Plan
-# Claude Code endpoint/model evidence below; route-specific quota still gates it.
+# ``claude_code`` is accepted as a receipt ``supported_tool`` value only when
+# paired with the official Z.ai Coding Plan Claude Code endpoint/model evidence
+# below; route-specific quota still gates dispatch.
 GLMCP_ADMISSION_SUPPORTED_TOOLS = frozenset({"hapax-glmcp-reviewer", "claude_code"})
 GLMCP_ADMISSION_ENDPOINTS = frozenset(
     {"https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/anthropic"}
@@ -98,6 +104,10 @@ GLMCP_ADMISSION_DEFAULT_STALE_AFTER_SECONDS = 900
 GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS = 3600
 GLMCP_ADMISSION_RECHECK_COMMAND = (
     "find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*glmcp-quota-admission*.yaml' -print"
+)
+GLMCP_ADMISSION_RECOVERY_HINT = (
+    "false-negative recovery: repair receipt permissions/encoding or create a fresh "
+    "short-lived supported-tool admission receipt with evidence_ref, then rerun writer"
 )
 
 LOCAL_COMPUTE_ROUTE = "litellm.local.command-r-35b"
@@ -185,7 +195,8 @@ def _parse_utc(value: str) -> datetime | None:
 def _warn_ignored_glmcp_admission(path: Path, reason: str) -> None:
     print(
         f"hapax-quota-telemetry-writer: ignoring GLMCP admission receipt {path.name}: "
-        f"{reason}; recheck: {GLMCP_ADMISSION_RECHECK_COMMAND}",
+        f"{reason}; path: {path}; recheck: {GLMCP_ADMISSION_RECHECK_COMMAND}; "
+        f"{GLMCP_ADMISSION_RECOVERY_HINT}",
         file=sys.stderr,
     )
 
