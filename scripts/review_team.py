@@ -133,11 +133,7 @@ _PROVIDER_OUTAGE_LINE_RE = re.compile(
 )
 _PROVIDER_OUTAGE_MAX_CHARS = 4_000
 _REVIEWER_ROUTE_UNAVAILABLE_MAX_CHARS = 4_000
-_UNSUPPORTED_REVIEWER_CLIENT_RE = re.compile(
-    r"(?:IneligibleTierError|UNSUPPORTED_CLIENT|client is no longer supported|"
-    r"migrate to the Antigravity suite)",
-    re.IGNORECASE,
-)
+_UNSUPPORTED_REVIEWER_CLIENT_RE = re.compile(r"(?:IneligibleTierError|UNSUPPORTED_CLIENT)")
 
 #: The dispatcher's family-outage witness state (canonical path; the
 #: dispatcher aliases this). Admission consults it so a forged dossier

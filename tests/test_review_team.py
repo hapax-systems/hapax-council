@@ -1103,6 +1103,8 @@ class TestFamilyOutageDegradation:
             "x" * (rt._REVIEWER_ROUTE_UNAVAILABLE_MAX_CHARS + 1) + "UNSUPPORTED_CLIENT"
         )
         assert not rt.is_reviewer_route_unavailable(oversized_marker, process_failed=True)
+        advisory_only = "Please migrate to the Antigravity suite of products."
+        assert not rt.is_reviewer_route_unavailable(advisory_only, process_failed=True)
 
     def test_clean_exit_text_never_counts_as_wall_evidence(self) -> None:
         # round-6 channel trust: model-influenced stdout cannot forge a wall,
