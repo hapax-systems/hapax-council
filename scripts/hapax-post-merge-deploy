@@ -708,6 +708,16 @@ restart_user_unit() {
     systemctl --user restart "$unit"
 }
 
+stage_coord_activation_before_restart() {
+    local deploy_bin="$HOME/.local/lib/hapax-recovery/council/current/scripts/hapax-coord-deploy"
+    if [ ! -x "$deploy_bin" ]; then
+        echo "hapax-post-merge-deploy: refusing to restart hapax-coord.service before its activation worktree is staged; missing executable $deploy_bin; next: install the D2 recovery bundle, verify $deploy_bin exists, then rerun hapax-post-merge-deploy for this merge" >&2
+        return 5
+    fi
+    echo "staging hapax-coord activation before restarting hapax-coord.service"
+    "$deploy_bin"
+}
+
 # Per-file deploy uses `git cat-file -e $SHA:$path` + `git show $SHA:$path`
 # to read commit-time content, decoupling the deploy decision from local
 # working-tree state. Prior revision used [ -f $REPO/$f ] which raced the
@@ -1015,6 +1025,9 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
         base="$(basename "$f")"
         if systemctl --user is-active --quiet "$base"; then
             # Already running — restart to pick up the new unit definition.
+            if [ "$base" = "hapax-coord.service" ]; then
+                stage_coord_activation_before_restart
+            fi
             echo "restarting $base"
             restart_user_unit "$base"
         elif unit_content_auto_enable "$(git show "$SHA:$f" 2>/dev/null || true)"; then

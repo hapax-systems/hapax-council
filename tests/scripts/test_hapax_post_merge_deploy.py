@@ -629,6 +629,69 @@ def test_recovery_bundle_missing_installer_error_names_next_action(tmp_path: Pat
     assert "rerun hapax-post-merge-deploy" in result.stderr
 
 
+def test_coord_service_deploy_stages_activation_before_active_restart(
+    tmp_path: Path,
+) -> None:
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            "systemd/units/hapax-coord.service": (
+                "[Unit]\n"
+                "Description=Coord\n"
+                "OnFailure=notify-failure@%n.service\n"
+                "\n"
+                "[Service]\n"
+                "Type=simple\n"
+                "WorkingDirectory=%h/.cache/hapax/coord-activation/worktree\n"
+                "ExecStart=%h/.cache/hapax/coord-activation/worktree/scripts/run-dev.sh --daemon\n"
+            ),
+        },
+    )
+    home = tmp_path / "home"
+    coord_deploy = (
+        home
+        / ".local"
+        / "lib"
+        / "hapax-recovery"
+        / "council"
+        / "current"
+        / "scripts"
+        / "hapax-coord-deploy"
+    )
+    coord_deploy.parent.mkdir(parents=True)
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    coord_deploy.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'printf "%s\\n" "coord-deploy" >> "$HAPAX_SYSTEMCTL_CALLS"\n',
+        encoding="utf-8",
+    )
+    coord_deploy.chmod(0o755)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "staging hapax-coord activation before restarting hapax-coord.service" in result.stdout
+    calls = systemctl_calls.read_text(encoding="utf-8").splitlines()
+    assert calls.index("--user is-active --quiet hapax-coord.service") < calls.index("coord-deploy")
+    assert calls.index("coord-deploy") < calls.index("--user restart hapax-coord.service")
+
+
 def test_obs_audio_bind_unit_deploy_removes_stale_audio_l12_dropin(tmp_path: Path) -> None:
     unit_path = "systemd/units/hapax-obs-audio-bind.service"
     repo, sha = _repo_with_linear_commit(

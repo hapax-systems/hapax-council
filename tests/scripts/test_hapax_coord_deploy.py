@@ -74,6 +74,26 @@ def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
         encoding="utf-8",
     )
     fake_mv.chmod(0o755)
+    fake_git = bin_dir / "git"
+    fake_git.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'if [ "${HAPAX_FAIL_CHECKOUT_ON_SHA:-}" != "" ] '
+        '&& [ "${1:-}" = "-C" ] && [ "${3:-}" = "checkout" ] '
+        '&& [ "${6:-}" = "$HAPAX_FAIL_CHECKOUT_ON_SHA" ]; then\n'
+        "    exit 1\n"
+        "fi\n"
+        'if [ "${HAPAX_FAIL_CLEAN_ON_SHA:-}" != "" ] '
+        '&& [ "${1:-}" = "-C" ] && [ "${3:-}" = "clean" ]; then\n'
+        '    head="$(/usr/bin/git -C "$2" rev-parse HEAD 2>/dev/null || true)"\n'
+        '    if [ "$head" = "$HAPAX_FAIL_CLEAN_ON_SHA" ]; then\n'
+        "        exit 1\n"
+        "    fi\n"
+        "fi\n"
+        'exec /usr/bin/git "$@"\n',
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
     return bin_dir, calls
 
 
@@ -85,6 +105,8 @@ def _deploy(
     *,
     fail_restart: bool = False,
     fail_receipt_promote: bool = False,
+    fail_checkout_on_sha: str | None = None,
+    fail_clean_on_sha: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
@@ -97,6 +119,10 @@ def _deploy(
         env["HAPAX_SYSTEMCTL_FAIL_RESTART"] = "1"
     if fail_receipt_promote:
         env["HAPAX_FAIL_RECEIPT_PROMOTE"] = "1"
+    if fail_checkout_on_sha is not None:
+        env["HAPAX_FAIL_CHECKOUT_ON_SHA"] = fail_checkout_on_sha
+    if fail_clean_on_sha is not None:
+        env["HAPAX_FAIL_CLEAN_ON_SHA"] = fail_clean_on_sha
     return subprocess.run(
         [str(SCRIPT)],
         cwd=REPO_ROOT,
@@ -213,6 +239,48 @@ def test_coord_deploy_rolls_activation_back_when_restart_fails(tmp_path: Path) -
     assert _activation_head(worktree) == sha_a
     assert (worktree / ".deployed-sha").read_text(encoding="utf-8").strip() == sha_a
     assert len(_restart_calls(calls)) == 3
+
+
+def test_coord_deploy_rolls_activation_back_when_target_checkout_fails(
+    tmp_path: Path,
+) -> None:
+    repo, sha_a = _init_coord_repo(tmp_path)
+    act_root = tmp_path / "activation"
+    bin_dir, calls = _fake_systemctl(tmp_path)
+    first = _deploy(repo, act_root, bin_dir, calls)
+    assert first.returncode == 0, first.stderr
+    worktree = act_root / "worktree"
+
+    sha_b = _commit_and_push(repo, "checkout failure update\n")
+    result = _deploy(repo, act_root, bin_dir, calls, fail_checkout_on_sha=sha_b)
+
+    assert result.returncode == 1
+    assert "checkout activation worktree" in result.stderr
+    assert "failed before restart; rolled activation worktree back" in result.stderr
+    assert _activation_head(worktree) == sha_a
+    assert (worktree / ".deployed-sha").read_text(encoding="utf-8").strip() == sha_a
+    assert _restart_calls(calls) == ["--user restart hapax-coord.service"]
+
+
+def test_coord_deploy_rolls_activation_back_when_target_clean_fails(
+    tmp_path: Path,
+) -> None:
+    repo, sha_a = _init_coord_repo(tmp_path)
+    act_root = tmp_path / "activation"
+    bin_dir, calls = _fake_systemctl(tmp_path)
+    first = _deploy(repo, act_root, bin_dir, calls)
+    assert first.returncode == 0, first.stderr
+    worktree = act_root / "worktree"
+
+    sha_b = _commit_and_push(repo, "clean failure update\n")
+    result = _deploy(repo, act_root, bin_dir, calls, fail_clean_on_sha=sha_b)
+
+    assert result.returncode == 1
+    assert "clean untracked/ignored activation worktree" in result.stderr
+    assert "failed before restart; rolled activation worktree back" in result.stderr
+    assert _activation_head(worktree) == sha_a
+    assert (worktree / ".deployed-sha").read_text(encoding="utf-8").strip() == sha_a
+    assert _restart_calls(calls) == ["--user restart hapax-coord.service"]
 
 
 def test_coord_deploy_rolls_service_back_when_receipt_promote_fails(
