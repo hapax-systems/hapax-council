@@ -48,6 +48,8 @@ def _commit_and_push(repo: Path, body: str) -> str:
 
 def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
     calls = tmp_path / "systemctl-calls.txt"
+    service_state = tmp_path / "systemctl-service-state.txt"
+    service_state.write_text("inactive\n", encoding="utf-8")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake = bin_dir / "systemctl"
@@ -55,10 +57,23 @@ def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         'printf \'%s\\n\' "$*" >> "$HAPAX_SYSTEMCTL_CALLS"\n'
-        'if [ "${HAPAX_SYSTEMCTL_FAIL_RESTART:-0}" = "1" ] '
-        '&& [ "$*" = "--user restart hapax-coord.service" ]; then\n'
-        "    exit 1\n"
-        "fi\n"
+        'state_file="${HAPAX_SYSTEMCTL_SERVICE_STATE:?}"\n'
+        'case "$*" in\n'
+        '    "--user is-active --quiet hapax-coord.service")\n'
+        '        [ "$(cat "$state_file" 2>/dev/null || true)" = "active" ] && exit 0\n'
+        "        exit 3\n"
+        "        ;;\n"
+        '    "--user stop hapax-coord.service")\n'
+        '        if [ "${HAPAX_SYSTEMCTL_FAIL_STOP:-0}" = "1" ]; then exit 1; fi\n'
+        '        printf "inactive\\n" > "$state_file"\n'
+        "        exit 0\n"
+        "        ;;\n"
+        '    "--user restart hapax-coord.service")\n'
+        '        if [ "${HAPAX_SYSTEMCTL_FAIL_RESTART:-0}" = "1" ]; then exit 1; fi\n'
+        '        printf "active\\n" > "$state_file"\n'
+        "        exit 0\n"
+        "        ;;\n"
+        "esac\n"
         "exit 0\n",
         encoding="utf-8",
     )
@@ -83,6 +98,12 @@ def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
         '&& [ "${1:-}" = "-C" ] && [ "${3:-}" = "checkout" ] '
         '&& [ "${6:-}" = "$HAPAX_FAIL_CHECKOUT_ON_SHA" ]; then\n'
         "    exit 1\n"
+        "fi\n"
+        'if [ "${HAPAX_FAIL_MUTATE_WHILE_ACTIVE:-0}" = "1" ] '
+        '&& [ "${1:-}" = "-C" ] '
+        '&& { [ "${3:-}" = "checkout" ] || [ "${3:-}" = "clean" ]; } '
+        '&& [ "$(cat "$HAPAX_SYSTEMCTL_SERVICE_STATE" 2>/dev/null || true)" = "active" ]; then\n'
+        "    exit 66\n"
         "fi\n"
         'if [ "${HAPAX_FAIL_CLEAN_ON_SHA:-}" != "" ] '
         '&& [ "${1:-}" = "-C" ] && [ "${3:-}" = "clean" ]; then\n'
@@ -115,6 +136,8 @@ def _deploy(
         "HAPAX_COORD_DEPLOY_REPO": str(repo),
         "HAPAX_COORD_DEPLOY_ACT_ROOT": str(act_root),
         "HAPAX_SYSTEMCTL_CALLS": str(calls),
+        "HAPAX_SYSTEMCTL_SERVICE_STATE": str(calls.with_name("systemctl-service-state.txt")),
+        "HAPAX_FAIL_MUTATE_WHILE_ACTIVE": "1",
     }
     if fail_restart:
         env["HAPAX_SYSTEMCTL_FAIL_RESTART"] = "1"
@@ -139,13 +162,15 @@ def _activation_head(worktree: Path) -> str:
 
 
 def _restart_calls(calls: Path) -> list[str]:
+    return [
+        line for line in _systemctl_calls(calls) if line == "--user restart hapax-coord.service"
+    ]
+
+
+def _systemctl_calls(calls: Path) -> list[str]:
     if not calls.exists():
         return []
-    return [
-        line
-        for line in calls.read_text(encoding="utf-8").splitlines()
-        if line == "--user restart hapax-coord.service"
-    ]
+    return calls.read_text(encoding="utf-8").splitlines()
 
 
 def test_coord_deploy_contract_names_stable_activation_surfaces(tmp_path: Path) -> None:
@@ -171,6 +196,7 @@ def test_coord_deploy_contract_names_stable_activation_surfaces(tmp_path: Path) 
     assert contract["source_repo"] == str(repo)
     assert contract["activation_worktree"] == str(act_root / "worktree")
     assert contract["single_writer_lock"] == str(act_root / "deploy.lock")
+    assert contract["stops_service_before_worktree_mutation"] is True
     assert contract["writes_deployed_sha_after_restart"] is True
     assert contract["rolls_back_worktree_on_restart_failure"] is True
     assert contract["restarts_service"] == "hapax-coord.service"
@@ -250,6 +276,11 @@ def test_coord_deploy_cleans_activation_worktree_before_new_restart(
     assert _activation_head(worktree) == sha_b
     assert not stale.exists()
     assert (worktree / ".deployed-sha").read_text(encoding="utf-8").strip() == sha_b
+    calls_after_second_deploy = _systemctl_calls(calls)[2:]
+    assert calls_after_second_deploy[:2] == [
+        "--user is-active --quiet hapax-coord.service",
+        "--user stop hapax-coord.service",
+    ]
     assert _restart_calls(calls) == [
         "--user restart hapax-coord.service",
         "--user restart hapax-coord.service",
@@ -268,7 +299,8 @@ def test_coord_deploy_rolls_activation_back_when_restart_fails(tmp_path: Path) -
     result = _deploy(repo, act_root, bin_dir, calls, fail_restart=True)
 
     assert result.returncode == 1
-    assert "restart failed; rolled activation worktree back" in result.stderr
+    assert "restart failed; stopped hapax-coord.service before rollback" in result.stderr
+    assert "rolled activation worktree back" in result.stderr
     assert _activation_head(worktree) == sha_a
     assert (worktree / ".deployed-sha").read_text(encoding="utf-8").strip() == sha_a
     assert len(_restart_calls(calls)) == 3
@@ -290,9 +322,13 @@ def test_coord_deploy_rolls_activation_back_when_target_checkout_fails(
     assert result.returncode == 1
     assert "checkout activation worktree" in result.stderr
     assert "failed before restart; rolled activation worktree back" in result.stderr
+    assert "restarted hapax-coord.service on rollback sha" in result.stderr
     assert _activation_head(worktree) == sha_a
     assert (worktree / ".deployed-sha").read_text(encoding="utf-8").strip() == sha_a
-    assert _restart_calls(calls) == ["--user restart hapax-coord.service"]
+    assert _restart_calls(calls) == [
+        "--user restart hapax-coord.service",
+        "--user restart hapax-coord.service",
+    ]
 
 
 def test_coord_deploy_rolls_activation_back_when_target_clean_fails(
@@ -311,9 +347,13 @@ def test_coord_deploy_rolls_activation_back_when_target_clean_fails(
     assert result.returncode == 1
     assert "clean untracked/ignored activation worktree" in result.stderr
     assert "failed before restart; rolled activation worktree back" in result.stderr
+    assert "restarted hapax-coord.service on rollback sha" in result.stderr
     assert _activation_head(worktree) == sha_a
     assert (worktree / ".deployed-sha").read_text(encoding="utf-8").strip() == sha_a
-    assert _restart_calls(calls) == ["--user restart hapax-coord.service"]
+    assert _restart_calls(calls) == [
+        "--user restart hapax-coord.service",
+        "--user restart hapax-coord.service",
+    ]
 
 
 def test_coord_deploy_rolls_service_back_when_receipt_promote_fails(
@@ -330,7 +370,11 @@ def test_coord_deploy_rolls_service_back_when_receipt_promote_fails(
     result = _deploy(repo, act_root, bin_dir, calls, fail_receipt_promote=True)
 
     assert result.returncode == 1
-    assert "receipt write failed after restart; rolled activation worktree back" in result.stderr
+    assert (
+        "receipt write failed after restart; stopped hapax-coord.service before rollback"
+        in result.stderr
+    )
+    assert "rolled activation worktree back" in result.stderr
     assert _activation_head(worktree) == sha_a
     assert (worktree / ".deployed-sha").read_text(encoding="utf-8").strip() == sha_a
     assert not (worktree / ".deployed-sha.tmp").exists()
