@@ -8,6 +8,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UNIT = REPO_ROOT / "systemd" / "units" / "notify-failure@.service"
+INSTALLER = REPO_ROOT / "scripts" / "hapax-recovery-plane-install"
 
 
 def _write_fake_bin(path: Path, body: str) -> None:
@@ -19,17 +20,24 @@ def test_notify_failure_routes_through_p0_intake():
     text = UNIT.read_text(encoding="utf-8")
 
     assert (
-        "ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/"
+        "ExecStart=%h/.local/lib/hapax-recovery/council/scripts/"
         "hapax-p0-incident-intake service-failed %i"
     ) in text
+    assert ".cache/hapax/source-activation/worktree" not in text
+    assert "/data/cache/hapax/scratch" not in text
     assert "/usr/bin/notify-send" not in text
 
 
 def test_notify_failure_execstart_runs_intake_cli(tmp_path):
     home = tmp_path / "home"
-    source_activation = home / ".cache" / "hapax" / "source-activation"
-    source_activation.mkdir(parents=True)
-    (source_activation / "worktree").symlink_to(REPO_ROOT, target_is_directory=True)
+    recovery_dest = home / ".local" / "lib" / "hapax-recovery" / "council"
+    install = subprocess.run(
+        [str(INSTALLER), "--source", str(REPO_ROOT), "--dest", str(recovery_dest)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert install.returncode == 0, install.stderr
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()

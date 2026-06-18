@@ -43,6 +43,10 @@
 #   systemd/watchdogs/*            → install executable into ~/.local/bin
 #   systemd/logrotate.d/*          → logrotate configs; require sudo install
 #   systemd/system/**              → system-scoped configs; require sudo install
+#   scripts/hapax-recovery-plane-install, scripts/hapax-p0-incident-intake,
+#   scripts/hapax-coord-deploy, shared/{__init__,jsonl_append,p0_incident_intake}.py
+#                                  → refresh the stable D2 recovery bundle under
+#                                    ~/.local/lib/hapax-recovery/council
 #   scripts/hapax-*                → ensure ~/.local/bin/ symlink
 #   hooks/scripts/{cc-task-gate.impl.sh,agent-role.sh,escape-grant.sh,
 #                  hooks-doctor.sh,cc-task-gate.sh}
@@ -347,6 +351,7 @@ record_post_merge_trace() {
     HAPAX_TRACE_SYSTEMD_DROPINS="$(_trace_join "${SYSTEMD_DROPINS[@]}")" \
     HAPAX_TRACE_USER_PRESETS="$(_trace_join "${USER_PRESETS[@]}")" \
     HAPAX_TRACE_WATCHDOGS="$(_trace_join "${WATCHDOGS[@]}")" \
+    HAPAX_TRACE_RECOVERY_BUNDLE="$(_trace_join "${RECOVERY_BUNDLE[@]}")" \
     HAPAX_TRACE_SCRIPTS="$(_trace_join "${SCRIPTS[@]}")" \
     HAPAX_TRACE_SCRIPT_PY="$(_trace_join "${SCRIPT_PY[@]}")" \
     HAPAX_TRACE_QUAKE_ASSETS="$(_trace_join "${QUAKE_ASSETS[@]}")" \
@@ -389,6 +394,7 @@ deploy_groups = {
     "systemd_dropins": lines("HAPAX_TRACE_SYSTEMD_DROPINS"),
     "systemd_user_presets": lines("HAPAX_TRACE_USER_PRESETS"),
     "systemd_watchdogs": lines("HAPAX_TRACE_WATCHDOGS"),
+    "recovery_bundle": lines("HAPAX_TRACE_RECOVERY_BUNDLE"),
     "hapax_scripts": lines("HAPAX_TRACE_SCRIPTS"),
     "unit_backing_scripts": lines("HAPAX_TRACE_SCRIPT_PY"),
     "quake_assets": lines("HAPAX_TRACE_QUAKE_ASSETS"),
@@ -404,6 +410,7 @@ runtime_media_groups = [
         "systemd_system_units",
         "systemd_dropins",
         "systemd_watchdogs",
+        "recovery_bundle",
         "hapax_scripts",
         "unit_backing_scripts",
         "quake_assets",
@@ -501,7 +508,7 @@ else
     FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" | sort -u)"
 fi
 
-PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=()
+PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); RECOVERY_BUNDLE=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=()
 GATE_CLOSURE=()
 SYSTEMD_UNCLASSIFIED=()
 AUDIO_SAFE_RESTARTS=()
@@ -752,6 +759,13 @@ while IFS= read -r f; do
         systemd/udev/*.rules)             ;; # udev rules; require sudo install + udevadm reload (operator action)
         systemd/logrotate.d/*)            ;; # logrotate configs; require sudo install
         systemd/system/*)                 ;; # system-scoped configs; require sudo install
+        scripts/hapax-recovery-plane-install|scripts/hapax-p0-incident-intake|scripts/hapax-coord-deploy)
+            RECOVERY_BUNDLE+=("$f")
+            SCRIPTS+=("$f")
+            ;;
+        shared/__init__.py|shared/jsonl_append.py|shared/p0_incident_intake.py)
+            RECOVERY_BUNDLE+=("$f")
+            ;;
         hooks/scripts/cc-task-gate.impl.sh|hooks/scripts/agent-role.sh|hooks/scripts/escape-grant.sh|hooks/scripts/cc-task-gate-bootstrap.py|hooks/scripts/hooks-doctor.sh|hooks/scripts/cc-task-gate.sh)
             GATE_CLOSURE+=("$f") ;;
         assets/quake/maps/*|assets/quake/qc/*|assets/quake/csqc/*|assets/quake/models/*|assets/quake/sound/*|assets/quake/glsl/*|assets/quake/scripts/*|assets/quake/config/*|assets/quake/darkplaces/*)
@@ -907,6 +921,21 @@ if [ "${#WATCHDOGS[@]}" -gt 0 ]; then
             fi
         done
     done
+    DID_ANYTHING=1
+fi
+
+# --- D2 recovery-plane stable bundle ---
+if [ "${#RECOVERY_BUNDLE[@]}" -gt 0 ]; then
+    echo "recovery bundle files changed (${#RECOVERY_BUNDLE[@]}):"
+    for f in "${RECOVERY_BUNDLE[@]}"; do
+        echo "  $f"
+    done
+    RECOVERY_INSTALLER="$REPO/scripts/hapax-recovery-plane-install"
+    if [ ! -x "$RECOVERY_INSTALLER" ]; then
+        echo "hapax-post-merge-deploy: missing executable recovery bundle installer: $RECOVERY_INSTALLER" >&2
+        exit 2
+    fi
+    "$RECOVERY_INSTALLER" --source "$REPO" --source-ref "$SHA"
     DID_ANYTHING=1
 fi
 

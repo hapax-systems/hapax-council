@@ -1,0 +1,11 @@
+# Hapax-Auto-Enable: true
+[Unit]
+Description=Run Hapax coord deploy periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

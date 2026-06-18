@@ -163,6 +163,31 @@ def _repo_with_quake_asset_commit(tmp_path: Path) -> tuple[Path, str]:
     return repo, _git(repo, "rev-parse", "HEAD")
 
 
+def _repo_with_recovery_bundle_change(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "trace-test@example.test")
+    _git(repo, "config", "user.name", "Trace Test")
+    installer = repo / "scripts" / "hapax-recovery-plane-install"
+    installer.parent.mkdir(parents=True)
+    installer.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'printf \'%s\\n\' "$*" >> "$HAPAX_RECOVERY_INSTALL_CALLS"\n',
+        encoding="utf-8",
+    )
+    installer.chmod(0o755)
+    _git(repo, "add", "scripts/hapax-recovery-plane-install")
+    _git(repo, "commit", "-m", "base recovery installer")
+    shared = repo / "shared" / "p0_incident_intake.py"
+    shared.parent.mkdir(parents=True)
+    shared.write_text("# changed intake closure\n", encoding="utf-8")
+    _git(repo, "add", "shared/p0_incident_intake.py")
+    _git(repo, "commit", "-m", "update recovery intake closure")
+    return repo, _git(repo, "rev-parse", "HEAD")
+
+
 def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
     calls = tmp_path / "systemctl-calls.txt"
     bin_dir = tmp_path / "bin"
@@ -547,6 +572,37 @@ def test_quake_asset_changes_install_and_restart_active_darkplaces(tmp_path: Pat
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
     assert record["deploy_groups"]["quake_assets"] == ["assets/quake/maps/screwm.bsp"]
     assert "quake_assets" in record["avsdlc"]["runtime_media_witness_groups"]
+
+
+def test_recovery_bundle_changes_refresh_stable_installed_closure(tmp_path: Path) -> None:
+    repo, sha = _repo_with_recovery_bundle_change(tmp_path)
+    home = tmp_path / "home"
+    install_calls = tmp_path / "recovery-install-calls.txt"
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "REPO": str(repo),
+        "HAPAX_RECOVERY_INSTALL_CALLS": str(install_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "recovery bundle files changed (1)" in result.stdout
+    assert install_calls.read_text(encoding="utf-8").splitlines() == [
+        f"--source {repo} --source-ref {sha}"
+    ]
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["deploy_groups"]["recovery_bundle"] == ["shared/p0_incident_intake.py"]
+    assert "recovery_bundle" in record["avsdlc"]["runtime_media_witness_groups"]
 
 
 def test_obs_audio_bind_unit_deploy_removes_stale_audio_l12_dropin(tmp_path: Path) -> None:
