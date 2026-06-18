@@ -1706,6 +1706,50 @@ def test_does_not_auto_arm_governance_sensitive_task(tmp_path: Path) -> None:
     assert any(reason.startswith("release_auto_arm_ineligible:") for reason in decision["reasons"])
 
 
+def test_auto_arms_pass_backed_runtime_secret_subscription_task(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-glmcp-secret",
+        status="pr_open",
+        pr=706,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "title": "Activate GLMCP lane with pass-backed secret",
+            "pass_backed_secret_only": True,
+            "no_secret_value_storage": True,
+            "secret_entry": "glmcp/api-key",
+            "subscription_quota_only": True,
+            "supported_tools_only": True,
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(706)]
+    ledger = tmp_path / "ledger.jsonl"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=ledger,
+    )
+
+    armed = note.read_text(encoding="utf-8")
+    assert "release_authorized: true" in armed
+    assert "stage: S7_RELEASE" in armed
+    assert ["gh", "pr", "merge", "706", "--repo", "owner/repo", "--auto", "--squash"] in (
+        runner.calls
+    )
+    decision = next(d for d in report["decisions"] if d["pr"] == 706)
+    assert decision["action"] == "queue"
+    assert decision["auto_arm"] is True
+    record = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+    assert record["kind"] == "release_auto_arm"
+    assert record["task_id"] == "stranded-glmcp-secret"
+
+
 def test_dry_run_reports_release_auto_arm_without_writing_note(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     note = _write_task(
