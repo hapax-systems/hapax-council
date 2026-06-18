@@ -229,6 +229,13 @@ def test_fresh_glmcp_admission_receipt_marks_glmcp_fresh(tmp_path: Path) -> None
     assert glmcp_snapshot["subscription_quota_state"] == "fresh"
     assert glmcp_snapshot["fresh_until"] == "2026-06-10T00:10:00Z"
     assert any("glmcp-quota-admission.yaml" in ref for ref in glmcp_snapshot["evidence_refs"])
+    assert any(
+        "witness:supported-tool-usage-witness" in ref
+        and "supported_tool:hapax-glmcp-reviewer" in ref
+        and "endpoint:https://api.z.ai/api/coding/paas/v4" in ref
+        and "model:glm-5.2" in ref
+        for ref in glmcp_snapshot["evidence_refs"]
+    )
     assert "finite" in glmcp_snapshot["operator_visible_reason"]
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 1
@@ -735,6 +742,39 @@ evidence_ref: supported-tool-usage-witness
     assert "malformed stale_after_seconds" in result.stderr
     assert "non-positive stale_after_seconds 0" in result.stderr
     assert "false-negative recovery" in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
+
+
+def test_glmcp_admission_receipt_requires_explicit_stale_after_seconds(
+    tmp_path: Path,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    (relay / "glmcp-quota-admission-missing-stale-after.yaml").write_text(
+        """status: quota_available
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5.2
+observed_at: 2026-06-09T23:55:00Z
+evidence_ref: supported-tool-usage-witness
+""",
+        encoding="utf-8",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["glmcp.review.direct"] == "unknown"
+    assert "stale_after_seconds missing" in result.stderr
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
 

@@ -114,7 +114,6 @@ GLMCP_ADMISSION_ENDPOINTS = frozenset(
     endpoint for endpoints in GLMCP_ADMISSION_TOOL_ENDPOINTS.values() for endpoint in endpoints
 )
 GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2", "glm-5.2[1m]"})
-GLMCP_ADMISSION_DEFAULT_STALE_AFTER_SECONDS = 900
 GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS = 3600
 GLMCP_ADMISSION_RECEIPT_GLOB = "*glmcp-quota-admission*.yaml"
 GLMCP_ADMISSION_RECHECK_COMMAND = (
@@ -223,6 +222,10 @@ def _warn_ignored_glmcp_admission(path: Path, reason: str) -> None:
         f"{GLMCP_ADMISSION_RECOVERY_HINT}",
         file=sys.stderr,
     )
+
+
+def _evidence_value(value: str, *, max_chars: int) -> str:
+    return " ".join(value.split())[:max_chars]
 
 
 def active_quota_walls(
@@ -349,7 +352,8 @@ def active_glmcp_admission_receipts(
                 f"model {model or 'missing'}; expected GLM-5.2",
             )
             continue
-        if not fields.get("evidence_ref", "").strip():
+        receipt_evidence_ref = fields.get("evidence_ref", "").strip()
+        if not receipt_evidence_ref:
             _warn_ignored_glmcp_admission(path, "evidence_ref missing")
             continue
         observed_raw = (
@@ -370,13 +374,12 @@ def active_glmcp_admission_receipts(
                 "observed_at is in the future",
             )
             continue
+        stale_after_raw = fields.get("stale_after_seconds", "").strip()
+        if not stale_after_raw:
+            _warn_ignored_glmcp_admission(path, "stale_after_seconds missing")
+            continue
         try:
-            stale_after_seconds = int(
-                fields.get(
-                    "stale_after_seconds",
-                    str(GLMCP_ADMISSION_DEFAULT_STALE_AFTER_SECONDS),
-                )
-            )
+            stale_after_seconds = int(stale_after_raw)
         except ValueError:
             _warn_ignored_glmcp_admission(
                 path,
@@ -407,7 +410,9 @@ def active_glmcp_admission_receipts(
             GlmcpAdmission(
                 evidence_ref=(
                     "relay-receipt:"
-                    f"{path.name}:observed_at:{observed_at.isoformat().replace('+00:00', 'Z')}:"
+                    f"{path.name}:witness:{_evidence_value(receipt_evidence_ref, max_chars=240)}:"
+                    f"supported_tool:{supported_tool}:endpoint:{endpoint}:model:{model}:"
+                    f"observed_at:{observed_at.isoformat().replace('+00:00', 'Z')}:"
                     f"fresh_until:{fresh_until.isoformat().replace('+00:00', 'Z')}"
                 ),
                 fresh_until=fresh_until,
