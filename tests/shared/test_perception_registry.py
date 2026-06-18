@@ -250,6 +250,47 @@ def test_sixteen_points(live_registry) -> None:
     assert len(live_registry.points) == 16
 
 
+def test_ir_edge_points_are_registered_exactly(live_registry) -> None:
+    expected = {
+        "ir-desk": (
+            "desk",
+            "/api/pi/desk/ir",
+            "~/hapax-state/pi-noir/desk.json",
+        ),
+        "ir-room": (
+            "room",
+            "/api/pi/room/ir",
+            "~/hapax-state/pi-noir/room.json",
+        ),
+        "ir-overhead": (
+            "overhead",
+            "/api/pi/overhead/ir",
+            "~/hapax-state/pi-noir/overhead.json",
+        ),
+    }
+    ir_points = {
+        point_id: point
+        for point_id, point in live_registry.points.items()
+        if point.geometry == GeometryClass.IR_EDGE
+    }
+    assert set(ir_points) == set(expected)
+    for point_id, (role, endpoint, state_path) in expected.items():
+        point = ir_points[point_id]
+        assert point.exposure == ExposureDomain.QUARANTINE
+        assert point.pipewire_node is None
+        assert point.hw_source is None
+        assert point.edge_source is not None
+        assert point.edge_source.role == role
+        assert point.edge_source.http_endpoint == endpoint
+        assert point.edge_source.state_path == state_path
+        assert {name: channel.kind for name, channel in point.channels.items()} == {
+            "person": "person",
+            "gaze": "gaze",
+            "hands": "hands",
+            "biometrics": "biometrics",
+        }
+
+
 def test_all_geometry_classes_represented(live_registry) -> None:
     present = {p.geometry for p in live_registry.points.values()}
     assert present == set(GeometryClass)
