@@ -3,21 +3,22 @@
 # Changes to these paths require a deviation record in
 # research/protocols/deviations/DEVIATION-NNN.md.
 #
-# Prefix match: "agents/hapax_daimonion/proofs/" freezes everything under it.
+# Prefix match: paths ending in "/" freeze everything under them.
 
-# ── Inner zone: absolute freeze (experiment-specific code) ──
-agents/hapax_daimonion/grounding_ledger.py
-agents/hapax_daimonion/grounding_evaluator.py
-agents/hapax_daimonion/stats.py
-agents/hapax_daimonion/experiment_runner.py
-agents/hapax_daimonion/eval_grounding.py
+# Live SCED / segment-ruler surfaces.
+agents/deliberative_council/rubrics.py
+agents/hapax_daimonion/daily_segment_prep.py
+agents/hapax_daimonion/segment_composability_gate.py
+shared/segment_prep_a0_runner.py
+shared/segment_prep_consultation.py
+shared/segment_prep_contract.py
+shared/segment_prep_dv_reader.py
+shared/segment_prep_pause.py
+shared/segment_prep_phase_controller.py
+
+# Research record surfaces.
 agents/hapax_daimonion/proofs/
 
-# ── Middle zone: behavioral freeze (shared integration points) ──
-agents/hapax_daimonion/conversation_pipeline.py
-agents/hapax_daimonion/persona.py
-agents/hapax_daimonion/conversational_policy.py
-
-# ── Experiment config (self-protecting) ──
+# Experiment config (self-protecting).
 experiment-phase.json
 experiment-freeze-manifest.txt
