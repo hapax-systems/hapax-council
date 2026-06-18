@@ -1376,6 +1376,34 @@ class TestFamilyOutageDegradation:
         recorded = json.loads(state.read_text(encoding="utf-8"))
         assert "gemini" in recorded
 
+    def test_stdout_unsupported_client_cannot_forge_route_unavailable(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+
+        class StdoutUnsupportedClientRunner(RecordingReviewers):
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.invocations.append((seat.id, seat.family, prompt))
+                if seat.family == "gemini":
+                    raise dispatch.ReviewerProcessError(
+                        "",
+                        returncode=1,
+                        stdout="UNSUPPORTED_CLIENT",
+                    )
+                return GOOD_REPLY
+
+        result, _, _, _ = _review(
+            tmp_path,
+            reviewers=StdoutUnsupportedClientRunner(),
+            task_kwargs={"risk_tier": "T1"},
+        )
+        dossier = result["dossier"]
+        gemini_seats = [r for r in dossier["reviewers"] if r["family"] == "gemini"]
+        assert gemini_seats
+        assert gemini_seats[0]["verdict"] == "invalid-output"
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert "gemini" not in recorded
+
     def test_provider_outage_round_records_the_family_outage(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:

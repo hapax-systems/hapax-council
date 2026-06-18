@@ -550,6 +550,8 @@ def dispatch_reviews(
         process_output = ""
         quota_wall_output = ""
         quota_wall_stdout = ""
+        diagnostic_output = ""
+        diagnostic_stdout = ""
         try:
             reply = reviewer_runner(seat, family_cfgs[seat.family], prompts[index])
         except ReviewerProcessError as exc:
@@ -560,6 +562,8 @@ def dispatch_reviews(
             if exc.stderr.strip():
                 quota_wall_output = exc.stderr
                 quota_wall_stdout = exc.stdout
+                diagnostic_output = exc.stderr
+                diagnostic_stdout = exc.stdout
             else:
                 stdout = exc.stdout.strip()
                 quota_wall_output = stdout if stdout and "\n" not in stdout else ""
@@ -583,10 +587,10 @@ def dispatch_reviews(
                     quota_wall_output, process_failed=True, model_stdout=quota_wall_stdout
                 )
                 provider_outage = review_team.is_provider_outage(
-                    quota_wall_output, process_failed=True, model_stdout=quota_wall_stdout
+                    diagnostic_output, process_failed=True, model_stdout=diagnostic_stdout
                 )
                 route_unavailable = review_team.is_reviewer_route_unavailable(
-                    quota_wall_output, process_failed=True, model_stdout=quota_wall_stdout
+                    diagnostic_output, process_failed=True, model_stdout=diagnostic_stdout
                 )
             else:
                 walled = False
