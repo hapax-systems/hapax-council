@@ -12,7 +12,7 @@ def test_segment_prep_emit_health_service_routes_failure_to_notify_intake() -> N
     text = (UNITS / "hapax-segment-prep-emit-health.service").read_text(encoding="utf-8")
 
     assert "OnFailure=notify-failure@%n.service" in text
-    assert "notify-failure @%n.service" not in text
+    assert "OnFailure=notify-failure @%n.service" not in text
     assert f"WorkingDirectory={SOURCE_ACTIVATION}" in text
     assert "EnvironmentFile=-/run/user/1000/hapax-secrets.env" in text
     assert f"Environment=PYTHONPATH={SOURCE_ACTIVATION}" in text
