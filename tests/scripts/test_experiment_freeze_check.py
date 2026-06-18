@@ -3,6 +3,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "experiment-freeze-check"
 MANIFEST = REPO_ROOT / "experiment-freeze-manifest.txt"
@@ -20,6 +22,7 @@ LIVE_RULER_PATHS = {
 }
 
 RETIRED_CYCLE2_DYAD_PATHS = {
+    "agents/hapax_daimonion/grounding_ledger.py",
     "agents/hapax_daimonion/grounding_evaluator.py",
     "agents/hapax_daimonion/stats.py",
     "agents/hapax_daimonion/experiment_runner.py",
@@ -92,9 +95,12 @@ def test_manifest_tracks_live_segment_ruler_not_retired_dyad() -> None:
     assert paths.isdisjoint(RETIRED_CYCLE2_DYAD_PATHS)
 
 
-def test_active_phase_blocks_staged_live_ruler_change(tmp_path: Path) -> None:
+@pytest.mark.parametrize("frozen_path", sorted(LIVE_RULER_PATHS))
+def test_active_phase_blocks_staged_live_ruler_change(
+    tmp_path: Path,
+    frozen_path: str,
+) -> None:
     repo = _repo_with_active_freeze(tmp_path)
-    frozen_path = "agents/hapax_daimonion/daily_segment_prep.py"
     _write(repo, frozen_path, "changed\n")
     _git(repo, "add", frozen_path)
 
