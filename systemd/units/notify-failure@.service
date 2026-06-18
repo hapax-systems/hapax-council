@@ -1,7 +1,6 @@
 [Unit]
 Description=Send failure notification for %i
-ConditionPathExists=%h/.local/lib/hapax-recovery/council/current/scripts/hapax-p0-incident-intake
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/lib/hapax-recovery/council/current/scripts/hapax-p0-incident-intake service-failed %i
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-p0-incident-intake service-failed %i

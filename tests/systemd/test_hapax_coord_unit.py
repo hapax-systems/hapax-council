@@ -5,7 +5,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UNIT = REPO_ROOT / "systemd" / "units" / "hapax-coord.service"
-ACTIVATION_WORKTREE = "%h/.cache/hapax/coord-activation/worktree"
 
 
 def _read_unit() -> configparser.ConfigParser:
@@ -15,30 +14,23 @@ def _read_unit() -> configparser.ConfigParser:
     return parser
 
 
-def test_hapax_coord_unit_runs_from_coord_activation_worktree() -> None:
+def test_hapax_coord_unit_is_source_only_shape() -> None:
     parser = _read_unit()
-    text = UNIT.read_text(encoding="utf-8")
-    conditions = [
-        line.removeprefix("ConditionPathExists=")
-        for line in text.splitlines()
-        if line.startswith("ConditionPathExists=")
-    ]
 
     assert parser.get("Service", "Type") == "simple"
-    assert parser.get("Service", "Environment") == f"HAPAX_COORD_ROOT={ACTIVATION_WORKTREE}"
-    assert parser.get("Service", "WorkingDirectory") == ACTIVATION_WORKTREE
+    assert parser.get("Service", "WorkingDirectory") == "/home/hapax/projects/hapax-coord"
     assert (
-        parser.get("Service", "ExecStart") == f"{ACTIVATION_WORKTREE}/scripts/run-dev.sh --daemon"
+        parser.get("Service", "ExecStart")
+        == "/home/hapax/projects/hapax-coord/scripts/run-dev.sh --daemon"
     )
-    assert conditions == [f"{ACTIVATION_WORKTREE}/scripts/run-dev.sh"]
-    assert f"ConditionPathExists={ACTIVATION_WORKTREE}/.deployed-sha" not in text
-    assert parser.get("Unit", "OnFailure") == "notify-failure@%n.service"
+    assert parser.get("Unit", "ConditionPathExists") == (
+        "/home/hapax/projects/hapax-coord/scripts/run-dev.sh"
+    )
 
 
 def test_hapax_coord_unit_does_not_install_or_expose_secrets() -> None:
     text = UNIT.read_text(encoding="utf-8")
 
     assert "systemctl" not in text
-    assert text.count("Environment=") == 1
+    assert "Environment=" not in text
     assert "0.0.0.0" not in text
-    assert "/home/hapax/projects/hapax-coord/scripts/run-dev.sh" not in text

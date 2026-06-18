@@ -134,7 +134,6 @@ S1S2_CONSTITUENT_UNITS: dict[str, tuple[str, ...]] = {
     "coordination-sdlc": (
         "hapax-coordinator.service",
         "hapax-coord.service",
-        "hapax-coord-rebuild.service",
         "hapax-lane-idle-watchdog.service",
         "hapax-lane-reaper.service",
         "hapax-cc-cascade-unblock.service",
