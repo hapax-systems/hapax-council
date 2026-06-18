@@ -932,7 +932,8 @@ if [ "${#RECOVERY_BUNDLE[@]}" -gt 0 ]; then
     done
     RECOVERY_INSTALLER="$REPO/scripts/hapax-recovery-plane-install"
     if [ ! -x "$RECOVERY_INSTALLER" ]; then
-        echo "hapax-post-merge-deploy: missing executable recovery bundle installer: $RECOVERY_INSTALLER" >&2
+        echo "hapax-post-merge-deploy: missing executable recovery bundle installer: $RECOVERY_INSTALLER; next: ensure scripts/hapax-recovery-plane-install is present and executable at the deployed source-activation SHA, then rerun hapax-post-merge-deploy for this merge" \
+            >&2
         exit 2
     fi
     "$RECOVERY_INSTALLER" --source "$REPO" --source-ref "$SHA"

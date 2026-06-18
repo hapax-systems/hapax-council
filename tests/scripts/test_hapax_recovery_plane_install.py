@@ -17,6 +17,31 @@ BUNDLE_FILES = {
 }
 
 
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def _write_minimal_bundle(repo: Path, token: str) -> None:
+    files = {
+        "scripts/hapax-p0-incident-intake": f"#!/bin/sh\necho intake {token}\n",
+        "scripts/hapax-coord-deploy": f"#!/bin/sh\necho coord {token}\n",
+        "shared/__init__.py": f"# init {token}\n",
+        "shared/jsonl_append.py": f"# jsonl {token}\n",
+        "shared/p0_incident_intake.py": f"# intake module {token}\n",
+    }
+    for relative, body in files.items():
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body, encoding="utf-8")
+
+
 def test_recovery_plane_install_materializes_minimal_bundle(tmp_path: Path) -> None:
     dest = tmp_path / "council"
 
@@ -40,6 +65,46 @@ def test_recovery_plane_install_materializes_minimal_bundle(tmp_path: Path) -> N
         mode = (dest / relative).stat().st_mode
         assert mode & stat.S_IXUSR, f"{relative} must be executable"
     assert (dest / "manifest.json").is_file()
+
+
+def test_recovery_plane_install_source_ref_ignores_dirty_worktree(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    _git(source, "init", "-b", "main")
+    _git(source, "config", "user.email", "recovery-install-test@example.test")
+    _git(source, "config", "user.name", "Recovery Install Test")
+    _write_minimal_bundle(source, "committed")
+    _git(source, "add", ".")
+    _git(source, "commit", "-m", "committed bundle")
+    committed_sha = _git(source, "rev-parse", "HEAD")
+    (source / "scripts" / "hapax-coord-deploy").write_text(
+        "#!/bin/sh\necho coord dirty\n",
+        encoding="utf-8",
+    )
+    dest = tmp_path / "council"
+
+    result = subprocess.run(
+        [
+            str(SCRIPT),
+            "--source",
+            str(source),
+            "--source-ref",
+            committed_sha,
+            "--dest",
+            str(dest),
+            "--json",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    manifest = json.loads(result.stdout)
+    assert manifest["source_ref"] == committed_sha
+    assert (dest / "scripts" / "hapax-coord-deploy").read_text(encoding="utf-8") == (
+        "#!/bin/sh\necho coord committed\n"
+    )
 
 
 def test_installed_p0_intake_runs_without_source_activation(tmp_path: Path) -> None:

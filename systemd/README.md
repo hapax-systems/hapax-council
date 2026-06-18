@@ -296,9 +296,13 @@ rebuild worktree shares that ref namespace with the canonical checkout, so when
 `hapax-post-merge-deploy.service`, which resolves the new HEAD SHA and invokes
 the script.
 
-Loop-safety: the deploy script only writes to `~/.config/systemd/user/`,
-`~/.config/pipewire/`, `~/.local/bin/`, and `~/.cache/hapax/post-merge-traces/`;
-it never touches `.git/refs`. Belt-and-braces: `StartLimitIntervalSec=60` /
+Loop-safety: the deploy script writes only to deploy destinations:
+`~/.config/systemd/user/`, `~/.config/systemd/user-preset/`,
+`~/.config/pipewire/`, `~/.config/wireplumber/`, `~/.config/hapax/`,
+`~/.local/bin/`, `~/.local/share/wireplumber/scripts/hapax/`,
+`~/.local/lib/hapax-recovery/council/`, the canonical gate destination under
+`~/.local/lib/hapax/hooks/`, and `~/.cache/hapax/post-merge-traces/`. It never
+touches `.git/refs`. Belt-and-braces: `StartLimitIntervalSec=60` /
 `StartLimitBurst=3` on the `[Unit]` section caps runaway fires. Failures route
 through `OnFailure=notify-failure@%n.service`. Trace inspection is documented
 at `docs/runbooks/post-merge-traces.md`.

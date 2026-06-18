@@ -605,6 +605,30 @@ def test_recovery_bundle_changes_refresh_stable_installed_closure(tmp_path: Path
     assert "recovery_bundle" in record["avsdlc"]["runtime_media_witness_groups"]
 
 
+def test_recovery_bundle_missing_installer_error_names_next_action(tmp_path: Path) -> None:
+    repo, sha = _repo_with_recovery_bundle_change(tmp_path)
+    (repo / "scripts" / "hapax-recovery-plane-install").chmod(0o644)
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path / "home"),
+        "REPO": str(repo),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "traces" / "post-merge-traces.jsonl"),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 2
+    assert "missing executable recovery bundle installer" in result.stderr
+    assert "next: ensure scripts/hapax-recovery-plane-install" in result.stderr
+    assert "rerun hapax-post-merge-deploy" in result.stderr
+
+
 def test_obs_audio_bind_unit_deploy_removes_stale_audio_l12_dropin(tmp_path: Path) -> None:
     unit_path = "systemd/units/hapax-obs-audio-bind.service"
     repo, sha = _repo_with_linear_commit(
