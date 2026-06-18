@@ -1441,6 +1441,13 @@ class TestGoGate:
         f = self._lit("Turtle will not parse", file="docs/bad.ttl", line=2)
         assert rt.verify_literal_defect_critical(f, tmp_path) is True
 
+    def test_real_turtle_parse_error_with_absent_bad_literal_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "docs/bad.ttl", "@prefix ex: <https://example.test/> .\nex:s ex:p\n")
+        f = self._lit("Turtle will not parse", file="docs/bad.ttl", line=2)
+        f["detail"] = "The file contains `@bad/path.py` and will fail to parse."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
     def test_clean_trig_parse_claim_is_phantom(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         self._py(

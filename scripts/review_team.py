@@ -614,11 +614,11 @@ def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) 
         source = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return True  # unreadable — cannot verify, keep
-    if namespace_claim and _line_literal_claim_refuted(finding, source):
-        return False
     rdf_format = _rdf_parse_format(path)
     if rdf_format is not None and syntax_claim:
         return not _rdf_parses_clean(path, rdf_format)
+    if namespace_claim and _line_literal_claim_refuted(finding, source):
+        return False
     if rdf_format is not None:
         return True
     if path.suffix != ".py":
