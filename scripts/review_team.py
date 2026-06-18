@@ -511,9 +511,8 @@ _GO_GATE_OFF_ENV = "HAPAX_REVIEW_GO_GATE_OFF"
 def _is_syntax_compile_claim(finding: Mapping[str, Any]) -> bool:
     """True iff the critical asserts a SYNTAX/COMPILE defect — the ONLY class the verifier may
     refute. Semantic claims ('corrupt state', off-by-one) are never matched, so never invalidated."""
-    title = str(finding.get("title", ""))
     text = f"{finding.get('title', '')}\n{finding.get('detail', '')}"
-    if _NEGATED_SYNTAX_COMPILE_RE.search(text) and not _SYNTAX_COMPILE_RE.search(title):
+    if _NEGATED_SYNTAX_COMPILE_RE.search(text):
         return False
     return bool(_SYNTAX_COMPILE_RE.search(text))
 
