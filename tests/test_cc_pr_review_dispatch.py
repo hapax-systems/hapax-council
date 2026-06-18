@@ -915,6 +915,24 @@ class TestReceiptAndWake:
         assert sent[0][0].endswith("hapax-codex-send")
         assert sent[0][1:3] == ["--session", "cx-glmcp"]
 
+    def test_glm_prefix_authoring_lane_auto_wakes_via_glmcp_codex_session(
+        self, tmp_path: Path
+    ) -> None:
+        sent: list[list[str]] = []
+        reviewers = RecordingReviewers(replies={"codex": BLOCK_REPLY})
+        result, _, _, _ = _review(
+            tmp_path,
+            reviewers=reviewers,
+            send_runner=lambda cmd: sent.append(list(cmd)),
+            task_kwargs={"assigned_to": "glm-alpha"},
+        )
+
+        assert result["dossier"]["writer_family"] == "glm"
+        assert result["dossier"]["review_team_verdict"] == "blocked"
+        assert sent, "auto-wake send was not attempted"
+        assert sent[0][0].endswith("hapax-codex-send")
+        assert sent[0][1:3] == ["--session", "cx-glmcp"]
+
     def test_existing_wake_payload_is_not_resent(self, tmp_path: Path) -> None:
         sent: list[list[str]] = []
         reviewers = RecordingReviewers(replies={"codex": BLOCK_REPLY})

@@ -116,6 +116,14 @@ def load_family_outage_witness(now_iso: str, state_path: Path | None = None) -> 
     return out
 
 
+def send_session_for_lane(lane: str) -> str:
+    """Normalize task lane labels to the concrete sender session name."""
+
+    if lane.startswith("glm-"):
+        return "cx-glmcp"
+    return SEND_SESSION_ALIASES.get(lane, lane)
+
+
 def load_family_outage(now_iso: str, state_path: Path | None = None) -> frozenset[str]:
     """Families currently out on an observed quota wall (TTL-bounded)."""
 
@@ -840,7 +848,7 @@ def auto_wake(
     lane = str(frontmatter.get("assigned_to") or "").strip().lower()
     family = review_team.writer_family_for_lane(lane, registry)
     send_script = SEND_SCRIPTS.get(family)
-    send_session = SEND_SESSION_ALIASES.get(lane, lane)
+    send_session = send_session_for_lane(lane)
     if lane and send_script:
         cmd = [
             str(SCRIPTS_DIR / send_script),

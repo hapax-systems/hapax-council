@@ -415,7 +415,7 @@ def test_empty_pass_first_line_is_rejected(tmp_path: Path) -> None:
     assert "returned an empty first line" in result.stderr
 
 
-def test_pass_failure_reports_next_action_and_pass_reason(tmp_path: Path) -> None:
+def test_pass_failure_reports_next_action_without_pass_stderr(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
     env["TMPDIR"] = str(tmp_path)
     _write_executable(
@@ -438,7 +438,9 @@ def test_pass_failure_reports_next_action_and_pass_reason(tmp_path: Path) -> Non
 
     assert result.returncode == 5
     assert "run: pass show 'glmcp/api-key'" in result.stderr
-    assert "pass said: gpg: decryption failed" in result.stderr
+    assert "pass returned an error" in result.stderr
+    assert "gpg: decryption failed" not in result.stderr
+    assert "pass said:" not in result.stderr
     assert not list(tmp_path.glob("hapax-glmcp-pass.*"))
 
 
