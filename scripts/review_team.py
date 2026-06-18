@@ -132,6 +132,7 @@ _PROVIDER_OUTAGE_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 _PROVIDER_OUTAGE_MAX_CHARS = 4_000
+_REVIEWER_ROUTE_UNAVAILABLE_MAX_CHARS = 4_000
 _UNSUPPORTED_REVIEWER_CLIENT_RE = re.compile(
     r"(?:IneligibleTierError|UNSUPPORTED_CLIENT|client is no longer supported|"
     r"migrate to the Antigravity suite)",
@@ -248,7 +249,7 @@ def is_reviewer_route_unavailable(
     stripped = text.strip()
     if model_stdout.strip():
         return False
-    if len(stripped) > _PROVIDER_OUTAGE_MAX_CHARS:
+    if len(stripped) > _REVIEWER_ROUTE_UNAVAILABLE_MAX_CHARS:
         return False
     return bool(_UNSUPPORTED_REVIEWER_CLIENT_RE.search(stripped))
 

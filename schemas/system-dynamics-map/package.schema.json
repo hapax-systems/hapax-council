@@ -33,7 +33,7 @@
       "type": "string"
     },
     "git_sha_role": {
-      "const": "generation_head",
+      "const": "not_recorded",
       "type": "string"
     },
     "map_id": {

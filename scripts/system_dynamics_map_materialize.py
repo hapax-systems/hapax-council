@@ -1061,7 +1061,7 @@ def generate_schema_artifacts() -> dict[Path, str]:
         },
         "validation": {"type": "object"},
         "git_sha": {"type": "string", "pattern": "^([0-9a-f]{40}|unknown)$"},
-        "git_sha_role": {"type": "string", "const": "generation_head"},
+        "git_sha_role": {"type": "string", "const": "not_recorded"},
     }
 
     schemas = {
@@ -1495,7 +1495,7 @@ def generate_package(seed: dict[str, Any], rendered: dict[Path, str]) -> str:
         "authority_case": seed["authority_case"],
         "generated_at": seed["generated_at"],
         "git_sha": _git_sha(),
-        "git_sha_role": "generation_head",
+        "git_sha_role": "not_recorded",
         "git_sha_policy": (
             "Committed artifacts intentionally record git_sha as unknown. Artifact "
             "commits cannot embed their own future commit SHA, so content hashes are "
@@ -1524,7 +1524,7 @@ def generate_lock(seed: dict[str, Any], rendered: dict[Path, str], package_conte
         "version": seed["version"],
         "generated_at": seed["generated_at"],
         "git_sha": _git_sha(),
-        "git_sha_role": "generation_head",
+        "git_sha_role": "not_recorded",
         "source_hashes": {
             "seed": _sha256(SEED_PATH),
             "viewer": _sha256_text(rendered[VIEWER_PATH]),

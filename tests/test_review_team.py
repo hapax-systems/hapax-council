@@ -1097,6 +1097,12 @@ class TestFamilyOutageDegradation:
             process_failed=True,
             model_stdout="```yaml\nverdict: accept\n```",
         )
+        embedded_marker = "wrapper prelude\n" + unsupported_client
+        assert rt.is_reviewer_route_unavailable(embedded_marker, process_failed=True)
+        oversized_marker = (
+            "x" * (rt._REVIEWER_ROUTE_UNAVAILABLE_MAX_CHARS + 1) + "UNSUPPORTED_CLIENT"
+        )
+        assert not rt.is_reviewer_route_unavailable(oversized_marker, process_failed=True)
 
     def test_clean_exit_text_never_counts_as_wall_evidence(self) -> None:
         # round-6 channel trust: model-influenced stdout cannot forge a wall,

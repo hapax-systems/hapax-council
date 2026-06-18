@@ -940,8 +940,8 @@ def test_v1_contract_artifacts_cover_claims_observations_lenses_and_package():
     lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
     assert package["schema"] == "system-dynamics-map-package-v1"
     assert lock["schema"] == "system-dynamics-map-lock-v1"
-    assert package["git_sha_role"] == "generation_head"
-    assert lock["git_sha_role"] == "generation_head"
+    assert package["git_sha_role"] == "not_recorded"
+    assert lock["git_sha_role"] == "not_recorded"
     assert "content hashes are the staleness key" in package["git_sha_policy"]
     assert "PR history carries commit provenance" in package["git_sha_policy"]
     assert "self-referential future commit SHA" in lock["staleness_policy"]
@@ -958,15 +958,15 @@ def test_v1_contract_artifacts_cover_claims_observations_lenses_and_package():
         assert required in package_paths
     assert lock["source_hashes"]["seed"] == materialize._sha256(SEED_PATH)
 
-    package_with_new_generation_head = copy.deepcopy(package)
-    package_with_new_generation_head["git_sha"] = "0" * 40
+    package_with_recorded_sha = copy.deepcopy(package)
+    package_with_recorded_sha["git_sha"] = "0" * 40
     assert materialize._normalise_for_check(PACKAGE_PATH, json.dumps(package)) == (
-        materialize._normalise_for_check(PACKAGE_PATH, json.dumps(package_with_new_generation_head))
+        materialize._normalise_for_check(PACKAGE_PATH, json.dumps(package_with_recorded_sha))
     )
-    lock_with_new_generation_head = copy.deepcopy(lock)
-    lock_with_new_generation_head["git_sha"] = "0" * 40
+    lock_with_recorded_sha = copy.deepcopy(lock)
+    lock_with_recorded_sha["git_sha"] = "0" * 40
     assert materialize._normalise_for_check(LOCK_PATH, json.dumps(lock)) == (
-        materialize._normalise_for_check(LOCK_PATH, json.dumps(lock_with_new_generation_head))
+        materialize._normalise_for_check(LOCK_PATH, json.dumps(lock_with_recorded_sha))
     )
 
     fixture = json.loads(SDLC_FIXTURE_PATH.read_text(encoding="utf-8"))

@@ -126,9 +126,9 @@ claims, observations, relations, lenses, schemas, and reproducibility metadata:
 - `system-dynamics-map.package.json` and `system-dynamics-map.lock.json`:
   reproducibility contract with source hashes, generated hashes, generator
   command, validation commands, and an explicit `git_sha: unknown` marker.
-  Artifact commits cannot embed their own future commit SHA, so `--check` treats
-  generated content hashes as the staleness key and PR history carries commit
-  provenance.
+  `git_sha_role: not_recorded` is paired with that marker because artifact
+  commits cannot embed their own future commit SHA. `--check` treats generated
+  content hashes as the staleness key and PR history carries commit provenance.
 
 The viewer consumes this shape and should remain replaceable. The graph contract
 is the important artifact; Cytoscape is the current projection engine.

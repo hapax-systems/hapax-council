@@ -8,7 +8,7 @@
     {
       "bytes": 234108,
       "path": "docs/architecture/system-dynamics-map-viewer.html",
-      "sha256": "471271d028f9d7153d3212a1c65cb1a9007b506bc0843727a8301c1f72a55616"
+      "sha256": "b01c8e756b11c985cbbfb79c3e366e495922a13230c12efc877b7ac8fa4f0eb5"
     },
     {
       "bytes": 435328,
@@ -38,7 +38,7 @@
     {
       "bytes": 3375,
       "path": "docs/architecture/system-dynamics-map.observations.jsonl",
-      "sha256": "84ee079d726bec84a7c3963ac09c52b9d051c275c4b77250a6c3db31e33a4e76"
+      "sha256": "ac6a73b6c29329f74409f1ec51e1de1c95a57c25d24281e5bd3bb449b8aa3955"
     },
     {
       "bytes": 24510,
@@ -71,9 +71,9 @@
       "sha256": "b67365b33792c5eaf991900fc3154e05cff8b434100585d5d418710ad5334422"
     },
     {
-      "bytes": 1335,
+      "bytes": 1332,
       "path": "schemas/system-dynamics-map/package.schema.json",
-      "sha256": "7b76eed33b35cc845f2bdafd5e83baddf9ad51806e82817fb72125e24ff693b5"
+      "sha256": "8f29bc903c39ca6ab14030a3c1d370019d5e1048110d3aa92c308be43d7e7e1e"
     },
     {
       "bytes": 2153,
@@ -99,7 +99,7 @@
   },
   "git_sha": "unknown",
   "git_sha_policy": "Committed artifacts intentionally record git_sha as unknown. Artifact commits cannot embed their own future commit SHA, so content hashes are the staleness key and PR history carries commit provenance.",
-  "git_sha_role": "generation_head",
+  "git_sha_role": "not_recorded",
   "map_id": "system-dynamics-map-v1",
   "schema": "system-dynamics-map-package-v1",
   "validation": {

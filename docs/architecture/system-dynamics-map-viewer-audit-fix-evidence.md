@@ -27,11 +27,15 @@ artifact path and made the path fail existence checks.
 Run from the repository root:
 
 ```bash
+test -f scripts/cc-close-acceptance-receipt-check.py
 python3 scripts/cc-close-acceptance-receipt-check.py \
   "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/closed/system-dynamics-map-viewer-ux-hardening-20260618.md"
 ```
 
-Observed result during this fix pass:
+The repository script is pre-existing at this PR head. The command is the
+replayable witness; the exit code below is the observed result during this fix
+pass and should be refreshed by rerunning the command if the external receipt is
+edited again.
 
 ```text
 exit:0

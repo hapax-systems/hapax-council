@@ -1247,6 +1247,32 @@ class TestFamilyOutageDegradation:
         assert claude_seats, "harness must seat a claude reviewer at t2"
         assert all(r["verdict"] == "quota-wall" for r in claude_seats)
 
+    def test_quota_wall_precedes_route_unavailable_when_both_match(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        self._isolate_state(monkeypatch, tmp_path)
+
+        class MixedFailureRunner(RecordingReviewers):
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.invocations.append((seat.id, seat.family, prompt))
+                if seat.family == "claude":
+                    raise dispatch.ReviewerProcessError(
+                        "You've hit your weekly limit · resets Jun 19, 5pm "
+                        "(America/Chicago)\nUNSUPPORTED_CLIENT",
+                        returncode=1,
+                    )
+                return GOOD_REPLY
+
+        result, _, _, _ = _review(
+            tmp_path,
+            reviewers=MixedFailureRunner(),
+            task_kwargs={"assigned_to": "cx-gold"},
+        )
+        dossier = result["dossier"]
+        claude_seats = [r for r in dossier["reviewers"] if r["family"] == "claude"]
+        assert claude_seats
+        assert all(r["verdict"] == "quota-wall" for r in claude_seats)
+
     def test_nonzero_stdout_malformed_reset_does_not_forge_quota_wall(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
