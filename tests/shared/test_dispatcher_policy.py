@@ -19,6 +19,7 @@ from shared.dispatcher_policy import (
     write_route_decision_receipt,
 )
 from shared.platform_capability_registry import (
+    CapacityPool,
     PlatformCapabilityRegistry,
     PlatformCapabilityRoute,
     build_supply_vector,
@@ -649,6 +650,34 @@ def test_glmcp_subscription_route_launches_with_fresh_route_quota() -> None:
     assert "policy_launch" in decision.reason_codes
 
 
+def test_glmcp_route_specific_quota_holds_on_capacity_pool_mismatch() -> None:
+    quota_ref = "relay-receipt:glmcp-quota-admission.yaml:fresh_until:2026-05-09T23:00:00Z"
+    request = _request(
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        route_id="glmcp.review.direct",
+        capability=_capability(
+            route_id="glmcp.review.direct",
+            capacity_pool="local_compute",
+        ),
+        quota=_quota(
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="fresh",
+            route_quota_evidence_refs=(quota_ref,),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.route_policy_green is False
+    assert decision.quota_freshness_green is False
+    assert "subscription_route_capacity_pool_mismatch" in decision.reason_codes
+    assert "capacity_pool:local_compute" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
 def test_build_dispatch_request_enforces_exact_route_subscription_quota() -> None:
     route_id = "glmcp.review.direct"
     registry = _registry_with_fresh_route(route_id)
@@ -725,6 +754,49 @@ def test_build_dispatch_request_enforces_exact_route_subscription_quota() -> Non
     assert fresh_decision.action is DispatchAction.LAUNCH
     assert fresh_decision.quota_freshness_green is True
     assert "policy_launch" in fresh_decision.reason_codes
+
+
+def test_build_dispatch_request_holds_glmcp_capacity_pool_mismatch() -> None:
+    route_id = "glmcp.review.direct"
+    registry = _registry_with_fresh_route(route_id)
+    route = registry.require(route_id).model_copy(
+        update={"capacity_pool": CapacityPool.LOCAL_COMPUTE}
+    )
+    registry = registry.model_copy(
+        update={
+            "routes": [
+                route if existing.route_id == route_id else existing for existing in registry.routes
+            ]
+        }
+    )
+    freshness_now = datetime(2026, 5, 9, 22, 10, tzinfo=UTC)
+
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        task_fields=_task_fields(),
+        registry=registry,
+        quota_ledger=_ledger_with_route_subscription_state(
+            route_id,
+            "fresh",
+            fresh_until="2026-05-09T23:00:00Z",
+        ),
+        now=freshness_now,
+    )
+    assert request.capability is not None
+    assert request.capability.capacity_pool == "local_compute"
+    assert request.quota is not None
+    assert request.quota.route_subscription_quota_state == "fresh"
+
+    decision = evaluate_dispatch_policy(request, now=freshness_now)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.quota_freshness_green is False
+    assert "subscription_route_capacity_pool_mismatch" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
 
 
 def test_glmcp_expired_admission_snapshot_holds_even_when_ledger_fresh() -> None:

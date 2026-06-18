@@ -1811,7 +1811,10 @@ def _quota_state(
     evidence_refs: tuple[str, ...] = ()
     route_subscription_state: str | None = None
     route_quota_evidence_refs: tuple[str, ...] = ()
-    if capability is not None and capability.capacity_pool == "subscription_quota":
+    if capability is not None and (
+        capability.capacity_pool == "subscription_quota"
+        or _requires_route_specific_subscription_quota(capability.route_id)
+    ):
         state, refs = subscription_quota_state_for_route(
             quota_ledger,
             capability.route_id,
@@ -1939,9 +1942,14 @@ def _quota_freshness_green(request: DispatchRequest) -> bool:
     capability = request.capability
     if (
         capability is not None
-        and capability.capacity_pool == "subscription_quota"
+        and (
+            capability.capacity_pool == "subscription_quota"
+            or _requires_route_specific_subscription_quota(capability.route_id)
+        )
         and capability.freshness_ok
     ):
+        if capability.capacity_pool != "subscription_quota":
+            return False
         quota = request.quota
         if quota is None or not quota.available:
             return False
@@ -2310,7 +2318,14 @@ def _subscription_quota_hold_reasons(
     request: DispatchRequest,
     capability: RouteCapabilityState,
 ) -> tuple[str, ...]:
+    requires_route_specific_quota = _requires_route_specific_subscription_quota(capability.route_id)
     if capability.capacity_pool != "subscription_quota":
+        if requires_route_specific_quota:
+            return (
+                "subscription_route_capacity_pool_mismatch",
+                f"capacity_pool:{capability.capacity_pool or 'missing'}",
+                f"route_id:{normalize_route_id(capability.route_id)}",
+            )
         return ()
     quota = request.quota
     if quota is None or not quota.available:
@@ -2321,7 +2336,7 @@ def _subscription_quota_hold_reasons(
         return ("subscription_quota_ledger_unknown",)
     route_state = quota.route_subscription_quota_state
     if route_state is None:
-        if _requires_route_specific_subscription_quota(capability.route_id):
+        if requires_route_specific_quota:
             route_state = "unknown"
         else:
             return ()

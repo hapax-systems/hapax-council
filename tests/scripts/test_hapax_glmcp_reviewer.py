@@ -196,7 +196,10 @@ def test_zai_quota_error_classifies_reset_without_secret(
     [
         ("1302", "rate_limited_concurrency", "backoff_reduce_concurrency"),
         ("1303", "rate_limited_frequency", "backoff_reduce_frequency"),
+        ("1261", "prompt_too_long", "reduce_prompt_size"),
+        ("1304", "daily_limit_exhausted", "hold_until_limit_reset"),
         ("1305", "rate_limited", "backoff"),
+        ("1310", "quota_exhausted", "hold_until_reset"),
         ("1311", "plan_model_unavailable", "switch_model_or_upgrade_plan"),
         ("1312", "provider_high_traffic", "backoff_or_switch_model"),
         ("1313", "fair_use_restricted", "hold_until_manual_clear"),
