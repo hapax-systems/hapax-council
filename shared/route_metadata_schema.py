@@ -733,7 +733,7 @@ def _derive_risk_flags(frontmatter: Mapping[str, Any]) -> dict[str, bool]:
         "privacy_or_secret_sensitive": _contains_any(combined, ("privacy", "secret", "credential")),
         "public_claim_sensitive": _contains_any(combined, ("public", "publication", "claim")),
         "aesthetic_theory_sensitive": _contains_any(combined, ("aesthetic", "theory")),
-        "audio_or_live_egress_sensitive": _contains_any(combined, ("audio", "egress", "live")),
+        "audio_or_live_egress_sensitive": _contains_audio_or_live_egress_marker(combined),
         "provider_billing_sensitive": _contains_any(combined, ("provider", "billing", "spend")),
     }
 
@@ -1206,11 +1206,19 @@ def _lower_strings(value: object) -> set[str]:
 #: or 'live' inside 'deliver' — false positives that wrongly mark routine
 #: tasks audio/live/egress sensitive and veto their system auto-arm.
 _RISK_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_GO_LIVE_RE = re.compile(r"\bgo[-_\s]+live\b")
 
 
 def _contains_any(value: str, needles: tuple[str, ...]) -> bool:
     tokens = set(_RISK_TOKEN_RE.findall(value.lower()))
     return any(needle in tokens for needle in needles)
+
+
+def _contains_audio_or_live_egress_marker(value: str) -> bool:
+    # "go-live" is the SDLC/program milestone phrase, not evidence that the task
+    # mutates a live public/audio egress surface.
+    without_go_live = _GO_LIVE_RE.sub("golive", value.lower())
+    return _contains_any(without_go_live, ("audio", "egress", "live"))
 
 
 def _optional_frontmatter_string(value: object) -> str | None:
