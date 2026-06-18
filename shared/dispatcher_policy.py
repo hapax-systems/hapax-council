@@ -596,10 +596,19 @@ def evaluate_dispatch_policy(
 
     capability = request.capability
     if capability is None:
+        reasons = ["capability_registry_unavailable"]
+        if _requires_route_specific_subscription_quota(request.route_id):
+            reasons.extend(
+                [
+                    "subscription_route_quota_not_fresh",
+                    "route_subscription_quota_state:unknown",
+                    "subscription_route_capability_missing",
+                ]
+            )
         return _decision(
             request,
             DispatchAction.HOLD,
-            ("capability_registry_unavailable",),
+            tuple(reasons),
             checked_at,
             quality_floor_satisfied=False,
             authority_allowed=False,

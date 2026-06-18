@@ -688,6 +688,29 @@ def test_build_dispatch_request_enforces_exact_route_subscription_quota() -> Non
     assert "policy_launch" in fresh_decision.reason_codes
 
 
+def test_glmcp_missing_capability_still_surfaces_route_quota_requirement() -> None:
+    request = _request(
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        route_id="glmcp.review.direct",
+        capability=None,
+        quota=_quota(
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="unknown",
+            route_quota_evidence_refs=("quota-snapshot:glmcp.review.direct:missing",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert "capability_registry_unavailable" in decision.reason_codes
+    assert "subscription_route_quota_not_fresh" in decision.reason_codes
+    assert "route_subscription_quota_state:unknown" in decision.reason_codes
+    assert "subscription_route_capability_missing" in decision.reason_codes
+
+
 def test_spike_workload_refuses_local_fleet_and_points_to_cloud_burst() -> None:
     request = _request(
         cloud_burst={

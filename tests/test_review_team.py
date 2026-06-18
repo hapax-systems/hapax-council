@@ -1044,6 +1044,12 @@ class TestFamilyOutageDegradation:
             process_failed=True,
         )
         assert not rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 429; "
+            "error_class=provider_high_traffic; action=backoff_or_switch_model; "
+            "message=provider echoed quota exceeded hold_until_reset",
+            process_failed=True,
+        )
+        assert not rt.is_quota_wall(
             "hapax-glmcp-reviewer: api error: HTTP 418; "
             "zai_error_code=x; error_class=quota_exhausted; action=hold_until_reset; "
             "error_class=api_error; action=inspect_provider_response",
@@ -1105,6 +1111,12 @@ class TestFamilyOutageDegradation:
             "hapax-glmcp-reviewer: api error: HTTP 418; "
             "error_class=api_error; action=inspect_provider_response; "
             "detail=provider echoed error_class=provider_error action=retry_later",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 503; "
+            "error_class=quota_exhausted; action=hold_until_reset; "
+            "detail=provider echoed temporarily overloaded retry later",
             process_failed=True,
         )
         assert not rt.is_provider_outage(

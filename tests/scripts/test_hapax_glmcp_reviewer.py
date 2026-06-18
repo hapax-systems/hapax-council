@@ -244,6 +244,53 @@ def test_zai_http_status_fallback_classification(
     assert info.action == expected_action
 
 
+@pytest.mark.parametrize(
+    ("status", "detail", "expected_class", "expected_action"),
+    [
+        (401, "missing token", "auth_failed", "check_api_key"),
+        (503, "upstream unavailable", "provider_error", "retry_later"),
+        (418, "unexpected provider response", "api_error", "inspect_provider_response"),
+    ],
+)
+def test_call_glm_http_error_paths_surface_structured_classification(
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+    detail: str,
+    expected_class: str,
+    expected_action: str,
+) -> None:
+    module = _load_module()
+
+    def fake_open(_request: object, *, timeout: float) -> object:
+        raise urllib.error.HTTPError(
+            "url",
+            status,
+            "provider error",
+            {},
+            io.BytesIO(detail.encode("utf-8")),
+        )
+
+    monkeypatch.setattr(module, "open_no_redirect", fake_open)
+    config = module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_BASE_URL,
+        model="glm-5.2",
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking="disabled",
+    )
+
+    with pytest.raises(module.ApiError) as excinfo:
+        module.call_glm("review prompt", config, "test-secret-token")
+
+    message = str(excinfo.value)
+    assert f"HTTP {status}" in message
+    assert f"error_class={expected_class}" in message
+    assert f"action={expected_action}" in message
+    assert "retry later or check the Z.ai Coding Plan endpoint/status" in message
+
+
 def test_format_zai_error_sanitizes_untrusted_structured_values() -> None:
     module = _load_module()
     detail = json.dumps(

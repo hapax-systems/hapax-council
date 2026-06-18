@@ -187,15 +187,17 @@ FAMILY_OUTAGE_STATE = Path.home() / ".cache" / "hapax" / "review-team" / "family
 FAMILY_OUTAGE_TTL_S = 2 * 3600
 
 
-def _structured_zai_error_matches(
+def _structured_zai_error_match_state(
     text: str,
     *,
     error_classes: frozenset[str],
     actions: frozenset[str],
-) -> bool:
+) -> bool | None:
+    """Return None when no structured controls exist, else trusted match state."""
+
     envelope = _STRUCTURED_ZAI_ENVELOPE_RE.search(text)
     if envelope is None:
-        return False
+        return None
     control_text = re.split(
         r";\s*(?:message|detail)=",
         text[envelope.start() :],
@@ -203,6 +205,7 @@ def _structured_zai_error_matches(
         flags=re.IGNORECASE,
     )[0]
     tokens: dict[str, str] = {}
+    saw_control = False
     for raw_field in control_text.split(";")[1:]:
         field = raw_field.strip()
         if "=" not in field:
@@ -210,9 +213,12 @@ def _structured_zai_error_matches(
         key, value = [part.strip() for part in field.split("=", 1)]
         if key not in {"error_class", "action"}:
             continue
+        saw_control = True
         if key in tokens or _STRUCTURED_FIELD_VALUE_RE.fullmatch(value) is None:
             return False
         tokens[key] = value
+    if not saw_control:
+        return None
     return tokens.get("error_class") in error_classes or tokens.get("action") in actions
 
 
@@ -253,12 +259,14 @@ def is_quota_wall(
     # Fast path: short, bare wall phrase (the 2026-06-12 claude shape)
     if len(stripped) <= _QUOTA_WALL_MAX_CHARS and _QUOTA_WALL_SHAPE_RE.fullmatch(stripped):
         return True
-    if len(stripped) <= _PROVIDER_OUTAGE_MAX_CHARS and _structured_zai_error_matches(
-        stripped,
-        error_classes=_STRUCTURED_QUOTA_ERROR_CLASSES,
-        actions=_STRUCTURED_QUOTA_ACTIONS,
-    ):
-        return True
+    if len(stripped) <= _PROVIDER_OUTAGE_MAX_CHARS:
+        structured_match = _structured_zai_error_match_state(
+            stripped,
+            error_classes=_STRUCTURED_QUOTA_ERROR_CLASSES,
+            actions=_STRUCTURED_QUOTA_ACTIONS,
+        )
+        if structured_match is not None:
+            return structured_match
     if len(stripped) <= _PROVIDER_OUTAGE_MAX_CHARS and _QUOTA_WALL_HTTP_RE.search(stripped):
         return True
     # Slow path: CLI chrome wraps the wall phrase (codex v0.139.0 emits
@@ -294,12 +302,13 @@ def is_provider_outage(
     if len(stripped) > _PROVIDER_OUTAGE_MAX_CHARS:
         return False
     normalized = re.sub(r"\A[-\w.]+:\s+api error:\s*", "", stripped, flags=re.I)
-    if _structured_zai_error_matches(
+    structured_match = _structured_zai_error_match_state(
         stripped,
         error_classes=_STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES,
         actions=_STRUCTURED_PROVIDER_OUTAGE_ACTIONS,
-    ):
-        return True
+    )
+    if structured_match is not None:
+        return structured_match
     http_429 = bool(re.match(r"\AHTTP\s+429\b", normalized, flags=re.IGNORECASE))
     http_5xx = bool(re.match(r"\AHTTP\s+5\d\d\b", normalized, flags=re.IGNORECASE))
     outage_terms = bool(_PROVIDER_OUTAGE_LINE_RE.search(stripped))
