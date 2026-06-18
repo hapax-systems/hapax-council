@@ -3,9 +3,11 @@
 #
 # The reconciler owns broadcast-critical PipeWire links from
 # ~/.config/hapax/audio-link-map.conf and privacy/safety disconnects from
-# ~/.config/hapax/audio-forbidden-links.conf. It samples the graph once per
-# tick and only mutates missing/present edges; this keeps the control plane
-# quiet while preserving fast repair.
+# ~/.config/hapax/audio-forbidden-links.conf. It also keeps public broadcast
+# source/filter nodes at unity volume so controller or UI drift does not silently
+# attenuate the emitted segment. It samples the graph once per tick and only
+# mutates missing/present edges and present volume targets; this keeps the
+# control plane quiet while preserving fast repair.
 
 set -euo pipefail
 
@@ -14,13 +16,19 @@ LOGFILE="${HAPAX_RECONCILER_LOG:-/tmp/hapax-audio-reconciler.log}"
 LINK_MAP="${HAPAX_RECONCILER_LINK_MAP:-/home/hapax/.config/hapax/audio-link-map.conf}"
 FORBIDDEN_FILE="${HAPAX_RECONCILER_FORBIDDEN_LINKS:-/home/hapax/.config/hapax/audio-forbidden-links.conf}"
 PW_LINK="${HAPAX_RECONCILER_PW_LINK:-pw-link}"
+WPCTL="${HAPAX_RECONCILER_WPCTL:-wpctl}"
+DEFAULT_VOLUME_NODES="hapax-livestream-tap hapax-broadcast-master hapax-broadcast-normalized hapax-obs-broadcast-remap hapax-mic-rode-playback hapax-music-loudnorm hapax-voice-wet-playback hapax-yt-loudnorm"
+VOLUME_NODE_LIST="${HAPAX_RECONCILER_VOLUME_NODES-$DEFAULT_VOLUME_NODES}"
+VOLUME_LEVEL="${HAPAX_RECONCILER_VOLUME_LEVEL:-1.0}"
 ONCE="${HAPAX_RECONCILER_ONCE:-0}"
 
 declare -a DESIRED_LINKS=()
 declare -a FORBIDDEN_LINKS=()
+declare -a VOLUME_NODES=()
 declare -A PRESENT_LINKS=()
 declare -A PRESENT_PORTS=()
 GRAPH=""
+WPCTL_STATUS_TEXT=""
 
 log() {
     printf '%s [reconciler] %s\n' "$(date -Iseconds)" "$*" >> "$LOGFILE"
@@ -60,6 +68,17 @@ load_forbidden_links() {
     done < "$FORBIDDEN_FILE"
     if ((${#FORBIDDEN_LINKS[@]} > 0)); then
         log "loaded ${#FORBIDDEN_LINKS[@]} forbidden link patterns"
+    fi
+}
+
+load_volume_nodes() {
+    VOLUME_NODES=()
+    local node
+    for node in $VOLUME_NODE_LIST; do
+        VOLUME_NODES+=("$node")
+    done
+    if ((${#VOLUME_NODES[@]} > 0)); then
+        log "loaded ${#VOLUME_NODES[@]} unity-volume node target(s)"
     fi
 }
 
@@ -190,22 +209,83 @@ enforce_forbidden() {
     fi
 }
 
+node_id_from_wpctl_status() {
+    local wanted="$1"
+    local raw line id name
+    while IFS= read -r raw; do
+        line="$(trim_policy_line "$raw")"
+        [[ -z "$line" ]] && continue
+        # ``wpctl status --name`` renders a tree prefix, an optional default
+        # marker, then ``<id>. <node.name> [metadata]``.
+        if [[ "$line" =~ ^[^0-9]*\*?[[:space:]]*([0-9]+)\.[[:space:]]+([^[]+)[[:space:]]+\[ ]]; then
+            id="${BASH_REMATCH[1]}"
+            name="$(trim_policy_line "${BASH_REMATCH[2]}")"
+            if [[ "$name" == "$wanted" ]]; then
+                printf '%s\n' "$id"
+                return 0
+            fi
+        fi
+    done <<< "$WPCTL_STATUS_TEXT"
+    return 1
+}
+
+enforce_unity_volumes() {
+    ((${#VOLUME_NODES[@]} == 0)) && return
+
+    if ! WPCTL_STATUS_TEXT="$("$WPCTL" status --name 2>/dev/null)"; then
+        WPCTL_STATUS_TEXT=""
+        if ((tick % 60 == 0)); then
+            log "WARN: could not read WirePlumber node status for unity-volume guard"
+        fi
+        return
+    fi
+
+    local node id
+    local repaired=0
+    local missing=0
+    local failures=0
+    for node in "${VOLUME_NODES[@]}"; do
+        if ! id="$(node_id_from_wpctl_status "$node")"; then
+            ((missing += 1))
+            continue
+        fi
+        if "$WPCTL" set-volume "$id" "$VOLUME_LEVEL" 2>/dev/null; then
+            ((repaired += 1))
+        else
+            ((failures += 1))
+        fi
+    done
+
+    if ((repaired > 0)); then
+        log "set unity volume on $repaired broadcast node(s)"
+    fi
+    if ((missing > 0 && tick % 60 == 0)); then
+        log "deferred $missing/${#VOLUME_NODES[@]} unity-volume target(s) with absent node names"
+    fi
+    if ((failures > 0 && tick % 60 == 0)); then
+        log "WARN: $failures/${#VOLUME_NODES[@]} unity-volume target(s) could not be repaired"
+    fi
+}
+
 log "=== hapax-audio-reconciler starting ==="
-log "interval=${INTERVAL_S}s link_map=$LINK_MAP forbidden=$FORBIDDEN_FILE"
+log "interval=${INTERVAL_S}s link_map=$LINK_MAP forbidden=$FORBIDDEN_FILE volume_level=$VOLUME_LEVEL"
 
 load_link_map
 load_forbidden_links
+load_volume_nodes
 
 tick=0
 while true; do
     refresh_graph || true
     enforce_links
     enforce_forbidden
+    enforce_unity_volumes
 
     ((tick += 1))
     if ((tick % 60 == 0)); then
         load_link_map
         load_forbidden_links
+        load_volume_nodes
     fi
 
     if [[ "$ONCE" == "1" ]]; then
