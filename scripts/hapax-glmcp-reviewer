@@ -243,6 +243,11 @@ _RESET_RE = re.compile(
     r"(?:reset|resets|will reset)\s+(?:at|on|in)?\s*([^.;,\n]+(?:T[^.;,\n]+)?)",
     re.IGNORECASE,
 )
+_ZAI_CODE_RE = re.compile(r"\A\d{3,8}\Z")
+
+
+def safe_structured_value(value: str, *, max_chars: int) -> str:
+    return re.sub(r"[;\r\n]+", " ", value).strip()[:max_chars]
 
 
 _ZAI_ERROR_CLASS_BY_CODE = {
@@ -356,15 +361,22 @@ def format_zai_error(status: int, detail: str, *, secret: str) -> str:
     redacted_detail = redact(detail, secret).strip()
     parts = [f"HTTP {status}"]
     if info.code:
-        parts.append(f"zai_error_code={info.code}")
+        code = info.code if _ZAI_CODE_RE.fullmatch(info.code) else "untrusted"
+        parts.append(f"zai_error_code={code}")
     parts.append(f"error_class={info.error_class}")
     parts.append(f"action={info.action}")
     if info.resets_at:
-        parts.append(f"resets_at={redact(info.resets_at, secret)[:120]}")
+        resets_at = safe_structured_value(redact(info.resets_at, secret), max_chars=120)
+        if resets_at:
+            parts.append(f"resets_at={resets_at}")
     if info.message:
-        parts.append(f"message={redact(info.message, secret)[:240]}")
+        message = safe_structured_value(redact(info.message, secret), max_chars=240)
+        if message:
+            parts.append(f"message={message}")
     if redacted_detail and redacted_detail != (info.message or ""):
-        parts.append(f"detail={redacted_detail[:1000]}")
+        detail_value = safe_structured_value(redacted_detail, max_chars=1000)
+        if detail_value:
+            parts.append(f"detail={detail_value}")
     return "; ".join(parts)
 
 

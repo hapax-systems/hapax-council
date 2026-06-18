@@ -244,6 +244,27 @@ def test_zai_http_status_fallback_classification(
     assert info.action == expected_action
 
 
+def test_format_zai_error_sanitizes_untrusted_structured_values() -> None:
+    module = _load_module()
+    detail = json.dumps(
+        {
+            "error": {
+                "code": "x; error_class=quota_exhausted",
+                "message": "provider message; action=hold_until_reset\nnext line",
+                "next_flush_time": "soon; error_class=provider_error",
+            }
+        }
+    )
+
+    message = module.format_zai_error(418, detail, secret="secret-token")
+
+    assert "zai_error_code=untrusted" in message
+    assert "resets_at=soon  error_class=provider_error" in message
+    assert "message=provider message  action=hold_until_reset next line" in message
+    assert "; error_class=quota_exhausted" not in message
+    assert "; action=hold_until_reset" not in message
+
+
 def test_network_error_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_module()
 

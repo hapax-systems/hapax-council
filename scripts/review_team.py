@@ -119,14 +119,11 @@ _QUOTA_WALL_HTTP_RE = re.compile(
     r"RESOURCE_EXHAUSTED)",
     re.IGNORECASE | re.DOTALL,
 )
-_STRUCTURED_TOKEN_RE = re.compile(
-    r"(?<![A-Za-z0-9_])(?P<key>error_class|action)="
-    r"(?P<value>[A-Za-z0-9_:-]+)"
-)
 _STRUCTURED_ZAI_ENVELOPE_RE = re.compile(
     r"\bhapax-glmcp-reviewer:\s+api error:\s+HTTP\s+\d{3}\b",
     re.IGNORECASE,
 )
+_STRUCTURED_FIELD_VALUE_RE = re.compile(r"\A[A-Za-z0-9_:-]+\Z")
 _STRUCTURED_QUOTA_ERROR_CLASSES = frozenset(
     {
         "account_balance_or_arrears",
@@ -205,10 +202,18 @@ def _structured_zai_error_matches(
         maxsplit=1,
         flags=re.IGNORECASE,
     )[0]
-    tokens: dict[str, set[str]] = {"error_class": set(), "action": set()}
-    for match in _STRUCTURED_TOKEN_RE.finditer(control_text):
-        tokens[match.group("key")].add(match.group("value"))
-    return bool(tokens["error_class"] & error_classes or tokens["action"] & actions)
+    tokens: dict[str, str] = {}
+    for raw_field in control_text.split(";")[1:]:
+        field = raw_field.strip()
+        if "=" not in field:
+            continue
+        key, value = [part.strip() for part in field.split("=", 1)]
+        if key not in {"error_class", "action"}:
+            continue
+        if key in tokens or _STRUCTURED_FIELD_VALUE_RE.fullmatch(value) is None:
+            return False
+        tokens[key] = value
+    return tokens.get("error_class") in error_classes or tokens.get("action") in actions
 
 
 def is_quota_wall(
