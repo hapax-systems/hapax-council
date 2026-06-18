@@ -550,6 +550,8 @@ def dispatch_reviews(
         process_output = ""
         quota_wall_output = ""
         quota_wall_stdout = ""
+        diagnostic_output = ""
+        diagnostic_stdout = ""
         try:
             reply = reviewer_runner(seat, family_cfgs[seat.family], prompts[index])
         except ReviewerProcessError as exc:
@@ -560,6 +562,8 @@ def dispatch_reviews(
             if exc.stderr.strip():
                 quota_wall_output = exc.stderr
                 quota_wall_stdout = exc.stdout
+                diagnostic_output = exc.stderr
+                diagnostic_stdout = exc.stdout
             else:
                 stdout = exc.stdout.strip()
                 quota_wall_output = stdout if stdout and "\n" not in stdout else ""
@@ -583,11 +587,15 @@ def dispatch_reviews(
                     quota_wall_output, process_failed=True, model_stdout=quota_wall_stdout
                 )
                 provider_outage = review_team.is_provider_outage(
-                    quota_wall_output, process_failed=True, model_stdout=quota_wall_stdout
+                    diagnostic_output, process_failed=True, model_stdout=diagnostic_stdout
+                )
+                route_unavailable = review_team.is_reviewer_route_unavailable(
+                    diagnostic_output, process_failed=True, model_stdout=diagnostic_stdout
                 )
             else:
                 walled = False
                 provider_outage = False
+                route_unavailable = False
             if walled:
                 LOG.warning(
                     "reviewer %s (%s) hit a provider quota wall -> verdict quota-wall",
@@ -595,6 +603,14 @@ def dispatch_reviews(
                     seat.family,
                 )
                 verdict = "quota-wall"
+            elif route_unavailable:
+                LOG.warning(
+                    "reviewer %s (%s) reviewer route unavailable -> verdict "
+                    "reviewer-route-unavailable",
+                    seat.id,
+                    seat.family,
+                )
+                verdict = "reviewer-route-unavailable"
             elif provider_outage:
                 LOG.warning(
                     "reviewer %s (%s) hit provider availability failure -> verdict provider-outage",
@@ -1213,7 +1229,13 @@ def review_pr(
             dead = [
                 str(r.get("id") or r.get("family"))
                 for r in reviews
-                if str(r.get("verdict")) in ("invalid-output", "quota-wall", "provider-outage")
+                if str(r.get("verdict"))
+                in (
+                    "invalid-output",
+                    "quota-wall",
+                    "provider-outage",
+                    "reviewer-route-unavailable",
+                )
             ]
             dossier["no_quorum_cause"] = (
                 f"dead reviewers: {', '.join(dead)}" if dead else "verdict split below quorum"

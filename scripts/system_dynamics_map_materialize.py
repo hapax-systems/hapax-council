@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 import re
-import subprocess
 import sys
 import tempfile
 from datetime import UTC, datetime
@@ -65,7 +64,7 @@ GENERATED_PATHS = (
 GENERATED_NAMES = {path.name for path in GENERATED_PATHS}
 OBSERVED_AT = "2026-06-18T14:56:02Z"
 DEFAULT_VALID_FROM = "2026-06-18T00:00:00Z"
-FRESH_EXPIRES_AT = "2026-06-18T20:56:02Z"
+FRESH_EXPIRES_AT = "2030-01-01T00:00:00Z"
 STALE_EXPIRES_AT = "2026-06-18T01:00:00Z"
 STATUS_KINDS = ["asserted", "inferred", "observed", "simulated", "rendered", "candidate"]
 OBSERVATION_FRESHNESS = ["fresh", "stale", "historical"]
@@ -132,7 +131,15 @@ VIEW_MANIFEST_REQUIRED = [
     "validation",
     "provenance",
 ]
-PACKAGE_REQUIRED = ["schema", "map_id", "version", "artifacts", "validation", "git_sha"]
+PACKAGE_REQUIRED = [
+    "schema",
+    "map_id",
+    "version",
+    "artifacts",
+    "validation",
+    "git_sha",
+    "git_sha_role",
+]
 
 
 def _load_seed() -> dict[str, Any]:
@@ -188,12 +195,7 @@ def _relative(path: Path) -> str:
 
 
 def _git_sha() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True, stderr=subprocess.DEVNULL
-        ).strip()
-    except (OSError, subprocess.CalledProcessError):
-        return "unknown"
+    return "unknown"
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -1066,8 +1068,8 @@ def generate_schema_artifacts() -> dict[Path, str]:
             },
         },
         "validation": {"type": "object"},
-        "git_sha": {"type": "string", "pattern": "^([0-9a-f]{40}|unknown)$"},
-        "git_sha_role": {"type": "string", "const": "generation_head"},
+        "git_sha": {"type": "string", "const": "unknown"},
+        "git_sha_role": {"type": "string", "const": "not_recorded"},
     }
 
     schemas = {
@@ -1501,11 +1503,11 @@ def generate_package(seed: dict[str, Any], rendered: dict[Path, str]) -> str:
         "authority_case": seed["authority_case"],
         "generated_at": seed["generated_at"],
         "git_sha": _git_sha(),
-        "git_sha_role": "generation_head",
+        "git_sha_role": "not_recorded",
         "git_sha_policy": (
-            "Records git rev-parse HEAD at materializer invocation. Artifact commits "
-            "cannot embed their own future commit SHA, so content hashes are the "
-            "staleness key and git_sha is provenance."
+            "Committed artifacts intentionally record git_sha as unknown. Artifact "
+            "commits cannot embed their own future commit SHA, so content hashes are "
+            "the staleness key and PR history carries commit provenance."
         ),
         "generator": {
             "command": "python3 scripts/system_dynamics_map_materialize.py",
@@ -1530,7 +1532,7 @@ def generate_lock(seed: dict[str, Any], rendered: dict[Path, str], package_conte
         "version": seed["version"],
         "generated_at": seed["generated_at"],
         "git_sha": _git_sha(),
-        "git_sha_role": "generation_head",
+        "git_sha_role": "not_recorded",
         "source_hashes": {
             "seed": _sha256(SEED_PATH),
             "viewer": _sha256_text(rendered[VIEWER_PATH]),
@@ -1543,10 +1545,10 @@ def generate_lock(seed: dict[str, Any], rendered: dict[Path, str], package_conte
         },
         "package_hash": _sha256_text(package_content),
         "staleness_policy": (
-            "Generated hashes must match rendered materializer output. git_sha records "
-            "the generation-head provenance; it is not a staleness key because an "
-            "artifact committed to Git cannot contain its own self-referential future "
-            "commit SHA."
+            "Generated hashes must match rendered materializer output. git_sha is "
+            "intentionally unknown and is not a staleness key because an artifact "
+            "committed to Git cannot contain its own self-referential future commit "
+            "SHA."
         ),
     }
     return _json(lock)

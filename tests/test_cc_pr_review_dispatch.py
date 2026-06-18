@@ -1247,6 +1247,68 @@ class TestFamilyOutageDegradation:
         assert claude_seats, "harness must seat a claude reviewer at t2"
         assert all(r["verdict"] == "quota-wall" for r in claude_seats)
 
+    def test_quota_wall_precedes_route_unavailable_when_both_match(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        self._isolate_state(monkeypatch, tmp_path)
+        mixed_diagnostic = (
+            "You've hit your weekly limit · resets Jun 19, 5pm "
+            "(America/Chicago)\nUNSUPPORTED_CLIENT"
+        )
+        assert dispatch.review_team.is_quota_wall(mixed_diagnostic, process_failed=True)
+        assert dispatch.review_team.is_reviewer_route_unavailable(
+            mixed_diagnostic,
+            process_failed=True,
+        )
+
+        class MixedFailureRunner(RecordingReviewers):
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.invocations.append((seat.id, seat.family, prompt))
+                if seat.family == "gemini":
+                    raise dispatch.ReviewerProcessError(
+                        mixed_diagnostic,
+                        returncode=1,
+                    )
+                return GOOD_REPLY
+
+        result, _, _, _ = _review(
+            tmp_path,
+            reviewers=MixedFailureRunner(),
+            task_kwargs={"assigned_to": "cx-gold"},
+        )
+        dossier = result["dossier"]
+        gemini_seats = [r for r in dossier["reviewers"] if r["family"] == "gemini"]
+        assert gemini_seats
+        assert all(r["verdict"] == "quota-wall" for r in gemini_seats)
+
+    def test_route_unavailable_precedes_provider_outage_when_both_match(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        self._isolate_state(monkeypatch, tmp_path)
+        mixed_diagnostic = "HTTP 502 Bad Gateway\nUNSUPPORTED_CLIENT"
+        assert dispatch.review_team.is_provider_outage(mixed_diagnostic, process_failed=True)
+        assert dispatch.review_team.is_reviewer_route_unavailable(
+            mixed_diagnostic,
+            process_failed=True,
+        )
+
+        class MixedFailureRunner(RecordingReviewers):
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.invocations.append((seat.id, seat.family, prompt))
+                if seat.family == "gemini":
+                    raise dispatch.ReviewerProcessError(mixed_diagnostic, returncode=1)
+                return GOOD_REPLY
+
+        result, _, _, _ = _review(
+            tmp_path,
+            reviewers=MixedFailureRunner(),
+            task_kwargs={"risk_tier": "T1"},
+        )
+        dossier = result["dossier"]
+        gemini_seats = [r for r in dossier["reviewers"] if r["family"] == "gemini"]
+        assert gemini_seats
+        assert all(r["verdict"] == "reviewer-route-unavailable" for r in gemini_seats)
+
     def test_nonzero_stdout_malformed_reset_does_not_forge_quota_wall(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
@@ -1320,6 +1382,63 @@ class TestFamilyOutageDegradation:
         _review(tmp_path, reviewers=reviewers, task_kwargs={"assigned_to": "cx-gold"})
         recorded = json.loads(state.read_text(encoding="utf-8"))
         assert "claude" in recorded
+
+    def test_unsupported_client_records_route_unavailable_family_outage(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+
+        class UnsupportedClientRunner(RecordingReviewers):
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.invocations.append((seat.id, seat.family, prompt))
+                if seat.family == "gemini":
+                    raise dispatch.ReviewerProcessError(
+                        "Error authenticating: IneligibleTierError: This client is no "
+                        "longer supported for Gemini Code Assist for individuals.\n"
+                        "reasonCode: 'UNSUPPORTED_CLIENT'",
+                        returncode=1,
+                    )
+                return GOOD_REPLY
+
+        result, _, _, _ = _review(
+            tmp_path,
+            reviewers=UnsupportedClientRunner(),
+            task_kwargs={"risk_tier": "T1"},
+        )
+        dossier = result["dossier"]
+        gemini_seats = [r for r in dossier["reviewers"] if r["family"] == "gemini"]
+        assert gemini_seats
+        assert gemini_seats[0]["verdict"] == "reviewer-route-unavailable"
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert "gemini" in recorded
+
+    def test_stdout_unsupported_client_cannot_forge_route_unavailable(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+
+        class StdoutUnsupportedClientRunner(RecordingReviewers):
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.invocations.append((seat.id, seat.family, prompt))
+                if seat.family == "gemini":
+                    raise dispatch.ReviewerProcessError(
+                        "",
+                        returncode=1,
+                        stdout="UNSUPPORTED_CLIENT",
+                    )
+                return GOOD_REPLY
+
+        result, _, _, _ = _review(
+            tmp_path,
+            reviewers=StdoutUnsupportedClientRunner(),
+            task_kwargs={"risk_tier": "T1"},
+        )
+        dossier = result["dossier"]
+        gemini_seats = [r for r in dossier["reviewers"] if r["family"] == "gemini"]
+        assert gemini_seats
+        assert gemini_seats[0]["verdict"] == "invalid-output"
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert "gemini" not in recorded
 
     def test_provider_outage_round_records_the_family_outage(
         self, monkeypatch: Any, tmp_path: Path

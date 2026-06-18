@@ -9,12 +9,13 @@ from pathlib import Path
 import pytest
 
 playwright_sync_api = pytest.importorskip("playwright.sync_api", reason="playwright not installed")
-PlaywrightError = playwright_sync_api.Error
 sync_playwright = playwright_sync_api.sync_playwright
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ARCHITECTURE_DIR = REPO_ROOT / "docs" / "architecture"
 VIEWER_PATH = ARCHITECTURE_DIR / "system-dynamics-map-viewer.html"
+HIDDEN_SELECTION_MESSAGE = "hidden by the active lens or filters"
+HIDDEN_SELECTION_RECOVERY = "Clear filters or choose a lens that includes it"
 NONBLANK_CANVAS_SCRIPT = """
 () => Array.from(document.querySelectorAll("#cy canvas")).some((canvas) => {
   if (!canvas.width || !canvas.height) {
@@ -60,6 +61,27 @@ def _static_server() -> Iterator[str]:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def _browser_error_message(page, expression: str) -> str | None:
+    return page.evaluate(
+        """
+        (expression) => {
+          try {
+            Function(expression)();
+            return null;
+          } catch (error) {
+            return error instanceof Error ? error.message : String(error);
+          }
+        }
+        """,
+        expression,
+    )
+
+
+def _assert_no_viewer_selection(page) -> None:
+    assert page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload().selected") is None
+    assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 0
 
 
 def test_system_dynamics_viewer_core_interactions():
@@ -113,6 +135,14 @@ def test_system_dynamics_viewer_core_interactions():
             assert page.locator("#panel").inner_text().startswith("RDF / OWL Knowledge Graph"), (
                 "viewer initial panel is not focused on the semantic backbone. "
                 "Fix by rendering seed.default_focus before any user selection."
+            )
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 0, (
+                "viewer initialized with a Cytoscape selection but no selectedElement state. "
+                "Fix by rendering the default panel without selecting the default node."
+            )
+            assert not page.locator("#data-health.active").is_visible(), (
+                "served-mode healthy initialization displayed the data-health banner. "
+                "Fix by only activating #data-health after seed or supplemental data fallback."
             )
             assert (
                 page.get_by_role("link", name="Seed JSON")
@@ -234,15 +264,144 @@ def test_system_dynamics_viewer_core_interactions():
             assert "SOURCE" in panel_text and "scripts/cc-claim" in panel_text
             assert "AUTHORITY" in panel_text and "architecture_contract" in panel_text
 
+            page.get_by_label("Search").fill("cc-task claim")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.currentViewPayload().visible_node_ids.includes('cc-task-claim')"
+            )
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "cc-task-claim",
+            }
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1, (
+                "visible selection was not reselected after a filter kept it in scope. "
+                "Fix by reselecting visible selectedElement during reconciliation."
+            )
+            page.get_by_label("Search").fill("")
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 8")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "cc-task-claim",
+            }
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
+
             page.evaluate("window.systemDynamicsMapRuntime.selectEdge('sdlc-intake-to-claim')")
             edge_panel_text = page.locator("#panel").inner_text()
             assert "Advances To" in edge_panel_text and "governance" in edge_panel_text
             assert page.evaluate(
                 "window.systemDynamicsMapRuntime.relationFor('advances_to').category"
             ) == ("governance")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "edges",
+                "id": "sdlc-intake-to-claim",
+            }
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
+            page.keyboard.press("Escape")
+            assert (
+                page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload().selected")
+                is None
+            ), (
+                "Escape reset left stale selected edge state in current-view export. "
+                "Fix by clearing selectedElement and Cytoscape selection when resetting the panel."
+            )
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 0, (
+                "Escape reset left a stale Cytoscape element selected. "
+                "Fix by calling cy.elements().unselect() when clearing viewer selection."
+            )
+            assert page.locator("#panel").inner_text().startswith("RDF / OWL Knowledge Graph")
+            page.evaluate("window.systemDynamicsMapRuntime.selectEdge('sdlc-intake-to-claim')")
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
+            page.get_by_label("Search").fill("advances_to")
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().edges >= 1")
+            page.get_by_label("Search").press("Escape")
+            focused_escape_payload = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload()"
+            )
+            assert focused_escape_payload["search"] == "", (
+                "focused-control Escape did not clear the active search. "
+                "Fix by handling Escape before returning from input/select/button key targets."
+            )
+            assert focused_escape_payload["selected"] is None, (
+                "focused-control Escape left stale selected edge state in current-view export. "
+                "Fix by handling Escape before the focused-control keyboard shortcut guard."
+            )
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 0, (
+                "focused-control Escape left a stale Cytoscape element selected. "
+                "Fix by routing focused-control Escape through clearSelection()."
+            )
+            assert page.locator("#panel").inner_text().startswith("RDF / OWL Knowledge Graph")
+
+            page.evaluate("window.systemDynamicsMapRuntime.selectEdge('sdlc-intake-to-claim')")
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
+            page.get_by_label("Lens").focus()
+            page.get_by_label("Lens").press("Escape")
+            select_escape_payload = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload()"
+            )
+            assert select_escape_payload["selected"] is None, (
+                "focused-select Escape left stale selected edge state in current-view export. "
+                "Fix by handling Escape before the focused-control keyboard shortcut guard."
+            )
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 0, (
+                "focused-select Escape left a stale Cytoscape element selected. "
+                "Fix by routing focused select Escape through clearSelection()."
+            )
 
             page.get_by_label("Lens").select_option("topology")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
+            page.evaluate("window.systemDynamicsMapRuntime.selectNode('dmn')")
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
+            assert page.locator("#panel").inner_text().startswith("DMN")
+            page.get_by_label("Lens").select_option("operating-slice")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeLens() === 'operating-slice'"
+            )
+            lens_payload = page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload()")
+            assert lens_payload["selected"] is None, (
+                "lens transition exported a selected node that the active lens hides. "
+                "Fix by reconciling selectedElement after lens/filter visibility changes."
+            )
+            assert "dmn" not in lens_payload["visible_node_ids"]
+            assert page.locator("#panel").inner_text().startswith("RDF / OWL Knowledge Graph")
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 0
+            error_message = _browser_error_message(
+                page, "window.systemDynamicsMapRuntime.selectNode('dmn')"
+            )
+            assert HIDDEN_SELECTION_MESSAGE in error_message
+            assert HIDDEN_SELECTION_RECOVERY in error_message
+
+            page.get_by_label("Lens").select_option("topology")
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
+            _assert_no_viewer_selection(page)
+            page.evaluate("window.systemDynamicsMapRuntime.selectEdge('dmn-to-sbvr')")
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
+            page.get_by_label("Lens").select_option("operating-slice")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeLens() === 'operating-slice'"
+            )
+            lens_edge_payload = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload()"
+            )
+            assert lens_edge_payload["selected"] is None, (
+                "lens transition exported a selected edge that the active lens hides. "
+                "Fix by reconciling selectedElement for edges after lens visibility changes."
+            )
+            assert "dmn-to-sbvr" not in lens_edge_payload["visible_edge_ids"]
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 0
+            error_message = _browser_error_message(
+                page, "window.systemDynamicsMapRuntime.selectEdge('dmn-to-sbvr')"
+            )
+            assert HIDDEN_SELECTION_MESSAGE in error_message
+            assert HIDDEN_SELECTION_RECOVERY in error_message
+
+            page.get_by_label("Lens").select_option("topology")
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
+            _assert_no_viewer_selection(page)
             page.get_by_role("button", name="Directed").click()
             page.wait_for_function(
                 "window.systemDynamicsMapRuntime.activeLayout() === 'breadthfirst'"
@@ -282,10 +441,128 @@ def test_system_dynamics_viewer_core_interactions():
                 "runtime node selection returned the wrong node. "
                 "Fix by selecting nodes by exact nodes[].id."
             )
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
             assert page.locator("#panel").inner_text().startswith("OpenTelemetry"), (
                 "details panel did not update after node selection. "
                 "Fix by rendering node data in selectNode()."
             )
+            page.get_by_label("Search").fill("scripts/cc-claim")
+            page.wait_for_function(
+                "!window.systemDynamicsMapRuntime.currentViewPayload().visible_node_ids.includes('opentelemetry')"
+            )
+            search_payload = page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload()")
+            assert search_payload["selected"] is None, (
+                "search filter exported a selected node after hiding it. "
+                "Fix by reconciling selectedElement after search-driven visibility changes."
+            )
+            assert "opentelemetry" not in search_payload["visible_node_ids"]
+            assert page.locator("#panel").inner_text().startswith("RDF / OWL Knowledge Graph")
+            error_message = _browser_error_message(
+                page, "window.systemDynamicsMapRuntime.selectNode('opentelemetry')"
+            )
+            assert HIDDEN_SELECTION_MESSAGE in error_message
+            assert HIDDEN_SELECTION_RECOVERY in error_message
+            page.get_by_label("Search").fill("")
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
+            _assert_no_viewer_selection(page)
+
+            page.evaluate("window.systemDynamicsMapRuntime.selectNode('opentelemetry')")
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
+            resolution = page.locator("#resolution")
+            resolution.focus()
+            resolution.press("ArrowLeft")
+            resolution.press("ArrowLeft")
+            assert resolution.input_value() == "3"
+            page.wait_for_function(
+                "!window.systemDynamicsMapRuntime.currentViewPayload().visible_node_ids.includes('opentelemetry')"
+            )
+            resolution_payload = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload()"
+            )
+            assert resolution_payload["selected"] is None, (
+                "resolution filter exported a selected node after hiding it. "
+                "Fix by reconciling selectedElement after resolution changes."
+            )
+            assert "opentelemetry" not in resolution_payload["visible_node_ids"]
+            error_message = _browser_error_message(
+                page, "window.systemDynamicsMapRuntime.selectNode('opentelemetry')"
+            )
+            assert HIDDEN_SELECTION_MESSAGE in error_message
+            assert HIDDEN_SELECTION_RECOVERY in error_message
+            resolution.press("ArrowRight")
+            resolution.press("ArrowRight")
+            assert resolution.input_value() == "5"
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
+            _assert_no_viewer_selection(page)
+
+            page.evaluate("window.systemDynamicsMapRuntime.selectNode('opentelemetry')")
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
+            page.locator('input[data-filter="layer"][value="observation-state"]').uncheck()
+            page.wait_for_function(
+                "!window.systemDynamicsMapRuntime.currentViewPayload().visible_node_ids.includes('opentelemetry')"
+            )
+            layer_payload = page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload()")
+            assert layer_payload["selected"] is None, (
+                "layer filter exported a selected node after hiding it. "
+                "Fix by reconciling selectedElement after layer checkbox changes."
+            )
+            assert "opentelemetry" not in layer_payload["visible_node_ids"]
+            error_message = _browser_error_message(
+                page, "window.systemDynamicsMapRuntime.selectNode('opentelemetry')"
+            )
+            assert HIDDEN_SELECTION_MESSAGE in error_message
+            assert HIDDEN_SELECTION_RECOVERY in error_message
+            page.locator('input[data-filter="layer"][value="observation-state"]').check()
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
+            _assert_no_viewer_selection(page)
+
+            page.evaluate("window.systemDynamicsMapRuntime.selectNode('sbvr')")
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
+            assert page.locator("#panel").inner_text().startswith("SBVR")
+            page.locator('input[data-filter="status"][value="candidate"]').uncheck()
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes < 35")
+            status_payload = page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload()")
+            assert status_payload["selected"] is None, (
+                "status filter exported a selected candidate node after hiding candidates. "
+                "Fix by clearing hidden selectedElement state after filter changes."
+            )
+            assert "sbvr" not in status_payload["visible_node_ids"]
+            assert page.locator("#panel").inner_text().startswith("RDF / OWL Knowledge Graph")
+            error_message = _browser_error_message(
+                page, "window.systemDynamicsMapRuntime.selectNode('sbvr')"
+            )
+            assert HIDDEN_SELECTION_MESSAGE in error_message
+            assert HIDDEN_SELECTION_RECOVERY in error_message
+            page.locator('input[data-filter="status"][value="candidate"]').check()
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
+            _assert_no_viewer_selection(page)
+
+            page.evaluate("window.systemDynamicsMapRuntime.selectEdge('dmn-to-sbvr')")
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "edges",
+                "id": "dmn-to-sbvr",
+            }
+            page.locator('input[data-filter="status"][value="candidate"]').uncheck()
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes < 35")
+            hidden_edge_payload = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload()"
+            )
+            assert hidden_edge_payload["selected"] is None, (
+                "status filter exported a selected edge after hiding it. "
+                "Fix by reconciling selectedElement for hidden edges as well as nodes."
+            )
+            assert "dmn-to-sbvr" not in hidden_edge_payload["visible_edge_ids"]
+            error_message = _browser_error_message(
+                page, "window.systemDynamicsMapRuntime.selectEdge('dmn-to-sbvr')"
+            )
+            assert HIDDEN_SELECTION_MESSAGE in error_message
+            assert HIDDEN_SELECTION_RECOVERY in error_message
+            page.locator('input[data-filter="status"][value="candidate"]').check()
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
+            _assert_no_viewer_selection(page)
 
             page.get_by_label("Search").fill("scripts/cc-claim")
             page.get_by_label("Search").press("Enter")
@@ -306,8 +583,10 @@ def test_system_dynamics_viewer_core_interactions():
                 "Fix by deriving export payload from the active Cytoscape visibility state."
             )
 
-            with pytest.raises(PlaywrightError, match="nodes\\[\\]\\.id"):
-                page.evaluate("window.systemDynamicsMapRuntime.selectNode('missing-node')")
+            error_message = _browser_error_message(
+                page, "window.systemDynamicsMapRuntime.selectNode('missing-node')"
+            )
+            assert error_message is not None and "nodes[].id" in error_message
         finally:
             browser.close()
 
@@ -358,6 +637,45 @@ def test_system_dynamics_viewer_direct_file_mode_preserves_supplemental_data():
                 "window.systemDynamicsMapRuntime.pngDataUri().startsWith('data:image/png;base64,')"
             )
             assert not page.locator("#data-health.active").is_visible()
+        finally:
+            browser.close()
+
+
+def test_system_dynamics_viewer_reports_served_seed_fallback():
+    with _static_server() as base_url, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        seed_fallback_urls = []
+
+        def route_seed_fallback(route):
+            seed_fallback_urls.append(route.request.url)
+            route.fulfill(status=404, body="missing seed")
+
+        page.route("**/system-dynamics-map.seed.json", route_seed_fallback)
+        try:
+            page.goto(f"{base_url}/system-dynamics-map-viewer.html")
+            page.locator("#cy canvas").first.wait_for(timeout=10_000)
+            page.wait_for_function("window.systemDynamicsMapRuntime")
+            assert len(seed_fallback_urls) == 1
+            assert seed_fallback_urls[0].endswith("/system-dynamics-map.seed.json")
+            assert (
+                page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload().map_id")
+                == "system-dynamics-map-v1"
+            )
+            assert page.locator("#data-health.active").is_visible(), (
+                "served-mode seed fallback did not surface visible recovery guidance. "
+                "Fix by reporting seed fallback through the same data-health banner as companion data."
+            )
+            assert (
+                "Seed data loaded from embedded fallback"
+                in page.locator("#data-health").inner_text()
+            )
+            assert (
+                "Restore system-dynamics-map.seed.json or rerun "
+                "scripts/system_dynamics_map_materialize.py"
+                in page.locator("#data-health").inner_text()
+            )
+            assert "could not be loaded" not in page.locator("#data-health").inner_text()
         finally:
             browser.close()
 

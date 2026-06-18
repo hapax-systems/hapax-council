@@ -29,11 +29,11 @@
       "type": "array"
     },
     "git_sha": {
-      "pattern": "^([0-9a-f]{40}|unknown)$",
+      "const": "unknown",
       "type": "string"
     },
     "git_sha_role": {
-      "const": "generation_head",
+      "const": "not_recorded",
       "type": "string"
     },
     "map_id": {
@@ -58,7 +58,8 @@
     "version",
     "artifacts",
     "validation",
-    "git_sha"
+    "git_sha",
+    "git_sha_role"
   ],
   "title": "System dynamics package",
   "type": "object"

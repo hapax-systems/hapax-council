@@ -51,7 +51,8 @@ ACCEPT_VERDICTS = frozenset({"accept", "accept-with-findings"})
 
 #: Reviewer verdicts the dispatcher may record. ``invalid-output`` is what an
 #: unparseable reviewer reply becomes — it never counts as an accept.
-#: ``quota-wall`` and ``provider-outage`` are FAMILY-AVAILABILITY signals:
+#: ``quota-wall``, ``provider-outage``, and ``reviewer-route-unavailable`` are
+#: FAMILY-AVAILABILITY signals:
 #: on 2026-06-12 the claude weekly wall surfaced as invalid-output for 13
 #: hours and t1's require_all_families sealed the merge gate fleet-wide
 #: (postmortem failure class #1). Availability failures must be named so the
@@ -64,9 +65,10 @@ REVIEWER_VERDICTS = frozenset(
         "invalid-output",
         "quota-wall",
         "provider-outage",
+        "reviewer-route-unavailable",
     }
 )
-FAMILY_OUTAGE_VERDICTS = frozenset({"quota-wall", "provider-outage"})
+FAMILY_OUTAGE_VERDICTS = frozenset({"quota-wall", "provider-outage", "reviewer-route-unavailable"})
 TEAM_CLASS_RANK = {"t3_docs": 0, "t2_standard": 1, "t1_critical": 2}
 
 #: Provider usage-wall shapes (the 2026-06-12 claude weekly-wall text is the
@@ -130,6 +132,8 @@ _PROVIDER_OUTAGE_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 _PROVIDER_OUTAGE_MAX_CHARS = 4_000
+_REVIEWER_ROUTE_UNAVAILABLE_MAX_CHARS = 4_000
+_UNSUPPORTED_REVIEWER_CLIENT_RE = re.compile(r"(?:IneligibleTierError|UNSUPPORTED_CLIENT)")
 
 #: The dispatcher's family-outage witness state (canonical path; the
 #: dispatcher aliases this). Admission consults it so a forged dossier
@@ -221,6 +225,29 @@ def is_provider_outage(
         or (http_429 and provider_detail_outage_terms)
         or (direct_outage and outage_terms)
     )
+
+
+def is_reviewer_route_unavailable(
+    text: str,
+    *,
+    process_failed: bool = False,
+    model_stdout: str = "",
+) -> bool:
+    """True when the configured reviewer route itself is unavailable.
+
+    This covers process-level auth/client/tier failures such as the Gemini CLI
+    unsupported-client failure. It is a family-availability signal like a quota
+    wall, but it is not mislabeled as a transient provider outage.
+    """
+
+    if not process_failed or not text:
+        return False
+    stripped = text.strip()
+    if model_stdout.strip():
+        return False
+    if len(stripped) > _REVIEWER_ROUTE_UNAVAILABLE_MAX_CHARS:
+        return False
+    return bool(_UNSUPPORTED_REVIEWER_CLIENT_RE.search(stripped))
 
 
 def _parse_iso_datetime(value: Any) -> datetime:
