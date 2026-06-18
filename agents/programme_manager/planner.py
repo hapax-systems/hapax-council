@@ -122,6 +122,15 @@ _GENERIC_STAGE_BEAT_RE = re.compile(
     r"questions?|recap|closing|close)\s*:",
     re.IGNORECASE,
 )
+_COMPOSABILITY_FEEDBACK_MARKERS = (
+    "uncomposable_topic_type",
+    "un-composable",
+    "parallel_list",
+    "resolves_specific_hook=false",
+    "reorder_breaks_it=false",
+    "specific-opening",
+    "reorder-invariant",
+)
 
 
 def _stage_phase_key(phase: str) -> str:
@@ -214,10 +223,10 @@ class ProgrammePlanner:
             resolved_sources=resolved_sources,
         )
 
-        # A3: carry a prior round's downstream substance verdict into THIS
-        # authoring so the planner re-authors a source-denser angle. It rides in
-        # base_prompt so it is present from attempt 1 and survives the validation
-        # retry (which rebuilds from base_prompt).
+        # A3/A2: carry prior downstream verdicts into THIS authoring so the
+        # planner re-authors from the failure mode instead of replaying the
+        # same topic shape. It rides in base_prompt so it is present from attempt
+        # 1 and survives the validation retry (which rebuilds from base_prompt).
         if prior_substance_feedback:
             base_prompt = self._build_substance_feedback_prompt(
                 base_prompt, prior_substance_feedback
@@ -328,24 +337,28 @@ class ProgrammePlanner:
         )
 
     def _build_substance_feedback_prompt(self, base_prompt: str, substance_feedback: str) -> str:
-        """Fold a prior round's council/disconfirmation substance rationale in.
+        """Fold a prior round's council/disconfirmation/S2 rationale in.
 
         Sibling to ``_build_retry_prompt`` — same prompt-feedback channel, a
         different signal. ``_build_retry_prompt`` carries a SCHEMA/validation
-        error from a within-call retry; this carries the DOWNSTREAM substance
-        verdict from a prior planning round (why the council or disconfirmation
-        pass found the last plan's topic/claims thin) so the planner RE-AUTHORS a
-        source-denser angle instead of re-proposing the same under-supported
-        topic. It is rationale TEXT — never a score/threshold or an
+        error from a within-call retry; this carries the DOWNSTREAM verdict from
+        a prior planning round. For council/disconfirmation it means the topic or
+        claims were source-thin. For S2 it means the topic+type was structurally
+        uncomposable (usually a parallel list), so more source density alone is
+        the wrong repair. It is rationale TEXT — never a score/threshold or an
         "add N keywords" rule.
         """
+        composability_guidance = _build_composability_feedback_guidance(substance_feedback)
         return (
             f"{base_prompt}\n\n## Prior-round substance feedback\n\n"
-            "A plan you authored in an earlier round was found THIN by the "
-            "downstream council / disconfirmation pass. Re-author with a "
-            "source-denser angle and concrete, source-bound claims; do not "
-            "re-propose the same under-supported topic. Rationale:\n\n"
+            "A plan you authored in an earlier round was rejected downstream. "
+            "Use the rationale to re-author the topic, role, and beats from the "
+            "actual failure mode; do not re-propose the same failed topic shape. "
+            "If the rationale is about thin or unsupported claims, make the angle "
+            "source-denser and bind every claim to concrete source evidence. "
+            "Rationale:\n\n"
             f"```\n{substance_feedback}\n```"
+            f"{composability_guidance}"
         )
 
     def _read_prompt_template(self) -> str:
@@ -502,6 +515,36 @@ def _render_resolved_sources(resolved_sources: Sequence[ResolvedSourceSet] | Non
         for handle, packet in zip(source_set.handles, source_set.packets, strict=True):
             lines.append(f"    - `{handle}`: {packet.snippet[:200]}")
     return "\n".join(lines)
+
+
+def _build_composability_feedback_guidance(substance_feedback: str) -> str:
+    """Return targeted A2 guidance when prior feedback is an S2 composability fail."""
+
+    text = substance_feedback.lower()
+    if not any(marker in text for marker in _COMPOSABILITY_FEEDBACK_MARKERS):
+        return ""
+    return (
+        "\n\n## Topic-type composability correction\n\n"
+        "The prior rationale is an S2 structural composability failure, not only "
+        "a source-density failure. Re-author the next plan as ONE ordered segment "
+        "arc:\n"
+        "- `declared_topic` must name a concrete tension, question, failure-to-receipt "
+        "change, or object under test. Avoid labels like `why X matters`, `why X is "
+        "inspectable`, `teach X`, `explain X`, or `ranking/list of X` unless the "
+        "ranking itself is a causally ordered test.\n"
+        "- The opening beat must pose the specific hook: a paradox, disputed claim, "
+        "failure, or question the audience can remember.\n"
+        "- Middle beats must depend on the previous beat. If they can be reordered "
+        "without changing the closing, the plan is still a parallel list.\n"
+        "- Include a pivot or complication that changes what the segment can claim "
+        "next; this is the proof that the arc is building.\n"
+        "- The closing beat must resolve the same opening hook with a source receipt, "
+        "decision, or reframe. Merely concluding, recapping, or finishing a list does "
+        "not pass.\n"
+        "- For `tier_list` and `top_10`, make the ranking a tournament, bracket, "
+        "or litmus test where each placement changes the criterion for the next "
+        "placement. Independent item-by-item evaluation is a parallel list."
+    )
 
 
 def _build_thesis_prompt(source_set: ResolvedSourceSet) -> str:

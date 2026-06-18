@@ -182,10 +182,11 @@ The operator does NOT write the outline.
         "hosting_context": "hapax_responsible_live",
         "authority": "prior_only",
         "segment_beats": [
-          "hook: Introduce the ranking topic and state the criteria used to evaluate entries",
-          "Evaluate the first entry against the declared criteria with source evidence",
-          "Evaluate the next entry — compare against previous placements",
-          "close: Recap the final ranking, invite chat reactions, tease implications"
+          "hook: State the ranking paradox the segment will resolve and name the source-backed criterion under test",
+          "Establish the first source receipt and why it makes the expected winner unstable",
+          "Test the next candidate against that changed criterion; show what the prior beat forces you to reconsider",
+          "peak: Use the decisive source receipt to settle the disputed placement",
+          "close: Resolve the opening paradox with the final ranking and the receipt that changed it"
         ],
         "beat_layout_intents": [
           {
@@ -228,25 +229,30 @@ that beat to be responsible; they are proposals, not runtime authority.
 
 Every segment MUST have this structure:
 
-1. **Opening beat** (first beat): Hook the audience, state the topic,
-   set context, build anticipation. This is the segment's FRONT DOOR.
-   Example: `"hook: Introduce the tier list topic — why we're ranking
-   these and what criteria we're using. Tease a controversial placement."`
+1. **Opening beat** (first beat): Hook the audience with a specific
+   tension, question, failure, paradox, or disputed claim that the
+   closing beat can resolve. This is the segment's FRONT DOOR.
+   Example: `"hook: The launch looked green, but one receipt says it
+   would still be dishonest. Name the disputed gate and the evidence
+   standard that will decide it."`
 
 2. **Body beats** (middle beats, minimum 3): Beat-by-beat delivery of
    the segment content. Each beat describes what to deliver in concrete
-   language. NEVER use template placeholders like `item_1:`, `item_N:`,
-   `{topic}`, or `{item}`. Write real content directions:
-   - Tier list: `"Evaluate Python against the declared criteria — cite framework ecosystem evidence from vault"`
-   - Rant: `"Escalate the governance argument using the Zuboff source and operator profile facts"`
-   - React: `"Pause at the 3:42 mark — react to the speaker's claim about alignment"`
-   - Iceberg: `"Descend to the third layer — the lesser-known connection between X and Y"`
-   - Lecture: `"Present the second piece of evidence for the thesis from the research notes"`
+   language and must depend on the previous beat. NEVER use template
+   placeholders like `item_1:`, `item_N:`, `{topic}`, or `{item}`. Write
+   real content directions:
+   - Tier list: `"Use the first source receipt to upset the expected S-tier candidate; make the next placement test the revised criterion"`
+   - Rant: `"Escalate the governance argument by showing how the second receipt turns a false-green claim into a live blocker"`
+   - React: `"Pause at the 3:42 mark, test the speaker's alignment claim against the prior source receipt, then let that test force the next clip choice"`
+   - Iceberg: `"Descend to the third layer only after the second layer explains why the surface account cannot carry the claim"`
+   - Lecture: `"Use the second piece of evidence to change the initial definition before the worked example depends on it"`
 
 3. **Closing beat** (last beat): Land the segment, invite audience
-   response, tease what's next. This is the segment's EXIT.
-   Example: `"close: Recap the final tier chart. Invite chat to disagree.
-   Tease the next segment topic."`
+   response, tease what's next, and explicitly resolve the opening hook.
+   This is the segment's EXIT.
+   Example: `"close: Return to the false-green launch claim, show the
+   receipt that settles it, and state what changed for the audience's
+   decision."`
 
 Segments with fewer than 8 total beats are TOO SHORT. Aim for 10-20
 beats for a 30-60 minute segment. Each beat should BREATHE — never
@@ -264,6 +270,16 @@ source readiness validation and will block the segment:
   `framing: Define`, `main_points: Present`, `synthesis: Connect`,
   or `questions: Invite` — name the source, object, consequence, and
   visible/doable obligation for that beat
+
+**Composability contract**: S2 rejects a segment before compose when it
+reads as `parallel_list`: independent items, a syllabus, or an
+inspectability/importance essay whose middle beats can be reordered
+without changing the close. To pass S2, the opening beat must pose a
+specific hook, the closing beat must resolve that same hook, and
+reordering the middle beats should break the segment. Avoid
+`declared_topic` or `narrative_beat` labels like "why X matters",
+"why X is inspectable", "teach X", or "explain X" unless you convert
+them into a concrete test, tension, or failure-to-receipt arc.
 
 **Arc shaping**: Every segment has dramatic energy, not just
 information. Open with tension. Build through the body — each beat
@@ -575,9 +591,11 @@ point and adapt to the declared topic.
   decisions); resolve any external references via the
   content-resolver daemon. Rank candidates against the operator's
   positions in the operator profile.
-- **Beats**: introduce topic + tier rubric → walk S tier with
-  justifications → A → B → C → D → invite chat dissent →
-  re-rank if reactions warrant → close with operator's distillation.
+- **Beats**: state the ranking tension + source-backed criterion →
+  test the expected winner → introduce a source receipt that changes
+  the criterion → resolve borderline placements in that changed order
+  → invite chat dissent → close by resolving the opening ranking
+  tension.
 - **`narrative_beat` example**: `"tier-list segment on governance
   enforcement failures. Use the May 2026 agentgov audit packets as
   candidates; rank each failure against refusal, provenance, and
@@ -588,9 +606,10 @@ point and adapt to the declared topic.
 - **Assets**: pull candidates from vault + RAG (same sources as
   tier-list); resolve external references via content-resolver;
   rank against operator profile.
-- **Beats**: introduce topic + countdown framing → 10 → 9 → ... → 1
-  with reasoning at each step → reveal the #1 with operator's
-  distinctive angle → close with chat invitation.
+- **Beats**: introduce the countdown question → establish the first
+  criterion → climb only when each entry changes what the next entry
+  must prove → reveal #1 as the answer to the opening question → close
+  with chat invitation.
 - **`narrative_beat` example**: `"top-10 countdown on launch blockers
   before the HN drop. Source candidates from the readiness tree and
   live receipts; climb from cosmetic polish to hard runtime blockers;
@@ -662,11 +681,12 @@ point and adapt to the declared topic.
   (`~/Documents/Personal/30-areas/` or `20-projects/`); fall
   back to RAG when vault is silent on the topic. Cite the
   source notes / RAG hits inline so the lecture is grounded.
-- **Beats**: motivation (why this matters) → framing
-  (definitions, prerequisites) → main points (3-5, each
-  with an example) → synthesis (how the points connect) →
-  questions (invite chat or reflect on operator-asked
-  questions from prior windows).
+- **Beats**: motivating tension (what claim fails without this
+  concept) → framing (definitions needed for the test) → source
+  sequence where each point changes what the next point can prove →
+  worked example that depends on the sequence → synthesis that
+  resolves the opening tension → questions (invite chat or reflect on
+  operator-asked questions from prior windows).
   Do not emit those phase names as generic beat text. A valid lecture
   beat names the specific source note, demonstration object, worked
   example, or audience question it will make visible/doable. Labels such
