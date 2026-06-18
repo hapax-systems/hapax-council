@@ -1473,6 +1473,21 @@ class TestGoGate:
         f["detail"] = "The line uses `@bad/path.py` instead of `@prefix`."
         assert rt.verify_literal_defect_critical(f, tmp_path) is True
 
+    def test_absent_expected_namespace_iri_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path,
+            "docs/semantic.ttl",
+            "@prefix wrong: <https://example.test/wrong/> .\nwrong:s wrong:p wrong:o .\n",
+        )
+        f = self._lit(
+            "Invalid RDF namespace contract",
+            file="docs/semantic.ttl",
+            line=1,
+        )
+        f["detail"] = "The expected namespace IRI `https://example.test/required/` is absent."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
     def test_non_literal_critical_passes_through(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         self._py(tmp_path, "shared/foo.py", "x = 1\n")
