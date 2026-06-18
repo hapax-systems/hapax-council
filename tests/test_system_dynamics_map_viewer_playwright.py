@@ -6,6 +6,8 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import sync_playwright
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ARCHITECTURE_DIR = REPO_ROOT / "docs" / "architecture"
@@ -56,18 +58,9 @@ def _static_server() -> Iterator[str]:
         thread.join(timeout=5)
 
 
-def _launch_chromium_or_skip(sync_playwright):
-    try:
-        return sync_playwright.chromium.launch()
-    except Exception as exc:  # pragma: no cover - environment-specific skip path
-        pytest.skip(f"Playwright Chromium is unavailable in this environment: {exc}")
-
-
 def test_system_dynamics_viewer_core_interactions():
-    playwright_sync = pytest.importorskip("playwright.sync_api")
-
-    with _static_server() as base_url, playwright_sync.sync_playwright() as playwright:
-        browser = _launch_chromium_or_skip(playwright)
+    with _static_server() as base_url, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
         page = browser.new_page(viewport={"width": 1280, "height": 900})
         try:
             page.goto(f"{base_url}/system-dynamics-map-viewer.html")
@@ -105,5 +98,8 @@ def test_system_dynamics_viewer_core_interactions():
             selected = page.evaluate("window.systemDynamicsMapRuntime.selectNode('opentelemetry')")
             assert selected["id"] == "opentelemetry"
             assert page.locator("#panel").inner_text().startswith("OpenTelemetry")
+
+            with pytest.raises(PlaywrightError):
+                page.evaluate("window.systemDynamicsMapRuntime.selectNode('missing-node')")
         finally:
             browser.close()

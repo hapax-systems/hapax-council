@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from rdflib import RDF, Dataset, Graph, Namespace, URIRef
+
 from scripts import system_dynamics_map_materialize as materialize
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +18,10 @@ SHACL_PATH = ARCHITECTURE_DIR / "system-dynamics-map.shacl.ttl"
 MANIFEST_PATH = ARCHITECTURE_DIR / "system-dynamics-map.view-manifest.json"
 EXPECTED_NODE_COUNT = 29
 EXPECTED_EDGE_COUNT = 35
+BASE = Namespace("https://hapax.local/system-dynamics-map/v0/")
+SD = Namespace("https://hapax.local/ns/system-dynamics-map#")
+SH = Namespace("http://www.w3.org/ns/shacl#")
+PROV = Namespace("http://www.w3.org/ns/prov#")
 
 
 def _load_seed() -> dict:
@@ -173,6 +179,31 @@ def test_materialized_semantic_artifacts_are_current():
     )
 
 
+def test_materializer_write_and_stale_detection_paths(tmp_path, monkeypatch):
+    seed_path = tmp_path / "system-dynamics-map.seed.json"
+    vendor_path = tmp_path / "cytoscape-3.34.0.min.js"
+    trig_path = tmp_path / "system-dynamics-map.canonical.trig"
+    shacl_path = tmp_path / "system-dynamics-map.shacl.ttl"
+    manifest_path = tmp_path / "system-dynamics-map.view-manifest.json"
+    seed_path.write_text(SEED_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    vendor_path.write_bytes(VENDOR_PATH.read_bytes())
+
+    monkeypatch.setattr(materialize, "SEED_PATH", seed_path)
+    monkeypatch.setattr(materialize, "VENDOR_PATH", vendor_path)
+    monkeypatch.setattr(materialize, "TRIG_PATH", trig_path)
+    monkeypatch.setattr(materialize, "SHACL_PATH", shacl_path)
+    monkeypatch.setattr(materialize, "MANIFEST_PATH", manifest_path)
+
+    materialize.write_artifacts()
+    assert trig_path.exists()
+    assert shacl_path.exists()
+    assert manifest_path.exists()
+    assert materialize.check_artifacts() == []
+
+    trig_path.write_text("stale\n", encoding="utf-8")
+    assert any("stale" in error for error in materialize.check_artifacts())
+
+
 def test_materialized_trig_covers_seed_identity_and_named_graphs():
     seed = _load_seed()
     trig = TRIG_PATH.read_text(encoding="utf-8")
@@ -195,6 +226,46 @@ def test_materialized_trig_covers_seed_identity_and_named_graphs():
             f"{TRIG_PATH}: missing relation {edge['relation']} for {edge['id']}. "
             "Fix by regenerating the canonical TriG artifact."
         )
+
+
+def test_materialized_rdf_artifacts_parse_and_match_seed_contract():
+    seed = _load_seed()
+    dataset = Dataset()
+    dataset.parse(TRIG_PATH, format="trig")
+    shapes = Graph()
+    shapes.parse(SHACL_PATH, format="turtle")
+
+    graph_ids = {str(graph.identifier) for graph in dataset.graphs()}
+    for graph_name in ("asserted", "rendered", "provenance"):
+        assert str(BASE[f"graph/{graph_name}"]) in graph_ids, (
+            f"{TRIG_PATH}: missing parseable named graph {graph_name}. "
+            "Fix by regenerating the canonical TriG artifact."
+        )
+
+    asserted = dataset.graph(URIRef(BASE["graph/asserted"]))
+    for node in seed["nodes"]:
+        subject = URIRef(BASE[f"node/{node['id']}"])
+        assert (subject, RDF.type, SD.Node) in asserted
+        assert (subject, SD.stableId, None) in asserted
+        assert (subject, SD.documentationLink, None) in asserted
+
+    for edge in seed["edges"]:
+        subject = URIRef(BASE[f"edge/{edge['id']}"])
+        assert (subject, RDF.type, SD.Edge) in asserted
+        assert (subject, SD.source, URIRef(BASE[f"node/{edge['source']}"])) in asserted
+        assert (subject, SD.target, URIRef(BASE[f"node/{edge['target']}"])) in asserted
+        assert (subject, SD.relation, None) in asserted
+        assert (subject, SD.confidence, None) in asserted
+        assert (subject, SD.documentationLink, None) in asserted
+
+    for shape, target_class in (
+        (SD.NodeShape, SD.Node),
+        (SD.EdgeShape, SD.Edge),
+        (SD.RenderedViewShape, SD.RenderedView),
+        (SD.ProvenanceActivityShape, PROV.Activity),
+    ):
+        assert (shape, RDF.type, SH.NodeShape) in shapes
+        assert (shape, SH.targetClass, target_class) in shapes
 
 
 def test_shacl_shapes_and_view_manifest_cover_the_durable_contract():
