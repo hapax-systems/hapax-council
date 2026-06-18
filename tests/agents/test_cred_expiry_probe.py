@@ -33,6 +33,19 @@ def test_tailscale_key_expiry_disabled_yields_no_alert():
     )
 
 
+def test_tailscale_zero_time_means_expiry_disabled_no_alert():
+    # tailscale encodes DISABLED key expiry as the Go zero time, not null -> must NOT alert
+    assert (
+        ep.probe_tailscale_node_key(
+            now=_NOW,
+            run=lambda argv: _proc(
+                stdout=json.dumps({"Self": {"KeyExpiry": "0001-01-01T00:00:00Z"}})
+            ),
+        )
+        is None
+    )
+
+
 def test_tailscale_key_far_out_is_ok():
     s = ep.probe_tailscale_node_key(now=_NOW, run=_ts_run(82))
     assert s is not None and s.severity == "ok" and s.days_remaining == 82

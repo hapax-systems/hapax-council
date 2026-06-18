@@ -78,6 +78,12 @@ def probe_tailscale_node_key(
         exp = datetime.fromisoformat(str(expiry).replace("Z", "+00:00"))
     except ValueError:
         return None
+    # Tailscale encodes "key expiry DISABLED" as the Go zero time (0001-01-01T00:00:00Z),
+    # not null -- and that is the DESIRED max-longevity state. Parsing it naively yields a
+    # huge-negative days_remaining -> a false P0 on a healthy node, so treat year<=1 as
+    # disabled (no alert), the same as a missing/null KeyExpiry.
+    if exp.year <= 1:
+        return None
     days = (exp - now).days
     healthy = days > 0
     return CredentialExpiry(
