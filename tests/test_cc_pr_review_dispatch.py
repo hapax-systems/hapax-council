@@ -1,6 +1,6 @@
 """Tests for ``scripts/cc-pr-review-dispatch.py`` — the review-team dispatcher.
 
-    Reviewer CLIs are stubbed via the injected ``reviewer_runner``; GitHub via the
+Reviewer CLIs are stubbed via the injected ``reviewer_runner``; GitHub via the
 injected ``gh_runner``. The exit-predicate integration test at the bottom runs
 a test PR through the dispatcher and shows cc-pr-autoqueue blocks without the
 produced dossier and admits with it.

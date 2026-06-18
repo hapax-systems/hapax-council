@@ -546,6 +546,7 @@ def _pass_backed_runtime_secret_auto_arm_ok(frontmatter: Mapping[str, Any]) -> b
     secret_entry = _frontmatter_non_null_scalar(frontmatter.get("secret_entry"))
     if not secret_entry:
         return False
+    # Intentionally scoped to the GLM Coding Plan pass namespace.
     if not secret_entry.startswith("glmcp/"):
         return False
     if any(ch.isspace() for ch in secret_entry):

@@ -72,7 +72,7 @@ Reads a blind review prompt on stdin and writes the GLM reviewer reply to stdout
 
 Environment overrides:
   HAPAX_GLMCP_REVIEW_SECRET_ENTRY       pass entry name (default: glmcp/api-key)
-  HAPAX_GLMCP_REVIEW_BASE_URL          endpoint base (default: Z.ai Coding Plan)
+  HAPAX_GLMCP_REVIEW_BASE_URL          OpenAI-compatible Coding Plan base URL
   HAPAX_GLMCP_REVIEW_MODEL             model (default: glm-5.2)
   HAPAX_GLMCP_REVIEW_TIMEOUT_SECONDS   request timeout (default: 900)
   HAPAX_GLMCP_REVIEW_MAX_TOKENS        max response tokens (default: 8192)
