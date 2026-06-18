@@ -235,11 +235,11 @@ rg -n '#[0-9A-Fa-f]{3,8}\b' \
   docs/architecture/system-dynamics-map-viewer.html
 ```
 
-The hardcoded-hex scan should return no matches. Confirm responsive CSS at-rules
-were not corrupted by accidental replacement:
+The hardcoded-hex scan should return no matches. Confirm responsive CSS container
+queries are present and no accidental path replacement entered the viewer:
 
 ```bash
-rg -n '@media \(max-width: (1100|760)px\)' docs/architecture/system-dynamics-map-viewer.html
+rg -n '@container \(max-width: (1100|760)px\)' docs/architecture/system-dynamics-map-viewer.html
 ! rg -n '@agents|phone_media|hapax_daimonion' docs/architecture/system-dynamics-map-viewer.html
 ```
 
