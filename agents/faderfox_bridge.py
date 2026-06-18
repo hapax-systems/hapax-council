@@ -46,6 +46,8 @@ DEFAULT_CONFIG = (
 # ALSA/mido port name fragments for the MX12.
 PORT_PATTERNS = ("MX12", "Faderfox")
 RECONNECT_S = 3.0
+# Two CC steps is ~1.6% of the fader throw: enough to avoid sticky pickup,
+# small enough that the hand must visibly meet the live value before takeover.
 PICKUP_TOLERANCE_CC = 2
 
 # node.name -> PipeWire object id cache (invalidated on a failed wpctl call).
@@ -201,7 +203,8 @@ def resync_faders(faders: dict[tuple[int, int], dict]) -> None:
             fader.pop("_pickup_target", None)
             fader.pop("_pickup_last_value", None)
             log.warning(
-                "fader %s -> %s resync skipped; volume state unavailable",
+                "fader %s -> %s resync skipped; volume state unavailable; "
+                "verify configured target node and non-mutating wpctl get-volume readback",
                 fader.get("label"),
                 fader["target"],
             )
@@ -244,9 +247,32 @@ def _pickup_ready(fader: dict, value: int) -> bool:
 def _handle_fader(fader: dict, value: int) -> bool:
     if not _pickup_ready(fader, value):
         return False
+    _apply_fader(fader, value)
+    return True
+
+
+def _apply_fader(fader: dict, value: int) -> None:
     vol = _cc_to_volume(fader, value)
     set_volume(fader["target"], vol)
     log.debug("fader %s -> %s vol=%.3f", fader.get("label"), fader["target"], vol)
+
+
+def _coalesced_fader_value(fader: dict, values: list[int]) -> int | None:
+    if not values:
+        return None
+    if fader.get("_pickup_target") is None:
+        return values[-1]
+    for value in values:
+        if _pickup_ready(fader, value):
+            return values[-1]
+    return None
+
+
+def _handle_fader_batch(fader: dict, values: list[int]) -> bool:
+    value = _coalesced_fader_value(fader, values)
+    if value is None:
+        return False
+    _apply_fader(fader, value)
     return True
 
 
@@ -286,7 +312,7 @@ def run(config_path: str | Path, *, learn: bool = False) -> None:
                 # each serially (one wpctl subprocess per event) lags seconds
                 # behind the hand. Keep only the LATEST value per fader and apply
                 # once per tick. Buttons are discrete presses — never coalesced.
-                latest_fader: dict[tuple[int, int], int] = {}
+                fader_events: dict[tuple[int, int], list[int]] = {}
                 button_events: list[tuple[tuple[int, int], int]] = []
                 for msg in inport.iter_pending():
                     if learn:
@@ -296,15 +322,15 @@ def run(config_path: str | Path, *, learn: bool = False) -> None:
                         continue
                     key = (msg.channel, msg.control)
                     if key in faders:
-                        latest_fader[key] = msg.value
+                        fader_events.setdefault(key, []).append(msg.value)
                     elif key in buttons:
                         button_events.append((key, msg.value))
-                if not latest_fader and not button_events:
+                if not fader_events and not button_events:
                     time.sleep(TICK_S)
                     continue
-                for key, value in latest_fader.items():
+                for key, values in fader_events.items():
                     fader = faders[key]
-                    _handle_fader(fader, value)
+                    _handle_fader_batch(fader, values)
                 for key, value in button_events:
                     msg_value = value
                     _handle_button(buttons[key], msg_value)
