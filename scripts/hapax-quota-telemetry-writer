@@ -95,9 +95,13 @@ GLMCP_ADMISSION_CAPACITY_POOL = "subscription_quota"
 # ``claude_code`` is accepted as a receipt ``supported_tool`` value only when
 # paired with the official Z.ai Coding Plan Claude Code endpoint/model evidence
 # below; route-specific quota still gates dispatch.
-GLMCP_ADMISSION_SUPPORTED_TOOLS = frozenset({"hapax-glmcp-reviewer", "claude_code"})
+GLMCP_ADMISSION_TOOL_ENDPOINTS = {
+    "hapax-glmcp-reviewer": frozenset({"https://api.z.ai/api/coding/paas/v4"}),
+    "claude_code": frozenset({"https://api.z.ai/api/anthropic"}),
+}
+GLMCP_ADMISSION_SUPPORTED_TOOLS = frozenset(GLMCP_ADMISSION_TOOL_ENDPOINTS)
 GLMCP_ADMISSION_ENDPOINTS = frozenset(
-    {"https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/anthropic"}
+    endpoint for endpoints in GLMCP_ADMISSION_TOOL_ENDPOINTS.values() for endpoint in endpoints
 )
 GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2", "glm-5.2[1m]"})
 GLMCP_ADMISSION_DEFAULT_STALE_AFTER_SECONDS = 900
@@ -313,6 +317,14 @@ def active_glmcp_admission_receipts(
                 _warn_ignored_glmcp_admission(
                     path,
                     f"endpoint {endpoint or 'missing'}; expected official Z.ai Coding Plan endpoint",
+                )
+                continue
+            if endpoint not in GLMCP_ADMISSION_TOOL_ENDPOINTS[supported_tool]:
+                expected = ", ".join(sorted(GLMCP_ADMISSION_TOOL_ENDPOINTS[supported_tool]))
+                _warn_ignored_glmcp_admission(
+                    path,
+                    f"supported_tool/endpoint mismatch {supported_tool}:{endpoint}; "
+                    f"expected endpoint {expected}",
                 )
                 continue
             model = fields.get("model", "")

@@ -70,14 +70,21 @@ action: exit_clean_await_restart
     )
 
 
-def _glmcp_admission(relay: Path, *, observed_at: str, stale_after_seconds: int = 900) -> None:
+def _glmcp_admission(
+    relay: Path,
+    *,
+    observed_at: str,
+    stale_after_seconds: int = 900,
+    supported_tool: str = "hapax-glmcp-reviewer",
+    endpoint: str = "https://api.z.ai/api/coding/paas/v4",
+) -> None:
     (relay / "glmcp-quota-admission.yaml").write_text(
         f"""status: quota_available
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
-supported_tool: hapax-glmcp-reviewer
-endpoint: https://api.z.ai/api/coding/paas/v4
+supported_tool: {supported_tool}
+endpoint: {endpoint}
 model: glm-5.2
 observed_at: {observed_at}
 stale_after_seconds: {stale_after_seconds}
@@ -210,6 +217,78 @@ def test_fresh_glmcp_admission_receipt_marks_glmcp_fresh(tmp_path: Path) -> None
     assert "finite" in glmcp_snapshot["operator_visible_reason"]
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 1
+
+
+def test_glmcp_admission_accepts_claude_code_with_anthropic_endpoint(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _glmcp_admission(
+        relay,
+        observed_at="2026-06-09T23:55:00Z",
+        supported_tool="claude_code",
+        endpoint="https://api.z.ai/api/anthropic",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["subscription_quota_state"] == "fresh"
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 1
+
+
+def test_glmcp_admission_rejects_supported_tool_endpoint_mismatches(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    (relay / "glmcp-quota-admission-claude-code-coding-endpoint.yaml").write_text(
+        """status: quota_available
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+supported_tool: claude_code
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5.2
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 900
+evidence_ref: supported-tool-usage-witness
+""",
+        encoding="utf-8",
+    )
+    (relay / "glmcp-quota-admission-reviewer-anthropic-endpoint.yaml").write_text(
+        """status: quota_available
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/anthropic
+model: glm-5.2
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 900
+evidence_ref: supported-tool-usage-witness
+""",
+        encoding="utf-8",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["subscription_quota_state"] == "unknown"
+    assert "supported_tool/endpoint mismatch claude_code" in result.stderr
+    assert "supported_tool/endpoint mismatch hapax-glmcp-reviewer" in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
 
 
 def test_glmcp_admission_receipt_requires_provider_and_route(tmp_path: Path) -> None:
