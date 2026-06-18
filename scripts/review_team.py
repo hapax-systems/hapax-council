@@ -698,6 +698,40 @@ def _reviews_with_phantom_resolutions(
     return out
 
 
+def _reviews_for_quorum(
+    reviews: Sequence[Mapping[str, Any]],
+    blocking_criticals: Sequence[tuple[str, dict]],
+    phantom_criticals: Sequence[tuple[str, dict]],
+) -> list[dict[str, Any]]:
+    blocking_keys = {
+        _finding_key(reviewer_id, finding) for reviewer_id, finding in blocking_criticals
+    }
+    phantom_keys = {
+        _finding_key(reviewer_id, finding) for reviewer_id, finding in phantom_criticals
+    }
+    out: list[dict[str, Any]] = []
+    for review in reviews:
+        record = dict(review)
+        if str(review.get("verdict", "")).lower() == "block":
+            reviewer_id = str(review.get("id"))
+            critical_keys = {
+                _finding_key(reviewer_id, finding)
+                for finding in review.get("findings") or []
+                if isinstance(finding, Mapping)
+                and str(finding.get("severity", "")).lower() == "critical"
+            }
+            if (
+                critical_keys
+                and not (critical_keys & blocking_keys)
+                and critical_keys <= phantom_keys
+            ):
+                record["verdict"] = "accept-with-findings"
+                record["raw_verdict"] = "block"
+                record["verdict_effective_reason"] = "all named criticals invalidated by go-gate"
+        out.append(record)
+    return out
+
+
 def _accepting(reviews: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     return [r for r in reviews if str(r.get("verdict", "")).lower() in ACCEPT_VERDICTS]
 
@@ -810,10 +844,11 @@ def synthesize_dossier(
         roster = [f for f in roster if f not in degraded_outage]
         if any(str(n) == "degraded_to:t2_standard" for n in constitution_notes):
             sizing = registry["sizing"]["t2_standard"]
-    accepts = _checklist_complete_accepts(reviews, lenses)
-    accept_families = {str(r.get("family")) for r in accepts}
     block_reviews = [r for r in reviews if str(r.get("verdict", "")).lower() == "block"]
     criticals, phantom_criticals = _blocking_criticals(reviews, repo_root, head_sha=head_sha)
+    quorum_reviews = _reviews_for_quorum(reviews, criticals, phantom_criticals)
+    accepts = _checklist_complete_accepts(quorum_reviews, lenses)
+    accept_families = {str(r.get("family")) for r in accepts}
     scoped_files = None if changed_files is None else [str(f) for f in changed_files]
     if changed_files is not None and changed_file_count is None:
         changed_file_count = len(scoped_files)
@@ -1135,7 +1170,8 @@ def _dossier_validity_blockers(
     for review in reviews:
         blockers.extend(_review_checklist_blockers(review, lenses))
 
-    accepts = _checklist_complete_accepts(reviews, lenses)
+    quorum_reviews = _reviews_for_quorum(reviews, criticals, phantoms)
+    accepts = _checklist_complete_accepts(quorum_reviews, lenses)
     unknown_accept_families = {str(r.get("family")) for r in accepts} - roster
     if unknown_accept_families:
         blockers.append(

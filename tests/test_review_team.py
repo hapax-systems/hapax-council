@@ -1659,6 +1659,50 @@ class TestGoGate:
         assert finding["resolved"] is True
         assert finding["resolution_source"] == "review-go-gate"
 
+    def test_phantom_only_block_counts_for_quorum(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
+        reviews = [
+            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("codex-1", "codex", "accept"),
+            _review("claude-1", "claude", "invalid-output"),
+        ]
+        dossier = _synth(rt, reviews, repo_root=tmp_path)
+
+        assert dossier["review_team_verdict"] == rt.QUORUM_ACCEPT
+        assert dossier["accept_count"] == 2
+        assert dossier["reviewers"][0]["verdict"] == "block"
+        assert dossier["reviewers"][0]["findings"][0]["resolution_source"] == "review-go-gate"
+
+    def test_admission_counts_phantom_only_block_for_quorum(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        (tmp_path / ".git").mkdir()
+        phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
+        reviews = [
+            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("codex-1", "codex", "accept"),
+            _review("claude-1", "claude", "invalid-output"),
+        ]
+        dossier = _synth(rt, reviews, repo_root=tmp_path)
+
+        monkeypatch.chdir(tmp_path)
+        blockers = rt._dossier_validity_blockers(
+            dossier,
+            pr_head_sha="a" * 40,
+            registry=reg,
+        )
+
+        assert "review_dossier_quorum_not_met:1/2" not in blockers
+        assert "review_dossier_family_diversity:accept_families=1/2" not in blockers
+        assert not any(b.startswith("review_team_verdict_not_quorum_accept:") for b in blockers)
+
     def test_real_literal_critical_still_blocks(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         self._py(tmp_path, "bad.py", "def f(:\n")
