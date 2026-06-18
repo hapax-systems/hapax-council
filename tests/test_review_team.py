@@ -957,6 +957,14 @@ class TestFamilyOutageDegradation:
             "You've hit your weekly limit · resets Jun 19, 5pm (America/Chicago)",
             process_failed=True,
         )
+        assert rt.is_quota_wall(
+            "You've hit your weekly limit · resets Jun 19, 5pm (America/Port-au-Prince)",
+            process_failed=True,
+        )
+        assert rt.is_quota_wall(
+            "You've hit your weekly limit · resets Jun 19, 5pm (America/Argentina/Buenos_Aires)",
+            process_failed=True,
+        )
         assert not rt.is_quota_wall(
             "You've hit your weekly limit · resets not a date and here is model prose",
             process_failed=True,

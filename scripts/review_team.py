@@ -66,7 +66,8 @@ TEAM_CLASS_RANK = {"t3_docs": 0, "t2_standard": 1, "t1_critical": 2}
 _RESET_TIME_SHAPE = (
     r"(?:(?:[A-Z][a-z]{2}\s+\d{1,2},\s+)?"
     r"\d{1,2}(?::\d{2})?\s*(?:am|pm)"
-    r"(?:\s+(?:\([A-Za-z_]+/[A-Za-z_]+\)|[A-Za-z_]+/[A-Za-z_]+))?)"
+    r"(?:\s+(?:\([A-Z][A-Za-z0-9._+-]*(?:/[A-Z][A-Za-z0-9._+-]*)+\)"
+    r"|[A-Z][A-Za-z0-9._+-]*(?:/[A-Z][A-Za-z0-9._+-]*)+|[A-Z]{2,5}))?)"
 )
 _QUOTA_WALL_SHAPE_RE = re.compile(
     r"\A("
