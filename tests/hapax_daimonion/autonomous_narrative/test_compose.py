@@ -10,6 +10,7 @@ from programme/stimmung/activity alone).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -187,6 +188,45 @@ def test_prompt_includes_open_triad_continuity() -> None:
 
     assert "Narration continuity ledger" in seen[0]
     assert "Resolve monitor obligation" in seen[0]
+
+
+def test_prompt_includes_self_grounding_projection(monkeypatch) -> None:
+    seen = []
+    block = "[Self-Grounding State]\nRoute: private\nAllowed: private_answer"
+    monkeypatch.setattr(compose, "_render_self_grounding_seed_block", lambda _ctx: block)
+
+    def stub(*, prompt: str, seed: str, **kwargs) -> str:
+        seen.append({"prompt": prompt, "seed": seed})
+        return "Signal continuity remains open pending witness."
+
+    compose.compose_narrative(_FakeContext(), llm_call=stub)
+
+    assert block in seen[0]["seed"]
+    assert block in seen[0]["prompt"]
+
+
+def test_self_grounding_projection_fails_closed_on_missing_witnesses(monkeypatch) -> None:
+    monkeypatch.setattr(
+        compose,
+        "read_broadcast_audio_health_state",
+        lambda: SimpleNamespace(safe=False, status=compose.BroadcastAudioStatus.UNSAFE),
+    )
+    monkeypatch.setattr(
+        compose,
+        "resolve_livestream_egress_state",
+        lambda **_kwargs: SimpleNamespace(
+            public_claim_allowed=False,
+            evidence=(SimpleNamespace(source="local_preview"),),
+        ),
+    )
+
+    block = compose._render_self_grounding_seed_block(_FakeContext())
+
+    assert "[Self-Grounding State]" in block
+    assert "Route: private" in block
+    assert "Programme auth: missing" in block
+    assert "Audio safety: unsafe" in block
+    assert "egress_not_witnessed" in block
 
 
 def test_prompt_carries_voice_constraints() -> None:
