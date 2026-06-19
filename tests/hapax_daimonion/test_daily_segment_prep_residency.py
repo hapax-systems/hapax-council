@@ -1232,6 +1232,39 @@ def test_dual_readout_for_segment_reads_precomputed_axis_reports() -> None:
     }
 
 
+def test_dual_readout_for_segment_reads_programme_carrier_reports() -> None:
+    axis_a_report = {
+        "axis_id": "A",
+        "score_0_100": 78,
+        "score_1_5": 4.12,
+        "ok": True,
+        "coverage": {"ok": True},
+    }
+    axis_b_report = {
+        "axis_id": "B",
+        "score_0_100": 71,
+        "score_1_5": 3.84,
+        "ok": True,
+        "coverage": {"ok": True},
+    }
+    programme = SimpleNamespace(
+        axis_a_grounding_efficacy_reports={"prog-carrier": axis_a_report},
+        content=SimpleNamespace(axis_b_ndcvb_report=axis_b_report),
+    )
+
+    dual_readout = prep._dual_readout_for_segment(
+        programme=programme,
+        prep_session={},
+        programme_id="prog-carrier",
+        segment_prep_contract={},
+    )
+
+    assert dual_readout is not None
+    assert dual_readout["available_axes"] == ["A", "B"]
+    assert dual_readout[prep.AXIS_A_READOUT_KEY] == axis_a_report
+    assert dual_readout[prep.AXIS_B_READOUT_KEY] == axis_b_report
+
+
 def test_dual_readout_for_segment_allows_partial_contract_metadata_reports() -> None:
     axis_a_report = {
         "axis_id": "A",
@@ -1302,6 +1335,59 @@ def test_council_decisions_ledger_records_dual_readout(tmp_path: Path) -> None:
     assert row["programme_id"] == "prog-dual"
     assert row["terminal_status"] == "released"
     assert row["dual_readout"] == dual_readout
+
+
+def test_prep_deadline_exceeded_records_budget_terminal_dual_readout(tmp_path: Path) -> None:
+    dual_readout = {
+        "schema_version": prep.DUAL_READOUT_SCHEMA_VERSION,
+        "record_type": prep.DUAL_READOUT_RECORD_TYPE,
+        "programme_id": "prog-budget",
+        "available_axes": ["A", "B"],
+        "missing_axes": [],
+        "complete": True,
+        prep.AXIS_A_READOUT_KEY: {
+            "axis_id": "A",
+            "score_0_100": 74,
+            "score_1_5": 3.96,
+            "ok": True,
+        },
+        prep.AXIS_B_READOUT_KEY: {
+            "axis_id": "B",
+            "score_0_100": 86,
+            "score_1_5": 4.44,
+            "ok": True,
+        },
+    }
+
+    exceeded = prep._prep_deadline_exceeded(
+        0.0,
+        prep_dir=tmp_path,
+        prep_session={
+            "prep_session_id": "segment-prep-test",
+            "model_id": prep.RESIDENT_PREP_MODEL,
+            "llm_calls": [],
+        },
+        programme_id="prog-budget",
+        role="rant",
+        topic="A budget-exhausted dual-readout witness",
+        beats=["source-backed beat"],
+        council_decisions={"coherence": {"mean_score": 4.2}},
+        dual_readout=dual_readout,
+        phase="coherence_check",
+    )
+
+    assert exceeded is True
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / prep.COUNCIL_DECISIONS_LEDGER_FILENAME)
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    terminal_row = [row for row in rows if row["record_type"] == "council_decisions_ledger_entry"][
+        -1
+    ]
+    assert terminal_row["terminal_status"] == "budget_exhausted_no_release"
+    assert terminal_row["dual_readout"] == dual_readout
 
 
 def test_prep_segment_release_preserves_dual_readout_in_artifact_and_ledger(
