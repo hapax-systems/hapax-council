@@ -631,7 +631,7 @@ stale_after_seconds: 900
         ("supported_tool", "supported_tool missing or unsupported"),
         ("endpoint", "endpoint missing or unsupported"),
         ("model", "model missing or unsupported"),
-        ("observed_at", "missing or malformed observed_at/captured_at/detected_at"),
+        ("observed_at", "missing or malformed observed_at"),
         ("stale_after_seconds", "malformed stale_after_seconds"),
     ],
 )
@@ -808,6 +808,44 @@ def test_future_glmcp_admission_receipt_keeps_glmcp_unknown(tmp_path: Path) -> N
     assert "observed_at is in the future" in result.stderr
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
+
+
+def test_ambiguous_glmcp_admission_timestamps_keep_glmcp_unknown(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    (relay / "glmcp-quota-admission-ambiguous-timestamp.yaml").write_text(
+        """status: quota_available
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5.2
+observed_at: 2026-06-09T23:55:00Z
+captured_at: 2026-06-10T00:05:00Z
+stale_after_seconds: 900
+evidence_ref: supported-tool-usage-witness
+""",
+        encoding="utf-8",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["subscription_quota_state"] == "unknown"
+    assert any(
+        ":ignored:ambiguous-timestamp-fields" in ref for ref in glmcp_snapshot["evidence_refs"]
+    )
+    assert "ambiguous timestamp fields" in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
+    assert summary["glmcp_ignored_admissions"] == 1
 
 
 def test_malformed_glmcp_admission_timestamps_are_operator_visible(tmp_path: Path) -> None:

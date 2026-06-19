@@ -422,22 +422,36 @@ def active_glmcp_admission_receipts(
                 "evidence_ref unsafe; expected a sanitized witness reference, not raw secret material",
             )
             continue
-        observed_raw = (
-            fields.get("observed_at", "")
-            or fields.get("captured_at", "")
-            or fields.get("detected_at", "")
-        )
+        timestamp_fields = [
+            key
+            for key in ("observed_at", "captured_at", "detected_at")
+            if fields.get(key, "").strip()
+        ]
+        if not timestamp_fields:
+            reject(
+                path,
+                "missing timestamp field; expected exactly one of observed_at/captured_at/detected_at",
+            )
+            continue
+        if len(timestamp_fields) > 1:
+            reject(
+                path,
+                "ambiguous timestamp fields; expected exactly one of observed_at/captured_at/detected_at",
+            )
+            continue
+        timestamp_key = timestamp_fields[0]
+        observed_raw = fields[timestamp_key]
         observed_at = _parse_utc(observed_raw)
         if observed_at is None:
             reject(
                 path,
-                "missing or malformed observed_at/captured_at/detected_at",
+                f"missing or malformed {timestamp_key}",
             )
             continue
         if observed_at > now:
             reject(
                 path,
-                "observed_at is in the future",
+                f"{timestamp_key} is in the future",
             )
             continue
         stale_after_raw = fields.get("stale_after_seconds", "").strip()
