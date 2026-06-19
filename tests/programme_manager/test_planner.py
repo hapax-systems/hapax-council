@@ -31,6 +31,7 @@ from agents.programme_manager.planner import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_MODEL,
     ProgrammePlanner,
+    _render_arc_roles_directive,
 )
 from shared.programme import ProgrammePlan, ProgrammeRole, is_segmented_content_role
 from shared.segment_prep_contract import programme_source_readiness
@@ -222,6 +223,45 @@ class TestHappyPath:
         assert plan is not None
         assert "emit exactly 1 segmented-content programme" in prompts[0]
         assert "soft-prior programme proposals" in prompts[0]
+
+    def test_arc_roles_only_restricts_roles_in_prompt(self) -> None:
+        # RED-1 producer fix: arc_roles_only=True prepends a HARD role restriction (the validated
+        # lever) — ONLY arc-shaped roles offered, ranking/listy/dyad roles FORBIDDEN this run.
+        prompts: list[str] = []
+
+        def capture(prompt: str) -> str:
+            prompts.append(prompt)
+            return json.dumps(_well_formed_plan_payload(role=ProgrammeRole.TIER_LIST))
+
+        planner = ProgrammePlanner(llm_fn=capture)
+        plan = planner.plan(show_id="show-test-001", target_programmes=1, arc_roles_only=True)
+
+        assert plan is not None
+        p = prompts[0]
+        assert "composable arc" in p.lower()
+        assert "`rant`" in p and "`iceberg`" in p and "`react`" in p  # arc roles offered
+        # ranking / listy / dyad roles forbidden this run
+        assert "`tier_list`" in p and "`top_10`" in p and "`lecture`" in p and "`interview`" in p
+        assert "FORBIDDEN" in p
+
+    def test_arc_roles_only_off_omits_directive(self) -> None:
+        prompts: list[str] = []
+
+        def capture(prompt: str) -> str:
+            prompts.append(prompt)
+            return json.dumps(_well_formed_plan_payload(role=ProgrammeRole.TIER_LIST))
+
+        planner = ProgrammePlanner(llm_fn=capture)
+        plan = planner.plan(show_id="show-test-001", target_programmes=1)  # default off
+
+        assert plan is not None
+        assert "ROLE RESTRICTION (this run)" not in prompts[0]
+
+    def test_render_arc_roles_directive_pure(self) -> None:
+        assert _render_arc_roles_directive(False) == ""
+        directive = _render_arc_roles_directive(True)
+        assert "composable arc" in directive.lower()
+        assert "`rant`" in directive and "FORBIDDEN" in directive
 
     def test_default_model_is_resident_command_r(self) -> None:
         """Pin the only production planner model.
