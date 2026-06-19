@@ -2362,6 +2362,7 @@ def prep_segment(
         programme=programme,
         prep_session=prep_session,
         programme_id=prog_id,
+        segment_prep_contract=model_contract,
     )
     if _prep_deadline_exceeded(
         deadline_monotonic,
@@ -2484,6 +2485,12 @@ def prep_segment(
             prog_id,
         )
         model_contract = None
+    terminal_dual_readout = _precomputed_dual_readout_for_terminal_row(
+        programme=programme,
+        prep_session=prep_session,
+        programme_id=prog_id,
+        segment_prep_contract=model_contract,
+    )
 
     # OBSERVABILITY (Type 4 — true iteration): record the refined draft with the
     # feedback that prompted it. delta_from_prev auto-detects a re-roll vs a real

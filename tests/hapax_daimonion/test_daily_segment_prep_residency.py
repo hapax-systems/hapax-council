@@ -1562,6 +1562,76 @@ def test_prep_segment_refusal_preserves_dual_readout_in_terminal_ledger(
     assert terminal_row["dual_readout"][prep.AXIS_B_READOUT_KEY] == axis_b_report
 
 
+def test_prep_segment_refusal_reads_dual_readout_from_model_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import agents.hapax_daimonion.angle_resolver as angle_resolver
+
+    axis_a_report = {"axis_id": "A", "score_0_100": 49, "score_1_5": 2.96, "ok": False}
+    axis_b_report = {"axis_id": "B", "score_0_100": 82, "score_1_5": 4.28, "ok": True}
+    programme = SimpleNamespace(
+        programme_id="prog-contract-refusal",
+        role=SimpleNamespace(value="rant"),
+        content=_ready_content(
+            narrative_beat="A contract-carried dual-readout refusal",
+            segment_beats=["argue the point with a source receipt"],
+            role="rant",
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+    }
+    model_contract = {
+        "metadata": {
+            "axis_a_grounding_efficacy_report": axis_a_report,
+            "axis_b_ndcvb_report": axis_b_report,
+        }
+    }
+
+    monkeypatch.setattr(angle_resolver, "resolve_angle", lambda _topic: None)
+    monkeypatch.setattr(prep, "_build_seed", lambda _programme: "seed")
+    monkeypatch.setattr(prep, "_build_full_segment_prompt", lambda _programme, _seed: "prompt")
+    monkeypatch.setattr(
+        prep,
+        "_call_llm",
+        lambda _prompt, **_kwargs: json.dumps(
+            {
+                "prepared_script": [
+                    "According to the receipt, the launch claim changes once the source is visible."
+                ],
+                "segment_prep_contract": model_contract,
+            }
+        ),
+    )
+    monkeypatch.setattr(prep, "_refine_script", lambda script, _programme, **_kwargs: script)
+    monkeypatch.setattr(prep, "_emit_self_evaluation", lambda *_args, **_kwargs: None)
+
+    def _low(_script: str, _pid: str) -> Any:
+        return prep._CoherenceOutcome(
+            passed=False,
+            refused=False,
+            feedback="Council coherence scores (mean=1.5, min=1):",
+            council_decisions={"check": "coherence", "mean_score": 1.5, "axis_min": 1},
+        )
+
+    monkeypatch.setattr(prep, "_council_coherence_check", _low)
+
+    assert prep.prep_segment(programme, tmp_path, prep_session=session) is None
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / prep.COUNCIL_DECISIONS_LEDGER_FILENAME).read_text().splitlines()
+    ]
+    terminal_row = [row for row in rows if row["record_type"] == "council_decisions_ledger_entry"][
+        -1
+    ]
+    assert terminal_row["terminal_status"] == "low_coherence_no_release"
+    assert terminal_row["dual_readout"][prep.AXIS_A_READOUT_KEY] == axis_a_report
+    assert terminal_row["dual_readout"][prep.AXIS_B_READOUT_KEY] == axis_b_report
+
+
 def test_prep_segment_records_substance_feedback_on_no_candidate(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
