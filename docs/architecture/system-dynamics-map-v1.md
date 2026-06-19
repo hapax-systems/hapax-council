@@ -327,6 +327,11 @@ for path, dimensions in expected.items():
 PY
 ```
 
+This snippet assumes Pillow is available in the repo test environment. The
+`>50` color threshold is a blank/sparse-image guard; the Playwright viewer suite
+performs the stronger current-served-render comparison against these committed
+references.
+
 The AV-SDLC task evidence also carries operator-local copies under the closing
 task evidence directory named in the cc-task dossier.
 

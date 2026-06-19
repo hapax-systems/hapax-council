@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from PIL import Image, ImageChops, ImageStat
 
 playwright_sync_api = pytest.importorskip("playwright.sync_api", reason="playwright not installed")
 sync_playwright = playwright_sync_api.sync_playwright
@@ -14,6 +15,16 @@ sync_playwright = playwright_sync_api.sync_playwright
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ARCHITECTURE_DIR = REPO_ROOT / "docs" / "architecture"
 VIEWER_PATH = ARCHITECTURE_DIR / "system-dynamics-map-viewer.html"
+REFERENCE_CAPTURE_SPECS = (
+    (
+        {"width": 1440, "height": 960},
+        ARCHITECTURE_DIR / "system-dynamics-map-viewer-desktop.png",
+    ),
+    (
+        {"width": 390, "height": 844},
+        ARCHITECTURE_DIR / "system-dynamics-map-viewer-mobile.png",
+    ),
+)
 HIDDEN_SELECTION_MESSAGE = "hidden by the active lens or filters"
 HIDDEN_SELECTION_RECOVERY = "Clear filters or choose a lens that includes it"
 NONBLANK_CANVAS_SCRIPT = """
@@ -82,6 +93,15 @@ def _browser_error_message(page, expression: str) -> str | None:
 def _assert_no_viewer_selection(page) -> None:
     assert page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload().selected") is None
     assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 0
+
+
+def _mean_image_delta(left_path: Path, right_path: Path) -> float:
+    with Image.open(left_path) as left_image, Image.open(right_path) as right_image:
+        left = left_image.convert("RGB")
+        right = right_image.convert("RGB")
+        assert left.size == right.size
+        diff = ImageChops.difference(left, right)
+        return float(sum(ImageStat.Stat(diff).mean) / 3)
 
 
 def test_system_dynamics_viewer_core_interactions():
@@ -980,6 +1000,33 @@ def test_system_dynamics_viewer_toolbar_and_panel_actions_are_operable():
             browser.close()
 
 
+def test_system_dynamics_viewer_reference_captures_match_current_served_render(tmp_path):
+    with _static_server() as base_url, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            for viewport, reference_path in REFERENCE_CAPTURE_SPECS:
+                page = browser.new_page(viewport=viewport)
+                try:
+                    page.goto(f"{base_url}/system-dynamics-map-viewer.html")
+                    page.locator("#cy canvas").first.wait_for(timeout=10_000)
+                    page.wait_for_function("window.systemDynamicsMapRuntime")
+                    page.wait_for_function(NONBLANK_CANVAS_SCRIPT, timeout=10_000)
+                    page.wait_for_timeout(500)
+                    current_path = tmp_path / reference_path.name
+                    page.screenshot(path=str(current_path), full_page=False)
+                finally:
+                    page.close()
+
+                mean_delta = _mean_image_delta(reference_path, current_path)
+                assert mean_delta < 12.0, (
+                    f"{reference_path}: committed capture drifted from the current served viewer "
+                    f"(mean pixel delta {mean_delta:.2f}). Regenerate the reference PNG at "
+                    f"{viewport['width']}x{viewport['height']}."
+                )
+        finally:
+            browser.close()
+
+
 def test_system_dynamics_viewer_direct_file_mode_preserves_supplemental_data():
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
@@ -1126,16 +1173,26 @@ def test_system_dynamics_viewer_forced_colors_keeps_focus_and_boundaries_visible
             page.locator("#cy canvas").first.wait_for(timeout=10_000)
             page.wait_for_function("window.systemDynamicsMapRuntime")
             assert page.evaluate("window.matchMedia('(forced-colors: active)').matches")
-            assert page.evaluate(
+            forced_color_styles = page.evaluate(
                 """
                 () => {
                   const cyStyle = getComputedStyle(document.querySelector("#cy"));
                   const buttonStyle = getComputedStyle(document.querySelector("button"));
-                  return cyStyle.borderTopColor === buttonStyle.color;
+                  return {
+                    borderColor: cyStyle.borderTopColor,
+                    borderStyle: cyStyle.borderTopStyle,
+                    borderWidth: cyStyle.borderTopWidth,
+                    buttonTextColor: buttonStyle.color,
+                    canvasColor: cyStyle.backgroundColor
+                  };
                 }
                 """
-            ), (
-                "forced-colors mode did not map graph boundaries to ButtonText. "
+            )
+            assert forced_color_styles["borderStyle"] == "solid"
+            assert forced_color_styles["borderWidth"] != "0px"
+            assert forced_color_styles["borderColor"] == forced_color_styles["buttonTextColor"]
+            assert forced_color_styles["borderColor"] != forced_color_styles["canvasColor"], (
+                "forced-colors mode did not render a contrastive graph boundary. "
                 "Fix by keeping #cy in the forced-colors border-color rule."
             )
             page.get_by_role("button", name="Force").focus()
