@@ -27,6 +27,30 @@ exit 0
     )
 
 
+def _init_primary_council_repo(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "init", "-b", "main", str(path)],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ["git", "-C", str(path), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(path), "config", "user.name", "Test"], check=True)
+    _write_executable(path / "hooks" / "scripts" / "codex-hook-adapter.sh", "exit 0\n")
+    (path / "README.md").write_text("primary council\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(path), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(path), "commit", "-m", "init"],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 def test_codex_headless_runs_on_appendix_via_remote_payload(tmp_path: Path) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
@@ -102,6 +126,74 @@ exit 0
     sid = proof["session_id"]
     assert (cache / f"session-role-{sid}").read_text(encoding="utf-8") == "cx-amber\n"
     assert (cache / f"cc-active-task-cx-amber-{sid}").read_text(encoding="utf-8") == "task-x\n"
+
+
+def test_codex_headless_creates_missing_remote_default_worktree(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-cx-amber").write_text("task-x\n", encoding="utf-8")
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    primary = home / "projects" / "hapax-council"
+    _init_primary_council_repo(primary)
+
+    # Present for the launcher's podium-local validation, then removed by the
+    # fake SSH boundary before remote preflight to model appendix missing it.
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
+
+    bin_dir = tmp_path / "bin"
+    args_file = tmp_path / "codex-args.txt"
+    pwd_file = tmp_path / "codex-pwd.txt"
+    ssh_count = tmp_path / "ssh-count.txt"
+    _write_executable(
+        bin_dir / "ssh",
+        f"""remote_cmd="${{@: -1}}"
+count="$(cat {ssh_count} 2>/dev/null || echo 0)"
+count=$((count + 1))
+echo "$count" > {ssh_count}
+if [ "$count" -eq 1 ]; then
+  rm -rf {workdir}
+fi
+exec bash -c "$remote_cmd"
+""",
+    )
+    _write_executable(
+        bin_dir / "codex",
+        f"""pwd > {pwd_file}
+printf '%s\\n' "$*" > {args_file}
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(primary)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert ssh_count.read_text(encoding="utf-8").strip() == "3"
+    assert pwd_file.read_text(encoding="utf-8").strip() == str(workdir)
+    branch = subprocess.run(
+        ["git", "-C", str(workdir), "rev-parse", "--abbrev-ref", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert branch == "codex/cx-amber"
+    assert "exec --dangerously-bypass-approvals-and-sandbox" in args_file.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_codex_headless_prefers_session_keyed_claim_over_stale_legacy(
