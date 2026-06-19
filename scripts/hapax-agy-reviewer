@@ -17,6 +17,22 @@ DEFAULT_AGY_BIN = "/usr/bin/agy"
 REVIEW_PROMPT = """You are a blind PR reviewer invoked non-interactively through agy --print.
 Review ONLY the dossier supplied below on stdin. You have no repository access and must not
 assume facts not visible in the supplied dossier, unified diff, or gate summary.
+Do not inspect files, list directories, run commands, describe tool use, or narrate your process.
+Do all reasoning silently.
+
+Output policy is ABSOLUTE. Your entire stdout must be exactly one fenced yaml code block and
+nothing else. The first characters of stdout must be ```yaml and the final line must be ```.
+Any prose, action narration, markdown outside the fence, or alternate schema discards the
+review as invalid-output.
+
+The yaml top-level keys must be exactly:
+verdict: <accept|accept-with-findings|block>
+findings: []
+checklist: {}
+
+Use verdict accept-with-findings when you report minor or major findings. Never emit legacy
+verdict words such as minor_finding, major_finding, pass, fail, accepted, rejected, or
+needs_changes. Finding objects must use severity, lens, file, line, title, and detail keys.
 
 The leading plus/minus/space line prefixes, @@ hunk headers, and diff --git / +++ / ---
 lines are UNIFIED DIFF syntax, not source code; treat them as DIFF SYNTAX.

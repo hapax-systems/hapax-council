@@ -1518,17 +1518,20 @@ def test_system_dynamics_viewer_reports_served_seed_fallback():
             browser.close()
 
 
-def test_system_dynamics_viewer_reports_malformed_workbench_contract():
+def _viewer_html_with_workbench_contract(contract: object) -> str:
+    return re.sub(
+        r'(<script type="application/json" id="workbench-contract-data">\s*).*?(\s*</script>)',
+        rf"\1{json.dumps(contract)}\2",
+        VIEWER_PATH.read_text(encoding="utf-8"),
+        count=1,
+        flags=re.S,
+    )
+
+
+def _assert_malformed_workbench_contract_falls_back(broken_html: str) -> None:
     with _static_server() as base_url, sync_playwright() as playwright:
         browser = playwright.chromium.launch()
         page = browser.new_page(viewport={"width": 1280, "height": 900})
-        broken_html = re.sub(
-            r'(<script type="application/json" id="workbench-contract-data">\s*).*?(\s*</script>)',
-            r"\1{}\2",
-            VIEWER_PATH.read_text(encoding="utf-8"),
-            count=1,
-            flags=re.S,
-        )
 
         def route_broken_workbench(route):
             route.fulfill(status=200, content_type="text/html", body=broken_html)
@@ -1549,6 +1552,49 @@ def test_system_dynamics_viewer_reports_malformed_workbench_contract():
             )
         finally:
             browser.close()
+
+
+def test_system_dynamics_viewer_reports_malformed_workbench_contract():
+    _assert_malformed_workbench_contract_falls_back(_viewer_html_with_workbench_contract({}))
+
+
+def test_system_dynamics_viewer_rejects_partial_workbench_contract_arrays():
+    _assert_malformed_workbench_contract_falls_back(
+        _viewer_html_with_workbench_contract(
+            {
+                "schema": "system-dynamics-map-workbench-contract-v1",
+                "defaults": {
+                    "inquiry_mode": "partial",
+                    "audience_mode": "operator",
+                    "explanation_path": "missing-scenes",
+                },
+                "inquiry_modes": [
+                    {
+                        "id": "partial",
+                        "label": "Partial",
+                        "prompt": "This contract is intentionally incomplete.",
+                    }
+                ],
+                "audience_modes": [
+                    {
+                        "id": "operator",
+                        "label": "Operator",
+                    }
+                ],
+                "explanation_paths": [
+                    {
+                        "id": "missing-scenes",
+                        "label": "Missing scenes",
+                        "summary": "Array-shaped but unusable.",
+                        "scene_count": 0,
+                        "must_include": [],
+                        "scenes": [],
+                    }
+                ],
+                "follow_on_tranches": [],
+            }
+        )
+    )
 
 
 def test_system_dynamics_viewer_mobile_layout_remains_operable():

@@ -1860,7 +1860,7 @@ def generate_manifest(seed: dict[str, Any]) -> str:
             ],
         },
         "validation": {
-            "pytest": "uv run pytest tests/test_system_dynamics_map_artifacts.py",
+            "pytest": "uv run --extra ci pytest tests/test_system_dynamics_map_artifacts.py",
             "browser": "uv run --extra ci pytest tests/test_system_dynamics_map_viewer_playwright.py",
             "package_gate": "scripts/system-dynamics-map-gate",
         },

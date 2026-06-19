@@ -5827,7 +5827,7 @@
     "expires_at": "2030-01-01T00:00:00Z",
     "freshness": "fresh",
     "source_ref": "docs/architecture/system-dynamics-map-v1.md",
-    "source_hash": "7263b939d496de4e761b559d84c262294d4d3c271f8ea379a387a92886e534e5",
+    "source_hash": "b5634f907fba186e874337c603264dda28c42771678a51e56c90c4a0cf8c0f7a",
     "source_type": "fixture",
     "evidence": [
       {
@@ -6886,12 +6886,109 @@
       follow_on_tranches: []
     };
 
+    function isPlainObject(value) {
+      return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+    }
+
+    function isNonEmptyString(value) {
+      return typeof value === "string" && value.trim().length > 0;
+    }
+
+    function isStringArray(value) {
+      return Array.isArray(value) && value.every((item) => typeof item === "string");
+    }
+
+    function isValidWorkbenchSelection(selection) {
+      return (
+        isPlainObject(selection)
+        && ["nodes", "edges"].includes(selection.group)
+        && isNonEmptyString(selection.id)
+      );
+    }
+
+    function isValidInquiryMode(mode) {
+      return (
+        isPlainObject(mode)
+        && isNonEmptyString(mode.id)
+        && isNonEmptyString(mode.label)
+        && isNonEmptyString(mode.prompt)
+        && isNonEmptyString(mode.lens)
+        && isStringArray(mode.focus_node_ids)
+        && isStringArray(mode.focus_edge_ids)
+        && isStringArray(mode.answer_shape)
+      );
+    }
+
+    function isValidAudienceMode(mode) {
+      return (
+        isPlainObject(mode)
+        && isNonEmptyString(mode.id)
+        && isNonEmptyString(mode.label)
+        && isNonEmptyString(mode.emphasis)
+      );
+    }
+
+    function isValidExplanationScene(scene) {
+      return (
+        isPlainObject(scene)
+        && isNonEmptyString(scene.title)
+        && isNonEmptyString(scene.lens)
+        && isValidWorkbenchSelection(scene.selection)
+        && isNonEmptyString(scene.takeaway)
+        && isNonEmptyString(scene.caveat)
+      );
+    }
+
+    function isValidExplanationPath(path) {
+      return (
+        isPlainObject(path)
+        && isNonEmptyString(path.id)
+        && isNonEmptyString(path.label)
+        && isNonEmptyString(path.summary)
+        && Number.isInteger(path.scene_count)
+        && isStringArray(path.must_include)
+        && Array.isArray(path.scenes)
+        && path.scenes.length > 0
+        && path.scenes.length === path.scene_count
+        && path.scenes.every(isValidExplanationScene)
+      );
+    }
+
+    function hasDefaultIds(contract) {
+      if (!isPlainObject(contract.defaults)) {
+        return false;
+      }
+      const inquiryIds = new Set(contract.inquiry_modes.map((mode) => mode.id));
+      const audienceIds = new Set(contract.audience_modes.map((mode) => mode.id));
+      const pathIds = new Set(contract.explanation_paths.map((path) => path.id));
+      return (
+        inquiryIds.has(contract.defaults.inquiry_mode)
+        && audienceIds.has(contract.defaults.audience_mode)
+        && pathIds.has(contract.defaults.explanation_path)
+      );
+    }
+
+    function isValidWorkbenchContract(contract) {
+      return (
+        isPlainObject(contract)
+        && contract.schema === "system-dynamics-map-workbench-contract-v1"
+        && Array.isArray(contract.inquiry_modes)
+        && contract.inquiry_modes.length > 0
+        && contract.inquiry_modes.every(isValidInquiryMode)
+        && Array.isArray(contract.audience_modes)
+        && contract.audience_modes.length > 0
+        && contract.audience_modes.every(isValidAudienceMode)
+        && Array.isArray(contract.explanation_paths)
+        && contract.explanation_paths.length > 0
+        && contract.explanation_paths.every(isValidExplanationPath)
+        && Array.isArray(contract.follow_on_tranches)
+        && hasDefaultIds(contract)
+      );
+    }
+
     function normalizeWorkbenchContract(contract) {
       if (
-        !contract
-        || !Array.isArray(contract.inquiry_modes)
-        || !Array.isArray(contract.audience_modes)
-        || !Array.isArray(contract.explanation_paths)
+        !isValidWorkbenchContract(contract)
       ) {
         dataHealthMessages.push(
           "Workbench contract data is missing or malformed; using inert fallback. Rerun scripts/system_dynamics_map_materialize.py before relying on inquiry or explanation output."

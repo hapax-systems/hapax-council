@@ -52,6 +52,11 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     assert "--print" in args
     assert "UNIFIED DIFF" in args
     assert "no repository access" in args
+    assert "Do not inspect files" in args
+    assert "Your entire stdout must be exactly one fenced yaml code block" in args
+    assert "Never emit legacy" in args
+    assert "minor_finding" in args
+    assert "severity, lens, file, line, title, and detail" in args
     assert not cwd_file.read_text(encoding="utf-8").strip().startswith(str(REPO_ROOT))
     assert home_file.read_text(encoding="utf-8").strip() != str(operator_home)
     assert secret_file.read_text(encoding="utf-8").strip() == "unset"

@@ -203,7 +203,7 @@
   "validation": {
     "browser": "uv run --extra ci pytest tests/test_system_dynamics_map_viewer_playwright.py",
     "package_gate": "scripts/system-dynamics-map-gate",
-    "pytest": "uv run pytest tests/test_system_dynamics_map_artifacts.py"
+    "pytest": "uv run --extra ci pytest tests/test_system_dynamics_map_artifacts.py"
   },
   "version": "1.0.0",
   "workbench_contract": {
