@@ -1,8 +1,6 @@
 """Tests for Phase R2 — affordance learning associations from outcomes."""
 
-import json
 from pathlib import Path
-from unittest.mock import patch
 
 from shared.affordance_pipeline import AffordancePipeline
 
@@ -96,42 +94,20 @@ def test_save_load_activation_state_roundtrip(tmp_path: Path):
     """save_activation_state + load_activation_state roundtrip."""
     state_file = tmp_path / "affordance-activation-state.json"
 
-    pipe = AffordancePipeline()
+    pipe = AffordancePipeline(posterior_path=state_file)
     pipe.record_outcome("speak", success=True, context={"mode": "rnd"})
     pipe.record_outcome("listen", success=True, context={"source": "voice"})
     pipe.record_outcome("speak", success=True)
-
-    with patch.object(
-        type(pipe),
-        "save_activation_state",
-        lambda self: _save_to(self, state_file),
-    ):
-        _save_to(pipe, state_file)
+    pipe.save_activation_state()
 
     # Load into fresh pipeline
-    pipe2 = AffordancePipeline()
-    with patch(
-        "shared.affordance_pipeline.ACTIVATION_STATE_PATH",
-        state_file,
-    ):
-        pipe2.load_activation_state()
+    pipe2 = AffordancePipeline(posterior_path=state_file)
+    pipe2.load_activation_state()
 
     assert pipe2._activation["speak"].use_count == pipe._activation["speak"].use_count
     assert pipe2._activation["listen"].use_count == pipe._activation["listen"].use_count
     assert ("rnd", "speak") in pipe2._context_associations
     assert ("voice", "listen") in pipe2._context_associations
-
-
-def _save_to(pipe: AffordancePipeline, path: Path) -> None:
-    """Helper to save to a custom path."""
-    data = {
-        "activations": {name: state.model_dump() for name, state in pipe._activation.items()},
-        "associations": {f"{k[0]}|{k[1]}": v for k, v in pipe._context_associations.items()},
-    }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
-    tmp.rename(path)
 
 
 def test_get_audit_snapshot_structure():

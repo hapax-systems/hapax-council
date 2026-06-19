@@ -124,12 +124,9 @@ def precompute_pipeline_deps(daemon: VoiceDaemon) -> None:
 
     # Affordance pipeline
     from agents._affordance import CapabilityRecord, OperationalProperties
-    from agents._affordance_pipeline import AffordancePipeline
+    from agents.hapax_daimonion.affordance_pipeline import build_daimonion_affordance_pipeline
 
-    daemon._affordance_pipeline = AffordancePipeline(
-        posterior_mode="reader",
-        posterior_client_id="hapax_daimonion",
-    )
+    daemon._affordance_pipeline = build_daimonion_affordance_pipeline()
 
     # Collect ALL capability records for batch indexing
     _all_records: list[CapabilityRecord] = []

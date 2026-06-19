@@ -254,11 +254,15 @@ class AffordancePipeline:
         *,
         posterior_mode: PosteriorMode = "local",
         posterior_client_id: str | None = None,
+        posterior_path: str | Path | None = None,
     ) -> None:
         if posterior_mode not in {"local", "owner", "reader"}:
             raise ValueError(f"unknown posterior_mode: {posterior_mode}")
         self._posterior_mode: PosteriorMode = posterior_mode
         self._posterior_client_id = posterior_client_id or f"affordance_pipeline:{posterior_mode}"
+        self._posterior_path = (
+            Path(posterior_path) if posterior_path is not None else ACTIVATION_STATE_PATH
+        )
         self._posterior_loaded_mtime_ns: int | None = None
         self._posterior_last_refresh_check: float = 0.0
         self._posterior_update_failures: int = 0
@@ -1253,11 +1257,11 @@ class AffordancePipeline:
         """Persist activation states and context associations to disk."""
         if self._posterior_mode == "reader":
             raise PosteriorLockError(
-                f"{self._posterior_client_id} is read-only for {ACTIVATION_STATE_PATH}"
+                f"{self._posterior_client_id} is read-only for {self._posterior_path}"
             )
         if self._posterior_mode == "owner":
             write_posterior_state_draining_updates(
-                ACTIVATION_STATE_PATH,
+                self._posterior_path,
                 self._activation,
                 self._context_associations,
                 self._apply_pending_posterior_updates,
@@ -1265,7 +1269,7 @@ class AffordancePipeline:
             )
             return
         write_posterior_state(
-            ACTIVATION_STATE_PATH,
+            self._posterior_path,
             self._activation,
             self._context_associations,
             blocking=False,
@@ -1273,13 +1277,13 @@ class AffordancePipeline:
 
     def load_activation_state(self) -> None:
         """Load persisted activation states and context associations."""
-        state = load_posterior_state(ACTIVATION_STATE_PATH)
+        state = load_posterior_state(self._posterior_path)
         if state is None:
             return
         activations, associations = state
         self._activation = dict(activations)
         self._context_associations = dict(associations)
-        self._posterior_loaded_mtime_ns = _posterior_mtime_ns(ACTIVATION_STATE_PATH)
+        self._posterior_loaded_mtime_ns = _posterior_mtime_ns(self._posterior_path)
 
     @property
     def metrics(self) -> AffordanceMetrics:
@@ -1532,20 +1536,30 @@ class AffordancePipeline:
         self._context_associations[key] = max(-1.0, min(4.0, current + delta))
 
     def _prepare_posterior_for_scoring(self) -> None:
+        self.refresh_activation_state_if_changed()
+
+    def refresh_activation_state_if_changed(self, *, force: bool = False) -> bool:
+        """Refresh a read-only posterior view when the shared state file changed."""
+
         if self._posterior_mode != "reader":
-            return
+            return False
         now = time.monotonic()
-        if now - self._posterior_last_refresh_check < POSTERIOR_REFRESH_MIN_INTERVAL_S:
-            return
+        if (
+            not force
+            and now - self._posterior_last_refresh_check < POSTERIOR_REFRESH_MIN_INTERVAL_S
+        ):
+            return False
         self._posterior_last_refresh_check = now
-        current_mtime = _posterior_mtime_ns(ACTIVATION_STATE_PATH)
+        current_mtime = _posterior_mtime_ns(self._posterior_path)
         if current_mtime is not None and current_mtime != self._posterior_loaded_mtime_ns:
             self.load_activation_state()
+            return True
+        return False
 
     def _queue_posterior_update(self, kind: str, **payload: Any) -> None:
         try:
             append_posterior_update(
-                ACTIVATION_STATE_PATH,
+                self._posterior_path,
                 {
                     "kind": kind,
                     "source": self._posterior_client_id,
@@ -1713,3 +1727,6 @@ class AffordancePipeline:
 
     def get_activation_state(self, capability_name: str) -> ActivationState:
         return self._activation.get(capability_name, ActivationState())
+
+    def get_context_association(self, cue_value: str, capability_name: str) -> float:
+        return self._context_associations.get((cue_value, capability_name), 0.0)
