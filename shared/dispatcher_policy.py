@@ -614,6 +614,20 @@ def evaluate_dispatch_policy(
             quality_floor_satisfied=False,
             authority_allowed=False,
         )
+    if normalize_route_id(capability.route_id) != normalize_route_id(request.route_id):
+        return _decision(
+            request,
+            DispatchAction.REFUSE,
+            (
+                "capability_route_mismatch",
+                f"request_route_id:{normalize_route_id(request.route_id)}",
+                f"capability_route_id:{normalize_route_id(capability.route_id)}",
+                *_subscription_quota_hold_reasons(request, capability),
+            ),
+            checked_at,
+            quality_floor_satisfied=False,
+            authority_allowed=False,
+        )
     if not capability.supported:
         unsupported_reasons = ["unsupported_route"]
         unsupported_reasons.extend(_unsupported_route_subscription_quota_reasons(request))
@@ -2319,14 +2333,14 @@ def _subscription_quota_hold_reasons(
     request: DispatchRequest,
     capability: RouteCapabilityState,
 ) -> tuple[str, ...]:
-    requires_route_specific_quota = _requires_route_specific_subscription_quota(capability.route_id)
+    requires_route_specific_quota = _requires_route_specific_subscription_quota(request.route_id)
     if not requires_route_specific_quota:
         return ()
     if capability.capacity_pool != "subscription_quota":
         return (
             "subscription_route_capacity_pool_mismatch",
             f"capacity_pool:{capability.capacity_pool or 'missing'}",
-            f"route_id:{normalize_route_id(capability.route_id)}",
+            f"route_id:{normalize_route_id(request.route_id)}",
         )
     quota = request.quota
     if quota is None or not quota.available:
@@ -2344,7 +2358,7 @@ def _subscription_quota_hold_reasons(
     if route_state == "fresh":
         return ()
     evidence = quota.route_quota_evidence_refs or (
-        f"quota-snapshot:{normalize_route_id(capability.route_id)}:missing",
+        f"quota-snapshot:{normalize_route_id(request.route_id)}:missing",
     )
     return (
         "subscription_route_quota_not_fresh",

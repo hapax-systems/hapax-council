@@ -887,6 +887,31 @@ def test_glmcp_unsupported_route_never_reports_quota_green() -> None:
     assert "subscription_route_capability_missing" in decision.reason_codes
 
 
+def test_glmcp_mismatched_capability_route_fails_closed() -> None:
+    request = _request(
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        route_id="glmcp.review.direct",
+        capability=_capability(route_id="codex.headless.full"),
+        quota=_quota(
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="unknown",
+            route_quota_evidence_refs=("quota-snapshot:glmcp.review.direct:missing",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert decision.quota_freshness_green is False
+    assert "capability_route_mismatch" in decision.reason_codes
+    assert "request_route_id:glmcp.review.direct" in decision.reason_codes
+    assert "capability_route_id:codex.headless.full" in decision.reason_codes
+    assert "subscription_route_quota_not_fresh" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
 def test_spike_workload_refuses_local_fleet_and_points_to_cloud_burst() -> None:
     request = _request(
         cloud_burst={
