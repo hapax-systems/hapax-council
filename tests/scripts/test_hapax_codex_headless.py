@@ -17,6 +17,53 @@ def _write_executable(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
+def _write_classifying_ssh(
+    path: Path,
+    log_path: Path,
+    *,
+    remove_workdir_on_worktree: Path | None = None,
+    remove_council_on_worktree: Path | None = None,
+) -> None:
+    remove_workdir = (
+        f"""  rm -rf "{remove_workdir_on_worktree}"
+"""
+        if remove_workdir_on_worktree is not None
+        else ""
+    )
+    remove_council = (
+        f"""  rm -rf "{remove_council_on_worktree}"
+"""
+        if remove_council_on_worktree is not None
+        else ""
+    )
+    _write_executable(
+        path,
+        f"""remote_cmd="${{@: -1}}"
+kind="$(python3 - "$remote_cmd" <<'PY'
+import base64
+import shlex
+import sys
+
+parts = shlex.split(sys.argv[1])
+code = base64.b64decode(parts[-1]).decode()
+if "create_worktree" in code and "worktree" in code:
+    print("worktree")
+elif "required_dirs" in code and "executables" in code:
+    print("preflight")
+elif "os.execvp" in code:
+    print("exec")
+else:
+    print("unknown")
+PY
+)"
+printf '%s\\n' "$kind" >> "{log_path}"
+if [ "$kind" = "worktree" ]; then
+{remove_workdir}{remove_council}fi
+exec bash -c "$remote_cmd"
+""",
+    )
+
+
 def _write_minimal_council(council_dir: Path, retire_log: Path) -> None:
     _write_executable(council_dir / "hooks" / "scripts" / "codex-hook-adapter.sh", "exit 0\n")
     _write_executable(
@@ -145,18 +192,11 @@ def test_codex_headless_creates_missing_remote_default_worktree(tmp_path: Path) 
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
     pwd_file = tmp_path / "codex-pwd.txt"
-    ssh_count = tmp_path / "ssh-count.txt"
-    _write_executable(
+    ssh_log = tmp_path / "ssh.log"
+    _write_classifying_ssh(
         bin_dir / "ssh",
-        f"""remote_cmd="${{@: -1}}"
-count="$(cat {ssh_count} 2>/dev/null || echo 0)"
-count=$((count + 1))
-echo "$count" > {ssh_count}
-if [ "$count" -eq 1 ]; then
-  rm -rf {workdir}
-fi
-exec bash -c "$remote_cmd"
-""",
+        ssh_log,
+        remove_workdir_on_worktree=workdir,
     )
     _write_executable(
         bin_dir / "codex",
@@ -182,7 +222,7 @@ exit 0
     )
 
     assert result.returncode == 0, result.stderr
-    assert ssh_count.read_text(encoding="utf-8").strip() == "3"
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["worktree", "preflight", "exec"]
     assert pwd_file.read_text(encoding="utf-8").strip() == str(workdir)
     branch = subprocess.run(
         ["git", "-C", str(workdir), "rev-parse", "--abbrev-ref", "HEAD"],
@@ -194,6 +234,171 @@ exit 0
     assert "exec --dangerously-bypass-approvals-and-sandbox" in args_file.read_text(
         encoding="utf-8"
     )
+
+
+def test_codex_headless_refuses_without_task_before_remote_bootstrap(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    primary = home / "projects" / "hapax-council"
+    _init_primary_council_repo(primary)
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
+
+    bin_dir = tmp_path / "bin"
+    ssh_log = tmp_path / "ssh.log"
+    _write_executable(
+        bin_dir / "ssh",
+        f"""printf 'ssh invoked\\n' >> "{ssh_log}"
+rm -rf "{workdir}"
+exit 99
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(primary)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 15
+    assert "without --task" in result.stderr
+    assert not ssh_log.exists()
+    assert workdir.exists()
+
+
+def test_codex_headless_remote_bootstrap_refuses_missing_explicit_workdir(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "explicit-worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    ssh_log = tmp_path / "ssh.log"
+    _write_classifying_ssh(
+        bin_dir / "ssh",
+        ssh_log,
+        remove_workdir_on_worktree=workdir,
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 75
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["worktree"]
+    assert "remote worktree bootstrap failed" in result.stderr
+    assert "explicit" in result.stderr
+
+
+def test_codex_headless_remote_bootstrap_refuses_disabled_worktree_creation(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    primary = home / "projects" / "hapax-council"
+    _init_primary_council_repo(primary)
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
+
+    bin_dir = tmp_path / "bin"
+    ssh_log = tmp_path / "ssh.log"
+    _write_classifying_ssh(
+        bin_dir / "ssh",
+        ssh_log,
+        remove_workdir_on_worktree=workdir,
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(primary)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_CREATE_WORKTREE"] = "0"
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 75
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["worktree"]
+    assert "remote worktree bootstrap failed" in result.stderr
+    assert "disabled" in result.stderr
+
+
+def test_codex_headless_remote_bootstrap_reports_missing_remote_council(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    primary = home / "projects" / "hapax-council"
+    _init_primary_council_repo(primary)
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
+
+    bin_dir = tmp_path / "bin"
+    ssh_log = tmp_path / "ssh.log"
+    _write_classifying_ssh(
+        bin_dir / "ssh",
+        ssh_log,
+        remove_workdir_on_worktree=workdir,
+        remove_council_on_worktree=primary,
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(primary)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 75
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["worktree"]
+    assert "remote worktree bootstrap failed" in result.stderr
+    assert "council checkout" in result.stderr
 
 
 def test_codex_headless_prefers_session_keyed_claim_over_stale_legacy(
