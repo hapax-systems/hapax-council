@@ -1139,10 +1139,41 @@ def test_system_dynamics_viewer_mobile_layout_remains_operable():
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
             assert page.get_by_role("searchbox", name="Search").is_visible()
             assert page.locator("#cy").is_visible()
-            assert (
-                page.evaluate("getComputedStyle(document.querySelector('.controls')).overflowY")
-                == "visible"
+            mobile_layout = page.evaluate(
+                """
+                () => {
+                  const styleFor = (selector) => getComputedStyle(document.querySelector(selector));
+                  const app = styleFor(".app");
+                  const controls = styleFor(".controls");
+                  const details = styleFor(".details");
+                  const workspace = document.querySelector(".workspace");
+                  const graph = styleFor("#cy");
+                  return {
+                    appDisplay: app.display,
+                    appOverflowY: app.overflowY,
+                    controlsMaxHeight: controls.maxHeight,
+                    controlsOverflowY: controls.overflowY,
+                    controlsWidth: Math.round(document.querySelector(".controls").getBoundingClientRect().width),
+                    detailsMaxHeight: details.maxHeight,
+                    detailsOverflowY: details.overflowY,
+                    detailsWidth: Math.round(document.querySelector(".details").getBoundingClientRect().width),
+                    graphMinHeight: graph.minHeight,
+                    viewportWidth: window.innerWidth,
+                    workspaceHeight: Math.round(workspace.getBoundingClientRect().height)
+                  };
+                }
+                """
             )
+            assert mobile_layout["appDisplay"] == "block"
+            assert mobile_layout["appOverflowY"] == "visible"
+            assert mobile_layout["controlsMaxHeight"] == "none"
+            assert mobile_layout["controlsOverflowY"] == "visible"
+            assert mobile_layout["detailsMaxHeight"] == "none"
+            assert mobile_layout["detailsOverflowY"] == "visible"
+            assert mobile_layout["controlsWidth"] <= mobile_layout["viewportWidth"]
+            assert mobile_layout["detailsWidth"] <= mobile_layout["viewportWidth"]
+            assert mobile_layout["graphMinHeight"] == "340px"
+            assert mobile_layout["workspaceHeight"] >= 420
             page.get_by_role("searchbox", name="Search").fill("dmn")
             assert page.locator("#search-results [data-result-id]").first.is_visible()
             page.locator("#cy").focus()
