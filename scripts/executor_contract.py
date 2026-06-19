@@ -55,15 +55,17 @@ EXECUTOR_REGISTRY: dict[str, ExecutorCapabilities] = {
     "api": ExecutorCapabilities(
         platform="api",
         modes=(),
-        profiles=("api_frontier",),
+        profiles=("api_frontier", "provider_gateway"),
         mutates=False,
         claims=False,
         hooks_wired=False,
         headless=False,
         read_only=True,
         notes=(
-            "cloud-burst route metadata only; no direct provider launcher is wired, "
-            "so dispatch can emit receipts without spending provider budget"
+            "receipt-only route metadata for both REQUIRED api routes "
+            "(api_frontier cloud-burst + provider_gateway maintenance); no direct "
+            "provider launcher is wired (modes=()), so dispatch emits receipts "
+            "without spending provider budget"
         ),
     ),
     "claude": ExecutorCapabilities(
