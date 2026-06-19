@@ -1120,6 +1120,16 @@ class TestFamilyOutageDegradation:
         assert not rt.is_reviewer_route_unavailable(oversized_marker, process_failed=True)
         advisory_only = "Please migrate to the Antigravity suite of products."
         assert not rt.is_reviewer_route_unavailable(advisory_only, process_failed=True)
+        missing_agy = (
+            "hapax-agy-reviewer: failed to launch /usr/bin/agy: [Errno 2] "
+            "No such file or directory; install agy or pass --agy-bin /absolute/path/to/agy"
+        )
+        assert rt.is_reviewer_route_unavailable(missing_agy, process_failed=True)
+        assert not rt.is_reviewer_route_unavailable(
+            missing_agy,
+            process_failed=True,
+            model_stdout="```yaml\nverdict: accept\n```",
+        )
 
     def test_clean_exit_text_never_counts_as_wall_evidence(self) -> None:
         # round-6 channel trust: model-influenced stdout cannot forge a wall,
@@ -2142,6 +2152,8 @@ def test_gemini_reviewer_denies_repo_roaming_and_blocks_phantom_syntax():
     assert "--sandbox" in wrapper, "agy reviewer must use sandboxed print mode"
     assert "no repository access" in wrapper
     prompt = wrapper
+    assert "fenced yaml code block" in prompt
+    assert "no prose" in prompt
     assert "ALREADY PASSED" in prompt and "CI" in prompt, "gemini prompt must cite the CI gates"
     assert "source-activation" in prompt, "gemini prompt must whitelist the canonical deploy path"
 

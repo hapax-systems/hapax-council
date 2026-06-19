@@ -82,7 +82,7 @@ class TestTeamRegistry:
         reg = TeamRegistry(tmp_path)
         assert reg.read("nonexistent") is None
 
-    def test_read_normalizes_legacy_gemini_cli_platform(self, tmp_path: Path) -> None:
+    def test_read_normalizes_legacy_gemini_cli_platform(self, tmp_path: Path, caplog) -> None:
         reg = TeamRegistry(tmp_path)
         (tmp_path / "antigrav.json").write_text(
             json.dumps(
@@ -105,6 +105,7 @@ class TestTeamRegistry:
         assert loaded is not None
         assert loaded.platform == "antigrav"
         assert "gemini-cli normalized to antigrav" in loaded.notes
+        assert "normalized legacy team-registry platform" in caplog.text
 
     def test_all_lanes(self, tmp_path: Path) -> None:
         reg = TeamRegistry(tmp_path)
