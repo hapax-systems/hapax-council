@@ -369,7 +369,7 @@ def test_viewer_uses_committed_local_cytoscape_asset():
     )
 
 
-def test_viewer_layout_uses_intrinsic_wrapping_without_conditional_at_rules():
+def test_viewer_layout_uses_intrinsic_wrapping_with_explicit_mobile_rules():
     html, _ = _load_viewer()
     assert "flex-wrap: wrap" in html, (
         "viewer layout no longer declares intrinsic wrapping. "
@@ -379,9 +379,9 @@ def test_viewer_layout_uses_intrinsic_wrapping_without_conditional_at_rules():
         "viewer reintroduced container queries. "
         "Fix by using intrinsic wrapping or updating the visual witnesses and review notes."
     )
-    assert "@media" not in html, (
-        "viewer reintroduced media queries. "
-        "Fix by using intrinsic wrapping or updating the visual witnesses and review notes."
+    assert "@media (max-width: 860px)" in html, (
+        "viewer lost its explicit mobile layout contract. "
+        "Fix by restoring the narrow-viewport rules or replacing this guard with a rendered mobile test."
     )
 
 

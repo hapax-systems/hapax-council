@@ -181,6 +181,22 @@ def test_system_dynamics_viewer_core_interactions():
                 "Fix by recomputing visible edge state from the explicit visible node set."
             )
 
+            page.get_by_label("Search").fill("model")
+            second_search_result = page.locator("#search-results [data-result-id]").nth(1)
+            second_result_id = second_search_result.get_attribute("data-result-id")
+            second_result_group = second_search_result.get_attribute("data-result-group")
+            page.get_by_label("Search").press("ArrowDown")
+            assert page.get_by_label("Search").get_attribute("aria-activedescendant") == (
+                "search-result-1"
+            )
+            page.get_by_label("Search").press("Enter")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": second_result_group,
+                "id": second_result_id,
+            }
+
             page.get_by_label("Search").fill("advances_to")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().edges >= 1")
             first_search_result = page.locator("#search-results [data-result-id]").first
@@ -198,9 +214,11 @@ def test_system_dynamics_viewer_core_interactions():
             copied_payload = page.evaluate("JSON.parse(window.__copiedViewJson)")
             assert copied_payload["search"] == "advances_to"
             assert "sdlc-intake-to-claim" in copied_payload["visible_edge_ids"]
+            assert "viewport" in copied_payload
+            assert "visible_relation_categories" in copied_payload
             assert (
                 "Current view JSON copied to clipboard."
-                in page.locator("#data-health").inner_text()
+                in page.locator("#action-status").inner_text()
             )
             page.get_by_role("button", name="PNG").click()
             download_click = page.evaluate("window.__downloadClicks.at(-1)")
@@ -209,6 +227,10 @@ def test_system_dynamics_viewer_core_interactions():
 
             page.get_by_label("Search").fill("")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
+            page.locator('input[data-filter="relation"][value="governance"]').uncheck()
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().edges < 42")
+            page.locator('input[data-filter="relation"][value="governance"]').check()
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().edges === 42")
             page.locator('input[data-filter="status"][value="candidate"]').uncheck()
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes < 35")
             assert page.evaluate(
@@ -219,7 +241,7 @@ def test_system_dynamics_viewer_core_interactions():
             )
 
             page.locator('input[data-filter="status"][value="candidate"]').check()
-            page.get_by_label("Lens").select_option("operating-slice")
+            page.get_by_label("View").select_option("operating-slice")
             page.wait_for_function(
                 "window.systemDynamicsMapRuntime.activeLens() === 'operating-slice'"
             )
@@ -338,8 +360,8 @@ def test_system_dynamics_viewer_core_interactions():
 
             page.evaluate("window.systemDynamicsMapRuntime.selectEdge('sdlc-intake-to-claim')")
             assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
-            page.get_by_label("Lens").focus()
-            page.get_by_label("Lens").press("Escape")
+            page.get_by_label("View").focus()
+            page.get_by_label("View").press("Escape")
             select_escape_payload = page.evaluate(
                 "window.systemDynamicsMapRuntime.currentViewPayload()"
             )
@@ -352,12 +374,12 @@ def test_system_dynamics_viewer_core_interactions():
                 "Fix by routing focused select Escape through clearSelection()."
             )
 
-            page.get_by_label("Lens").select_option("topology")
+            page.get_by_label("View").select_option("topology")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
             page.evaluate("window.systemDynamicsMapRuntime.selectNode('dmn')")
             assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
             assert page.locator("#panel").inner_text().startswith("DMN")
-            page.get_by_label("Lens").select_option("operating-slice")
+            page.get_by_label("View").select_option("operating-slice")
             page.wait_for_function(
                 "window.systemDynamicsMapRuntime.activeLens() === 'operating-slice'"
             )
@@ -369,18 +391,37 @@ def test_system_dynamics_viewer_core_interactions():
             assert "dmn" not in lens_payload["visible_node_ids"]
             assert page.locator("#panel").inner_text().startswith("RDF / OWL Knowledge Graph")
             assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 0
+            assert (
+                "DMN hidden by the active view or filters"
+                in page.locator("#action-status").inner_text()
+            )
             error_message = _browser_error_message(
                 page, "window.systemDynamicsMapRuntime.selectNode('dmn')"
             )
             assert HIDDEN_SELECTION_MESSAGE in error_message
             assert HIDDEN_SELECTION_RECOVERY in error_message
+            page.get_by_label("Search").fill("dmn")
+            hidden_result = page.locator(
+                '#search-results [data-hidden="true"][data-result-id="dmn"]'
+            )
+            assert "DMN" in hidden_result.inner_text()
+            hidden_result.click()
+            page.wait_for_function("window.systemDynamicsMapRuntime.activeLens() === 'topology'")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "dmn",
+            }
+            page.keyboard.press("Escape")
+            _assert_no_viewer_selection(page)
 
-            page.get_by_label("Lens").select_option("topology")
+            page.get_by_label("View").select_option("topology")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
             _assert_no_viewer_selection(page)
             page.evaluate("window.systemDynamicsMapRuntime.selectEdge('dmn-to-sbvr')")
             assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
-            page.get_by_label("Lens").select_option("operating-slice")
+            page.get_by_label("View").select_option("operating-slice")
             page.wait_for_function(
                 "window.systemDynamicsMapRuntime.activeLens() === 'operating-slice'"
             )
@@ -399,8 +440,17 @@ def test_system_dynamics_viewer_core_interactions():
             assert HIDDEN_SELECTION_MESSAGE in error_message
             assert HIDDEN_SELECTION_RECOVERY in error_message
 
-            page.get_by_label("Lens").select_option("topology")
+            page.get_by_label("View").select_option("topology")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
+            _assert_no_viewer_selection(page)
+            page.locator("#cy").focus()
+            page.keyboard.press("ArrowDown")
+            graph_selected = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            )
+            assert graph_selected is not None
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
+            page.keyboard.press("Escape")
             _assert_no_viewer_selection(page)
             page.get_by_role("button", name="Directed").click()
             page.wait_for_function(
@@ -676,6 +726,33 @@ def test_system_dynamics_viewer_reports_served_seed_fallback():
                 in page.locator("#data-health").inner_text()
             )
             assert "could not be loaded" not in page.locator("#data-health").inner_text()
+        finally:
+            browser.close()
+
+
+def test_system_dynamics_viewer_mobile_layout_remains_operable():
+    with _static_server() as base_url, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        try:
+            page.goto(f"{base_url}/system-dynamics-map-viewer.html")
+            page.locator("#cy canvas").first.wait_for(timeout=10_000)
+            page.wait_for_function("window.systemDynamicsMapRuntime")
+            assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+            assert page.get_by_role("searchbox", name="Search").is_visible()
+            assert page.locator("#cy").is_visible()
+            assert (
+                page.evaluate("getComputedStyle(document.querySelector('.controls')).overflowY")
+                == "visible"
+            )
+            page.get_by_role("searchbox", name="Search").fill("dmn")
+            assert page.locator("#search-results [data-result-id]").first.is_visible()
+            page.locator("#cy").focus()
+            page.keyboard.press("ArrowDown")
+            assert (
+                page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload().selected")
+                is not None
+            )
         finally:
             browser.close()
 

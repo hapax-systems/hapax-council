@@ -3,19 +3,22 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>System Dynamics Map v1</title>
+  <title>System Topology and State Map</title>
   <style>
     :root {
       color-scheme: light dark;
-      --bg: Canvas;
+      --bg: color-mix(in oklab, Canvas 96%, CanvasText 4%);
       --text: CanvasText;
-      --surface: color-mix(in oklab, Canvas 92%, CanvasText 8%);
-      --surface-strong: color-mix(in oklab, Canvas 86%, CanvasText 14%);
+      --surface: color-mix(in oklab, Canvas 94%, CanvasText 6%);
+      --surface-strong: color-mix(in oklab, Canvas 88%, CanvasText 12%);
+      --canvas-field: color-mix(in oklab, Canvas 98%, rgb(37 99 235) 2%);
       --line: color-mix(in oklab, CanvasText 20%, Canvas 80%);
       --muted: color-mix(in oklab, CanvasText 62%, Canvas 38%);
       --accent: rgb(37 99 235);
       --accent-2: rgb(13 148 136);
       --danger: rgb(185 28 28);
+      --warning: rgb(217 119 6);
+      --success: rgb(22 163 74);
       --focus: rgb(217 119 6);
       --shadow: 0 18px 48px color-mix(in oklab, CanvasText 16%, transparent);
       --radius: 8px;
@@ -130,8 +133,18 @@
     }
 
     #cy {
+      background:
+        linear-gradient(90deg, color-mix(in oklab, var(--line) 34%, transparent) 1px, transparent 1px),
+        linear-gradient(color-mix(in oklab, var(--line) 34%, transparent) 1px, transparent 1px),
+        var(--canvas-field);
+      background-size: 28px 28px;
       min-height: 420px;
+      outline: none;
       width: 100%;
+    }
+
+    #cy:focus-visible {
+      box-shadow: inset 0 0 0 3px var(--focus);
     }
 
     .field {
@@ -218,6 +231,15 @@
       border-color: var(--accent);
     }
 
+    button:focus-visible,
+    .source-link:focus-visible,
+    input:focus-visible,
+    select:focus-visible,
+    summary:focus-visible {
+      outline: 3px solid var(--focus);
+      outline-offset: 2px;
+    }
+
     button.active {
       background: color-mix(in oklab, var(--accent) 16%, Canvas);
       border-color: var(--accent);
@@ -251,6 +273,39 @@
       display: block;
     }
 
+    .notice {
+      border-bottom: 1px solid var(--line);
+      color: var(--text);
+      display: none;
+      font-size: 0.86rem;
+      line-height: 1.4;
+      padding: 8px 18px;
+    }
+
+    .notice.active {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .notice.info {
+      background: color-mix(in oklab, var(--accent) 10%, Canvas);
+    }
+
+    .notice.success {
+      background: color-mix(in oklab, var(--success) 12%, Canvas);
+    }
+
+    .notice.warning {
+      background: color-mix(in oklab, var(--warning) 14%, Canvas);
+    }
+
+    .notice.error {
+      background: color-mix(in oklab, var(--danger) 12%, Canvas);
+      border-color: color-mix(in oklab, var(--danger) 42%, Canvas);
+    }
+
     .helper {
       color: var(--muted);
       font-size: 0.78rem;
@@ -260,13 +315,25 @@
 
     .lens-summary,
     .finder-results,
-    .encoding-list {
+    .encoding-list,
+    .data-drawer {
       background: color-mix(in oklab, Canvas 96%, CanvasText 4%);
       border: 1px solid var(--line);
       border-radius: var(--radius);
       display: grid;
       gap: 8px;
       padding: 10px;
+    }
+
+    .data-drawer {
+      margin-top: 10px;
+    }
+
+    .data-drawer summary {
+      cursor: pointer;
+      font-size: 0.8rem;
+      font-weight: 700;
+      text-transform: uppercase;
     }
 
     .lens-summary {
@@ -333,6 +400,16 @@
       width: 100%;
     }
 
+    .result-button.active-result,
+    .result-button[aria-selected="true"] {
+      border-color: var(--focus);
+      box-shadow: inset 3px 0 0 var(--focus);
+    }
+
+    .result-button.hidden-result {
+      border-style: dashed;
+    }
+
     .pill-row {
       display: flex;
       flex-wrap: wrap;
@@ -353,6 +430,13 @@
       font-size: 1rem;
       line-height: 1.25;
       margin: 0 0 4px;
+    }
+
+    .panel-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
     }
 
     .panel-meta {
@@ -455,6 +539,7 @@
     .swatch {
       border: 1px solid var(--line);
       border-radius: 4px;
+      display: inline-block;
       height: 14px;
       width: 14px;
     }
@@ -483,12 +568,70 @@
       margin: 16px;
       padding: 12px;
     }
+
+    @media (max-width: 860px) {
+      body {
+        display: block;
+        min-height: 100vh;
+      }
+
+      header {
+        padding: 12px;
+      }
+
+      .app {
+        display: block;
+        overflow: visible;
+      }
+
+      .controls,
+      .details {
+        border-left: 0;
+        border-right: 0;
+        max-height: none;
+        overflow: visible;
+        width: 100%;
+      }
+
+      .workspace {
+        height: 64vh;
+        max-height: none;
+        min-height: 420px;
+      }
+
+      #cy {
+        min-height: 340px;
+      }
+
+      .toolbar {
+        align-items: stretch;
+      }
+
+      .toolbar .button-row,
+      .toolbar > button {
+        flex: 1 1 auto;
+      }
+    }
+
+    @media (forced-colors: active) {
+      button,
+      .source-link,
+      input[type="search"],
+      select,
+      fieldset,
+      .lens-summary,
+      .finder-results,
+      .encoding-list,
+      .data-drawer {
+        border-color: ButtonText;
+      }
+    }
   </style>
 </head>
 <body>
   <header>
     <div class="title-row">
-      <h1>System Dynamics Map v1</h1>
+      <h1>System Topology and State Map</h1>
       <div class="button-row">
         <a class="source-link" href="./system-dynamics-map.seed.json">Seed JSON</a>
         <a class="source-link" href="./system-dynamics-map.claims.json">Claims</a>
@@ -500,23 +643,29 @@
       </div>
     </div>
     <p class="subtitle">A source-neutral semantic backbone anchors the map. Modeling notations, runtime topology, telemetry, state evidence, provenance, validation, and projection engines are rendered as separable claim types.</p>
+    <details class="data-drawer">
+      <summary>Data provenance</summary>
+      <div id="data-provenance"></div>
+    </details>
   </header>
   <div class="data-health" id="data-health" role="status" aria-live="polite"></div>
+  <div class="notice info" id="action-status" role="status" aria-live="polite"></div>
 
   <main class="app">
     <aside class="controls" aria-label="Map controls">
       <div class="field">
-        <label for="lens">Lens</label>
+        <label for="lens">View</label>
         <select id="lens"></select>
       </div>
       <div class="lens-summary" id="lens-summary" aria-live="polite"></div>
 
-      <div class="field">
+      <div class="field" role="search">
         <label for="search">Search</label>
-        <input id="search" type="search" placeholder="provenance, telemetry">
-        <p class="helper">Search includes labels, aliases, tags, claims, observations, relation vocabulary, and documentation links.</p>
+        <input id="search" type="search" placeholder="provenance, telemetry" autocomplete="off" aria-controls="search-results" aria-describedby="search-help search-live">
+        <p class="helper" id="search-help">Search includes labels, aliases, tags, claims, observations, relation vocabulary, and documentation links.</p>
+        <p class="helper" id="search-live" aria-live="polite"></p>
       </div>
-      <div class="finder-results" id="search-results" aria-label="Visible element results"></div>
+      <div class="finder-results" id="search-results" aria-label="Element results"></div>
 
       <div class="field">
         <label for="resolution">Resolution <span id="resolution-label"></span></label>
@@ -530,9 +679,14 @@
       </fieldset>
 
       <fieldset>
-        <legend>Claim Partition</legend>
+        <legend>Graph Claim Type</legend>
         <p class="helper">Topology claim partition is separate from temporal observations and live state evidence.</p>
         <div id="status-filters"></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Relation Categories</legend>
+        <div id="relation-filters"></div>
       </fieldset>
 
       <div class="section">
@@ -555,12 +709,17 @@
           <button type="button" data-layout="grid" aria-pressed="false">Grid</button>
         </div>
         <button type="button" id="fit">Fit</button>
+        <button type="button" id="fit-selected">Fit Selected</button>
+        <button type="button" id="zoom-in">Zoom In</button>
+        <button type="button" id="zoom-out">Zoom Out</button>
+        <button type="button" id="zoom-reset">Reset Zoom</button>
+        <button type="button" id="edge-labels" aria-pressed="false">Edge Labels</button>
         <button type="button" id="copy-view">Copy View JSON</button>
         <button type="button" id="export-png">PNG</button>
         <span class="state-summary" id="state-summary" role="status" aria-live="polite"></span>
         <span class="metric" id="counts" role="status" aria-live="polite"></span>
       </div>
-      <div id="cy" role="img" tabindex="0" aria-label="Interactive system dynamics graph. Use the result buttons in Map controls for keyboard selection."></div>
+      <div id="cy" role="application" tabindex="0" aria-label="Interactive system topology graph. Use arrow keys to move through visible elements, Enter or Space to select, Escape to reset, and slash to open the finder."></div>
     </section>
 
     <aside class="details" aria-live="polite" aria-label="Selection details">
@@ -6258,6 +6417,12 @@
     let activeLayout = "cose";
     let activeLens = "topology";
     let resizeTimer;
+    let activeSearchResults = [];
+    let activeSearchIndex = -1;
+    let edgeLabelsVisible = false;
+    let activeRelationCategories = new Set();
+    let lastHiddenSelection = null;
+    let graphCursorIndex = -1;
 
     function className(value) {
       return String(value).toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
@@ -6301,6 +6466,59 @@
       }
       banner.classList.add("active");
       banner.textContent = dataHealthMessages.join(" ");
+    }
+
+    function setActionStatus(message, variant = "info", html = "") {
+      const notice = document.getElementById("action-status");
+      if (!notice) {
+        return;
+      }
+      notice.className = `notice ${variant} active`;
+      if (html) {
+        notice.innerHTML = html;
+      } else {
+        notice.textContent = message;
+      }
+    }
+
+    function clearActionStatus() {
+      const notice = document.getElementById("action-status");
+      if (!notice) {
+        return;
+      }
+      notice.className = "notice info";
+      notice.textContent = "";
+    }
+
+    function renderFatalError(message) {
+      const graph = document.getElementById("cy");
+      if (!graph) {
+        return;
+      }
+      graph.innerHTML = `<div class="error" role="alert" tabindex="-1">${escapeHtml(message)}</div>`;
+      graph.querySelector("[role='alert']")?.focus();
+    }
+
+    function renderDataProvenance() {
+      const target = document.getElementById("data-provenance");
+      if (!target || !seed) {
+        return;
+      }
+      const packageNodeCount = seed.nodes?.length ?? 0;
+      const packageEdgeCount = seed.edges?.length ?? 0;
+      target.innerHTML = `
+        <dl class="fact-list">
+          ${factHtml("map", seed.map_id)}
+          ${factHtml("version", seed.version)}
+          ${factHtml("generated", seed.generated_at)}
+          ${factHtml("authority", seed.authority_case)}
+          ${factHtml("nodes", packageNodeCount)}
+          ${factHtml("edges", packageEdgeCount)}
+          ${factHtml("claims", claims.length)}
+          ${factHtml("observations", observations.length)}
+          ${factHtml("relations", relations.relations?.length ?? 0)}
+        </dl>
+      `;
     }
 
     function relationEntry(id) {
@@ -6430,11 +6648,20 @@
       return `<div class="pill-row">${values.map((value) => `<span class="pill">${escapeHtml(value)}</span>`).join("")}</div>`;
     }
 
+    function nodeLabel(id) {
+      return seed.nodes.find((node) => node.id === id)?.label || id;
+    }
+
     function renderNodePanel(data) {
       document.getElementById("panel").innerHTML = `
         <h2 class="panel-title">${escapeHtml(data.label)}</h2>
         <div class="panel-meta">${escapeHtml(data.id)}</div>
         ${pillHtml(data)}
+        <div class="panel-actions" aria-label="Selected node actions">
+          <button type="button" data-panel-action="copy-id" data-id="${escapeHtml(data.id)}">Copy ID</button>
+          <button type="button" data-panel-action="fit-selected">Fit Selected</button>
+          <button type="button" data-panel-action="neighborhood" data-id="${escapeHtml(data.id)}">Neighborhood</button>
+        </div>
         <div class="section"><h3>Summary</h3><p>${escapeHtml(data.summary)}</p></div>
         <div class="section"><h3>Context</h3><p>${escapeHtml(data.context)}</p></div>
         <div class="section"><h3>Hardening</h3>${listHtml(data.hardening)}</div>
@@ -6445,12 +6672,18 @@
     }
 
     function renderEdgePanel(data) {
-      const source = seed.nodes.find((node) => node.id === data.source)?.label || data.source;
-      const target = seed.nodes.find((node) => node.id === data.target)?.label || data.target;
+      const source = nodeLabel(data.source);
+      const target = nodeLabel(data.target);
       document.getElementById("panel").innerHTML = `
         <h2 class="panel-title">${escapeHtml(source)} -> ${escapeHtml(target)}</h2>
         <div class="panel-meta">${escapeHtml(data.id)}</div>
         ${pillHtml(data)}
+        <div class="panel-actions" aria-label="Selected relation actions">
+          <button type="button" data-panel-action="copy-id" data-id="${escapeHtml(data.id)}">Copy ID</button>
+          <button type="button" data-panel-action="source" data-id="${escapeHtml(data.source)}">Source</button>
+          <button type="button" data-panel-action="target" data-id="${escapeHtml(data.target)}">Target</button>
+          <button type="button" data-panel-action="fit-selected">Fit Selected</button>
+        </div>
         <div class="section"><h3>Relation</h3>${relationHtml(data.relation)}</div>
         <div class="section"><h3>Summary</h3><p>${escapeHtml(data.summary)}</p></div>
         <div class="section"><h3>Confidence</h3><p>${escapeHtml(data.confidence ?? "unknown")}</p></div>
@@ -6485,12 +6718,25 @@
       const layers = seed.layers.map((layer) => layer.id);
       document.getElementById("layer-filters").innerHTML = layers.map((id) => {
         const layer = seed.layers.find((item) => item.id === id);
-        return `<label class="check"><input type="checkbox" data-filter="layer" value="${escapeHtml(id)}" checked><span>${escapeHtml(layer?.label || id)}</span></label>`;
+        return `<label class="check"><input type="checkbox" data-filter="layer" value="${escapeHtml(id)}" checked><span><span class="swatch" style="background: ${layerColors[id] || "rgb(107, 114, 128)"}"></span> ${escapeHtml(layer?.label || id)}</span></label>`;
       }).join("");
 
       document.getElementById("status-filters").innerHTML = seed.status_kinds.map((id) => (
-        `<label class="check"><input type="checkbox" data-filter="status" value="${escapeHtml(id)}" checked><span>${escapeHtml(id)}</span></label>`
+        `<label class="check"><input type="checkbox" data-filter="status" value="${escapeHtml(id)}" checked><span>${escapeHtml(id.replace(/-/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()))}</span></label>`
       )).join("");
+    }
+
+    function relationCategoryForEdge(edgeData) {
+      return relationEntry(edgeData.relation)?.category || "uncategorized";
+    }
+
+    function renderRelationCategoryFilters() {
+      const categories = Array.from(new Set((relations.relations || []).map((relation) => relation.category || "uncategorized"))).sort();
+      activeRelationCategories = new Set(categories);
+      document.getElementById("relation-filters").innerHTML = categories.map((category) => {
+        const count = seed.edges.filter((edge) => relationCategoryForEdge(edge) === category).length;
+        return `<label class="check"><input type="checkbox" data-filter="relation" value="${escapeHtml(category)}" checked><span>${escapeHtml(category.replace(/-/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()))} (${escapeHtml(count)})</span></label>`;
+      }).join("");
     }
 
     function fallbackLenses() {
@@ -6626,12 +6872,72 @@
       return selectedElementIsVisible() ? selectedElement : null;
     }
 
+    function elementDisplayLabel(selection) {
+      if (!selection) {
+        return "selection";
+      }
+      const element = cy?.$id(selection.id);
+      if (element && !element.empty()) {
+        if (selection.group === "edges") {
+          return `${nodeLabel(element.data("source"))} -> ${nodeLabel(element.data("target"))}`;
+        }
+        return element.data("label") || selection.id;
+      }
+      const node = seed.nodes.find((item) => item.id === selection.id);
+      if (node) {
+        return node.label;
+      }
+      const edge = seed.edges.find((item) => item.id === selection.id);
+      if (edge) {
+        return `${nodeLabel(edge.source)} -> ${nodeLabel(edge.target)}`;
+      }
+      return selection.id;
+    }
+
+    function showElementInTopology(selection) {
+      if (!selection) {
+        return;
+      }
+      document.getElementById("search").value = "";
+      applyLens("topology", { run: false });
+      setCheckedValues("layer", new Set(seed.layers.map((layer) => layer.id)));
+      setCheckedValues("status", new Set(seed.status_kinds));
+      setCheckedValues("relation", new Set((relations.relations || []).map((relation) => relation.category || "uncategorized")));
+      document.getElementById("resolution").value = 5;
+      applyFilters();
+      if (selection.group === "edges") {
+        focusEdge(selection.id);
+      } else {
+        focusNode(selection.id);
+      }
+      runLayout(activeLayout);
+      setActionStatus(`${elementDisplayLabel(selection)} revealed in Topology.`, "success");
+    }
+
+    function renderHiddenSelectionNotice(selection) {
+      lastHiddenSelection = selection;
+      const label = elementDisplayLabel(selection);
+      setActionStatus(
+        `${label} hidden by the active view or filters; details reset.`,
+        "warning",
+        `
+          <span>${escapeHtml(label)} hidden by the active view or filters; details reset.</span>
+          <button type="button" id="show-hidden-selection">Show in Topology</button>
+          <button type="button" id="dismiss-action-status">Dismiss</button>
+        `
+      );
+      document.getElementById("show-hidden-selection")?.addEventListener("click", () => showElementInTopology(lastHiddenSelection));
+      document.getElementById("dismiss-action-status")?.addEventListener("click", clearActionStatus);
+    }
+
     function reconcileSelectedElement() {
       if (!selectedElement) {
         return false;
       }
       if (!selectedElementIsVisible()) {
+        const hidden = { ...selectedElement };
         clearSelection({ renderPanel: true });
+        renderHiddenSelectionNotice(hidden);
         return true;
       }
       cy.$id(selectedElement.id).select();
@@ -6641,21 +6947,25 @@
     function renderLensSummary() {
       const lens = activeLensData();
       if (!lens) {
-        document.getElementById("lens-summary").innerHTML = "<p>No lens contract loaded.</p>";
+        document.getElementById("lens-summary").innerHTML = "<p>No view contract loaded.</p>";
         return;
       }
       const hiddenNodes = lens.hidden_node_ids?.length ?? 0;
       const hiddenEdges = lens.hidden_edge_ids?.length ?? 0;
+      const useThisTo = {
+        topology: "Inspect the full topology, relation vocabulary, and source-neutral backbone.",
+        "operating-slice": "Focus on current operating state and runtime/governance flow.",
+        "evidence-risk": "Audit evidence freshness, stale observations, and validation surfaces."
+      }[lens.id] || "Inspect this projection at the selected resolution.";
       document.getElementById("lens-summary").innerHTML = `
-        <p>${escapeHtml(lens.description || "No lens description recorded.")}</p>
+        <p><strong>${escapeHtml(lens.label)}</strong>: ${escapeHtml(useThisTo)}</p>
+        <p>${escapeHtml(lens.description || "No view description recorded.")}</p>
         <div class="kv-grid">
-          <div class="kv"><span>Mode</span><span>${escapeHtml(lens.state_mode || "unknown")}</span></div>
+          <div class="kv"><span>State basis</span><span>${escapeHtml(lens.state_mode || "unknown")}</span></div>
+          <div class="kv"><span>Trust basis</span><span>${escapeHtml(lens.validation_status || "unknown")}</span></div>
           <div class="kv"><span>Visible</span><span>${escapeHtml((lens.visible_node_ids || []).length)} nodes / ${escapeHtml((lens.visible_edge_ids || []).length)} edges</span></div>
           <div class="kv"><span>Hidden</span><span>${escapeHtml(hiddenNodes)} nodes / ${escapeHtml(hiddenEdges)} edges</span></div>
-          <div class="kv"><span>Aggregation</span><span>${escapeHtml(lens.aggregation?.mode || "none")}</span></div>
-          <div class="kv"><span>Lossy</span><span>${escapeHtml(Boolean(lens.aggregation?.lossy))}</span></div>
-          <div class="kv"><span>Reversible</span><span>${escapeHtml(Boolean(lens.aggregation?.reversible))}</span></div>
-          <div class="kv"><span>Validation</span><span>${escapeHtml(lens.validation_status || "unknown")}</span></div>
+          <div class="kv"><span>Projection</span><span>${escapeHtml(lens.aggregation?.mode || "none")} / lossy ${escapeHtml(Boolean(lens.aggregation?.lossy))} / reversible ${escapeHtml(Boolean(lens.aggregation?.reversible))}</span></div>
           <div class="kv"><span>Snapshot</span><span>${escapeHtml(lens.source_snapshot || "not recorded")}</span></div>
         </div>
       `;
@@ -6683,10 +6993,12 @@
       cy.elements().unselect();
       node.select();
       selectedElement = { group: "nodes", id };
+      graphCursorIndex = visibleTraversalItems().findIndex((item) => item.id === id && item.group === "nodes");
       renderNodePanel(node.data());
       if (!node.hasClass("hidden")) {
         cy.animate({ center: { eles: node }, zoom: Math.max(cy.zoom(), 1) }, { duration: prefersReducedMotion() ? 0 : 180 });
       }
+      setActionStatus(`${node.data("label") || id} selected.`, "info");
       return node.data();
     }
 
@@ -6701,10 +7013,12 @@
       cy.elements().unselect();
       edge.select();
       selectedElement = { group: "edges", id };
+      graphCursorIndex = visibleTraversalItems().findIndex((item) => item.id === id && item.group === "edges");
       renderEdgePanel(edge.data());
       if (!edge.hasClass("hidden")) {
         cy.animate({ center: { eles: edge }, zoom: Math.max(cy.zoom(), 1) }, { duration: prefersReducedMotion() ? 0 : 180 });
       }
+      setActionStatus(`${nodeLabel(edge.data("source"))} to ${nodeLabel(edge.data("target"))} selected.`, "info");
       return edge.data();
     }
 
@@ -6713,62 +7027,142 @@
         return;
       }
       const resultBox = document.getElementById("search-results");
+      const live = document.getElementById("search-live");
       const visibleNodes = cy.nodes().filter((node) => !node.hasClass("hidden"));
       const visibleEdges = cy.edges().filter((edge) => !edge.hasClass("hidden"));
-      const nodeItems = visibleNodes.map((node) => ({
+      const allNodeMatches = cy.nodes().filter((node) => search && elementText(node.data()).includes(search));
+      const allEdgeMatches = cy.edges().filter((edge) => search && elementText(edge.data()).includes(search));
+      const visibleNodeItems = visibleNodes.map((node) => ({
         group: "nodes",
         id: node.id(),
         label: node.data("label"),
         meta: `${node.data("kind")} / ${node.data("layer")}`,
+        hidden: false,
         rank: search && elementText(node.data()).includes(search) ? 0 : 2
       }));
-      const edgeItems = visibleEdges.map((edge) => ({
+      const visibleEdgeItems = visibleEdges.map((edge) => ({
         group: "edges",
         id: edge.id(),
         label: relationLabel(edge.data("relation")),
         meta: `${edge.source().data("label")} -> ${edge.target().data("label")}`,
+        hidden: false,
         rank: search && elementText(edge.data()).includes(search) ? 0 : 1
       }));
       if (!search) {
+        activeSearchResults = [];
+        activeSearchIndex = -1;
+        document.getElementById("search").removeAttribute("aria-activedescendant");
+        live.textContent = `${visibleNodes.length + visibleEdges.length} visible elements.`;
         resultBox.innerHTML = `
           <p>${escapeHtml(visibleNodes.length + visibleEdges.length)} visible elements. Type to filter, then press Enter or choose a result.</p>
         `;
         return;
       }
       const resultLimit = search ? 12 : 4;
-      const items = [...nodeItems, ...edgeItems]
+      const visibleItems = [...visibleNodeItems, ...visibleEdgeItems]
         .sort((left, right) => left.rank - right.rank || left.label.localeCompare(right.label))
         .slice(0, resultLimit);
+      const hiddenItems = [
+        ...allNodeMatches.filter((node) => node.hasClass("hidden")).map((node) => ({
+          group: "nodes",
+          id: node.id(),
+          label: node.data("label"),
+          meta: `${node.data("kind")} / ${node.data("layer")}`,
+          hidden: true,
+          rank: 0
+        })),
+        ...allEdgeMatches.filter((edge) => edge.hasClass("hidden")).map((edge) => ({
+          group: "edges",
+          id: edge.id(),
+          label: relationLabel(edge.data("relation")),
+          meta: `${edge.source().data("label")} -> ${edge.target().data("label")}`,
+          hidden: true,
+          rank: 0
+        }))
+      ].sort((left, right) => left.label.localeCompare(right.label)).slice(0, 8);
+      const items = [...visibleItems, ...hiddenItems];
+      activeSearchResults = items;
+      activeSearchIndex = items.length > 0 ? Math.max(0, Math.min(activeSearchIndex, items.length - 1)) : -1;
       if (items.length === 0) {
+        document.getElementById("search").removeAttribute("aria-activedescendant");
+        live.textContent = "No visible or hidden elements match.";
         resultBox.innerHTML = `
-          <p>No visible elements match the current filters.</p>
-          <button type="button" class="result-button" id="reset-filters">Reset to topology</button>
+          <p>No visible or hidden elements match the current filters.</p>
+          <button type="button" class="result-button" id="reset-filters">Reset to Topology</button>
         `;
-        document.getElementById("reset-filters").addEventListener("click", () => applyLens("topology"));
+        document.getElementById("reset-filters").addEventListener("click", resetToTopology);
         return;
       }
-      const heading = search ? `${visibleNodes.length + visibleEdges.length} matching visible elements` : `${visibleNodes.length + visibleEdges.length} visible elements`;
+      const heading = `${visibleItems.length} visible matches`;
+      const hiddenHeading = `${hiddenItems.length} hidden by current view or filters`;
+      live.textContent = `${heading}; ${hiddenHeading}. Use arrow keys to move through results and Enter to select or reveal.`;
       resultBox.innerHTML = `
-        <p>${escapeHtml(heading)}. Showing ${escapeHtml(items.length)} keyboard-selectable results.</p>
-        <ul class="result-list">
-          ${items.map((item) => `
+        <p>${escapeHtml(heading)}. ${escapeHtml(hiddenHeading)}. Showing ${escapeHtml(items.length)} keyboard-selectable results.</p>
+        <ul class="result-list" aria-label="Element result choices">
+          ${items.map((item, index) => `
             <li>
-              <button type="button" class="result-button" data-result-group="${escapeHtml(item.group)}" data-result-id="${escapeHtml(item.id)}">
-                ${escapeHtml(item.label)} <span class="panel-meta">${escapeHtml(item.meta)}</span>
+              <button type="button" id="search-result-${escapeHtml(index)}" class="result-button${item.hidden ? " hidden-result" : ""}${index === activeSearchIndex ? " active-result" : ""}" aria-selected="${escapeHtml(index === activeSearchIndex)}" data-result-index="${escapeHtml(index)}" data-result-group="${escapeHtml(item.group)}" data-result-id="${escapeHtml(item.id)}" data-hidden="${escapeHtml(item.hidden)}">
+                ${escapeHtml(item.label)} <span class="panel-meta">${escapeHtml(item.hidden ? `${item.meta} / hidden` : item.meta)}</span>
               </button>
             </li>
           `).join("")}
         </ul>
       `;
+      if (activeSearchIndex >= 0) {
+        document.getElementById("search").setAttribute("aria-activedescendant", `search-result-${activeSearchIndex}`);
+      } else {
+        document.getElementById("search").removeAttribute("aria-activedescendant");
+      }
       resultBox.querySelectorAll("[data-result-id]").forEach((button) => {
         button.addEventListener("click", () => {
-          if (button.dataset.resultGroup === "edges") {
-            focusEdge(button.dataset.resultId);
-          } else {
-            focusNode(button.dataset.resultId);
-          }
+          activateSearchResult(Number(button.dataset.resultIndex));
         });
       });
+    }
+
+    function activateSearchResult(index = activeSearchIndex) {
+      const item = activeSearchResults[index] || activeSearchResults[0];
+      if (!item) {
+        return;
+      }
+      activeSearchIndex = Math.max(0, index);
+      if (item.hidden) {
+        showElementInTopology({ group: item.group, id: item.id });
+        return;
+      }
+      if (item.group === "edges") {
+        focusEdge(item.id);
+      } else {
+        focusNode(item.id);
+      }
+    }
+
+    function moveActiveSearchResult(delta) {
+      if (activeSearchResults.length === 0) {
+        return;
+      }
+      activeSearchIndex = (activeSearchIndex + delta + activeSearchResults.length) % activeSearchResults.length;
+      renderFinderResults(document.getElementById("search").value.trim().toLowerCase());
+    }
+
+    function setActiveSearchResult(index) {
+      if (activeSearchResults.length === 0) {
+        return;
+      }
+      activeSearchIndex = Math.max(0, Math.min(index, activeSearchResults.length - 1));
+      renderFinderResults(document.getElementById("search").value.trim().toLowerCase());
+    }
+
+    function resetToTopology() {
+      document.getElementById("search").value = "";
+      applyLens("topology", { run: false });
+      setCheckedValues("layer", new Set(seed.layers.map((layer) => layer.id)));
+      setCheckedValues("status", new Set(seed.status_kinds));
+      setCheckedValues("relation", new Set((relations.relations || []).map((relation) => relation.category || "uncategorized")));
+      document.getElementById("resolution").value = 5;
+      applyFilters();
+      runLayout(activeLayout);
+      setActionStatus("Reset to Topology.", "success");
     }
 
     function applyLens(lensId, { run = true } = {}) {
@@ -6796,6 +7190,8 @@
       const search = document.getElementById("search").value.trim().toLowerCase();
       const layers = checkedValues("layer");
       const statuses = checkedValues("status");
+      const relationCategories = checkedValues("relation");
+      activeRelationCategories = relationCategories;
       const lens = activeLensData();
       const lensNodeIds = new Set(lens?.visible_node_ids || []);
       const lensEdgeIds = new Set(lens?.visible_edge_ids || []);
@@ -6825,8 +7221,10 @@
 
       cy.edges().forEach((edge) => {
         const data = edge.data();
+        const relationCategory = relationCategoryForEdge(data);
         const baseVisible = layers.has(data.layer)
           && statuses.has(data.status)
+          && (relationCategories.size === 0 || relationCategories.has(relationCategory))
           && Number(data.resolution) <= maxResolution
           && (lensEdgeIds.size === 0 || lensEdgeIds.has(data.id))
           && nodeBaseVisibility.get(data.source)
@@ -6862,6 +7260,7 @@
             && visibleNodeIdSet.has(data.target)
             && edgeTextMatches.get(edge.id());
           edge.toggleClass("hidden", !edgeVisible);
+          edge.toggleClass("show-label", edgeLabelsVisible);
         });
       });
 
@@ -6871,6 +7270,14 @@
       reconcileSelectedElement();
       renderFinderResults(search);
       updateStateSummary();
+    }
+
+    function updateEdgeLabelState() {
+      if (!cy) {
+        return;
+      }
+      cy.edges().forEach((edge) => edge.toggleClass("show-label", edgeLabelsVisible));
+      document.getElementById("edge-labels")?.setAttribute("aria-pressed", String(edgeLabelsVisible));
     }
 
     function prefersReducedMotion() {
@@ -6943,6 +7350,125 @@
       cy.fit(cy.elements().not(".hidden"), 44);
     }
 
+    function fitSelectedElement() {
+      if (!cy || !selectedElementIsVisible()) {
+        fitVisibleGraph();
+        return;
+      }
+      const element = cy.$id(selectedElement.id);
+      cy.animate({ center: { eles: element }, zoom: Math.max(cy.zoom(), 1.25) }, { duration: prefersReducedMotion() ? 0 : 160 });
+    }
+
+    function zoomBy(factor) {
+      if (!cy) {
+        return;
+      }
+      cy.zoom({
+        level: Math.max(cy.minZoom(), Math.min(cy.maxZoom(), cy.zoom() * factor)),
+        renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 }
+      });
+    }
+
+    function resetZoom() {
+      if (!cy) {
+        return;
+      }
+      cy.zoom(1);
+      fitVisibleGraph();
+    }
+
+    function visibleTraversalItems() {
+      if (!cy) {
+        return [];
+      }
+      const nodes = cy.nodes().filter((node) => !node.hasClass("hidden")).map((node) => ({
+        group: "nodes",
+        id: node.id(),
+        label: node.data("label") || node.id()
+      }));
+      const edges = cy.edges().filter((edge) => !edge.hasClass("hidden")).map((edge) => ({
+        group: "edges",
+        id: edge.id(),
+        label: `${nodeLabel(edge.data("source"))} -> ${nodeLabel(edge.data("target"))}`
+      }));
+      return [...nodes, ...edges].sort((left, right) => left.label.localeCompare(right.label) || left.id.localeCompare(right.id));
+    }
+
+    function selectTraversalItem(index) {
+      const items = visibleTraversalItems();
+      if (items.length === 0) {
+        setActionStatus("No visible graph elements to select.", "warning");
+        return;
+      }
+      graphCursorIndex = (index + items.length) % items.length;
+      const item = items[graphCursorIndex];
+      if (item.group === "edges") {
+        focusEdge(item.id);
+      } else {
+        focusNode(item.id);
+      }
+    }
+
+    function handleGraphKeydown(event) {
+      const items = visibleTraversalItems();
+      if (items.length === 0) {
+        return;
+      }
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+        event.preventDefault();
+        selectTraversalItem(graphCursorIndex + 1);
+      } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+        event.preventDefault();
+        selectTraversalItem(graphCursorIndex - 1);
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        selectTraversalItem(0);
+      } else if (event.key === "End") {
+        event.preventDefault();
+        selectTraversalItem(items.length - 1);
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectTraversalItem(graphCursorIndex >= 0 ? graphCursorIndex : 0);
+      }
+    }
+
+    async function copyText(text, label = "Value") {
+      try {
+        await navigator.clipboard.writeText(text);
+        setActionStatus(`${label} copied.`, "success");
+      } catch {
+        setActionStatus(`${label}: ${text}`, "info");
+      }
+    }
+
+    function showNeighborhood(id) {
+      const node = cy.$id(id);
+      if (node.empty() || node.hasClass("hidden")) {
+        return;
+      }
+      const neighborhood = node.closedNeighborhood().not(".hidden");
+      cy.animate({ fit: { eles: neighborhood, padding: 64 } }, { duration: prefersReducedMotion() ? 0 : 180 });
+      setActionStatus(`${node.data("label") || id} neighborhood framed.`, "info");
+    }
+
+    function handlePanelAction(event) {
+      const button = event.target.closest("[data-panel-action]");
+      if (!button) {
+        return;
+      }
+      const action = button.dataset.panelAction;
+      const id = button.dataset.id;
+      if (action === "copy-id") {
+        copyText(id, "Element ID");
+      } else if (action === "fit-selected") {
+        fitSelectedElement();
+      } else if (action === "neighborhood") {
+        showNeighborhood(id);
+      } else if (action === "source" || action === "target") {
+        focusNode(id);
+      }
+    }
+
     function observationFreshnessFor(id) {
       const rows = observationRows(id);
       if (rows.some((item) => item.freshness === "stale")) {
@@ -6968,7 +7494,11 @@
       const edges = data.edges.map((edge) => ({
         group: "edges",
         data: { ...edge, display_relation: relationLabel(edge.relation) },
-        classes: [`layer-${className(edge.layer)}`, `status-${className(edge.status)}`].join(" ")
+        classes: [
+          `layer-${className(edge.layer)}`,
+          `status-${className(edge.status)}`,
+          `relation-${className(relationCategoryForEdge(edge))}`
+        ].join(" ")
       }));
       return [...nodes, ...edges];
     }
@@ -7016,7 +7546,7 @@
           }
         },
         {
-          selector: "edge.hovered, edge:selected",
+          selector: "edge.hovered, edge:selected, edge.show-label",
           style: {
             "label": "data(display_relation)",
             "opacity": 0.96,
@@ -7072,6 +7602,33 @@
         }
       ];
 
+      const relationCategoryStyles = [
+        {
+          selector: "edge.relation-governance",
+          style: {
+            "line-style": "dashed"
+          }
+        },
+        {
+          selector: "edge.relation-observational",
+          style: {
+            "line-style": "dotted"
+          }
+        },
+        {
+          selector: "edge.relation-execution",
+          style: {
+            "target-arrow-shape": "vee"
+          }
+        },
+        {
+          selector: "edge.relation-projection",
+          style: {
+            "target-arrow-shape": "diamond"
+          }
+        }
+      ];
+
       const layerStyles = Object.entries(layerColors).flatMap(([layer, color]) => ([
         {
           selector: `node.layer-${className(layer)}`,
@@ -7112,7 +7669,7 @@
         }
       ];
 
-      return [...base, ...layerStyles, ...statusStyles, ...observationStyles];
+      return [...base, ...layerStyles, ...statusStyles, ...relationCategoryStyles, ...observationStyles];
     }
 
     async function loadSeed() {
@@ -7193,18 +7750,20 @@
 
     async function init() {
       if (!window.cytoscape) {
-        document.getElementById("cy").innerHTML = '<div class="error">Cytoscape.js did not load. Check that ./vendor/cytoscape-3.34.0.min.js is present.</div>';
+        renderFatalError("Cytoscape.js did not load. Check that ./vendor/cytoscape-3.34.0.min.js is present.");
         return;
       }
 
       seed = await loadSeed();
       await loadSupplemental();
       renderCheckboxes();
+      renderRelationCategoryFilters();
       renderLensControls();
       renderLegend();
       renderEncodingLegend();
       applyLens(activeLens, { run: false });
       setDataHealth();
+      renderDataProvenance();
 
       cy = cytoscape({
         container: document.getElementById("cy"),
@@ -7238,8 +7797,14 @@
           search: document.getElementById("search").value,
           visible_layers: Array.from(checkedValues("layer")).sort(),
           visible_statuses: Array.from(checkedValues("status")).sort(),
+          visible_relation_categories: Array.from(checkedValues("relation")).sort(),
           visible_node_ids: Array.from(visibleNodeIds()).sort(),
           visible_edge_ids: Array.from(visibleEdgeIds()).sort(),
+          viewport: {
+            zoom: cy.zoom(),
+            pan: cy.pan()
+          },
+          edge_labels_visible: edgeLabelsVisible,
           selected: visibleSelectedElement()
         };
       }
@@ -7278,9 +7843,11 @@
         pngDataUri: () => cy.png({ output: "base64uri", bg: "white", full: false }),
         relatedClaims: (id) => claimRows(id),
         relationFor: (id) => relationEntry(id),
+        searchResults: () => activeSearchResults,
         selectEdge: focusEdge,
         selectedElementCount,
         selectNode: focusNode,
+        traversalItems: visibleTraversalItems,
         stateSummary: () => document.getElementById("state-summary").textContent,
         visibleCounts: () => ({
           edges: cy.edges().filter((edge) => !edge.hasClass("hidden")).length,
@@ -7292,15 +7859,25 @@
       };
 
       document.getElementById("search").addEventListener("input", () => {
+        activeSearchIndex = 0;
         applyFilters();
       });
       document.getElementById("search").addEventListener("keydown", (event) => {
-        if (event.key === "Enter") {
-          const firstResult = document.querySelector("#search-results [data-result-id]");
-          if (firstResult) {
-            event.preventDefault();
-            firstResult.click();
-          }
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          moveActiveSearchResult(1);
+        } else if (event.key === "ArrowUp") {
+          event.preventDefault();
+          moveActiveSearchResult(-1);
+        } else if (event.key === "Home") {
+          event.preventDefault();
+          setActiveSearchResult(0);
+        } else if (event.key === "End") {
+          event.preventDefault();
+          setActiveSearchResult(activeSearchResults.length - 1);
+        } else if (event.key === "Enter") {
+          event.preventDefault();
+          activateSearchResult(activeSearchIndex);
         }
       });
       document.getElementById("resolution").addEventListener("input", () => {
@@ -7321,14 +7898,33 @@
       document.getElementById("fit").addEventListener("click", () => {
         fitVisibleGraph();
       });
+      document.getElementById("fit-selected").addEventListener("click", () => {
+        fitSelectedElement();
+      });
+      document.getElementById("zoom-in").addEventListener("click", () => {
+        zoomBy(1.18);
+      });
+      document.getElementById("zoom-out").addEventListener("click", () => {
+        zoomBy(0.85);
+      });
+      document.getElementById("zoom-reset").addEventListener("click", () => {
+        resetZoom();
+      });
+      document.getElementById("edge-labels").addEventListener("click", () => {
+        edgeLabelsVisible = !edgeLabelsVisible;
+        updateEdgeLabelState();
+        setActionStatus(edgeLabelsVisible ? "Edge labels shown." : "Edge labels hidden.", "info");
+      });
+      document.getElementById("panel").addEventListener("click", handlePanelAction);
+      document.getElementById("cy").addEventListener("keydown", handleGraphKeydown);
       document.getElementById("copy-view").addEventListener("click", async () => {
         const payload = JSON.stringify(currentViewPayload(), null, 2);
         try {
           await navigator.clipboard.writeText(payload);
-          dataHealthMessages.push("Current view JSON copied to clipboard.");
-          setDataHealth();
+          setActionStatus("Current view JSON copied to clipboard.", "success");
         } catch {
           downloadText("system-dynamics-current-view.json", payload, "application/json");
+          setActionStatus("Clipboard unavailable; current view JSON downloaded.", "warning");
         }
       });
       document.getElementById("export-png").addEventListener("click", () => {
@@ -7367,13 +7963,14 @@
 
       renderInitialPanel();
       applyFilters();
+      updateEdgeLabelState();
       cy.ready(() => {
         setTimeout(fitVisibleGraph, 80);
       });
     }
 
     init().catch((error) => {
-      document.getElementById("cy").innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
+      renderFatalError(error.message);
     });
   </script>
 </body>
