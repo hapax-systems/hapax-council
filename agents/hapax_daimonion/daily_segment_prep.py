@@ -224,6 +224,7 @@ DUAL_READOUT_RECORD_TYPE = "segment_dual_readout"
 AXIS_A_READOUT_KEY = "axis_a_grounding_efficacy"
 AXIS_B_READOUT_KEY = "axis_b_integration_honesty"
 AXIS_A_GROUNDING_EFFICACY_REPORT_KEYS = (
+    AXIS_A_READOUT_KEY,
     "axis_a_grounding_efficacy_report",
     "axis_a_grounding_report",
     "grounding_efficacy_report",
@@ -236,6 +237,7 @@ AXIS_A_GROUNDING_EFFICACY_REPORT_MAP_KEYS = (
     "axis_a_reports",
 )
 AXIS_B_NDCVB_REPORT_KEYS = (
+    AXIS_B_READOUT_KEY,
     "axis_b_ndcvb_report",
     "ndcvb_axis_b_report",
     "axis_b_report",

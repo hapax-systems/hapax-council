@@ -1291,6 +1291,30 @@ def test_dual_readout_for_segment_allows_partial_contract_metadata_reports() -> 
     assert dual_readout["axis_b_integration_honesty"] is None
 
 
+def test_dual_readout_for_segment_reads_canonical_contract_envelope() -> None:
+    axis_a_report = {"axis_id": "A", "score_0_100": 82, "score_1_5": 4.28, "ok": True}
+    axis_b_report = {"axis_id": "B", "score_0_100": 88, "score_1_5": 4.52, "ok": True}
+
+    dual_readout = prep._dual_readout_for_segment(
+        programme=SimpleNamespace(content=SimpleNamespace()),
+        prep_session={},
+        programme_id="prog-canonical",
+        segment_prep_contract={
+            "dual_readout": {
+                "schema_version": prep.DUAL_READOUT_SCHEMA_VERSION,
+                "record_type": prep.DUAL_READOUT_RECORD_TYPE,
+                prep.AXIS_A_READOUT_KEY: axis_a_report,
+                prep.AXIS_B_READOUT_KEY: axis_b_report,
+            },
+        },
+    )
+
+    assert dual_readout is not None
+    assert dual_readout["available_axes"] == ["A", "B"]
+    assert dual_readout[prep.AXIS_A_READOUT_KEY] == axis_a_report
+    assert dual_readout[prep.AXIS_B_READOUT_KEY] == axis_b_report
+
+
 def test_dual_readout_for_segment_does_not_reuse_session_level_direct_report() -> None:
     axis_a_report = {
         "axis_id": "A",
@@ -1420,9 +1444,11 @@ def test_prep_segment_release_preserves_dual_readout_in_artifact_and_ledger(
         "llm_calls": [],
     }
     model_contract = {
-        "metadata": {
-            "axis_a_grounding_efficacy_report": axis_a_report,
-            "axis_b_ndcvb_report": axis_b_report,
+        "dual_readout": {
+            "schema_version": prep.DUAL_READOUT_SCHEMA_VERSION,
+            "record_type": prep.DUAL_READOUT_RECORD_TYPE,
+            prep.AXIS_A_READOUT_KEY: axis_a_report,
+            prep.AXIS_B_READOUT_KEY: axis_b_report,
         }
     }
 
