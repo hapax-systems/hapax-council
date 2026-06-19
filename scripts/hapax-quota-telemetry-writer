@@ -116,6 +116,22 @@ GLMCP_ADMISSION_ENDPOINTS = frozenset(
     endpoint for endpoints in GLMCP_ADMISSION_TOOL_ENDPOINTS.values() for endpoint in endpoints
 )
 GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2", "glm-5.2[1m]"})
+GLMCP_ADMISSION_FIELDS = frozenset(
+    {
+        "capacity_pool",
+        "captured_at",
+        "detected_at",
+        "endpoint",
+        "evidence_ref",
+        "model",
+        "observed_at",
+        "provider",
+        "route_id",
+        "stale_after_seconds",
+        "status",
+        "supported_tool",
+    }
+)
 GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS = 3600
 GLMCP_ADMISSION_RECEIPT_GLOB = "*glmcp-quota-admission*.yaml"
 GLMCP_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
@@ -209,6 +225,8 @@ def _parse_flat_yaml_strict(text: str) -> tuple[dict[str, str], str | None]:
         normalized_key = key.strip()
         if not normalized_key:
             return {}, f"empty key on line {line_no}"
+        if normalized_key not in GLMCP_ADMISSION_FIELDS:
+            return {}, f"unsupported key on line {line_no}"
         if normalized_key in fields:
             return {}, f"duplicate key on line {line_no}"
         fields[normalized_key] = value.strip().strip("'\"")
