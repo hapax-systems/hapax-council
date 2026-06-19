@@ -111,6 +111,33 @@ class HkpExportResult:
         }
 
 
+@dataclass(frozen=True)
+class HkpCatalogResult:
+    catalog_path: Path
+    shadow_root: Path
+    index_root: Path
+    bundle_count: int
+    finding_count: int
+    error_count: int
+    bundles: tuple[dict[str, Any], ...]
+
+    @property
+    def ok(self) -> bool:
+        return self.error_count == 0
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "catalog_path": str(self.catalog_path),
+            "shadow_root": str(self.shadow_root),
+            "index_root": str(self.index_root),
+            "bundle_count": self.bundle_count,
+            "finding_count": self.finding_count,
+            "error_count": self.error_count,
+            "bundles": list(self.bundles),
+        }
+
+
 def default_shadow_root() -> Path:
     return Path.home() / ".cache" / "hapax" / "hkp-shadow"
 
@@ -146,11 +173,10 @@ def export_shadow_bundle(
     _ensure_cache_child(bundle_path, default_shadow_root(), "HKP bundle output")
     _ensure_cache_child(tmp_path, default_shadow_root(), "HKP bundle output")
     _ensure_cache_child(backup_path, default_shadow_root(), "HKP bundle output")
+    _ensure_replaceable_directory(bundle_path, "HKP bundle output", trusted_root=output_root)
     prior_log_entries = _read_log_entries(bundle_path / "log.md")
-    if tmp_path.exists():
-        shutil.rmtree(tmp_path)
-    if backup_path.exists():
-        shutil.rmtree(backup_path)
+    _remove_cache_path(tmp_path, "HKP bundle temporary path", trusted_root=output_root)
+    _remove_cache_path(backup_path, "HKP bundle backup path", trusted_root=output_root)
     (tmp_path / "concepts").mkdir(parents=True)
     (tmp_path / "references").mkdir()
     (tmp_path / "_hkp").mkdir()
@@ -247,20 +273,12 @@ def export_shadow_bundle(
         },
     )
     _write_json(tmp_path / "_hkp" / "checksums.json", _checksums(tmp_path))
-    if bundle_path.exists():
-        bundle_path.replace(backup_path)
-    tmp_path.replace(bundle_path)
-    if backup_path.exists():
-        shutil.rmtree(backup_path)
-
-    index_path = _write_index(
-        index_root=index_root,
-        bundle_id=normalized_bundle_id,
-        bundle_path=bundle_path,
-        concepts=concepts,
-        findings=findings,
-        generated_at=generated_at,
-        output_tree_hash=output_tree_hash,
+    _replace_cache_directory(
+        tmp_path,
+        bundle_path,
+        backup_path,
+        label="HKP bundle output",
+        trusted_root=output_root,
     )
     validation = validate_bundle(bundle_path)
     findings.extend(
@@ -272,16 +290,15 @@ def export_shadow_bundle(
         )
         for finding in validation.findings
     )
-    if validation.findings:
-        index_path = _write_index(
-            index_root=index_root,
-            bundle_id=normalized_bundle_id,
-            bundle_path=bundle_path,
-            concepts=concepts,
-            findings=findings,
-            generated_at=generated_at,
-            output_tree_hash=output_tree_hash,
-        )
+    index_path = _write_index(
+        index_root=index_root,
+        bundle_id=normalized_bundle_id,
+        bundle_path=bundle_path,
+        concepts=concepts,
+        findings=findings,
+        generated_at=generated_at,
+        output_tree_hash=output_tree_hash,
+    )
     return HkpExportResult(
         bundle_path=bundle_path,
         index_path=index_path,
@@ -312,6 +329,93 @@ def build_derived_index(bundle_path: Path, *, index_path: Path) -> tuple[HkpInde
         explicit_index_path=index_path,
     )
     return tuple(findings)
+
+
+def build_shadow_catalog(
+    *,
+    shadow_root: Path | None = None,
+    index_root: Path | None = None,
+    generated_at: str | None = None,
+) -> HkpCatalogResult:
+    """Discover shadow bundles and write an aggregate cache-only JSONL catalog."""
+
+    generated_at = generated_at or _now_utc()
+    shadow_root = shadow_root or default_shadow_root()
+    index_root = index_root or default_index_root()
+    _ensure_cache_child(shadow_root, default_shadow_root(), "HKP shadow catalog input")
+    _ensure_cache_child(index_root, default_index_root(), "HKP shadow catalog")
+    if shadow_root.exists() and not shadow_root.is_dir():
+        raise ValueError(
+            f"HKP shadow catalog input must be a directory: {shadow_root}; next-action: "
+            "remove the non-directory cache path or pass the HKP shadow bundle root"
+        )
+    if index_root.exists() and not index_root.is_dir():
+        raise ValueError(
+            f"HKP shadow catalog output must be a directory: {index_root}; next-action: "
+            "remove the non-directory cache path or pass the HKP shadow index root"
+        )
+    shadow_root.mkdir(parents=True, exist_ok=True)
+    index_root.mkdir(parents=True, exist_ok=True)
+    catalog_path = index_root / "catalog.jsonl"
+    _reject_symlink_components(catalog_path, "HKP shadow catalog", trusted_root=index_root)
+
+    bundle_rows: list[dict[str, Any]] = []
+    finding_rows: list[dict[str, Any]] = []
+    for bundle_path in _discover_shadow_bundles(shadow_root):
+        concepts = _read_concepts(bundle_path)
+        validation = validate_bundle(bundle_path)
+        findings = _bundle_index_findings(bundle_path, concepts)
+        manifest = _manifest_summary(bundle_path)
+        severity_counts = _severity_counts(findings)
+        bundle_row = {
+            "record_type": "bundle_summary",
+            "bundle_id": bundle_path.name,
+            "bundle_path": str(bundle_path),
+            "bundle_uid": manifest.get("bundle_uid"),
+            "generated_at": generated_at,
+            "concept_count": len(concepts),
+            "edge_count": _jsonl_row_count(bundle_path / "_hkp" / "edges.jsonl"),
+            "finding_count": len(findings),
+            "error_count": severity_counts["error"],
+            "warning_count": severity_counts["warning"],
+            "input_ref_hash": manifest.get("input_ref_hash"),
+            "output_tree_hash": manifest.get("output_tree_hash"),
+            "validator_ok": validation.ok,
+            "catalog_ok": severity_counts["error"] == 0,
+        }
+        bundle_rows.append(bundle_row)
+        finding_rows.extend(
+            {
+                "record_type": "finding",
+                "bundle_id": bundle_path.name,
+                **finding.as_dict(),
+            }
+            for finding in findings
+        )
+
+    error_count = sum(int(row["error_count"]) for row in bundle_rows)
+    rows = [
+        {
+            "record_type": "catalog",
+            "generated_at": generated_at,
+            "shadow_root": str(shadow_root),
+            "bundle_count": len(bundle_rows),
+            "finding_count": len(finding_rows),
+            "error_count": error_count,
+        },
+        *bundle_rows,
+        *finding_rows,
+    ]
+    _write_jsonl_atomic(catalog_path, rows, label="HKP shadow catalog", trusted_root=index_root)
+    return HkpCatalogResult(
+        catalog_path=catalog_path,
+        shadow_root=shadow_root,
+        index_root=index_root,
+        bundle_count=len(bundle_rows),
+        finding_count=len(finding_rows),
+        error_count=error_count,
+        bundles=tuple(bundle_rows),
+    )
 
 
 def _load_input(path: Path, *, source_root: Path, source_root_id: str) -> HkpExportInput:
@@ -619,6 +723,11 @@ def _write_index(
     index_root.mkdir(parents=True, exist_ok=True)
     index_path = explicit_index_path or index_root / f"{bundle_id}.jsonl"
     _reject_symlink_components(index_path, "HKP derived index", trusted_root=index_root)
+    if index_path.exists() and not index_path.is_file():
+        raise ValueError(
+            f"HKP derived index path must be a file: {index_path}; next-action: "
+            "remove the non-file cache path or choose a different index filename"
+        )
     rows = [
         {
             "record_type": "bundle",
@@ -646,8 +755,43 @@ def _write_index(
         for concept in concepts
     )
     rows.extend({"record_type": "finding", **finding.as_dict()} for finding in findings)
-    _write_jsonl(index_path, rows)
+    _write_jsonl_atomic(index_path, rows, label="HKP derived index", trusted_root=index_root)
     return index_path
+
+
+def _discover_shadow_bundles(shadow_root: Path) -> tuple[Path, ...]:
+    bundles: list[Path] = []
+    for path in sorted(shadow_root.iterdir(), key=lambda item: item.name):
+        _reject_symlink_components(path, "HKP shadow catalog input", trusted_root=shadow_root)
+        if path.name.startswith(".") or not path.is_dir():
+            continue
+        if (path / "_hkp").exists() or (path / "index.md").exists():
+            bundles.append(path)
+    return tuple(bundles)
+
+
+def _manifest_summary(bundle_path: Path) -> dict[str, Any]:
+    manifest_path = bundle_path / "_hkp" / "manifest.yaml"
+    if not manifest_path.is_file():
+        return {}
+    try:
+        payload = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _jsonl_row_count(path: Path) -> int:
+    if not path.is_file():
+        return 0
+    return len([line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()])
+
+
+def _severity_counts(findings: tuple[HkpIndexFinding, ...]) -> dict[str, int]:
+    return {
+        "error": sum(1 for finding in findings if finding.severity == "error"),
+        "warning": sum(1 for finding in findings if finding.severity == "warning"),
+    }
 
 
 def _read_concepts(bundle_path: Path) -> list[dict[str, Any]]:
@@ -785,10 +929,131 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.write_text(
-        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
-        encoding="utf-8",
+    path.write_text(_jsonl_payload(rows), encoding="utf-8")
+
+
+def _write_jsonl_atomic(
+    path: Path,
+    rows: list[dict[str, Any]],
+    *,
+    label: str,
+    trusted_root: Path,
+) -> None:
+    if path.parent.exists() and not path.parent.is_dir():
+        raise ValueError(
+            f"{label} parent must be a directory: {path.parent}; next-action: remove the "
+            "non-directory cache path or choose a different output root"
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _reject_symlink_components(path, label, trusted_root=trusted_root)
+    if path.exists() and not path.is_file():
+        raise ValueError(
+            f"{label} path must be a file: {path}; next-action: remove the non-file cache path "
+            "or choose a different output filename"
+        )
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    _remove_cache_path(tmp_path, f"{label} temporary path", trusted_root=trusted_root)
+    tmp_path.write_text(_jsonl_payload(rows), encoding="utf-8")
+    try:
+        tmp_path.replace(path)
+    except Exception as exc:
+        if tmp_path.exists():
+            _remove_cache_path(tmp_path, f"{label} temporary path", trusted_root=trusted_root)
+        if isinstance(exc, ValueError):
+            raise
+        raise ValueError(
+            f"failed to write {label} atomically: {exc}; next-action: verify cache permissions "
+            "and remove stale temporary index files"
+        ) from exc
+
+
+def _jsonl_payload(rows: list[dict[str, Any]]) -> str:
+    return "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows)
+
+
+def _ensure_replaceable_directory(path: Path, label: str, *, trusted_root: Path) -> None:
+    _reject_symlink_components(path, label, trusted_root=trusted_root)
+    if path.exists() and not path.is_dir():
+        raise ValueError(
+            f"{label} path collision is not a directory: {path}; next-action: remove the "
+            "non-directory cache path before rerunning HKP export"
+        )
+
+
+def _remove_cache_path(path: Path, label: str, *, trusted_root: Path) -> None:
+    _reject_symlink_components(path, label, trusted_root=trusted_root)
+    if not path.exists():
+        return
+    if path.is_dir():
+        shutil.rmtree(path)
+        return
+    if path.is_file():
+        path.unlink()
+        return
+    raise ValueError(
+        f"{label} has unsupported cache path type: {path}; next-action: remove the stale "
+        "cache path manually, then rerun HKP export"
     )
+
+
+def _replace_cache_directory(
+    tmp_path: Path,
+    target_path: Path,
+    backup_path: Path,
+    *,
+    label: str,
+    trusted_root: Path,
+) -> None:
+    _ensure_replaceable_directory(tmp_path, f"{label} temporary path", trusted_root=trusted_root)
+    _ensure_replaceable_directory(target_path, label, trusted_root=trusted_root)
+    _remove_cache_path(backup_path, f"{label} backup path", trusted_root=trusted_root)
+    backup_created = False
+    try:
+        if target_path.exists():
+            target_path.replace(backup_path)
+            backup_created = True
+        tmp_path.replace(target_path)
+    except Exception as exc:
+        rollback_error: Exception | None = None
+        if backup_created:
+            try:
+                _restore_cache_backup(
+                    target_path,
+                    backup_path,
+                    label=label,
+                    trusted_root=trusted_root,
+                )
+            except Exception as restore_exc:
+                rollback_error = restore_exc
+        if tmp_path.exists():
+            _remove_cache_path(tmp_path, f"{label} temporary path", trusted_root=trusted_root)
+        if rollback_error is not None:
+            raise ValueError(
+                f"failed to replace {label} atomically and rollback failed: {rollback_error}; "
+                f"original error: {exc}; next-action: inspect {target_path} and {backup_path}, "
+                "restore the backup manually if needed, then rerun HKP export"
+            ) from rollback_error
+        if isinstance(exc, ValueError):
+            raise
+        raise ValueError(
+            f"failed to replace {label} atomically: {exc}; next-action: verify cache permissions "
+            "and remove stale temporary or backup paths under the HKP cache root"
+        ) from exc
+
+    _remove_cache_path(backup_path, f"{label} backup path", trusted_root=trusted_root)
+
+
+def _restore_cache_backup(
+    target_path: Path,
+    backup_path: Path,
+    *,
+    label: str,
+    trusted_root: Path,
+) -> None:
+    if target_path.exists():
+        _remove_cache_path(target_path, label, trusted_root=trusted_root)
+    if backup_path.exists():
+        backup_path.replace(target_path)
 
 
 def _write_text(path: Path, value: str) -> None:
