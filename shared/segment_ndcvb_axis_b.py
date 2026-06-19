@@ -220,10 +220,14 @@ def coerce_ndcvb_verdict(value: Mapping[str, Any] | str) -> NDCVBVerdictRecord:
     source = _optional_str(value.get("source"))
     rationale = _optional_str(value.get("rationale"))
     correspondent = _optional_str(value.get("correspondent"))
-    rendered = _optional_str(value.get("rendered") or value.get("verdict"))
-    if rendered is not None:
+    rendered = _optional_str(value.get("rendered"))
+    verdict = _optional_str(value.get("verdict"))
+    if rendered is not None and verdict is not None and rendered != verdict:
+        raise AxisBNDCVBError("rendered and verdict fields must match when both are supplied")
+    verdict_text = rendered if rendered is not None else verdict
+    if verdict_text is not None:
         return _parse_verdict_text(
-            rendered,
+            verdict_text,
             correspondent=correspondent,
             source=source,
             rationale=rationale,
@@ -338,6 +342,10 @@ def evaluate_ndcvb_axis_b(verdicts: Sequence[Mapping[str, Any] | str]) -> dict[s
             }
         )
 
+    n_corroborated = sum(1 for record in records if record.kind is AxisBVerdictKind.CORROBORATED)
+    n_dissociated = sum(1 for record in records if record.kind is AxisBVerdictKind.DISSOCIATED)
+    n_undetermined = sum(1 for record in records if record.kind is AxisBVerdictKind.UNDETERMINED)
+
     return {
         "scorer": AXIS_B_NDCVB_SCORER_NAME,
         "scorer_version": AXIS_B_NDCVB_SCORER_VERSION,
@@ -357,16 +365,10 @@ def evaluate_ndcvb_axis_b(verdicts: Sequence[Mapping[str, Any] | str]) -> dict[s
         },
         "coverage": {
             "n_correspondents": len(records),
-            "n_corroborated": sum(
-                1 for record in records if record.kind is AxisBVerdictKind.CORROBORATED
-            ),
-            "n_dissociated": sum(
-                1 for record in records if record.kind is AxisBVerdictKind.DISSOCIATED
-            ),
-            "n_undetermined": sum(
-                1 for record in records if record.kind is AxisBVerdictKind.UNDETERMINED
-            ),
-            "ok": True,
+            "n_corroborated": n_corroborated,
+            "n_dissociated": n_dissociated,
+            "n_undetermined": n_undetermined,
+            "ok": n_undetermined == 0,
         },
         "correspondent_scores": correspondent_reports,
         "violations": violations,

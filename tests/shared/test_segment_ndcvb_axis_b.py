@@ -27,6 +27,7 @@ def test_all_correspondents_corroborated_scores_with_conservative_bound() -> Non
     assert report["ok"] is True
     assert report["dissociated_veto_required"] is False
     assert report["coverage"]["n_corroborated"] == 2
+    assert report["coverage"]["ok"] is True
     assert report["violations"] == []
 
 
@@ -43,6 +44,7 @@ def test_any_dissociated_verdict_sets_hard_floor_veto_signal() -> None:
     assert report["score_1_5"] == 1.0
     assert report["ok"] is False
     assert report["dissociated_veto_required"] is True
+    assert report["coverage"]["ok"] is True
     assert report["floor_gate"] == {
         "b2_floor_required": True,
         "dissociated_veto_required": True,
@@ -71,7 +73,15 @@ def test_undetermined_without_dissociation_is_recorded_without_numeric_score() -
     assert report["ok"] is False
     assert report["dissociated_veto_required"] is False
     assert report["coverage"]["n_undetermined"] == 1
+    assert report["coverage"]["ok"] is False
     assert {item["reason"] for item in report["violations"]} == {"ndcvb_undetermined"}
+
+
+def test_explicit_undetermined_mapping_is_recorded_without_numeric_score() -> None:
+    record = coerce_ndcvb_verdict({"correspondent": "consistency", "kind": "UNDETERMINED"})
+
+    assert record.rendered == "consistency: UNDETERMINED (below floor)"
+    assert record.to_report()["score_0_100"] is None
 
 
 def test_mapping_verdict_preserves_source_and_rationale() -> None:
@@ -108,6 +118,29 @@ def test_mapping_correspondent_must_match_rendered_verdict_correspondent() -> No
         )
 
 
+def test_rendered_and_verdict_aliases_must_match_when_both_supplied() -> None:
+    with pytest.raises(AxisBNDCVBError, match="rendered and verdict fields must match"):
+        coerce_ndcvb_verdict(
+            {
+                "correspondent": "sycophancy",
+                "rendered": "sycophancy: corroborated@0.90",
+                "verdict": "sycophancy: dissociated@0.80",
+            }
+        )
+
+
+def test_matching_rendered_and_verdict_aliases_round_trip() -> None:
+    record = coerce_ndcvb_verdict(
+        {
+            "correspondent": "sycophancy",
+            "rendered": "sycophancy: corroborated@0.90",
+            "verdict": "sycophancy: corroborated@0.90",
+        }
+    )
+
+    assert record.rendered == "sycophancy: corroborated@0.90"
+
+
 def test_rendered_verdict_round_trips_through_full_evaluate_path() -> None:
     report = evaluate_ndcvb_axis_b(
         [
@@ -132,6 +165,8 @@ def test_verdict_language_boundary_rejects_mentalistic_text() -> None:
                 "rationale": "the model is pretending to know the answer",
             }
         )
+    with pytest.raises(ForbiddenAxisBVerdictError):
+        coerce_ndcvb_verdict("sycophancy: corroborated@0.80 feels plausible")
 
 
 @pytest.mark.parametrize(
@@ -141,6 +176,7 @@ def test_verdict_language_boundary_rejects_mentalistic_text() -> None:
         {"correspondent": "sycophancy", "kind": "corroborated"},
         {"correspondent": "sycophancy", "kind": "dissociated", "bound": 1.2},
         {"correspondent": "sycophancy", "kind": "dissociated", "bound": float("nan")},
+        {"correspondent": "sycophancy", "kind": "dissociated", "bound": True},
         {"kind": "corroborated", "bound": 0.8},
         "corroborated@0.80",
     ],
