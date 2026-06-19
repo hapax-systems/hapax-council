@@ -68,6 +68,21 @@ EXECUTOR_REGISTRY: dict[str, ExecutorCapabilities] = {
             "without spending provider budget"
         ),
     ),
+    "glmcp": ExecutorCapabilities(
+        platform="glmcp",
+        modes=(),
+        profiles=("direct",),
+        mutates=False,
+        claims=False,
+        hooks_wired=False,
+        headless=False,
+        read_only=True,
+        notes=(
+            "receipt-only review-seat route (glmcp.review.direct); a read-only PR "
+            "reviewer via hapax-glmcp-reviewer, not a launchable worker (modes=()). "
+            "The coding workhorse is a separate, bakeoff-gated route, not this one."
+        ),
+    ),
     "claude": ExecutorCapabilities(
         platform="claude",
         modes=("headless", "interactive"),

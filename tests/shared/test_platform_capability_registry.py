@@ -109,7 +109,36 @@ def test_registry_route_ids_match_dispatcher_platform_paths() -> None:
         for route in dispatcher.PLATFORM_PATHS.values()
     }
 
-    assert set(registry.route_map()) == dispatcher_routes
+    # Review-seat routes (mode=review, e.g. glmcp.review.direct) are non-launchable
+    # capability rows — admitted/observed but never spawned through a PLATFORM_PATHS
+    # launcher — so they are registry-only, not dispatcher launchers.
+    launchable_routes = {
+        route_id for route_id, route in registry.route_map().items() if route.mode != "review"
+    }
+    assert launchable_routes == dispatcher_routes
+
+
+def test_glmcp_review_seat_registered_as_fail_closed_read_only_route() -> None:
+    # The GLM Coding-Plan review seat (live in cc-pr-review-dispatch) is now visible
+    # in DESCRIBE as a non-launchable, read-only ReviewSeatAdapter route. The coding
+    # workhorse is a separate, bakeoff-gated route — NOT this one.
+    from shared.dispatcher_policy import ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED
+    from shared.quota_spend_ledger import RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
+
+    assert "glmcp.review.direct" in REQUIRED_ROUTE_IDS
+    route = load_platform_capability_registry().require("glmcp.review.direct")
+    assert (route.platform.value, route.mode.value, route.profile.value) == (
+        "glmcp",
+        "review",
+        "direct",
+    )
+    assert route.authority_ceiling == AuthorityCeiling.READ_ONLY
+    assert route.worker_tier.value == "read_only_sidecar"
+    assert route.route_state == RouteState.BLOCKED  # receipt-bounded admission, fail-closed
+    assert not route.mutability.any_mutation()
+    # the receipt-bounded subscription-quota machinery already keys this route id
+    assert "glmcp.review.direct" in ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED
+    assert "glmcp.review.direct" in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
 
 
 def test_seed_registry_uses_explicit_surface_blockers_and_fails_closed() -> None:

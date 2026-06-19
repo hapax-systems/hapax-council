@@ -19,6 +19,7 @@
     "claude.interactive.full",
     "codex.headless.full",
     "codex.headless.spark",
+    "glmcp.review.direct",
     "vibe.headless.full"
   ],
   "routes": [
@@ -2940,6 +2941,247 @@
       "approval_posture": "programmatic_auto_approve_task_scoped",
       "capability_tier": "jr_plus",
       "worker_tier": "bounded_worker"
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "glmcp.review.direct",
+      "platform": "glmcp",
+      "mode": "review",
+      "profile": "direct",
+      "launcher": "scripts/hapax-glmcp-reviewer (review seat: blind-review prompt on stdin -> YAML verdict on stdout)",
+      "sanctioned_wrapper": "scripts/hapax-glmcp-reviewer",
+      "summary": "GLMCP Z.ai Coding-Plan review seat (glm-5)",
+      "notes": "Receipt-bounded GLM-5 review seat, live in cc-pr-review-dispatch as the 'glm' reviewer family. Non-worker, read-only reviewer; NOT a coding workhorse -- the GLMCP coding/dispatch promotion is separately gated by glmcp-workhorse-bakeoff-20260618 (must emit promote_to_dispatch_shadow). Admission is receipt-bounded via quota_spend_ledger RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES + dispatcher_policy ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED.",
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "glmcp_review_seat_receipt_admission_required",
+        "fresh_capability_evidence_absent",
+        "quota_telemetry_unknown"
+      ],
+      "model_or_engine": "z_ai-glm-coding-plan:glm-5",
+      "auth_surface": "subscription",
+      "capacity_pool": "subscription_quota",
+      "mutability": {
+        "vault_docs": false,
+        "source": false,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "read_only",
+      "tool_access": {
+        "filesystem": "read_only",
+        "shell": "none",
+        "browser": false,
+        "mcp": []
+      },
+      "privacy_posture": "provider_training_unknown",
+      "quality_envelope": {
+        "eligible_quality_floors": [
+          "frontier_review_required"
+        ],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "source_mutation",
+          "runtime_mutation",
+          "provider_spend",
+          "governance_authority_case",
+          "privacy_secret_sensitive",
+          "public_release_without_gate"
+        ]
+      },
+      "context_limits": {
+        "max_context_class": "very_large"
+      },
+      "telemetry": {
+        "quota_source": "ledger",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": null,
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": null,
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "quota_telemetry_unknown"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_resource_evidence_absent"
+            ]
+          },
+          "provider_docs": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "provider_docs_evidence_absent"
+            ]
+          }
+        }
+      },
+      "known_unknowns": [
+        "Z.ai provider training/privacy posture is not equivalent to local execution; privacy/secret-sensitive review is excluded by policy.",
+        "Coding/dispatch workhorse promotion is separate and bakeoff-gated (glmcp-workhorse-bakeoff-20260618); this route is the review seat only.",
+        "Subscription quota is not exposed as account-live local telemetry; admission is receipt-bounded via the spend ledger."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:glmcp.review.direct:dimensional-score"
+          ],
+          "observed_at": "2026-06-19T08:00:00Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:glmcp.review.direct:dimensional-score"
+          ],
+          "observed_at": "2026-06-19T08:00:00Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 1,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:glmcp.review.direct:dimensional-score"
+          ],
+          "observed_at": "2026-06-19T08:00:00Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:glmcp.review.direct:dimensional-score"
+          ],
+          "observed_at": "2026-06-19T08:00:00Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:glmcp.review.direct:dimensional-score"
+          ],
+          "observed_at": "2026-06-19T08:00:00Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 5,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:glmcp.review.direct:dimensional-score"
+          ],
+          "observed_at": "2026-06-19T08:00:00Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:glmcp.review.direct:dimensional-score"
+          ],
+          "observed_at": "2026-06-19T08:00:00Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 1,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:glmcp.review.direct:dimensional-score"
+          ],
+          "observed_at": "2026-06-19T08:00:00Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 1,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:glmcp.review.direct:dimensional-score"
+          ],
+          "observed_at": "2026-06-19T08:00:00Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:glmcp.review.direct:dimensional-score"
+          ],
+          "observed_at": "2026-06-19T08:00:00Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:glmcp.review.direct:dimensional-score"
+          ],
+          "observed_at": "2026-06-19T08:00:00Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:glmcp.review.direct:dimensional-score"
+          ],
+          "observed_at": "2026-06-19T08:00:00Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:glmcp.review.direct:dimensional-score"
+          ],
+          "observed_at": "2026-06-19T08:00:00Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:glmcp.review.direct:dimensional-score"
+          ],
+          "observed_at": "2026-06-19T08:00:00Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": null,
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:glmcp.review.direct:tool_access.filesystem"
+        }
+      ],
+      "approval_posture": "default_deny_enable_latch",
+      "capability_tier": "read_only_support",
+      "worker_tier": "read_only_sidecar"
     }
   ]
 }
