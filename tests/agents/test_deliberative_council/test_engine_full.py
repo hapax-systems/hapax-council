@@ -442,3 +442,8 @@ class TestFullDeliberation:
         assert len(receipt["phase4_transcript"]) == 2
         assert "phase5_convergence" in receipt
         assert receipt["phase5_convergence"]["a"]["status"] == "converged"
+        # AC #4: the FULL deliberation receipt (not just the short-circuit one)
+        # must record served models + a ruler_substituted signal, so a silent
+        # served-model swap is auditable on the normal convergence path too.
+        assert receipt["served_models"] == [r.served_model for r in divergent_p1]
+        assert isinstance(receipt["ruler_substituted"], bool)
