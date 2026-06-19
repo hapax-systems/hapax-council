@@ -940,6 +940,43 @@ class TestReceiptAndWake:
         )
         assert "operator" in receipt_path.read_text(encoding="utf-8")
 
+    def test_stale_review_team_receipt_is_archived_and_rewritten(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault, quality_floor="frontier_review_required")
+        receipt_path = note.parent / "task-a.acceptance.yaml"
+        receipt_path.write_text(
+            yaml.safe_dump(
+                {
+                    "acceptor": "review-team:claude,codex",
+                    "verdict": "accepted",
+                    "head_sha": "b" * 40,
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:00:00+00:00",
+        )
+
+        assert result["side_effects"]["receipt_path"] == str(receipt_path)
+        archived = note.parent / "task-a.acceptance.bbbbbbbb.yaml"
+        assert archived.is_file()
+        assert yaml.safe_load(archived.read_text(encoding="utf-8"))["head_sha"] == "b" * 40
+        receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
+        assert receipt["head_sha"] == "c" * 40
+        assert receipt["acceptor"].startswith("review-team:")
+
     def test_no_receipt_for_non_review_floor(self, tmp_path: Path) -> None:
         _, _, _, note = _review(tmp_path)  # frontier_required, not review floor
         assert not (note.parent / "task-a.acceptance.yaml").is_file()
