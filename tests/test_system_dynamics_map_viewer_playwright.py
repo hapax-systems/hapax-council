@@ -262,6 +262,15 @@ def test_system_dynamics_viewer_core_interactions():
             companion_text = page.locator("#companion-readout").inner_text()
             assert "Companion Readout" in companion_text
             assert "Table view for the active projection" in companion_text
+            initial_view_payload = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload()"
+            )
+            assert page.locator('#companion-readout tr[data-companion-row="node"]').count() == len(
+                initial_view_payload["visible_node_ids"]
+            )
+            assert page.locator('#companion-readout tr[data-companion-row="edge"]').count() == len(
+                initial_view_payload["visible_edge_ids"]
+            )
             workbench_payload = page.evaluate(
                 "window.systemDynamicsMapRuntime.currentWorkbenchPayload()"
             )

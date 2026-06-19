@@ -2,7 +2,7 @@
   "generated_at": "2026-06-18T00:00:00Z",
   "generated_hashes": {
     "docs/architecture/fixtures/system-dynamics-map/sdlc-operating-slice.json": "b405bf4be92d1a7e4fcecbb4ab640e3b9f9b2dedae73d22bcbcd2189b6b78c1f",
-    "docs/architecture/system-dynamics-map-viewer.html": "6a421d37803990c4291fb0322efec4ff18c013e66af4891876f4d5a66b2a7c13",
+    "docs/architecture/system-dynamics-map-viewer.html": "0127ea4f50038b7a401f92ec6989d8ff058e1db1c15ee8e5772e2252029266a3",
     "docs/architecture/system-dynamics-map.canonical.trig": "180cb9af6e6052265528a0829d43786862f91f3e3992c678d16887addceb6328",
     "docs/architecture/system-dynamics-map.claims.json": "b52f80e5eeb3b4cd8abf5b37e4a49b8e457bf823fa0ecdf838872b56ea1e641d",
     "docs/architecture/system-dynamics-map.lenses.json": "d7ef9c7773ad04c5d76597378414277089137028416e406559490e87512eef7f",
@@ -21,12 +21,12 @@
   "git_sha": "unknown",
   "git_sha_role": "not_recorded",
   "map_id": "system-dynamics-map-v1",
-  "package_hash": "1d330e7268a2ddef9f856973d9ad2593686e2a0c996f7f1e3684fd929d096c1f",
+  "package_hash": "14fe13599269b36616e4c913f7fd30d7a9f8360c06fbf6f12084e47195007081",
   "schema": "system-dynamics-map-lock-v1",
   "source_hashes": {
     "seed": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
     "vendor": "9c2a3bf2592e0b14a1f7bec07c03a54f16dedf32af9cd0af155c716aa6c87bc3",
-    "viewer": "6a421d37803990c4291fb0322efec4ff18c013e66af4891876f4d5a66b2a7c13"
+    "viewer": "0127ea4f50038b7a401f92ec6989d8ff058e1db1c15ee8e5772e2252029266a3"
   },
   "staleness_policy": "Generated hashes must match rendered materializer output. git_sha is intentionally unknown and is not a staleness key because an artifact committed to Git cannot contain its own self-referential future commit SHA.",
   "version": "1.0.0"

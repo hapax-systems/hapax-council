@@ -7433,21 +7433,21 @@
         return;
       }
       const scope = visibleElementScope();
-      const nodeRows = scope.nodeIds.slice(0, 8).map((id) => {
+      const nodeRows = scope.nodeIds.map((id) => {
         const node = seed.nodes.find((item) => item.id === id);
         const observation = currentStateFor(id);
         return `
-          <tr>
+          <tr data-companion-row="node">
             <td>${elementButtonHtml("nodes", id, node?.label || id)}</td>
             <td>${escapeHtml(node?.kind || "node")}</td>
             <td>${escapeHtml(observation?.state || "no observation")}</td>
           </tr>
         `;
       }).join("");
-      const edgeRows = scope.edgeIds.slice(0, 6).map((id) => {
+      const edgeRows = scope.edgeIds.map((id) => {
         const edge = seed.edges.find((item) => item.id === id);
         return `
-          <tr>
+          <tr data-companion-row="edge">
             <td>${elementButtonHtml("edges", id, edgeLabel(id))}</td>
             <td>${escapeHtml(edge ? relationLabel(edge.relation) : "relation")}</td>
             <td>${escapeHtml(edge ? relationCategoryForEdge(edge) : "unknown")}</td>
