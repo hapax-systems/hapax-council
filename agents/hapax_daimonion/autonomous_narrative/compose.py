@@ -21,12 +21,29 @@ import logging
 import os
 import re
 import time
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from shared.broadcast_audio_health import BroadcastAudioStatus, read_broadcast_audio_health_state
 from shared.claim_prompt import SURFACE_FLOORS
+from shared.livestream_egress_state import resolve_livestream_egress_state
 from shared.narration_triad import render_triad_prompt_context
 from shared.operator_referent import REFERENTS
 from shared.resident_command_r import call_resident_command_r
+from shared.self_grounding_envelope import (
+    ApertureSnapshot,
+    AudioSafetySnapshot,
+    AudioSafetyState,
+    EgressSnapshot,
+    EnvelopeInputs,
+    LivestreamEgressState,
+    ProgrammeAuthorizationState,
+    ProgrammeSnapshot,
+    RoleSnapshot,
+    build_envelope_projection,
+    render_compact_prompt_block,
+)
+from shared.self_presence import ExposureMode, PublicPrivateMode
 
 log = logging.getLogger(__name__)
 
@@ -361,6 +378,9 @@ def compose_narrative(
 
     segment_mode = _is_segment_mode(context)
     seed = _build_seed(context)
+    self_grounding_block = _render_self_grounding_seed_block(context)
+    if self_grounding_block:
+        seed = f"{seed}\n{self_grounding_block}" if seed else self_grounding_block
 
     if segment_mode:
         from agents.hapax_daimonion.autonomous_narrative.segment_prompts import (
@@ -465,6 +485,93 @@ def compose_narrative(
     if final_text[-1] not in ".!?":
         final_text = final_text + "."
     return final_text
+
+
+def _render_self_grounding_seed_block(context: Any) -> str:
+    try:
+        return render_compact_prompt_block(
+            build_envelope_projection(_self_grounding_inputs(context))
+        )
+    except Exception:
+        log.warning("autonomous_narrative: self-grounding envelope unavailable", exc_info=True)
+        return ""
+
+
+def _self_grounding_inputs(context: Any) -> EnvelopeInputs:
+    prog = getattr(context, "programme", None)
+    programme_id = str(getattr(prog, "programme_id", "") or "") or None
+    now = datetime.now(UTC)
+    status = str(getattr(getattr(prog, "status", None), "value", getattr(prog, "status", "")))
+    fresh_programme = bool(programme_id and status.lower() in {"active", "programmestatus.active"})
+    return EnvelopeInputs(
+        role=RoleSnapshot(
+            role_id="role:public-narrator",
+            office="public_narrator",
+            addressee_mode="public_audience",
+            route_posture="broadcast_authorized" if fresh_programme else "public_candidate",
+        ),
+        aperture=ApertureSnapshot(
+            aperture_id="aperture:public-broadcast-voice",
+            kind="public_broadcast_voice",
+            exposure_mode=ExposureMode.PUBLIC_CANDIDATE,
+            public_private_mode=PublicPrivateMode.PUBLIC_CANDIDATE,
+            requires_programme_authorization=True,
+            requires_audio_safety=True,
+            requires_egress_witness=True,
+        ),
+        programme=ProgrammeSnapshot(
+            programme_id=programme_id,
+            authorization_state=ProgrammeAuthorizationState.FRESH
+            if fresh_programme
+            else ProgrammeAuthorizationState.MISSING,
+            authorized_at=now.isoformat() if fresh_programme else None,
+            expires_at=(now + timedelta(seconds=90)).isoformat() if fresh_programme else None,
+        ),
+        audio_safety=_self_grounding_audio_snapshot(),
+        egress=_self_grounding_egress_snapshot(),
+        source_context_refs=("autonomous_narrative.compose",),
+        chronicle_refs=tuple(
+            str(event.get("source", "chronicle"))
+            for event in getattr(context, "chronicle_events", ())
+        ),
+    )
+
+
+def _self_grounding_audio_snapshot() -> AudioSafetySnapshot:
+    try:
+        audio = read_broadcast_audio_health_state()
+    except Exception:
+        log.debug("autonomous_narrative: audio self-grounding witness failed", exc_info=True)
+        return AudioSafetySnapshot(
+            state=AudioSafetyState.UNKNOWN,
+            evidence_refs=("BroadcastAudioHealth.unavailable",),
+        )
+    if audio.safe:
+        state = AudioSafetyState.SAFE
+    elif audio.status is BroadcastAudioStatus.UNSAFE:
+        state = AudioSafetyState.UNSAFE
+    else:
+        state = AudioSafetyState.UNKNOWN
+    return AudioSafetySnapshot(state=state, evidence_refs=("BroadcastAudioHealth.safe",))
+
+
+def _self_grounding_egress_snapshot() -> EgressSnapshot:
+    try:
+        egress = resolve_livestream_egress_state(probe_network=False)
+    except Exception:
+        log.debug("autonomous_narrative: egress self-grounding witness failed", exc_info=True)
+        return EgressSnapshot(
+            state=LivestreamEgressState.NOT_WITNESSED,
+            evidence_refs=("LivestreamEgressState.unavailable",),
+        )
+    return EgressSnapshot(
+        state=LivestreamEgressState.WITNESSED
+        if egress.public_claim_allowed
+        else LivestreamEgressState.NOT_WITNESSED,
+        evidence_refs=tuple(
+            f"LivestreamEgressState.evidence:{item.source}" for item in egress.evidence
+        ),
+    )
 
 
 # Segmented-content roles whose asset resolution enriches the narrative
