@@ -155,6 +155,32 @@ def _render_target_directive(target_programmes: int | None) -> str:
     )
 
 
+# Hard role restriction for composability-gated runs. The validated lever (producer-discovery
+# wf_da4901ad + experiment a70432c5) is NOT more arc exhortation — the base prompt already carries
+# the arc contract and the resident 35B ignores it. It is REMOVING the ranking/listy roles so the
+# model must pick an arc-shaped role (rant/iceberg/react), whose structure IS the arc. That flipped
+# the resident 35B lecture->rant and produced S2-passing arcs. RED-1 / cc-task segprep-producer-arc-role.
+_ARC_ROLES_DIRECTIVE = """## ROLE RESTRICTION (this run) — composable arc only
+
+This run is gated by the S2 composability gate, which REJECTS parallel-list plans (ranked /
+enumerated independent items where reordering the middle beats is harmless). To pass, the segment
+MUST be a BUILDING NARRATIVE ARC: an opening hook (a paradox / disputed claim / failure stated up
+front) -> dependent middle beats (each needs the prior) -> a close that RESOLVES the SAME opening
+hook with a source receipt.
+
+You may ONLY use these segmented-content roles, whose structure IS an arc:
+  - `rant`    -- a bounded claim under pressure that a source receipt flips
+  - `iceberg` -- surface -> progressively deeper layers -> a bottom payoff
+  - `react`   -- a claim under reaction, tested against the media and resolved by it
+The ranking / enumeration / lecture / interview roles are FORBIDDEN this run because they are
+parallel lists or non-arc formats: do NOT use `tier_list`, `top_10`, `lecture`, or `interview`.
+Author the topic itself AS the tension/turn the arc resolves -- not a label to rank or enumerate."""
+
+
+def _render_arc_roles_directive(arc_roles_only: bool) -> str:
+    return _ARC_ROLES_DIRECTIVE if arc_roles_only else ""
+
+
 class ProgrammePlanner:
     """Emits a ``ProgrammePlan`` for the next 2-5 programmes.
 
@@ -197,6 +223,7 @@ class ProgrammePlanner:
         stream_biography: str | None = None,
         prior_substance_feedback: str | None = None,
         resolved_sources: Sequence[ResolvedSourceSet] | None = None,
+        arc_roles_only: bool = False,
     ) -> ProgrammePlan | None:
         """Compose a context block, call the LLM, validate + return.
 
@@ -221,6 +248,7 @@ class ProgrammePlanner:
             density_field=density_field,
             stream_biography=stream_biography,
             resolved_sources=resolved_sources,
+            arc_roles_only=arc_roles_only,
         )
 
         # A3/A2: carry prior downstream verdicts into THIS authoring so the
@@ -279,11 +307,13 @@ class ProgrammePlanner:
         density_field: dict | None = None,
         stream_biography: str | None = None,
         resolved_sources: Sequence[ResolvedSourceSet] | None = None,
+        arc_roles_only: bool = False,
     ) -> str:
         """Render the prompt template + per-call context."""
         template = self._read_prompt_template()
         target = _normalized_target_programmes(target_programmes)
         target_directive = _render_target_directive(target)
+        arc_directive = _render_arc_roles_directive(arc_roles_only)
         context = self._render_context(
             show_id=show_id,
             perception=perception,
@@ -297,7 +327,7 @@ class ProgrammePlanner:
             stream_biography=stream_biography,
             resolved_sources=resolved_sources,
         )
-        blocks = [block for block in (target_directive, template) if block]
+        blocks = [block for block in (arc_directive, target_directive, template) if block]
         prompt_body = "\n\n".join(blocks)
         return f"{prompt_body}\n\n## Per-call context\n\n{context}"
 

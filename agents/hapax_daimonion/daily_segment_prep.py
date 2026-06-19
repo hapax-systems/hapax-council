@@ -3582,11 +3582,19 @@ def run_prep(
             segmented_count=len(segmented),
         )
         try:
+            # RED-1 producer fix: constrain composability-gated runs to arc-shaped roles so the
+            # resident 35B composes an arc (rant/iceberg/react) instead of reaching for a ranking
+            # role and emitting a parallel list S2 rejects. Default ON, reversible via the env flag.
+            # cc-task 20260619-segprep-producer-arc-role-constraint.
+            arc_roles_only_enabled = os.environ.get(
+                "HAPAX_SEGMENT_PREP_ARC_ROLES", "1"
+            ).strip().lower() not in {"0", "false", "no", "off"}
             plan = planner.plan(
                 show_id=show_id,
                 target_programmes=planner_target_programmes,
                 fore_understanding=plan_recruit_fore or None,
                 prior_substance_feedback=prior_substance_feedback,
+                arc_roles_only=arc_roles_only_enabled,
                 **planner_kwargs,
             )
         except Exception as exc:
