@@ -327,10 +327,10 @@ for path, dimensions in expected.items():
 PY
 ```
 
-This snippet assumes Pillow is available in the repo test environment. The
-`>50` color threshold is a blank/sparse-image guard; the Playwright viewer suite
-performs the stronger current-served-render comparison against these committed
-references.
+Run this snippet from the repo test environment, where Pillow is installed, or
+install Pillow before using standalone `python3`. The `>50` color threshold is a
+blank/sparse-image guard; the Playwright viewer suite performs the stronger
+current-served-render comparison against these committed references.
 
 The AV-SDLC task evidence also carries operator-local copies under the closing
 task evidence directory named in the cc-task dossier.
@@ -356,11 +356,12 @@ while time.time() < deadline:
 raise SystemExit("local docs server did not start on 127.0.0.1:8765")
 PY
 
+# The reference files are viewport captures; do not add --full-page here.
 npx playwright screenshot --browser chromium --viewport-size 1440,960 \
-  --wait-for-selector '#cy canvas' --wait-for-timeout 3000 --full-page \
+  --wait-for-selector '#cy canvas' --wait-for-timeout 3000 \
   http://127.0.0.1:8765/system-dynamics-map-viewer.html docs/architecture/system-dynamics-map-viewer-desktop.png
 npx playwright screenshot --browser chromium --viewport-size 390,844 \
-  --wait-for-selector '#cy canvas' --wait-for-timeout 3000 --full-page \
+  --wait-for-selector '#cy canvas' --wait-for-timeout 3000 \
   http://127.0.0.1:8765/system-dynamics-map-viewer.html docs/architecture/system-dynamics-map-viewer-mobile.png
 kill "$server_pid" 2>/dev/null || true
 trap - EXIT

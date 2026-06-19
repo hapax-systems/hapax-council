@@ -5416,7 +5416,7 @@
     "expires_at": "2030-01-01T00:00:00Z",
     "freshness": "fresh",
     "source_ref": "docs/architecture/system-dynamics-map-v1.md",
-    "source_hash": "bbae67745b28e24bf6dba7e4cf4efb6366be6429d5bd759969b5caf3d0a70cf9",
+    "source_hash": "37eb7244968c8ce731cb7a0b3d32d103a4b7522f8af4462ecb6681b17ff5a1d7",
     "source_type": "fixture",
     "evidence": [
       {
@@ -7868,6 +7868,16 @@
         layoutAnimationEnabled: () => layoutOptions(activeLayout).animate,
         lensIds: () => lenses.lenses.map((lens) => lens.id),
         observationsFor: (id) => observationRows(id),
+        edgeLabelState: (id) => {
+          const edge = cy.$id(id);
+          if (edge.empty()) {
+            return null;
+          }
+          return {
+            hasShowLabel: edge.hasClass("show-label"),
+            label: edge.style("label")
+          };
+        },
         pngDataUri: () => cy.png({ output: "base64uri", bg: "white", full: false }),
         relatedClaims: (id) => claimRows(id),
         relationFor: (id) => relationEntry(id),

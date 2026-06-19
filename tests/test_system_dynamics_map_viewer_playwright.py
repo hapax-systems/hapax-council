@@ -959,6 +959,12 @@ def test_system_dynamics_viewer_toolbar_and_panel_actions_are_operable():
                 )
                 is False
             )
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.edgeLabelState('dmn-to-sbvr')"
+            ) == {
+                "hasShowLabel": False,
+                "label": "",
+            }
             page.locator("#edge-labels").click()
             assert page.locator("#edge-labels").get_attribute("aria-pressed") == "true"
             assert (
@@ -967,6 +973,12 @@ def test_system_dynamics_viewer_toolbar_and_panel_actions_are_operable():
                 )
                 is True
             )
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.edgeLabelState('dmn-to-sbvr')"
+            ) == {
+                "hasShowLabel": True,
+                "label": "Adjacent Vocabulary",
+            }
             assert "Edge labels shown." in page.locator("#action-status").inner_text()
 
             page.evaluate("window.systemDynamicsMapRuntime.selectEdge('dmn-to-sbvr')")
