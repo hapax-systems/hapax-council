@@ -268,8 +268,8 @@ def _warn_ignored_glmcp_admission(path: Path, reason: str) -> str:
     return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}"
 
 
-def _evidence_value(value: str, *, max_chars: int) -> str:
-    return " ".join(value.split())[:max_chars]
+def _evidence_value(value: str) -> str:
+    return " ".join(value.split())
 
 
 def _receipt_label(path: Path) -> str:
@@ -413,7 +413,7 @@ def active_glmcp_admission_receipts(
         if not receipt_evidence_ref:
             reject(path, "evidence_ref missing")
             continue
-        receipt_evidence_ref = _evidence_value(receipt_evidence_ref, max_chars=240)
+        receipt_evidence_ref = _evidence_value(receipt_evidence_ref)
         if (
             GLMCP_ADMISSION_EVIDENCE_REF_RE.fullmatch(receipt_evidence_ref) is None
             or GLMCP_ADMISSION_SECRETISH_RE.search(receipt_evidence_ref) is not None

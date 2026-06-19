@@ -1012,6 +1012,7 @@ def test_glmcp_admission_receipt_rejects_secretish_evidence_ref(tmp_path: Path) 
     secretish_ref = "sk-live-secret-token-000000000000000000000000"
     colon_ref = "relay:receipt:ambiguous"
     email_ref = "seat@example.com"
+    overlong_secretish_ref = ("a-" * 120) + "sk-live-secret-token-000000000000000000000000"
     (relay / "glmcp-quota-admission-secretish-evidence.yaml").write_text(
         f"""status: quota_available
 provider: z_ai-glm-coding-plan
@@ -1054,6 +1055,20 @@ evidence_ref: {email_ref}
 """,
         encoding="utf-8",
     )
+    (relay / "glmcp-quota-admission-overlong-secretish-evidence.yaml").write_text(
+        f"""status: quota_available
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5.2
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 900
+evidence_ref: {overlong_secretish_ref}
+""",
+        encoding="utf-8",
+    )
 
     result, out = _run_writer(tmp_path)
 
@@ -1067,9 +1082,11 @@ evidence_ref: {email_ref}
     assert states["glmcp.review.direct"] == "unknown"
     assert "evidence_ref unsafe" in result.stderr
     assert secretish_ref not in result.stderr
+    assert overlong_secretish_ref not in result.stderr
     assert secretish_ref not in payload_text
     assert colon_ref not in payload_text
     assert email_ref not in payload_text
+    assert overlong_secretish_ref not in payload_text
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
 
