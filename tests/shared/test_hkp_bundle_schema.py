@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from shared.hkp_bundle_schema import validate_bundle
+from shared.hkp_bundle_schema import HkpProjectionEvent, validate_bundle
 
 HASH = "sha256:" + "a" * 64
 TREE_HASH = "sha256:" + "b" * 64
@@ -607,6 +608,412 @@ def test_consumer_policy_denied_consumers_cannot_allow_fields_or_retrieval(
     assert "qdrant_rag may not allow embedding/retrieval" in messages
 
 
+def test_manifest_output_tree_hash_mismatch_fails(tmp_path: Path) -> None:
+    bundle = write_bundle(tmp_path)
+    (bundle / "index.md").write_text("# Changed after manifest\n", encoding="utf-8")
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "manifest_output_tree_hash_mismatch" in {finding.code for finding in result.findings}
+
+
+def test_manifest_input_ref_hash_mismatch_fails(tmp_path: Path) -> None:
+    bundle = write_bundle(tmp_path)
+    manifest = valid_manifest()
+    manifest["output_tree_hash"] = _tree_hash(bundle)
+    manifest["input_ref_hash"] = "sha256:" + "d" * 64
+    _write_yaml(bundle / "_hkp" / "manifest.yaml", manifest)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "manifest_input_ref_hash_mismatch" in {finding.code for finding in result.findings}
+
+
+def test_manifest_input_ref_hash_requires_hashed_source_refs(tmp_path: Path) -> None:
+    concept = valid_concept("task")
+    concept["source_refs"] = []
+    bundle = write_bundle(tmp_path, concept=concept)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "manifest_input_ref_hash_mismatch" in {finding.code for finding in result.findings}
+
+
+def test_event_hash_chain_break_fails(tmp_path: Path) -> None:
+    event_0 = valid_event(sequence=0, event_type="bundle_generated", subject_uid="hkp:test:bundle")
+    event_1 = valid_event(
+        sequence=1,
+        event_type="concept_emitted",
+        subject_uid="hkp:test:task",
+        previous_event_hash="sha256:" + "d" * 64,
+    )
+    bundle = write_bundle(tmp_path, events=[event_0, event_1])
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "event_hash_chain_broken" in {finding.code for finding in result.findings}
+
+
+def test_event_sequence_gap_fails(tmp_path: Path) -> None:
+    event = valid_event(sequence=2, event_type="bundle_generated", subject_uid="hkp:test:bundle")
+    bundle = write_bundle(tmp_path, events=[event])
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "event_sequence_not_contiguous" in {finding.code for finding in result.findings}
+
+
+def test_event_id_derivation_mismatch_fails(tmp_path: Path) -> None:
+    event = valid_event()
+    event["event_id"] = "event:not-derived"
+    bundle = write_bundle(tmp_path, events=[event])
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "event_id_mismatch" in {finding.code for finding in result.findings}
+
+
+def test_valid_multi_event_hash_chain_passes(tmp_path: Path) -> None:
+    event_0 = valid_event(sequence=0, event_type="bundle_generated", subject_uid="hkp:test:bundle")
+    event_1 = valid_event(
+        sequence=1,
+        event_type="concept_emitted",
+        subject_uid="hkp:test:task",
+        previous_event_hash=_event_hash(event_0),
+    )
+    bundle = write_bundle(tmp_path, events=[event_0, event_1])
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is True
+    assert "event_hash_chain_broken" not in {finding.code for finding in result.findings}
+    assert "event_id_mismatch" not in {finding.code for finding in result.findings}
+
+
+def test_snapshot_count_mismatch_fails(tmp_path: Path) -> None:
+    snapshot = valid_snapshot()
+    snapshot["edge_count"] = 2
+    bundle = write_bundle(tmp_path, snapshot=snapshot)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "snapshot_edge_count_mismatch" in {finding.code for finding in result.findings}
+
+
+def test_snapshot_bundle_uid_mismatch_fails(tmp_path: Path) -> None:
+    snapshot = valid_snapshot()
+    snapshot["bundle_uid"] = "hkp:test:other-bundle"
+    bundle = write_bundle(tmp_path, snapshot=snapshot)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "snapshot_bundle_uid_mismatch" in {finding.code for finding in result.findings}
+
+
+def test_snapshot_concept_count_mismatch_fails(tmp_path: Path) -> None:
+    snapshot = valid_snapshot()
+    snapshot["concept_count"] = 2
+    bundle = write_bundle(tmp_path, snapshot=snapshot)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "snapshot_concept_count_mismatch" in {finding.code for finding in result.findings}
+
+
+def test_duplicate_event_id_fails(tmp_path: Path) -> None:
+    event_0 = valid_event(sequence=0, event_type="bundle_generated", subject_uid="hkp:test:bundle")
+    event_1 = valid_event(
+        sequence=1,
+        event_type="concept_emitted",
+        subject_uid="hkp:test:task",
+    )
+    event_1["event_id"] = event_0["event_id"]
+    bundle = write_bundle(tmp_path, events=[event_0, event_1])
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "duplicate_event_id" in {finding.code for finding in result.findings}
+
+
+def test_concept_projection_event_ref_must_exist(tmp_path: Path) -> None:
+    concept = valid_concept("task")
+    concept["projection_provenance"]["projection_event_ids"] = ["event:missing"]
+    bundle = write_bundle(tmp_path, concept=concept)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "concept_projection_event_missing" in {finding.code for finding in result.findings}
+
+
+def test_concept_projection_event_ids_must_not_be_empty(tmp_path: Path) -> None:
+    concept = valid_concept("task")
+    concept["projection_provenance"]["projection_event_ids"] = []
+    bundle = write_bundle(tmp_path, concept=concept)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "concept_projection_event_missing" in {finding.code for finding in result.findings}
+
+
+def test_concept_evidence_refs_must_exist(tmp_path: Path) -> None:
+    concept = valid_concept("task")
+    concept["projection_provenance"]["evidence_refs"] = ["src:missing"]
+    bundle = write_bundle(tmp_path, concept=concept)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "concept_evidence_ref_missing" in {finding.code for finding in result.findings}
+
+
+def test_edge_refs_must_exist(tmp_path: Path) -> None:
+    edge = valid_edge()
+    edge["source_refs"] = ["src:missing"]
+    bundle = write_bundle(tmp_path, edges=[edge])
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "edge_source_ref_missing" in {finding.code for finding in result.findings}
+
+
+def test_edge_to_uid_must_exist(tmp_path: Path) -> None:
+    edge = valid_edge()
+    edge["to_uid"] = "hkp:test:missing"
+    edge["target_ref"] = None
+    bundle = write_bundle(tmp_path, edges=[edge])
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "edge_to_uid_missing" in {finding.code for finding in result.findings}
+
+
+def test_edge_from_uid_must_exist(tmp_path: Path) -> None:
+    edge = valid_edge()
+    edge["from_uid"] = "hkp:test:missing"
+    bundle = write_bundle(tmp_path, edges=[edge])
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "edge_from_uid_missing" in {finding.code for finding in result.findings}
+
+
+def test_edge_target_path_must_exist(tmp_path: Path) -> None:
+    edge = valid_edge()
+    edge["to_uid"] = None
+    edge["target_ref"] = None
+    edge["target_path"] = "concepts/missing.md"
+    bundle = write_bundle(tmp_path, edges=[edge])
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "edge_target_path_missing" in {finding.code for finding in result.findings}
+
+
+def test_edge_target_path_symlink_is_not_a_bundle_file(tmp_path: Path) -> None:
+    edge = valid_edge()
+    edge["to_uid"] = None
+    edge["target_ref"] = None
+    edge["target_path"] = "concepts/target.md"
+    bundle = write_bundle(tmp_path, edges=[edge])
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside\n", encoding="utf-8")
+    (bundle / "concepts" / "target.md").symlink_to(outside)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    codes = {finding.code for finding in result.findings}
+    assert "edge_target_path_missing" in codes
+    assert "manifest_output_tree_hash_mismatch" not in codes
+
+
+def test_edge_generated_from_event_must_exist(tmp_path: Path) -> None:
+    edge = valid_edge()
+    edge["generated_from"]["projection_event_id"] = "event:missing"
+    bundle = write_bundle(tmp_path, edges=[edge])
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "edge_generated_from_event_missing" in {finding.code for finding in result.findings}
+
+
+def test_rogue_bundle_file_fails(tmp_path: Path) -> None:
+    bundle = write_bundle(tmp_path)
+    (bundle / "_hkp" / "private.json").write_text("{}", encoding="utf-8")
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "bundle_unexpected_path" in {finding.code for finding in result.findings}
+
+
+def test_rogue_bundle_directory_fails(tmp_path: Path) -> None:
+    bundle = write_bundle(tmp_path)
+    (bundle / "private").mkdir()
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "bundle_unexpected_path" in {finding.code for finding in result.findings}
+
+
+def test_rogue_bundle_symlink_fails_whitelist(tmp_path: Path) -> None:
+    bundle = write_bundle(tmp_path)
+    target = tmp_path / "private.md"
+    target.write_text("private\n", encoding="utf-8")
+    (bundle / "private-link").symlink_to(target)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    codes = {finding.code for finding in result.findings}
+    assert "bundle_unexpected_path" in codes
+    assert "manifest_output_tree_hash_mismatch" not in codes
+
+
+def test_rogue_bundle_directory_symlink_is_not_hashed(tmp_path: Path) -> None:
+    bundle = write_bundle(tmp_path)
+    outside = tmp_path / "outside-dir"
+    outside.mkdir()
+    (outside / "secret.md").write_text("private\n", encoding="utf-8")
+    (bundle / "private-dir").symlink_to(outside, target_is_directory=True)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    codes = {finding.code for finding in result.findings}
+    assert "bundle_unexpected_path" in codes
+    assert "manifest_output_tree_hash_mismatch" not in codes
+
+
+def test_bundle_root_symlink_is_not_validated(tmp_path: Path) -> None:
+    real_bundle = write_bundle(tmp_path / "real")
+    symlink_bundle = tmp_path / "bundle-link"
+    symlink_bundle.symlink_to(real_bundle, target_is_directory=True)
+
+    result = validate_bundle(symlink_bundle)
+
+    assert result.ok is False
+    assert {finding.code for finding in result.findings} == {"bundle_root_symlink"}
+
+
+def test_required_concepts_directory_symlink_is_not_traversed(tmp_path: Path) -> None:
+    bundle = write_bundle(tmp_path)
+    (bundle / "concepts" / "task.md").unlink()
+    (bundle / "concepts").rmdir()
+    outside = tmp_path / "outside-concepts"
+    outside.mkdir()
+    (outside / "task.md").write_text("not frontmatter\n", encoding="utf-8")
+    (bundle / "concepts").symlink_to(outside, target_is_directory=True)
+    manifest = valid_manifest()
+    manifest["output_tree_hash"] = _tree_hash(bundle)
+    _write_yaml(bundle / "_hkp" / "manifest.yaml", manifest)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    codes = {finding.code for finding in result.findings}
+    assert "required_path_wrong_type" in codes
+    assert "concept_frontmatter_invalid" not in codes
+    assert "manifest_output_tree_hash_mismatch" not in codes
+
+
+def test_required_hkp_file_symlink_is_not_read(tmp_path: Path) -> None:
+    bundle = write_bundle(tmp_path)
+    outside = tmp_path / "manifest.yaml"
+    outside.write_text("source_root: /home/hapax/private\n", encoding="utf-8")
+    manifest = bundle / "_hkp" / "manifest.yaml"
+    manifest.unlink()
+    manifest.symlink_to(outside)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    codes = {finding.code for finding in result.findings}
+    assert "manifest_invalid" in codes
+    assert "manifest_output_tree_hash_mismatch" not in codes
+    assert "source_root must be a logical source id" not in _messages(result)
+
+
+def test_required_hkp_directory_symlink_is_not_read(tmp_path: Path) -> None:
+    bundle = write_bundle(tmp_path)
+    for child in (bundle / "_hkp").iterdir():
+        child.unlink()
+    (bundle / "_hkp").rmdir()
+    outside = tmp_path / "outside-hkp"
+    outside.mkdir()
+    (outside / "manifest.yaml").write_text("source_root: /home/hapax/private\n", encoding="utf-8")
+    (bundle / "_hkp").symlink_to(outside, target_is_directory=True)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    codes = {finding.code for finding in result.findings}
+    assert "required_path_wrong_type" in codes
+    assert "manifest_invalid" in codes
+    assert "source_root must be a logical source id" not in _messages(result)
+
+
+def test_checksum_symlink_artifact_is_not_read(tmp_path: Path) -> None:
+    bundle = write_bundle(tmp_path)
+    target = tmp_path / "private.md"
+    target.write_text("private\n", encoding="utf-8")
+    (bundle / "references" / "private.md").symlink_to(target)
+    checksums = valid_checksums(bundle)
+    checksums["artifacts"]["references/private.md"] = {
+        "hash": HASH,
+        "hash_scope": "full_content",
+        "hash_algorithm": "sha256",
+    }
+    (bundle / "_hkp" / "checksums.json").write_text(
+        json.dumps(checksums, indent=2),
+        encoding="utf-8",
+    )
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    codes = {finding.code for finding in result.findings}
+    assert "checksums_artifact_missing" in codes
+    assert "checksums_hash_mismatch" not in codes
+
+
+def test_duplicate_source_ref_id_fails(tmp_path: Path) -> None:
+    concept = valid_concept("task")
+    concept["source_refs"] = [valid_source_ref(), valid_source_ref()]
+    bundle = write_bundle(tmp_path, concept=concept)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "duplicate_source_ref_id" in {finding.code for finding in result.findings}
+
+
+def test_validator_version_is_exposed_in_json_result(tmp_path: Path) -> None:
+    bundle = write_bundle(tmp_path)
+
+    payload = validate_bundle(bundle).as_dict()
+
+    assert payload["validator_version"] == "0.2.0"
+
+
 def write_bundle(
     tmp_path: Path,
     *,
@@ -615,6 +1022,8 @@ def write_bundle(
     manifest: dict[str, Any] | None = None,
     consumer_policy: dict[str, Any] | None = None,
     edges: list[dict[str, Any]] | None = None,
+    events: list[dict[str, Any]] | None = None,
+    snapshot: dict[str, Any] | None = None,
     body: str = "",
 ) -> Path:
     bundle = tmp_path / "bundle"
@@ -623,22 +1032,30 @@ def write_bundle(
     (bundle / "_hkp").mkdir()
     (bundle / "index.md").write_text("# HKP bundle\n", encoding="utf-8")
     (bundle / "log.md").write_text("# Log\n", encoding="utf-8")
-    (bundle / "_hkp" / "snapshot.json").write_text(
-        json.dumps(valid_snapshot(), indent=2),
-        encoding="utf-8",
-    )
 
     concept_payload = dict(concept or valid_concept("task"))
     if concept_updates:
         concept_payload.update(concept_updates)
     _write_markdown(bundle / "concepts" / "task.md", concept_payload, body=body)
 
-    _write_yaml(bundle / "_hkp" / "manifest.yaml", manifest or valid_manifest())
     _write_yaml(
         bundle / "_hkp" / "consumer_policy.yaml", consumer_policy or valid_consumer_policy()
     )
-    _write_jsonl(bundle / "_hkp" / "edges.jsonl", edges or [valid_edge()])
-    _write_jsonl(bundle / "_hkp" / "events.jsonl", [valid_event()])
+    edge_rows = edges or [valid_edge()]
+    event_rows = events or [valid_event()]
+    snapshot_payload = snapshot or valid_snapshot(edge_count=len(edge_rows))
+    _write_jsonl(bundle / "_hkp" / "edges.jsonl", edge_rows)
+    _write_jsonl(bundle / "_hkp" / "events.jsonl", event_rows)
+    (bundle / "_hkp" / "snapshot.json").write_text(
+        json.dumps(snapshot_payload, indent=2),
+        encoding="utf-8",
+    )
+    manifest_payload = dict(manifest or valid_manifest())
+    if manifest is None or manifest.get("output_tree_hash") == TREE_HASH:
+        manifest_payload["output_tree_hash"] = _tree_hash(bundle)
+    if manifest is None or manifest.get("input_ref_hash") == HASH:
+        manifest_payload["input_ref_hash"] = _input_ref_hash([concept_payload])
+    _write_yaml(bundle / "_hkp" / "manifest.yaml", manifest_payload)
     (bundle / "_hkp" / "checksums.json").write_text(
         json.dumps(valid_checksums(bundle), indent=2),
         encoding="utf-8",
@@ -679,7 +1096,14 @@ def valid_concept(
         "projection_provenance": {
             "producer": "hkp-projector",
             "generated_at": "2026-06-18T16:43:11Z",
-            "projection_event_ids": ["event:1"],
+            "projection_event_ids": [
+                _projection_event_id(
+                    bundle_uid="hkp:test:bundle",
+                    sequence=0,
+                    event_type="bundle_generated",
+                    subject_uid="hkp:test:bundle",
+                )
+            ],
             "evidence_refs": [],
             "citation_refs": [],
         },
@@ -796,30 +1220,46 @@ def valid_edge() -> dict[str, Any]:
         "rel_family": "dependency",
         "rel": "depends_on",
         "direction": "outbound",
-        "to_uid": "hkp:test:upstream",
-        "target_ref": None,
+        "to_uid": None,
+        "target_ref": "cc-task:upstream",
         "target_path": None,
         "source_refs": ["src:task"],
         "authority_ceiling": "evidence_bound",
         "freshness": {"state": "fresh"},
         "generated_from": {
-            "projection_event_id": "event:1",
+            "projection_event_id": _projection_event_id(
+                bundle_uid="hkp:test:bundle",
+                sequence=0,
+                event_type="bundle_generated",
+                subject_uid="hkp:test:bundle",
+            ),
             "generator_id": "hkp-projector",
         },
     }
 
 
-def valid_event() -> dict[str, Any]:
+def valid_event(
+    *,
+    sequence: int = 0,
+    event_type: str = "bundle_generated",
+    subject_uid: str = "hkp:test:bundle",
+    previous_event_hash: str | None = None,
+) -> dict[str, Any]:
     return {
         "schema_version": 1,
-        "event_id": "event:1",
-        "sequence": 0,
+        "event_id": _projection_event_id(
+            bundle_uid="hkp:test:bundle",
+            sequence=sequence,
+            event_type=event_type,
+            subject_uid=subject_uid,
+        ),
+        "sequence": sequence,
         "timestamp": "2026-06-18T16:43:11Z",
-        "event_type": "bundle_generated",
+        "event_type": event_type,
         "actor": "hkp-projector",
-        "subject_uid": "hkp:test:bundle",
+        "subject_uid": subject_uid,
         "payload": {},
-        "previous_event_hash": PREV_HASH,
+        "previous_event_hash": previous_event_hash,
     }
 
 
@@ -865,14 +1305,73 @@ def valid_checksums(bundle: Path | None = None) -> dict[str, Any]:
     }
 
 
-def valid_snapshot() -> dict[str, Any]:
+def valid_snapshot(*, edge_count: int = 1) -> dict[str, Any]:
     return {
         "hkp_schema": 1,
         "bundle_uid": "hkp:test:bundle",
         "generated_at": "2026-06-18T16:43:11Z",
         "concept_count": 1,
-        "edge_count": 1,
+        "edge_count": edge_count,
     }
+
+
+def _tree_hash(bundle: Path) -> str:
+    excluded = {"_hkp/checksums.json", "_hkp/manifest.yaml"}
+    rows: list[dict[str, str]] = []
+    for path in _iter_paths(bundle):
+        relative_path = path.relative_to(bundle).as_posix()
+        if path.is_symlink() or not path.is_file() or relative_path in excluded:
+            continue
+        rows.append(
+            {
+                "path": relative_path,
+                "hash": "sha256:" + sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    return "sha256:" + sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
+
+
+def _iter_paths(root: Path) -> list[Path]:
+    if root.is_symlink():
+        return [root]
+    paths: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        current = Path(dirpath)
+        entries = [current / name for name in [*dirnames, *filenames]]
+        paths.extend(entries)
+        dirnames[:] = [name for name in dirnames if not (current / name).is_symlink()]
+    return sorted(paths)
+
+
+def _input_ref_hash(concepts: list[dict[str, Any]]) -> str:
+    rows = [
+        {"uri": source_ref["uri"], "content_hash": source_ref["content_hash"]}
+        for concept in concepts
+        for source_ref in concept.get("source_refs", [])
+        if source_ref.get("content_hash")
+    ]
+    rows.sort(key=lambda row: row["uri"])
+    return "sha256:" + sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
+
+
+def _json_hash(payload: dict[str, Any]) -> str:
+    return "sha256:" + sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _event_hash(payload: dict[str, Any]) -> str:
+    event = HkpProjectionEvent.model_validate(payload)
+    return _json_hash(event.model_dump(mode="json"))
+
+
+def _projection_event_id(
+    *,
+    bundle_uid: str,
+    sequence: int,
+    event_type: str,
+    subject_uid: str,
+) -> str:
+    seed = f"{bundle_uid}:{sequence}:{event_type}:{subject_uid}"
+    return f"event:{sha256(seed.encode()).hexdigest()[:24]}"
 
 
 def _write_markdown(path: Path, frontmatter: dict[str, Any], body: str = "") -> None:
