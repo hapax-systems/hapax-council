@@ -370,13 +370,14 @@ def format_zai_error(status: int, detail: str, *, secret: str) -> str:
         resets_at = safe_structured_value(redact(info.resets_at, secret), max_chars=120)
         if resets_at:
             parts.append(f"resets_at={resets_at}")
+    message_value = ""
     if info.message:
-        message = safe_structured_value(redact(info.message, secret), max_chars=240)
-        if message:
-            parts.append(f"message={message}")
-    if redacted_detail and redacted_detail != (info.message or ""):
+        message_value = safe_structured_value(redact(info.message, secret), max_chars=240)
+        if message_value:
+            parts.append(f"message={message_value}")
+    if redacted_detail:
         detail_value = safe_structured_value(redacted_detail, max_chars=1000)
-        if detail_value:
+        if detail_value and detail_value != message_value:
             parts.append(f"detail={detail_value}")
     return "; ".join(parts)
 

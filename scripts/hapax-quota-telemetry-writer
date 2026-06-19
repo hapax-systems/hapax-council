@@ -115,6 +115,8 @@ GLMCP_ADMISSION_SUPPORTED_TOOLS = frozenset(GLMCP_ADMISSION_TOOL_ENDPOINTS)
 GLMCP_ADMISSION_ENDPOINTS = frozenset(
     endpoint for endpoints in GLMCP_ADMISSION_TOOL_ENDPOINTS.values() for endpoint in endpoints
 )
+# Keep this fail-closed. Recheck before edits against Z.ai Coding Plan docs
+# (`/websites/z_ai_devpack`) and the official GLM-5 repo (`/zai-org/glm-5`).
 GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2", "glm-5.2[1m]"})
 GLMCP_ADMISSION_FIELDS = frozenset(
     {
