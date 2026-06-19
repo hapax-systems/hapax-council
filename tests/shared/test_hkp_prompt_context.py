@@ -15,6 +15,7 @@ from shared.hkp_prompt_context import (
     assert_local_route,
     build_prompt_context,
     build_prompt_context_for_route,
+    context_for_task,
 )
 
 GENERATED_AT = "2026-06-19T20:03:41Z"
@@ -167,3 +168,62 @@ def test_symlink_concept_rejected(tmp_path: Path, monkeypatch) -> None:
     concept.symlink_to(target)
     with pytest.raises(PromptContextError, match="symlink"):
         build_prompt_context(bundle)
+
+
+def _build_sdlc_bundle(tmp_path: Path):
+    from shared.hkp_bundle_export import export_shadow_bundle
+
+    src = tmp_path / "repo"
+
+    def w(name: str, tid: str, deps: list[str]) -> Path:
+        p = src / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fm = {
+            "type": "cc-task",
+            "task_id": tid,
+            "title": f"Task {tid}",
+            "description": "d",
+            "status": "done",
+            "depends_on": deps,
+            "privacy_class": "internal",
+            "authority_case": "CASE-SDLC-REFORM-001",
+            "parent_spec": "/redacted/spec.md",
+            "route_metadata_schema": 1,
+            "quality_floor": "frontier_required",
+            "mutation_surface": "source",
+            "authority_level": "authoritative",
+        }
+        p.write_text(
+            "---\n" + yaml.safe_dump(fm, sort_keys=False) + "---\n\n# T\nbody\n", encoding="utf-8"
+        )
+        return p
+
+    a = w("a.md", "ctx-a", ["ctx-b"])
+    b = w("b.md", "ctx-b", [])
+    return export_shadow_bundle(
+        [a, b],
+        bundle_id="sdlc",
+        source_root=src,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+
+
+def test_context_for_task_includes_resolved_neighbour(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    _build_sdlc_bundle(tmp_path)
+    ctx = context_for_task("ctx-a")
+    assert NON_AUTHORITY_BANNER in ctx
+    assert "Task ctx-a" in ctx
+    assert "Task ctx-b" in ctx  # 1-hop depends_on neighbour, resolved
+
+
+def test_context_for_task_missing_task_fails_open(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    _build_sdlc_bundle(tmp_path)
+    assert context_for_task("no-such-task") == ""
+
+
+def test_context_for_task_missing_bundle_fails_open(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    assert context_for_task("anything") == ""
