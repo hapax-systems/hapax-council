@@ -4183,12 +4183,18 @@ _TaskSpecD8._enforce_d8_governance_floor
 # InterviewConductor is the new turn-state-motor MVP (cc-task
 # voice-interview-conductor-turn-motor-20260615, REQ-20260616 Track A). Its live caller
 # (daemon answer-buffer capture + runner-handle injection) is a follow-on task; the class
-# is exercised by tests/hapax_daimonion/test_interview_conductor.py.
+# is exercised by tests/hapax_daimonion/test_interview_conductor.py. InterviewStateWriter
+# is the source-only N1 ward feed seam for voice-interview-state-shm-writer-20260619; live
+# instantiation is deliberately deferred to conductor live-wiring.
 from agents.hapax_daimonion.interview_conductor import (
     InterviewConductor as _InterviewConductor,
 )
+from agents.hapax_daimonion.interview_conductor import (
+    InterviewStateWriter as _InterviewStateWriter,
+)
 
 _InterviewConductor
+_InterviewStateWriter
 
 # HKP validator-first slice — Pydantic invokes field/model validators
 # dynamically during bundle validation, and the extensionless

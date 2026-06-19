@@ -12,10 +12,18 @@ never reaches air, or a silent answer, is witnessed + recorded as an abstention,
 
 from __future__ import annotations
 
+import json
 import threading
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from agents.hapax_daimonion.interview_conductor import InterviewConductor, InterviewFact
+from agents.hapax_daimonion.interview_conductor import (
+    InterviewConductor,
+    InterviewFact,
+    InterviewQuestion,
+    InterviewStateSnapshot,
+    InterviewStateWriter,
+)
 
 
 def _mock_pipeline(answer: str = "the operator's answer") -> MagicMock:
@@ -26,6 +34,38 @@ def _mock_pipeline(answer: str = "the operator's answer") -> MagicMock:
     pipeline.stt.transcribe = AsyncMock(return_value=answer)
     pipeline.process_utterance = AsyncMock()  # must NEVER be called
     return pipeline
+
+
+def test_interview_state_writer_atomically_writes_ward_contract(tmp_path: Path) -> None:
+    target = tmp_path / "interview-state.json"
+    writer = InterviewStateWriter(target)
+
+    writer(
+        InterviewStateSnapshot(
+            active=True,
+            current_question="What should the ward show?",
+            topic="broadcast",
+            depth="level-2",
+            rationale="N1 needs the current prompt.",
+            source_refs=("spec:a", "task:b"),
+            topics_explored=2,
+            topics_total=4,
+            facts_recorded=1,
+        )
+    )
+
+    assert json.loads(target.read_text(encoding="utf-8")) == {
+        "active": True,
+        "current_question": "What should the ward show?",
+        "topic": "broadcast",
+        "depth": "level-2",
+        "rationale": "N1 needs the current prompt.",
+        "source_refs": ["spec:a", "task:b"],
+        "topics_explored": 2,
+        "topics_total": 4,
+        "facts_recorded": 1,
+    }
+    assert list(tmp_path.glob(".interview-state.json.tmp.*")) == []
 
 
 async def test_conductor_runs_full_turn_per_question_and_records_facts() -> None:
@@ -58,6 +98,87 @@ async def test_conductor_runs_full_turn_per_question_and_records_facts() -> None
         InterviewFact(question="What is your name?", answer="my name is Oudepode"),
         InterviewFact(question="How are you today?", answer="my name is Oudepode"),
     ]
+
+
+async def test_conductor_writes_active_question_state_before_listen_and_final_inactive() -> None:
+    states: list[InterviewStateSnapshot] = []
+    pipeline = _mock_pipeline(answer="answer with one fact")
+    question = InterviewQuestion(
+        text="Which question is on screen?",
+        topic="interview",
+        depth="level-1",
+        rationale="The operator should see the live conductor prompt.",
+        source_refs=("docs/superpowers/specs/interview.md",),
+    )
+
+    async def _capture() -> bytes:
+        assert states[-1] == InterviewStateSnapshot(
+            active=True,
+            current_question="Which question is on screen?",
+            topic="interview",
+            depth="level-1",
+            rationale="The operator should see the live conductor prompt.",
+            source_refs=("docs/superpowers/specs/interview.md",),
+            topics_explored=0,
+            topics_total=1,
+            facts_recorded=0,
+        )
+        return b"ANSWER-AUDIO"
+
+    conductor = InterviewConductor(
+        pipeline=pipeline,
+        runner=MagicMock(),
+        questions=[question],
+        capture_answer=_capture,
+        state_writer=states.append,
+    )
+
+    facts = await conductor.run()
+
+    assert facts == [
+        InterviewFact(question="Which question is on screen?", answer="answer with one fact")
+    ]
+    assert states == [
+        InterviewStateSnapshot(
+            active=True,
+            current_question="Which question is on screen?",
+            topic="interview",
+            depth="level-1",
+            rationale="The operator should see the live conductor prompt.",
+            source_refs=("docs/superpowers/specs/interview.md",),
+            topics_explored=0,
+            topics_total=1,
+            facts_recorded=0,
+        ),
+        InterviewStateSnapshot(
+            active=False,
+            topics_explored=1,
+            topics_total=1,
+            facts_recorded=1,
+        ),
+    ]
+
+
+async def test_conductor_state_counts_abstentions_without_recording_facts() -> None:
+    states: list[InterviewStateSnapshot] = []
+    pipeline = _mock_pipeline(answer="   ")
+    conductor = InterviewConductor(
+        pipeline=pipeline,
+        runner=MagicMock(),
+        questions=["Q1"],
+        capture_answer=AsyncMock(return_value=b"A"),
+        state_writer=states.append,
+    )
+
+    facts = await conductor.run()
+
+    assert facts == [InterviewFact(question="Q1", answer="", abstained=True)]
+    assert states[-1] == InterviewStateSnapshot(
+        active=False,
+        topics_explored=1,
+        topics_total=1,
+        facts_recorded=0,
+    )
 
 
 async def test_conductor_turn_ordering_ask_then_arm_then_listen() -> None:
