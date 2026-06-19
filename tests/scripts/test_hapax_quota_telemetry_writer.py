@@ -423,11 +423,20 @@ stale_after_seconds: 900
         if snapshot["route_id"] == "glmcp.review.direct"
     )
     assert glmcp_snapshot["subscription_quota_state"] == "unknown"
+    assert "present but rejected" in glmcp_snapshot["operator_visible_reason"]
+    assert not any("quota-admission:absent" in ref for ref in glmcp_snapshot["evidence_refs"])
+    assert any(
+        ":ignored:provider-missing-or-unsupported" in ref for ref in glmcp_snapshot["evidence_refs"]
+    )
+    assert any(
+        ":ignored:route-id-missing-or-unsupported" in ref for ref in glmcp_snapshot["evidence_refs"]
+    )
     assert "provider missing or unsupported" in result.stderr
     assert "route_id missing or unsupported" in result.stderr
     assert "find ~/.cache/hapax/relay/receipts" in result.stderr
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
+    assert summary["glmcp_ignored_admissions"] == 2
 
 
 def test_glmcp_admission_receipt_warns_on_unsupported_status(tmp_path: Path) -> None:

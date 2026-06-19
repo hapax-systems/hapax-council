@@ -159,6 +159,12 @@ class GlmcpAdmission:
     fresh_until: datetime
 
 
+@dataclass(frozen=True)
+class GlmcpAdmissionScan:
+    admissions: list[GlmcpAdmission]
+    ignored_evidence_refs: list[str]
+
+
 LOCAL_COMPUTE_ROUTE = "litellm.local.command-r-35b"
 LOCAL_COMPUTE_PROVIDER = "tabbyapi"
 
@@ -243,13 +249,20 @@ def _parse_utc(value: str) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-def _warn_ignored_glmcp_admission(path: Path, reason: str) -> None:
+def _reason_code(reason: str) -> str:
+    code = re.sub(r"[^a-z0-9]+", "-", reason.lower()).strip("-")
+    return code[:80] or "ignored"
+
+
+def _warn_ignored_glmcp_admission(path: Path, reason: str) -> str:
+    receipt_label = _receipt_label(path)
     print(
-        f"hapax-quota-telemetry-writer: ignoring GLMCP admission receipt {_receipt_label(path)}: "
+        f"hapax-quota-telemetry-writer: ignoring GLMCP admission receipt {receipt_label}: "
         f"{reason}; dir: {path.parent}; recheck: {GLMCP_ADMISSION_RECHECK_COMMAND}; "
         f"{GLMCP_ADMISSION_RECOVERY_HINT}",
         file=sys.stderr,
     )
+    return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}"
 
 
 def _evidence_value(value: str, *, max_chars: int) -> str:
@@ -301,7 +314,7 @@ def active_glmcp_admission_receipts(
     receipt_dir: Path,
     *,
     now: datetime,
-) -> list[GlmcpAdmission]:
+) -> GlmcpAdmissionScan:
     """Return fresh positive GLMCP quota/admission receipt evidence refs.
 
     GLM Coding Plan Max is finite quota. Unlike the older Claude/Codex/Gemini
@@ -312,24 +325,29 @@ def active_glmcp_admission_receipts(
     """
 
     if not receipt_dir.is_dir():
-        return []
+        return GlmcpAdmissionScan(admissions=[], ignored_evidence_refs=[])
     refs: list[GlmcpAdmission] = []
+    ignored_refs: list[str] = []
+
+    def reject(path: Path, reason: str) -> None:
+        ignored_refs.append(_warn_ignored_glmcp_admission(path, reason))
+
     for path in sorted(receipt_dir.glob(GLMCP_ADMISSION_RECEIPT_GLOB)):
         try:
             raw_receipt = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
-            _warn_ignored_glmcp_admission(
+            reject(
                 path,
                 f"unreadable receipt {type(exc).__name__}",
             )
             continue
         fields, parse_error = _parse_flat_yaml_strict(raw_receipt)
         if parse_error is not None:
-            _warn_ignored_glmcp_admission(path, parse_error)
+            reject(path, parse_error)
             continue
         status = fields.get("status", "")
         if status not in {"quota_available", "admitted"}:
-            _warn_ignored_glmcp_admission(
+            reject(
                 path,
                 "status missing or unsupported; expected quota_available or admitted",
             )
@@ -337,67 +355,67 @@ def active_glmcp_admission_receipts(
         provider = fields.get("provider", "")
         if provider != GLMCP_ADMISSION_PROVIDER:
             if provider in {"z_ai", "z.ai", "zai"}:
-                _warn_ignored_glmcp_admission(
+                reject(
                     path,
                     f"provider ambiguous alias; expected {GLMCP_ADMISSION_PROVIDER}",
                 )
             else:
-                _warn_ignored_glmcp_admission(
+                reject(
                     path,
                     f"provider missing or unsupported; expected {GLMCP_ADMISSION_PROVIDER}",
                 )
             continue
         capacity_pool = fields.get("capacity_pool", "")
         if capacity_pool != GLMCP_ADMISSION_CAPACITY_POOL:
-            _warn_ignored_glmcp_admission(
+            reject(
                 path,
                 f"capacity_pool missing or unsupported; expected {GLMCP_ADMISSION_CAPACITY_POOL}",
             )
             continue
         route_id = fields.get("route_id", "")
         if route_id != SUBSCRIPTION_ROUTES["glmcp"]:
-            _warn_ignored_glmcp_admission(
+            reject(
                 path,
                 f"route_id missing or unsupported; expected {SUBSCRIPTION_ROUTES['glmcp']}",
             )
             continue
         supported_tool = fields.get("supported_tool", "")
         if supported_tool not in GLMCP_ADMISSION_SUPPORTED_TOOLS:
-            _warn_ignored_glmcp_admission(
+            reject(
                 path,
                 "supported_tool missing or unsupported; expected supported Coding Plan tool",
             )
             continue
         endpoint = fields.get("endpoint", "").rstrip("/")
         if endpoint not in GLMCP_ADMISSION_ENDPOINTS:
-            _warn_ignored_glmcp_admission(
+            reject(
                 path,
                 "endpoint missing or unsupported; expected official Z.ai Coding Plan endpoint",
             )
             continue
         if endpoint not in GLMCP_ADMISSION_TOOL_ENDPOINTS[supported_tool]:
-            _warn_ignored_glmcp_admission(
+            reject(
                 path,
                 "supported_tool/endpoint mismatch; expected official endpoint for supported tool",
             )
             continue
         model = fields.get("model", "")
         if model not in GLMCP_ADMISSION_MODELS:
-            _warn_ignored_glmcp_admission(
+            reject(
                 path,
                 "model missing or unsupported; expected GLM-5.2",
             )
             continue
         receipt_evidence_ref = fields.get("evidence_ref", "").strip()
         if not receipt_evidence_ref:
-            _warn_ignored_glmcp_admission(path, "evidence_ref missing")
+            reject(path, "evidence_ref missing")
             continue
         receipt_evidence_ref = _evidence_value(receipt_evidence_ref, max_chars=240)
         if (
             GLMCP_ADMISSION_EVIDENCE_REF_RE.fullmatch(receipt_evidence_ref) is None
             or GLMCP_ADMISSION_SECRETISH_RE.search(receipt_evidence_ref) is not None
         ):
-            _warn_ignored_glmcp_admission(
+            reject(
                 path,
                 "evidence_ref unsafe; expected a sanitized witness reference, not raw secret material",
             )
@@ -409,44 +427,44 @@ def active_glmcp_admission_receipts(
         )
         observed_at = _parse_utc(observed_raw)
         if observed_at is None:
-            _warn_ignored_glmcp_admission(
+            reject(
                 path,
                 "missing or malformed observed_at/captured_at/detected_at",
             )
             continue
         if observed_at > now:
-            _warn_ignored_glmcp_admission(
+            reject(
                 path,
                 "observed_at is in the future",
             )
             continue
         stale_after_raw = fields.get("stale_after_seconds", "").strip()
         if not stale_after_raw:
-            _warn_ignored_glmcp_admission(path, "stale_after_seconds missing")
+            reject(path, "stale_after_seconds missing")
             continue
         try:
             stale_after_seconds = int(stale_after_raw)
         except ValueError:
-            _warn_ignored_glmcp_admission(
+            reject(
                 path,
                 "malformed stale_after_seconds",
             )
             continue
         if stale_after_seconds <= 0:
-            _warn_ignored_glmcp_admission(
+            reject(
                 path,
                 "non-positive stale_after_seconds",
             )
             continue
         if stale_after_seconds > GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS:
-            _warn_ignored_glmcp_admission(
+            reject(
                 path,
                 f"stale_after_seconds exceeds maximum {GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS}",
             )
             continue
         fresh_until = observed_at + timedelta(seconds=stale_after_seconds)
         if now >= fresh_until:
-            _warn_ignored_glmcp_admission(
+            reject(
                 path,
                 "receipt expired",
             )
@@ -463,7 +481,7 @@ def active_glmcp_admission_receipts(
                 fresh_until=fresh_until,
             )
         )
-    return refs
+    return GlmcpAdmissionScan(admissions=refs, ignored_evidence_refs=ignored_refs)
 
 
 def probe_local_resource_state(*, nvidia_smi: str = "nvidia-smi") -> tuple[str, list[str]]:
@@ -525,6 +543,7 @@ def build_live_ledger(
     now: datetime,
     walls: dict[str, list[str]],
     glmcp_admissions: list[GlmcpAdmission],
+    glmcp_ignored_receipts: list[str],
     local_resource_state: str,
     local_resource_evidence: list[str],
 ) -> QuotaSpendLedger:
@@ -557,12 +576,20 @@ def build_live_ledger(
                 )
             else:
                 state = "unknown"
-                evidence = ["relay-receipt:glmcp:quota-admission:absent", writer_ref]
+                if glmcp_ignored_receipts:
+                    evidence = [*glmcp_ignored_receipts, writer_ref]
+                    reason = (
+                        "GLMCP quota admission receipt(s) were present but rejected; "
+                        "GLM Coding Plan Max is finite and rejected evidence must "
+                        "hold/backoff rather than dispatch blind"
+                    )
+                else:
+                    evidence = ["relay-receipt:glmcp:quota-admission:absent", writer_ref]
+                    reason = (
+                        "no fresh GLMCP quota admission receipt; GLM Coding Plan Max is finite "
+                        "and unknown quota must hold/backoff rather than dispatch blind"
+                    )
                 fresh_until = None
-                reason = (
-                    "no fresh GLMCP quota admission receipt; GLM Coding Plan Max is finite "
-                    "and unknown quota must hold/backoff rather than dispatch blind"
-                )
         else:
             state = "fresh"
             evidence = [f"relay-receipt:{platform}:quota-wall:absent", writer_ref]
@@ -712,14 +739,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     walls = active_quota_walls(args.relay_receipt_dir, now=now)
-    glmcp_admissions = active_glmcp_admission_receipts(args.relay_receipt_dir, now=now)
+    glmcp_scan = active_glmcp_admission_receipts(args.relay_receipt_dir, now=now)
     resource_state, resource_evidence = probe_local_resource_state(nvidia_smi=args.nvidia_smi)
     try:
         ledger = build_live_ledger(
             base,
             now=now,
             walls=walls,
-            glmcp_admissions=glmcp_admissions,
+            glmcp_admissions=glmcp_scan.admissions,
+            glmcp_ignored_receipts=glmcp_scan.ignored_evidence_refs,
             local_resource_state=resource_state,
             local_resource_evidence=resource_evidence,
         )
@@ -740,7 +768,8 @@ def main(argv: list[str] | None = None) -> int:
         "out": str(out_path),
         "receipts_refreshed": receipts_ok,
         "local_resource_state": resource_state,
-        "glmcp_admissions": len(glmcp_admissions),
+        "glmcp_admissions": len(glmcp_scan.admissions),
+        "glmcp_ignored_admissions": len(glmcp_scan.ignored_evidence_refs),
         "quota_walls": {platform: len(refs) for platform, refs in sorted(walls.items())},
         "snapshot_count": len(ledger.quota_snapshots),
     }
