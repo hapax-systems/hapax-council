@@ -96,9 +96,9 @@ def test_seed_registry_loads_sanctioned_platform_routes() -> None:
         "antigrav",
         "claude",
         "codex",
-        "gemini",
         "vibe",
     }
+    assert all(not route_id.startswith("gemini.") for route_id in registry.route_map())
 
 
 def test_registry_route_ids_match_dispatcher_platform_paths() -> None:
@@ -189,36 +189,40 @@ def test_unsupported_routes_fail_closed() -> None:
 
 def test_read_only_routes_cannot_declare_mutation_access() -> None:
     registry = load_platform_capability_registry()
-    gemini = registry.require("gemini/headless/full")
-
-    assert gemini.authority_ceiling is AuthorityCeiling.READ_ONLY
-    assert gemini.approval_posture.value == "plan_mode_read_only"
-    assert gemini.worker_tier.value == "read_only_sidecar"
-    assert gemini.mutability.source is False
-    assert gemini.tool_access.filesystem.value == "read_only"
-
-    payload = gemini.model_dump(mode="json")
+    route = registry.require("codex.headless.full")
+    payload = route.model_dump(mode="json")
+    payload["route_id"] = "local_tool.local.deterministic"
+    payload["platform"] = "local_tool"
+    payload["mode"] = "local"
+    payload["profile"] = "deterministic"
+    payload["authority_ceiling"] = AuthorityCeiling.READ_ONLY.value
+    payload["approval_posture"] = "plan_mode_read_only"
+    payload["worker_tier"] = "read_only_sidecar"
+    payload["mutability"] = {
+        "vault_docs": False,
+        "source": False,
+        "runtime": False,
+        "public": False,
+        "provider_spend": False,
+    }
+    payload["tool_access"] = {
+        "filesystem": "read_only",
+        "shell": "read_only",
+        "browser": False,
+        "mcp": [],
+    }
+    PlatformCapabilityRoute.model_validate(payload)
     payload["mutability"]["source"] = True
     with pytest.raises(ValidationError, match="read-only routes cannot declare mutation"):
         PlatformCapabilityRoute.model_validate(payload)
 
 
-def test_gemini_plan_and_worker_profiles_are_split() -> None:
+def test_gemini_routes_are_not_seeded_as_dispatchable_platform_paths() -> None:
     registry = load_platform_capability_registry()
-    plan = registry.require("gemini.headless.full")
-    worker = registry.require("gemini.headless.worker")
 
-    assert plan.approval_posture.value == "plan_mode_read_only"
-    assert plan.worker_tier.value == "read_only_sidecar"
-    assert plan.mutability.source is False
-    assert plan.tool_access.filesystem.value == "read_only"
-    assert "read_only_support_route" in plan.freshness.evidence.capability.blocked_reasons
-
-    assert worker.approval_posture.value == "auto_edit_policy_firewalled"
-    assert worker.worker_tier.value == "full_worker"
-    assert worker.mutability.source is True
-    assert worker.tool_access.filesystem.value == "read_write"
-    assert "quality_equivalence_record_absent" in worker.blocked_reasons
+    assert all(not route_id.startswith("gemini.") for route_id in registry.route_map())
+    with pytest.raises(KeyError):
+        registry.require("gemini.headless.full")
 
 
 def test_cloud_burst_api_route_is_blocked_dry_run_paid_surface() -> None:

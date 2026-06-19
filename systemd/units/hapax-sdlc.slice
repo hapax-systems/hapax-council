@@ -1,6 +1,6 @@
 # hapax-sdlc.slice — the elastic, yield-to-everything home for the SDLC fleet.
 #
-# The fleet = every Claude/Codex/Gemini/Vibe lane plus its git/pytest/cargo
+# The fleet = every Claude/Codex/Vibe/Antigrav lane plus its git/pytest/cargo
 # grandchildren. On 2026-06-01 a 98-agent audit + 6 build-lanes ran in the same
 # --user cgroup as the production daemons with ZERO scheduler shielding; podium
 # (8c/16t) hit load 30+ and STARVED the coordinator to death — not OOM, scheduler
@@ -10,7 +10,7 @@
 #
 # Attachment (lanes are born three ways, all funnel here):
 #   (a) Slice= on hapax-claude-lane@.service  [template-born lanes]
-#   (b) systemd-run --scope --slice= in hapax-methodology-dispatch  [codex/vibe/gemini]
+#   (b) systemd-run --scope --slice= in hapax-methodology-dispatch  [codex/vibe/antigrav]
 #   (c) self-attach re-exec in hapax-claude-headless  [tmux/foot + direct claude]
 # cgroup inheritance pushes cpu.idle onto every grandchild automatically.
 [Unit]

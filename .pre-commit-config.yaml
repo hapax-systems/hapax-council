@@ -80,5 +80,5 @@ repos:
         # operator machine where the live settings exist; CI checks the rest.
         entry: uv run python scripts/gate-manifest-check.py --require-claude-settings
         language: system
-        files: ^(hooks/gate-manifest\.yaml|hooks/scripts/(codex|antigrav)-hook-adapter\.sh|scripts/hapax-(codex|antigrav|vibe|gemini)|config/codex/config\.toml|\.github/workflows/ci\.yml)$
+        files: ^(hooks/gate-manifest\.yaml|hooks/scripts/(codex|antigrav)-hook-adapter\.sh|scripts/hapax-(codex|antigrav|vibe)|config/codex/config\.toml|\.github/workflows/ci\.yml)$
         pass_filenames: false

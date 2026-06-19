@@ -166,7 +166,10 @@ _PROVIDER_OUTAGE_LINE_RE = re.compile(
 )
 _PROVIDER_OUTAGE_MAX_CHARS = 4_000
 _REVIEWER_ROUTE_UNAVAILABLE_MAX_CHARS = 4_000
-_UNSUPPORTED_REVIEWER_CLIENT_RE = re.compile(r"(?:IneligibleTierError|UNSUPPORTED_CLIENT)")
+_UNSUPPORTED_REVIEWER_CLIENT_RE = re.compile(
+    r"(?:IneligibleTierError|UNSUPPORTED_CLIENT|failed to launch .*?\bagy\b.*?install agy)",
+    re.IGNORECASE,
+)
 _STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES = frozenset(
     {
         "provider_error",
@@ -330,9 +333,9 @@ def is_reviewer_route_unavailable(
 ) -> bool:
     """True when the configured reviewer route itself is unavailable.
 
-    This covers process-level auth/client/tier failures such as the Gemini CLI
-    unsupported-client failure. It is a family-availability signal like a quota
-    wall, but it is not mislabeled as a transient provider outage.
+    This covers process-level auth/client/tier failures such as an unsupported
+    reviewer client. It is a family-availability signal like a quota wall, but
+    it is not mislabeled as a transient provider outage.
     """
 
     if not process_failed or not text:
@@ -451,6 +454,8 @@ def writer_family_for_lane(lane: str | None, registry: Mapping[str, Any]) -> str
     lane_norm = (lane or "").strip().lower()
     if not lane_norm:
         return lane_families["default"]
+    if lane_norm in set(lane_families.get("retired") or []):
+        raise ValueError(f"retired authoring lane is not admissible: {lane_norm}")
     exact = lane_families.get("exact") or {}
     if lane_norm in exact:
         return exact[lane_norm]

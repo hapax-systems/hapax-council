@@ -166,51 +166,6 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         True,
         "JR+ bounded worker path; task fit must exclude governance-critical or off-limits work.",
     ),
-    ("gemini", "headless", "full"): PlatformPath(
-        "gemini",
-        "headless",
-        "full",
-        "scripts/hapax-gemini --role <lane> --terminal tmux -- -p <governed-prompt>",
-        "Gemini Pro plan-mode read-only headless sidecar",
-        False,
-        "Read-only/plan-mode only; mutation tasks must route elsewhere.",
-    ),
-    ("gemini", "headless", "worker"): PlatformPath(
-        "gemini",
-        "headless",
-        "worker",
-        "HAPAX_GEMINI_APPROVAL_MODE=auto_edit scripts/hapax-gemini --role <lane> --terminal tmux -- -p <governed-prompt>",
-        "Gemini governed auto-edit worker lane",
-        True,
-        "Full-worker wrapper profile; route only when task fit, policy firewall, and review gates allow it.",
-    ),
-    ("gemini", "headless", "flash"): PlatformPath(
-        "gemini",
-        "headless",
-        "flash",
-        "scripts/hapax-gemini --role <lane> --terminal tmux -- --model gemini-3-flash-preview -p <governed-prompt>",
-        "Gemini Flash read-only quota/fallback headless sidecar",
-        False,
-        "Spark analogue for quality-equivalent read-only research/review/extraction; mutation tasks must route elsewhere.",
-    ),
-    ("gemini", "headless", "lite"): PlatformPath(
-        "gemini",
-        "headless",
-        "lite",
-        "scripts/hapax-gemini --role <lane> --terminal tmux -- --model gemini-3.1-flash-lite-preview -p <governed-prompt>",
-        "Gemini Flash-Lite read-only lowest-cost headless sidecar",
-        False,
-        "Use only for quality-equivalent low-risk extraction/currentness packets; mutation tasks must route elsewhere.",
-    ),
-    ("gemini", "interactive", "full"): PlatformPath(
-        "gemini",
-        "interactive",
-        "full",
-        "scripts/hapax-gemini --role <lane> --terminal tmux",
-        "Gemini plan-mode interactive lane",
-        False,
-        "Read-only/plan-mode only; mutation tasks must route elsewhere.",
-    ),
     ("antigrav", "interactive", "full"): PlatformPath(
         "antigrav",
         "interactive",
@@ -416,8 +371,6 @@ def lane_worktree(lane: str, platform: str) -> Path:
         return root / "hapax-council" if lane == "alpha" else root / f"hapax-council--{lane}"
     if platform == "vibe":
         return root / f"hapax-council--{lane}"
-    if platform == "gemini":
-        return root / f"hapax-council--{lane}"
     if platform == "antigrav":
         normalized = "antigrav" if lane == "antigravity" else lane
         return root / f"hapax-council--{normalized}"
@@ -441,8 +394,8 @@ DRAINABLE_STATUSES = frozenset({"pr_open", "claimed", "in_progress"})
 #: Lanes whose live-session PID is published at ``<pid-dir>/<lane>.pid`` by
 #: scripts/hapax-claude-headless (grounding: beta/delta/epsilon/eta/theta/zeta
 #: confirmed live on this substrate). The drain only acts where it can PROVE
-#: liveness; any other lane (codex/vibe/gemini use a different substrate, not
-#: verified here) is refused fail-closed (reviewer must-fix #6).
+#: liveness; any other lane (codex/vibe use a different substrate, not verified
+#: here) is refused fail-closed (reviewer must-fix #6).
 KNOWN_CLAUDE_LANES = frozenset(
     {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}
 )
@@ -1276,8 +1229,6 @@ def normalize_profile(platform: str, profile: str) -> str:
             return "sonnet"
         if platform == "codex":
             return "spark"
-        if platform == "gemini":
-            return "flash"
     return profile
 
 
@@ -1456,29 +1407,6 @@ def launch_vibe_headless(task_id: str, lane: str, prompt: str, validation: Valid
     if status in {"claimed", "in_progress"}:
         args.append("--no-claim")
     return _sliced_call(args)
-
-
-def launch_gemini_headless(lane: str, prompt: str, route: PlatformPath) -> int:
-    launcher = Path(
-        os.environ.get(
-            "HAPAX_METHODOLOGY_GEMINI_LAUNCHER",
-            str(Path(__file__).resolve().parent / "hapax-gemini"),
-        )
-    )
-    if not launcher.is_file():
-        print(f"Gemini launcher not found: {launcher}", file=sys.stderr)
-        return 8
-
-    args = [str(launcher), "--role", lane, "--terminal", "tmux", "--force", "--"]
-    if route.profile == "flash":
-        args.extend(["--model", "gemini-3-flash-preview"])
-    elif route.profile == "lite":
-        args.extend(["--model", "gemini-3.1-flash-lite-preview"])
-    args.extend(["-p", prompt])
-    env = os.environ.copy()
-    if route.profile == "worker":
-        env["HAPAX_GEMINI_APPROVAL_MODE"] = "auto_edit"
-    return _sliced_call(args, env)
 
 
 def write_antigrav_inflection(task_id: str, lane: str, prompt: str) -> Path:
@@ -1674,7 +1602,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--platform",
         default="claude",
-        choices=["api", "claude", "codex", "gemini", "vibe", "antigrav"],
+        choices=["api", "claude", "codex", "vibe", "antigrav"],
     )
     parser.add_argument(
         "--mode", default="headless", choices=["headless", "interactive", "receipt-only"]
@@ -1685,8 +1613,7 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Capability profile. Use full by default; quota-fallback maps to "
             "the platform's constrained analogue when one exists. Codex also "
-            "supports spark; Gemini supports flash/lite for read-only work and "
-            "worker for governed auto-edit work."
+            "supports spark."
         ),
     )
     parser.add_argument("--launch", action="store_true", help="Launch after validation")
@@ -2040,7 +1967,6 @@ def main(argv: list[str] | None = None) -> int:
             ("vibe", "headless"): lambda: launch_vibe_headless(
                 args.task, args.lane, prompt or "", validation
             ),
-            ("gemini", "headless"): lambda: launch_gemini_headless(args.lane, prompt or "", route),
             ("antigrav", "interactive"): lambda: launch_antigrav_interactive(
                 args.task, args.lane, validation, prompt or ""
             ),

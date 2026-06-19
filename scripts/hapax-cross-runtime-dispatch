@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# hapax-cross-runtime-dispatch — invoke Claude/Codex/Gemini with orchestration receipts.
+# hapax-cross-runtime-dispatch — invoke active Hapax runtimes with orchestration receipts.
 #
 # Reads team metadata registry (Slice 3A), checks freshness gates,
 # validates session protection and duplicate checks, then dispatches
@@ -10,7 +10,6 @@
 # Usage:
 #   hapax-cross-runtime-dispatch --lane beta --task ari-sierpinski --platform claude
 #   hapax-cross-runtime-dispatch --lane cx-red --task some-task --platform codex
-#   hapax-cross-runtime-dispatch --lane iota --task research-task --platform gemini
 #   hapax-cross-runtime-dispatch --list-eligible          # show dispatch candidates
 #   hapax-cross-runtime-dispatch --check-lane beta        # freshness + protection check
 
@@ -30,8 +29,8 @@ usage() {
 hapax-cross-runtime-dispatch — cross-runtime dispatch with orchestration receipts
 
 Options:
-  --lane LANE          Target lane (e.g., beta, cx-red, iota)
-  --platform PLATFORM  Target platform (claude, codex, gemini)
+  --lane LANE          Target lane (e.g., beta, cx-red, antigrav)
+  --platform PLATFORM  Target platform (claude, codex, vibe, antigrav)
   --task TASK_ID       cc-task to dispatch
   --case CASE_ID       AuthorityCase reference (optional)
   --mq-message-id ID   Durable relay MQ dispatch message id
@@ -254,6 +253,13 @@ if [[ -z "$LANE" || -z "$PLATFORM" ]]; then
     echo "error: --lane and --platform required for dispatch" >&2
     exit 2
 fi
+case "$PLATFORM" in
+    claude|codex|vibe|antigrav) ;;
+    *)
+        echo "error: unsupported platform: $PLATFORM" >&2
+        exit 2
+        ;;
+esac
 
 echo "--- Pre-dispatch checks for $LANE ($PLATFORM) ---"
 
@@ -387,9 +393,15 @@ case "$PLATFORM" in
         ARGS=(--session "$LANE" --terminal tmux)
         [[ -n "$TASK" ]] && ARGS+=(--task "$TASK")
         ;;
-    gemini)
-        LAUNCHER="$SCRIPT_DIR/hapax-gemini"
-        ARGS=(--role "$LANE" --terminal tmux)
+    vibe)
+        LAUNCHER="$SCRIPT_DIR/hapax-vibe"
+        ARGS=(--session "$LANE" --terminal tmux)
+        [[ -n "$TASK" ]] && ARGS+=(--task "$TASK")
+        ;;
+    antigrav)
+        LAUNCHER="$SCRIPT_DIR/hapax-antigrav"
+        ARGS=(--session "$LANE" --terminal tmux)
+        [[ -n "$TASK" ]] && ARGS+=(--task "$TASK")
         ;;
     *)
         echo "error: unknown platform: $PLATFORM" >&2

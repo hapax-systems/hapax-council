@@ -22,7 +22,7 @@ def test_sidecar_script_compiles() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_dry_run_uses_plan_mode_default_model_and_guardrails(tmp_path: Path) -> None:
+def test_dry_run_uses_agy_default_model_and_guardrails(tmp_path: Path) -> None:
     result = subprocess.run(
         [
             str(WRAPPER),
@@ -44,11 +44,13 @@ def test_dry_run_uses_plan_mode_default_model_and_guardrails(tmp_path: Path) -> 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     command = payload["command"]
-    assert command[:3] == ["gemini", "--model", "gemini-3.1-pro-preview"]
-    assert "--approval-mode" in command
-    assert "plan" in command
-    assert "--output-format" in command
-    assert "text" in command
+    assert command[:3] == ["agy", "--sandbox", "--print-timeout"]
+    assert command[3] == "120s"
+    assert "--model" in command
+    assert "gemini-3.1-pro-preview" in command
+    assert "--print" in command
+    assert "--approval-mode" not in command
+    assert "--output-format" not in command
     assert "--yolo" not in command
     assert "auto_edit" not in command
     assert "No file edits" in payload["prompt"]
@@ -61,8 +63,8 @@ def test_capacity_failure_falls_back_to_auto_without_logging_prompt(tmp_path: Pa
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     calls = tmp_path / "calls.jsonl"
-    fake_gemini = bin_dir / "gemini"
-    fake_gemini.write_text(
+    fake_agy = bin_dir / "agy"
+    fake_agy.write_text(
         f"""#!/usr/bin/env bash
 printf '%s\\0' \"$*\" >> {calls}
 if printf '%s\\n' \"$*\" | grep -q 'gemini-3.1-pro-preview'; then
@@ -72,7 +74,7 @@ fi
 printf '%s\\n' 'auto route ok'
 """
     )
-    fake_gemini.chmod(0o755)
+    fake_agy.chmod(0o755)
 
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
@@ -98,6 +100,7 @@ printf '%s\\n' 'auto route ok'
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "auto route ok\n"
+    assert "WARNING fallback selected auto" in result.stderr
     call_lines = [line for line in calls.read_text().split("\0") if line]
     assert len(call_lines) == 2
     assert "gemini-3.1-pro-preview" in call_lines[0]
@@ -117,15 +120,15 @@ def test_non_capacity_error_does_not_fallback(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     calls = tmp_path / "calls.txt"
-    fake_gemini = bin_dir / "gemini"
-    fake_gemini.write_text(
+    fake_agy = bin_dir / "agy"
+    fake_agy.write_text(
         f"""#!/usr/bin/env bash
 printf '%s\\0' \"$*\" >> {calls}
 printf '%s\\n' 'syntax failure unrelated to model availability' >&2
 exit 2
 """
     )
-    fake_gemini.chmod(0o755)
+    fake_agy.chmod(0o755)
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
 
@@ -162,15 +165,15 @@ def test_strict_model_disables_lower_capability_fallback(tmp_path: Path) -> None
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     calls = tmp_path / "calls.jsonl"
-    fake_gemini = bin_dir / "gemini"
-    fake_gemini.write_text(
+    fake_agy = bin_dir / "agy"
+    fake_agy.write_text(
         f"""#!/usr/bin/env bash
 printf '%s\\0' "$*" >> {calls}
 printf '%s\\n' '429 quota exceeded for pro' >&2
 exit 1
 """
     )
-    fake_gemini.chmod(0o755)
+    fake_agy.chmod(0o755)
 
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
@@ -214,15 +217,15 @@ def test_strict_model_env_disables_lower_capability_fallback(tmp_path: Path) -> 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     calls = tmp_path / "calls.jsonl"
-    fake_gemini = bin_dir / "gemini"
-    fake_gemini.write_text(
+    fake_agy = bin_dir / "agy"
+    fake_agy.write_text(
         f"""#!/usr/bin/env bash
 printf '%s\\0' "$*" >> {calls}
 printf '%s\\n' '429 quota exceeded for pro' >&2
 exit 1
 """
     )
-    fake_gemini.chmod(0o755)
+    fake_agy.chmod(0o755)
 
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
@@ -288,21 +291,21 @@ def test_prompt_and_prompt_file_mutex_exits_with_error(tmp_path: Path) -> None:
 def test_subprocess_timeout_yields_exit_code_124(tmp_path: Path) -> None:
     """Gap 6: ``subprocess.TimeoutExpired`` must produce ``final_code = 124``.
 
-    Fake gemini binary sleeps longer than the sidecar's --timeout; the
+    Fake agy binary sleeps longer than the sidecar's --timeout; the
     wrapper kills the subprocess and reports 124 (canonical Linux
     timeout exit). Output stream must contain the timeout marker.
     """
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    fake_gemini = bin_dir / "gemini"
-    fake_gemini.write_text(
+    fake_agy = bin_dir / "agy"
+    fake_agy.write_text(
         """#!/usr/bin/env bash
 sleep 5
 exit 0
 """
     )
-    fake_gemini.chmod(0o755)
+    fake_agy.chmod(0o755)
 
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
@@ -340,8 +343,8 @@ def test_missing_binary_yields_exit_code_2(tmp_path: Path) -> None:
     result = subprocess.run(
         [
             str(WRAPPER),
-            "--gemini-bin",
-            str(tmp_path / "no-such-binary"),
+            "--agy-bin",
+            str(tmp_path / "agy"),
             "--prompt",
             "noop",
             "--strict-model",
@@ -361,10 +364,33 @@ def test_missing_binary_yields_exit_code_2(tmp_path: Path) -> None:
     assert metadata["exit_code"] == 2
 
 
+def test_agy_bin_rejects_non_agy_binary_name(tmp_path: Path) -> None:
+    fake_legacy = tmp_path / "gemini"
+    fake_legacy.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_legacy.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(WRAPPER),
+            "--dry-run",
+            "--agy-bin",
+            str(fake_legacy),
+            "--prompt",
+            "noop",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode != 0
+    assert "--agy-bin must point to agy" in result.stderr
+
+
 def test_global_timeout_during_fallback_yields_124(tmp_path: Path) -> None:
     """Gap 8: global timeout exhaustion across fallback attempts → 124.
 
-    Fake gemini completes the first attempt in ~0.6s with a 429 marker
+    Fake agy completes the first attempt in ~0.6s with a 429 marker
     on stderr (fallbackable=True), so the wrapper enters the second
     iteration with ~0.4s of budget remaining. The fake's second
     invocation runs with the reduced ``remaining_timeout`` and is
@@ -383,15 +409,15 @@ def test_global_timeout_during_fallback_yields_124(tmp_path: Path) -> None:
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    fake_gemini = bin_dir / "gemini"
-    fake_gemini.write_text(
+    fake_agy = bin_dir / "agy"
+    fake_agy.write_text(
         """#!/usr/bin/env bash
 printf '429 quota exceeded; would fall back\\n' >&2
 sleep 0.6
 exit 1
 """
     )
-    fake_gemini.chmod(0o755)
+    fake_agy.chmod(0o755)
 
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
@@ -449,8 +475,8 @@ def test_all_fallback_markers_trigger_fallback(tmp_path: Path) -> None:
     for marker in markers:
         bin_dir = tmp_path / f"bin-{abs(hash(marker))}"
         bin_dir.mkdir()
-        fake_gemini = bin_dir / "gemini"
-        fake_gemini.write_text(
+        fake_agy = bin_dir / "agy"
+        fake_agy.write_text(
             f"""#!/usr/bin/env bash
 if [[ "$*" == *"--model"* ]]; then
   printf '%s\\n' '{marker}' >&2
@@ -460,7 +486,7 @@ printf '%s\\n' 'auto route ok'
 exit 0
 """
         )
-        fake_gemini.chmod(0o755)
+        fake_agy.chmod(0o755)
 
         env = os.environ.copy()
         env["PATH"] = f"{bin_dir}:{env['PATH']}"

@@ -77,7 +77,7 @@ hapax_agent_role_from_path() {
   esac
   # Greek-slot worktrees: leading greek token (strip any -descriptor suffix).
   case "${suffix%%-*}" in
-    alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota)
+    alpha|beta|gamma|delta|epsilon|zeta|eta|theta)
       printf '%s\n' "${suffix%%-*}"
       return 0
       ;;
@@ -300,7 +300,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
       # cc-<name> = relay-coordinated Claude lanes (cc-zai, cc-cns, cc-cutovr, ...),
       # first-class governed lanes per the operator decision 2026-06-17.
       case "$_ar_role" in
-        alpha | beta | gamma | delta | epsilon | zeta | eta | theta | iota | antigrav) ;;
+        alpha | beta | gamma | delta | epsilon | zeta | eta | theta | antigrav) ;;
         cx-[a-z]*) ;;
         cc-[a-z]*) ;;
         vbe-[0-9]*) ;;

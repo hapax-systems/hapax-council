@@ -70,7 +70,7 @@ The system reminder will load `MEMORY.md` automatically. Pay special attention t
 - **`no-stale-branches.sh` hook blocks `git checkout -b` whenever any unmerged branch exists in the workspace.** Bypass with `git update-ref refs/heads/<name> <sha>` then `git push origin <sha>:refs/heads/<name>`. I used this 4× this session.
 - **Worktree symlink mismatch.** When a PR touches `systemd/units/*.service`, the deployed unit at `~/.config/systemd/user/<service>` is a `cp` (not a symlink), and `hapax-post-merge-deploy` only fires on actual merge — alpha worktree must be on origin/main (`git -C ~/projects/hapax-council switch --detach origin/main`) and you may need to manually `cp` the unit file if post-merge-deploy didn't run yet. Memory: `feedback_always_activate_features`.
 - **CI test job has flaky pre-existing failures** (`test_ops_live`, `test_timer_overrides`, `test_archive_lifecycle_integration`, missing `pass` CLI). Other 9 checks should be green for any clean PR. Admin-merge is the standard pattern when test is the only red.
-- **`gemini-cli` MCP**: not used this session. Reserve for >200KB inputs or perceptual tasks. Always `model: "gemini-3-pro-preview"`.
+- **`gemini-cli` MCP**: historical note only; this MCP is now retired. Gemini-family CLI work routes through agy-backed wrappers.
 - **Detached HEAD is normal** for the epsilon worktree. Don't try to "fix" it.
 
 ## Suggested first move on resume

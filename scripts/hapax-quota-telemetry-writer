@@ -95,7 +95,6 @@ RELAY_RECEIPT_DIR = Path(
 SUBSCRIPTION_ROUTES = {
     "claude": "claude.headless.full",
     "codex": "codex.headless.full",
-    "gemini": "gemini.headless.full",
     "glmcp": "glmcp.review.direct",
 }
 
@@ -199,7 +198,7 @@ def role_platform(role: str) -> str:
     if normalized.startswith("cx-") or normalized.startswith("codex"):
         return "codex"
     if normalized.startswith("gemini") or normalized.startswith("gm-"):
-        return "gemini"
+        return "retired-gemini"
     if normalized.startswith("antigrav") or normalized.startswith("agy"):
         return "antigrav"
     if normalized.startswith("vbe-") or normalized.startswith("vibe"):
@@ -305,6 +304,13 @@ def active_quota_walls(
             if detected_at is None or now - detected_at > WALL_WITHOUT_RESET_TTL:
                 continue
         platform = role_platform(role)
+        if platform == "retired-gemini":
+            print(
+                "hapax-quota-telemetry-writer: WARNING ignoring retired Gemini "
+                f"quota-wall receipt {path.name}; legacy Gemini CLI lanes are retired",
+                file=sys.stderr,
+            )
+            continue
         walls.setdefault(platform, []).append(
             f"relay-receipt:{path.name}:resets_at:{fields.get('resets_at') or 'unknown'}"
         )

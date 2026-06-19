@@ -39,9 +39,8 @@ Defined in `RouteConstraints.preferred_platforms` / `allowed_platforms` / `prohi
 |----------|---------|------|---------|-----------|
 | `claude` | Claude Code (Opus/Sonnet) | Frontier | 1M | Multi-file refactors, governance, architecture |
 | `codex` | Codex headless | Frontier | 192K | Bounded implementation, parallel lanes |
-| `gemini` | Gemini CLI (Pro) | Research | 2M | Long-doc research, OCR, plan-mode |
 | `vibe` | Mistral Medium 3.5 | JR+ | 256K | Mechanical: tests, deps, CI fixes |
-| `antigrav` | Antigravity IDE | JR+ | Opus | Directed, bounded, IDE-bound |
+| `antigrav` | Antigravity/agy (Gemini-family) | JR+ | large | Directed, bounded, agy-backed CLI/IDE work |
 
 ## Reaching the Opus Route (signed route-authority receipts)
 

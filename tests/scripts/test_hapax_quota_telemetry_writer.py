@@ -128,7 +128,7 @@ def test_writes_valid_live_ledger_with_fresh_captured_at(tmp_path: Path) -> None
     }
     assert states["claude.headless.full"] == "fresh"
     assert states["codex.headless.full"] == "fresh"
-    assert states["gemini.headless.full"] == "fresh"
+    assert "gemini.headless.full" not in states
     assert states["glmcp.review.direct"] == "unknown"
     assert states["litellm.local.command-r-35b"] == "fresh"
 
@@ -170,6 +170,22 @@ def test_unexpired_quota_wall_marks_platform_exhausted(tmp_path: Path) -> None:
     assert states["codex.headless.full"] == "fresh"
     summary = json.loads(result.stdout)
     assert summary["quota_walls"] == {"claude": 1}
+
+
+def test_retired_gemini_quota_wall_receipts_warn_and_do_not_seed_routes(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _wall_receipt(relay, "gemini-iota", "2026-06-10T06:00:00Z")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "WARNING ignoring retired Gemini quota-wall receipt" in result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    route_ids = {snapshot["route_id"] for snapshot in payload["quota_snapshots"]}
+    assert all(not route_id.startswith("gemini.") for route_id in route_ids)
+    summary = json.loads(result.stdout)
+    assert "retired-gemini" not in summary["quota_walls"]
 
 
 def test_glmcp_role_quota_wall_maps_to_glmcp_not_codex(tmp_path: Path) -> None:

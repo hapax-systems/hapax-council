@@ -28,7 +28,7 @@ Correction from the bootstrap session: child-session spawning means **Codex spaw
 - Global Claude instructions at `~/.claude/CLAUDE.md`: autonomy, subagent git safety, plugin use, Gemini delegation, all permissions granted.
 - Workspace Claude instructions at `~/projects/CLAUDE.md` -> `~/dotfiles/workspace-CLAUDE.md`: repo map, Obsidian vault, uv-only Python, pass/direnv secrets, worktree discipline.
 - Council Claude instructions at `hapax-council/CLAUDE.md`: architecture, Obsidian integration, CC-task SSOT, hook discipline, axioms.
-- Claude MCP config at `~/.claude.json`: context7, playwright, github, hapax-mcp, gemini-cli. Epidemic Sound MCP is deliberately decommissioned until a stronger use case exists.
+- Historical Claude MCP config at `~/.claude.json`: context7, playwright, github, hapax-mcp, gemini-cli. `gemini-cli` is now retired from current Codex/Hapax launch surfaces; Gemini-family CLI work routes through agy-backed wrappers. Epidemic Sound MCP is deliberately decommissioned until a stronger use case exists.
 - Codex config at `~/.codex/config.toml`: already on `gpt-5.5` / `xhigh`, trusted `~/projects`, but no MCP or hooks.
 
 ## Codex Contract

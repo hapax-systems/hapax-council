@@ -20,7 +20,7 @@ set -eu
 
 # Canonical identity regex — shared by the --match-title seam and the foot-window
 # -title path below. Mirrors the lane vocabulary in hooks/scripts/agent-role.sh.
-_IDENTITY_RE='\b(cx-[a-z][a-z-]*|cc-[a-z][a-z-]*|vbe-[0-9]+|antigrav|alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota)\b'
+_IDENTITY_RE='\b(cx-[a-z][a-z-]*|cc-[a-z][a-z-]*|vbe-[0-9]+|antigrav|alpha|beta|gamma|delta|epsilon|zeta|eta|theta)\b'
 
 # Testable seam: `hapax-whoami --match-title "<title>"` runs ONLY the title->identity
 # match (the foot-window-title path) so the matcher is unit-testable without a compositor.

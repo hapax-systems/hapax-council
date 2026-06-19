@@ -84,7 +84,7 @@ class ProcStat:
 @dataclass
 class SessionAccount:
     interface: str  # claude, codex, gemini, vibe, antigrav
-    role: str  # beta, cx-amber, iota, ...
+    role: str  # beta, cx-amber, antigrav, ...
     pids: list[int] = field(default_factory=list)
     cpu_pct: float = 0.0
     rss_kb: int = 0

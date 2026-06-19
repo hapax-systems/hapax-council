@@ -584,11 +584,11 @@ class TestRecipientExpansion(unittest.TestCase):
             self.assertIn("cx-blue", result)
             self.assertNotIn("alpha", result)
 
-    def test_expand_broadcast_gemini(self) -> None:
+    def test_expand_broadcast_gemini_is_retired(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             relay_dir = _make_relay_dir(Path(td), ["alpha", "iota", "cx-red"])
-            result = expand_recipients("*:gemini", relay_dir)
-            self.assertEqual(result, ["iota"])
+            with self.assertRaisesRegex(ValueError, "Unknown broadcast group"):
+                expand_recipients("*:gemini", relay_dir)
 
     def test_expand_broadcast_antigrav(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -620,7 +620,7 @@ class TestRecipientExpansion(unittest.TestCase):
             result = expand_recipients("*:workers", relay_dir)
             self.assertIn("alpha", result)
             self.assertIn("cx-red", result)
-            self.assertIn("iota", result)
+            self.assertNotIn("iota", result)
             self.assertIn("antigrav", result)
             self.assertIn("vbe-1", result)
             # Coordinators-only and stray status-file stems are not worker lanes.

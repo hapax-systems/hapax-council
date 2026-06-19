@@ -44,7 +44,7 @@ rather than the dirty canonical checkout. See
 | `sprint-tracker.sh` | session | ADVISORY: sprint progress |
 | `branch-switch-guard.sh` | Bash | BLOCK cross-session branch switches |
 | `canonical-worktree-protect.sh` | Bash | BLOCK `git checkout/switch/reset --hard` to non-main refs in canonical worktree (`~/projects/hapax-council`); allows main-targeting commands, file restores, fetches, pulls, worktree-add. Operator escape: `HAPAX_CANONICAL_PROTECT_BYPASS=1` |
-| `gemini-session-adapter.sh` / `gemini-tool-adapter.sh` | session | Adapter bridges for Gemini subagents |
+| `gemini-session-adapter.sh` / `gemini-tool-adapter.sh` | session | Legacy adapter bridges retained for historical fixtures; not active launch paths |
 | `conductor-*.sh` | session | Session-conductor protocol |
 | `cargo-check-rust.sh` | Edit / Write | PostToolUse: run cargo check on .rs edits |
 
@@ -52,7 +52,7 @@ rather than the dirty canonical checkout. See
 
 The canonical lane vocabulary (SSOT: `hooks/scripts/agent-role.sh`
 `assert-identity`) is: greek slots `alpha` `beta` `gamma` `delta`
-`epsilon` `zeta` `eta` `theta` `iota`, plus `antigrav`; Codex
+`epsilon` `zeta` `eta` `theta`, plus `antigrav`; Codex
 `cx-<color>` (e.g. `cx-red`); Claude relay lanes `cc-<name>` (e.g.
 `cc-zai`); and Vibe `vbe-<n>`. These are operational identities — not
 rhetorical choices — and the tooling assumes them:
@@ -70,10 +70,15 @@ rhetorical choices — and the tooling assumes them:
   slots (i.e. `kappa` and beyond) when used as a session identifier.
 - The worktree cap (`no-stale-branches.sh`) is sized for the full
   multi-interface team (greek + `cx-*` + `cc-*` + `vbe-*` + antigrav).
+- Legacy `iota` was the retired Gemini CLI lane and is intentionally no longer
+  accepted as a session identity.
 
 Recheck commands (verify these claims after any change):
 - `agent-role.sh whoami` — the resolved role for this session (the SSOT path).
 - `scripts/hapax-whoami-audit.sh` — exits non-zero on a name outside the vocabulary.
+- `rg -n 'gemini-(session|tool)-adapter' hooks tests config scripts` — confirms
+  the Gemini hook adapters are retained only as dormant adapter fixtures, not
+  launch or dispatch paths.
 - `uv run pytest tests/scripts/test_role_identity_resolution.py tests/hooks/test_session_name_enforcement.py`
   — exercises env-first resolution, the audit approved-set, the assert-identity vocab,
   and the enforcement deny-list against the canonical vocabulary above.

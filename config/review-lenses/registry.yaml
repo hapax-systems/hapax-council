@@ -90,15 +90,16 @@ families:
     # longer a single yaml fence and the strict dossier parser (extract_review,
     # deliberately bare-fence-only for channel trust) discards it as
     # invalid-output — a lost accept (the claude seat rode as invalid-output
-    # across rounds 6-8 of PR #4119 despite returning verdict: accept). gemini
-    # gets the same instruction via its -p arg; codex complies natively.
+    # across rounds 6-8 of PR #4119 despite returning verdict: accept).
+    # The agy-backed gemini family gets equivalent instructions in
+    # scripts/hapax-agy-reviewer; codex complies natively.
     reviewer_command: ["claude", "-p", "--append-system-prompt", "You are a blind PR reviewer invoked non-interactively. Output policy is ABSOLUTE and overrides any urge to explain: your ENTIRE reply MUST be exactly one fenced yaml code block (opening ```yaml, your verdict/findings/checklist, closing ```) and NOTHING ELSE — no preamble, no reasoning, no prose, no text whatsoever before or after the fence. The dossier parser requires the whole reply to be a single bare yaml fence; ANY character outside it discards your entire review as invalid-output (a silently lost vote). Do all reasoning silently; emit only the fence."]
     timeout_seconds: 1200
   - family: codex
     reviewer_command: ["codex", "exec", "--sandbox", "read-only", "-"]
     timeout_seconds: 1200
   - family: gemini
-    reviewer_command: ["gemini", "--skip-trust", "--approval-mode", "plan", "--policy", "config/review-lenses/gemini-review-policy.json", "-p", "You are a blind PR reviewer invoked non-interactively, reviewing ONLY the UNIFIED DIFF on stdin. You have no repository access -- do not assume facts not visible in the diff. The leading plus/minus/space line prefixes, the @@ hunk headers, and diff --git / +++ / --- lines are DIFF SYNTAX, not source code. RDF/Turtle/TriG `@prefix` directives are valid source syntax; do not rewrite or flag them as path-like corruption just because they appear in added .trig or .ttl lines. Never claim an RDF/Turtle/TriG namespace directive was replaced by a test-script path unless that replacement is visible on the exact current diff line you cite; a current diff line that starts with `@prefix` is valid namespace syntax, not corruption. These changes ALREADY PASSED the repository required CI gates (lint, typecheck, compile, test), so a genuine syntax error cannot be present: do NOT raise IndentationError, SyntaxError, invalid-decorator, invalid-shell-expansion, or invalid-systemd-unit-syntax findings above minor severity (for example, systemd template references like notify-failure@%n.service are valid, and a doubled .service in an instantiated template name is correct). The %h/.cache/hapax/source-activation/worktree path is the canonical governed deploy tree pinned by source-activation, not a volatile cache -- do not flag units that reference it. Spend the review on logic correctness, security, error handling, and interface or contract issues visible in the diff. Reply with exactly one fenced yaml code block and no prose."]
+    reviewer_command: ["scripts/hapax-agy-reviewer"]
     timeout_seconds: 1200
   - family: glm
     # Emergency outage procedure: GLM degrades out of a constitution only with
@@ -127,15 +128,18 @@ lane_families:
     zeta: claude
     eta: claude
     theta: claude
-    iota: gemini
-    kappa: gemini
-    lambda: gemini
-    mu: gemini
     cx-glmcp: glm
     codex-glmcp: glm
     glmcp: glm
+    antigrav: gemini
+    antigravity: gemini
   prefixes:
     cx-: codex
+    codex-: codex
     glm-: glm
     vbe-: vibe
+    antigrav-: gemini
+    agy-: gemini
+  retired:
+    - iota
   default: claude

@@ -117,7 +117,7 @@ def test_multi_platform_task_matches_listed_lanes(tmp_path: Path) -> None:
     assert result == "multi-task"
     result = _run_task_picker(tmp_path, "codex")
     assert result == "multi-task"
-    result = _run_task_picker(tmp_path, "gemini")
+    result = _run_task_picker(tmp_path, "antigrav")
     assert result == ""
 
 

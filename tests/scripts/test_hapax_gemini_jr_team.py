@@ -167,7 +167,7 @@ printf '%s\\n' 'Hook execution for SessionEnd: 2 hooks executed successfully'
     assert relay.exists()
     assert dashboard.exists()
     assert "authority: no_repo_edits_no_claims_no_prs_no_merge_no_deploy" in relay.read_text()
-    assert "Gemini CLI is a packet-only junior support team" in dashboard.read_text()
+    assert "Agy-backed Gemini-family support is packet-only" in dashboard.read_text()
     call_line = calls.read_text()
     assert "--strict-model" in call_line
     assert "gemini-3.1-pro-preview" in call_line

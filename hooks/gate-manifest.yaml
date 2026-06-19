@@ -227,21 +227,6 @@ runtimes:
       - '--output'
       - 'cc-claim'
 
-  gemini:
-    source: "scripts/hapax-gemini"
-    script: scripts/hapax-gemini
-    capability_markers:
-      - 'export HAPAX_AGENT_INTERFACE="gemini"'
-      - 'export HAPAX_AGENT_NAME="$ROLE"'
-      - 'export GEMINI_ROLE="$ROLE"'
-      - 'export HAPAX_WORKTREE_ROLE="$ROLE"'
-      - '--approval-mode'
-      - 'plan'
-      - '--policy'
-      - 'hapax-governance-firewall.toml'
-      - '--include-directories'
-      - '--resume'
-
   ci:
     source: ".github/workflows/ci.yml"
     workflow: .github/workflows/ci.yml

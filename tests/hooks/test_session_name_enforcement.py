@@ -3,7 +3,7 @@
 99-LOC PreToolUse hook that blocks Bash commands referencing a
 session name outside the governance-approved set
 (``alpha beta gamma delta epsilon``). Greek-letter names beyond that
-set (zeta, eta, theta, iota, kappa, lambda, mu, nu, xi, omicron,
+set (zeta, eta, theta, kappa, lambda, mu, nu, xi, omicron,
 sigma, tau, upsilon, phi, chi, psi, omega) are explicitly denied
 when they appear:
 
@@ -102,8 +102,8 @@ class TestUnapprovedFlagForms:
         assert result.returncode == 2
 
 
-# ── Canonical greek slots zeta..iota are APPROVED (deny-list narrowing) ──
-# Red-before-green for removing zeta|eta|theta|iota from UNAPPROVED: they are
+# ── Canonical greek slots zeta..theta are APPROVED (deny-list narrowing) ──
+# Red-before-green for removing zeta|eta|theta from UNAPPROVED: they are
 # first-class greek lanes per hooks/scripts/agent-role.sh, so referencing them
 # as a session identifier must NOT be blocked. (cc-task-role-resolution-disambiguation)
 
@@ -118,8 +118,10 @@ class TestApprovedGreekSlotsAllowed:
     def test_dash_s_theta_allowed(self) -> None:
         assert _run(_bash("hapax-tool -s theta")).returncode == 0
 
-    def test_worktree_slot_iota_allowed(self) -> None:
-        assert _run(_bash("ls hapax-council--iota/")).returncode == 0
+    def test_worktree_slot_iota_blocked(self) -> None:
+        result = _run(_bash("ls hapax-council--iota/"))
+        assert result.returncode == 2
+        assert "iota" in result.stderr.lower()
 
 
 # ── Unapproved names in path/filename form ─────────────────────────
