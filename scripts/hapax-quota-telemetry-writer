@@ -295,7 +295,7 @@ def active_glmcp_admission_receipts(
 
     if not receipt_dir.is_dir():
         return []
-    refs: list[str] = []
+    refs: list[GlmcpAdmission] = []
     for path in sorted(receipt_dir.glob(GLMCP_ADMISSION_RECEIPT_GLOB)):
         try:
             raw_receipt = path.read_text(encoding="utf-8")
