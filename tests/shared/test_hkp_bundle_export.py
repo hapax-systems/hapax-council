@@ -909,6 +909,19 @@ def test_shadow_catalog_rejects_symlinked_shadow_bundle_child(tmp_path: Path, mo
     assert "next-action" in str(exc_info.value)
 
 
+def test_shadow_catalog_rejects_non_directory_shadow_root(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    shadow_root = tmp_path / "home" / ".cache" / "hapax" / "hkp-shadow"
+    shadow_root.parent.mkdir(parents=True)
+    shadow_root.write_text("not a directory\n", encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc_info:
+        build_shadow_catalog(generated_at=GENERATED_AT)
+
+    assert "HKP shadow catalog input must be a directory" in str(exc_info.value)
+    assert "next-action" in str(exc_info.value)
+
+
 def test_shadow_catalog_rejects_non_directory_index_root(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     index_root = tmp_path / "home" / ".cache" / "hapax" / "hkp-shadow-index"

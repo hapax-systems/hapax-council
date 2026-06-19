@@ -15,6 +15,8 @@ if str(REPO_ROOT) not in sys.path:
 from shared.hkp_bundle_export import build_shadow_catalog, export_shadow_bundle  # noqa: E402
 from shared.hkp_bundle_schema import validate_bundle  # noqa: E402
 
+CATALOG_FAILURE_NEXT_ACTION = "inspect catalog findings and regenerate invalid bundles"
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -59,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             parser.exit(2, f"hapax-hkp-export: {_format_value_error(exc)}\n")
         payload = result.as_dict()
+        if not result.ok:
+            payload["next_action"] = CATALOG_FAILURE_NEXT_ACTION
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
@@ -67,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"bundles\t{result.bundle_count}")
             print(f"findings\t{result.finding_count}")
             if not result.ok:
-                print("next-action\tinspect catalog findings and regenerate invalid bundles")
+                print(f"next-action\t{CATALOG_FAILURE_NEXT_ACTION}")
         return 0 if result.ok else 1
 
     if not args.bundle_id:

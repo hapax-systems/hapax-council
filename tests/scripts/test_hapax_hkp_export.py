@@ -150,6 +150,50 @@ def test_cli_writes_shadow_catalog_json(tmp_path: Path, monkeypatch) -> None:
     assert catalog.is_file()
 
 
+def test_cli_catalog_text_output_reports_success(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_source(source_root / "tasks" / "demo.md")
+    export_result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            str(source),
+            "--bundle-id",
+            "cli-bundle",
+            "--source-root",
+            str(source_root),
+            "--source-root-id",
+            "repo:test",
+            "--generated-at",
+            GENERATED_AT,
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert export_result.returncode == 0, export_result.stderr
+
+    catalog_result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--catalog",
+            "--generated-at",
+            GENERATED_AT,
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert catalog_result.returncode == 0, catalog_result.stderr
+    assert "OK " in catalog_result.stdout
+    assert "bundles\t1" in catalog_result.stdout
+    assert "findings\t0" in catalog_result.stdout
+    assert "next-action" not in catalog_result.stdout
+
+
 def test_cli_catalog_text_output_reports_failure_next_action(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     source_root = tmp_path / "repo"
@@ -194,6 +238,98 @@ def test_cli_catalog_text_output_reports_failure_next_action(tmp_path: Path, mon
     assert "next-action\tinspect catalog findings and regenerate invalid bundles" in (
         catalog_result.stdout
     )
+
+
+def test_cli_catalog_json_output_reports_failure_next_action(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_source(source_root / "tasks" / "missing-route.md", include_route_metadata=False)
+    export_result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            str(source),
+            "--bundle-id",
+            "gap-bundle",
+            "--source-root",
+            str(source_root),
+            "--source-root-id",
+            "repo:test",
+            "--generated-at",
+            GENERATED_AT,
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert export_result.returncode == 0, export_result.stderr
+
+    catalog_result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--catalog",
+            "--generated-at",
+            GENERATED_AT,
+            "--json",
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert catalog_result.returncode == 1
+    payload = json.loads(catalog_result.stdout)
+    assert payload["ok"] is False
+    assert payload["next_action"] == "inspect catalog findings and regenerate invalid bundles"
+
+
+def test_cli_catalog_rejects_sources_and_bundle_id(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_source(source_root / "tasks" / "demo.md")
+
+    source_result = subprocess.run(
+        [sys.executable, str(SCRIPT), str(source), "--catalog"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert source_result.returncode == 2
+    assert "--catalog does not accept source files" in source_result.stderr
+
+    bundle_id_result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--catalog", "--bundle-id", "bad"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert bundle_id_result.returncode == 2
+    assert "--catalog does not accept --bundle-id" in bundle_id_result.stderr
+
+
+def test_cli_export_mode_requires_bundle_id_and_sources(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_source(source_root / "tasks" / "demo.md")
+
+    missing_bundle_id = subprocess.run(
+        [sys.executable, str(SCRIPT), str(source)],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert missing_bundle_id.returncode == 2
+    assert "--bundle-id is required unless --catalog is set" in missing_bundle_id.stderr
+
+    missing_sources = subprocess.run(
+        [sys.executable, str(SCRIPT), "--bundle-id", "missing-sources"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert missing_sources.returncode == 2
+    assert "at least one source file is required unless --catalog is set" in missing_sources.stderr
 
 
 def test_cli_value_error_formatter_adds_fallback_next_action() -> None:
