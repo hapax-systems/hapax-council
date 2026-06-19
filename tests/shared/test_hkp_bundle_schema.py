@@ -8,7 +8,13 @@ from typing import Any
 
 import yaml
 
-from shared.hkp_bundle_schema import HkpProjectionEvent, validate_bundle
+from shared.hkp_bundle_schema import (
+    ALLOWED_CONSUMERS,
+    VALIDATOR_FIRST_ALLOWED_CONSUMERS,
+    VALIDATOR_FIRST_DENY_CONSUMERS,
+    HkpProjectionEvent,
+    validate_bundle,
+)
 
 HASH = "sha256:" + "a" * 64
 TREE_HASH = "sha256:" + "b" * 64
@@ -130,6 +136,18 @@ def test_forbidden_consumer_in_posture_fails_closed(tmp_path: Path) -> None:
 
     assert result.ok is False
     assert "validator-first posture cannot allow blocked consumers" in _messages(result)
+
+
+def test_dashboard_consumer_in_posture_fails_closed(tmp_path: Path) -> None:
+    posture = valid_posture()
+    posture["allowed_consumers"] = ["research_viewer", "dashboard"]
+    bundle = write_bundle(tmp_path, concept_updates={"posture": posture})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "validator-first posture cannot allow blocked consumers" in _messages(result)
+    assert "dashboard" in _messages(result)
 
 
 def test_unknown_consumer_in_posture_allowed_list_fails(tmp_path: Path) -> None:
@@ -565,6 +583,20 @@ def test_manifest_rejects_qdrant_and_public_export_allowed_consumers(
     assert "public_export" in messages
 
 
+def test_manifest_rejects_dashboard_allowed_consumer(tmp_path: Path) -> None:
+    manifest = valid_manifest()
+    manifest["allowed_consumers"] = ["research_viewer", "dashboard"]
+    bundle = write_bundle(tmp_path, manifest=manifest)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "manifest allowed_consumers includes validator-first blocked consumers" in _messages(
+        result
+    )
+    assert "dashboard" in _messages(result)
+
+
 def test_manifest_rejects_unknown_allowed_consumers(tmp_path: Path) -> None:
     manifest = valid_manifest()
     manifest["allowed_consumers"] = ["research_viewer", "external_llm", "unknown"]
@@ -574,6 +606,25 @@ def test_manifest_rejects_unknown_allowed_consumers(tmp_path: Path) -> None:
 
     assert result.ok is False
     assert "manifest allowed_consumers includes unknown consumers" in _messages(result)
+
+
+def test_validator_first_consumer_partition_is_pinned() -> None:
+    expected_allowed = {"research_viewer", "local_prompt_context"}
+    expected_denied = {
+        "dashboard",
+        "qdrant_rag",
+        "public_export",
+        "release_gate",
+        "dispatcher",
+        "close_gate",
+        "runtime_loader",
+        "provider_spend_gate",
+        "unknown",
+    }
+    assert expected_allowed == VALIDATOR_FIRST_ALLOWED_CONSUMERS
+    assert expected_denied == VALIDATOR_FIRST_DENY_CONSUMERS
+    assert VALIDATOR_FIRST_ALLOWED_CONSUMERS | VALIDATOR_FIRST_DENY_CONSUMERS == ALLOWED_CONSUMERS
+    assert VALIDATOR_FIRST_ALLOWED_CONSUMERS.isdisjoint(VALIDATOR_FIRST_DENY_CONSUMERS)
 
 
 def test_consumer_policy_must_fail_closed_for_unknown_consumers(tmp_path: Path) -> None:
@@ -587,6 +638,92 @@ def test_consumer_policy_must_fail_closed_for_unknown_consumers(tmp_path: Path) 
     assert "consumer policy missing rows" in _messages(result)
 
 
+def test_consumer_policy_rejects_unknown_consumer_rows(tmp_path: Path) -> None:
+    policy = valid_consumer_policy()
+    policy["consumers"].append(
+        {
+            **policy["consumers"][0],
+            "consumer": "external_llm",
+        }
+    )
+    bundle = write_bundle(tmp_path, consumer_policy=policy)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "unknown consumer: external_llm" in _messages(result)
+
+
+def test_consumer_policy_rejects_duplicate_consumers(tmp_path: Path) -> None:
+    policy = valid_consumer_policy()
+    policy["consumers"].append(dict(policy["consumers"][0]))
+    bundle = write_bundle(tmp_path, consumer_policy=policy)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "consumer policy duplicate rows" in _messages(result)
+
+
+def test_consumer_policy_rejects_allowed_forbidden_field_overlap(
+    tmp_path: Path,
+) -> None:
+    policy = valid_consumer_policy()
+    for row in policy["consumers"]:
+        if row["consumer"] == "research_viewer":
+            row["forbidden_fields"].append("title")
+    bundle = write_bundle(tmp_path, consumer_policy=policy)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "allowed_fields overlap forbidden_fields: title" in _messages(result)
+
+
+def test_consumer_policy_rejects_unknown_allowed_fields(tmp_path: Path) -> None:
+    policy = valid_consumer_policy()
+    for row in policy["consumers"]:
+        if row["consumer"] == "research_viewer":
+            row["allowed_fields"].append("private_source_path")
+    bundle = write_bundle(tmp_path, consumer_policy=policy)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "allowed_fields include unsupported fields: private_source_path" in _messages(result)
+
+
+def test_consumer_policy_requires_forbidden_raw_fields(tmp_path: Path) -> None:
+    policy = valid_consumer_policy()
+    for row in policy["consumers"]:
+        if row["consumer"] == "research_viewer":
+            row["forbidden_fields"] = ["body", "private_source_path"]
+    bundle = write_bundle(tmp_path, consumer_policy=policy)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "forbidden_fields missing raw fields: secret" in _messages(result)
+
+
+def test_consumer_policy_rejects_unknown_policy_vocabulary(tmp_path: Path) -> None:
+    policy = valid_consumer_policy()
+    for row in policy["consumers"]:
+        if row["consumer"] == "research_viewer":
+            row["title_leak_policy"] = "generic"
+            row["body_leak_policy"] = "summarize_private"
+            row["path_redaction_policy"] = "none"
+    bundle = write_bundle(tmp_path, consumer_policy=policy)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    messages = _messages(result)
+    assert "unsupported title_leak_policy: generic" in messages
+    assert "unsupported body_leak_policy: summarize_private" in messages
+    assert "unsupported path_redaction_policy: none" in messages
+
+
 def test_consumer_policy_denied_consumers_cannot_allow_fields_or_retrieval(
     tmp_path: Path,
 ) -> None:
@@ -594,7 +731,7 @@ def test_consumer_policy_denied_consumers_cannot_allow_fields_or_retrieval(
     for row in policy["consumers"]:
         if row["consumer"] == "qdrant_rag":
             row["default"] = "allow_read_only"
-            row["allowed_fields"] = ["body"]
+            row["allowed_fields"] = ["title"]
             row["embedding_allowed"] = True
             row["retrieval_allowed"] = True
     bundle = write_bundle(tmp_path, consumer_policy=policy)
@@ -606,6 +743,24 @@ def test_consumer_policy_denied_consumers_cannot_allow_fields_or_retrieval(
     assert "qdrant_rag must default deny" in messages
     assert "qdrant_rag may not expose allowed_fields" in messages
     assert "qdrant_rag may not allow embedding/retrieval" in messages
+
+
+def test_consumer_policy_dashboard_stays_denied_without_explicit_future_task(
+    tmp_path: Path,
+) -> None:
+    policy = valid_consumer_policy()
+    for row in policy["consumers"]:
+        if row["consumer"] == "dashboard":
+            row["default"] = "allow_after_explicit_row"
+            row["allowed_fields"] = ["title"]
+    bundle = write_bundle(tmp_path, consumer_policy=policy)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    messages = _messages(result)
+    assert "dashboard must default deny" in messages
+    assert "dashboard may not expose allowed_fields" in messages
 
 
 def test_manifest_output_tree_hash_mismatch_fails(tmp_path: Path) -> None:
@@ -1185,7 +1340,7 @@ def valid_consumer_policy() -> dict[str, Any]:
     defaults = {
         "research_viewer": "allow_read_only",
         "local_prompt_context": "allow_with_ceiling",
-        "dashboard": "allow_after_explicit_row",
+        "dashboard": "deny",
         "qdrant_rag": "deny",
         "public_export": "deny",
         "release_gate": "deny",
@@ -1200,9 +1355,11 @@ def valid_consumer_policy() -> dict[str, Any]:
             {
                 "consumer": consumer,
                 "default": default,
-                "allowed_fields": ["title"] if default != "deny" else [],
-                "forbidden_fields": ["body"],
-                "title_leak_policy": "generic",
+                "allowed_fields": ["title", "description", "source_refs", "authority"]
+                if default != "deny"
+                else [],
+                "forbidden_fields": ["body", "private_source_path", "secret"],
+                "title_leak_policy": "internal_only",
                 "body_leak_policy": "drop_private",
                 "path_redaction_policy": "local_path_root_redaction",
                 "embedding_allowed": False,
