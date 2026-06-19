@@ -167,8 +167,12 @@ class InterviewConductor:
                 continue
             await self._write_state(question, active=True, facts=facts, topics_total=total)
             wrote_inactive = False
-            self._runner.begin_interview_silence()
-            answer = await self._listen()
+            try:
+                self._runner.begin_interview_silence()
+                answer = await self._listen()
+            except Exception:
+                await self._write_state(None, active=False, facts=facts, topics_total=total)
+                raise
             if answer.strip():
                 facts.append(InterviewFact(question=question.text, answer=answer))
             else:
@@ -189,7 +193,7 @@ class InterviewConductor:
         writer = self._state_writer
         if writer is None:
             return
-        writer_path = getattr(writer, "path", DEFAULT_INTERVIEW_STATE_PATH)
+        writer_path = getattr(writer, "path", "unknown")
         try:
             await asyncio.to_thread(
                 self._write_state_sync,
@@ -201,7 +205,8 @@ class InterviewConductor:
             )
         except Exception:
             LOGGER.warning(
-                "interview_state_write_failed; next_action=check %s parent directory, "
+                "interview_state_write_failed; next_action=check configured state writer path "
+                "%s parent directory, "
                 "permissions, and studio compositor ward poller",
                 writer_path,
                 exc_info=True,

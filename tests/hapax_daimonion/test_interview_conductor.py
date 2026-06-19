@@ -316,6 +316,44 @@ async def test_state_writer_failure_log_includes_next_action(
     assert "next_action=check" in caplog.text
 
 
+async def test_listen_failure_clears_active_state_before_reraising() -> None:
+    states: list[InterviewStateSnapshot] = []
+
+    async def _capture() -> bytes:
+        raise RuntimeError("capture failed")
+
+    conductor = InterviewConductor(
+        pipeline=_mock_pipeline(answer="unused"),
+        runner=MagicMock(),
+        questions=["Q1"],
+        capture_answer=_capture,
+        state_writer=states.append,
+    )
+
+    try:
+        await conductor.run()
+    except RuntimeError as exc:
+        assert str(exc) == "capture failed"
+    else:
+        raise AssertionError("capture failure should propagate")
+
+    assert states == [
+        InterviewStateSnapshot(
+            active=True,
+            current_question="Q1",
+            topics_explored=0,
+            topics_total=1,
+            facts_recorded=0,
+        ),
+        InterviewStateSnapshot(
+            active=False,
+            topics_explored=0,
+            topics_total=1,
+            facts_recorded=0,
+        ),
+    ]
+
+
 async def test_conductor_turn_ordering_ask_then_arm_then_listen() -> None:
     calls: list[str] = []
     pipeline = MagicMock()
