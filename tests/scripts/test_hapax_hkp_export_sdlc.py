@@ -90,3 +90,58 @@ def test_cli_json_smoke(tmp_path: Path) -> None:
     )
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["concept_count"] == 2
+
+
+def _write_metadata_gap_task(path: Path, task_id: str) -> None:
+    # missing authority_case/parent_spec/route_metadata_schema -> route_metadata_gap error finding
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fm = {
+        "type": "cc-task",
+        "task_id": task_id,
+        "title": task_id,
+        "status": "offered",
+        "depends_on": [],
+    }
+    path.write_text(
+        "---\n" + yaml.safe_dump(fm, sort_keys=False) + "---\n\n# T\nbody\n", encoding="utf-8"
+    )
+
+
+def _gap_vault(tmp_path: Path) -> Path:
+    root = tmp_path / "vault"
+    _write_metadata_gap_task(
+        root / "20-projects" / "hapax-cc-tasks" / "active" / "gap.md", "sdlc-gap"
+    )
+    return root
+
+
+def test_cli_default_exit_zero_despite_error_findings(tmp_path: Path) -> None:
+    root = _gap_vault(tmp_path)
+    home = str(tmp_path / "home")
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "--vault-root", str(root), "--json"],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": home},
+    )
+    assert proc.returncode == 0, proc.stderr  # projection succeeds; findings are advisory
+    assert json.loads(proc.stdout)["error_findings"] >= 1
+
+
+def test_cli_strict_exits_nonzero_on_error_findings(tmp_path: Path) -> None:
+    root = _gap_vault(tmp_path)
+    home = str(tmp_path / "home")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--vault-root",
+            str(root),
+            "--json",
+            "--fail-on-error-findings",
+        ],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": home},
+    )
+    assert proc.returncode == 1

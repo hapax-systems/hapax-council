@@ -60,6 +60,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--vault-root", type=Path, default=DEFAULT_VAULT)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--fail-on-error-findings",
+        action="store_true",
+        help=(
+            "exit non-zero if the projection has error-severity findings. OFF by "
+            "default: the scheduled timer wants the projection produced regardless "
+            "(findings are advisory support data, not a run failure); use this for "
+            "manual strict checks."
+        ),
+    )
     args = parser.parse_args(argv)
     result = run_sdlc_export(vault_root=args.vault_root)
     error_findings = sum(1 for f in result.findings if getattr(f, "severity", "") == "error")
@@ -79,6 +89,11 @@ def main(argv: list[str] | None = None) -> int:
             f"hkp sdlc export: {result.concept_count} concepts, {result.edge_count} edges, "
             f"{error_findings} error-findings -> {result.bundle_path}"
         )
+    # Default: always succeed (the cache projection IS the deliverable; findings
+    # such as route-metadata gaps / duplicate identities are advisory support
+    # data the consumers surface). --fail-on-error-findings opts into strict mode.
+    if args.fail_on_error_findings and error_findings:
+        return 1
     return 0
 
 

@@ -1,13 +1,17 @@
 [Unit]
 Description=HKP scheduled exporter — project the live SDLC corpus to the cache-only sdlc bundle
 After=network.target
+# Run from the governed activation worktree (pinned release), never the mutable
+# dev tree. Gracefully no-op until the deploy loop delivers the script there.
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-hkp-export-sdlc
 
 [Service]
 Type=oneshot
 # Cache-only, support-non-authoritative, CPU-only (no GPU): a derived projection, never authority.
-ExecStart=/home/hapax/.local/bin/uv run --project /home/hapax/projects/hapax-council python /home/hapax/projects/hapax-council/scripts/hapax-hkp-export-sdlc
-Environment=PATH=/home/hapax/.local/bin:/home/hapax/.cargo/bin:/usr/local/bin:/usr/bin:/bin
-Environment=HOME=/home/hapax
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.local/bin/uv run --project %h/.cache/hapax/source-activation/worktree python %h/.cache/hapax/source-activation/worktree/scripts/hapax-hkp-export-sdlc
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 Environment=CUDA_VISIBLE_DEVICES=
 MemoryMax=512M
 CPUQuota=50%
