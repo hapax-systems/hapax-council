@@ -667,11 +667,13 @@ def test_generated_schemas_validate_artifacts_and_reject_bad_shapes():
     malformed_workbench_manifest["workbench_contract"]["explanation_paths"][0]["scenes"][0][
         "selection"
     ]["group"] = "node"
+    malformed_workbench_manifest["workbench_contract"]["unexpected_top_level"] = True
     workbench_errors = "\n".join(_schema_errors(malformed_workbench_manifest, view_manifest_schema))
     assert "operator" in workbench_errors
     assert "'5' is not of type 'integer'" in workbench_errors
     assert "'gate path' is not of type 'array'" in workbench_errors
     assert "node" in workbench_errors
+    assert "unexpected_top_level" in workbench_errors
 
     bad_package = copy.deepcopy(json.loads(PACKAGE_PATH.read_text(encoding="utf-8")))
     bad_package["artifacts"][0]["sha256"] = "not-a-sha"
@@ -951,6 +953,11 @@ def test_shacl_shapes_and_view_manifest_cover_the_durable_contract():
     )
     node_ids = {node["id"] for node in seed["nodes"]}
     edge_ids = {edge["id"] for edge in seed["edges"]}
+    for mode in workbench["inquiry_modes"]:
+        for node_id in mode["focus_node_ids"]:
+            assert node_id in node_ids, f"{mode['id']} references missing node id {node_id!r}"
+        for edge_id in mode["focus_edge_ids"]:
+            assert edge_id in edge_ids, f"{mode['id']} references missing edge id {edge_id!r}"
     for path in workbench["explanation_paths"]:
         for scene in path["scenes"]:
             selection = scene["selection"]

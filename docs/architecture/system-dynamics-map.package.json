@@ -86,9 +86,9 @@
       "sha256": "d90e150c456f4ebc38609039389c00073efb830dbb95bd02d5d302b6cb2fe933"
     },
     {
-      "bytes": 12184,
+      "bytes": 12185,
       "path": "schemas/system-dynamics-map/view-manifest.schema.json",
-      "sha256": "1e04e4eec988552f2ef9e1f5bb57ed4e53c0d56e4fe3395dd491c857639ed829"
+      "sha256": "f11904e6f7121ec770d531e64267bd2a31f4e69244ce280990e678fcd9a6d878"
     }
   ],
   "authority_case": "CASE-SYSTEM-DYNAMICS-MAP-V1-ENHANCEMENT-20260618",

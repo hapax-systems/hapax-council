@@ -269,7 +269,7 @@
       "type": "string"
     },
     "workbench_contract": {
-      "additionalProperties": true,
+      "additionalProperties": false,
       "properties": {
         "audience_modes": {
           "items": {

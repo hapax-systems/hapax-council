@@ -1389,6 +1389,15 @@ def test_system_dynamics_viewer_toolbar_and_panel_actions_are_operable():
                 "Clipboard unavailable; current view JSON downloaded."
                 in page.locator("#action-status").inner_text()
             )
+            page.get_by_role("button", name="Copy Explanation JSON").click()
+            page.wait_for_function(
+                "window.__downloadClicks.some((item) => "
+                "item.download === 'system-dynamics-explanation-view.json')"
+            )
+            assert (
+                "Clipboard unavailable; explanation JSON downloaded."
+                in page.locator("#action-status").inner_text()
+            )
         finally:
             browser.close()
 

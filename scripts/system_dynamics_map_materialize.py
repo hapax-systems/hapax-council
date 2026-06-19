@@ -1327,7 +1327,7 @@ def generate_schema_artifacts() -> dict[Path, str]:
                 "explanation_paths",
                 "follow_on_tranches",
             ],
-            "additionalProperties": True,
+            "additionalProperties": False,
             "properties": {
                 "schema": {
                     "type": "string",
