@@ -35,6 +35,7 @@
     "local_execution_target",
     "reason_codes",
     "message",
+    "quota_evidence_refs",
     "resource_state_refs"
   ],
   "properties": {
@@ -100,6 +101,10 @@
       "items": {"type": "string", "minLength": 1}
     },
     "message": {"type": "string", "minLength": 1},
+    "quota_evidence_refs": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
     "resource_state_refs": {
       "type": "array",
       "items": {"type": "string", "minLength": 1}

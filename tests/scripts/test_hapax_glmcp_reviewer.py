@@ -27,7 +27,7 @@ ENV_KEYS = (
     "HAPAX_GLMCP_REVIEW_MAX_TOKENS",
     "HAPAX_GLMCP_REVIEW_TEMPERATURE",
     "HAPAX_GLMCP_REVIEW_THINKING",
-    "HAPAX_GLMCP_REVIEW_ALLOW_NON_52",
+    "HAPAX_GLMCP_REVIEW_ALLOW_NON_CODING_PLAN_MODEL",
     "HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE",
     "HAPAX_GLMCP_REVIEW_ALLOW_BASE_URL_OVERRIDE",
 )
@@ -93,7 +93,7 @@ def test_call_glm_uses_coding_plan_endpoint_and_model(monkeypatch: pytest.Monkey
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5.2",
+        model="glm-5",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -107,7 +107,7 @@ def test_call_glm_uses_coding_plan_endpoint_and_model(monkeypatch: pytest.Monkey
     assert seen["timeout"] == 42
     assert seen["headers"]["Authorization"] == "Bearer test-secret-token"
     body = seen["body"]
-    assert body["model"] == "glm-5.2"
+    assert body["model"] == "glm-5"
     assert body["messages"][0]["role"] == "system"
     assert "UNTRUSTED DATA" in body["messages"][0]["content"]
     assert "quote every title/detail string" in body["messages"][0]["content"]
@@ -129,7 +129,7 @@ def test_http_error_redacts_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5.2",
+        model="glm-5",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -146,6 +146,246 @@ def test_http_error_redacts_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "check the Z.ai Coding Plan endpoint/status" in message
 
 
+def test_zai_quota_error_classifies_reset_without_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+
+    def fake_open(_request: object, *, timeout: float) -> object:
+        body = {
+            "error": {
+                "code": "1308",
+                "message": "Usage limit reached for test-secret-token. Your limit will reset at 2026-06-18T20:00:00Z.",
+                "next_flush_time": "2026-06-18T20:00:00Z",
+            }
+        }
+        raise urllib.error.HTTPError(
+            "url",
+            429,
+            "Too Many Requests",
+            {},
+            io.BytesIO(json.dumps(body).encode("utf-8")),
+        )
+
+    monkeypatch.setattr(module, "open_no_redirect", fake_open)
+    config = module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_BASE_URL,
+        model="glm-5",
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking="disabled",
+    )
+
+    with pytest.raises(module.ApiError) as excinfo:
+        module.call_glm("review prompt", config, "test-secret-token")
+
+    message = str(excinfo.value)
+    assert "HTTP 429" in message
+    assert "zai_error_code=1308" in message
+    assert "error_class=quota_exhausted" in message
+    assert "action=hold_until_reset" in message
+    assert "resets_at=2026-06-18T20:00:00Z" in message
+    assert "test-secret-token" not in message
+    assert "<redacted>" in message
+
+
+@pytest.mark.parametrize(
+    ("code", "expected_class", "expected_action"),
+    [
+        ("1302", "rate_limited_concurrency", "backoff_reduce_concurrency"),
+        ("1303", "rate_limited_frequency", "backoff_reduce_frequency"),
+        ("1261", "prompt_too_long", "reduce_prompt_size"),
+        ("1304", "daily_limit_exhausted", "hold_until_limit_reset"),
+        ("1305", "rate_limited", "backoff"),
+        ("1310", "quota_exhausted", "hold_until_reset"),
+        ("1311", "plan_model_unavailable", "switch_model_or_upgrade_plan"),
+        ("1312", "provider_high_traffic", "backoff_or_switch_model"),
+        ("1313", "fair_use_restricted", "hold_until_manual_clear"),
+        ("1113", "account_balance_or_arrears", "hold_no_payg_fallback"),
+        ("1121", "account_hard_hold", "contact_provider"),
+    ],
+)
+def test_zai_business_error_code_classification(
+    code: str,
+    expected_class: str,
+    expected_action: str,
+) -> None:
+    module = _load_module()
+
+    info = module.classify_zai_error(
+        429,
+        json.dumps({"error": {"code": code, "message": "provider message"}}),
+    )
+
+    assert info.code == code
+    assert info.error_class == expected_class
+    assert info.action == expected_action
+
+
+@pytest.mark.parametrize(
+    ("status", "detail", "expected_class", "expected_action"),
+    [
+        (401, "missing token", "auth_failed", "check_api_key"),
+        (503, "upstream unavailable", "provider_error", "retry_later"),
+        (418, "unexpected provider response", "api_error", "inspect_provider_response"),
+    ],
+)
+def test_zai_http_status_fallback_classification(
+    status: int,
+    detail: str,
+    expected_class: str,
+    expected_action: str,
+) -> None:
+    module = _load_module()
+
+    info = module.classify_zai_error(status, detail)
+
+    assert info.code is None
+    assert info.error_class == expected_class
+    assert info.action == expected_action
+
+
+def test_zai_error_boolean_structured_fields_are_not_coerced() -> None:
+    module = _load_module()
+    detail = json.dumps(
+        {
+            "error": {
+                "code": True,
+                "message": False,
+                "next_flush_time": True,
+            }
+        }
+    )
+
+    info = module.classify_zai_error(503, detail)
+    message = module.format_zai_error(503, detail, secret="test-secret-token")
+
+    assert info.code is None
+    assert info.message is None
+    assert info.resets_at is None
+    assert "zai_error_code=True" not in message
+    assert "message=False" not in message
+    assert "resets_at=True" not in message
+    assert "error_class=provider_error" in message
+
+
+@pytest.mark.parametrize(
+    ("status", "detail", "expected_class", "expected_action"),
+    [
+        (401, "missing token", "auth_failed", "check_api_key"),
+        (503, "upstream unavailable", "provider_error", "retry_later"),
+        (418, "unexpected provider response", "api_error", "inspect_provider_response"),
+    ],
+)
+def test_call_glm_http_error_paths_surface_structured_classification(
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+    detail: str,
+    expected_class: str,
+    expected_action: str,
+) -> None:
+    module = _load_module()
+
+    def fake_open(_request: object, *, timeout: float) -> object:
+        raise urllib.error.HTTPError(
+            "url",
+            status,
+            "provider error",
+            {},
+            io.BytesIO(detail.encode("utf-8")),
+        )
+
+    monkeypatch.setattr(module, "open_no_redirect", fake_open)
+    config = module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_BASE_URL,
+        model="glm-5",
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking="disabled",
+    )
+
+    with pytest.raises(module.ApiError) as excinfo:
+        module.call_glm("review prompt", config, "test-secret-token")
+
+    message = str(excinfo.value)
+    assert f"HTTP {status}" in message
+    assert f"error_class={expected_class}" in message
+    assert f"action={expected_action}" in message
+    assert "retry later or check the Z.ai Coding Plan endpoint/status" in message
+
+
+def test_format_zai_error_sanitizes_untrusted_structured_values() -> None:
+    module = _load_module()
+    detail = json.dumps(
+        {
+            "error": {
+                "code": "x; error_class=quota_exhausted",
+                "message": "provider secret-token message;\taction=hold_until_reset\u2028next\x08line",
+                "next_flush_time": "secret-token soon;\verror_class=provider_error",
+            }
+        }
+    )
+
+    message = module.format_zai_error(418, detail, secret="secret-token")
+
+    assert "zai_error_code=untrusted" in message
+    assert "resets_at=<redacted> soon error_class=provider_error" in message
+    assert "message=provider <redacted> message action=hold_until_reset next line" in message
+    assert "secret-token" not in message
+    assert "; error_class=quota_exhausted" not in message
+    assert "; action=hold_until_reset" not in message
+    assert "\t" not in message
+    assert "\x08" not in message
+    assert "\u2028" not in message
+
+
+def test_format_zai_error_emits_structured_fields_in_contract_order() -> None:
+    module = _load_module()
+    detail = json.dumps(
+        {
+            "error": {
+                "code": "1308",
+                "message": "Usage limit reached.",
+                "next_flush_time": "2026-06-18T20:00:00Z",
+            }
+        }
+    )
+
+    message = module.format_zai_error(429, detail, secret="test-secret-token")
+
+    ordered_fields = (
+        "HTTP 429",
+        "zai_error_code=1308",
+        "error_class=quota_exhausted",
+        "action=hold_until_reset",
+        "resets_at=2026-06-18T20:00:00Z",
+        "message=Usage limit reached.",
+        "detail=",
+    )
+    positions = [message.index(field) for field in ordered_fields]
+    assert positions == sorted(positions)
+
+
+def test_format_zai_error_sanitizes_untrusted_detail_branch() -> None:
+    module = _load_module()
+    detail = "provider secret-token detail;\naction=hold_until_reset\tclass=quota\x08tail"
+
+    message = module.format_zai_error(503, detail, secret="secret-token")
+
+    assert "HTTP 503" in message
+    assert "error_class=provider_error" in message
+    assert "detail=provider <redacted> detail action=hold_until_reset class=quota tail" in message
+    assert "secret-token" not in message
+    assert "; action=hold_until_reset" not in message
+    assert "\n" not in message
+    assert "\t" not in message
+    assert "\x08" not in message
+
+
 def test_network_error_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_module()
 
@@ -156,7 +396,7 @@ def test_network_error_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5.2",
+        model="glm-5",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -177,7 +417,7 @@ def test_timeout_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5.2",
+        model="glm-5",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -198,7 +438,7 @@ def test_invalid_json_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5.2",
+        model="glm-5",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -214,7 +454,7 @@ def test_malformed_response_shapes_have_next_actions(monkeypatch: pytest.MonkeyP
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5.2",
+        model="glm-5",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -265,7 +505,7 @@ def test_content_list_response_is_joined(monkeypatch: pytest.MonkeyPatch) -> Non
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5.2",
+        model="glm-5",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -295,7 +535,7 @@ def test_redirect_is_refused_before_replaying_authorization(
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5.2",
+        model="glm-5",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -333,7 +573,7 @@ def test_real_no_redirect_opener_does_not_follow_redirect() -> None:
         config = module.ReviewConfig(
             secret_entry="glmcp/api-key",
             base_url=f"http://127.0.0.1:{server.server_port}",
-            model="glm-5.2",
+            model="glm-5",
             timeout_seconds=5,
             max_tokens=123,
             temperature=0,
@@ -388,7 +628,7 @@ def test_main_prints_model_reply(
     assert captured.err == ""
 
 
-def test_rejects_non_glm_52_model_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rejects_non_coding_plan_model_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_module()
     _clean_env(monkeypatch)
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_MODEL", "glm-4.5")
@@ -404,7 +644,8 @@ def test_accepts_reviewed_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE", "1")
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_BASE_URL", "https://api.z.ai/api/coding/paas/v4-beta")
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_ALLOW_BASE_URL_OVERRIDE", "1")
-    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_MODEL", "glm-5.2[1m]")
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_MODEL", "glm-4.7")
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_ALLOW_NON_CODING_PLAN_MODEL", "1")
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_THINKING", "enabled")
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_MAX_TOKENS", "321")
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_TEMPERATURE", "0.2")
@@ -413,7 +654,7 @@ def test_accepts_reviewed_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert config.secret_entry == "glmcp/alt-key"
     assert config.base_url == "https://api.z.ai/api/coding/paas/v4-beta"
-    assert config.model == "glm-5.2[1m]"
+    assert config.model == "glm-4.7"
     assert config.thinking == "enabled"
     assert config.max_tokens == 321
     assert config.temperature == 0.2
@@ -609,7 +850,7 @@ def test_empty_content_with_reasoning_points_to_disabled_thinking(
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5.2",
+        model="glm-5",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,

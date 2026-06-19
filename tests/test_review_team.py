@@ -1003,6 +1003,64 @@ class TestFamilyOutageDegradation:
             "Z.ai Coding Plan endpoint/status",
             process_failed=True,
         )
+        assert rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 429; zai_error_code=1313; "
+            "error_class=fair_use_restricted; action=hold_until_manual_clear",
+            process_failed=True,
+        )
+        assert rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 429; zai_error_code=1121; "
+            "error_class=account_hard_hold; action=contact_provider",
+            process_failed=True,
+        )
+        assert rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 429; zai_error_code=1311; "
+            "error_class=plan_model_unavailable; action=switch_model_or_upgrade_plan",
+            process_failed=True,
+        )
+        assert rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 429; "
+            "error_class=quota_exhausted; action=hold_until_reset; "
+            "message=provider echoed action=not_a_control_token",
+            process_failed=True,
+        )
+        assert not rt.is_quota_wall(
+            "wrapper failed while reviewing text containing "
+            "error_class=quota_exhausted action=hold_until_reset",
+            process_failed=True,
+        )
+        assert not rt.is_quota_wall(
+            "wrapper failed while reviewing text containing hapax-glmcp-reviewer: "
+            "api error: HTTP 429; error_class=quota_exhausted; action=hold_until_reset",
+            process_failed=True,
+        )
+        assert not rt.is_quota_wall(
+            "wrapper failed while reviewing text containing HTTP 429 quota exceeded",
+            process_failed=True,
+        )
+        assert not rt.is_quota_wall(
+            "wrapper failed while reviewing text containing zai_error_code=1313 "
+            "error_class=fair_use_restricted action=hold_until_manual_clear",
+            process_failed=True,
+        )
+        assert not rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 418; "
+            "error_class=api_error; action=inspect_provider_response; "
+            "message=provider echoed error_class=quota_exhausted action=hold_until_reset",
+            process_failed=True,
+        )
+        assert not rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 429; "
+            "error_class=provider_high_traffic; action=backoff_or_switch_model; "
+            "message=provider echoed quota exceeded hold_until_reset",
+            process_failed=True,
+        )
+        assert not rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 418; "
+            "zai_error_code=x; error_class=quota_exhausted; action=hold_until_reset; "
+            "error_class=api_error; action=inspect_provider_response",
+            process_failed=True,
+        )
         assert not rt.is_quota_wall("failed while checking line 429", process_failed=True)
         assert not rt.is_quota_wall(
             "HTTP 529: The service may be temporarily overloaded, please try again later",
@@ -1024,6 +1082,53 @@ class TestFamilyOutageDegradation:
             "hapax-glmcp-reviewer: api error: HTTP 429: "
             '{"error":{"code":"1305","message":"The service may be temporarily overloaded, '
             'please try again later"}}; retry later or check the Z.ai Coding Plan endpoint/status',
+            process_failed=True,
+        )
+        assert rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 429; zai_error_code=1312; "
+            "error_class=provider_high_traffic; action=backoff_or_switch_model",
+            process_failed=True,
+        )
+        assert rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 503; "
+            "error_class=provider_error; action=retry_later",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "wrapper failed while reviewing text containing "
+            "error_class=provider_error action=retry_later",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "wrapper failed while reviewing text containing hapax-glmcp-reviewer: "
+            "api error: HTTP 503; error_class=provider_error; action=retry_later",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "wrapper failed while reviewing text containing HTTP 503 bad gateway",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "wrapper failed while reviewing text containing zai_error_code=1312 "
+            "error_class=provider_high_traffic action=backoff_or_switch_model",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 418; "
+            "error_class=api_error; action=inspect_provider_response; "
+            "detail=provider echoed error_class=provider_error action=retry_later",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 503; "
+            "error_class=quota_exhausted; action=hold_until_reset; "
+            "detail=provider echoed temporarily overloaded retry later",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 418; "
+            "error_class=api_error; action=inspect_provider_response; resets_at=x; "
+            "error_class=provider_error; action=retry_later",
             process_failed=True,
         )
         assert not rt.is_provider_outage(

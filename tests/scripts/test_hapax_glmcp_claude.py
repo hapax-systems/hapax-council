@@ -44,7 +44,9 @@ def _install_pass_stub(
     )
 
 
-def test_check_mode_sets_glm_52_environment_without_printing_secret(tmp_path: Path) -> None:
+def test_check_mode_sets_coding_plan_environment_without_printing_secret(
+    tmp_path: Path,
+) -> None:
     env, bin_dir = _base_env(tmp_path)
     _install_pass_stub(bin_dir)
     env_file = tmp_path / "claude-env.txt"
@@ -83,8 +85,8 @@ def test_check_mode_sets_glm_52_environment_without_printing_secret(tmp_path: Pa
     assert "test-secret-token" not in result.stderr
     launched_env = env_file.read_text(encoding="utf-8")
     assert "ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic" in launched_env
-    assert "ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.2[1m]" in launched_env
-    assert "ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5.2[1m]" in launched_env
+    assert "ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5" in launched_env
+    assert "ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5" in launched_env
     assert "ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-4.5-air" in launched_env
     assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000" in launched_env
     assert "HAPAX_LLM_PROVIDER=zai-glm-coding-plan" in launched_env
@@ -156,7 +158,7 @@ def test_exec_path_propagates_claude_failure(tmp_path: Path) -> None:
     assert "provider failed" in result.stderr
 
 
-def test_rejects_non_glm_52_primary_model_by_default(tmp_path: Path) -> None:
+def test_rejects_non_coding_plan_primary_model_by_default(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
     _install_pass_stub(bin_dir)
     _write_executable(bin_dir / "claude", "exit 0\n")
@@ -175,12 +177,12 @@ def test_rejects_non_glm_52_primary_model_by_default(tmp_path: Path) -> None:
     assert "refusing primary model 'glm-4.5'" in result.stderr
 
 
-def test_allows_non_glm_52_primary_model_only_with_explicit_gate(tmp_path: Path) -> None:
+def test_allows_non_coding_plan_primary_model_only_with_explicit_gate(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
     _install_pass_stub(bin_dir)
     _write_executable(bin_dir / "claude", "printf 'claude 0.0-test\\n'\n")
     env["HAPAX_GLMCP_MODEL"] = "glm-4.5"
-    env["HAPAX_GLMCP_ALLOW_NON_52"] = "1"
+    env["HAPAX_GLMCP_ALLOW_NON_CODING_PLAN_MODEL"] = "1"
 
     result = subprocess.run(
         [str(SCRIPT), "--check"],

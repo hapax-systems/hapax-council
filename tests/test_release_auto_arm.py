@@ -112,7 +112,7 @@ def test_ineligible_when_public_claim_sensitive() -> None:
 
 def test_pass_backed_runtime_secret_subscription_task_is_auto_armable() -> None:
     fm = _eligible_frontmatter(
-        title="Activate GLMCP GLM-5.2 lane with pass-backed secret",
+        title="Activate GLMCP GLM-5 lane with pass-backed secret",
         pass_backed_secret_only=True,
         no_secret_value_storage=True,
         secret_entry="glmcp/api-key",
@@ -128,7 +128,7 @@ def test_pass_backed_runtime_secret_subscription_task_is_auto_armable() -> None:
 
 def test_pass_backed_runtime_secret_requires_no_secret_value_storage() -> None:
     fm = _eligible_frontmatter(
-        title="Activate GLMCP GLM-5.2 lane with pass-backed secret",
+        title="Activate GLMCP GLM-5 lane with pass-backed secret",
         pass_backed_secret_only=True,
         secret_entry="glmcp/api-key",
         subscription_quota_only=True,
@@ -141,7 +141,7 @@ def test_pass_backed_runtime_secret_requires_no_secret_value_storage() -> None:
 
 def test_pass_backed_runtime_secret_rejects_traversing_pass_entry() -> None:
     fm = _eligible_frontmatter(
-        title="Activate GLMCP GLM-5.2 lane with pass-backed secret",
+        title="Activate GLMCP GLM-5 lane with pass-backed secret",
         pass_backed_secret_only=True,
         no_secret_value_storage=True,
         secret_entry="glmcp/../other/api-key",
@@ -155,7 +155,7 @@ def test_pass_backed_runtime_secret_rejects_traversing_pass_entry() -> None:
 
 def test_pass_backed_runtime_secret_rejects_non_glmcp_pass_entry() -> None:
     fm = _eligible_frontmatter(
-        title="Activate GLMCP GLM-5.2 lane with pass-backed secret",
+        title="Activate GLMCP GLM-5 lane with pass-backed secret",
         pass_backed_secret_only=True,
         no_secret_value_storage=True,
         secret_entry="other/api-key",
@@ -169,7 +169,7 @@ def test_pass_backed_runtime_secret_rejects_non_glmcp_pass_entry() -> None:
 
 def test_pass_backed_runtime_secret_does_not_waive_explicit_privacy_flag() -> None:
     fm = _eligible_frontmatter(
-        title="Activate GLMCP GLM-5.2 lane with pass-backed secret",
+        title="Activate GLMCP GLM-5 lane with pass-backed secret",
         pass_backed_secret_only=True,
         no_secret_value_storage=True,
         secret_entry="glmcp/api-key",

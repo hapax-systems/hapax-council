@@ -44,6 +44,7 @@ from shared.quota_spend_ledger import (
     evaluate_paid_route_eligibility,
     load_quota_spend_ledger,
     load_quota_spend_ledger_resolved,
+    subscription_quota_state_for_route,
 )
 from shared.route_metadata_schema import (
     DemandVector,
@@ -73,6 +74,10 @@ NON_MUTATING_SURFACES = frozenset({"none"})
 CLOUD_BURST_ROUTE_IDS = frozenset({"api.headless.api_frontier"})
 LOCAL_DEV_PLATFORMS = frozenset({"antigrav", "claude", "codex", "gemini", "vibe"})
 LOCAL_DEV_TARGET = "appendix"
+# GLMCP false-negative recovery is receipt-plane: create a fresh short-lived
+# supported-tool admission receipt and rerun quota telemetry. There is no
+# environment kill switch for stale/unknown subscription quota.
+ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED = frozenset({"glmcp.review.direct"})
 
 
 class DispatchAction(StrEnum):
@@ -138,12 +143,15 @@ class QuotaSpendState(_PolicyModel):
     available: bool
     load_error: str | None = None
     budget_ledger_stale: bool | None = None
+    subscription_quota_state: str | None = None
+    route_subscription_quota_state: str | None = None
     paid_api_budget_state: str | None = None
     local_resource_state: str | None = None
     paid_api_route_eligible: bool | None = None
     paid_api_blocking_reasons: tuple[str, ...] = Field(default=())
     paid_route_eligibility_state: str | None = None
     paid_route_eligibility_reasons: tuple[str, ...] = Field(default=())
+    route_quota_evidence_refs: tuple[str, ...] = Field(default=())
     evidence_refs: tuple[str, ...] = Field(default=())
 
 
@@ -335,6 +343,7 @@ class RouteDecision(_PolicyModel):
     local_execution_target: str | None = None
     reason_codes: tuple[str, ...] = Field(default=())
     message: str
+    quota_evidence_refs: tuple[str, ...] = Field(default=())
     resource_state_refs: tuple[str, ...] = Field(default=())
     _dimensional_receipt: DimensionalRouteReceipt | None = PrivateAttr(default=None)
 
@@ -588,19 +597,44 @@ def evaluate_dispatch_policy(
 
     capability = request.capability
     if capability is None:
+        reasons = ["capability_registry_unavailable"]
+        if _requires_route_specific_subscription_quota(request.route_id):
+            reasons.extend(
+                [
+                    "subscription_route_quota_not_fresh",
+                    "route_subscription_quota_state:unknown",
+                    "subscription_route_capability_missing",
+                ]
+            )
         return _decision(
             request,
             DispatchAction.HOLD,
-            ("capability_registry_unavailable",),
+            tuple(reasons),
+            checked_at,
+            quality_floor_satisfied=False,
+            authority_allowed=False,
+        )
+    if normalize_route_id(capability.route_id) != normalize_route_id(request.route_id):
+        return _decision(
+            request,
+            DispatchAction.REFUSE,
+            (
+                "capability_route_mismatch",
+                f"request_route_id:{normalize_route_id(request.route_id)}",
+                f"capability_route_id:{normalize_route_id(capability.route_id)}",
+                *_subscription_quota_hold_reasons(request, capability),
+            ),
             checked_at,
             quality_floor_satisfied=False,
             authority_allowed=False,
         )
     if not capability.supported:
+        unsupported_reasons = ["unsupported_route"]
+        unsupported_reasons.extend(_unsupported_route_subscription_quota_reasons(request))
         return _decision(
             request,
             DispatchAction.REFUSE,
-            ("unsupported_route",),
+            tuple(unsupported_reasons),
             checked_at,
             quality_floor_satisfied=False,
             authority_allowed=False,
@@ -658,6 +692,17 @@ def evaluate_dispatch_policy(
             request,
             DispatchAction.REFUSE,
             paid_reasons,
+            checked_at,
+            quality_floor_satisfied=False,
+            authority_allowed=False,
+        )
+
+    subscription_quota_reasons = _subscription_quota_hold_reasons(request, capability)
+    if subscription_quota_reasons:
+        return _decision(
+            request,
+            DispatchAction.HOLD,
+            subscription_quota_reasons,
             checked_at,
             quality_floor_satisfied=False,
             authority_allowed=False,
@@ -750,6 +795,7 @@ def route_decision_receipt_payload(decision: RouteDecision) -> dict[str, Any]:
         "route_policy_degraded_state": decision.degraded_state,
         "route_policy_registry_freshness_green": decision.registry_freshness_green,
         "route_policy_quota_freshness_green": decision.quota_freshness_green,
+        "route_policy_quota_evidence_refs": list(decision.quota_evidence_refs),
         "route_policy_resource_freshness_green": decision.resource_freshness_green,
         "route_policy_route_selection_authority": decision.route_selection_authority,
         "route_policy_quality_floor_satisfied": decision.quality_floor_satisfied,
@@ -1779,6 +1825,23 @@ def _quota_state(
     eligibility_state: str | None = None
     eligibility_reasons: tuple[str, ...] = ()
     evidence_refs: tuple[str, ...] = ()
+    route_subscription_state: str | None = None
+    route_quota_evidence_refs: tuple[str, ...] = ()
+    if capability is not None and (
+        capability.capacity_pool == "subscription_quota"
+        or _requires_route_specific_subscription_quota(capability.route_id)
+    ):
+        state, refs = subscription_quota_state_for_route(
+            quota_ledger,
+            capability.route_id,
+            now=checked_at,
+        )
+        missing_ref = f"quota-snapshot:{normalize_route_id(capability.route_id)}:missing"
+        if refs != (missing_ref,) or _requires_route_specific_subscription_quota(
+            capability.route_id
+        ):
+            route_subscription_state = state.value
+            route_quota_evidence_refs = refs
     if capability is not None and capability.capacity_pool in PAID_CAPACITY_POOLS:
         request = PaidRouteRequest(
             route_id=capability.route_id,
@@ -1799,12 +1862,15 @@ def _quota_state(
     return QuotaSpendState(
         available=True,
         budget_ledger_stale=dashboard.budget_ledger_stale,
+        subscription_quota_state=dashboard.subscription_quota_state.value,
+        route_subscription_quota_state=route_subscription_state,
         paid_api_budget_state=dashboard.paid_api_budget_state.value,
         local_resource_state=dashboard.local_resource_state.value,
         paid_api_route_eligible=dashboard.paid_api_route_eligible,
         paid_api_blocking_reasons=tuple(dashboard.paid_api_blocking_reasons),
         paid_route_eligibility_state=eligibility_state,
         paid_route_eligibility_reasons=eligibility_reasons,
+        route_quota_evidence_refs=route_quota_evidence_refs,
         evidence_refs=evidence_refs,
     )
 
@@ -1857,6 +1923,7 @@ def _decision(
         **cloud_burst_receipt,
         reason_codes=tuple(reason for reason in reasons if reason),
         message="; ".join(reason for reason in reasons if reason) or action.value,
+        quota_evidence_refs=_quota_evidence_refs(request.quota),
         resource_state_refs=request.resource_state_refs,
     )
     decision._dimensional_receipt = _build_dimensional_route_receipt(
@@ -1889,6 +1956,20 @@ def _registry_freshness_green(request: DispatchRequest) -> bool:
 
 def _quota_freshness_green(request: DispatchRequest) -> bool:
     capability = request.capability
+    if _requires_route_specific_subscription_quota(request.route_id):
+        if (
+            capability is None
+            or not capability.supported
+            or capability.capacity_pool != "subscription_quota"
+            or not capability.freshness_ok
+        ):
+            return False
+        quota = request.quota
+        if quota is None or not quota.available:
+            return False
+        if quota.budget_ledger_stale is not False:
+            return False
+        return quota.route_subscription_quota_state == "fresh"
     if (
         capability is not None
         and capability.capacity_pool == "subscription_quota"
@@ -2248,6 +2329,70 @@ def _paid_route_refusal_reasons(
     return ()
 
 
+def _subscription_quota_hold_reasons(
+    request: DispatchRequest,
+    capability: RouteCapabilityState,
+) -> tuple[str, ...]:
+    requires_route_specific_quota = _requires_route_specific_subscription_quota(request.route_id)
+    if not requires_route_specific_quota:
+        return ()
+    if capability.capacity_pool != "subscription_quota":
+        return (
+            "subscription_route_capacity_pool_mismatch",
+            f"capacity_pool:{capability.capacity_pool or 'missing'}",
+            f"route_id:{normalize_route_id(request.route_id)}",
+        )
+    quota = request.quota
+    if quota is None or not quota.available:
+        return ("subscription_route_quota_unavailable",)
+    if quota.budget_ledger_stale is True:
+        return ("subscription_quota_ledger_stale",)
+    if quota.budget_ledger_stale is not False:
+        return ("subscription_quota_ledger_unknown",)
+    route_state = quota.route_subscription_quota_state
+    if route_state is None:
+        if requires_route_specific_quota:
+            route_state = "unknown"
+        else:
+            return ()
+    if route_state == "fresh":
+        return ()
+    evidence = quota.route_quota_evidence_refs or (
+        f"quota-snapshot:{normalize_route_id(request.route_id)}:missing",
+    )
+    return (
+        "subscription_route_quota_not_fresh",
+        f"route_subscription_quota_state:{route_state}",
+        *evidence,
+    )
+
+
+def _requires_route_specific_subscription_quota(route_id: str) -> bool:
+    return normalize_route_id(route_id) in ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED
+
+
+def _unsupported_route_subscription_quota_reasons(
+    request: DispatchRequest,
+) -> tuple[str, ...]:
+    if not _requires_route_specific_subscription_quota(request.route_id):
+        return ()
+    quota = request.quota
+    if quota is None or not quota.available:
+        return ("subscription_route_quota_unavailable", "subscription_route_capability_missing")
+    route_state = quota.route_subscription_quota_state or "unknown"
+    if route_state == "fresh":
+        return ("subscription_route_capability_missing",)
+    evidence = quota.route_quota_evidence_refs or (
+        f"quota-snapshot:{normalize_route_id(request.route_id)}:missing",
+    )
+    return (
+        "subscription_route_quota_not_fresh",
+        f"route_subscription_quota_state:{route_state}",
+        *evidence,
+        "subscription_route_capability_missing",
+    )
+
+
 def _freshness_hold_reasons(capability: RouteCapabilityState) -> tuple[str, ...]:
     if capability.freshness_ok:
         return ()
@@ -2295,6 +2440,12 @@ def _resource_state_refs(
     if quota is not None and quota.local_resource_state:
         refs.append(f"quota.local_resource_state:{quota.local_resource_state}")
     return tuple(refs)
+
+
+def _quota_evidence_refs(quota: QuotaSpendState | None) -> tuple[str, ...]:
+    if quota is None:
+        return ()
+    return tuple(dict.fromkeys([*quota.route_quota_evidence_refs, *quota.evidence_refs]))
 
 
 def _task_class_for(metadata: RouteMetadataAssessment) -> str:
