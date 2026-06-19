@@ -53,3 +53,16 @@ def test_cli_json_mode(tmp_path: Path, monkeypatch, capsys) -> None:
     rc = main([str(bundle), "--json"])
     assert rc == 0
     assert '"concept_count"' in capsys.readouterr().out
+
+
+def test_cli_rejects_non_local_api_base(tmp_path: Path, monkeypatch, capsys) -> None:
+    bundle = _bundle(tmp_path, monkeypatch)
+    rc = main([str(bundle), "--api-base", "https://api.anthropic.com"])
+    assert rc == 2
+    assert "local-only" in capsys.readouterr().err
+
+
+def test_cli_accepts_local_api_base(tmp_path: Path, monkeypatch, capsys) -> None:
+    bundle = _bundle(tmp_path, monkeypatch)
+    rc = main([str(bundle), "--api-base", "http://localhost:5000/v1"])
+    assert rc == 0

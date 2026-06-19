@@ -25,10 +25,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -138,6 +140,42 @@ def _effective_allowed_fields(policy: dict[str, Any] | None) -> frozenset[str]:
     return frozenset(allowed - FORBIDDEN_FIELDS)
 
 
+# Local-only delivery boundary (contract section 1 / predicate L1b). The adapter
+# refuses to hand assembled context to a non-local route. "Local" = operator-
+# fleet-private: loopback, a private-LAN address, or a Tailscale (.ts.net) host —
+# never a public provider endpoint. Fail-closed on anything else.
+_PRIVATE_HOST_RE = re.compile(
+    r"^(?:localhost"
+    r"|127\.\d+\.\d+\.\d+"
+    r"|10\.\d+\.\d+\.\d+"
+    r"|192\.168\.\d+\.\d+"
+    r"|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+"
+    r"|[A-Za-z0-9.-]+\.ts\.net)$"
+)
+
+
+def assert_local_route(api_base: str) -> None:
+    """Fail closed unless ``api_base`` resolves to an operator-fleet-private host.
+
+    The contract requires the adapter to ASSERT local-only delivery (not merely
+    configure it). A loopback / private-LAN / Tailscale host passes; any public
+    or provider endpoint raises.
+    """
+    host = (urlparse(api_base).hostname or "").lower()
+    if not host or not _PRIVATE_HOST_RE.match(host):
+        raise PromptContextError(
+            f"refusing non-local route '{api_base}': HKP prompt context is local-only; "
+            "next-action: target a local TabbyAPI/Ollama or fleet-private (Tailscale) "
+            "route, or open a separate provider-spend + egress task"
+        )
+
+
+def build_prompt_context_for_route(bundle: Path, *, api_base: str) -> PromptContextResult:
+    """Assemble context only after asserting the delivery route is local."""
+    assert_local_route(api_base)
+    return build_prompt_context(bundle)
+
+
 def _primary_source(concept: HkpConceptFrontmatter) -> dict[str, str]:
     if not concept.source_refs:
         return {"uri": "(none)", "freshness_state": "unknown"}
@@ -200,7 +238,10 @@ def _read_concepts(bundle: Path) -> list[HkpConceptFrontmatter]:
     concepts: list[HkpConceptFrontmatter] = []
     for path in sorted(concepts_dir.glob("*.md")):
         if path.is_symlink():
-            raise PromptContextError(f"refusing symlinked concept: {path}")
+            raise PromptContextError(
+                f"refusing symlinked concept: {path}; "
+                "next-action: remove the symlink or regenerate the bundle"
+            )
         parsed = parse_frontmatter_with_diagnostics(path)
         if not parsed.ok or parsed.frontmatter is None:
             raise PromptContextError(
@@ -230,7 +271,10 @@ def build_prompt_context(bundle: Path) -> PromptContextResult:
     serialized = json.dumps(snippets)
     for forbidden in FORBIDDEN_FIELDS:
         if f'"{forbidden}"' in serialized:
-            raise PromptContextError(f"forbidden field '{forbidden}' present in context")
+            raise PromptContextError(
+                f"forbidden field '{forbidden}' present in context; "
+                "next-action: drop it from the consumer allow-list and regenerate the bundle"
+            )
     return PromptContextResult(text=text, snippets=snippets, concept_count=len(snippets))
 
 
@@ -239,10 +283,19 @@ def main(argv: list[str] | None = None) -> int:
         description="Assemble local support-only HKP prompt context from a cache bundle."
     )
     parser.add_argument("bundle", help="path to an HKP shadow bundle directory")
+    parser.add_argument(
+        "--api-base",
+        default=None,
+        help="intended local delivery route; if set it must be fleet-private (fail-closed)",
+    )
     parser.add_argument("--json", action="store_true", help="emit JSON snippets")
     args = parser.parse_args(argv)
     try:
-        result = build_prompt_context(Path(args.bundle))
+        bundle_path = Path(args.bundle)
+        if args.api_base:
+            result = build_prompt_context_for_route(bundle_path, api_base=args.api_base)
+        else:
+            result = build_prompt_context(bundle_path)
     except PromptContextError as exc:
         print(f"hapax-hkp-prompt-context: {exc}", file=sys.stderr)
         return 2

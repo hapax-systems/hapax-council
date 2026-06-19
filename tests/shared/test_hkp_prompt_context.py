@@ -12,7 +12,9 @@ from shared.hkp_prompt_context import (
     NON_AUTHORITY_BANNER,
     PromptContextError,
     _effective_allowed_fields,
+    assert_local_route,
     build_prompt_context,
+    build_prompt_context_for_route,
 )
 
 GENERATED_AT = "2026-06-19T20:03:41Z"
@@ -116,4 +118,52 @@ def test_build_prompt_context_raises_on_denied_bundle(tmp_path: Path, monkeypatc
             row["default"] = "deny"
     policy_path.write_text(yaml.safe_dump(policy), encoding="utf-8")
     with pytest.raises(PromptContextError):
+        build_prompt_context(bundle)
+
+
+@pytest.mark.parametrize(
+    "api_base",
+    [
+        "http://localhost:5000/v1",
+        "http://127.0.0.1:11434",
+        "http://192.168.68.50:5000/v1",
+        "http://hapax-podium.tailf9491.ts.net:5000/v1",
+    ],
+)
+def test_assert_local_route_accepts_fleet_private(api_base: str) -> None:
+    assert_local_route(api_base)  # must not raise
+
+
+@pytest.mark.parametrize(
+    "api_base",
+    [
+        "https://api.anthropic.com",
+        "https://generativelanguage.googleapis.com/v1",
+        "https://api.openai.com/v1",
+        "https://api.perplexity.ai",
+        "",
+    ],
+)
+def test_assert_local_route_rejects_public_provider(api_base: str) -> None:
+    with pytest.raises(PromptContextError):
+        assert_local_route(api_base)
+
+
+def test_build_for_route_enforces_local(tmp_path: Path, monkeypatch) -> None:
+    bundle = _bundle(tmp_path, monkeypatch)
+    with pytest.raises(PromptContextError):
+        build_prompt_context_for_route(bundle, api_base="https://api.anthropic.com")
+    ok = build_prompt_context_for_route(bundle, api_base="http://localhost:5000/v1")
+    assert ok.concept_count == 1
+
+
+def test_symlink_concept_rejected(tmp_path: Path, monkeypatch) -> None:
+    bundle = _bundle(tmp_path, monkeypatch)
+    concept = next((bundle / "concepts").glob("*.md"))
+    real = concept.read_bytes()
+    concept.unlink()
+    target = bundle / "concepts" / "_real.md.hidden"
+    target.write_bytes(real)
+    concept.symlink_to(target)
+    with pytest.raises(PromptContextError, match="symlink"):
         build_prompt_context(bundle)
