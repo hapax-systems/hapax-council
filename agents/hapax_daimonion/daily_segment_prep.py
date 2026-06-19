@@ -219,6 +219,30 @@ PREP_ARTIFACT_AUTHORITY = "prior_only"
 PREP_DIAGNOSTIC_SCHEMA_VERSION = 1
 PREP_DIAGNOSTIC_AUTHORITY = "diagnostic_only"
 PREP_DIAGNOSTIC_LEDGER_FILENAME = "prep-diagnostic-outcomes.jsonl"
+DUAL_READOUT_SCHEMA_VERSION = 1
+DUAL_READOUT_RECORD_TYPE = "segment_dual_readout"
+AXIS_A_GROUNDING_EFFICACY_REPORT_KEYS = (
+    "axis_a_grounding_efficacy_report",
+    "axis_a_grounding_report",
+    "grounding_efficacy_report",
+    "axis_a_report",
+)
+AXIS_A_GROUNDING_EFFICACY_REPORT_MAP_KEYS = (
+    "axis_a_grounding_efficacy_reports",
+    "axis_a_grounding_reports",
+    "grounding_efficacy_reports",
+    "axis_a_reports",
+)
+AXIS_B_NDCVB_REPORT_KEYS = (
+    "axis_b_ndcvb_report",
+    "ndcvb_axis_b_report",
+    "axis_b_report",
+)
+AXIS_B_NDCVB_REPORT_MAP_KEYS = (
+    "axis_b_ndcvb_reports",
+    "ndcvb_axis_b_reports",
+    "axis_b_reports",
+)
 PREP_STATUS_VERSION = 1
 PREP_STATUS_FILENAME = "prep-status.json"
 # A3: per-day store for downstream council/disconfirmation substance rationale,
@@ -3185,6 +3209,12 @@ def prep_segment(
     # Save to disk
     out_path = prep_dir / artifact_name
     final_avg = sum(len(b) for b in script) / max(len(script), 1)
+    dual_readout = _dual_readout_for_segment(
+        programme=programme,
+        prep_session=prep_session,
+        programme_id=prog_id,
+        segment_prep_contract=segment_prep_contract,
+    )
     payload = {
         "schema_version": PREP_ARTIFACT_SCHEMA_VERSION,
         "authority": PREP_ARTIFACT_AUTHORITY,
@@ -3242,6 +3272,8 @@ def prep_segment(
         "avg_chars_per_beat": round(final_avg),
         "refinement_applied": True,
     }
+    if dual_readout is not None:
+        payload["dual_readout"] = dual_readout
     if council_disconfirmation_result is not None:
         payload["disconfirmation_council_verdict"] = council_disconfirmation_result
         source_hashes["council_verdict_sha256"] = council_disconfirmation_result.get(
@@ -3259,7 +3291,11 @@ def prep_segment(
     tmp.replace(out_path)
     _append_candidate_ledger(prep_dir, payload, out_path)
     _append_council_decisions_ledger(
-        prep_dir, prog_id, council_decisions, terminal_status="released"
+        prep_dir,
+        prog_id,
+        council_decisions,
+        terminal_status="released",
+        dual_readout=dual_readout,
     )
     log.info(
         "prep_segment: saved %s (%d blocks, avg %.0f chars/beat)",
@@ -3887,12 +3923,136 @@ def _emit_council_degradation_signal(
         log.debug("council degradation ntfy emit failed", exc_info=True)
 
 
+def _mapping_or_attr(carrier: Any, key: str) -> Any:
+    if isinstance(carrier, Mapping):
+        return carrier.get(key)
+    return getattr(carrier, key, None)
+
+
+def _copy_report_mapping(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    return dict(value)
+
+
+def _report_from_direct_keys(carrier: Any, keys: tuple[str, ...]) -> dict[str, Any] | None:
+    if carrier is None:
+        return None
+    for key in keys:
+        report = _copy_report_mapping(_mapping_or_attr(carrier, key))
+        if report is not None:
+            return report
+    return None
+
+
+def _report_from_programme_map(
+    carrier: Any,
+    map_keys: tuple[str, ...],
+    programme_id: str,
+) -> dict[str, Any] | None:
+    if carrier is None:
+        return None
+    for key in map_keys:
+        report_map = _mapping_or_attr(carrier, key)
+        if not isinstance(report_map, Mapping):
+            continue
+        report = _copy_report_mapping(report_map.get(programme_id))
+        if report is not None:
+            return report
+    return None
+
+
+def _contract_report_candidates(segment_prep_contract: dict[str, Any]) -> list[Mapping[str, Any]]:
+    candidates: list[Mapping[str, Any]] = [segment_prep_contract]
+    for key in ("dual_readout", "metadata", "reports", "measurements", "evaluations"):
+        value = segment_prep_contract.get(key)
+        if isinstance(value, Mapping):
+            candidates.append(value)
+    return candidates
+
+
+def _axis_report_for_segment(
+    *,
+    programme: Any,
+    prep_session: dict[str, Any],
+    programme_id: str,
+    segment_prep_contract: dict[str, Any],
+    direct_keys: tuple[str, ...],
+    map_keys: tuple[str, ...],
+) -> dict[str, Any] | None:
+    for carrier in (prep_session, programme, getattr(programme, "content", None)):
+        report = _report_from_programme_map(carrier, map_keys, programme_id)
+        if report is not None:
+            return report
+        report = _report_from_direct_keys(carrier, direct_keys)
+        if report is not None:
+            return report
+
+    for carrier in _contract_report_candidates(segment_prep_contract):
+        report = _report_from_programme_map(carrier, map_keys, programme_id)
+        if report is not None:
+            return report
+        report = _report_from_direct_keys(carrier, direct_keys)
+        if report is not None:
+            return report
+    return None
+
+
+def _dual_readout_for_segment(
+    *,
+    programme: Any,
+    prep_session: dict[str, Any],
+    programme_id: str,
+    segment_prep_contract: dict[str, Any],
+) -> dict[str, Any] | None:
+    axis_a_report = _axis_report_for_segment(
+        programme=programme,
+        prep_session=prep_session,
+        programme_id=programme_id,
+        segment_prep_contract=segment_prep_contract,
+        direct_keys=AXIS_A_GROUNDING_EFFICACY_REPORT_KEYS,
+        map_keys=AXIS_A_GROUNDING_EFFICACY_REPORT_MAP_KEYS,
+    )
+    axis_b_report = _axis_report_for_segment(
+        programme=programme,
+        prep_session=prep_session,
+        programme_id=programme_id,
+        segment_prep_contract=segment_prep_contract,
+        direct_keys=AXIS_B_NDCVB_REPORT_KEYS,
+        map_keys=AXIS_B_NDCVB_REPORT_MAP_KEYS,
+    )
+    if axis_a_report is None and axis_b_report is None:
+        return None
+
+    available_axes = []
+    missing_axes = []
+    if axis_a_report is not None:
+        available_axes.append("A")
+    else:
+        missing_axes.append("A")
+    if axis_b_report is not None:
+        available_axes.append("B")
+    else:
+        missing_axes.append("B")
+    return {
+        "schema_version": DUAL_READOUT_SCHEMA_VERSION,
+        "record_type": DUAL_READOUT_RECORD_TYPE,
+        "programme_id": programme_id,
+        "available_axes": available_axes,
+        "missing_axes": missing_axes,
+        "complete": not missing_axes,
+        "axis_a_grounding_efficacy": axis_a_report,
+        "axis_b_integration_honesty": axis_b_report,
+    }
+
+
 def _append_council_decisions_ledger(
     prep_dir: Path,
     programme_id: str,
     decisions: dict[str, Any],
     *,
     terminal_status: str,
+    dual_readout: dict[str, Any] | None = None,
 ) -> None:
     """Append a programme's council decisions to the append-only ledger.
 
@@ -3908,6 +4068,8 @@ def _append_council_decisions_ledger(
         "terminal_status": terminal_status,
         "council_decisions": decisions,
     }
+    if dual_readout is not None:
+        row["dual_readout"] = dict(dual_readout)
     # flock-guarded cross-process append (shared.jsonl_append): a manual batch /
     # smoke run hitting the same shared date dir concurrently with the 04:00
     # oneshot would otherwise tear NDJSON lines (rows exceed PIPE_BUF, so raw

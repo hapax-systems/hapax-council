@@ -1194,6 +1194,96 @@ def test_record_substance_feedback_accumulates_and_skips_blank() -> None:
     ]
 
 
+def test_dual_readout_for_segment_reads_precomputed_axis_reports() -> None:
+    axis_a_report = {
+        "axis_id": "A",
+        "score_0_100": 82,
+        "score_1_5": 4.28,
+        "ok": True,
+        "coverage": {"ok": True},
+    }
+    axis_b_report = {
+        "axis_id": "B",
+        "score_0_100": 88,
+        "score_1_5": 4.52,
+        "ok": True,
+        "coverage": {"ok": True},
+    }
+
+    dual_readout = prep._dual_readout_for_segment(
+        programme=SimpleNamespace(content=SimpleNamespace()),
+        prep_session={
+            "axis_a_grounding_efficacy_reports": {"prog-dual": axis_a_report},
+            "axis_b_ndcvb_reports": {"prog-dual": axis_b_report},
+        },
+        programme_id="prog-dual",
+        segment_prep_contract={},
+    )
+
+    assert dual_readout == {
+        "schema_version": prep.DUAL_READOUT_SCHEMA_VERSION,
+        "record_type": prep.DUAL_READOUT_RECORD_TYPE,
+        "programme_id": "prog-dual",
+        "available_axes": ["A", "B"],
+        "missing_axes": [],
+        "complete": True,
+        "axis_a_grounding_efficacy": axis_a_report,
+        "axis_b_integration_honesty": axis_b_report,
+    }
+
+
+def test_dual_readout_for_segment_allows_partial_contract_metadata_reports() -> None:
+    axis_a_report = {
+        "axis_id": "A",
+        "score_0_100": 64,
+        "score_1_5": 3.56,
+        "ok": False,
+        "coverage": {"ok": True},
+    }
+
+    dual_readout = prep._dual_readout_for_segment(
+        programme=SimpleNamespace(content=SimpleNamespace()),
+        prep_session={},
+        programme_id="prog-partial",
+        segment_prep_contract={
+            "metadata": {"axis_a_grounding_efficacy_report": axis_a_report},
+        },
+    )
+
+    assert dual_readout is not None
+    assert dual_readout["available_axes"] == ["A"]
+    assert dual_readout["missing_axes"] == ["B"]
+    assert dual_readout["complete"] is False
+    assert dual_readout["axis_a_grounding_efficacy"] == axis_a_report
+    assert dual_readout["axis_b_integration_honesty"] is None
+
+
+def test_council_decisions_ledger_records_dual_readout(tmp_path: Path) -> None:
+    dual_readout = {
+        "schema_version": prep.DUAL_READOUT_SCHEMA_VERSION,
+        "record_type": prep.DUAL_READOUT_RECORD_TYPE,
+        "programme_id": "prog-dual",
+        "available_axes": ["A", "B"],
+        "missing_axes": [],
+        "complete": True,
+        "axis_a_grounding_efficacy": {"score_0_100": 82, "ok": True},
+        "axis_b_integration_honesty": {"score_0_100": 88, "ok": True},
+    }
+
+    prep._append_council_decisions_ledger(
+        tmp_path,
+        "prog-dual",
+        {"coherence": {"mean_score": 4.0, "criterion": 3.5}},
+        terminal_status="released",
+        dual_readout=dual_readout,
+    )
+
+    row = json.loads((tmp_path / prep.COUNCIL_DECISIONS_LEDGER_FILENAME).read_text())
+    assert row["programme_id"] == "prog-dual"
+    assert row["terminal_status"] == "released"
+    assert row["dual_readout"] == dual_readout
+
+
 def test_prep_segment_records_substance_feedback_on_no_candidate(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
