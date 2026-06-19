@@ -290,6 +290,30 @@ def test_reader_reload_replaces_pruned_owner_associations(
     assert reader._context_associations == {}
 
 
+def test_context_association_accessor_returns_default_and_persisted_value(
+    tmp_path: Path,
+) -> None:
+    state_file = tmp_path / "affordance-activation-state.json"
+
+    owner = AffordancePipeline(
+        posterior_mode="owner",
+        posterior_client_id="reverie-test",
+        posterior_path=state_file,
+    )
+    assert owner.get_context_association("missing", "speech_production") == 0.0
+
+    owner.record_outcome("speech_production", success=True, context={"mode": "voice"})
+    owner.save_activation_state()
+    reader = AffordancePipeline(
+        posterior_mode="reader",
+        posterior_client_id="daimonion-test",
+        posterior_path=state_file,
+    )
+
+    assert reader.get_context_association("voice", "speech_production") == 0.1
+    assert reader.get_context_association("missing", "speech_production") == 0.0
+
+
 def test_reader_scoring_refreshes_posterior_when_mtime_changes(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
