@@ -31,6 +31,7 @@ CONSUMER_NAME = "research_viewer"
 SUPPORT_LABEL = "support_non_authoritative_projection_state"
 REPORT_DIRNAME = "hkp-reports"
 FORBIDDEN_REPORT_FIELDS = frozenset({"body", "private_source_path", "secret"})
+POLICY_ALLOWLISTED_REPORT_FIELDS = frozenset({"title", "description", "source_refs", "authority"})
 POLICY_FORBIDDEN_FIELD_ALIASES = {
     "freshness": frozenset({"freshness_state", "source_freshness"}),
     "posture": frozenset(
@@ -184,6 +185,7 @@ def _bundle_report(bundle: Path, *, shadow_root: Path, index_root: Path) -> dict
     ]
     consumer_row = _consumer_policy_row(policy)
     _assert_research_viewer_consumer_allowed(manifest, consumer_row, bundle=bundle)
+    policy_allowed_fields = _policy_allowed_output_fields(consumer_row)
     policy_forbidden_fields = _policy_forbidden_output_fields(consumer_row)
     denied_consumers = _denied_consumers(manifest, policy)
     rows: list[dict[str, Any]] = []
@@ -206,7 +208,11 @@ def _bundle_report(bundle: Path, *, shadow_root: Path, index_root: Path) -> dict
             ),
             findings=subject_findings,
         )
-        row = _omit_forbidden_fields(row, forbidden_fields=policy_forbidden_fields)
+        row = _apply_consumer_policy(
+            row,
+            allowed_fields=policy_allowed_fields,
+            forbidden_fields=policy_forbidden_fields,
+        )
         _assert_no_forbidden_report_fields(row, extra_forbidden=policy_forbidden_fields)
         disallowed = sorted(set(row) - REPORT_ROW_FIELDS)
         if disallowed:
@@ -223,24 +229,21 @@ def _bundle_report(bundle: Path, *, shadow_root: Path, index_root: Path) -> dict
         "support_label": SUPPORT_LABEL,
         "bundle_id": bundle.name,
         "bundle_uid": manifest.get("bundle_uid"),
-        "bundle_path": str(_absolute_without_symlink_resolution(bundle)),
         "output_tree_hash": manifest.get("output_tree_hash"),
-        "input_ref_hash": manifest.get("input_ref_hash"),
-        "source_root": manifest.get("source_root"),
-        "source_commit": manifest.get("source_commit"),
-        "cache_only": bool(manifest.get("cache_only")),
         "validator_version": VALIDATOR_VERSION,
         "validator_ok": validation.ok,
         "concept_count": len(rows),
         "edge_count": _jsonl_row_count(bundle / "_hkp" / "edges.jsonl", trusted_root=shadow_root),
-        "allowed_consumers": sorted(manifest.get("allowed_consumers") or []),
         "denied_consumers": denied_consumers,
-        "viewer_allowed_fields": sorted(consumer_row.get("allowed_fields") or []),
         "finding_count": len(bundle_findings),
         "findings": bundle_findings,
         "rows": rows,
     }
-    bundle_report = _omit_forbidden_fields(bundle_report, forbidden_fields=policy_forbidden_fields)
+    bundle_report = _apply_consumer_policy(
+        bundle_report,
+        allowed_fields=policy_allowed_fields,
+        forbidden_fields=policy_forbidden_fields,
+    )
     _assert_no_forbidden_report_fields(bundle_report, extra_forbidden=policy_forbidden_fields)
     return bundle_report
 
@@ -394,6 +397,10 @@ def _assert_research_viewer_concept_allowed(
         )
 
 
+def _policy_allowed_output_fields(consumer_row: dict[str, Any]) -> frozenset[str]:
+    return frozenset(str(field) for field in consumer_row.get("allowed_fields") or [])
+
+
 def _policy_forbidden_output_fields(consumer_row: dict[str, Any]) -> frozenset[str]:
     forbidden = {str(field) for field in consumer_row.get("forbidden_fields") or []}
     expanded = set(forbidden)
@@ -402,16 +409,20 @@ def _policy_forbidden_output_fields(consumer_row: dict[str, Any]) -> frozenset[s
     return frozenset(expanded)
 
 
-def _omit_forbidden_fields(
-    value: dict[str, Any], *, forbidden_fields: frozenset[str]
+def _apply_consumer_policy(
+    value: dict[str, Any],
+    *,
+    allowed_fields: frozenset[str],
+    forbidden_fields: frozenset[str],
 ) -> dict[str, Any]:
-    if not forbidden_fields:
-        return value
-    return {
-        key: item
-        for key, item in value.items()
-        if key not in forbidden_fields and key not in FORBIDDEN_REPORT_FIELDS
-    }
+    filtered: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in forbidden_fields or key in FORBIDDEN_REPORT_FIELDS:
+            continue
+        if key in POLICY_ALLOWLISTED_REPORT_FIELDS and key not in allowed_fields:
+            continue
+        filtered[key] = item
+    return filtered
 
 
 def _denied_consumers(manifest: dict[str, Any], policy: dict[str, Any]) -> list[str]:

@@ -39,7 +39,12 @@ def test_report_redacts_forbidden_fields_and_labels_rows(tmp_path: Path, monkeyp
 
     payload = result.as_dict()
     assert payload["support_label"] == SUPPORT_LABEL
-    row = payload["bundles"][0]["rows"][0]
+    bundle = payload["bundles"][0]
+    assert "bundle_path" not in bundle
+    assert "input_ref_hash" not in bundle
+    assert "source_root" not in bundle
+    assert "source_commit" not in bundle
+    row = bundle["rows"][0]
     assert row["support_label"] == SUPPORT_LABEL
     assert set(row) <= REPORT_ROW_FIELDS
     assert row["authority"] == {
@@ -91,6 +96,38 @@ def test_report_omits_fields_forbidden_by_consumer_policy(tmp_path: Path, monkey
     assert "description" not in row
     serialized = json.dumps(result.as_dict(), sort_keys=True)
     assert '"description"' not in serialized
+
+
+def test_report_omits_fields_absent_from_consumer_policy_allowed_fields(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    export = export_shadow_bundle(
+        [source],
+        bundle_id="viewer-demo",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+    policy_path = export.bundle_path / "_hkp" / "consumer_policy.yaml"
+    policy = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+    for row in policy["consumers"]:
+        if row["consumer"] == "research_viewer":
+            row["allowed_fields"].remove("description")
+    policy_path.write_text(yaml.safe_dump(policy, sort_keys=False), encoding="utf-8")
+
+    result = build_research_viewer_report(
+        [export.bundle_path],
+        report_id="viewer-allowlist-report",
+        generated_at=GENERATED_AT,
+    )
+
+    row = result.as_dict()["bundles"][0]["rows"][0]
+    assert "title" in row
+    assert "description" not in row
+    assert '"description"' not in json.dumps(result.as_dict(), sort_keys=True)
 
 
 def test_report_rejects_denied_research_viewer_consumer_policy(tmp_path: Path, monkeypatch) -> None:
