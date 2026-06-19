@@ -31,6 +31,13 @@ CONSUMER_NAME = "research_viewer"
 SUPPORT_LABEL = "support_non_authoritative_projection_state"
 REPORT_DIRNAME = "hkp-reports"
 FORBIDDEN_REPORT_FIELDS = frozenset({"body", "private_source_path", "secret"})
+POLICY_FORBIDDEN_FIELD_ALIASES = {
+    "freshness": frozenset({"freshness_state", "source_freshness"}),
+    "posture": frozenset(
+        {"privacy_class", "egress_state", "public_export_allowed", "denied_consumers"}
+    ),
+    "validator_findings": frozenset({"findings"}),
+}
 REPORT_ROW_FIELDS = frozenset(
     {
         "record_type",
@@ -176,6 +183,7 @@ def _bundle_report(bundle: Path, *, shadow_root: Path, index_root: Path) -> dict
         _finding_summary(finding.as_dict(), bundle=bundle) for finding in validation.findings
     ]
     consumer_row = _consumer_policy_row(policy)
+    policy_forbidden_fields = _policy_forbidden_output_fields(consumer_row)
     denied_consumers = _denied_consumers(manifest, policy)
     rows: list[dict[str, Any]] = []
     for concept_path in _concept_paths(bundle, shadow_root=shadow_root):
@@ -196,6 +204,8 @@ def _bundle_report(bundle: Path, *, shadow_root: Path, index_root: Path) -> dict
             ),
             findings=subject_findings,
         )
+        row = _omit_forbidden_fields(row, forbidden_fields=policy_forbidden_fields)
+        _assert_no_forbidden_report_fields(row, extra_forbidden=policy_forbidden_fields)
         disallowed = sorted(set(row) - REPORT_ROW_FIELDS)
         if disallowed:
             raise ValueError(
@@ -206,7 +216,7 @@ def _bundle_report(bundle: Path, *, shadow_root: Path, index_root: Path) -> dict
         rows.append(row)
 
     bundle_findings = [*index_findings, *validation_findings]
-    return {
+    bundle_report = {
         "record_type": "bundle",
         "support_label": SUPPORT_LABEL,
         "bundle_id": bundle.name,
@@ -228,6 +238,9 @@ def _bundle_report(bundle: Path, *, shadow_root: Path, index_root: Path) -> dict
         "findings": bundle_findings,
         "rows": rows,
     }
+    bundle_report = _omit_forbidden_fields(bundle_report, forbidden_fields=policy_forbidden_fields)
+    _assert_no_forbidden_report_fields(bundle_report, extra_forbidden=policy_forbidden_fields)
+    return bundle_report
 
 
 def _concept_row(
@@ -350,6 +363,26 @@ def _consumer_policy_row(policy: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _policy_forbidden_output_fields(consumer_row: dict[str, Any]) -> frozenset[str]:
+    forbidden = {str(field) for field in consumer_row.get("forbidden_fields") or []}
+    expanded = set(forbidden)
+    for field in forbidden:
+        expanded.update(POLICY_FORBIDDEN_FIELD_ALIASES.get(field, ()))
+    return frozenset(expanded)
+
+
+def _omit_forbidden_fields(
+    value: dict[str, Any], *, forbidden_fields: frozenset[str]
+) -> dict[str, Any]:
+    if not forbidden_fields:
+        return value
+    return {
+        key: item
+        for key, item in value.items()
+        if key not in forbidden_fields and key not in FORBIDDEN_REPORT_FIELDS
+    }
+
+
 def _denied_consumers(manifest: dict[str, Any], policy: dict[str, Any]) -> list[str]:
     denied = set(manifest.get("forbidden_consumers") or [])
     for row in policy.get("consumers") or []:
@@ -438,16 +471,16 @@ def _markdown_report(payload: dict[str, Any]) -> str:
         "|---|---|---:|---:|---|---|---:|",
     ]
     for bundle in payload["bundles"]:
-        denied = ", ".join(bundle["denied_consumers"])
+        denied = ", ".join(bundle.get("denied_consumers") or [])
         lines.append(
             "| `{bundle_id}` | {validator} | {concepts} | {edges} | `{hash}` | {denied} | {findings} |".format(
                 bundle_id=bundle["bundle_id"],
                 validator="ok" if bundle["validator_ok"] else "fail",
                 concepts=bundle["concept_count"],
                 edges=bundle["edge_count"],
-                hash=bundle["output_tree_hash"],
+                hash=bundle.get("output_tree_hash", "[withheld]"),
                 denied=denied,
-                findings=bundle["finding_count"],
+                findings=bundle.get("finding_count", 0),
             )
         )
     lines.extend(["", "## Rows", ""])
@@ -461,18 +494,21 @@ def _markdown_report(payload: dict[str, Any]) -> str:
             ]
         )
         for row in bundle["rows"]:
-            source_freshness = ", ".join(row["source_freshness"])
-            denied = ", ".join(row["denied_consumers"])
-            privacy = f"{row['privacy_class']} / {row['egress_state']}"
+            source_freshness = ", ".join(row.get("source_freshness") or [])
+            denied = ", ".join(row.get("denied_consumers") or [])
+            privacy = (
+                f"{row.get('privacy_class', '[withheld]')} / "
+                f"{row.get('egress_state', '[withheld]')}"
+            )
             lines.append(
                 "| {title} | `{type}` | `{freshness}` | `{source_freshness}` | `{privacy}` | {denied} | {findings} |".format(
-                    title=_md_cell(row["title"]),
-                    type=row["type"],
-                    freshness=row["freshness_state"],
+                    title=_md_cell(row.get("title", "[withheld]")),
+                    type=row.get("type", "[withheld]"),
+                    freshness=row.get("freshness_state", "[withheld]"),
                     source_freshness=source_freshness,
                     privacy=privacy,
                     denied=_md_cell(denied),
-                    findings=len(row["findings"]),
+                    findings=len(row.get("findings") or []),
                 )
             )
         lines.append("")
@@ -512,7 +548,7 @@ def _safe_report_id(report_id: str) -> str:
 
 
 def _default_report_id(generated_at: str) -> str:
-    safe_timestamp = generated_at.replace("-", "").replace(":", "").replace("Z", "Z")
+    safe_timestamp = generated_at.replace("-", "").replace(":", "")
     return f"hkp-research-viewer-{safe_timestamp}"
 
 
@@ -591,9 +627,11 @@ def _reject_symlink_components(path: Path, label: str, *, trusted_root: Path) ->
             )
 
 
-def _assert_no_forbidden_report_fields(value: Any) -> None:
+def _assert_no_forbidden_report_fields(
+    value: Any, *, extra_forbidden: frozenset[str] = frozenset()
+) -> None:
     if isinstance(value, dict):
-        bad = sorted(FORBIDDEN_REPORT_FIELDS & set(value))
+        bad = sorted((FORBIDDEN_REPORT_FIELDS | extra_forbidden) & set(value))
         if bad:
             raise ValueError(
                 "HKP research viewer attempted to emit forbidden fields: "
@@ -601,7 +639,7 @@ def _assert_no_forbidden_report_fields(value: Any) -> None:
                 + "; next-action: keep body/path/secret data out of viewer output"
             )
         for item in value.values():
-            _assert_no_forbidden_report_fields(item)
+            _assert_no_forbidden_report_fields(item, extra_forbidden=extra_forbidden)
     elif isinstance(value, list):
         for item in value:
-            _assert_no_forbidden_report_fields(item)
+            _assert_no_forbidden_report_fields(item, extra_forbidden=extra_forbidden)

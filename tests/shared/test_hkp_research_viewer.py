@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from shared.hkp_bundle_export import export_shadow_bundle
 from shared.hkp_research_viewer import (
@@ -58,6 +59,38 @@ def test_report_redacts_forbidden_fields_and_labels_rows(tmp_path: Path, monkeyp
         tmp_path / "home" / ".cache" / "hapax" / "hkp-reports"
     )
     assert result.json_path.is_file()
+
+
+def test_report_omits_fields_forbidden_by_consumer_policy(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    export = export_shadow_bundle(
+        [source],
+        bundle_id="viewer-demo",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+    policy_path = export.bundle_path / "_hkp" / "consumer_policy.yaml"
+    policy = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+    for row in policy["consumers"]:
+        if row["consumer"] == "research_viewer":
+            row["allowed_fields"].remove("description")
+            row["forbidden_fields"].append("description")
+    policy_path.write_text(yaml.safe_dump(policy, sort_keys=False), encoding="utf-8")
+
+    result = build_research_viewer_report(
+        [export.bundle_path],
+        report_id="viewer-policy-report",
+        generated_at=GENERATED_AT,
+    )
+
+    row = result.as_dict()["bundles"][0]["rows"][0]
+    assert "title" in row
+    assert "description" not in row
+    serialized = json.dumps(result.as_dict(), sort_keys=True)
+    assert '"description"' not in serialized
 
 
 def test_report_includes_findings_and_source_freshness_markers(tmp_path: Path, monkeypatch) -> None:
@@ -141,6 +174,23 @@ def test_report_rejects_discovered_symlinked_bundle(tmp_path: Path, monkeypatch)
     with pytest.raises(ValueError, match="must not traverse symlink component"):
         build_research_viewer_report(
             report_id="viewer-symlink-report",
+            generated_at=GENERATED_AT,
+        )
+
+
+def test_report_rejects_explicit_symlinked_bundle(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    shadow_root = tmp_path / "home" / ".cache" / "hapax" / "hkp-shadow"
+    shadow_root.mkdir(parents=True)
+    outside = tmp_path / "outside-bundle"
+    outside.mkdir()
+    bundle_link = shadow_root / "linked-bundle"
+    bundle_link.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="must not traverse symlink component"):
+        build_research_viewer_report(
+            [bundle_link],
+            report_id="viewer-explicit-symlink-report",
             generated_at=GENERATED_AT,
         )
 
