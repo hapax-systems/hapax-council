@@ -984,3 +984,68 @@ def _write_task(path: Path, *, include_route_metadata: bool = True) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def _write_task_with(path: Path, *, task_id: str, depends_on: list[str]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frontmatter = {
+        "type": "cc-task",
+        "task_id": task_id,
+        "title": f"Task {task_id}",
+        "status": "done",
+        "depends_on": depends_on,
+        "privacy_class": "internal",
+        "authority_case": "CASE-SDLC-REFORM-001",
+        "parent_spec": "/redacted/spec.md",
+        "route_metadata_schema": 1,
+        "quality_floor": "frontier_required",
+        "mutation_surface": "source",
+        "authority_level": "authoritative",
+    }
+    path.write_text(
+        "---\n" + yaml.safe_dump(frontmatter, sort_keys=False) + "---\n\n# Task\nPrivate body.\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_exporter_resolves_in_bundle_depends_on_edges(tmp_path: Path, monkeypatch) -> None:
+    # depends_on edges to concepts present in the same bundle must resolve to the
+    # target concept_uid (a navigable graph); edges to out-of-bundle targets must
+    # stay null AND be marked freshness=missing (a visible state, never a silent
+    # collapse) so the dangling-stub bug the keystone found cannot recur.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    task_a = _write_task_with(
+        source_root / "tasks" / "task-a.md",
+        task_id="task-a",
+        depends_on=["task-b", "ghost-task"],
+    )
+    task_b = _write_task_with(source_root / "tasks" / "task-b.md", task_id="task-b", depends_on=[])
+
+    result = export_shadow_bundle(
+        [task_a, task_b],
+        bundle_id="resolver-bundle",
+        source_root=source_root,
+        source_root_id="repo:test",
+        source_commit="abc123",
+        generated_at=GENERATED_AT,
+    )
+
+    edges = [
+        json.loads(line)
+        for line in (result.bundle_path / "_hkp" / "edges.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    resolved = next(e for e in edges if e["to_uid"] == "hkp:cc-task:task-b")
+    assert resolved["from_uid"] == "hkp:cc-task:task-a"
+    # a resolved edge names its target via to_uid only (target_ref cleared)
+    assert resolved["target_ref"] is None
+    assert resolved["freshness"]["state"] == "fresh"
+
+    dangling = next(e for e in edges if e["target_ref"] == "cc-task:ghost-task")
+    assert dangling["to_uid"] is None
+    assert dangling["freshness"]["state"] == "missing"
+
+    # An out-of-bundle dependency does not invalidate the bundle.
+    assert validate_bundle(result.bundle_path).ok is True

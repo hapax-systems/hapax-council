@@ -551,12 +551,20 @@ def _concept_for_source(
 
 
 def _edges_for_concepts(concepts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Resolve depends_on targets to in-bundle concept_uids so the projection is a
+    # navigable graph rather than dangling stubs. A concept_uid is
+    # "hkp:<namespace>:<source_id>" and a depends_on target_ref is
+    # "<namespace>:<source_id>", so the resolved uid is exactly "hkp:" + target_ref
+    # when that concept is present in the same bundle.
+    known_uids = {str(concept["concept_uid"]) for concept in concepts}
     edges: list[dict[str, Any]] = []
     for concept in concepts:
         route = concept["extensions"]["hapax"]
         source_id = str(concept["source_refs"][0]["ref_id"])
         for dep in _listify(route.get("depends_on")):
             target = f"cc-task:{_safe_id(dep)}"
+            candidate_uid = f"hkp:{target}"
+            resolved = candidate_uid in known_uids
             edge_seed = f"{concept['concept_uid']}|depends_on|{target}"
             edges.append(
                 {
@@ -566,12 +574,19 @@ def _edges_for_concepts(concepts: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "rel_family": "dependency",
                     "rel": "depends_on",
                     "direction": "outbound",
-                    "to_uid": None,
-                    "target_ref": target,
+                    # In-bundle targets resolve to their concept_uid; out-of-bundle
+                    # targets stay null and are marked freshness=missing (a visible
+                    # state, never a silent collapse) so a consumer can tell "the dep
+                    # is not projected in this bundle" from "the dep resolved".
+                    "to_uid": candidate_uid if resolved else None,
+                    # An edge names exactly one target form: a resolved edge points
+                    # via to_uid (target_ref cleared); an unresolved edge keeps the
+                    # human-readable target_ref.
+                    "target_ref": None if resolved else target,
                     "target_path": None,
                     "source_refs": [source_id],
                     "authority_ceiling": "evidence_bound",
-                    "freshness": {"state": "fresh"},
+                    "freshness": {"state": "fresh" if resolved else "missing"},
                     "generated_from": {
                         "projection_event_id": concept["projection_provenance"][
                             "projection_event_ids"
