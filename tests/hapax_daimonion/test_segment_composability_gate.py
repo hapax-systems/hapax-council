@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from agents.hapax_daimonion.segment_composability_gate import assess_composability
+from agents.hapax_daimonion.segment_composability_gate import _gate_max_tokens, assess_composability
 
 
 class _Resp:
@@ -26,6 +26,60 @@ class _Resp:
 def _urlopen_returning(signals: dict) -> mock.Mock:
     body = json.dumps({"choices": [{"message": {"content": json.dumps(signals)}}]}).encode()
     return mock.Mock(return_value=_Resp(body))
+
+
+def _urlopen_full(*, content: str, model: str, finish_reason: str) -> mock.Mock:
+    """Mock a full gateway response carrying model + finish_reason (truncation/served-model tests)."""
+    body = json.dumps(
+        {
+            "model": model,
+            "choices": [{"finish_reason": finish_reason, "message": {"content": content}}],
+        }
+    ).encode()
+    return mock.Mock(return_value=_Resp(body))
+
+
+def test_gate_max_tokens_default_and_env_override() -> None:
+    with mock.patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("HAPAX_COMPOSABILITY_GATE_MAX_TOKENS", None)
+        assert _gate_max_tokens() == 2048
+    with mock.patch.dict(os.environ, {"HAPAX_COMPOSABILITY_GATE_MAX_TOKENS": "4096"}):
+        assert _gate_max_tokens() == 4096
+    with mock.patch.dict(os.environ, {"HAPAX_COMPOSABILITY_GATE_MAX_TOKENS": "garbage"}):
+        assert _gate_max_tokens() == 2048
+    with mock.patch.dict(os.environ, {"HAPAX_COMPOSABILITY_GATE_MAX_TOKENS": "10"}):
+        assert _gate_max_tokens() == 256  # floored
+
+
+def test_truncation_is_loud_not_silent() -> None:
+    # A reasoning-model fallback burns the token budget on hidden CoT -> finish_reason=length + truncated
+    # JSON. The gate must FAIL LOUD (errored + served model surfaced), NOT silently fail-open as a verdict.
+    urlopen = _urlopen_full(
+        content='{"arc_or_list":"ar', model="gemini-3.1-pro-preview", finish_reason="length"
+    )
+    with mock.patch("urllib.request.urlopen", urlopen):
+        r = assess_composability("rant", "t", ["b1", "b2", "b3"])
+    assert r.errored is True
+    assert "truncat" in r.reason.lower()
+    assert "gemini-3.1-pro-preview" in r.reason  # served model surfaced, not hidden
+    assert r.signals.get("served_model") == "gemini-3.1-pro-preview"
+
+
+def test_served_model_captured_on_valid_verdict() -> None:
+    signals = {
+        "opening_hook": "h",
+        "test1_resolves_specific_hook": True,
+        "test2_reorder_breaks_it": True,
+        "arc_or_list": "arc",
+        "score": 5,
+    }
+    urlopen = _urlopen_full(
+        content=json.dumps(signals), model="claude-sonnet-4-6", finish_reason="stop"
+    )
+    with mock.patch("urllib.request.urlopen", urlopen):
+        r = assess_composability("rant", "t", ["b1", "b2", "b3"])
+    assert r.accept is True
+    assert r.signals.get("served_model") == "claude-sonnet-4-6"
 
 
 def test_accepts_building_arc() -> None:

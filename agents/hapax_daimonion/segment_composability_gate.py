@@ -57,6 +57,19 @@ _GATE_OFF_VALUES = {"off", "0", "false", "no", "disabled"}
 _REQUIRED_DECISION_KEYS = ("arc_or_list", "test1_resolves_specific_hook", "test2_reorder_breaks_it")
 # Operator next-action appended to fail-open messages (executive_function axiom: errors carry a recovery).
 _RECOVERY = "check the LiteLLM 'balanced' route on :4000, or disable the gate with HAPAX_COMPOSABILITY_GATE=off"
+# Output-token floor for the structural verdict JSON. Default 2048 (env-overridable). A REASONING model
+# served via fallback (e.g. gemini-pro for a credit-capped claude-sonnet, the 2026-06-19 incident) burns
+# the budget on hidden CoT before the compact JSON; at the old 500 it truncated -> empty parse -> silent
+# fail-open accept on EVERY plan (the gate went inert). Read per-call so an operator flip takes effect live.
+_GATE_MAX_TOKENS_DEFAULT = 2048
+_GATE_MAX_TOKENS_ENV = "HAPAX_COMPOSABILITY_GATE_MAX_TOKENS"
+
+
+def _gate_max_tokens() -> int:
+    try:
+        return max(256, int(os.environ.get(_GATE_MAX_TOKENS_ENV, _GATE_MAX_TOKENS_DEFAULT)))
+    except (TypeError, ValueError):
+        return _GATE_MAX_TOKENS_DEFAULT
 
 
 def _as_bool(value: object) -> bool:
@@ -159,13 +172,19 @@ def assess_composability(
     payload = {
         "model": GATE_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 500,
+        "max_tokens": _gate_max_tokens(),
         "temperature": 0.0,
     }
+    served_model = ""
+    finish_reason = ""
     try:
         req = urllib.request.Request(url, json.dumps(payload).encode(), headers, method="POST")
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            content = json.loads(resp.read().decode())["choices"][0]["message"]["content"]
+            data = json.loads(resp.read().decode())
+        choice = (data.get("choices") or [{}])[0]
+        served_model = str(data.get("model") or "")
+        finish_reason = str(choice.get("finish_reason") or "")
+        content = (choice.get("message") or {}).get("content") or ""
         m = re.search(r"\{.*\}", content, re.DOTALL)
         parsed = json.loads(m.group(0)) if m else {}
     except Exception as exc:  # noqa: BLE001 — fail-open on any gate failure
@@ -174,18 +193,41 @@ def assess_composability(
             True, f"gate unavailable (fail-open): {exc} [{_RECOVERY}]", errored=True
         )
 
+    # LOUD truncation detection (2026-06-19 credit-cap incident): a reasoning model served via fallback
+    # burns the token budget on hidden CoT, so the compact JSON truncates. Without this, the missing-fields
+    # path below SILENTLY fail-opens on every plan — the gate rubber-stamps. Make the degradation visible.
+    if finish_reason == "length":
+        log.warning(
+            "composability gate TRUNCATED (finish_reason=length) at max_tokens=%d, served_model=%s "
+            "(fail-open accept, LOUD — not a real verdict): %s",
+            payload["max_tokens"],
+            served_model or "<unknown>",
+            _RECOVERY,
+        )
+        return CompositionGateResult(
+            True,
+            f"gate truncated at max_tokens={payload['max_tokens']} "
+            f"(served_model={served_model or 'unknown'}; likely a reasoning-model fallback) — "
+            f"fail-open accept, NOT a real verdict [{_RECOVERY}]",
+            signals={"served_model": served_model, "finish_reason": finish_reason},
+            errored=True,
+        )
+
     missing = [k for k in _REQUIRED_DECISION_KEYS if k not in parsed]
     if missing:
         log.warning(
-            "composability gate response missing structural fields %s (fail-open accept): %s — %s",
+            "composability gate response missing structural fields %s (served_model=%s) "
+            "(fail-open accept): %s — %s",
             missing,
+            served_model or "<unknown>",
             parsed,
             _RECOVERY,
         )
         return CompositionGateResult(
             True,
-            f"gate response incomplete (fail-open): missing {missing} [{_RECOVERY}]",
-            signals=parsed,
+            f"gate response incomplete (fail-open): missing {missing} "
+            f"(served_model={served_model or 'unknown'}) [{_RECOVERY}]",
+            signals={**parsed, "served_model": served_model},
             errored=True,
         )
 
@@ -202,4 +244,4 @@ def assess_composability(
         f"(resolves_specific_hook={resolves}, reorder_breaks_it={reorder_breaks}, score={score}): "
         f"{parsed.get('opening_hook', '')}"
     )
-    return CompositionGateResult(accept, reason, signals=parsed)
+    return CompositionGateResult(accept, reason, signals={**parsed, "served_model": served_model})
