@@ -3247,6 +3247,7 @@ def prep_segment(
         prep_session=prep_session,
         programme_id=prog_id,
         segment_prep_contract=segment_prep_contract,
+        fallback_segment_prep_contract=model_contract,
     )
     payload = {
         "schema_version": PREP_ARTIFACT_SCHEMA_VERSION,
@@ -4041,6 +4042,7 @@ def _dual_readout_for_segment(
     prep_session: dict[str, Any],
     programme_id: str,
     segment_prep_contract: dict[str, Any],
+    fallback_segment_prep_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     axis_a_report = _axis_report_for_segment(
         programme=programme,
@@ -4058,6 +4060,25 @@ def _dual_readout_for_segment(
         direct_keys=AXIS_B_NDCVB_REPORT_KEYS,
         map_keys=AXIS_B_NDCVB_REPORT_MAP_KEYS,
     )
+    if fallback_segment_prep_contract is not None:
+        if axis_a_report is None:
+            axis_a_report = _axis_report_for_segment(
+                programme=programme,
+                prep_session=prep_session,
+                programme_id=programme_id,
+                segment_prep_contract=fallback_segment_prep_contract,
+                direct_keys=AXIS_A_GROUNDING_EFFICACY_REPORT_KEYS,
+                map_keys=AXIS_A_GROUNDING_EFFICACY_REPORT_MAP_KEYS,
+            )
+        if axis_b_report is None:
+            axis_b_report = _axis_report_for_segment(
+                programme=programme,
+                prep_session=prep_session,
+                programme_id=programme_id,
+                segment_prep_contract=fallback_segment_prep_contract,
+                direct_keys=AXIS_B_NDCVB_REPORT_KEYS,
+                map_keys=AXIS_B_NDCVB_REPORT_MAP_KEYS,
+            )
     if axis_a_report is None and axis_b_report is None:
         return None
 

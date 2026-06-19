@@ -1418,8 +1418,12 @@ def test_prep_segment_release_preserves_dual_readout_in_artifact_and_ledger(
         "prep_session_id": "segment-prep-test",
         "model_id": prep.RESIDENT_PREP_MODEL,
         "llm_calls": [],
-        "axis_a_grounding_efficacy_reports": {"prog-dual-release": axis_a_report},
-        "axis_b_ndcvb_reports": {"prog-dual-release": axis_b_report},
+    }
+    model_contract = {
+        "metadata": {
+            "axis_a_grounding_efficacy_report": axis_a_report,
+            "axis_b_ndcvb_report": axis_b_report,
+        }
     }
 
     monkeypatch.setattr(angle_resolver, "resolve_angle", lambda _topic: None)
@@ -1429,7 +1433,12 @@ def test_prep_segment_release_preserves_dual_readout_in_artifact_and_ledger(
         prep,
         "_call_llm",
         lambda _prompt, **_kwargs: json.dumps(
-            ["According to the receipt, the launch claim changes once the source is visible."]
+            {
+                "prepared_script": [
+                    "According to the receipt, the launch claim changes once the source is visible."
+                ],
+                "segment_prep_contract": model_contract,
+            }
         ),
     )
     monkeypatch.setattr(prep, "_refine_script", lambda script, _programme, **_kwargs: script)
