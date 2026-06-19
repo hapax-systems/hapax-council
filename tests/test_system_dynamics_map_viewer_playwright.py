@@ -934,6 +934,155 @@ def test_system_dynamics_viewer_core_interactions():
             browser.close()
 
 
+def test_system_dynamics_viewer_workbench_modes_and_explanations_are_complete():
+    with _static_server() as base_url, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        try:
+            page.goto(f"{base_url}/system-dynamics-map-viewer.html")
+            page.locator("#cy canvas").first.wait_for(timeout=10_000)
+            page.wait_for_function("window.systemDynamicsMapRuntime")
+            page.wait_for_function(NONBLANK_CANVAS_SCRIPT, timeout=10_000)
+
+            inquiry_expectations = {
+                "release-gates": [
+                    "First diagnostic stop",
+                    "Path states:",
+                    "Evidence basis:",
+                ],
+                "stuck-work": [
+                    "First diagnostic stop",
+                    "Path states:",
+                    "Evidence basis:",
+                ],
+                "changed": [
+                    "No prior snapshot is loaded",
+                    "bitemporal snapshot registry",
+                ],
+                "stale-evidence": [
+                    "stale observations are visible",
+                    "Stale evidence is temporal evidence",
+                ],
+                "trust": [
+                    "lower-confidence claims",
+                    "candidate elements",
+                    "contradiction records in the package",
+                ],
+                "missing-context": [
+                    "Do not conclude absence",
+                    "hidden scope",
+                ],
+            }
+            for mode_id, expected_fragments in inquiry_expectations.items():
+                page.get_by_label("Inquiry").select_option(mode_id)
+                page.wait_for_function(
+                    "(modeId) => window.systemDynamicsMapRuntime.activeInquiryMode() === modeId",
+                    arg=mode_id,
+                )
+                readout_text = page.locator("#workbench-readout").inner_text()
+                for expected_fragment in expected_fragments:
+                    assert expected_fragment in readout_text
+                payload = page.evaluate("window.systemDynamicsMapRuntime.currentWorkbenchPayload()")
+                assert payload["inquiry_mode"] == mode_id
+                assert (
+                    page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload().workbench")
+                    == payload
+                )
+
+            page.get_by_label("Inquiry").select_option("trust")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeInquiryMode() === 'trust'"
+            )
+            trust_payload = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentWorkbenchPayload()"
+            )
+            assert trust_payload["evidence_summary"]["weak_claims"] > 0
+            assert trust_payload["evidence_summary"]["candidate_elements"] > 0
+
+            audience_expectations = {
+                "operator": "diagnostic next action",
+                "newcomer": "plain-language meaning",
+                "collaborator": "interfaces, dependencies",
+                "reviewer": "scope, provenance, confidence, validation",
+                "executive": "state, risk, decision points",
+            }
+            for audience_id, expected_fragment in audience_expectations.items():
+                page.get_by_label("Audience").select_option(audience_id)
+                page.wait_for_function(
+                    "(audienceId) => "
+                    "window.systemDynamicsMapRuntime.activeAudienceMode() === audienceId",
+                    arg=audience_id,
+                )
+                readout_text = page.locator("#workbench-readout").inner_text()
+                assert expected_fragment in readout_text
+                assert (
+                    page.evaluate(
+                        "window.systemDynamicsMapRuntime.currentWorkbenchPayload().audience_mode"
+                    )
+                    == audience_id
+                )
+
+            page.locator('#workbench-readout [data-workbench-id="rdf-owl-kg"]').first.click()
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "rdf-owl-kg",
+            }
+            page.evaluate("window.systemDynamicsMapRuntime.selectNode('prov-o')")
+            page.locator('#companion-readout [data-workbench-id="rdf-owl-kg"]').first.click()
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "rdf-owl-kg",
+            }
+
+            page.get_by_label("View").select_option("operating-slice")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeLens() === 'operating-slice'"
+            )
+            page.evaluate(
+                "window.systemDynamicsMapRuntime.focusWorkbenchElementForTest('nodes', 'dmn')"
+            )
+            page.wait_for_function("window.systemDynamicsMapRuntime.activeLens() === 'topology'")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "dmn",
+            }
+            assert "DMN revealed in Topology." in page.locator("#action-status").inner_text()
+            assert "No lens contract is loaded" in page.evaluate(
+                "window.systemDynamicsMapRuntime.lensScopeWarningForTest(null)"
+            )
+
+            page.get_by_label("Explanation Path").select_option("release-readiness")
+            page.evaluate("window.systemDynamicsMapRuntime.applyExplanationScene(0)")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeExplanationScene().title "
+                "=== 'Start from source-neutral identity'"
+            )
+            page.get_by_role("button", name="Previous").click()
+            assert (
+                page.evaluate("window.systemDynamicsMapRuntime.activeExplanationScene().title")
+                == "Start from source-neutral identity"
+            )
+            for _ in range(10):
+                page.get_by_role("button", name="Next").click()
+            assert (
+                page.evaluate("window.systemDynamicsMapRuntime.activeExplanationScene().title")
+                == "State what this does not prove"
+            )
+            page.get_by_role("button", name="Next").click()
+            assert (
+                page.evaluate("window.systemDynamicsMapRuntime.activeExplanationScene().title")
+                == "State what this does not prove"
+            )
+        finally:
+            browser.close()
+
+
 def test_system_dynamics_viewer_toolbar_and_panel_actions_are_operable():
     with _static_server() as base_url, sync_playwright() as playwright:
         browser = playwright.chromium.launch()

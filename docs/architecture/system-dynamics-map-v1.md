@@ -261,8 +261,9 @@ The v2 workbench layer adds:
 - guided explanation paths with scene-level focus, takeaway, and an explicit
   "what this does not prove" warning;
 - an explanation export payload embedded in the current-view export, carrying
-  inquiry mode, audience mode, explanation path, scene, visible counts,
-  evidence summary, scope warning, and caveats;
+  `inquiry_mode`, `audience_mode`, `explanation_path`, `explanation_step`,
+  `scene_title`, visible counts, evidence summary, `scope_warning`, and
+  `does_not_prove`;
 - a non-canvas companion readout for visible nodes, states, relations, and
   relation categories.
 

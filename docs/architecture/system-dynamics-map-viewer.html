@@ -5531,7 +5531,7 @@
     "expires_at": "2030-01-01T00:00:00Z",
     "freshness": "fresh",
     "source_ref": "docs/architecture/system-dynamics-map-v1.md",
-    "source_hash": "827af72d0b2cc7a356f949ee05be74720c695f20f9993b082f2e9bfe5d077157",
+    "source_hash": "4807357fa0d8dd90f103d00a025ee127352d8c37183004829b1a22e9a4fb4e34",
     "source_type": "fixture",
     "evidence": [
       {
@@ -7020,6 +7020,19 @@
       };
     }
 
+    function globalTrustStats() {
+      const weakClaims = claims.filter((claim) => Number(claim.confidence_basis?.score ?? 1) < 0.85);
+      const candidateNodes = seed.nodes.filter((node) => node.status === "candidate");
+      const candidateEdges = seed.edges.filter((edge) => edge.status === "candidate");
+      const contradictions = claims.filter((claim) => claim.contradiction_state && claim.contradiction_state !== "none");
+      return {
+        weakClaims,
+        candidateNodes,
+        candidateEdges,
+        contradictions
+      };
+    }
+
     function currentStateFor(id) {
       const rows = observationRows(id);
       if (rows.length === 0) {
@@ -7095,9 +7108,10 @@
         });
         callouts.push({ level: "info", text: "Stale evidence is temporal evidence, not a topology overwrite." });
       } else if (mode.id === "trust") {
+        const trustStats = globalTrustStats();
         callouts.push({
-          level: stats.weakClaims.length || stats.candidateNodes.length || stats.candidateEdges.length ? "warning" : "success",
-          text: `${stats.weakClaims.length} lower-confidence claims, ${stats.candidateNodes.length + stats.candidateEdges.length} candidate elements, ${stats.contradictions.length} contradiction records in scope.`
+          level: trustStats.weakClaims.length || trustStats.candidateNodes.length || trustStats.candidateEdges.length ? "warning" : "success",
+          text: `${trustStats.weakClaims.length} lower-confidence claims, ${trustStats.candidateNodes.length + trustStats.candidateEdges.length} candidate elements, ${trustStats.contradictions.length} contradiction records in the package.`
         });
         callouts.push({
           level: "info",
@@ -7127,6 +7141,7 @@
       const path = activeExplanationData();
       const scene = activeExplanationScene();
       const lens = activeLensData();
+      const trustStats = activeInquiryMode === "trust" ? globalTrustStats() : inquiry.stats;
       return {
         schema: "system-dynamics-map-explanation-view-v1",
         inquiry_mode: inquiry.mode.id,
@@ -7146,9 +7161,9 @@
           stale_observations: inquiry.stats.staleObservations.length,
           hidden_stale_observations: inquiry.stats.hiddenStaleObservations.length,
           claim_fragments: inquiry.stats.claims.length,
-          weak_claims: inquiry.stats.weakClaims.length,
-          candidate_elements: inquiry.stats.candidateNodes.length + inquiry.stats.candidateEdges.length,
-          contradictions: inquiry.stats.contradictions.length
+          weak_claims: trustStats.weakClaims.length,
+          candidate_elements: trustStats.candidateNodes.length + trustStats.candidateEdges.length,
+          contradictions: trustStats.contradictions.length
         },
         scope_warning: lensScopeWarning(lens),
         does_not_prove: scene.caveat
@@ -8533,6 +8548,8 @@
         currentViewPayload,
         currentWorkbenchPayload,
         directedLayoutRootId: () => layoutOptions("breadthfirst").roots.id(),
+        focusWorkbenchElementForTest: focusWorkbenchElement,
+        lensScopeWarningForTest: lensScopeWarning,
         layoutAnimationEnabled: () => layoutOptions(activeLayout).animate,
         lensIds: () => lenses.lenses.map((lens) => lens.id),
         observationsFor: (id) => observationRows(id),
