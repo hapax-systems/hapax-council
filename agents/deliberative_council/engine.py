@@ -20,6 +20,7 @@ from .members import (
     build_member,
     cache_policy_for_aliases,
     model_family,
+    served_model_family,
 )
 from .models import (
     AdversarialExchange,
@@ -100,8 +101,15 @@ async def _call_member(
         run_kwargs["usage_limits"] = usage_limits
     result = await asyncio.wait_for(member.run(prompt, **run_kwargs), timeout=_MEMBER_TIMEOUT_S)
     tool_calls: list[str] = []
+    served_model = ""
     try:
         for msg in result.all_messages():
+            # ModelResponse messages carry the model that ACTUALLY answered; capture the last so a
+            # gateway fail-over (e.g. balanced->gemini-pro on a credit cap) is visible to the
+            # family-diversity quorum instead of being miscounted as the requested alias's family.
+            model_name = getattr(msg, "model_name", None)
+            if model_name:
+                served_model = str(model_name)
             parts = getattr(msg, "parts", [])
             for part in parts:
                 kind = getattr(part, "part_kind", "")
@@ -115,7 +123,7 @@ async def _call_member(
                     tool_calls.append(f"{name} → {content}")
     except Exception:
         pass
-    return result.output, tool_calls
+    return result.output, tool_calls, served_model
 
 
 async def run_phase1(
@@ -170,7 +178,7 @@ async def run_phase1(
                     f"{source_ctx_block}"
                 )
                 try:
-                    investigate_raw, tool_calls = await _call_member(
+                    investigate_raw, tool_calls, _ = await _call_member(
                         research_member, investigate_prompt, usage_limits=_RESEARCH_LIMITS
                     )
                     findings_text = str(investigate_raw)[:2000]
@@ -210,7 +218,7 @@ async def run_phase1(
                 "Respond ONLY with the structured score object (an integer "
                 f"{rubric.axes[0].min_score}-{rubric.axes[0].max_score} per axis)."
             )
-            phase1_output, score_tools = await _call_member(
+            phase1_output, score_tools, served_model = await _call_member(
                 score_member,
                 score_prompt,
                 output_type=NativeOutput(Phase1Output),
@@ -244,6 +252,7 @@ async def run_phase1(
             rationale=phase1_output.rationale,
             research_findings=phase1_output.research_findings,
             tool_calls_log=tool_calls + score_tools,
+            served_model=served_model,
         )
 
     results_or_none = await asyncio.gather(
@@ -265,7 +274,24 @@ def _assess_health(
     """
     requested = config.model_aliases
     valid_aliases = [r.model_alias for r in results]
-    families_valid = {model_family(a) for a in valid_aliases}
+
+    # Count family-diversity by the SERVED model, not the requested alias. A LiteLLM fail-over
+    # (e.g. balanced->gemini-pro on an Anthropic credit cap) means the seat's TRUE family is the
+    # one that answered; counting by the requested alias would let a phantom-anthropic gemini
+    # satisfy the diversity floor and silently contaminate the ruler. Fall back to the requested
+    # alias's family when the served name is unknown (no regression on the all-up path).
+    def _served_family_of(r: PhaseOneResult) -> str:
+        fam = served_model_family(r.served_model) if r.served_model else "unknown"
+        return fam if fam != "unknown" else model_family(r.model_alias)
+
+    families_valid = {_served_family_of(r) for r in results}
+    served_substitutions = sum(
+        1
+        for r in results
+        if r.served_model
+        and served_model_family(r.served_model) != "unknown"
+        and served_model_family(r.served_model) != model_family(r.model_alias)
+    )
     families_requested = {model_family(a) for a in requested}
     below = (
         len(valid_aliases) < config.min_valid_members
@@ -280,6 +306,7 @@ def _assess_health(
         below_quorum=below,
         quorum_floor_members=config.min_valid_members,
         quorum_floor_families=config.min_valid_families,
+        served_substitutions=served_substitutions,
     )
 
 
@@ -391,6 +418,7 @@ async def _deliberate(
                 "shortcircuited": True,
                 "council_health": health_payload,
                 "models_used": [r.model_alias for r in phase1_results],
+                "served_models": [r.served_model for r in phase1_results],
                 "failed_members": failed_members_payload,
                 "cache_policy": cache_policy,
                 "phases_completed": [1],
@@ -531,7 +559,7 @@ async def _run_phase2(
 
     try:
         member = build_member(config.model_aliases[0])
-        raw, _ = await _call_member(member, prompt)
+        raw, _, _ = await _call_member(member, prompt)
         text = raw.strip()
         if "```json" in text:
             text = text.split("```json", 1)[1].split("```", 1)[0].strip()
@@ -627,7 +655,7 @@ async def _run_phase3(
 
         try:
             member = build_member(high_alias)
-            raw, _ = await _call_member(member, prompt)
+            raw, _, _ = await _call_member(member, prompt)
             exchanges.append(
                 AdversarialExchange(
                     axis=axis,
@@ -682,7 +710,7 @@ async def _run_phase4(
         )
         try:
             member = build_member(original.model_alias)
-            raw, _ = await _call_member(member, prompt)
+            raw, _, _ = await _call_member(member, prompt)
             text = raw.strip()
             if "```json" in text:
                 text = text.split("```json", 1)[1].split("```", 1)[0].strip()

@@ -91,6 +91,11 @@ class PhaseOneResult(BaseModel):
     rationale: dict[str, str]
     research_findings: list[str] = Field(default_factory=list)
     tool_calls_log: list[str] = Field(default_factory=list)
+    # The model that ACTUALLY answered (LiteLLM ModelResponse.model_name), which can differ from
+    # model_alias when the gateway fails over (e.g. balanced->gemini-pro on an Anthropic credit cap).
+    # Empty when unknown. The engine counts family-diversity by the SERVED family so a silent
+    # substitution cannot fool the quorum floor (the 2026-06-19 credit-cap incident).
+    served_model: str = ""
 
 
 class MemberFailure(BaseModel):
@@ -152,6 +157,10 @@ class CouncilHealth(BaseModel):
     below_quorum: bool = False
     quorum_floor_members: int = 0
     quorum_floor_families: int = 0
+    # Count of valid seats whose SERVED family differs from the requested alias's family — i.e. the
+    # gateway substituted a model (credit-cap fail-over). > 0 means the panel ran partly off-roster;
+    # for a frozen-phase SCED run this flags ruler substitution (the run is recorded but suspect).
+    served_substitutions: int = 0
 
 
 class EvidenceClassification(BaseModel):

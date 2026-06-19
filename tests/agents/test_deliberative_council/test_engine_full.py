@@ -67,7 +67,7 @@ class TestPhase2EvidenceMatrix:
         )
 
         async def _mock_call(member, prompt):
-            return matrix_response, []
+            return matrix_response, [], ""
 
         with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
             config = CouncilConfig(model_aliases=("opus", "balanced"))
@@ -115,7 +115,7 @@ class TestPhase3Adversarial:
         )
 
         async def _mock_call(member, prompt):
-            return challenge_response, []
+            return challenge_response, [], ""
 
         evidence_matrix = EvidenceMatrix(
             axes={"a": EvidenceMatrixAxis(axis="a", least_inconsistent_score=3)},
@@ -183,13 +183,17 @@ class TestPhase4Revision:
         ]
 
         async def _mock_call(member, prompt):
-            return json.dumps(
-                {
-                    "revised_scores": {"a": 3},
-                    "revision_rationale": {"a": "adjusted after evidence"},
-                    "changed_axes": ["a"],
-                }
-            ), []
+            return (
+                json.dumps(
+                    {
+                        "revised_scores": {"a": 3},
+                        "revision_rationale": {"a": "adjusted after evidence"},
+                        "changed_axes": ["a"],
+                    }
+                ),
+                [],
+                "",
+            )
 
         with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
             config = CouncilConfig(model_aliases=("opus", "balanced"))
@@ -230,7 +234,7 @@ class TestPhase4Revision:
         ]
 
         async def _mock_call(member, prompt):
-            return "not json", []
+            return "not json", [], ""
 
         with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
             config = CouncilConfig(model_aliases=("opus",))
@@ -366,12 +370,12 @@ class TestFullDeliberation:
         async def _mock_call(member, prompt):
             lower = prompt.lower()
             if "competing hypotheses" in lower:
-                return matrix_json, []
+                return matrix_json, [], ""
             if "adversarial" in lower:
-                return json.dumps({"revised_score": 1, "response": "Confirmed low."}), []
+                return json.dumps({"revised_score": 1, "response": "Confirmed low."}), [], ""
             if "revising" in lower:
-                return revision_json, []
-            return "{}", []
+                return revision_json, [], ""
+            return "{}", [], ""
 
         with (
             patch("agents.deliberative_council.engine.run_phase1", return_value=phase1_results),
