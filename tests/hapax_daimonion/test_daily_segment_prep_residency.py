@@ -12,6 +12,7 @@ from agents.hapax_daimonion import daily_segment_prep as prep
 from agents.hapax_daimonion import programme_loop
 from shared.programme_store import ProgrammePlanStore
 from shared.segment_candidate_selection import SEGMENT_CANDIDATE_SELECTION_VERSION
+from shared.segment_ndcvb_axis_b import evaluate_ndcvb_axis_b
 from shared.source_packet import (
     ResolvedSourceSet,
     SourcePacket,
@@ -133,6 +134,29 @@ def _recruited_sources_default(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _advisory_angle_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default the non-load-bearing advisory angle pass away from live Qdrant/GPU.
+
+    Source recruitment above is the citable closed set for prep tests. The
+    advisory angle prose is best-effort composer context, so residency tests
+    should not block on embedding or vector search unless a test opts into that
+    path explicitly.
+    """
+    import agents.hapax_daimonion.angle_resolver as angle_resolver
+
+    monkeypatch.setattr(angle_resolver, "resolve_angle", lambda _topic: None)
+
+
+@pytest.fixture(autouse=True)
+def _hermeneutic_side_channels_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep prep_segment residency tests off live embedding-backed side channels."""
+
+    monkeypatch.setattr(prep, "retrieve_fore_understanding", lambda **_kwargs: [])
+    monkeypatch.setattr(prep, "compute_hermeneutic_delta", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(prep, "persist_source_consequences", lambda *_args, **_kwargs: None)
+
+
+@pytest.fixture(autouse=True)
 def _composability_gate_accepts_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """Default the S2 topic+type composability gate to ACCEPT for prep tests.
 
@@ -187,6 +211,98 @@ def test_coherence_check_quarantines_degraded_ruler(monkeypatch: pytest.MonkeyPa
     assert outcome.council_decisions["ruler_substituted"] is True
     assert outcome.council_decisions["served_substitutions"] == 2
     assert outcome.council_decisions.get("quarantined") == "ruler_substituted"
+
+
+def _patch_axis_b_prep_happy_path(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    axis_b_report: dict[str, Any],
+) -> None:
+    import shared.segment_disconfirmation as disc
+    import shared.segment_narrative_critique as narr
+    from agents.deliberative_council.models import (
+        ConvergenceStatus,
+        NarrativeVerdict,
+        NarrativeVerdictStatus,
+    )
+
+    draft = [
+        "According to the test segment source, the receipt changes the visible launch obligation."
+    ]
+
+    monkeypatch.setattr(prep, "_read_recent_impingements", lambda *_a, **_k: [])
+    monkeypatch.setattr(prep, "_build_seed", lambda _programme: "seed")
+    monkeypatch.setattr(prep, "_build_full_segment_prompt", lambda _programme, _seed: "prompt")
+    monkeypatch.setattr(prep, "_call_llm", lambda _prompt, **_kwargs: json.dumps(draft))
+    monkeypatch.setattr(prep, "_refine_script", lambda script, _programme, **_kwargs: script)
+    monkeypatch.setattr(prep, "_emit_self_evaluation", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        prep,
+        "_council_coherence_check",
+        lambda _script, _programme_id: prep._CoherenceOutcome(
+            passed=True,
+            refused=False,
+            feedback="",
+            council_decisions={
+                "check": "coherence",
+                "mean_score": 4.0,
+                "axis_min": 4,
+                "scores": {"source_grounding": 4},
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        prep,
+        "validate_layout_responsibility",
+        lambda _beat_action_intents: {
+            "ok": True,
+            "violations": [],
+            "hosting_context": prep.RESPONSIBLE_HOSTING_CONTEXT,
+            "beat_layout_intents": [
+                {
+                    "beat_id": "beat-1",
+                    "needs": ["source_visible"],
+                    "evidence_refs": [SOURCE_REF],
+                    "default_static_success_allowed": False,
+                }
+            ],
+            "layout_decision_contract": {"ok": True},
+            "runtime_layout_validation": {"ok": True},
+            "layout_decision_receipts": [],
+        },
+    )
+    monkeypatch.setattr(disc, "extract_claims", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        narr,
+        "run_narrative_critique",
+        lambda _text, _pid: NarrativeVerdict(
+            scores={"focalization_integrity": 4},
+            confidence_bands={},
+            convergence_status=ConvergenceStatus.CONVERGED,
+            verdict_status=NarrativeVerdictStatus.BROADCAST_READY,
+            receipt={"mean_score": 4.0},
+        ),
+    )
+    monkeypatch.setattr(
+        prep,
+        "validate_segment_prep_contract",
+        lambda *_args, **_kwargs: {"ok": True, "violations": []},
+    )
+    monkeypatch.setattr(
+        prep,
+        "evaluate_segment_live_event_quality",
+        lambda *_args, **_kwargs: {"ok": True, "violations": [], "plan": {}},
+    )
+    monkeypatch.setattr(
+        prep,
+        "validate_live_event_viability",
+        lambda _viability: {"ok": True, "violations": []},
+    )
+    monkeypatch.setattr(
+        prep,
+        "_axis_b_ndcvb_report_for_segment",
+        lambda **_kwargs: axis_b_report,
+    )
 
 
 def test_prep_model_is_command_r_only(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2457,6 +2573,108 @@ def test_compose_refusal_reason_refuses_non_viable_segment() -> None:
         )
         == "segment_live_event_report_failed"
     )
+
+
+def test_prep_segment_axis_b_dissociated_veto_writes_diagnostic_only_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    report = evaluate_ndcvb_axis_b(
+        [
+            "sycophancy: corroborated@0.88",
+            "consistency: dissociated@0.80",
+        ]
+    )
+    _patch_axis_b_prep_happy_path(monkeypatch, axis_b_report=report)
+    programme = SimpleNamespace(
+        programme_id="prog-axis-b-dissociated",
+        role=SimpleNamespace(value="rant"),
+        content=_ready_content(
+            narrative_beat="Axis-B veto candidate",
+            segment_beats=["argue the source-visible claim with a receipt"],
+            role="rant",
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+    }
+
+    saved = prep.prep_segment(programme, tmp_path, prep_session=session)
+
+    assert saved is None
+    assert not (tmp_path / "prog-axis-b-dissociated.json").exists()
+    assert not (tmp_path / prep.CANDIDATE_LEDGER).exists()
+    diagnostic_path = tmp_path / "prog-axis-b-dissociated.axis-b-dissociated-veto.json"
+    assert diagnostic_path.exists()
+    diagnostic = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+    assert diagnostic["terminal_status"] == "refused_no_release"
+    assert diagnostic["terminal_reason"] == prep.AXIS_B_DISSOCIATED_VETO_REASON
+    assert diagnostic["not_loadable_reason"] == prep.AXIS_B_DISSOCIATED_VETO_NOT_LOADABLE
+    assert diagnostic["authority"] == prep.PREP_DIAGNOSTIC_AUTHORITY
+    assert diagnostic["diagnostic_only"] is True
+    assert diagnostic["release_boundary"] == "closed"
+    assert diagnostic["runtime_boundary"] == "closed"
+    assert diagnostic["loadable"] is False
+    assert diagnostic["axis_b_ndcvb_report"]["dissociated_veto_required"] is True
+    ledger_row = json.loads(
+        (tmp_path / prep.PREP_DIAGNOSTIC_LEDGER_FILENAME).read_text(encoding="utf-8")
+    )
+    assert ledger_row["terminal_status"] == "refused_no_release"
+    assert ledger_row["terminal_reason"] == prep.AXIS_B_DISSOCIATED_VETO_REASON
+    assert ledger_row["manifest_eligible"] is False
+    dossier = json.loads(Path(ledger_row["dossier_ref"]).read_text(encoding="utf-8"))
+    assert dossier["diagnostic_refs"] == [str(diagnostic_path)]
+    assert dossier["refusal_metadata"]["axis_b_ndcvb_report"]["dissociated_veto_required"] is True
+
+
+@pytest.mark.parametrize(
+    ("programme_id", "report"),
+    [
+        (
+            "prog-axis-b-corroborated",
+            evaluate_ndcvb_axis_b(["sycophancy: corroborated@0.88"]),
+        ),
+        (
+            "prog-axis-b-undetermined",
+            evaluate_ndcvb_axis_b(["sycophancy: UNDETERMINED (below floor)"]),
+        ),
+    ],
+)
+def test_prep_segment_axis_b_non_dissociated_reports_do_not_hard_veto(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    programme_id: str,
+    report: dict[str, Any],
+) -> None:
+    assert report["dissociated_veto_required"] is False
+    _patch_axis_b_prep_happy_path(monkeypatch, axis_b_report=report)
+    programme = SimpleNamespace(
+        programme_id=programme_id,
+        role=SimpleNamespace(value="rant"),
+        content=_ready_content(
+            narrative_beat="Axis-B non-veto candidate",
+            segment_beats=["argue the source-visible claim with a receipt"],
+            role="rant",
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+    }
+
+    saved = prep.prep_segment(programme, tmp_path, prep_session=session)
+
+    assert saved == tmp_path / f"{programme_id}.json"
+    assert saved.exists()
+    payload = json.loads(saved.read_text(encoding="utf-8"))
+    assert payload["authority"] == prep.PREP_ARTIFACT_AUTHORITY
+    assert payload["programme_id"] == programme_id
+    assert "axis_b_ndcvb_report" not in payload
+    assert not (tmp_path / f"{programme_id}.axis-b-dissociated-veto.json").exists()
+    assert not (tmp_path / prep.PREP_DIAGNOSTIC_LEDGER_FILENAME).exists()
 
 
 def test_council_coherence_check_constructs_valid_config(
