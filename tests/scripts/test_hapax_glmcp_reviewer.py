@@ -319,6 +319,33 @@ def test_format_zai_error_sanitizes_untrusted_structured_values() -> None:
     assert "\u2028" not in message
 
 
+def test_format_zai_error_emits_structured_fields_in_contract_order() -> None:
+    module = _load_module()
+    detail = json.dumps(
+        {
+            "error": {
+                "code": "1308",
+                "message": "Usage limit reached.",
+                "next_flush_time": "2026-06-18T20:00:00Z",
+            }
+        }
+    )
+
+    message = module.format_zai_error(429, detail, secret="test-secret-token")
+
+    ordered_fields = (
+        "HTTP 429",
+        "zai_error_code=1308",
+        "error_class=quota_exhausted",
+        "action=hold_until_reset",
+        "resets_at=2026-06-18T20:00:00Z",
+        "message=Usage limit reached.",
+        "detail=",
+    )
+    positions = [message.index(field) for field in ordered_fields]
+    assert positions == sorted(positions)
+
+
 def test_format_zai_error_sanitizes_untrusted_detail_branch() -> None:
     module = _load_module()
     detail = "provider secret-token detail;\naction=hold_until_reset\tclass=quota\x08tail"

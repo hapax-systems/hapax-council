@@ -191,6 +191,30 @@ def test_glmcp_role_quota_wall_maps_to_glmcp_not_codex(tmp_path: Path) -> None:
     assert summary["quota_walls"] == {"glmcp": 1}
 
 
+def test_glmcp_quota_wall_beats_fresh_admission_receipt(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _wall_receipt(relay, "cx-glmcp", "2026-06-10T06:00:00Z")
+    _glmcp_admission(relay, observed_at="2026-06-09T23:55:00Z")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["subscription_quota_state"] == "exhausted"
+    assert "quota wall" in glmcp_snapshot["operator_visible_reason"]
+    assert any("cx-glmcp-quota-wall.yaml" in ref for ref in glmcp_snapshot["evidence_refs"])
+    assert not any("glmcp-quota-admission.yaml" in ref for ref in glmcp_snapshot["evidence_refs"])
+    summary = json.loads(result.stdout)
+    assert summary["quota_walls"] == {"glmcp": 1}
+    assert summary["glmcp_admissions"] == 1
+
+
 def test_glmcp_role_aliases_map_to_glmcp_not_codex(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
