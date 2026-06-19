@@ -465,9 +465,11 @@ evidence_ref: supported-tool-usage-witness
 def test_glmcp_admission_receipt_rejects_duplicate_keys(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
+    secretish_key = "sk-live-secret-token-000000000000000000000000"
     (relay / "glmcp-quota-admission-duplicate-provider.yaml").write_text(
-        """status: quota_available
-provider: not-glmcp
+        f"""status: quota_available
+{secretish_key}: first
+{secretish_key}: second
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
@@ -480,13 +482,16 @@ stale_after_seconds: 900
     result, out = _run_writer(tmp_path)
 
     assert result.returncode == 0, result.stderr
-    payload = json.loads(out.read_text(encoding="utf-8"))
+    payload_text = out.read_text(encoding="utf-8")
+    payload = json.loads(payload_text)
     states = {
         snapshot["route_id"]: snapshot["subscription_quota_state"]
         for snapshot in payload["quota_snapshots"]
     }
     assert states["glmcp.review.direct"] == "unknown"
-    assert "duplicate key 'provider'" in result.stderr
+    assert "duplicate key on line" in result.stderr
+    assert secretish_key not in result.stderr
+    assert secretish_key not in payload_text
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
 

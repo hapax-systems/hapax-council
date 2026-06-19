@@ -210,7 +210,7 @@ def _parse_flat_yaml_strict(text: str) -> tuple[dict[str, str], str | None]:
         if not normalized_key:
             return {}, f"empty key on line {line_no}"
         if normalized_key in fields:
-            return {}, f"duplicate key {normalized_key!r} on line {line_no}"
+            return {}, f"duplicate key on line {line_no}"
         fields[normalized_key] = value.strip().strip("'\"")
     return fields, None
 
