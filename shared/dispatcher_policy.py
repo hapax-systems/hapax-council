@@ -71,7 +71,7 @@ SUPPORT_CEILINGS = frozenset(
 )
 NON_MUTATING_SURFACES = frozenset({"none"})
 CLOUD_BURST_ROUTE_IDS = frozenset({"api.headless.api_frontier"})
-LOCAL_DEV_PLATFORMS = frozenset({"antigrav", "claude", "codex", "gemini", "vibe"})
+LOCAL_DEV_PLATFORMS = frozenset({"antigrav", "claude", "codex", "vibe"})
 LOCAL_DEV_TARGET = "appendix"
 
 

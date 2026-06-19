@@ -25,9 +25,6 @@ command = "__HAPAX_COUNCIL_DIR__/scripts/hapax-playwright-mcp"
 [mcp_servers.github]
 command = "__HAPAX_COUNCIL_DIR__/scripts/hapax-github-mcp"
 
-[mcp_servers.gemini-cli]
-command = "__HAPAX_COUNCIL_DIR__/scripts/hapax-gemini-mcp"
-
 [mcp_servers.tavily]
 command = "__HAPAX_COUNCIL_DIR__/scripts/hapax-tavily-mcp"
 

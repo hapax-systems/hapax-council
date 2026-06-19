@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only Gemini CLI sidecar wrapper for Codex."""
+"""Read-only Gemini-family sidecar wrapper for Codex via agy."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ READ_ONLY_GUARDRAILS = "\n".join(
     [
         "Read-only. No file edits. No PRs. No branch/worktree operations.",
         "No deploy/restart. No secrets. No new auth/users/roles.",
-        "Separate evidence from inference. Gemini output is evidence/draft only;",
+        "Separate evidence from inference. Agy/Gemini output is evidence/draft only;",
         "Codex remains implementation owner.",
     ]
 )
@@ -54,12 +54,10 @@ MODE_TEMPLATES: dict[str, str] = {
     ),
 }
 
-# Latest highest-capability Gemini CLI selector verified 2026-05-01:
-# Gemini CLI docs say Gemini 3.1 Pro Preview is rolling out and can be launched
-# directly with `-m gemini-3.1-pro-preview` when the account has access. The
-# Gemini API models page identifies Gemini 3 Pro as the most intelligent public
-# model family. For coding/review sidecars, use the 3.1 Pro selector first and
-# let strict callers fail closed instead of silently downgrading quality.
+# Latest highest-capability Gemini-family selector verified 2026-05-01:
+# Gemini 3.1 Pro Preview can be selected when the agy account has access. For
+# coding/review sidecars, use the 3.1 Pro selector first and let strict callers
+# fail closed instead of silently downgrading quality.
 DEFAULT_MODEL = "gemini-3.1-pro-preview"
 AUTO_ROUTING_SENTINEL = "auto"
 FALLBACK_BY_MODE: dict[str, list[str]] = {
@@ -150,16 +148,21 @@ def _fallbackable(output: str) -> bool:
     return any(marker in lowered for marker in FALLBACK_MARKERS)
 
 
+def _print_timeout(timeout_s: float) -> str:
+    return f"{max(1, int(timeout_s))}s"
+
+
 def _command(
-    gemini_bin: str,
+    agy_bin: str,
     *,
     model: str,
-    output_format: str,
     prompt: str,
+    timeout_s: float,
 ) -> list[str]:
-    cmd = [gemini_bin, "--approval-mode", "plan", "--output-format", output_format, "-p", prompt]
+    cmd = [agy_bin, "--sandbox", "--print-timeout", _print_timeout(timeout_s)]
     if model != AUTO_ROUTING_SENTINEL:
-        cmd[1:1] = ["--model", model]
+        cmd.extend(["--model", model])
+    cmd.extend(["--print", prompt])
     return cmd
 
 
@@ -210,20 +213,28 @@ def _prompt_from_args(args: argparse.Namespace) -> str:
 
 def _make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Invoke Gemini CLI as a read-only Hapax sidecar.",
-        epilog="Gemini output is evidence/draft only; Codex owns implementation and train state.",
+        description="Invoke agy as a read-only Gemini-family Hapax sidecar.",
+        epilog="Agy/Gemini output is evidence/draft only; Codex owns implementation and train state.",
     )
     parser.add_argument("--mode", choices=sorted(MODE_TEMPLATES), default="reviewer")
     parser.add_argument("--prompt")
     parser.add_argument("--prompt-file")
     parser.add_argument("--model", default=os.environ.get("HAPAX_GEMINI_SIDECAR_MODEL"))
-    parser.add_argument("--gemini-bin", default=os.environ.get("GEMINI_BIN", "gemini"))
+    parser.add_argument(
+        "--agy-bin",
+        default=os.environ.get("HAPAX_AGY_BIN") or os.environ.get("AGY_BIN") or "agy",
+    )
+    parser.add_argument(
+        "--gemini-bin",
+        dest="legacy_gemini_bin",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument(
         "--timeout",
         type=float,
         default=float(os.environ.get("HAPAX_GEMINI_SIDECAR_TIMEOUT", "120")),
     )
-    parser.add_argument("--output-format", choices=("text", "json", "stream-json"), default="text")
+    parser.add_argument("--output-format", choices=("text",), default="text")
     parser.add_argument("--metadata-log")
     parser.add_argument("--artifact-dir")
     parser.add_argument(
@@ -242,6 +253,10 @@ def _make_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _make_parser().parse_args(argv)
+    if args.legacy_gemini_bin:
+        if Path(args.legacy_gemini_bin).name != "agy":
+            raise SystemExit("hapax-gemini-sidecar: --gemini-bin is retired; use --agy-bin agy")
+        args.agy_bin = args.legacy_gemini_bin
     prompt = _build_prompt(args.mode, _prompt_from_args(args))
     attempts = (
         _strict_model_attempts(args.mode, args.model)
@@ -254,10 +269,10 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "command": _command(
-                        args.gemini_bin,
+                        args.agy_bin,
                         model=attempts[0],
-                        output_format=args.output_format,
                         prompt=prompt,
+                        timeout_s=args.timeout,
                     ),
                     "fallback_models": attempts,
                     "mode": args.mode,
@@ -287,9 +302,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     for model in attempts:
-        cmd = _command(
-            args.gemini_bin, model=model, output_format=args.output_format, prompt=prompt
-        )
+        cmd = _command(args.agy_bin, model=model, prompt=prompt, timeout_s=args.timeout)
         remaining_timeout = deadline - time.monotonic()
         if remaining_timeout <= 0:
             final_stdout = ""
@@ -312,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
             final_code = result.returncode
         except OSError as exc:
             final_stdout = ""
-            final_stderr = f"hapax-gemini-sidecar: failed to launch {args.gemini_bin}: {exc}\n"
+            final_stderr = f"hapax-gemini-sidecar: failed to launch {args.agy_bin}: {exc}\n"
             final_code = 2
         except subprocess.TimeoutExpired as exc:
             final_stdout = exc.stdout if isinstance(exc.stdout, str) else ""

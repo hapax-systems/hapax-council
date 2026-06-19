@@ -1983,31 +1983,7 @@ printf '%s\\n' "$@" > {launcher_args}
     assert "quality_floor_not_satisfied" in result.stderr
 
 
-def test_gemini_read_only_quota_fallback_maps_to_flash(tmp_path: Path) -> None:
-    _worktree(tmp_path / "worktree")
-    _task(
-        tmp_path / "tasks",
-        "research-only",
-        """
-        kind: research
-        task_type: read-only
-        parent_spec: null
-        tags:
-          - research
-          - read-only
-        """,
-    )
-    launcher_args = tmp_path / "gemini-args.txt"
-    fake_launcher = tmp_path / "bin" / "hapax-gemini"
-    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
-    fake_launcher.write_text(
-        f"""#!/usr/bin/env bash
-printf '%s\\n' "$@" > {launcher_args}
-""",
-        encoding="utf-8",
-    )
-    fake_launcher.chmod(0o755)
-
+def test_gemini_platform_is_not_dispatchable(tmp_path: Path) -> None:
     result = _run(
         tmp_path,
         "--task",
@@ -2018,105 +1994,10 @@ printf '%s\\n' "$@" > {launcher_args}
         "gemini",
         "--mode",
         "headless",
-        "--profile",
-        "quota-fallback",
-        "--launch",
-        extra_env={"HAPAX_METHODOLOGY_GEMINI_LAUNCHER": str(fake_launcher)},
     )
 
-    assert result.returncode == 0, result.stderr
-    args = launcher_args.read_text(encoding="utf-8").splitlines()
-    assert "--model" in args
-    assert "gemini-3-flash-preview" in args
-    assert "-p" in args
-    receipt = json.loads(
-        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
-        .read_text(encoding="utf-8")
-        .splitlines()[-1]
-    )
-    assert receipt["platform"] == "gemini"
-    assert receipt["profile"] == "flash"
-    assert receipt["launched"] is True
-
-
-def test_gemini_mutation_task_fails_platform_fit(tmp_path: Path) -> None:
-    _worktree(tmp_path / "worktree")
-    spec = _spec(tmp_path / "isap-test.md")
-    _task(
-        tmp_path / "tasks",
-        "governed-build",
-        f"""
-        kind: build
-        authority_case: CASE-TEST-001
-        parent_spec: {spec}
-        """,
-    )
-
-    result = _run(
-        tmp_path,
-        "--task",
-        "governed-build",
-        "--lane",
-        "iota",
-        "--platform",
-        "gemini",
-        "--mode",
-        "headless",
-        "--launch",
-    )
-
-    assert result.returncode == 10
-    assert "read_only_mutation_route" in result.stderr
-
-
-def test_gemini_worker_profile_sets_auto_edit_mode(tmp_path: Path) -> None:
-    _worktree(tmp_path / "worktree")
-    _task(
-        tmp_path / "tasks",
-        "research-only",
-        """
-        kind: research
-        task_type: read-only
-        parent_spec: null
-        tags:
-          - research
-          - read-only
-        """,
-    )
-    launcher_args = tmp_path / "gemini-worker-args.txt"
-    launcher_env = tmp_path / "gemini-worker-env.txt"
-    fake_launcher = tmp_path / "bin" / "hapax-gemini"
-    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
-    fake_launcher.write_text(
-        f"""#!/usr/bin/env bash
-printf '%s\n' "$HAPAX_GEMINI_APPROVAL_MODE" > {launcher_env}
-printf '%s\n' "$@" > {launcher_args}
-""",
-        encoding="utf-8",
-    )
-    fake_launcher.chmod(0o755)
-
-    result = _run(
-        tmp_path,
-        "--task",
-        "research-only",
-        "--lane",
-        "iota",
-        "--platform",
-        "gemini",
-        "--mode",
-        "headless",
-        "--profile",
-        "worker",
-        "--launch",
-        extra_env={"HAPAX_METHODOLOGY_GEMINI_LAUNCHER": str(fake_launcher)},
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert launcher_env.read_text(encoding="utf-8").strip() == "auto_edit"
-    args = launcher_args.read_text(encoding="utf-8").splitlines()
-    assert "--model" not in args
-    assert "-p" in args
+    assert result.returncode == 2
+    assert "invalid choice: 'gemini'" in result.stderr
 
 
 def test_lists_platform_profile_paths(tmp_path: Path) -> None:
@@ -2128,8 +2009,7 @@ def test_lists_platform_profile_paths(tmp_path: Path) -> None:
     assert "codex/headless/spark" in result.stdout
     assert "claude/interactive/full" in result.stdout
     assert "claude/headless/sonnet" in result.stdout
-    assert "gemini/headless/flash" in result.stdout
-    assert "gemini/headless/worker" in result.stdout
+    assert "gemini/" not in result.stdout
     assert "antigrav/interactive/full" in result.stdout
     assert "api/headless/api_frontier" in result.stdout
     assert "api/headless/provider_gateway" in result.stdout

@@ -1104,14 +1104,13 @@ _SPAWNERS = [
     "hapax-claude",
     "hapax-claude-headless",
     "hapax-codex",
-    "hapax-gemini",
     "hapax-vibe",
     "hapax-antigrav",
 ]
 
 
 class TestSpawnerSessionIdentity:
-    """All six spawners export HAPAX_AGENT_ROLE + a generated HAPAX_SESSION_ID.
+    """All active spawners export HAPAX_AGENT_ROLE + a generated HAPAX_SESSION_ID.
 
     The launchers spawn processes/tmux and cannot be run in isolation, so these
     assert the identity wiring is present in the source (complemented by `bash -n`

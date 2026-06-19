@@ -90,7 +90,7 @@ def test_writes_valid_live_ledger_with_fresh_captured_at(tmp_path: Path) -> None
     }
     assert states["claude.headless.full"] == "fresh"
     assert states["codex.headless.full"] == "fresh"
-    assert states["gemini.headless.full"] == "fresh"
+    assert "gemini.headless.full" not in states
     assert states["litellm.local.command-r-35b"] == "fresh"
 
 

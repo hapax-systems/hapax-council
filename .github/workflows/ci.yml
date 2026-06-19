@@ -354,8 +354,8 @@ jobs:
             bash scripts/check-legal-name-leaks.sh --diff "$PUSH_BEFORE_SHA..HEAD"
           fi
       # Cross-runtime gate-manifest wiring check (reform §6 P0 — one gate-set
-      # SSOT). Verifies the codex hook adapter, antigrav/vibe/gemini capability
-      # markers, and CI jobs/run-markers still match hooks/gate-manifest.yaml.
+      # SSOT). Verifies the codex hook adapter, antigrav/vibe capability markers,
+      # and CI jobs/run-markers still match hooks/gate-manifest.yaml.
       # The live ~/.claude/settings.json check has no file on CI runners, so it
       # is skipped here and enforced by the pre-commit hook on the operator
       # machine where the live settings exist.

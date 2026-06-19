@@ -24,7 +24,7 @@ Usage::
 
 Default mode is a dry-run constitution plan. ``--apply`` dispatches reviewers
 and writes the dossier; ``--force`` re-reviews an already-reviewed head sha.
-Reviewer CLIs (claude/codex/gemini/glm) are configured in
+Reviewer CLIs (claude/codex/agy-backed gemini/glm) are configured in
 ``config/review-lenses/registry.yaml`` ``families[].reviewer_command``.
 """
 
@@ -74,7 +74,6 @@ MAX_REVIEW_REPLY_EXCERPT_CHARS = 4_000
 SEND_SCRIPTS = {
     "claude": "hapax-claude-send",
     "codex": "hapax-codex-send",
-    "gemini": "hapax-gemini-send",
     "glm": "hapax-codex-send",
 }
 SEND_SESSION_ALIASES = {

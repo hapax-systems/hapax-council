@@ -1040,8 +1040,6 @@ CODEX_ARGS=(
   -c "mcp_servers.context7.command=\"$COUNCIL_DIR/scripts/hapax-context7-mcp\""
   -c "mcp_servers.github.command=\"$COUNCIL_DIR/scripts/hapax-github-mcp\""
   -c "mcp_servers.playwright.command=\"$COUNCIL_DIR/scripts/hapax-playwright-mcp\""
-  -c "mcp_servers.gemini-cli.command=\"$COUNCIL_DIR/scripts/hapax-gemini-mcp\""
-  -c 'mcp_servers.gemini-cli.args=[]'
   -c "mcp_servers.tavily.command=\"$COUNCIL_DIR/scripts/hapax-tavily-mcp\""
   "${CODEX_EXTRA[@]}"
 )

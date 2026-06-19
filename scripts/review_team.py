@@ -235,9 +235,9 @@ def is_reviewer_route_unavailable(
 ) -> bool:
     """True when the configured reviewer route itself is unavailable.
 
-    This covers process-level auth/client/tier failures such as the Gemini CLI
-    unsupported-client failure. It is a family-availability signal like a quota
-    wall, but it is not mislabeled as a transient provider outage.
+    This covers process-level auth/client/tier failures such as an unsupported
+    reviewer client. It is a family-availability signal like a quota wall, but
+    it is not mislabeled as a transient provider outage.
     """
 
     if not process_failed or not text:

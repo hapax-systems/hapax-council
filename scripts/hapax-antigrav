@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Launch Antigravity CLI as a Hapax audited full-worker coding interface.
 #
-# Antigravity is currently installed locally as the `agy` terminal CLI. Legacy
-# desktop/IDE installs may still expose `antigravity`; this wrapper accepts both
-# but treats `agy` as the canonical implementation.
+# Antigravity is installed locally as the `agy` terminal CLI. Hapax intentionally
+# does not fall back to legacy `antigravity` or `gemini` binaries.
 #
 # This launcher:
 #   - Resolves/creates the antigrav worktree
@@ -194,19 +193,21 @@ fi
 
 resolve_antigrav_bin() {
   if [ -n "${HAPAX_ANTIGRAV_BIN:-}" ]; then
+    if [ "$(basename "$HAPAX_ANTIGRAV_BIN")" != "agy" ]; then
+      echo "hapax-antigrav: HAPAX_ANTIGRAV_BIN must point to an agy executable" >&2
+      return 1
+    fi
     [ -x "$HAPAX_ANTIGRAV_BIN" ] || return 1
     printf '%s\n' "$HAPAX_ANTIGRAV_BIN"
     return 0
   fi
 
   local candidate
-  for candidate in agy antigravity; do
-    if command -v "$candidate" >/dev/null 2>&1; then
-      command -v "$candidate"
-      return 0
-    fi
-  done
-  for candidate in /usr/bin/agy /usr/bin/antigravity; do
+  if command -v agy >/dev/null 2>&1; then
+    command -v agy
+    return 0
+  fi
+  for candidate in /usr/bin/agy; do
     if [ -x "$candidate" ]; then
       printf '%s\n' "$candidate"
       return 0
@@ -217,7 +218,7 @@ resolve_antigrav_bin() {
 
 ANTIGRAV_BIN="$(resolve_antigrav_bin || true)"
 if [ -z "$ANTIGRAV_BIN" ] && [ "$OPEN_IDE" -eq 1 ]; then
-  echo "hapax-antigrav: Antigravity CLI not found (expected agy, antigravity, or HAPAX_ANTIGRAV_BIN)" >&2
+  echo "hapax-antigrav: Antigravity CLI not found (expected agy or HAPAX_ANTIGRAV_BIN=/path/to/agy)" >&2
   exit 4
 fi
 if [ -n "$ANTIGRAV_BIN" ]; then

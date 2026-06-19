@@ -49,11 +49,6 @@ REQUIRED_ROUTE_IDS = frozenset(
         "claude.interactive.full",
         "codex.headless.full",
         "codex.headless.spark",
-        "gemini.headless.flash",
-        "gemini.headless.full",
-        "gemini.headless.lite",
-        "gemini.headless.worker",
-        "gemini.interactive.full",
         "vibe.headless.full",
     }
 )

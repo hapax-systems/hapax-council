@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 REGISTRY_DIR = Path.home() / ".cache" / "hapax" / "team-registry"
 
-Platform = Literal["claude-code", "codex", "gemini-cli", "vibe", "antigrav"]
+Platform = Literal["claude-code", "codex", "vibe", "antigrav"]
 FreshnessResult = Literal["fresh", "stale", "unknown", "blocked"]
 
 

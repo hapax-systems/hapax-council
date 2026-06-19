@@ -1,12 +1,12 @@
 """Executor adapter contract — the one capability surface every runtime conforms
 to (reform §6 P1).
 
-Each launcher (Claude, Codex, Gemini, Vibe, Antigrav) speaks a common adapter
-CLI; their genuine differences (Gemini read-only, Antigrav's IDE-surface hook
-gap, which runtimes have a real headless path) are reported as machine-legible
-*capability flags* by :func:`capabilities`, NOT branched in the dispatcher. The
-dispatcher consumes :func:`supports_route` to decide launchability instead of a
-hard ``(platform, mode)`` if-ladder, and ``hapax-executor-capabilities`` /
+Each launcher (Claude, Codex, Vibe, Antigrav) speaks a common adapter CLI; their
+genuine differences (Antigrav's IDE-surface hook gap, which runtimes have a real
+headless path) are reported as machine-legible *capability flags* by
+:func:`capabilities`, NOT branched in the dispatcher. The dispatcher consumes
+:func:`supports_route` to decide launchability instead of a hard
+``(platform, mode)`` if-ladder, and ``hapax-executor-capabilities`` /
 ``hapax-methodology-dispatch --capabilities`` emit the registry as JSON so the
 CLOG cockpit and other clients read the same contract.
 
@@ -88,17 +88,6 @@ EXECUTOR_REGISTRY: dict[str, ExecutorCapabilities] = {
             "codex exec headless (hapax-codex-headless). The tmux pane (hapax-codex) "
             "exists for direct interactive use but is not a governed dispatch route."
         ),
-    ),
-    "gemini": ExecutorCapabilities(
-        platform="gemini",
-        modes=("headless",),
-        profiles=("full", "worker", "flash", "lite"),
-        mutates=False,
-        claims=False,
-        hooks_wired=True,
-        headless=True,
-        read_only=True,
-        notes="read-only/plan-mode by policy; the worker profile is a governed auto-edit exception",
     ),
     "vibe": ExecutorCapabilities(
         platform="vibe",

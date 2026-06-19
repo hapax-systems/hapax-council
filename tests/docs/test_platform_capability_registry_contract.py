@@ -88,6 +88,7 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
 def test_seed_registry_keeps_absent_evidence_blocked_unless_explicitly_seeded() -> None:
     registry = _json(REGISTRY)
 
+    assert all(not route["route_id"].startswith("gemini.") for route in registry["routes"])
     for route in registry["routes"]:
         freshness = route["freshness"]
         assert route["route_state"] == "blocked"

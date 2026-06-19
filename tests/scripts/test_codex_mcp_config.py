@@ -14,7 +14,6 @@ CODEX_MCP_CONFIG_SCRUB = REPO_ROOT / "scripts" / "hapax-codex-mcp-config-scrub"
 TAVILY_WRAPPER = REPO_ROOT / "scripts" / "hapax-tavily-mcp"
 PLAYWRIGHT_WRAPPER = REPO_ROOT / "scripts" / "hapax-playwright-mcp"
 GITHUB_WRAPPER = REPO_ROOT / "scripts" / "hapax-github-mcp"
-GEMINI_WRAPPER = REPO_ROOT / "scripts" / "hapax-gemini-mcp"
 CONTEXT7_WRAPPER = REPO_ROOT / "scripts" / "hapax-context7-mcp"
 
 
@@ -97,16 +96,13 @@ def test_playwright_mcp_uses_noninteractive_wrapper(tmp_path: Path) -> None:
     assert 'npx -y "$PACKAGE"' in wrapper
 
 
-def test_gemini_mcp_uses_noninteractive_wrapper(tmp_path: Path) -> None:
+def test_gemini_cli_mcp_is_not_installed(tmp_path: Path) -> None:
     config = _installed_config(tmp_path)
     launcher = CODEX_LAUNCHER.read_text()
-    wrapper = GEMINI_WRAPPER.read_text()
 
-    assert config["mcp_servers"]["gemini-cli"] == {"command": str(GEMINI_WRAPPER)}
-    assert 'mcp_servers.gemini-cli.command=\\"$COUNCIL_DIR/scripts/hapax-gemini-mcp\\"' in launcher
-    assert "mcp_servers.gemini-cli.args=[]" in launcher
-    assert "NPM_CONFIG_YES=true" in wrapper
-    assert 'npx -y "$PACKAGE"' in wrapper
+    assert "gemini-cli" not in config["mcp_servers"]
+    assert "mcp_servers.gemini-cli" not in launcher
+    assert "hapax-gemini-mcp" not in launcher
 
 
 def test_github_mcp_uses_secret_loading_wrapper(tmp_path: Path) -> None:
@@ -193,7 +189,6 @@ def test_codex_mcp_scripts_are_valid_bash() -> None:
             str(TAVILY_WRAPPER),
             str(PLAYWRIGHT_WRAPPER),
             str(GITHUB_WRAPPER),
-            str(GEMINI_WRAPPER),
             str(CONTEXT7_WRAPPER),
         ],
         capture_output=True,

@@ -44,7 +44,6 @@ KNOWN_LANES: dict[str, dict] = {
 MODEL_DEFAULTS: dict[str, tuple[str, int]] = {
     "claude-code": ("claude-opus-4-6", 1_000_000),
     "codex": ("o3", 200_000),
-    "gemini-cli": ("gemini-3-pro-preview", 1_000_000),
     "vibe": ("claude-sonnet-4-6", 200_000),
     "antigrav": ("claude-sonnet-4-6", 200_000),
 }
@@ -52,7 +51,6 @@ MODEL_DEFAULTS: dict[str, tuple[str, int]] = {
 TOOL_DEFAULTS: dict[str, list[str]] = {
     "claude-code": ["Edit", "Write", "Bash", "Read", "Grep", "Glob", "Agent", "MCP"],
     "codex": ["Edit", "Write", "Bash", "Read", "Grep", "Glob"],
-    "gemini-cli": ["Edit", "Write", "Bash", "Read"],
     "vibe": ["Edit", "Write", "Bash", "Read"],
     "antigrav": ["Edit", "Write", "Bash", "Read"],
 }

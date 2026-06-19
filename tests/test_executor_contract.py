@@ -19,7 +19,7 @@ if str(SCRIPTS) not in sys.path:
 
 import executor_contract as ec  # noqa: E402
 
-ALL_PLATFORMS = {"api", "claude", "codex", "gemini", "vibe", "antigrav"}
+ALL_PLATFORMS = {"api", "claude", "codex", "vibe", "antigrav"}
 
 
 def test_registry_covers_all_runtimes() -> None:
@@ -41,12 +41,12 @@ def test_read_only_implies_no_mutation() -> None:
 def test_supports_route_for_known_routes() -> None:
     assert ec.supports_route("codex", "headless")
     assert ec.supports_route("claude", "headless")
-    assert ec.supports_route("gemini", "headless")
     assert ec.supports_route("vibe", "headless")
     assert ec.supports_route("antigrav", "interactive")
 
 
 def test_supports_route_rejects_unlaunchable_routes() -> None:
+    assert not ec.supports_route("gemini", "headless")
     assert not ec.supports_route("gemini", "interactive")
     assert not ec.supports_route("antigrav", "headless")
     assert not ec.supports_route("vibe", "interactive")
@@ -103,7 +103,7 @@ def test_standalone_capabilities_cli_emits_json() -> None:
     assert payload["codex"]["modes"] == ["headless"]
 
 
-def test_standalone_capabilities_cli_single_platform() -> None:
+def test_standalone_capabilities_cli_rejects_retired_gemini_platform() -> None:
     result = subprocess.run(
         [sys.executable, str(SCRIPTS / "hapax-executor-capabilities"), "gemini"],
         capture_output=True,
@@ -111,7 +111,5 @@ def test_standalone_capabilities_cli_single_platform() -> None:
         check=False,
         timeout=30,
     )
-    assert result.returncode == 0, result.stderr
-    caps = json.loads(result.stdout)
-    assert caps["platform"] == "gemini"
-    assert caps["read_only"] is True
+    assert result.returncode == 1
+    assert "unknown executor" in result.stderr

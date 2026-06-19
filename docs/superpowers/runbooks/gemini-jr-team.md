@@ -1,12 +1,12 @@
 # Gemini JR Team
 
-Gemini CLI is a packet-only junior support team. It is useful for breadth,
-currentness scouting, alternate review, extraction, and test-gap analysis, but
-it must not become a production train engine.
+Agy-backed Gemini-family support is a packet-only junior support team. It is
+useful for breadth, currentness scouting, alternate review, extraction, and
+test-gap analysis, but it must not become a production train engine.
 
 ## Model Policy
 
-Use the latest highest-capability Gemini CLI selector:
+Use the latest highest-capability agy Gemini-family selector:
 
 ```bash
 gemini-3.1-pro-preview
@@ -14,10 +14,8 @@ gemini-3.1-pro-preview
 
 This is intentionally strict. The junior team fails closed if the selector is
 unavailable rather than silently falling back to Flash or a lower-capability
-model. As of 2026-05-01, Google Gemini CLI docs say Gemini 3.1 Pro Preview is
-rolling out and can be launched directly with `-m gemini-3.1-pro-preview` when
-available; Google API docs identify Gemini 3 Pro as the most intelligent public
-model family.
+model. The local CLI executable is `agy`; legacy `gemini` and `antigravity`
+executables are not supported Hapax launch paths.
 
 ## Authority
 

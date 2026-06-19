@@ -122,8 +122,10 @@ class TestLensRegistry:
     def test_gemini_prompt_names_rdf_prefix_directives_as_valid_syntax(self) -> None:
         reg = _registry()
         gemini = next(row for row in reg["families"] if row["family"] == "gemini")
-        prompt = gemini["reviewer_command"][-1]
-        assert "RDF/Turtle/TriG `@prefix` directives are valid source syntax" in prompt
+        assert gemini["reviewer_command"] == ["scripts/hapax-agy-reviewer"]
+        prompt = (REPO_ROOT / "scripts" / "hapax-agy-reviewer").read_text(encoding="utf-8")
+        assert "RDF/Turtle/TriG @prefix directives are" in prompt
+        assert "valid source syntax" in prompt
         assert "path-like corruption" in prompt
 
     def test_sizing_matches_ratified_spec(self) -> None:
@@ -148,10 +150,10 @@ class TestLensRegistry:
             assert isinstance(entry["reviewer_command"], list) and entry["reviewer_command"]
             assert entry["timeout_seconds"] > 0
         gemini = next(entry for entry in roster if entry["family"] == "gemini")
-        assert "--skip-trust" in gemini["reviewer_command"]
-        gemini_command = " ".join(str(part) for part in gemini["reviewer_command"])
-        assert "fenced yaml code block" in gemini_command
-        assert "ONLY the dossier YAML" not in gemini_command
+        assert gemini["reviewer_command"] == ["scripts/hapax-agy-reviewer"]
+        gemini_wrapper = (REPO_ROOT / "scripts" / "hapax-agy-reviewer").read_text(encoding="utf-8")
+        assert "fenced yaml code block" in gemini_wrapper
+        assert "ONLY the dossier YAML" not in gemini_wrapper
         glm = next(entry for entry in roster if entry["family"] == "glm")
         assert glm["reviewer_command"] == ["scripts/hapax-glmcp-reviewer"]
 
@@ -184,7 +186,7 @@ class TestLensRegistry:
     def test_lane_families_map_lanes_to_families(self) -> None:
         lane_families = _registry()["lane_families"]
         assert lane_families["exact"]["zeta"] == "claude"
-        assert lane_families["exact"]["iota"] == "gemini"
+        assert "iota" not in lane_families["exact"]
         assert lane_families["exact"]["cx-glmcp"] == "glm"
         assert lane_families["exact"]["codex-glmcp"] == "glm"
         assert lane_families["exact"]["glmcp"] == "glm"
@@ -377,7 +379,7 @@ class TestConstitution:
         reg = rt.load_lens_registry()
         assert rt.writer_family_for_lane("zeta", reg) == "claude"
         assert rt.writer_family_for_lane("cx-gold", reg) == "codex"
-        assert rt.writer_family_for_lane("iota", reg) == "gemini"
+        assert rt.writer_family_for_lane("iota", reg) == "claude"
         assert rt.writer_family_for_lane("cx-glmcp", reg) == "glm"
         assert rt.writer_family_for_lane("codex-glmcp", reg) == "glm"
         assert rt.writer_family_for_lane("glm-alpha", reg) == "glm"
@@ -2104,7 +2106,8 @@ def test_gemini_reviewer_prompt_has_diff_awareness():
     prefixes are syntax, not code, so it confirms a defect against real line content."""
     reg = _registry()
     gemini = next(f for f in reg["families"] if (f.get("family") or f.get("name")) == "gemini")
-    prompt = " ".join(str(part) for part in gemini["reviewer_command"])
+    assert gemini["reviewer_command"] == ["scripts/hapax-agy-reviewer"]
+    prompt = (REPO_ROOT / "scripts" / "hapax-agy-reviewer").read_text(encoding="utf-8")
     assert "UNIFIED DIFF" in prompt, "gemini reviewer prompt lost its diff-awareness guard"
     assert "DIFF SYNTAX" in prompt
 
@@ -2114,27 +2117,29 @@ def test_gemini_reviewer_denies_repo_roaming_and_blocks_phantom_syntax():
     plan-mode gemini ROAMED the repo (grep/read) and manufactured phantom syntax
     criticals (notify-failure@%n.service read as invalid template syntax) AND a false
     'volatile cache' critical on the canonical source-activation deploy path -- blocking a
-    PR that claude + codex accepted. The reviewer_command must (a) pass --policy
-    <deny-all-tools> so gemini reviews ONLY the stdin diff, and (b) tell gemini the diff
-    already passed CI so it does not block on phantom syntax findings."""
+    PR that claude + codex accepted. The reviewer_command must (a) enforce a
+    deny-roaming equivalent by invoking agy in sandboxed print mode and telling the
+    reviewer it has no repository access, and (b) tell gemini the diff already passed CI
+    so it does not block on phantom syntax findings."""
     reg = _registry()
     gemini = next(f for f in reg["families"] if (f.get("family") or f.get("name")) == "gemini")
     cmd = [str(part) for part in gemini["reviewer_command"]]
-    assert "--policy" in cmd, "gemini must pass a tool-deny policy to stop repo roaming"
-    assert "gemini-review-policy" in cmd[cmd.index("--policy") + 1]
-    prompt = " ".join(cmd)
+    assert cmd == ["scripts/hapax-agy-reviewer"]
+    wrapper = (REPO_ROOT / "scripts" / "hapax-agy-reviewer").read_text(encoding="utf-8")
+    assert "--sandbox" in wrapper, "agy reviewer must use sandboxed print mode"
+    assert "no repository access" in wrapper
+    prompt = wrapper
     assert "ALREADY PASSED" in prompt and "CI" in prompt, "gemini prompt must cite the CI gates"
     assert "source-activation" in prompt, "gemini prompt must whitelist the canonical deploy path"
 
 
-def test_gemini_review_policy_denies_all_tools():
-    """The policy file gemini --policy points at must deny ALL tools, so the reviewer
-    cannot grep/read the repo and conflate repo findings with the reviewed diff."""
-    import json
-    from pathlib import Path
+def test_gemini_review_family_uses_agy_wrapper_not_legacy_cli():
+    """Gemini-family review seats must not execute the retired gemini binary."""
 
-    repo_root = Path(__file__).resolve().parents[1]
-    policy = json.loads((repo_root / "config/review-lenses/gemini-review-policy.json").read_text())
-    assert any(
-        r.get("toolName") == "*" and r.get("decision") == "deny" for r in policy.get("rules", [])
-    ), "gemini review policy must deny all tools (toolName '*' -> deny)"
+    reg = _registry()
+    gemini = next(f for f in reg["families"] if (f.get("family") or f.get("name")) == "gemini")
+    assert gemini["reviewer_command"] == ["scripts/hapax-agy-reviewer"]
+    wrapper = (REPO_ROOT / "scripts" / "hapax-agy-reviewer").read_text(encoding="utf-8")
+    assert "--print" in wrapper
+    assert "--model" in wrapper
+    assert "agy" in wrapper
