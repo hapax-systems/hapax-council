@@ -129,7 +129,9 @@ def build_research_viewer_report(
         )
     report_dir.mkdir(parents=True, exist_ok=True)
 
-    bundle_reports = [_bundle_report(bundle, index_root=index_root) for bundle in bundles]
+    bundle_reports = [
+        _bundle_report(bundle, shadow_root=shadow_root, index_root=index_root) for bundle in bundles
+    ]
     payload = {
         "ok": all(bundle["validator_ok"] for bundle in bundle_reports),
         "record_type": "research_viewer_report",
@@ -159,11 +161,12 @@ def build_research_viewer_report(
     )
 
 
-def _bundle_report(bundle: Path, *, index_root: Path) -> dict[str, Any]:
-    manifest = _read_yaml(bundle / "_hkp" / "manifest.yaml")
-    policy = _read_yaml(bundle / "_hkp" / "consumer_policy.yaml")
+def _bundle_report(bundle: Path, *, shadow_root: Path, index_root: Path) -> dict[str, Any]:
+    _assert_bundle_read_boundary(bundle, shadow_root=shadow_root)
     validation = validate_bundle(bundle)
-    index_rows = _read_index_rows(index_root / f"{bundle.name}.jsonl")
+    manifest = _read_yaml(bundle / "_hkp" / "manifest.yaml", trusted_root=shadow_root)
+    policy = _read_yaml(bundle / "_hkp" / "consumer_policy.yaml", trusted_root=shadow_root)
+    index_rows = _read_index_rows(index_root / f"{bundle.name}.jsonl", trusted_root=index_root)
     index_findings = [
         _finding_summary(row, bundle=bundle)
         for row in index_rows
@@ -175,7 +178,7 @@ def _bundle_report(bundle: Path, *, index_root: Path) -> dict[str, Any]:
     consumer_row = _consumer_policy_row(policy)
     denied_consumers = _denied_consumers(manifest, policy)
     rows: list[dict[str, Any]] = []
-    for concept_path in sorted((bundle / "concepts").glob("*.md")):
+    for concept_path in _concept_paths(bundle, shadow_root=shadow_root):
         concept = _read_concept(concept_path)
         subject_findings = [
             finding
@@ -217,7 +220,7 @@ def _bundle_report(bundle: Path, *, index_root: Path) -> dict[str, Any]:
         "validator_version": VALIDATOR_VERSION,
         "validator_ok": validation.ok,
         "concept_count": len(rows),
-        "edge_count": _jsonl_row_count(bundle / "_hkp" / "edges.jsonl"),
+        "edge_count": _jsonl_row_count(bundle / "_hkp" / "edges.jsonl", trusted_root=shadow_root),
         "allowed_consumers": sorted(manifest.get("allowed_consumers") or []),
         "denied_consumers": denied_consumers,
         "viewer_allowed_fields": sorted(consumer_row.get("allowed_fields") or []),
@@ -300,7 +303,8 @@ def _read_concept(path: Path) -> HkpConceptFrontmatter:
     return HkpConceptFrontmatter.model_validate(parsed.frontmatter)
 
 
-def _read_yaml(path: Path) -> dict[str, Any]:
+def _read_yaml(path: Path, *, trusted_root: Path) -> dict[str, Any]:
+    _reject_symlink_components(path, "HKP research viewer bundle input", trusted_root=trusted_root)
     try:
         loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError) as exc:
@@ -316,7 +320,8 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return loaded
 
 
-def _read_index_rows(path: Path) -> list[dict[str, Any]]:
+def _read_index_rows(path: Path, *, trusted_root: Path) -> list[dict[str, Any]]:
+    _reject_symlink_components(path, "HKP research viewer index input", trusted_root=trusted_root)
     if not path.is_file():
         return []
     rows: list[dict[str, Any]] = []
@@ -384,6 +389,15 @@ def _resolve_bundle_refs(
     if not bundle_refs:
         if not shadow_root.exists():
             return ()
+        if not shadow_root.is_dir():
+            raise ValueError(
+                f"HKP research viewer bundle input must be a directory: {shadow_root}; "
+                "next-action: pass a valid HKP shadow root"
+            )
+        for path in shadow_root.iterdir():
+            _reject_symlink_components(
+                path, "HKP research viewer bundle input", trusted_root=shadow_root
+            )
         return tuple(
             path
             for path in sorted(shadow_root.iterdir(), key=lambda item: item.name)
@@ -395,6 +409,7 @@ def _resolve_bundle_refs(
         path = raw if raw.is_absolute() else shadow_root / raw
         path = _absolute_without_symlink_resolution(path)
         _ensure_cache_child(path, shadow_root, "HKP research viewer bundle input")
+        _assert_bundle_read_boundary(path, shadow_root=shadow_root)
         if not path.is_dir() or not (path / "_hkp" / "manifest.yaml").is_file():
             raise ValueError(
                 f"HKP research viewer bundle input is not a bundle directory: {path}; "
@@ -468,7 +483,8 @@ def _md_cell(value: str) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
-def _jsonl_row_count(path: Path) -> int:
+def _jsonl_row_count(path: Path, *, trusted_root: Path) -> int:
+    _reject_symlink_components(path, "HKP research viewer bundle input", trusted_root=trusted_root)
     if not path.is_file():
         return 0
     return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
@@ -477,6 +493,9 @@ def _jsonl_row_count(path: Path) -> int:
 def _write_text_atomic(path: Path, value: str, *, trusted_root: Path) -> None:
     _reject_symlink_components(path, "HKP research viewer report output", trusted_root=trusted_root)
     tmp_path = path.with_name(f".{path.name}.tmp")
+    _reject_symlink_components(
+        tmp_path, "HKP research viewer report output", trusted_root=trusted_root
+    )
     if tmp_path.exists():
         tmp_path.unlink()
     tmp_path.write_text(value, encoding="utf-8")
@@ -510,6 +529,36 @@ def _ensure_cache_child(path: Path, cache_root: Path, label: str) -> None:
             "the default cache location or pass a path under that cache root"
         )
     _reject_symlink_components(path, label, trusted_root=cache_root)
+
+
+def _assert_bundle_read_boundary(bundle: Path, *, shadow_root: Path) -> None:
+    _ensure_cache_child(bundle, shadow_root, "HKP research viewer bundle input")
+    for path in (
+        bundle,
+        bundle / "_hkp",
+        bundle / "_hkp" / "manifest.yaml",
+        bundle / "_hkp" / "consumer_policy.yaml",
+        bundle / "_hkp" / "edges.jsonl",
+        bundle / "concepts",
+    ):
+        _reject_symlink_components(
+            path, "HKP research viewer bundle input", trusted_root=shadow_root
+        )
+
+
+def _concept_paths(bundle: Path, *, shadow_root: Path) -> tuple[Path, ...]:
+    concepts_root = bundle / "concepts"
+    _reject_symlink_components(
+        concepts_root, "HKP research viewer bundle input", trusted_root=shadow_root
+    )
+    if not concepts_root.is_dir():
+        return ()
+    paths = tuple(sorted(concepts_root.glob("*.md"), key=lambda item: item.name))
+    for path in paths:
+        _reject_symlink_components(
+            path, "HKP research viewer bundle input", trusted_root=shadow_root
+        )
+    return paths
 
 
 def _absolute_without_symlink_resolution(path: Path) -> Path:

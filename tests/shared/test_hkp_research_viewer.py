@@ -95,6 +95,27 @@ def test_report_includes_findings_and_source_freshness_markers(tmp_path: Path, m
     )
 
 
+def test_report_default_discovery_reads_real_cache_bundles(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    export_shadow_bundle(
+        [source],
+        bundle_id="viewer-discovered",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+
+    result = build_research_viewer_report(
+        report_id="viewer-discovered-report",
+        generated_at=GENERATED_AT,
+    )
+
+    assert result.as_dict()["bundle_count"] == 1
+    assert result.as_dict()["bundles"][0]["bundle_id"] == "viewer-discovered"
+
+
 def test_report_rejects_inputs_and_outputs_outside_cache(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     outside = tmp_path / "outside-bundle"
@@ -106,6 +127,72 @@ def test_report_rejects_inputs_and_outputs_outside_cache(tmp_path: Path, monkeyp
         build_research_viewer_report(report_root=tmp_path / "reports-outside-cache")
     with pytest.raises(ValueError, match="must be under"):
         build_research_viewer_report(index_root=tmp_path / "index-outside-cache")
+
+
+def test_report_rejects_discovered_symlinked_bundle(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    shadow_root = tmp_path / "home" / ".cache" / "hapax" / "hkp-shadow"
+    shadow_root.mkdir(parents=True)
+    outside = tmp_path / "outside-bundle"
+    (outside / "_hkp").mkdir(parents=True)
+    (outside / "_hkp" / "manifest.yaml").write_text("cache_only: true\n", encoding="utf-8")
+    (shadow_root / "linked-bundle").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="must not traverse symlink component"):
+        build_research_viewer_report(
+            report_id="viewer-symlink-report",
+            generated_at=GENERATED_AT,
+        )
+
+
+def test_report_rejects_symlinked_required_bundle_artifact(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    export = export_shadow_bundle(
+        [source],
+        bundle_id="viewer-demo",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+    outside = tmp_path / "outside-policy.yaml"
+    outside.write_text("consumers: []\n", encoding="utf-8")
+    policy = export.bundle_path / "_hkp" / "consumer_policy.yaml"
+    policy.unlink()
+    policy.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="must not traverse symlink component"):
+        build_research_viewer_report(
+            [export.bundle_path],
+            report_id="viewer-artifact-symlink-report",
+            generated_at=GENERATED_AT,
+        )
+
+
+def test_report_rejects_broken_temp_symlink_before_write(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    export = export_shadow_bundle(
+        [source],
+        bundle_id="viewer-demo",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+    report_dir = tmp_path / "home" / ".cache" / "hapax" / "hkp-reports" / "viewer-report"
+    report_dir.mkdir(parents=True)
+    outside = tmp_path / "outside-report.md"
+    (report_dir / ".report.md.tmp").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="must not traverse symlink component"):
+        build_research_viewer_report(
+            [export.bundle_path],
+            report_id="viewer-report",
+            generated_at=GENERATED_AT,
+        )
+    assert not outside.exists()
 
 
 def test_report_rejects_unsafe_report_id(tmp_path: Path, monkeypatch) -> None:
