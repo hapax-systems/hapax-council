@@ -38,15 +38,16 @@
   },
   "$defs": {
     "platform": {
-      "enum": ["antigrav", "api", "claude", "codex", "gemini", "local_tool", "vibe"]
+      "enum": ["antigrav", "api", "claude", "codex", "gemini", "glmcp", "local_tool", "vibe"]
     },
     "mode": {
-      "enum": ["headless", "interactive", "local", "receipt_only"]
+      "enum": ["headless", "interactive", "local", "receipt_only", "review"]
     },
     "profile": {
       "enum": [
         "api_frontier",
         "deterministic",
+        "direct",
         "flash",
         "full",
         "jr",

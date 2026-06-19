@@ -276,6 +276,28 @@ def _task_fields() -> dict[str, object]:
     return payload
 
 
+def _review_task_fields() -> dict[str, object]:
+    # A review-seat task: non-mutating, support-non-authoritative — the work a
+    # read-only ReviewSeatAdapter (glmcp.review.direct) actually does. Used to
+    # exercise the receipt-bounded subscription-quota gate on the review seat; the
+    # authoritative coding-workhorse quota path is a separate, bakeoff-gated route.
+    payload = _task_fields()
+    payload.update(
+        {
+            "quality_floor": "frontier_review_required",
+            "authority_level": "support_non_authoritative",
+            "mutation_surface": "none",
+            "mutation_scope_refs": [],
+            "review_requirement": {
+                "support_artifact_allowed": True,
+                "independent_review_required": True,
+                "authoritative_acceptor_profile": "operator",
+            },
+        }
+    )
+    return payload
+
+
 def _dimensional_request(
     route_id: str,
     *,
@@ -704,7 +726,7 @@ def test_build_dispatch_request_enforces_exact_route_subscription_quota() -> Non
         platform="glmcp",
         mode="review",
         profile="direct",
-        task_fields=_task_fields(),
+        task_fields=_review_task_fields(),
         registry=registry,
         quota_ledger=_ledger_with_route_subscription_state("codex.headless.full", "fresh"),
         now=freshness_now,
@@ -728,7 +750,7 @@ def test_build_dispatch_request_enforces_exact_route_subscription_quota() -> Non
         platform="glmcp",
         mode="review",
         profile="direct",
-        task_fields=_task_fields(),
+        task_fields=_review_task_fields(),
         registry=registry,
         quota_ledger=_ledger_with_route_subscription_state(route_id, "fresh"),
         now=freshness_now,
@@ -752,7 +774,7 @@ def test_build_dispatch_request_enforces_exact_route_subscription_quota() -> Non
         platform="glmcp",
         mode="review",
         profile="direct",
-        task_fields=_task_fields(),
+        task_fields=_review_task_fields(),
         registry=registry,
         quota_ledger=_ledger_with_route_subscription_state(
             route_id,
@@ -792,7 +814,7 @@ def test_build_dispatch_request_holds_glmcp_capacity_pool_mismatch() -> None:
         platform="glmcp",
         mode="review",
         profile="direct",
-        task_fields=_task_fields(),
+        task_fields=_review_task_fields(),
         registry=registry,
         quota_ledger=_ledger_with_route_subscription_state(
             route_id,
@@ -825,7 +847,7 @@ def test_glmcp_expired_admission_snapshot_holds_even_when_ledger_fresh() -> None
         platform="glmcp",
         mode="review",
         profile="direct",
-        task_fields=_task_fields(),
+        task_fields=_review_task_fields(),
         registry=registry,
         quota_ledger=_ledger_with_route_subscription_state(
             route_id,

@@ -49,6 +49,7 @@ REQUIRED_ROUTE_IDS = frozenset(
         "claude.interactive.full",
         "codex.headless.full",
         "codex.headless.spark",
+        "glmcp.review.direct",
         "vibe.headless.full",
     }
 )
@@ -72,6 +73,7 @@ class Platform(StrEnum):
     CLAUDE = "claude"
     CODEX = "codex"
     GEMINI = "gemini"
+    GLMCP = "glmcp"
     LOCAL_TOOL = "local_tool"
     VIBE = "vibe"
 
@@ -81,11 +83,13 @@ class Mode(StrEnum):
     INTERACTIVE = "interactive"
     LOCAL = "local"
     RECEIPT_ONLY = "receipt_only"
+    REVIEW = "review"
 
 
 class Profile(StrEnum):
     API_FRONTIER = "api_frontier"
     DETERMINISTIC = "deterministic"
+    DIRECT = "direct"
     FLASH = "flash"
     FULL = "full"
     JR = "jr"
