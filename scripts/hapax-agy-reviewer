@@ -7,6 +7,7 @@ import argparse
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 DEFAULT_MODEL = "gemini-3.1-pro-preview"
@@ -54,6 +55,33 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _review_env(workdir: Path) -> dict[str, str]:
+    preserved = (
+        "HOME",
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "NODE_EXTRA_CA_CERTS",
+    )
+    env = {key: value for key in preserved if (value := os.environ.get(key))}
+    env.update(
+        {
+            "CI": "1",
+            "NO_UPDATE_NOTIFIER": "1",
+            "NPM_CONFIG_AUDIT": "false",
+            "NPM_CONFIG_FUND": "false",
+            "NPM_CONFIG_UPDATE_NOTIFIER": "false",
+            "XDG_CACHE_HOME": str(workdir / "cache"),
+            "XDG_CONFIG_HOME": str(workdir / "config"),
+            "XDG_STATE_HOME": str(workdir / "state"),
+        }
+    )
+    return env
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if Path(args.agy_bin).name != "agy":
@@ -62,18 +90,32 @@ def main(argv: list[str] | None = None) -> int:
 
     dossier = sys.stdin.read()
     prompt = "\n\n".join([REVIEW_PROMPT.strip(), "# Reviewer dossier", dossier.strip()])
-    cmd = [args.agy_bin, "--print-timeout", args.print_timeout]
-    if not args.no_sandbox:
-        cmd.append("--sandbox")
-    if args.model:
-        cmd.extend(["--model", args.model])
-    cmd.extend(["--print", prompt])
+    with tempfile.TemporaryDirectory(prefix="hapax-agy-review-") as tmp:
+        workdir = Path(tmp)
+        cmd = [
+            args.agy_bin,
+            "--print-timeout",
+            args.print_timeout,
+            "--log-file",
+            str(workdir / "agy.log"),
+        ]
+        if not args.no_sandbox:
+            cmd.append("--sandbox")
+        if args.model:
+            cmd.extend(["--model", args.model])
+        cmd.extend(["--print", prompt])
 
-    try:
-        result = subprocess.run(cmd, text=True, check=False)
-    except OSError as exc:
-        print(f"hapax-agy-reviewer: failed to launch {args.agy_bin}: {exc}", file=sys.stderr)
-        return 2
+        try:
+            result = subprocess.run(
+                cmd,
+                text=True,
+                check=False,
+                cwd=workdir,
+                env=_review_env(workdir),
+            )
+        except OSError as exc:
+            print(f"hapax-agy-reviewer: failed to launch {args.agy_bin}: {exc}", file=sys.stderr)
+            return 2
     return result.returncode
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -13,21 +14,27 @@ def test_agy_reviewer_invokes_sandboxed_print_mode(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     calls = tmp_path / "calls.txt"
+    cwd_file = tmp_path / "cwd.txt"
+    secret_file = tmp_path / "secret.txt"
     fake_agy = bin_dir / "agy"
     fake_agy.write_text(
         f"""#!/usr/bin/env bash
 printf '%s\\n' "$@" > {calls}
+pwd > {cwd_file}
+printf '%s\\n' "${{HAPAX_SHOULD_NOT_LEAK:-unset}}" > {secret_file}
 printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
 """,
         encoding="utf-8",
     )
     fake_agy.chmod(0o755)
 
+    env = {"HAPAX_SHOULD_NOT_LEAK": "secret", **os.environ}
     result = subprocess.run(
         [str(WRAPPER), "--agy-bin", str(fake_agy), "--model", "gemini-3.1-pro-preview"],
         input="diff --git a/x b/x\n+change\n",
         capture_output=True,
         text=True,
+        env=env,
         timeout=5,
     )
 
@@ -35,12 +42,15 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     assert "verdict: accept" in result.stdout
     args = calls.read_text(encoding="utf-8")
     assert "--sandbox" in args
+    assert "--log-file" in args
     assert "--print-timeout" in args
     assert "--model" in args
     assert "gemini-3.1-pro-preview" in args
     assert "--print" in args
     assert "UNIFIED DIFF" in args
     assert "no repository access" in args
+    assert not cwd_file.read_text(encoding="utf-8").strip().startswith(str(REPO_ROOT))
+    assert secret_file.read_text(encoding="utf-8").strip() == "unset"
 
 
 def test_agy_reviewer_rejects_non_agy_binary_name(tmp_path: Path) -> None:

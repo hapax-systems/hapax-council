@@ -131,8 +131,12 @@ lane_families:
     cx-glmcp: glm
     codex-glmcp: glm
     glmcp: glm
+    antigrav: gemini
+    antigravity: gemini
   prefixes:
     cx-: codex
     glm-: glm
     vbe-: vibe
+    antigrav-: gemini
+    agy-: gemini
   default: claude
