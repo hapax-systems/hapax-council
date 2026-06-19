@@ -63,6 +63,7 @@ DEFAULT_DUCK_DB: float = -40.0
 
 DEFAULT_SINK_NAME: str = "hapax-broadcast-master"
 DEFAULT_MONITOR_SOURCE: str = "hapax-broadcast-master.monitor"
+WPCTL_TARGET_CACHE_TTL_S: float = 60.0
 
 AWARENESS_STATE_PATH: Path = Path("/dev/shm/hapax-awareness/state.json")
 REFUSAL_LOG_PATH: Path = Path("/dev/shm/hapax-refusal/log.jsonl")
@@ -78,8 +79,13 @@ def _pipewire_control_next_action(node_name: str) -> str:
         "Next action: run `wpctl status` and inspect `pw-dump` for node.name "
         f"`{node_name}`, then run `wpctl get-volume <node-id>`; if the node is "
         "absent, restore the PipeWire/WirePlumber graph before restarting "
-        "`hapax-lufs-panic-cap.service`."
+        "`hapax-lufs-panic-cap.service`, then run `scripts/hapax-audio-routing-check`."
     )
+
+
+def _node_sort_key(node: dict) -> int:
+    props = node.get("info", {}).get("props", {})
+    return 0 if props.get("media.class") == "Audio/Sink" else 1
 
 
 def _resolve_wpctl_node_id(node_name: str) -> str | None:
@@ -121,7 +127,7 @@ def _resolve_wpctl_node_id(node_name: str) -> str | None:
             _pipewire_control_next_action(node_name),
         )
         return None
-    for node in nodes:
+    for node in sorted(nodes, key=_node_sort_key):
         if node.get("type") != "PipeWire:Interface:Node":
             continue
         props = node.get("info", {}).get("props", {})
@@ -192,6 +198,7 @@ class LufsPanicCap:
         self._parec_proc: subprocess.Popen | None = None
         self._duck_thread: threading.Thread | None = None
         self._wpctl_target_id: str | None = None
+        self._wpctl_target_resolved_at: float | None = None
 
         self._triggers_total: int = 0
         self._last_peak: float = float("-inf")
@@ -416,7 +423,15 @@ class LufsPanicCap:
         if result is not None:
             parts = result.stdout.strip().split()
             if len(parts) >= 2 and parts[0] == "Volume:":
-                return float(parts[1])
+                try:
+                    return float(parts[1])
+                except ValueError:
+                    log.warning(
+                        "wpctl get-volume returned malformed volume for %s: %r. %s",
+                        self._sink_name,
+                        result.stdout.strip(),
+                        _pipewire_control_next_action(self._sink_name),
+                    )
         return 1.0
 
     def _set_sink_volume(self, linear: float) -> None:
@@ -424,8 +439,14 @@ class LufsPanicCap:
         self._run_wpctl(["set-volume", f"{linear:.4f}"], text=False)
 
     def _control_target_id(self, *, refresh: bool = False) -> str | None:
-        if refresh:
+        expired = (
+            self._wpctl_target_id is not None
+            and self._wpctl_target_resolved_at is not None
+            and time.monotonic() - self._wpctl_target_resolved_at > WPCTL_TARGET_CACHE_TTL_S
+        )
+        if refresh or expired:
             self._wpctl_target_id = None
+            self._wpctl_target_resolved_at = None
         if self._wpctl_target_id is None:
             self._wpctl_target_id = _resolve_wpctl_node_id(self._sink_name)
             if self._wpctl_target_id is None:
@@ -434,6 +455,8 @@ class LufsPanicCap:
                     self._sink_name,
                     _pipewire_control_next_action(self._sink_name),
                 )
+            else:
+                self._wpctl_target_resolved_at = time.monotonic()
         return self._wpctl_target_id
 
     def _run_wpctl(

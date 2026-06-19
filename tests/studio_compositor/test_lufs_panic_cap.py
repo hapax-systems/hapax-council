@@ -120,6 +120,7 @@ class TestWpctlNodeResolution:
         assert "Next action:" in caplog.text
         assert "wpctl status" in caplog.text
         assert "hapax-broadcast-master" in caplog.text
+        assert "scripts/hapax-audio-routing-check" in caplog.text
 
     @patch("subprocess.run")
     def test_returns_none_when_pw_dump_returns_nonzero_with_next_action(
@@ -135,6 +136,7 @@ class TestWpctlNodeResolution:
         assert "pw server down" in caplog.text
         assert "Next action:" in caplog.text
         assert "pw-dump" in caplog.text
+        assert "scripts/hapax-audio-routing-check" in caplog.text
 
     @patch("subprocess.run")
     def test_returns_none_when_pw_dump_emits_invalid_json_with_next_action(
@@ -149,6 +151,7 @@ class TestWpctlNodeResolution:
 
         assert "invalid JSON" in caplog.text
         assert "Next action:" in caplog.text
+        assert "scripts/hapax-audio-routing-check" in caplog.text
 
     @patch("subprocess.run")
     def test_ignores_node_id_with_unusable_type(self, mock_run: MagicMock) -> None:
@@ -167,6 +170,39 @@ class TestWpctlNodeResolution:
         )
 
         assert _resolve_wpctl_node_id("hapax-broadcast-master") is None
+
+    @patch("subprocess.run")
+    def test_duplicate_node_names_prefer_audio_sink(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=json.dumps(
+                [
+                    {
+                        "id": 70,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": "hapax-broadcast-master",
+                                "media.class": "Stream/Output/Audio",
+                            }
+                        },
+                    },
+                    {
+                        "id": 80,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": "hapax-broadcast-master",
+                                "media.class": "Audio/Sink",
+                            }
+                        },
+                    },
+                ]
+            ),
+            stderr="",
+        )
+
+        assert _resolve_wpctl_node_id("hapax-broadcast-master") == "80"
 
 
 class TestBreachAccumulator:
@@ -432,31 +468,25 @@ class TestWpctlVolumeControl:
 
         assert mock_run.call_args_list[1].args[0] == ["wpctl", "set-volume", "80", "0.5000"]
 
+    @patch("agents.studio_compositor.lufs_panic_cap._resolve_wpctl_node_id")
     @patch("subprocess.run")
-    def test_set_volume_refreshes_stale_cached_node_id(self, mock_run: MagicMock) -> None:
+    def test_set_volume_refreshes_stale_cached_node_id(
+        self,
+        mock_run: MagicMock,
+        mock_resolve: MagicMock,
+    ) -> None:
         stale_failure = MagicMock(returncode=1, stdout="", stderr="not found")
-        pw_dump = MagicMock(
-            returncode=0,
-            stdout=json.dumps(
-                [
-                    {
-                        "id": 81,
-                        "type": "PipeWire:Interface:Node",
-                        "info": {"props": {"node.name": "hapax-broadcast-master"}},
-                    }
-                ]
-            ),
-            stderr="",
-        )
         retry_success = MagicMock(returncode=0, stdout="", stderr="")
-        mock_run.side_effect = [stale_failure, pw_dump, retry_success]
+        mock_run.side_effect = [stale_failure, retry_success]
+        mock_resolve.return_value = "81"
 
         cap = LufsPanicCap(sink_name="hapax-broadcast-master")
         cap._wpctl_target_id = "80"
         cap._set_sink_volume(0.25)
 
         assert mock_run.call_args_list[0].args[0] == ["wpctl", "set-volume", "80", "0.2500"]
-        assert mock_run.call_args_list[2].args[0] == ["wpctl", "set-volume", "81", "0.2500"]
+        assert mock_run.call_args_list[1].args[0] == ["wpctl", "set-volume", "81", "0.2500"]
+        mock_resolve.assert_called_once_with("hapax-broadcast-master")
 
     @patch("agents.studio_compositor.lufs_panic_cap._resolve_wpctl_node_id")
     @patch("subprocess.run")
@@ -475,6 +505,7 @@ class TestWpctlVolumeControl:
         mock_run.assert_not_called()
         assert "Could not resolve PipeWire node" in caplog.text
         assert "Next action:" in caplog.text
+        assert "scripts/hapax-audio-routing-check" in caplog.text
 
     @patch("agents.studio_compositor.lufs_panic_cap._resolve_wpctl_node_id")
     @patch("subprocess.run")
@@ -496,6 +527,44 @@ class TestWpctlVolumeControl:
         assert mock_run.call_args_list[1].args[0] == ["wpctl", "get-volume", "81"]
 
     @patch("subprocess.run")
+    def test_read_volume_malformed_wpctl_stdout_warns_and_falls_back(
+        self,
+        mock_run: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="Volume: loud\n", stderr="")
+        cap = LufsPanicCap(sink_name="hapax-broadcast-master")
+        cap._wpctl_target_id = "80"
+
+        with caplog.at_level("WARNING", logger="agents.studio_compositor.lufs_panic_cap"):
+            assert cap._read_sink_volume() == pytest.approx(1.0)
+
+        assert "malformed volume" in caplog.text
+        assert "Next action:" in caplog.text
+        assert "scripts/hapax-audio-routing-check" in caplog.text
+
+    @patch("agents.studio_compositor.lufs_panic_cap.time.monotonic")
+    @patch("agents.studio_compositor.lufs_panic_cap._resolve_wpctl_node_id")
+    @patch("subprocess.run")
+    def test_cached_node_id_expires_after_ttl(
+        self,
+        mock_run: MagicMock,
+        mock_resolve: MagicMock,
+        mock_monotonic: MagicMock,
+    ) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="Volume: 0.74\n", stderr="")
+        mock_resolve.return_value = "81"
+        mock_monotonic.side_effect = [61.1, 61.1]
+
+        cap = LufsPanicCap(sink_name="hapax-broadcast-master")
+        cap._wpctl_target_id = "80"
+        cap._wpctl_target_resolved_at = 0.0
+
+        assert cap._read_sink_volume() == pytest.approx(0.74)
+        assert mock_run.call_args.args[0] == ["wpctl", "get-volume", "81"]
+        mock_resolve.assert_called_once_with("hapax-broadcast-master")
+
+    @patch("subprocess.run")
     def test_wpctl_exception_logs_next_action(
         self,
         mock_run: MagicMock,
@@ -511,6 +580,7 @@ class TestWpctlVolumeControl:
         assert "wpctl set-volume failed" in caplog.text
         assert "Next action:" in caplog.text
         assert "wpctl get-volume <node-id>" in caplog.text
+        assert "scripts/hapax-audio-routing-check" in caplog.text
 
     @patch("agents.studio_compositor.lufs_panic_cap._resolve_wpctl_node_id")
     @patch("subprocess.run")
@@ -536,6 +606,7 @@ class TestWpctlVolumeControl:
         assert "wpctl set-volume failed" in caplog.text
         assert "target_id=81" in caplog.text
         assert "Next action:" in caplog.text
+        assert "scripts/hapax-audio-routing-check" in caplog.text
 
 
 class TestNotifyCallback:
