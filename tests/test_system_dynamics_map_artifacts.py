@@ -379,9 +379,11 @@ def test_viewer_layout_uses_intrinsic_wrapping_with_explicit_mobile_rules():
         "viewer reintroduced container queries. "
         "Fix by using intrinsic wrapping or updating the visual witnesses and review notes."
     )
-    assert "@media (max-width: 860px)" in html, (
-        "viewer lost its explicit mobile layout contract. "
-        "Fix by restoring the narrow-viewport rules or replacing this guard with a rendered mobile test."
+    media_rules = set(re.findall(r"@media\s*\([^)]+\)", html))
+    assert media_rules == {"@media (max-width: 860px)", "@media (forced-colors: active)"}, (
+        "viewer media-rule contract drifted. "
+        "Fix by keeping only the reviewed mobile and forced-colors media rules, "
+        f"or updating the architecture recheck contract. Found: {sorted(media_rules)}"
     )
 
 
