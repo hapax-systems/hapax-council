@@ -25,6 +25,9 @@ REFERENCE_CAPTURE_SPECS = (
         ARCHITECTURE_DIR / "system-dynamics-map-viewer-mobile.png",
     ),
 )
+# Merge-queue Chromium produced a 14.19 mean delta for the accepted reference
+# render from font and canvas antialiasing variance; 20.0 leaves CI headroom
+# while still catching blank, stale, or substantially shifted captures.
 REFERENCE_CAPTURE_MAX_MEAN_DELTA = 20.0
 HIDDEN_SELECTION_MESSAGE = "hidden by the active lens or filters"
 HIDDEN_SELECTION_RECOVERY = "Clear filters or choose a lens that includes it"

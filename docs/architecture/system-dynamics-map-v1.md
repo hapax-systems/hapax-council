@@ -311,16 +311,22 @@ The committed reference captures are:
 The maintained recheck target for the Pillow-backed shape/nonblank guard is:
 
 ```bash
-.venv/bin/pytest -q tests/test_system_dynamics_map_artifacts.py::test_committed_viewer_reference_captures_are_current_shape_and_nonblank
+.venv/bin/pytest -q tests/test_system_dynamics_map_artifacts.py::test_committed_viewer_reference_captures_have_expected_shape_and_nonblank_content
 ```
 
 For standalone use outside the repo environment, install Pillow first and run
-the equivalent portable recheck:
+the equivalent portable recheck. Keep this snippet's dimensions and color
+threshold in sync with the maintained pytest target above if either guard
+changes:
 
 ```bash
 python3 - <<'PY'
 from pathlib import Path
-from PIL import Image
+
+try:
+    from PIL import Image
+except ImportError as error:
+    raise SystemExit("Install Pillow before running this standalone recheck.") from error
 
 expected = {
     Path("docs/architecture/system-dynamics-map-viewer-desktop.png"): (1440, 960),

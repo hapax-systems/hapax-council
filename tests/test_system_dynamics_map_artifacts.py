@@ -390,7 +390,7 @@ def test_viewer_layout_uses_intrinsic_wrapping_with_explicit_mobile_rules():
     )
 
 
-def test_committed_viewer_reference_captures_are_current_shape_and_nonblank():
+def test_committed_viewer_reference_captures_have_expected_shape_and_nonblank_content():
     expected = {
         DESKTOP_CAPTURE_PATH: (1440, 960),
         MOBILE_CAPTURE_PATH: (390, 844),
