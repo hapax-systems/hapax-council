@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -94,7 +95,7 @@ class InterviewStateWriter:
 
     def __call__(self, snapshot: InterviewStateSnapshot) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_name(f".{self.path.name}.tmp.{os.getpid()}")
+        tmp = self.path.with_name(f".{self.path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
         try:
             tmp.write_text(
                 json.dumps(snapshot.to_json_dict(), sort_keys=True) + "\n",
@@ -185,23 +186,49 @@ class InterviewConductor:
         facts: Sequence[InterviewFact],
         topics_total: int,
     ) -> None:
-        if self._state_writer is None:
+        writer = self._state_writer
+        if writer is None:
             return
-        snapshot = InterviewStateSnapshot(
-            active=active,
-            current_question=question.text if question is not None else "",
-            topic=question.topic if question is not None else "",
-            depth=question.depth if question is not None else "",
-            rationale=question.rationale if question is not None else "",
-            source_refs=question.source_refs if question is not None else (),
-            topics_explored=len(facts),
-            topics_total=topics_total,
-            facts_recorded=sum(1 for fact in facts if not fact.abstained),
-        )
+        writer_path = getattr(writer, "path", DEFAULT_INTERVIEW_STATE_PATH)
         try:
-            await asyncio.to_thread(self._state_writer, snapshot)
+            await asyncio.to_thread(
+                self._write_state_sync,
+                writer,
+                question,
+                active=active,
+                facts=facts,
+                topics_total=topics_total,
+            )
         except Exception:
-            LOGGER.warning("interview_state_write_failed", exc_info=True)
+            LOGGER.warning(
+                "interview_state_write_failed; next_action=check %s parent directory, "
+                "permissions, and studio compositor ward poller",
+                writer_path,
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _write_state_sync(
+        writer: Callable[[InterviewStateSnapshot], None],
+        question: InterviewQuestion | None,
+        *,
+        active: bool,
+        facts: Sequence[InterviewFact],
+        topics_total: int,
+    ) -> None:
+        writer(
+            InterviewStateSnapshot(
+                active=active,
+                current_question=question.text if question is not None else "",
+                topic=question.topic if question is not None else "",
+                depth=question.depth if question is not None else "",
+                rationale=question.rationale if question is not None else "",
+                source_refs=question.source_refs if question is not None else (),
+                topics_explored=len(facts),
+                topics_total=topics_total,
+                facts_recorded=sum(1 for fact in facts if not fact.abstained),
+            )
+        )
 
     async def _ask(self, text: str) -> bool:
         """Synthesize + play one question. Returns True iff it actually reached air.
