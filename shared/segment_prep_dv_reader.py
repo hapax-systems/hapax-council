@@ -43,6 +43,7 @@ from typing import Any
 COUNCIL_DECISIONS_LEDGER_FILENAME = "council-decisions.ndjson"
 S2_COMPOSABILITY_LEDGER_RECORD_TYPE = "producer_s2_composability_ledger_entry"
 S2_COMPOSABILITY_GATE_NAME = "s2_composability"
+DUAL_READOUT_SCHEMA_VERSION = 1
 DUAL_READOUT_RECORD_TYPE = "segment_dual_readout"
 AXIS_A_READOUT_KEY = "axis_a_grounding_efficacy"
 AXIS_B_READOUT_KEY = "axis_b_integration_honesty"
@@ -189,6 +190,10 @@ def _axis_readout_from_report(report: Any, *, axis_id: str) -> AxisReadout | Non
 def _dual_readout_from_row(row: dict) -> tuple[AxisReadout | None, AxisReadout | None]:
     dual_readout = row.get("dual_readout")
     if not isinstance(dual_readout, Mapping):
+        return None, None
+    if dual_readout.get("schema_version") != DUAL_READOUT_SCHEMA_VERSION:
+        return None, None
+    if dual_readout.get("record_type") != DUAL_READOUT_RECORD_TYPE:
         return None, None
     return (
         _axis_readout_from_report(dual_readout.get(AXIS_A_READOUT_KEY), axis_id="A"),

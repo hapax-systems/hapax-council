@@ -221,6 +221,8 @@ PREP_DIAGNOSTIC_AUTHORITY = "diagnostic_only"
 PREP_DIAGNOSTIC_LEDGER_FILENAME = "prep-diagnostic-outcomes.jsonl"
 DUAL_READOUT_SCHEMA_VERSION = 1
 DUAL_READOUT_RECORD_TYPE = "segment_dual_readout"
+AXIS_A_READOUT_KEY = "axis_a_grounding_efficacy"
+AXIS_B_READOUT_KEY = "axis_b_integration_honesty"
 AXIS_A_GROUNDING_EFFICACY_REPORT_KEYS = (
     "axis_a_grounding_efficacy_report",
     "axis_a_grounding_report",
@@ -2356,6 +2358,11 @@ def prep_segment(
     # council with low coherence injects feedback into refinement (recoverable).
     # council_decisions accumulates the council audit receipt for the manifest.
     council_decisions: dict[str, Any] = {}
+    terminal_dual_readout = _precomputed_dual_readout_for_terminal_row(
+        programme=programme,
+        prep_session=prep_session,
+        programme_id=prog_id,
+    )
     if _prep_deadline_exceeded(
         deadline_monotonic,
         prep_dir=prep_dir,
@@ -2365,6 +2372,7 @@ def prep_segment(
         topic=topic,
         beats=beats,
         council_decisions=council_decisions,
+        dual_readout=terminal_dual_readout,
         phase="coherence_check",
     ):
         return None
@@ -2418,7 +2426,11 @@ def prep_segment(
         log.warning("prep_segment: council coherence REFUSED for %s — no release", prog_id)
         _emit_council_degradation_signal(prog_id, "coherence", coherence_outcome.council_decisions)
         _append_council_decisions_ledger(
-            prep_dir, prog_id, council_decisions, terminal_status="refused_no_release"
+            prep_dir,
+            prog_id,
+            council_decisions,
+            terminal_status="refused_no_release",
+            dual_readout=terminal_dual_readout,
         )
         _write_prep_diagnostic_outcome(
             prep_dir,
@@ -2540,7 +2552,11 @@ def prep_segment(
                 prog_id, "coherence_recheck", recheck.council_decisions
             )
             _append_council_decisions_ledger(
-                prep_dir, prog_id, council_decisions, terminal_status="low_coherence_no_release"
+                prep_dir,
+                prog_id,
+                council_decisions,
+                terminal_status="low_coherence_no_release",
+                dual_readout=terminal_dual_readout,
             )
             _write_prep_diagnostic_outcome(
                 prep_dir,
@@ -2566,6 +2582,7 @@ def prep_segment(
         topic=topic,
         beats=beats,
         council_decisions=council_decisions,
+        dual_readout=terminal_dual_readout,
         phase="disconfirmation",
     ):
         return None
@@ -2716,7 +2733,11 @@ def prep_segment(
             prog_id, "disconfirmation", council_decisions.get("disconfirmation", {})
         )
         _append_council_decisions_ledger(
-            prep_dir, prog_id, council_decisions, terminal_status="refused_no_release"
+            prep_dir,
+            prog_id,
+            council_decisions,
+            terminal_status="refused_no_release",
+            dual_readout=terminal_dual_readout,
         )
         _write_prep_diagnostic_outcome(
             prep_dir,
@@ -2742,6 +2763,7 @@ def prep_segment(
         topic=topic,
         beats=beats,
         council_decisions=council_decisions,
+        dual_readout=terminal_dual_readout,
         phase="narrative_critique",
     ):
         return None
@@ -2955,7 +2977,11 @@ def prep_segment(
             prog_id, "coherence_final", final_coherence.council_decisions
         )
         _append_council_decisions_ledger(
-            prep_dir, prog_id, council_decisions, terminal_status="low_coherence_no_release"
+            prep_dir,
+            prog_id,
+            council_decisions,
+            terminal_status="low_coherence_no_release",
+            dual_readout=terminal_dual_readout,
         )
         _write_prep_diagnostic_outcome(
             prep_dir,
@@ -3980,7 +4006,11 @@ def _axis_report_for_segment(
     direct_keys: tuple[str, ...],
     map_keys: tuple[str, ...],
 ) -> dict[str, Any] | None:
-    for carrier in (prep_session, programme, getattr(programme, "content", None)):
+    report = _report_from_programme_map(prep_session, map_keys, programme_id)
+    if report is not None:
+        return report
+
+    for carrier in (programme, getattr(programme, "content", None)):
         report = _report_from_programme_map(carrier, map_keys, programme_id)
         if report is not None:
             return report
@@ -4000,7 +4030,7 @@ def _axis_report_for_segment(
 
 def _dual_readout_for_segment(
     *,
-    programme: Any,
+    programme: Any | None,
     prep_session: dict[str, Any],
     programme_id: str,
     segment_prep_contract: dict[str, Any],
@@ -4041,9 +4071,24 @@ def _dual_readout_for_segment(
         "available_axes": available_axes,
         "missing_axes": missing_axes,
         "complete": not missing_axes,
-        "axis_a_grounding_efficacy": axis_a_report,
-        "axis_b_integration_honesty": axis_b_report,
+        AXIS_A_READOUT_KEY: axis_a_report,
+        AXIS_B_READOUT_KEY: axis_b_report,
     }
+
+
+def _precomputed_dual_readout_for_terminal_row(
+    *,
+    programme: Any | None = None,
+    prep_session: dict[str, Any] | None = None,
+    programme_id: str,
+    segment_prep_contract: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    return _dual_readout_for_segment(
+        programme=programme,
+        prep_session=prep_session or {},
+        programme_id=programme_id,
+        segment_prep_contract=segment_prep_contract or {},
+    )
 
 
 def _append_council_decisions_ledger(
@@ -4136,6 +4181,7 @@ def _prep_deadline_exceeded(
     topic: str,
     beats: list[Any],
     council_decisions: dict[str, Any],
+    dual_readout: dict[str, Any] | None,
     phase: str,
 ) -> bool:
     """True (and records a terminal budget-exhausted dossier) if the mid-segment
@@ -4152,7 +4198,11 @@ def _prep_deadline_exceeded(
         "prep_segment: prep budget exhausted before %s for %s — no release", phase, programme_id
     )
     _append_council_decisions_ledger(
-        prep_dir, programme_id, council_decisions, terminal_status="budget_exhausted_no_release"
+        prep_dir,
+        programme_id,
+        council_decisions,
+        terminal_status="budget_exhausted_no_release",
+        dual_readout=dual_readout,
     )
     _write_prep_diagnostic_outcome(
         prep_dir,
