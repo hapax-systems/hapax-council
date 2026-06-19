@@ -21,7 +21,7 @@ from typing import Any
 import yaml
 
 from shared.frontmatter import parse_frontmatter_with_diagnostics
-from shared.hkp_bundle_schema import FORBIDDEN_CONSUMERS, validate_bundle
+from shared.hkp_bundle_schema import FORBIDDEN_CONSUMERS, STALE_SOURCE_STATES, validate_bundle
 
 PROFILE_VERSION = "hkp-v1"
 GENERATOR_ID = "hkp-shadow-exporter"
@@ -31,6 +31,19 @@ UNKNOWN_DENY_CONSUMER = "unknown"
 SHADOW_INDEX_DIRNAME = "hkp-shadow-index"
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
 _SAFE_BUNDLE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
+ROUTE_METADATA_GAP_ERROR_CLASSES = {
+    "planning",
+    "source_mutation",
+    "runtime_mutation",
+    "public_claim",
+    "provider_spend",
+}
+UNPARSEABLE_FRONTMATTER_ERROR_CLASSES = {
+    "source_mutation",
+    "runtime_mutation",
+    "public_claim",
+    "provider_spend",
+}
 TREE_HASH_EXCLUDED_PATHS = {"_hkp/checksums.json", "_hkp/manifest.yaml"}
 _FRONTMATTER_TYPE_MAP = {
     "cc-task": "cc-task",
@@ -170,9 +183,9 @@ def export_shadow_bundle(
             findings.append(
                 HkpIndexFinding(
                     code="source_frontmatter_unparseable",
-                    severity="warning",
+                    severity=_unparseable_frontmatter_severity(source),
                     subject=concept["concept_uid"],
-                    message=source.parse_error,
+                    message=_source_frontmatter_unparseable_message(source.parse_error),
                 )
             )
         _write_markdown(
@@ -546,9 +559,9 @@ def _route_metadata_findings(
     return tuple(
         HkpIndexFinding(
             code="route_metadata_gap",
-            severity="warning",
+            severity=_route_metadata_gap_severity(source),
             subject=concept_uid,
-            message=f"source lacks {gap}",
+            message=_route_metadata_gap_message(gap),
         )
         for gap in _route_metadata_gaps(source.frontmatter)
     )
@@ -570,7 +583,7 @@ def _bundle_index_findings(
     )
     for concept in concepts:
         freshness = concept.get("freshness") or {}
-        if freshness.get("state") in {"stale", "missing", "contradictory", "unparseable"}:
+        if freshness.get("state") in STALE_SOURCE_STATES:
             findings.append(
                 HkpIndexFinding(
                     code=f"source_{freshness['state']}",
@@ -584,9 +597,9 @@ def _bundle_index_findings(
             findings.append(
                 HkpIndexFinding(
                     code="route_metadata_gap",
-                    severity="warning",
+                    severity=_route_metadata_gap_severity_for_concept(concept),
                     subject=str(concept.get("concept_uid") or ""),
-                    message=f"source lacks {gap}",
+                    message=_route_metadata_gap_message(gap),
                 )
             )
     return tuple(findings)
@@ -849,6 +862,47 @@ def _source_authority_class(source: HkpExportInput) -> str:
     if source.frontmatter.get("type") == "cc-task":
         return "planning"
     return "authoritative_docs" if source.frontmatter else "none"
+
+
+def _route_metadata_gap_severity_for_concept(concept: dict[str, Any]) -> str:
+    source_refs = concept.get("source_refs") or []
+    source_classes: list[str] = []
+    for source_ref in source_refs:
+        if not isinstance(source_ref, dict):
+            continue
+        source_classes.append(str(source_ref.get("source_authority_class") or "none"))
+    return _route_metadata_gap_severity_for_classes(tuple(source_classes))
+
+
+def _route_metadata_gap_severity(source: HkpExportInput) -> str:
+    return _route_metadata_gap_severity_for_classes((_source_authority_class(source),))
+
+
+def _route_metadata_gap_severity_for_classes(source_classes: tuple[str, ...]) -> str:
+    return (
+        "error"
+        if any(source_class in ROUTE_METADATA_GAP_ERROR_CLASSES for source_class in source_classes)
+        else "warning"
+    )
+
+
+def _route_metadata_gap_message(gap: str) -> str:
+    return (
+        f"source lacks {gap}; next-action: add {gap} to governed source frontmatter "
+        "or remove the file from the governed HKP source set"
+    )
+
+
+def _source_frontmatter_unparseable_message(parse_error: str) -> str:
+    return (
+        f"{parse_error}; next-action: repair the source frontmatter YAML "
+        "or remove the malformed frontmatter fence"
+    )
+
+
+def _unparseable_frontmatter_severity(source: HkpExportInput) -> str:
+    source_class = _source_authority_class(source)
+    return "error" if source_class in UNPARSEABLE_FRONTMATTER_ERROR_CLASSES else "warning"
 
 
 def _privacy_class(frontmatter: dict[str, Any]) -> str:

@@ -114,10 +114,43 @@ _QUOTA_WALL_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 _QUOTA_WALL_HTTP_RE = re.compile(
-    r"\bHTTP\s+429\b.*"
+    r"\A(?:[-\w.]+:\s+api error:\s+)?HTTP\s+429\b.*"
     r"(?:quota|usage limit|rate.?limit|too many requests|insufficient balance|"
     r"RESOURCE_EXHAUSTED)",
     re.IGNORECASE | re.DOTALL,
+)
+_STRUCTURED_ZAI_ENVELOPE_RE = re.compile(
+    r"\A\s*hapax-glmcp-reviewer:\s+api error:\s+HTTP\s+\d{3}\b",
+    re.IGNORECASE,
+)
+_STRUCTURED_FIELD_VALUE_RE = re.compile(r"\A[A-Za-z0-9_:-]+\Z")
+_STRUCTURED_QUOTA_ERROR_CLASSES = frozenset(
+    {
+        "account_balance_or_arrears",
+        "account_hard_hold",
+        "daily_limit_exhausted",
+        "fair_use_restricted",
+        "plan_model_unavailable",
+        "quota_exhausted",
+        "rate_limited",
+        "rate_limited_concurrency",
+        "rate_limited_frequency",
+        "subscription_expired",
+    }
+)
+_STRUCTURED_QUOTA_ACTIONS = frozenset(
+    {
+        "backoff",
+        "backoff_reduce_concurrency",
+        "backoff_reduce_frequency",
+        "contact_provider",
+        "hold_no_payg_fallback",
+        "hold_until_limit_reset",
+        "hold_until_manual_clear",
+        "hold_until_reset",
+        "hold_until_subscription_restored",
+        "switch_model_or_upgrade_plan",
+    }
 )
 
 _PROVIDER_OUTAGE_SHAPE_RE = re.compile(
@@ -137,12 +170,59 @@ _UNSUPPORTED_REVIEWER_CLIENT_RE = re.compile(
     r"(?:IneligibleTierError|UNSUPPORTED_CLIENT|failed to launch .*?\bagy\b.*?install agy)",
     re.IGNORECASE,
 )
+_STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES = frozenset(
+    {
+        "provider_error",
+        "provider_high_traffic",
+    }
+)
+_STRUCTURED_PROVIDER_OUTAGE_ACTIONS = frozenset(
+    {
+        "backoff_or_switch_model",
+        "retry_later",
+    }
+)
 
 #: The dispatcher's family-outage witness state (canonical path; the
 #: dispatcher aliases this). Admission consults it so a forged dossier
 #: cannot self-certify a degradation (round-4 review finding).
 FAMILY_OUTAGE_STATE = Path.home() / ".cache" / "hapax" / "review-team" / "family-outage.json"
 FAMILY_OUTAGE_TTL_S = 2 * 3600
+
+
+def _structured_zai_error_match_state(
+    text: str,
+    *,
+    error_classes: frozenset[str],
+    actions: frozenset[str],
+) -> bool | None:
+    """Return None when no structured controls exist, else trusted match state."""
+
+    envelope = _STRUCTURED_ZAI_ENVELOPE_RE.search(text)
+    if envelope is None:
+        return None
+    control_text = re.split(
+        r";\s*(?:message|detail)=",
+        text[envelope.start() :],
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    tokens: dict[str, str] = {}
+    saw_control = False
+    for raw_field in control_text.split(";")[1:]:
+        field = raw_field.strip()
+        if "=" not in field:
+            continue
+        key, value = [part.strip() for part in field.split("=", 1)]
+        if key not in {"error_class", "action"}:
+            continue
+        saw_control = True
+        if key in tokens or _STRUCTURED_FIELD_VALUE_RE.fullmatch(value) is None:
+            return False
+        tokens[key] = value
+    if not saw_control:
+        return None
+    return tokens.get("error_class") in error_classes or tokens.get("action") in actions
 
 
 def is_quota_wall(
@@ -182,6 +262,14 @@ def is_quota_wall(
     # Fast path: short, bare wall phrase (the 2026-06-12 claude shape)
     if len(stripped) <= _QUOTA_WALL_MAX_CHARS and _QUOTA_WALL_SHAPE_RE.fullmatch(stripped):
         return True
+    if len(stripped) <= _PROVIDER_OUTAGE_MAX_CHARS:
+        structured_match = _structured_zai_error_match_state(
+            stripped,
+            error_classes=_STRUCTURED_QUOTA_ERROR_CLASSES,
+            actions=_STRUCTURED_QUOTA_ACTIONS,
+        )
+        if structured_match is not None:
+            return structured_match
     if len(stripped) <= _PROVIDER_OUTAGE_MAX_CHARS and _QUOTA_WALL_HTTP_RE.search(stripped):
         return True
     # Slow path: CLI chrome wraps the wall phrase (codex v0.139.0 emits
@@ -217,8 +305,15 @@ def is_provider_outage(
     if len(stripped) > _PROVIDER_OUTAGE_MAX_CHARS:
         return False
     normalized = re.sub(r"\A[-\w.]+:\s+api error:\s*", "", stripped, flags=re.I)
-    http_429 = bool(re.search(r"\bHTTP\s+429\b", stripped, flags=re.IGNORECASE))
-    http_5xx = bool(re.search(r"\bHTTP\s+5\d\d\b", stripped, flags=re.IGNORECASE))
+    structured_match = _structured_zai_error_match_state(
+        stripped,
+        error_classes=_STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES,
+        actions=_STRUCTURED_PROVIDER_OUTAGE_ACTIONS,
+    )
+    if structured_match is not None:
+        return structured_match
+    http_429 = bool(re.match(r"\AHTTP\s+429\b", normalized, flags=re.IGNORECASE))
+    http_5xx = bool(re.match(r"\AHTTP\s+5\d\d\b", normalized, flags=re.IGNORECASE))
     outage_terms = bool(_PROVIDER_OUTAGE_LINE_RE.search(stripped))
     provider_detail = re.split(r";\s*retry later\b", normalized, maxsplit=1, flags=re.IGNORECASE)[0]
     provider_detail_outage_terms = bool(_PROVIDER_OUTAGE_LINE_RE.search(provider_detail))

@@ -7,9 +7,10 @@ import pytest
 import yaml
 
 from shared.hkp_bundle_export import _tree_hash, build_derived_index, export_shadow_bundle
-from shared.hkp_bundle_schema import validate_bundle
+from shared.hkp_bundle_schema import STALE_SOURCE_STATES, validate_bundle
 
 GENERATED_AT = "2026-06-18T20:03:41Z"
+INDEX_REPORTED_SOURCE_STATES = tuple(sorted(STALE_SOURCE_STATES))
 
 
 def test_exporter_emits_validator_clean_cache_bundle(tmp_path: Path, monkeypatch) -> None:
@@ -55,6 +56,9 @@ def test_exporter_emits_validator_clean_cache_bundle(tmp_path: Path, monkeypatch
     assert source_ref["uri"] == "repo:test/tasks/demo.md"
     assert source_ref["content_hash"].startswith("sha256:")
     assert source_ref["hash_scope"] == "full_content"
+    assert source_ref["observed_at"] == GENERATED_AT
+    assert source_ref["checked_at"] == GENERATED_AT
+    assert source_ref["stale_after"] == "P7D"
     assert concept["authority"]["may_authorize"] is False
     assert "qdrant_rag" not in concept["posture"]["allowed_consumers"]
 
@@ -196,6 +200,35 @@ def test_exporter_reports_unparseable_frontmatter(tmp_path: Path, monkeypatch) -
     )
 
     assert "source_frontmatter_unparseable" in {finding.code for finding in result.findings}
+    finding = next(
+        finding for finding in result.findings if finding.code == "source_frontmatter_unparseable"
+    )
+    assert finding.severity == "warning"
+    assert "next-action" in finding.message
+
+
+def test_exporter_reports_code_unparseable_frontmatter_as_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = source_root / "src" / "bad.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("---\ntitle: [unterminated\n---\nprint('bad')\n", encoding="utf-8")
+
+    result = export_shadow_bundle(
+        [source],
+        bundle_id="bad-code-frontmatter-bundle",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+
+    finding = next(
+        finding for finding in result.findings if finding.code == "source_frontmatter_unparseable"
+    )
+    assert finding.severity == "error"
+    assert "next-action" in finding.message
 
 
 def test_exporter_rejects_non_cache_index_root(tmp_path: Path, monkeypatch) -> None:
@@ -361,6 +394,11 @@ def test_derived_index_reports_validation_and_route_findings(tmp_path: Path, mon
         source_root_id="repo:test",
         generated_at=GENERATED_AT,
     )
+    export_route_finding = next(
+        finding for finding in result.findings if finding.code == "route_metadata_gap"
+    )
+    assert export_route_finding.severity == "error"
+    assert "next-action" in export_route_finding.message
     concept_path = next((result.bundle_path / "concepts").glob("*.md"))
     concept_path.write_text(
         concept_path.read_text(encoding="utf-8") + "\nBroken [link](missing.md).\n",
@@ -373,13 +411,21 @@ def test_derived_index_reports_validation_and_route_findings(tmp_path: Path, mon
     codes = {finding.code for finding in findings}
     assert "broken_markdown_link" in codes
     assert "route_metadata_gap" in codes
+    route_finding = next(finding for finding in findings if finding.code == "route_metadata_gap")
+    assert route_finding.severity == "error"
+    assert "next-action" in route_finding.message
     rows = [json.loads(line) for line in index_path.read_text(encoding="utf-8").splitlines()]
     assert any(
-        row["record_type"] == "finding" and row["code"] == "route_metadata_gap" for row in rows
+        row["record_type"] == "finding"
+        and row["code"] == "route_metadata_gap"
+        and row["severity"] == "error"
+        for row in rows
     )
 
 
-def test_derived_index_reports_stale_missing_and_duplicate_ids(tmp_path: Path, monkeypatch) -> None:
+def test_derived_index_route_gap_warning_for_non_authority_source_class(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     source_root = tmp_path / "repo"
     source = _write_task(source_root / "tasks" / "demo.md")
@@ -393,17 +439,108 @@ def test_derived_index_reports_stale_missing_and_duplicate_ids(tmp_path: Path, m
     concept_path = next((result.bundle_path / "concepts").glob("*.md"))
     concept_text = concept_path.read_text(encoding="utf-8")
     frontmatter = yaml.safe_load(concept_text.split("---", 2)[1])
-    frontmatter["freshness"]["state"] = "missing"
+    frontmatter["source_refs"][0]["source_authority_class"] = "none"
+    frontmatter["extensions"]["hapax"]["route_metadata_gaps"] = ["authority_case"]
     concept_path.write_text(
         "---\n" + yaml.safe_dump(frontmatter, sort_keys=False) + "---\n\n# Demo\n",
         encoding="utf-8",
     )
-    duplicate = result.bundle_path / "concepts" / "duplicate.md"
-    duplicate.write_text(concept_path.read_text(encoding="utf-8"), encoding="utf-8")
-    stale_frontmatter = dict(frontmatter)
+    index_path = tmp_path / "home" / ".cache" / "hapax" / "hkp-shadow-index" / "index.jsonl"
+
+    findings = build_derived_index(result.bundle_path, index_path=index_path)
+
+    route_finding = next(finding for finding in findings if finding.code == "route_metadata_gap")
+    assert route_finding.severity == "warning"
+
+
+def test_derived_index_route_gap_error_if_later_source_ref_is_authoritative(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    result = export_shadow_bundle(
+        [source],
+        bundle_id="demo-bundle",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+    concept_path = next((result.bundle_path / "concepts").glob("*.md"))
+    concept_text = concept_path.read_text(encoding="utf-8")
+    frontmatter = yaml.safe_load(concept_text.split("---", 2)[1])
+    secondary_ref = dict(frontmatter["source_refs"][0])
+    frontmatter["source_refs"][0]["source_authority_class"] = "none"
+    secondary_ref["ref_id"] = "src:authoritative-secondary"
+    secondary_ref["source_authority_class"] = "source_mutation"
+    frontmatter["source_refs"].append(secondary_ref)
+    frontmatter["extensions"]["hapax"]["route_metadata_gaps"] = ["authority_case"]
+    concept_path.write_text(
+        "---\n" + yaml.safe_dump(frontmatter, sort_keys=False) + "---\n\n# Demo\n",
+        encoding="utf-8",
+    )
+    index_path = tmp_path / "home" / ".cache" / "hapax" / "hkp-shadow-index" / "index.jsonl"
+
+    findings = build_derived_index(result.bundle_path, index_path=index_path)
+
+    route_finding = next(finding for finding in findings if finding.code == "route_metadata_gap")
+    assert route_finding.severity == "error"
+
+
+@pytest.mark.parametrize("state", INDEX_REPORTED_SOURCE_STATES)
+def test_derived_index_reports_source_freshness_state(
+    tmp_path: Path, monkeypatch, state: str
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    result = export_shadow_bundle(
+        [source],
+        bundle_id="demo-bundle",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+    concept_path = next((result.bundle_path / "concepts").glob("*.md"))
+    concept_text = concept_path.read_text(encoding="utf-8")
+    frontmatter = yaml.safe_load(concept_text.split("---", 2)[1])
+    frontmatter["freshness"]["state"] = state
+    concept_path.write_text(
+        "---\n" + yaml.safe_dump(frontmatter, sort_keys=False) + "---\n\n# Demo\n",
+        encoding="utf-8",
+    )
+    index_path = tmp_path / "home" / ".cache" / "hapax" / "hkp-shadow-index" / "index.jsonl"
+
+    findings = build_derived_index(result.bundle_path, index_path=index_path)
+
+    assert f"source_{state}" in {finding.code for finding in findings}
+
+
+def test_derived_index_explicitly_reports_stale_and_missing_states(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    result = export_shadow_bundle(
+        [source],
+        bundle_id="demo-bundle",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+    concept_path = next((result.bundle_path / "concepts").glob("*.md"))
+    concept_text = concept_path.read_text(encoding="utf-8")
+    missing_frontmatter = yaml.safe_load(concept_text.split("---", 2)[1])
+    missing_frontmatter["freshness"]["state"] = "missing"
+    concept_path.write_text(
+        "---\n" + yaml.safe_dump(missing_frontmatter, sort_keys=False) + "---\n\n# Missing\n",
+        encoding="utf-8",
+    )
+    stale_frontmatter = dict(missing_frontmatter)
     stale_frontmatter["concept_uid"] = "hkp:cc-task:stale-task"
     stale_frontmatter["concept_path"] = "stale-task"
-    stale_frontmatter["freshness"] = {**frontmatter["freshness"], "state": "stale"}
+    stale_frontmatter["freshness"] = {**missing_frontmatter["freshness"], "state": "stale"}
     (result.bundle_path / "concepts" / "stale.md").write_text(
         "---\n" + yaml.safe_dump(stale_frontmatter, sort_keys=False) + "---\n\n# Stale\n",
         encoding="utf-8",
@@ -415,7 +552,45 @@ def test_derived_index_reports_stale_missing_and_duplicate_ids(tmp_path: Path, m
     codes = {finding.code for finding in findings}
     assert "source_missing" in codes
     assert "source_stale" in codes
-    assert "duplicate_concept_uid" in codes
+
+
+def test_derived_index_does_not_report_fresh_source_state(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    result = export_shadow_bundle(
+        [source],
+        bundle_id="demo-bundle",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+    index_path = tmp_path / "home" / ".cache" / "hapax" / "hkp-shadow-index" / "index.jsonl"
+
+    findings = build_derived_index(result.bundle_path, index_path=index_path)
+
+    assert "source_fresh" not in {finding.code for finding in findings}
+
+
+def test_derived_index_reports_duplicate_source_ids(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    result = export_shadow_bundle(
+        [source],
+        bundle_id="demo-bundle",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+    concept_path = next((result.bundle_path / "concepts").glob("*.md"))
+    duplicate = result.bundle_path / "concepts" / "duplicate.md"
+    duplicate.write_text(concept_path.read_text(encoding="utf-8"), encoding="utf-8")
+    index_path = tmp_path / "home" / ".cache" / "hapax" / "hkp-shadow-index" / "index.jsonl"
+
+    findings = build_derived_index(result.bundle_path, index_path=index_path)
+
+    assert "duplicate_concept_uid" in {finding.code for finding in findings}
 
 
 def _write_task(path: Path, *, include_route_metadata: bool = True) -> Path:

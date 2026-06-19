@@ -6,13 +6,31 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
-from shared.hkp_bundle_schema import HkpProjectionEvent, validate_bundle
+from shared.hkp_bundle_schema import (
+    ALLOWED_CONSUMERS,
+    STALE_SOURCE_STATES,
+    VALIDATOR_FIRST_ALLOWED_CONSUMERS,
+    VALIDATOR_FIRST_DENY_CONSUMERS,
+    HkpProjectionEvent,
+    validate_bundle,
+)
 
 HASH = "sha256:" + "a" * 64
 TREE_HASH = "sha256:" + "b" * 64
 PREV_HASH = "sha256:" + "c" * 64
+SOURCE_REF_STATES = (
+    "fresh",
+    "stale",
+    "missing",
+    "contradictory",
+    "unparseable",
+    "manual_assertion",
+    "unknown",
+)
+STALE_AUTHORITY_SOURCE_REF_STATES = tuple(sorted(STALE_SOURCE_STATES))
 
 
 def test_valid_hkp_bundle_passes(tmp_path: Path) -> None:
@@ -76,6 +94,43 @@ def test_stale_authority_source_refs_fail_closed(tmp_path: Path) -> None:
     assert "authority/evidence source ref cannot be stale" in _messages(result)
 
 
+@pytest.mark.parametrize("state", SOURCE_REF_STATES)
+def test_non_authority_source_ref_states_validate(tmp_path: Path, state: str) -> None:
+    source_ref = valid_source_ref()
+    source_ref["data_role"] = "projection"
+    source_ref["source_authority_class"] = "none"
+    source_ref["freshness_state"] = state
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is True
+
+
+@pytest.mark.parametrize("state", STALE_AUTHORITY_SOURCE_REF_STATES)
+def test_authority_source_ref_unfresh_states_fail_closed(tmp_path: Path, state: str) -> None:
+    source_ref = valid_source_ref()
+    source_ref["freshness_state"] = state
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert f"authority/evidence source ref cannot be {state}" in _messages(result)
+    assert "next-action" in _messages(result)
+
+
+def test_fresh_authority_source_ref_accepts_p7d_stale_after(tmp_path: Path) -> None:
+    source_ref = valid_source_ref()
+    source_ref["freshness_state"] = "fresh"
+    source_ref["stale_after"] = "P7D"
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is True
+
+
 def test_source_ref_uri_path_leaks_fail(tmp_path: Path) -> None:
     source_ref = valid_source_ref()
     source_ref["uri"] = "file:///home/hapax/projects/hapax-council/task.md"
@@ -85,6 +140,7 @@ def test_source_ref_uri_path_leaks_fail(tmp_path: Path) -> None:
 
     assert result.ok is False
     assert "source ref uri must not expose a local path" in _messages(result)
+    assert "next-action" in _messages(result)
 
 
 def test_source_ref_uri_parent_traversal_fails(tmp_path: Path) -> None:
@@ -96,6 +152,116 @@ def test_source_ref_uri_parent_traversal_fails(tmp_path: Path) -> None:
 
     assert result.ok is False
     assert "source ref uri must not expose a local path or .." in _messages(result)
+    assert "next-action" in _messages(result)
+
+
+@pytest.mark.parametrize("uri", ("repo:../secret.md", "repo:tasks/../secret.md"))
+def test_source_ref_scheme_qualified_parent_traversal_fails(tmp_path: Path, uri: str) -> None:
+    source_ref = valid_source_ref()
+    source_ref["uri"] = uri
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "source ref uri must not expose a local path or .." in _messages(result)
+    assert "next-action" in _messages(result)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    (
+        "repo:/home/hapax/projects/hapax-council/task.md",
+        "repo:C:\\Users\\hapax\\task.md",
+    ),
+)
+def test_source_ref_scheme_qualified_local_paths_fail(tmp_path: Path, uri: str) -> None:
+    source_ref = valid_source_ref()
+    source_ref["uri"] = uri
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "source ref uri must not expose a local path or .." in _messages(result)
+    assert "next-action" in _messages(result)
+
+
+def test_source_ref_uri_requires_allowed_scheme(tmp_path: Path) -> None:
+    source_ref = valid_source_ref()
+    source_ref["uri"] = "task.md"
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "source ref uri must use an allowed logical scheme" in _messages(result)
+    assert "next-action" in _messages(result)
+
+
+def test_source_ref_uri_rejects_unsupported_scheme(tmp_path: Path) -> None:
+    source_ref = valid_source_ref()
+    source_ref["uri"] = "ftp://example.test/task.md"
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "source ref uri must use an allowed logical scheme" in _messages(result)
+    assert "next-action" in _messages(result)
+
+
+@pytest.mark.parametrize("field", ("observed_at", "checked_at"))
+def test_source_ref_timestamps_require_timezone(tmp_path: Path, field: str) -> None:
+    source_ref = valid_source_ref()
+    source_ref[field] = "2026-06-18T16:43:11"
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "source ref timestamps must include a timezone" in _messages(result)
+    assert "next-action" in _messages(result)
+
+
+@pytest.mark.parametrize("field", ("observed_at", "checked_at"))
+def test_source_ref_timestamps_must_parse(tmp_path: Path, field: str) -> None:
+    source_ref = valid_source_ref()
+    source_ref[field] = "not-a-timestamp"
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "source ref timestamps must be ISO 8601 datetimes" in _messages(result)
+    assert "next-action" in _messages(result)
+
+
+def test_source_ref_stale_after_requires_iso_duration(tmp_path: Path) -> None:
+    source_ref = valid_source_ref()
+    source_ref["stale_after"] = "7d"
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "stale_after must be an ISO 8601 duration such as P7D" in _messages(result)
+    assert "next-action" in _messages(result)
+
+
+@pytest.mark.parametrize("duration", ("", "P", "P1DT", "P1WT1H", "P1Y2W", "PT"))
+def test_source_ref_stale_after_rejects_malformed_iso_duration(
+    tmp_path: Path, duration: str
+) -> None:
+    source_ref = valid_source_ref()
+    source_ref["stale_after"] = duration
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "stale_after must be an ISO 8601 duration such as P7D" in _messages(result)
+    assert "next-action" in _messages(result)
 
 
 def test_privacy_ambiguity_fails_closed(tmp_path: Path) -> None:
@@ -130,6 +296,18 @@ def test_forbidden_consumer_in_posture_fails_closed(tmp_path: Path) -> None:
 
     assert result.ok is False
     assert "validator-first posture cannot allow blocked consumers" in _messages(result)
+
+
+def test_dashboard_consumer_in_posture_fails_closed(tmp_path: Path) -> None:
+    posture = valid_posture()
+    posture["allowed_consumers"] = ["research_viewer", "dashboard"]
+    bundle = write_bundle(tmp_path, concept_updates={"posture": posture})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "validator-first posture cannot allow blocked consumers" in _messages(result)
+    assert "dashboard" in _messages(result)
 
 
 def test_unknown_consumer_in_posture_allowed_list_fails(tmp_path: Path) -> None:
@@ -565,6 +743,20 @@ def test_manifest_rejects_qdrant_and_public_export_allowed_consumers(
     assert "public_export" in messages
 
 
+def test_manifest_rejects_dashboard_allowed_consumer(tmp_path: Path) -> None:
+    manifest = valid_manifest()
+    manifest["allowed_consumers"] = ["research_viewer", "dashboard"]
+    bundle = write_bundle(tmp_path, manifest=manifest)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "manifest allowed_consumers includes validator-first blocked consumers" in _messages(
+        result
+    )
+    assert "dashboard" in _messages(result)
+
+
 def test_manifest_rejects_unknown_allowed_consumers(tmp_path: Path) -> None:
     manifest = valid_manifest()
     manifest["allowed_consumers"] = ["research_viewer", "external_llm", "unknown"]
@@ -574,6 +766,25 @@ def test_manifest_rejects_unknown_allowed_consumers(tmp_path: Path) -> None:
 
     assert result.ok is False
     assert "manifest allowed_consumers includes unknown consumers" in _messages(result)
+
+
+def test_validator_first_consumer_partition_is_pinned() -> None:
+    expected_allowed = {"research_viewer", "local_prompt_context"}
+    expected_denied = {
+        "dashboard",
+        "qdrant_rag",
+        "public_export",
+        "release_gate",
+        "dispatcher",
+        "close_gate",
+        "runtime_loader",
+        "provider_spend_gate",
+        "unknown",
+    }
+    assert expected_allowed == VALIDATOR_FIRST_ALLOWED_CONSUMERS
+    assert expected_denied == VALIDATOR_FIRST_DENY_CONSUMERS
+    assert VALIDATOR_FIRST_ALLOWED_CONSUMERS | VALIDATOR_FIRST_DENY_CONSUMERS == ALLOWED_CONSUMERS
+    assert VALIDATOR_FIRST_ALLOWED_CONSUMERS.isdisjoint(VALIDATOR_FIRST_DENY_CONSUMERS)
 
 
 def test_consumer_policy_must_fail_closed_for_unknown_consumers(tmp_path: Path) -> None:
@@ -587,6 +798,92 @@ def test_consumer_policy_must_fail_closed_for_unknown_consumers(tmp_path: Path) 
     assert "consumer policy missing rows" in _messages(result)
 
 
+def test_consumer_policy_rejects_unknown_consumer_rows(tmp_path: Path) -> None:
+    policy = valid_consumer_policy()
+    policy["consumers"].append(
+        {
+            **policy["consumers"][0],
+            "consumer": "external_llm",
+        }
+    )
+    bundle = write_bundle(tmp_path, consumer_policy=policy)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "unknown consumer: external_llm" in _messages(result)
+
+
+def test_consumer_policy_rejects_duplicate_consumers(tmp_path: Path) -> None:
+    policy = valid_consumer_policy()
+    policy["consumers"].append(dict(policy["consumers"][0]))
+    bundle = write_bundle(tmp_path, consumer_policy=policy)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "consumer policy duplicate rows" in _messages(result)
+
+
+def test_consumer_policy_rejects_allowed_forbidden_field_overlap(
+    tmp_path: Path,
+) -> None:
+    policy = valid_consumer_policy()
+    for row in policy["consumers"]:
+        if row["consumer"] == "research_viewer":
+            row["forbidden_fields"].append("title")
+    bundle = write_bundle(tmp_path, consumer_policy=policy)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "allowed_fields overlap forbidden_fields: title" in _messages(result)
+
+
+def test_consumer_policy_rejects_unknown_allowed_fields(tmp_path: Path) -> None:
+    policy = valid_consumer_policy()
+    for row in policy["consumers"]:
+        if row["consumer"] == "research_viewer":
+            row["allowed_fields"].append("private_source_path")
+    bundle = write_bundle(tmp_path, consumer_policy=policy)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "allowed_fields include unsupported fields: private_source_path" in _messages(result)
+
+
+def test_consumer_policy_requires_forbidden_raw_fields(tmp_path: Path) -> None:
+    policy = valid_consumer_policy()
+    for row in policy["consumers"]:
+        if row["consumer"] == "research_viewer":
+            row["forbidden_fields"] = ["body", "private_source_path"]
+    bundle = write_bundle(tmp_path, consumer_policy=policy)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "forbidden_fields missing raw fields: secret" in _messages(result)
+
+
+def test_consumer_policy_rejects_unknown_policy_vocabulary(tmp_path: Path) -> None:
+    policy = valid_consumer_policy()
+    for row in policy["consumers"]:
+        if row["consumer"] == "research_viewer":
+            row["title_leak_policy"] = "generic"
+            row["body_leak_policy"] = "summarize_private"
+            row["path_redaction_policy"] = "none"
+    bundle = write_bundle(tmp_path, consumer_policy=policy)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    messages = _messages(result)
+    assert "unsupported title_leak_policy: generic" in messages
+    assert "unsupported body_leak_policy: summarize_private" in messages
+    assert "unsupported path_redaction_policy: none" in messages
+
+
 def test_consumer_policy_denied_consumers_cannot_allow_fields_or_retrieval(
     tmp_path: Path,
 ) -> None:
@@ -594,7 +891,7 @@ def test_consumer_policy_denied_consumers_cannot_allow_fields_or_retrieval(
     for row in policy["consumers"]:
         if row["consumer"] == "qdrant_rag":
             row["default"] = "allow_read_only"
-            row["allowed_fields"] = ["body"]
+            row["allowed_fields"] = ["title"]
             row["embedding_allowed"] = True
             row["retrieval_allowed"] = True
     bundle = write_bundle(tmp_path, consumer_policy=policy)
@@ -606,6 +903,24 @@ def test_consumer_policy_denied_consumers_cannot_allow_fields_or_retrieval(
     assert "qdrant_rag must default deny" in messages
     assert "qdrant_rag may not expose allowed_fields" in messages
     assert "qdrant_rag may not allow embedding/retrieval" in messages
+
+
+def test_consumer_policy_dashboard_stays_denied_without_explicit_future_task(
+    tmp_path: Path,
+) -> None:
+    policy = valid_consumer_policy()
+    for row in policy["consumers"]:
+        if row["consumer"] == "dashboard":
+            row["default"] = "allow_after_explicit_row"
+            row["allowed_fields"] = ["title"]
+    bundle = write_bundle(tmp_path, consumer_policy=policy)
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    messages = _messages(result)
+    assert "dashboard must default deny" in messages
+    assert "dashboard may not expose allowed_fields" in messages
 
 
 def test_manifest_output_tree_hash_mismatch_fails(tmp_path: Path) -> None:
@@ -1185,7 +1500,7 @@ def valid_consumer_policy() -> dict[str, Any]:
     defaults = {
         "research_viewer": "allow_read_only",
         "local_prompt_context": "allow_with_ceiling",
-        "dashboard": "allow_after_explicit_row",
+        "dashboard": "deny",
         "qdrant_rag": "deny",
         "public_export": "deny",
         "release_gate": "deny",
@@ -1200,9 +1515,11 @@ def valid_consumer_policy() -> dict[str, Any]:
             {
                 "consumer": consumer,
                 "default": default,
-                "allowed_fields": ["title"] if default != "deny" else [],
-                "forbidden_fields": ["body"],
-                "title_leak_policy": "generic",
+                "allowed_fields": ["title", "description", "source_refs", "authority"]
+                if default != "deny"
+                else [],
+                "forbidden_fields": ["body", "private_source_path", "secret"],
+                "title_leak_policy": "internal_only",
                 "body_leak_policy": "drop_private",
                 "path_redaction_policy": "local_path_root_redaction",
                 "embedding_allowed": False,
