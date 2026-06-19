@@ -25,10 +25,21 @@ from shared.hkp_bundle_schema import FORBIDDEN_CONSUMERS, STALE_SOURCE_STATES, v
 
 PROFILE_VERSION = "hkp-v1"
 GENERATOR_ID = "hkp-shadow-exporter"
-GENERATOR_VERSION = "0.1.0"
+GENERATOR_VERSION = "0.1.1"
 SOURCE_REF_STALE_AFTER = "P7D"
 UNKNOWN_DENY_CONSUMER = "unknown"
 SHADOW_INDEX_DIRNAME = "hkp-shadow-index"
+READ_ONLY_CONSUMER_ALLOWED_FIELDS = [
+    "title",
+    "description",
+    "source_refs",
+    "authority",
+    "freshness",
+    "posture",
+    "bundle_uid",
+    "output_tree_hash",
+    "validator_findings",
+]
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
 _SAFE_BUNDLE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
 ROUTE_METADATA_GAP_ERROR_CLASSES = {
@@ -642,9 +653,7 @@ def _consumer_policy() -> dict[str, Any]:
             {
                 "consumer": consumer,
                 "default": default,
-                "allowed_fields": ["title", "description", "source_refs", "authority"]
-                if default != "deny"
-                else [],
+                "allowed_fields": READ_ONLY_CONSUMER_ALLOWED_FIELDS if default != "deny" else [],
                 "forbidden_fields": ["body", "private_source_path", "secret"],
                 "title_leak_policy": "internal_only",
                 "body_leak_policy": "drop_private",
