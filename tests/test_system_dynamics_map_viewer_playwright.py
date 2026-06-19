@@ -506,6 +506,8 @@ def test_system_dynamics_viewer_core_interactions():
                 "DMN hidden by the active view or filters"
                 in page.locator("#action-status").inner_text()
             )
+            page.get_by_role("button", name="Dismiss").click()
+            assert page.locator("#action-status").inner_text() == ""
             error_message = _browser_error_message(
                 page, "window.systemDynamicsMapRuntime.selectNode('dmn')"
             )
@@ -1108,6 +1110,45 @@ def test_system_dynamics_viewer_respects_reduced_motion():
             assert (
                 page.evaluate("window.systemDynamicsMapRuntime.layoutAnimationEnabled()") is False
             )
+        finally:
+            browser.close()
+
+
+def test_system_dynamics_viewer_forced_colors_keeps_focus_and_boundaries_visible():
+    with _static_server() as base_url, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(
+            viewport={"width": 1280, "height": 900},
+            forced_colors="active",
+        )
+        try:
+            page.goto(f"{base_url}/system-dynamics-map-viewer.html")
+            page.locator("#cy canvas").first.wait_for(timeout=10_000)
+            page.wait_for_function("window.systemDynamicsMapRuntime")
+            assert page.evaluate("window.matchMedia('(forced-colors: active)').matches")
+            assert page.evaluate(
+                """
+                () => {
+                  const cyStyle = getComputedStyle(document.querySelector("#cy"));
+                  const buttonStyle = getComputedStyle(document.querySelector("button"));
+                  return cyStyle.borderTopColor === buttonStyle.color;
+                }
+                """
+            ), (
+                "forced-colors mode did not map graph boundaries to ButtonText. "
+                "Fix by keeping #cy in the forced-colors border-color rule."
+            )
+            page.get_by_role("button", name="Force").focus()
+            focus_style = page.evaluate(
+                """
+                () => {
+                  const style = getComputedStyle(document.activeElement);
+                  return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth };
+                }
+                """
+            )
+            assert focus_style["outlineStyle"] == "solid"
+            assert focus_style["outlineWidth"] != "0px"
         finally:
             browser.close()
 

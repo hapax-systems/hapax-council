@@ -311,8 +311,20 @@ The committed reference captures are:
 The portable recheck for committed reference captures is:
 
 ```bash
-test -f docs/architecture/system-dynamics-map-viewer-desktop.png
-test -f docs/architecture/system-dynamics-map-viewer-mobile.png
+python3 - <<'PY'
+from pathlib import Path
+from PIL import Image
+
+expected = {
+    Path("docs/architecture/system-dynamics-map-viewer-desktop.png"): (1440, 960),
+    Path("docs/architecture/system-dynamics-map-viewer-mobile.png"): (390, 844),
+}
+for path, dimensions in expected.items():
+    with Image.open(path) as image:
+        assert image.size == dimensions, (path, image.size)
+        colors = image.convert("RGB").getcolors(maxcolors=1_000_000)
+        assert colors is not None and len(colors) > 50, path
+PY
 ```
 
 The AV-SDLC task evidence also carries operator-local copies under the closing

@@ -2,11 +2,11 @@
   "generated_at": "2026-06-18T00:00:00Z",
   "generated_hashes": {
     "docs/architecture/fixtures/system-dynamics-map/sdlc-operating-slice.json": "b405bf4be92d1a7e4fcecbb4ab640e3b9f9b2dedae73d22bcbcd2189b6b78c1f",
-    "docs/architecture/system-dynamics-map-viewer.html": "ee65bb6521340beb8776d57469739f3879bb69ea33133807e9aa5cca81445115",
+    "docs/architecture/system-dynamics-map-viewer.html": "e50217f076d90fb16f4af055ee730feda570da1cb72e08fa072b75361e578065",
     "docs/architecture/system-dynamics-map.canonical.trig": "180cb9af6e6052265528a0829d43786862f91f3e3992c678d16887addceb6328",
     "docs/architecture/system-dynamics-map.claims.json": "b52f80e5eeb3b4cd8abf5b37e4a49b8e457bf823fa0ecdf838872b56ea1e641d",
     "docs/architecture/system-dynamics-map.lenses.json": "d7ef9c7773ad04c5d76597378414277089137028416e406559490e87512eef7f",
-    "docs/architecture/system-dynamics-map.observations.jsonl": "ce249b09a4d38ce25db811b24a1a8d58b362a4b1e26342f938b1bf51175be8b3",
+    "docs/architecture/system-dynamics-map.observations.jsonl": "527328ff39396fcf642bd672bf361863de19daa466b1b6ef179ae7fb0267a5c4",
     "docs/architecture/system-dynamics-map.relations.json": "382cdd0fa36e9a1cba9feea58d78d6c6280e1416092e704770d822fe912b0e9d",
     "docs/architecture/system-dynamics-map.shacl.ttl": "56c382e4afa373f2d989676e2f3d0c533d7fe91743b1893199cf19c4923e653b",
     "docs/architecture/system-dynamics-map.view-manifest.json": "eba1f4216f08012090ef9e381b1baa244b956be907cefcea3415c9bcae844ebc",
@@ -21,12 +21,12 @@
   "git_sha": "unknown",
   "git_sha_role": "not_recorded",
   "map_id": "system-dynamics-map-v1",
-  "package_hash": "005a160ad9a664d963a2c9917e339f93f78c0ec878d021ec76f7056d98736910",
+  "package_hash": "584f50c05937f04c8bf7853e0a28a5f476fc2da0229754c65d9875abb5d950b6",
   "schema": "system-dynamics-map-lock-v1",
   "source_hashes": {
     "seed": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
     "vendor": "9c2a3bf2592e0b14a1f7bec07c03a54f16dedf32af9cd0af155c716aa6c87bc3",
-    "viewer": "ee65bb6521340beb8776d57469739f3879bb69ea33133807e9aa5cca81445115"
+    "viewer": "e50217f076d90fb16f4af055ee730feda570da1cb72e08fa072b75361e578065"
   },
   "staleness_policy": "Generated hashes must match rendered materializer output. git_sha is intentionally unknown and is not a staleness key because an artifact committed to Git cannot contain its own self-referential future commit SHA.",
   "version": "1.0.0"
