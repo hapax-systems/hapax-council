@@ -101,6 +101,42 @@ class Profile(StrEnum):
     WORKER = "worker"
 
 
+class Effort(StrEnum):
+    """Reasoning-effort axis (operator-steered; today smuggled into launchers/model strings)."""
+
+    NONE = "none"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    XHIGH = "xhigh"
+    MAX = "max"
+
+
+class ContextMode(StrEnum):
+    """Context-window mode: standard vs an extended (e.g. 1M) variant of the same model."""
+
+    STANDARD = "standard"
+    EXTENDED_1M = "extended_1m"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class FastMode(StrEnum):
+    """Opus faster-output mode (a client-side harness flag today)."""
+
+    OFF = "off"
+    FAST = "fast"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class Quantization(StrEnum):
+    """Local-inference quantization (EXL3 bits-per-weight); not_applicable for hosted models."""
+
+    NONE = "none"
+    EXL3_4_0BPW = "exl3_4_0bpw"
+    EXL3_5_0BPW = "exl3_5_0bpw"
+    NOT_APPLICABLE = "not_applicable"
+
+
 class RouteState(StrEnum):
     ACTIVE = "active"
     BLOCKED = "blocked"
@@ -232,6 +268,34 @@ class ToolAccess(StrictModel):
     shell: ShellAccess
     browser: bool
     mcp: list[str] = Field(default_factory=list)
+
+
+class ExecutionDescriptor(StrictModel):
+    """The operator-steered execution axes a capability is selected on, beyond
+    ``platform.mode.profile``. These were previously absent from the governed plane
+    (effort/fast-mode/quantization) or coarse (a single ``max_context_class`` enum, a
+    free-text ``model_or_engine``). Modeled here so a capability is the FULL descriptor;
+    the 3-segment ``route_id`` stays the human key (no combinatorial blow-up)."""
+
+    model_id: str
+    effort: Effort
+    context_mode: ContextMode = ContextMode.STANDARD
+    fast_mode: FastMode = FastMode.OFF
+    quantization: Quantization = Quantization.NONE
+
+
+class DescriptorVariant(StrictModel):
+    """A materially-different (model, effort, context, …) leaf of a route, carried sparsely:
+    a variant exists only where a knob change crosses an authority/quality/quota boundary or
+    shifts a capability score. ``score_delta`` overrides specific scores; otherwise the leaf
+    inherits the route scores with explicit ``scores_inherited_from`` provenance (never a
+    fabricated per-knob number)."""
+
+    variant_id: str
+    knobs_override: dict[str, str] = Field(default_factory=dict)
+    score_delta: dict[str, int] = Field(default_factory=dict)
+    scores_inherited_from: str | None = None
+    blocked_reasons: list[str] = Field(default_factory=list)
 
 
 class QualityEnvelope(StrictModel):
@@ -1163,6 +1227,50 @@ def _apply_surface(
     freshness[f"{surface}_stale_after"] = stale_after
 
 
+#: Effort tokens historically smuggled into ``model_or_engine`` (e.g. codex.headless.full's
+#: ``gpt-5.5-xhigh``). ``derive_execution_descriptor`` splits them back into structured axes.
+_SMUGGLED_EFFORT_SUFFIXES: dict[str, Effort] = {
+    "-max": Effort.MAX,
+    "-xhigh": Effort.XHIGH,
+    "-high": Effort.HIGH,
+    "-medium": Effort.MEDIUM,
+    "-low": Effort.LOW,
+}
+
+
+def derive_execution_descriptor(route: PlatformCapabilityRoute) -> ExecutionDescriptor:
+    """Project a route's CURRENT implicit execution descriptor from its existing fields.
+
+    Best-effort and read-only: it surfaces effort smuggled into ``model_or_engine``
+    (``gpt-5.5-xhigh`` -> model_id ``gpt-5.5`` + effort ``XHIGH``), but cannot recover what
+    the data never carried — effort is otherwise UNKNOWN-at-rest (``Effort.NONE``), and
+    context_mode/quantization stay at their conservative defaults until a route declares a
+    structured ``execution_descriptor`` (a later slice that also makes ``model_id`` a strict
+    dated identity and backfills quantization for local routes). This is the foundation the
+    completeness gate's registry-site detector and the future backfill build on.
+    """
+
+    raw = (route.model_or_engine or "").strip()
+    effort = Effort.NONE
+    model_id = raw
+    for suffix, eff in _SMUGGLED_EFFORT_SUFFIXES.items():
+        if raw.endswith(suffix):
+            effort = eff
+            model_id = raw[: -len(suffix)]
+            break
+    return ExecutionDescriptor(model_id=model_id or "unknown", effort=effort)
+
+
+def materialize_descriptors(
+    registry: PlatformCapabilityRegistry,
+) -> dict[str, ExecutionDescriptor]:
+    """The current implicit execution descriptor for every route — the dispatch plane's
+    capability *leaf set* made explicit. Foundation for the completeness gate and the later
+    stored-and-strict ``execution_descriptor`` route field + backfill."""
+
+    return {route.route_id: derive_execution_descriptor(route) for route in registry.routes}
+
+
 _DYNAMIC_ENTRYPOINTS = (
     ScoreConfidence._score_evidence_is_freshness_typed,
     ToolState._tool_freshness_duration_is_valid,
@@ -1174,4 +1282,6 @@ _DYNAMIC_ENTRYPOINTS = (
     build_supply_vector,
     check_registry_freshness,
     load_platform_capability_registry,
+    derive_execution_descriptor,
+    materialize_descriptors,
 )

@@ -4281,3 +4281,13 @@ _hkp_export_shadow_bundle
 from shared.hkp_prompt_context import context_for_task as _hkp_context_for_task  # noqa: E402
 
 _hkp_context_for_task
+
+# ExecutionDescriptor foundation (REQ-20260619 P4): the DescriptorVariant sparse-leaf model is
+# public API consumed by tests/shared/test_execution_descriptor.py and the forthcoming
+# stored-field + backfill slice, outside vulture's scanned module call graph.
+# S5-CAPADAPTER-P4-COMPLETENESS-20260619.
+from shared.platform_capability_registry import (  # noqa: E402
+    DescriptorVariant as _capadapter_descriptor_variant,
+)
+
+_capadapter_descriptor_variant
