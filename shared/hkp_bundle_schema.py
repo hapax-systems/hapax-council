@@ -7,6 +7,7 @@ shape and authority ceilings; it does not grant authority to any bundle.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from enum import StrEnum
@@ -38,6 +39,16 @@ RESERVED_BUNDLE_NAMES = {
     "secret.yml",
     "secrets.yaml",
     "secrets.yml",
+}
+VALIDATOR_VERSION = "0.2.0"
+TREE_HASH_EXCLUDED_PATHS = {"_hkp/checksums.json", "_hkp/manifest.yaml"}
+ALLOWED_HKP_FILES = {
+    "_hkp/manifest.yaml",
+    "_hkp/consumer_policy.yaml",
+    "_hkp/edges.jsonl",
+    "_hkp/events.jsonl",
+    "_hkp/snapshot.json",
+    "_hkp/checksums.json",
 }
 
 AUTHORITY_SOURCE_ROLES = {"authority_source", "raw_evidence", "public_event_move"}
@@ -171,6 +182,7 @@ class HkpValidationResult:
         return {
             "ok": self.ok,
             "mode": self.mode.value,
+            "validator_version": VALIDATOR_VERSION,
             "bundle_path": str(self.bundle_path),
             "findings": [finding.as_dict() for finding in self.findings],
         }
@@ -669,8 +681,25 @@ class _BundleValidator:
         self.mode = mode
         self.findings: list[HkpFinding] = []
         self.concept_uids: set[str] = set()
+        self.manifest: HkpManifest | None = None
+        self.concepts: dict[str, HkpConceptFrontmatter] = {}
+        self.concept_paths: dict[str, Path] = {}
+        self.source_ref_ids: dict[str, Path] = {}
+        self.consumer_policy: HkpConsumerPolicy | None = None
+        self.edges: list[HkpEdge] = []
+        self.events: list[HkpProjectionEvent] = []
+        self.snapshot: HkpSnapshot | None = None
+        self.checksum_index: HkpChecksumIndex | None = None
 
     def validate(self) -> list[HkpFinding]:
+        if self.bundle.is_symlink():
+            self._error(
+                "bundle_root_symlink",
+                self.bundle,
+                "bundle root must be a real directory, not a symlink; "
+                "validate the real bundle directory or regenerate bundle",
+            )
+            return self.findings
         if not self.bundle.is_dir():
             self._error("bundle_missing", self.bundle, "bundle path must be a directory")
             return self.findings
@@ -680,6 +709,7 @@ class _BundleValidator:
             (self.bundle / "log.md", "file"),
             (self.bundle / "concepts", "dir"),
             (self.bundle / "references", "dir"),
+            (self.bundle / "_hkp", "dir"),
             (self.bundle / "_hkp" / "manifest.yaml", "file"),
             (self.bundle / "_hkp" / "consumer_policy.yaml", "file"),
             (self.bundle / "_hkp" / "edges.jsonl", "file"),
@@ -688,7 +718,14 @@ class _BundleValidator:
             (self.bundle / "_hkp" / "checksums.json", "file"),
         ]
         for path, expected_type in required_paths:
-            if not path.exists():
+            if _has_symlink_in_path(self.bundle, path):
+                self._error(
+                    "required_path_wrong_type",
+                    path,
+                    "required HKP path must be a real bundle path, not a symlink; "
+                    "copy the artifact into the bundle or regenerate bundle",
+                )
+            elif not path.exists():
                 self._error("required_path_missing", path, "required HKP bundle path is missing")
             elif expected_type == "dir" and not path.is_dir():
                 self._error(
@@ -698,6 +735,7 @@ class _BundleValidator:
                 self._error("required_path_wrong_type", path, "required HKP path must be a file")
 
         self._validate_reserved_names()
+        self._validate_bundle_file_whitelist()
         self._validate_manifest()
         self._validate_consumer_policy()
         self._validate_concepts()
@@ -705,22 +743,23 @@ class _BundleValidator:
         self._validate_events()
         self._validate_snapshot()
         self._validate_checksums()
+        self._validate_cross_artifact_integrity()
         return self.findings
 
     def _validate_manifest(self) -> None:
-        self._validate_yaml_model(
+        self.manifest = self._validate_yaml_model(
             self.bundle / "_hkp" / "manifest.yaml", HkpManifest, "manifest_invalid"
         )
 
     def _validate_consumer_policy(self) -> None:
-        self._validate_yaml_model(
+        self.consumer_policy = self._validate_yaml_model(
             self.bundle / "_hkp" / "consumer_policy.yaml",
             HkpConsumerPolicy,
             "consumer_policy_invalid",
         )
 
     def _validate_reserved_names(self) -> None:
-        for path in sorted(self.bundle.rglob("*")):
+        for path in _iter_bundle_paths(self.bundle):
             if path.is_symlink():
                 self._error(
                     "reserved_file_name",
@@ -741,11 +780,53 @@ class _BundleValidator:
                     + ", ".join(reserved_parts),
                 )
 
+    def _validate_bundle_file_whitelist(self) -> None:
+        for path in _iter_bundle_paths(self.bundle):
+            relative = _rel(path, self.bundle)
+            allowed = (
+                relative in {"index.md", "log.md"}
+                or relative in ALLOWED_HKP_FILES
+                or (relative.startswith("concepts/") and path.suffix == ".md")
+                or relative.startswith("references/")
+            )
+            if path.is_symlink():
+                if not allowed:
+                    self._error(
+                        "bundle_unexpected_path",
+                        path,
+                        "HKP bundle contains symlink outside the allowed bundle layout; "
+                        "remove the symlink or regenerate bundle",
+                    )
+                continue
+            if path.is_dir():
+                if (
+                    relative in {"concepts", "references", "_hkp"}
+                    or relative.startswith("concepts/")
+                    or relative.startswith("references/")
+                ):
+                    continue
+                self._error(
+                    "bundle_unexpected_path",
+                    path,
+                    "HKP bundle contains unexpected directory outside concepts/, references/, "
+                    "or _hkp/; remove the directory or regenerate bundle",
+                )
+                continue
+            if not allowed:
+                self._error(
+                    "bundle_unexpected_path",
+                    path,
+                    "HKP bundle contains file outside the allowed bundle layout; "
+                    "remove the file or regenerate bundle",
+                )
+
     def _validate_concepts(self) -> None:
         concepts_root = self.bundle / "concepts"
-        if not concepts_root.is_dir():
+        if concepts_root.is_symlink() or not concepts_root.is_dir():
             return
-        for path in sorted(concepts_root.rglob("*.md")):
+        for path in _iter_bundle_paths(concepts_root):
+            if path.is_symlink() or path.suffix != ".md":
+                continue
             parsed = parse_frontmatter_with_diagnostics(path)
             if not parsed.ok or parsed.frontmatter is None:
                 self._error(
@@ -791,36 +872,51 @@ class _BundleValidator:
                     "duplicate_concept_uid", path, f"duplicate concept_uid {concept.concept_uid}"
                 )
             self.concept_uids.add(concept.concept_uid)
+            self.concepts[concept.concept_uid] = concept
+            self.concept_paths[concept.concept_uid] = path
+            for source_ref in concept.source_refs:
+                if source_ref.ref_id in self.source_ref_ids:
+                    self._error(
+                        "duplicate_source_ref_id",
+                        path,
+                        f"duplicate source ref id {source_ref.ref_id}; make ref_id bundle-unique",
+                    )
+                self.source_ref_ids[source_ref.ref_id] = path
             self._validate_markdown_links(path, parsed.body)
 
     def _validate_edges(self) -> None:
-        self._validate_jsonl_model(self.bundle / "_hkp" / "edges.jsonl", HkpEdge, "edge_invalid")
+        self.edges = self._validate_jsonl_model(
+            self.bundle / "_hkp" / "edges.jsonl", HkpEdge, "edge_invalid"
+        )
 
     def _validate_events(self) -> None:
-        self._validate_jsonl_model(
+        self.events = self._validate_jsonl_model(
             self.bundle / "_hkp" / "events.jsonl", HkpProjectionEvent, "event_invalid"
         )
 
     def _validate_snapshot(self) -> None:
         path = self.bundle / "_hkp" / "snapshot.json"
-        if not path.exists():
+        text = self._read_artifact_text(path, "snapshot_invalid")
+        if text is None:
             return
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            HkpSnapshot.model_validate(payload)
-        except (OSError, json.JSONDecodeError, ValidationError) as exc:
+            payload = json.loads(text)
+            self.snapshot = HkpSnapshot.model_validate(payload)
+        except (json.JSONDecodeError, ValidationError) as exc:
             self._error("snapshot_invalid", path, str(exc))
 
     def _validate_checksums(self) -> None:
         path = self.bundle / "_hkp" / "checksums.json"
-        if not path.exists():
+        text = self._read_artifact_text(path, "checksums_invalid")
+        if text is None:
             return
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(text)
             index = HkpChecksumIndex.model_validate(payload)
-        except (OSError, json.JSONDecodeError, ValidationError) as exc:
+        except (json.JSONDecodeError, ValidationError) as exc:
             self._error("checksums_invalid", path, str(exc))
             return
+        self.checksum_index = index
         self._validate_checksum_artifacts(index)
 
     def _validate_checksum_artifacts(self, index: HkpChecksumIndex) -> None:
@@ -834,12 +930,18 @@ class _BundleValidator:
             "_hkp/snapshot.json",
         }
         concepts_root = self.bundle / "concepts"
-        if concepts_root.is_dir():
-            required.update(_rel(path, self.bundle) for path in concepts_root.rglob("*.md"))
-        references_root = self.bundle / "references"
-        if references_root.is_dir():
+        if not concepts_root.is_symlink() and concepts_root.is_dir():
             required.update(
-                _rel(path, self.bundle) for path in references_root.rglob("*") if path.is_file()
+                _rel(path, self.bundle)
+                for path in _iter_bundle_paths(concepts_root)
+                if not path.is_symlink() and path.suffix == ".md"
+            )
+        references_root = self.bundle / "references"
+        if not references_root.is_symlink() and references_root.is_dir():
+            required.update(
+                _rel(path, self.bundle)
+                for path in _iter_bundle_paths(references_root)
+                if not path.is_symlink() and path.is_file()
             )
         missing = sorted(required - set(index.artifacts))
         if missing:
@@ -850,11 +952,12 @@ class _BundleValidator:
             )
         for relative_path, entry in index.artifacts.items():
             artifact = self.bundle / relative_path
-            if not artifact.is_file():
+            if _has_symlink_in_path(self.bundle, artifact) or not artifact.is_file():
                 self._error(
                     "checksums_artifact_missing",
                     self.bundle / "_hkp" / "checksums.json",
-                    f"checksum artifact is missing or not a file; add or remove: {relative_path}",
+                    "checksum artifact is missing, a symlink, or not a file; "
+                    f"add, remove, or copy a real file: {relative_path}",
                 )
                 continue
             if entry.hash_scope != "full_content":
@@ -867,27 +970,201 @@ class _BundleValidator:
                     f"checksum mismatch for {relative_path}; regenerate bundle checksums",
                 )
 
-    def _validate_yaml_model(self, path: Path, model: type[BaseModel], code: str) -> None:
-        if not path.exists():
+    def _validate_cross_artifact_integrity(self) -> None:
+        self._validate_manifest_integrity()
+        self._validate_snapshot_integrity()
+        self._validate_event_integrity()
+        self._validate_concept_and_edge_refs()
+
+    def _validate_manifest_integrity(self) -> None:
+        if self.manifest is None:
             return
+        actual_tree_hash = _tree_hash(self.bundle)
+        if self.manifest.output_tree_hash != actual_tree_hash:
+            self._error(
+                "manifest_output_tree_hash_mismatch",
+                self.bundle / "_hkp" / "manifest.yaml",
+                "manifest output_tree_hash does not match bundle contents; regenerate bundle",
+            )
+        actual_input_hash = _input_ref_hash(self.concepts.values())
+        if actual_input_hash is None:
+            self._error(
+                "manifest_input_ref_hash_mismatch",
+                self.bundle / "_hkp" / "manifest.yaml",
+                "manifest input_ref_hash cannot be verified because concept source_refs "
+                "have no content_hash; restore source refs or regenerate bundle",
+            )
+        elif self.manifest.input_ref_hash != actual_input_hash:
+            self._error(
+                "manifest_input_ref_hash_mismatch",
+                self.bundle / "_hkp" / "manifest.yaml",
+                "manifest input_ref_hash does not match concept source_refs; regenerate bundle",
+            )
+
+    def _validate_snapshot_integrity(self) -> None:
+        if self.snapshot is None:
+            return
+        if self.manifest is not None and self.snapshot.bundle_uid != self.manifest.bundle_uid:
+            self._error(
+                "snapshot_bundle_uid_mismatch",
+                self.bundle / "_hkp" / "snapshot.json",
+                "snapshot bundle_uid does not match manifest bundle_uid; regenerate bundle",
+            )
+        if self.snapshot.concept_count != len(self.concepts):
+            self._error(
+                "snapshot_concept_count_mismatch",
+                self.bundle / "_hkp" / "snapshot.json",
+                "snapshot concept_count does not match emitted concepts; regenerate bundle",
+            )
+        if self.snapshot.edge_count != len(self.edges):
+            self._error(
+                "snapshot_edge_count_mismatch",
+                self.bundle / "_hkp" / "snapshot.json",
+                "snapshot edge_count does not match emitted edges; regenerate bundle",
+            )
+
+    def _validate_event_integrity(self) -> None:
+        if not self.events:
+            return
+        event_ids: set[str] = set()
+        for event in self.events:
+            if event.event_id in event_ids:
+                self._error(
+                    "duplicate_event_id",
+                    self.bundle / "_hkp" / "events.jsonl",
+                    f"duplicate event_id {event.event_id}; regenerate events with unique ids",
+                )
+            event_ids.add(event.event_id)
+        sequences = [event.sequence for event in self.events]
+        expected = list(range(len(self.events)))
+        if sequences != expected:
+            self._error(
+                "event_sequence_not_contiguous",
+                self.bundle / "_hkp" / "events.jsonl",
+                "event sequence must be contiguous and file-ordered from 0: "
+                f"{sequences}; regenerate events in projection order",
+            )
+        previous_hash: str | None = None
+        bundle_uid = self.manifest.bundle_uid if self.manifest is not None else None
+        for event in self.events:
+            if event.previous_event_hash != previous_hash:
+                self._error(
+                    "event_hash_chain_broken",
+                    self.bundle / "_hkp" / "events.jsonl",
+                    f"event {event.event_id} previous_event_hash does not match prior row; "
+                    "regenerate events from the source projection log",
+                )
+            if bundle_uid is not None:
+                expected_event_id = _projection_event_id(
+                    bundle_uid=bundle_uid,
+                    sequence=event.sequence,
+                    event_type=event.event_type,
+                    subject_uid=event.subject_uid,
+                )
+                if event.event_id != expected_event_id:
+                    self._error(
+                        "event_id_mismatch",
+                        self.bundle / "_hkp" / "events.jsonl",
+                        "event_id for sequence "
+                        f"{event.sequence} does not match HKP derivation; regenerate events",
+                    )
+            previous_hash = _json_hash(event.model_dump(mode="json"))
+
+    def _validate_concept_and_edge_refs(self) -> None:
+        event_ids = {event.event_id for event in self.events}
+        for concept_uid, concept in self.concepts.items():
+            path = self.concept_paths.get(concept_uid, self.bundle / "concepts")
+            if not concept.projection_provenance.projection_event_ids:
+                self._error(
+                    "concept_projection_event_missing",
+                    path,
+                    "projection_event_ids is empty; repair concept provenance or regenerate events",
+                )
+            for event_id in concept.projection_provenance.projection_event_ids:
+                if event_id not in event_ids:
+                    self._error(
+                        "concept_projection_event_missing",
+                        path,
+                        f"projection_event_id {event_id} is not present in _hkp/events.jsonl; "
+                        "repair concept provenance or regenerate events",
+                    )
+            for evidence_ref in concept.projection_provenance.evidence_refs:
+                if evidence_ref not in self.source_ref_ids:
+                    self._error(
+                        "concept_evidence_ref_missing",
+                        path,
+                        f"evidence_ref {evidence_ref} is not present in concept source_refs; "
+                        "repair concept source_refs or provenance",
+                    )
+        for edge in self.edges:
+            edge_path = self.bundle / "_hkp" / "edges.jsonl"
+            if edge.from_uid not in self.concepts:
+                self._error(
+                    "edge_from_uid_missing",
+                    edge_path,
+                    f"edge from_uid {edge.from_uid} is not present in concepts; "
+                    "repair edge endpoint or regenerate edges",
+                )
+            if edge.to_uid and edge.to_uid not in self.concepts:
+                self._error(
+                    "edge_to_uid_missing",
+                    edge_path,
+                    f"edge to_uid {edge.to_uid} is not present in concepts; "
+                    "repair edge endpoint or regenerate edges",
+                )
+            if edge.target_path:
+                target = self.bundle / edge.target_path
+                target_missing = _has_symlink_in_path(self.bundle, target) or not target.is_file()
+            else:
+                target_missing = False
+            if edge.target_path and target_missing:
+                self._error(
+                    "edge_target_path_missing",
+                    edge_path,
+                    f"edge target_path {edge.target_path} is not a real file in bundle; "
+                    "repair target_path, copy the file, or regenerate edges",
+                )
+            for source_ref in edge.source_refs:
+                if source_ref not in self.source_ref_ids:
+                    self._error(
+                        "edge_source_ref_missing",
+                        edge_path,
+                        f"edge source_ref {source_ref} is not present in concept source_refs; "
+                        "repair edge source_refs or concept source_refs",
+                    )
+            if edge.generated_from.projection_event_id not in event_ids:
+                self._error(
+                    "edge_generated_from_event_missing",
+                    edge_path,
+                    "edge generated_from.projection_event_id is not present in "
+                    "_hkp/events.jsonl; repair edge provenance or regenerate events",
+                )
+
+    def _validate_yaml_model(
+        self, path: Path, model: type[BaseModel], code: str
+    ) -> BaseModel | None:
+        text = self._read_artifact_text(path, code)
+        if text is None:
+            return None
         try:
-            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except (OSError, yaml.YAMLError) as exc:
+            payload = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
             self._error(code, path, str(exc))
-            return
+            return None
         try:
-            model.model_validate(payload)
+            return model.model_validate(payload)
         except ValidationError as exc:
             self._validation_errors(code, path, exc)
+            return None
 
-    def _validate_jsonl_model(self, path: Path, model: type[BaseModel], code: str) -> None:
-        if not path.exists():
-            return
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except OSError as exc:
-            self._error(code, path, str(exc))
-            return
+    def _validate_jsonl_model(
+        self, path: Path, model: type[BaseModel], code: str
+    ) -> list[BaseModel]:
+        parsed: list[BaseModel] = []
+        text = self._read_artifact_text(path, code)
+        if text is None:
+            return parsed
+        lines = text.splitlines()
         for line_number, line in enumerate(lines, start=1):
             if not line.strip():
                 continue
@@ -897,9 +1174,27 @@ class _BundleValidator:
                 self._error(code, path, f"line {line_number}: {exc}")
                 continue
             try:
-                model.model_validate(payload)
+                parsed.append(model.model_validate(payload))
             except ValidationError as exc:
                 self._validation_errors(code, path, exc, line_number=line_number)
+        return parsed
+
+    def _read_artifact_text(self, path: Path, code: str) -> str | None:
+        if _has_symlink_in_path(self.bundle, path):
+            self._error(
+                code,
+                path,
+                "HKP artifact must be a real bundle file, not a symlink; "
+                "copy the redacted file into the bundle or regenerate bundle",
+            )
+            return None
+        if not path.exists():
+            return None
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError as exc:
+            self._error(code, path, str(exc))
+            return None
 
     def _validate_markdown_links(self, path: Path, body: str) -> None:
         targets = [*MARKDOWN_LINK_RE.findall(body), *MARKDOWN_REFERENCE_LINK_RE.findall(body)]
@@ -972,6 +1267,72 @@ class _BundleValidator:
 
 def _is_external_link(target: str) -> bool:
     return target.startswith(("http://", "https://", "mailto:"))
+
+
+def _iter_bundle_paths(root: Path) -> list[Path]:
+    if root.is_symlink():
+        return [root]
+    paths: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        current = Path(dirpath)
+        entries = [current / name for name in [*dirnames, *filenames]]
+        paths.extend(entries)
+        dirnames[:] = [name for name in dirnames if not (current / name).is_symlink()]
+    return sorted(paths)
+
+
+def _has_symlink_in_path(root: Path, path: Path) -> bool:
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return True
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            return True
+    return False
+
+
+def _tree_hash(bundle: Path) -> str:
+    rows: list[dict[str, str]] = []
+    for path in _iter_bundle_paths(bundle):
+        relative_path = path.relative_to(bundle).as_posix()
+        if path.is_symlink() or not path.is_file() or relative_path in TREE_HASH_EXCLUDED_PATHS:
+            continue
+        rows.append({"path": relative_path, "hash": _file_hash(path)})
+    return "sha256:" + sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
+
+
+def _input_ref_hash(concepts: Any) -> str | None:
+    rows: list[dict[str, str]] = []
+    for concept in concepts:
+        for source_ref in concept.source_refs:
+            if source_ref.content_hash:
+                rows.append({"uri": source_ref.uri, "content_hash": source_ref.content_hash})
+    if not rows:
+        return None
+    rows.sort(key=lambda row: row["uri"])
+    return "sha256:" + sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
+
+
+def _file_hash(path: Path) -> str:
+    return "sha256:" + sha256(path.read_bytes()).hexdigest()
+
+
+def _json_hash(payload: dict[str, Any]) -> str:
+    return "sha256:" + sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _projection_event_id(
+    *,
+    bundle_uid: str,
+    sequence: int,
+    event_type: str,
+    subject_uid: str,
+) -> str:
+    seed = f"{bundle_uid}:{sequence}:{event_type}:{subject_uid}"
+    return f"event:{sha256(seed.encode()).hexdigest()[:24]}"
 
 
 def _rel(path: Path, base: Path) -> str:

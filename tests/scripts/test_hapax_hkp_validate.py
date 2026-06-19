@@ -24,6 +24,7 @@ def test_cli_json_success(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["findings"] == []
+    assert payload["validator_version"] == "0.2.0"
 
 
 def test_cli_returns_nonzero_for_governed_error(tmp_path: Path) -> None:
