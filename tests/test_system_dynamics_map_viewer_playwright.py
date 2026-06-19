@@ -229,6 +229,72 @@ def test_system_dynamics_viewer_core_interactions():
             assert relation_cues["observational"]["line_style"] == "dotted"
             assert relation_cues["execution"]["target_arrow_shape"] == "vee"
             assert relation_cues["projection"]["target_arrow_shape"] == "diamond"
+            assert set(page.evaluate("window.systemDynamicsMapRuntime.inquiryModeIds()")) == {
+                "release-gates",
+                "stuck-work",
+                "changed",
+                "stale-evidence",
+                "trust",
+                "missing-context",
+            }
+            assert set(page.evaluate("window.systemDynamicsMapRuntime.explanationPathIds()")) == {
+                "release-readiness",
+                "evidence-trust",
+            }
+            assert page.evaluate("window.systemDynamicsMapRuntime.activeInquiryMode()") == (
+                "release-gates"
+            )
+            workbench_text = page.locator("#workbench-readout").inner_text()
+            assert "What gates release?" in workbench_text
+            assert "First diagnostic stop: Review Dossier is pending." in workbench_text
+            assert "What this does not prove" in workbench_text
+            assert "Audience emphasis: diagnostic next action" in workbench_text
+            companion_text = page.locator("#companion-readout").inner_text()
+            assert "Companion Readout" in companion_text
+            assert "Table view for the active projection" in companion_text
+            workbench_payload = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentWorkbenchPayload()"
+            )
+            assert workbench_payload["schema"] == "system-dynamics-map-explanation-view-v1"
+            assert workbench_payload["inquiry_mode"] == "release-gates"
+            assert workbench_payload["audience_mode"] == "operator"
+            assert workbench_payload["evidence_summary"]["stale_observations"] == 1
+            assert "does_not_prove" in workbench_payload
+            view_payload = page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload()")
+            assert view_payload["workbench"]["inquiry_mode"] == "release-gates"
+            assert view_payload["workbench"]["explanation_path"] == "release-readiness"
+
+            page.get_by_label("Audience").select_option("reviewer")
+            reviewer_text = page.locator("#workbench-readout").inner_text()
+            assert "Reviewer / Auditor" in reviewer_text
+            assert "scope, provenance, confidence, validation" in reviewer_text
+            page.get_by_label("Inquiry").select_option("changed")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeInquiryMode() === 'changed'"
+            )
+            changed_text = page.locator("#workbench-readout").inner_text()
+            assert "No prior snapshot is loaded" in changed_text
+            assert "bitemporal snapshot registry" in changed_text
+            assert page.evaluate("window.systemDynamicsMapRuntime.activeLens()") == "topology"
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {"group": "nodes", "id": "view-manifest"}
+            page.get_by_role("button", name="Next").click()
+            scene = page.evaluate("window.systemDynamicsMapRuntime.activeExplanationScene()")
+            assert scene["title"] == "Separate topology from temporal state"
+            assert page.evaluate("window.systemDynamicsMapRuntime.activeLens()") == (
+                "operating-slice"
+            )
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {"group": "nodes", "id": "temporal-state-events"}
+            page.get_by_role("button", name="Copy Explanation JSON").click()
+            copied_explanation = page.evaluate("JSON.parse(window.__clipboardWrites.at(-1))")
+            assert copied_explanation["schema"] == "system-dynamics-map-explanation-view-v1"
+            assert copied_explanation["audience_mode"] == "reviewer"
+            assert copied_explanation["explanation_step"] == 1
+            page.get_by_label("View").select_option("topology")
+            page.wait_for_function("window.systemDynamicsMapRuntime.activeLens() === 'topology'")
 
             page.get_by_label("Search").fill("telemetry")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes < 35")

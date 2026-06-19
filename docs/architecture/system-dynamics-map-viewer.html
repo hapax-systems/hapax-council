@@ -99,7 +99,7 @@
     .controls {
       border-right: 1px solid var(--line);
       flex: 1 1 280px;
-      max-height: clamp(320px, 38vh, 720px);
+      max-height: min(760px, calc(100vh - 190px));
       order: 1;
     }
 
@@ -113,7 +113,7 @@
     .workspace {
       display: grid;
       flex: 999 1 min(520px, 100%);
-      grid-template-rows: auto 1fr;
+      grid-template-rows: auto 1fr auto;
       height: 72vh;
       max-height: 760px;
       min-height: 520px;
@@ -316,7 +316,9 @@
     .lens-summary,
     .finder-results,
     .encoding-list,
-    .data-drawer {
+    .data-drawer,
+    .workbench-readout,
+    .companion-readout {
       background: color-mix(in oklab, Canvas 96%, CanvasText 4%);
       border: 1px solid var(--line);
       border-radius: var(--radius);
@@ -342,6 +344,21 @@
       overflow: auto;
     }
 
+    .workbench-readout {
+      margin-bottom: 14px;
+      max-height: 280px;
+      overflow: auto;
+    }
+
+    .companion-readout {
+      border-left: 0;
+      border-radius: 0;
+      border-right: 0;
+      border-bottom: 0;
+      max-height: 220px;
+      overflow: auto;
+    }
+
     .finder-results {
       max-height: 180px;
       overflow: auto;
@@ -349,11 +366,77 @@
 
     .lens-summary p,
     .finder-results p,
-    .encoding-list p {
+    .encoding-list p,
+    .workbench-readout p,
+    .companion-readout p {
       color: var(--muted);
       font-size: 0.82rem;
       line-height: 1.35;
       margin: 0;
+    }
+
+    .workbench-heading {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 10px;
+      justify-content: space-between;
+    }
+
+    .workbench-heading strong {
+      font-size: 0.92rem;
+    }
+
+    .workbench-grid {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    }
+
+    .callout-list {
+      display: grid;
+      gap: 6px;
+      margin: 0;
+      padding: 0;
+    }
+
+    .callout-list li {
+      border-left: 3px solid var(--accent);
+      color: var(--text);
+      font-size: 0.86rem;
+      line-height: 1.4;
+      list-style: none;
+      padding-left: 8px;
+    }
+
+    .callout-list li.warning {
+      border-color: var(--warning);
+    }
+
+    .callout-list li.risk {
+      border-color: var(--danger);
+    }
+
+    .callout-list li.success {
+      border-color: var(--success);
+    }
+
+    .companion-table {
+      border-collapse: collapse;
+      font-size: 0.82rem;
+      width: 100%;
+    }
+
+    .companion-table th,
+    .companion-table td {
+      border-top: 1px solid var(--line);
+      padding: 6px 4px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .compact-button {
+      min-height: 32px;
+      padding: 5px 8px;
     }
 
     .kv-grid {
@@ -622,6 +705,8 @@
       .lens-summary,
       .finder-results,
       .encoding-list,
+      .workbench-readout,
+      .companion-readout,
       .data-drawer {
         border-color: ButtonText;
       }
@@ -669,6 +754,28 @@
         <select id="lens"></select>
       </div>
       <div class="lens-summary" id="lens-summary" aria-live="polite"></div>
+
+      <div class="field">
+        <label for="inquiry-mode">Inquiry</label>
+        <select id="inquiry-mode"></select>
+        <p class="helper">Question-first modes synthesize the active graph, temporal evidence, claims, and hidden-scope caveats.</p>
+      </div>
+
+      <div class="field">
+        <label for="audience-mode">Audience</label>
+        <select id="audience-mode"></select>
+      </div>
+
+      <div class="field">
+        <label for="explanation-path">Explanation Path</label>
+        <select id="explanation-path"></select>
+        <div class="button-row" aria-label="Explanation scene navigation">
+          <button type="button" id="previous-scene">Previous</button>
+          <button type="button" id="next-scene">Next</button>
+        </div>
+      </div>
+
+      <div class="workbench-readout" id="workbench-readout" aria-live="polite"></div>
 
       <div class="field" role="search">
         <label for="search">Search</label>
@@ -726,11 +833,13 @@
         <button type="button" id="zoom-reset">Reset Zoom</button>
         <button type="button" id="edge-labels" aria-pressed="false">Edge Labels</button>
         <button type="button" id="copy-view">Copy View JSON</button>
+        <button type="button" id="copy-explanation">Copy Explanation JSON</button>
         <button type="button" id="export-png">PNG</button>
         <span class="state-summary" id="state-summary" role="status" aria-live="polite"></span>
         <span class="metric" id="counts" role="status" aria-live="polite"></span>
       </div>
       <div id="cy" role="application" tabindex="0" aria-label="Interactive system topology graph. Use arrow keys to move through visible elements, Enter or Space to select, Escape to reset, and slash to open the finder."></div>
+      <div class="companion-readout" id="companion-readout" aria-live="polite"></div>
     </section>
 
     <aside class="details" aria-live="polite" aria-label="Selection details">
@@ -5422,7 +5531,7 @@
     "expires_at": "2030-01-01T00:00:00Z",
     "freshness": "fresh",
     "source_ref": "docs/architecture/system-dynamics-map-v1.md",
-    "source_hash": "c6f5c2796fd729736ab6bf4cc073cea2595385f1d49eded0b1bbf6b6acae5f9e",
+    "source_hash": "827af72d0b2cc7a356f949ee05be74720c695f20f9993b082f2e9bfe5d077157",
     "source_type": "fixture",
     "evidence": [
       {
@@ -6434,6 +6543,177 @@
     let activeRelationCategories = new Set();
     let lastHiddenSelection = null;
     let graphCursorIndex = -1;
+    let activeInquiryMode = "release-gates";
+    let activeAudienceMode = "operator";
+    let activeExplanationPath = "release-readiness";
+    let activeExplanationStep = 0;
+
+    const sdlcGateNodeIds = [
+      "sdlc-intake",
+      "cc-task-claim",
+      "review-dossier",
+      "pr-ci-checks",
+      "merge-release"
+    ];
+
+    const sdlcGateEdgeIds = [
+      "sdlc-intake-to-claim",
+      "claim-to-review-dossier",
+      "review-dossier-to-pr-ci",
+      "pr-ci-to-merge-release"
+    ];
+
+    const inquiryModes = [
+      {
+        id: "release-gates",
+        label: "What gates release?",
+        prompt: "Follow the current intake-to-release path and identify the first non-ready gate.",
+        lens: "operating-slice",
+        focus_node_ids: sdlcGateNodeIds,
+        focus_edge_ids: sdlcGateEdgeIds
+      },
+      {
+        id: "stuck-work",
+        label: "What is stuck?",
+        prompt: "Find the first blocking or waiting state and its upstream/downstream context.",
+        lens: "operating-slice",
+        focus_node_ids: sdlcGateNodeIds,
+        focus_edge_ids: sdlcGateEdgeIds
+      },
+      {
+        id: "changed",
+        label: "What changed?",
+        prompt: "Show what this static package can and cannot say about change over time.",
+        lens: "topology",
+        focus_node_ids: ["view-manifest", "temporal-state-events", "operating-lens"],
+        focus_edge_ids: ["temporal-state-to-sdlc", "kg-to-view-manifest"]
+      },
+      {
+        id: "stale-evidence",
+        label: "What is stale?",
+        prompt: "Expose stale temporal evidence in scope and stale evidence hidden by the current projection.",
+        lens: "evidence-risk",
+        focus_node_ids: ["view-manifest", "temporal-state-events", "shacl-contracts", "prov-o"],
+        focus_edge_ids: ["kg-to-view-manifest", "shacl-to-view-manifest", "prov-to-view-manifest"]
+      },
+      {
+        id: "trust",
+        label: "What do I trust?",
+        prompt: "Summarize confidence, authority ceilings, candidate claims, and contradiction readiness.",
+        lens: "evidence-risk",
+        focus_node_ids: ["rdf-owl-kg", "prov-o", "shacl-contracts", "review-dossier"],
+        focus_edge_ids: ["kg-to-prov", "kg-to-shacl", "prov-to-review-dossier"]
+      },
+      {
+        id: "missing-context",
+        label: "What am I missing?",
+        prompt: "State what the active view hides and which conclusions the projection cannot support.",
+        lens: "topology",
+        focus_node_ids: ["operating-lens", "view-manifest", "rdf-owl-kg"],
+        focus_edge_ids: ["kg-to-view-manifest", "view-to-cytoscape"]
+      }
+    ];
+
+    const audienceModes = [
+      {
+        id: "operator",
+        label: "Operator",
+        emphasis: "diagnostic next action, trust calibration, and resumable investigation"
+      },
+      {
+        id: "newcomer",
+        label: "Newcomer",
+        emphasis: "plain-language meaning, glossary density, and why the view exists"
+      },
+      {
+        id: "collaborator",
+        label: "Collaborator",
+        emphasis: "interfaces, dependencies, evidence, and implementation handoff"
+      },
+      {
+        id: "reviewer",
+        label: "Reviewer / Auditor",
+        emphasis: "scope, provenance, confidence, validation, and what cannot be concluded"
+      },
+      {
+        id: "executive",
+        label: "Executive",
+        emphasis: "state, risk, decision points, and caveats without graph mechanics"
+      }
+    ];
+
+    const explanationPaths = [
+      {
+        id: "release-readiness",
+        label: "Release readiness path",
+        summary: "Teach how topology, state observations, review gates, PR/CI, and release closure relate without treating the graph as live authority.",
+        scenes: [
+          {
+            title: "Start from source-neutral identity",
+            lens: "topology",
+            selection: { group: "nodes", id: "rdf-owl-kg" },
+            takeaway: "The backbone names identities and relations; source models and telemetry are inputs, not the center.",
+            caveat: "This proves the model shape, not live operational truth."
+          },
+          {
+            title: "Separate topology from temporal state",
+            lens: "operating-slice",
+            selection: { group: "nodes", id: "temporal-state-events" },
+            takeaway: "State is carried by observations with time, source, freshness, and expiry instead of overwriting topology.",
+            caveat: "The fixture has only a small observation corpus and should not be read as a full history."
+          },
+          {
+            title: "Follow the gate path",
+            lens: "operating-slice",
+            selection: { group: "edges", id: "review-dossier-to-pr-ci" },
+            takeaway: "The path exposes how review state gates PR/CI readiness and downstream release closure.",
+            caveat: "Edge direction shows declared relation flow, not automatically causal proof."
+          },
+          {
+            title: "Read the trust basis",
+            lens: "evidence-risk",
+            selection: { group: "nodes", id: "prov-o" },
+            takeaway: "Claims and observations need provenance, confidence, authority ceiling, and validation before being trusted.",
+            caveat: "Generated confidence is an evidence cue, not independent acceptance."
+          },
+          {
+            title: "State what this does not prove",
+            lens: "evidence-risk",
+            selection: { group: "nodes", id: "view-manifest" },
+            takeaway: "Every focused view hides scope; shareable explanations must carry hidden counts and lossiness caveats.",
+            caveat: "A clear projection can still be misleading if hidden evidence or stale sources would change the conclusion."
+          }
+        ]
+      },
+      {
+        id: "evidence-trust",
+        label: "Evidence and trust path",
+        summary: "Explain how evidence, validation, provenance, stale observations, and claim confidence make the map auditable.",
+        scenes: [
+          {
+            title: "Claims are explicit records",
+            lens: "evidence-risk",
+            selection: { group: "nodes", id: "rdf-owl-kg" },
+            takeaway: "Rendered elements are backed by claim fragments with provenance and confidence basis.",
+            caveat: "A rendered node is not enough; inspect its claim and observation records."
+          },
+          {
+            title: "Validation precedes trust",
+            lens: "evidence-risk",
+            selection: { group: "nodes", id: "shacl-contracts" },
+            takeaway: "Schema and SHACL-style gates constrain whether the package is safe to interpret.",
+            caveat: "A passing render is weaker than a passing validation contract."
+          },
+          {
+            title: "Stale evidence remains visible",
+            lens: "evidence-risk",
+            selection: { group: "nodes", id: "view-manifest" },
+            takeaway: "The stale canary keeps expiry and hidden stale evidence legible.",
+            caveat: "This slice surfaces stale evidence; full snapshot diff is the next governed tranche."
+          }
+        ]
+      }
+    ];
 
     function className(value) {
       return String(value).toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
@@ -6666,6 +6946,364 @@
 
     function nodeLabel(id) {
       return seed.nodes.find((node) => node.id === id)?.label || id;
+    }
+
+    function edgeLabel(id) {
+      const edge = seed.edges.find((item) => item.id === id);
+      if (!edge) {
+        return id;
+      }
+      return `${nodeLabel(edge.source)} -> ${nodeLabel(edge.target)}`;
+    }
+
+    function activeInquiryData() {
+      return inquiryModes.find((mode) => mode.id === activeInquiryMode) || inquiryModes[0];
+    }
+
+    function activeAudienceData() {
+      return audienceModes.find((mode) => mode.id === activeAudienceMode) || audienceModes[0];
+    }
+
+    function activeExplanationData() {
+      return explanationPaths.find((path) => path.id === activeExplanationPath) || explanationPaths[0];
+    }
+
+    function activeExplanationScene() {
+      const path = activeExplanationData();
+      return path.scenes[Math.max(0, Math.min(activeExplanationStep, path.scenes.length - 1))];
+    }
+
+    function elementButtonHtml(group, id, label = null) {
+      const display = label || (group === "edges" ? edgeLabel(id) : nodeLabel(id));
+      return `<button type="button" class="compact-button" data-workbench-group="${escapeHtml(group)}" data-workbench-id="${escapeHtml(id)}">${escapeHtml(display)}</button>`;
+    }
+
+    function visibleElementScope() {
+      const nodeIds = Array.from(visibleNodeIds());
+      const edgeIds = Array.from(visibleEdgeIds());
+      return {
+        nodeIds,
+        edgeIds,
+        nodeSet: new Set(nodeIds),
+        edgeSet: new Set(edgeIds)
+      };
+    }
+
+    function scopedClaims(scope) {
+      return claims.filter((claim) => (
+        scope.nodeSet.has(claim.element_id)
+        || scope.edgeSet.has(claim.element_id)
+        || scope.nodeSet.has(claim.subject)
+        || scope.nodeSet.has(claim.object)
+      ));
+    }
+
+    function scopedStats() {
+      const scope = visibleElementScope();
+      const inScopeObservations = observations.filter((item) => scope.nodeSet.has(item.subject));
+      const hiddenObservations = observations.filter((item) => !scope.nodeSet.has(item.subject));
+      const inScopeClaims = scopedClaims(scope);
+      const weakClaims = inScopeClaims.filter((claim) => Number(claim.confidence_basis?.score ?? 1) < 0.85);
+      const candidateNodes = seed.nodes.filter((node) => scope.nodeSet.has(node.id) && node.status === "candidate");
+      const candidateEdges = seed.edges.filter((edge) => scope.edgeSet.has(edge.id) && edge.status === "candidate");
+      const contradictions = inScopeClaims.filter((claim) => claim.contradiction_state && claim.contradiction_state !== "none");
+      return {
+        ...scope,
+        observations: inScopeObservations,
+        staleObservations: inScopeObservations.filter((item) => item.freshness === "stale"),
+        hiddenStaleObservations: hiddenObservations.filter((item) => item.freshness === "stale"),
+        claims: inScopeClaims,
+        weakClaims,
+        candidateNodes,
+        candidateEdges,
+        contradictions
+      };
+    }
+
+    function currentStateFor(id) {
+      const rows = observationRows(id);
+      if (rows.length === 0) {
+        return null;
+      }
+      return rows.slice().sort((left, right) => String(right.observed_at).localeCompare(String(left.observed_at)))[0];
+    }
+
+    function gateStateRows() {
+      return sdlcGateNodeIds.map((id) => ({
+        id,
+        label: nodeLabel(id),
+        observation: currentStateFor(id)
+      }));
+    }
+
+    function firstNonReadyGate() {
+      const nonReadyStates = new Set(["pending", "not_open", "not_released", "blocked", "failed", "stale_fixture"]);
+      return gateStateRows().find((row) => nonReadyStates.has(row.observation?.state));
+    }
+
+    function lensScopeWarning(lens = activeLensData()) {
+      if (!lens) {
+        return "No lens contract is loaded, so hidden scope and projection lossiness cannot be assessed.";
+      }
+      const hiddenNodes = lens.hidden_node_ids?.length ?? 0;
+      const hiddenEdges = lens.hidden_edge_ids?.length ?? 0;
+      const aggregation = lens.aggregation || {};
+      if (hiddenNodes === 0 && hiddenEdges === 0 && !aggregation.lossy) {
+        return "This view is the full declared projection for the current package; filters and search can still hide context.";
+      }
+      return `${hiddenNodes} nodes and ${hiddenEdges} edges are outside this lens. Aggregation mode ${aggregation.mode || "unknown"} is marked lossy ${Boolean(aggregation.lossy)} and reversible ${Boolean(aggregation.reversible)}.`;
+    }
+
+    function buildInquirySummary() {
+      const mode = activeInquiryData();
+      const stats = scopedStats();
+      const lens = activeLensData();
+      const gateStop = firstNonReadyGate();
+      const relationPath = sdlcGateEdgeIds.map((id) => elementButtonHtml("edges", id)).join(" ");
+      const gateStates = gateStateRows().map((row) => `${row.label}: ${row.observation?.state || "no observation"}`).join(" / ");
+      const callouts = [];
+      const evidenceBasis = `${stats.observations.length} in-scope observations, ${stats.claims.length} claim fragments, ${stats.staleObservations.length} stale in scope, ${stats.hiddenStaleObservations.length} hidden stale.`;
+
+      if (mode.id === "release-gates" || mode.id === "stuck-work") {
+        if (gateStop) {
+          callouts.push({
+            level: "warning",
+            text: `First diagnostic stop: ${gateStop.label} is ${gateStop.observation?.state || "unknown"}.`
+          });
+        } else {
+          callouts.push({ level: "success", text: "No non-ready state is visible in the declared gate path." });
+        }
+        callouts.push({ level: "info", text: `Path states: ${gateStates}.` });
+        callouts.push({ level: "info", text: `Evidence basis: ${evidenceBasis}` });
+      } else if (mode.id === "changed") {
+        callouts.push({
+          level: "warning",
+          text: "No prior snapshot is loaded in this static package; this view cannot prove change by itself."
+        });
+        callouts.push({
+          level: "info",
+          text: "Current export contains source snapshot, visible scope, viewport, selection, and workbench state for a future diff package."
+        });
+        callouts.push({
+          level: "info",
+          text: "Next governed tranche: bitemporal snapshot registry, transition records, and package-to-package diff lens."
+        });
+      } else if (mode.id === "stale-evidence") {
+        callouts.push({
+          level: stats.staleObservations.length || stats.hiddenStaleObservations.length ? "warning" : "success",
+          text: `${stats.staleObservations.length} stale observations are visible; ${stats.hiddenStaleObservations.length} stale observations are hidden by the current scope.`
+        });
+        callouts.push({ level: "info", text: "Stale evidence is temporal evidence, not a topology overwrite." });
+      } else if (mode.id === "trust") {
+        callouts.push({
+          level: stats.weakClaims.length || stats.candidateNodes.length || stats.candidateEdges.length ? "warning" : "success",
+          text: `${stats.weakClaims.length} lower-confidence claims, ${stats.candidateNodes.length + stats.candidateEdges.length} candidate elements, ${stats.contradictions.length} contradiction records in scope.`
+        });
+        callouts.push({
+          level: "info",
+          text: "Authority ceiling, provenance, confidence basis, freshness, and validation status are evidence cues, not independent acceptance."
+        });
+      } else {
+        callouts.push({ level: "warning", text: lensScopeWarning(lens) });
+        callouts.push({
+          level: "info",
+          text: "Do not conclude absence from a focused view unless the lens declares that hidden scope cannot affect the question."
+        });
+      }
+
+      return {
+        mode,
+        stats,
+        relationPath,
+        evidenceBasis,
+        callouts,
+        focusNodeButtons: (mode.focus_node_ids || []).map((id) => elementButtonHtml("nodes", id)).join(" "),
+        focusEdgeButtons: (mode.focus_edge_ids || []).map((id) => elementButtonHtml("edges", id)).join(" ")
+      };
+    }
+
+    function currentWorkbenchPayload() {
+      const inquiry = buildInquirySummary();
+      const path = activeExplanationData();
+      const scene = activeExplanationScene();
+      const lens = activeLensData();
+      return {
+        schema: "system-dynamics-map-explanation-view-v1",
+        inquiry_mode: inquiry.mode.id,
+        inquiry_label: inquiry.mode.label,
+        audience_mode: activeAudienceMode,
+        audience_label: activeAudienceData().label,
+        explanation_path: path.id,
+        explanation_label: path.label,
+        explanation_step: activeExplanationStep,
+        scene_title: scene.title,
+        visible_counts: {
+          nodes: inquiry.stats.nodeIds.length,
+          edges: inquiry.stats.edgeIds.length
+        },
+        evidence_summary: {
+          observations: inquiry.stats.observations.length,
+          stale_observations: inquiry.stats.staleObservations.length,
+          hidden_stale_observations: inquiry.stats.hiddenStaleObservations.length,
+          claim_fragments: inquiry.stats.claims.length,
+          weak_claims: inquiry.stats.weakClaims.length,
+          candidate_elements: inquiry.stats.candidateNodes.length + inquiry.stats.candidateEdges.length,
+          contradictions: inquiry.stats.contradictions.length
+        },
+        scope_warning: lensScopeWarning(lens),
+        does_not_prove: scene.caveat
+      };
+    }
+
+    function renderWorkbenchControls() {
+      document.getElementById("inquiry-mode").innerHTML = inquiryModes.map((mode) => (
+        `<option value="${escapeHtml(mode.id)}">${escapeHtml(mode.label)}</option>`
+      )).join("");
+      document.getElementById("audience-mode").innerHTML = audienceModes.map((mode) => (
+        `<option value="${escapeHtml(mode.id)}">${escapeHtml(mode.label)}</option>`
+      )).join("");
+      document.getElementById("explanation-path").innerHTML = explanationPaths.map((path) => (
+        `<option value="${escapeHtml(path.id)}">${escapeHtml(path.label)}</option>`
+      )).join("");
+      document.getElementById("inquiry-mode").value = activeInquiryMode;
+      document.getElementById("audience-mode").value = activeAudienceMode;
+      document.getElementById("explanation-path").value = activeExplanationPath;
+    }
+
+    function renderWorkbenchReadout() {
+      const target = document.getElementById("workbench-readout");
+      if (!target || !seed) {
+        return;
+      }
+      const inquiry = buildInquirySummary();
+      const audience = activeAudienceData();
+      const path = activeExplanationData();
+      const scene = activeExplanationScene();
+      const sceneIndex = activeExplanationStep + 1;
+      target.innerHTML = `
+        <div class="workbench-heading">
+          <strong>${escapeHtml(inquiry.mode.label)}</strong>
+          <span class="pill">${escapeHtml(audience.label)}</span>
+        </div>
+        <p>${escapeHtml(inquiry.mode.prompt)}</p>
+        <ul class="callout-list">
+          ${inquiry.callouts.map((item) => `<li class="${escapeHtml(item.level)}">${escapeHtml(item.text)}</li>`).join("")}
+        </ul>
+        <div class="workbench-grid">
+          <div>
+            <p><strong>Relevant nodes</strong></p>
+            <div class="button-row">${inquiry.focusNodeButtons || "<span class=\"helper\">No focus nodes declared.</span>"}</div>
+          </div>
+          <div>
+            <p><strong>Relevant relations</strong></p>
+            <div class="button-row">${inquiry.focusEdgeButtons || inquiry.relationPath || "<span class=\"helper\">No focus relations declared.</span>"}</div>
+          </div>
+        </div>
+        <div class="section">
+          <h3>Explanation Scene ${escapeHtml(sceneIndex)} of ${escapeHtml(path.scenes.length)}</h3>
+          <p><strong>${escapeHtml(scene.title)}</strong> - ${escapeHtml(path.summary)}</p>
+          <ul class="callout-list">
+            <li class="success">${escapeHtml(scene.takeaway)}</li>
+            <li class="warning"><strong>What this does not prove:</strong> ${escapeHtml(scene.caveat)}</li>
+            <li>${escapeHtml(`Audience emphasis: ${audience.emphasis}.`)}</li>
+          </ul>
+          <div class="button-row">${elementButtonHtml(scene.selection.group, scene.selection.id, "Focus Scene Element")}</div>
+        </div>
+      `;
+    }
+
+    function renderCompanionReadout() {
+      const target = document.getElementById("companion-readout");
+      if (!target || !seed) {
+        return;
+      }
+      const scope = visibleElementScope();
+      const nodeRows = scope.nodeIds.slice(0, 8).map((id) => {
+        const node = seed.nodes.find((item) => item.id === id);
+        const observation = currentStateFor(id);
+        return `
+          <tr>
+            <td>${elementButtonHtml("nodes", id, node?.label || id)}</td>
+            <td>${escapeHtml(node?.kind || "node")}</td>
+            <td>${escapeHtml(observation?.state || "no observation")}</td>
+          </tr>
+        `;
+      }).join("");
+      const edgeRows = scope.edgeIds.slice(0, 6).map((id) => {
+        const edge = seed.edges.find((item) => item.id === id);
+        return `
+          <tr>
+            <td>${elementButtonHtml("edges", id, edgeLabel(id))}</td>
+            <td>${escapeHtml(edge ? relationLabel(edge.relation) : "relation")}</td>
+            <td>${escapeHtml(edge ? relationCategoryForEdge(edge) : "unknown")}</td>
+          </tr>
+        `;
+      }).join("");
+      target.innerHTML = `
+        <div class="workbench-heading">
+          <strong>Companion Readout</strong>
+          <span class="pill">${escapeHtml(scope.nodeIds.length)} nodes / ${escapeHtml(scope.edgeIds.length)} relations</span>
+        </div>
+        <p>Table view for the active projection. It gives a non-canvas path for scanning visible elements, state evidence, and relation categories.</p>
+        <table class="companion-table">
+          <thead><tr><th>Visible node</th><th>Kind</th><th>State</th></tr></thead>
+          <tbody>${nodeRows || "<tr><td colspan=\"3\">No visible nodes.</td></tr>"}</tbody>
+        </table>
+        <table class="companion-table">
+          <thead><tr><th>Visible relation</th><th>Relation</th><th>Category</th></tr></thead>
+          <tbody>${edgeRows || "<tr><td colspan=\"3\">No visible relations.</td></tr>"}</tbody>
+        </table>
+      `;
+    }
+
+    function focusWorkbenchElement(group, id) {
+      try {
+        if (group === "edges") {
+          focusEdge(id);
+        } else {
+          focusNode(id);
+        }
+      } catch {
+        showElementInTopology({ group, id });
+      }
+    }
+
+    function handleWorkbenchAction(event) {
+      const button = event.target.closest("[data-workbench-id]");
+      if (!button) {
+        return;
+      }
+      focusWorkbenchElement(button.dataset.workbenchGroup, button.dataset.workbenchId);
+    }
+
+    function applyInquiryMode(modeId, { adjustView = true } = {}) {
+      const mode = inquiryModes.find((item) => item.id === modeId) || activeInquiryData();
+      activeInquiryMode = mode.id;
+      document.getElementById("inquiry-mode").value = mode.id;
+      if (adjustView && cy) {
+        applyLens(mode.lens, { run: true });
+        const firstVisible = (mode.focus_node_ids || []).find((id) => {
+          const node = cy.$id(id);
+          return !node.empty() && !node.hasClass("hidden");
+        });
+        if (firstVisible) {
+          focusNode(firstVisible);
+        }
+      }
+      renderWorkbenchReadout();
+      renderCompanionReadout();
+    }
+
+    function applyExplanationScene(index, { adjustView = true } = {}) {
+      const path = activeExplanationData();
+      activeExplanationStep = Math.max(0, Math.min(index, path.scenes.length - 1));
+      const scene = activeExplanationScene();
+      if (adjustView && cy) {
+        applyLens(scene.lens || activeLens, { run: true });
+        focusWorkbenchElement(scene.selection.group, scene.selection.id);
+      }
+      renderWorkbenchReadout();
+      renderCompanionReadout();
     }
 
     function renderNodePanel(data) {
@@ -6999,6 +7637,8 @@
       const label = lens ? lens.label : activeLens;
       document.getElementById("state-summary").textContent = `${label} / ${scopedObservations.length} in-scope observations / ${staleScoped} stale in scope / ${staleGlobal} global stale`;
       renderLensSummary();
+      renderWorkbenchReadout();
+      renderCompanionReadout();
     }
 
     function focusNode(id) {
@@ -7292,6 +7932,8 @@
       reconcileSelectedElement();
       renderFinderResults(search);
       updateStateSummary();
+      renderWorkbenchReadout();
+      renderCompanionReadout();
     }
 
     function updateEdgeLabelState() {
@@ -7805,6 +8447,7 @@
       renderCheckboxes();
       renderRelationCategoryFilters();
       renderLensControls();
+      renderWorkbenchControls();
       renderLegend();
       renderEncodingLegend();
       applyLens(activeLens, { run: false });
@@ -7851,7 +8494,8 @@
             pan: cy.pan()
           },
           edge_labels_visible: edgeLabelsVisible,
-          selected: visibleSelectedElement()
+          selected: visibleSelectedElement(),
+          workbench: currentWorkbenchPayload()
         };
       }
 
@@ -7880,8 +8524,14 @@
       window.systemDynamicsMapRuntime = {
         activeLens: () => activeLens,
         activeLayout: () => activeLayout,
+        activeAudienceMode: () => activeAudienceMode,
+        activeExplanationScene: () => activeExplanationScene(),
+        activeInquiryMode: () => activeInquiryMode,
         applyLens,
+        applyInquiryMode,
+        applyExplanationScene,
         currentViewPayload,
+        currentWorkbenchPayload,
         directedLayoutRootId: () => layoutOptions("breadthfirst").roots.id(),
         layoutAnimationEnabled: () => layoutOptions(activeLayout).animate,
         lensIds: () => lenses.lenses.map((lens) => lens.id),
@@ -7908,6 +8558,8 @@
             }];
           })
         ),
+        explanationPathIds: () => explanationPaths.map((path) => path.id),
+        inquiryModeIds: () => inquiryModes.map((mode) => mode.id),
         searchResults: () => activeSearchResults,
         selectEdge: focusEdge,
         selectedElementCount,
@@ -7951,6 +8603,24 @@
       document.getElementById("lens").addEventListener("change", (event) => {
         applyLens(event.target.value);
       });
+      document.getElementById("inquiry-mode").addEventListener("change", (event) => {
+        applyInquiryMode(event.target.value);
+      });
+      document.getElementById("audience-mode").addEventListener("change", (event) => {
+        activeAudienceMode = event.target.value;
+        renderWorkbenchReadout();
+      });
+      document.getElementById("explanation-path").addEventListener("change", (event) => {
+        activeExplanationPath = event.target.value;
+        activeExplanationStep = 0;
+        applyExplanationScene(0);
+      });
+      document.getElementById("previous-scene").addEventListener("click", () => {
+        applyExplanationScene(activeExplanationStep - 1);
+      });
+      document.getElementById("next-scene").addEventListener("click", () => {
+        applyExplanationScene(activeExplanationStep + 1);
+      });
       document.querySelectorAll("input[data-filter]").forEach((input) => {
         input.addEventListener("change", () => {
           applyFilters();
@@ -7981,6 +8651,8 @@
         setActionStatus(edgeLabelsVisible ? "Edge labels shown." : "Edge labels hidden.", "info");
       });
       document.getElementById("panel").addEventListener("click", handlePanelAction);
+      document.getElementById("workbench-readout").addEventListener("click", handleWorkbenchAction);
+      document.getElementById("companion-readout").addEventListener("click", handleWorkbenchAction);
       document.getElementById("cy").addEventListener("keydown", handleGraphKeydown);
       document.getElementById("copy-view").addEventListener("click", async () => {
         const payload = JSON.stringify(currentViewPayload(), null, 2);
@@ -7990,6 +8662,16 @@
         } catch {
           downloadText("system-dynamics-current-view.json", payload, "application/json");
           setActionStatus("Clipboard unavailable; current view JSON downloaded.", "warning");
+        }
+      });
+      document.getElementById("copy-explanation").addEventListener("click", async () => {
+        const payload = JSON.stringify(currentWorkbenchPayload(), null, 2);
+        try {
+          await navigator.clipboard.writeText(payload);
+          setActionStatus("Explanation JSON copied to clipboard.", "success");
+        } catch {
+          downloadText("system-dynamics-explanation-view.json", payload, "application/json");
+          setActionStatus("Clipboard unavailable; explanation JSON downloaded.", "warning");
         }
       });
       document.getElementById("export-png").addEventListener("click", () => {
@@ -8028,6 +8710,8 @@
 
       renderInitialPanel();
       applyFilters();
+      renderWorkbenchReadout();
+      renderCompanionReadout();
       updateEdgeLabelState();
       cy.ready(() => {
         setTimeout(fitVisibleGraph, 80);

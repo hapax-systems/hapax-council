@@ -127,6 +127,7 @@ VIEW_MANIFEST_REQUIRED = [
     "source_snapshot",
     "default_projection",
     "claim_contract",
+    "workbench_contract",
     "lenses",
     "validation",
     "provenance",
@@ -450,6 +451,116 @@ def generate_sdlc_fixture(seed: dict[str, Any]) -> dict[str, Any]:
                 "role": "closure",
                 "source_ref": "https://github.com/hapax-systems/hapax-council/commit/1522faae8212ddbc63da64140a12f86117f30c2d",
             },
+        ],
+    }
+
+
+def generate_workbench_contract(seed: dict[str, Any]) -> dict[str, Any]:
+    _ = seed
+    return {
+        "schema": "system-dynamics-map-workbench-contract-v1",
+        "purpose": (
+            "Question-first sensemaking and explanation contract for rendering topology, "
+            "state, evidence, projection scope, and trust caveats without centering any "
+            "single source notation."
+        ),
+        "inquiry_modes": [
+            {
+                "id": "release-gates",
+                "label": "What gates release?",
+                "answer_shape": [
+                    "ordered gate path",
+                    "first non-ready state",
+                    "evidence basis",
+                    "scope caveat",
+                ],
+            },
+            {
+                "id": "stuck-work",
+                "label": "What is stuck?",
+                "answer_shape": [
+                    "first waiting or blocking state",
+                    "upstream context",
+                    "downstream consequence",
+                    "supporting observation",
+                ],
+            },
+            {
+                "id": "changed",
+                "label": "What changed?",
+                "answer_shape": [
+                    "snapshot identity",
+                    "prior snapshot requirement",
+                    "current export basis",
+                    "diff-tranche caveat",
+                ],
+            },
+            {
+                "id": "stale-evidence",
+                "label": "What is stale?",
+                "answer_shape": [
+                    "visible stale evidence",
+                    "hidden stale evidence",
+                    "expiry basis",
+                    "state/topology separation",
+                ],
+            },
+            {
+                "id": "trust",
+                "label": "What do I trust?",
+                "answer_shape": [
+                    "confidence basis",
+                    "authority ceiling",
+                    "candidate elements",
+                    "contradiction readiness",
+                ],
+            },
+            {
+                "id": "missing-context",
+                "label": "What am I missing?",
+                "answer_shape": [
+                    "hidden nodes",
+                    "hidden edges",
+                    "aggregation/lossiness",
+                    "invalid conclusions",
+                ],
+            },
+        ],
+        "audience_modes": [
+            "operator",
+            "newcomer",
+            "collaborator",
+            "reviewer",
+            "executive",
+        ],
+        "explanation_paths": [
+            {
+                "id": "release-readiness",
+                "scene_count": 5,
+                "must_include": [
+                    "source-neutral identity",
+                    "temporal state separation",
+                    "gate path",
+                    "trust basis",
+                    "what this does not prove",
+                ],
+            },
+            {
+                "id": "evidence-trust",
+                "scene_count": 3,
+                "must_include": [
+                    "explicit claim records",
+                    "validation before trust",
+                    "stale evidence visibility",
+                ],
+            },
+        ],
+        "follow_on_tranches": [
+            "bitemporal snapshot registry and diff lens",
+            "causality, guard, evidence, correlation, containment, and projection relation semantics",
+            "uncertainty classes, contradiction groups, competing evidence, and confidence basis categories",
+            "source adapter provenance chains and verification receipts",
+            "visible invariant registry and aggregation/lossiness ledger",
         ],
     }
 
@@ -1032,6 +1143,50 @@ def generate_schema_artifacts() -> dict[Path, str]:
             "type": "object",
             "required": ["claim_count", "claims", "observation_count", "relation_count"],
         },
+        "workbench_contract": {
+            "type": "object",
+            "required": [
+                "schema",
+                "purpose",
+                "inquiry_modes",
+                "audience_modes",
+                "explanation_paths",
+                "follow_on_tranches",
+            ],
+            "additionalProperties": True,
+            "properties": {
+                "schema": {
+                    "type": "string",
+                    "const": "system-dynamics-map-workbench-contract-v1",
+                },
+                "purpose": {"type": "string", "minLength": 1},
+                "inquiry_modes": {
+                    "type": "array",
+                    "minItems": 6,
+                    "items": {
+                        "type": "object",
+                        "required": ["id", "label", "answer_shape"],
+                        "additionalProperties": True,
+                        "properties": {
+                            "id": {"type": "string", "minLength": 1},
+                            "label": {"type": "string", "minLength": 1},
+                            "answer_shape": _string_array_schema(),
+                        },
+                    },
+                },
+                "audience_modes": _string_array_schema(),
+                "explanation_paths": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "required": ["id", "scene_count", "must_include"],
+                        "additionalProperties": True,
+                    },
+                },
+                "follow_on_tranches": _string_array_schema(),
+            },
+        },
         "validation": {
             "type": "object",
             "required": ["pytest", "browser", "package_gate"],
@@ -1401,6 +1556,7 @@ def generate_manifest(seed: dict[str, Any]) -> str:
             "observation_count": len(generate_observations(seed)),
             "relation_count": len(generate_relation_vocabulary(seed)["relations"]),
         },
+        "workbench_contract": generate_workbench_contract(seed),
         "default_projection": {
             "viewer": "system-dynamics-map-viewer.html",
             "runtime_asset": "vendor/cytoscape-3.34.0.min.js",

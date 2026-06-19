@@ -267,6 +267,82 @@
     "version": {
       "minLength": 1,
       "type": "string"
+    },
+    "workbench_contract": {
+      "additionalProperties": true,
+      "properties": {
+        "audience_modes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "explanation_paths": {
+          "items": {
+            "additionalProperties": true,
+            "required": [
+              "id",
+              "scene_count",
+              "must_include"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "follow_on_tranches": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "inquiry_modes": {
+          "items": {
+            "additionalProperties": true,
+            "properties": {
+              "answer_shape": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "label",
+              "answer_shape"
+            ],
+            "type": "object"
+          },
+          "minItems": 6,
+          "type": "array"
+        },
+        "purpose": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "schema": {
+          "const": "system-dynamics-map-workbench-contract-v1",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "purpose",
+        "inquiry_modes",
+        "audience_modes",
+        "explanation_paths",
+        "follow_on_tranches"
+      ],
+      "type": "object"
     }
   },
   "required": [
@@ -276,6 +352,7 @@
     "source_snapshot",
     "default_projection",
     "claim_contract",
+    "workbench_contract",
     "lenses",
     "validation",
     "provenance"

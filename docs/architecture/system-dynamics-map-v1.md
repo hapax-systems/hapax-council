@@ -242,6 +242,48 @@ The viewer tests also cover direct file-open supplemental data, lens-scoped
 freshness, relation-vocabulary detail panels, finder-driven keyboard selection,
 current-view export payloads, ARIA layout state, and reduced-motion behavior.
 
+## V2 Sensemaking Workbench Slice
+
+The viewer now treats question-first sensemaking and explanation as part of the
+projection contract. The map still renders source-neutral topology, state,
+evidence, projection, and governance; it does not make any notation the center.
+
+The v2 workbench layer adds:
+
+- inquiry modes for recurring operator questions: what gates release, what is
+  stuck, what changed, what is stale, what is trustworthy, and what context is
+  missing;
+- synthesized readouts that derive from visible topology, relation paths,
+  claim fragments, observations, stale evidence, hidden scope, and lens
+  aggregation metadata;
+- audience modes for operator, newcomer, collaborator, reviewer/auditor, and
+  executive explanations without changing graph truth;
+- guided explanation paths with scene-level focus, takeaway, and an explicit
+  "what this does not prove" warning;
+- an explanation export payload embedded in the current-view export, carrying
+  inquiry mode, audience mode, explanation path, scene, visible counts,
+  evidence summary, scope warning, and caveats;
+- a non-canvas companion readout for visible nodes, states, relations, and
+  relation categories.
+
+This remains a static-file viewer. The workbench is intentionally derived from
+the existing seed, claims, observations, relation vocabulary, lenses, and
+manifest metadata. It is not a second source of truth.
+
+The generated `system-dynamics-map.view-manifest.json` declares a
+`workbench_contract` so inquiry modes, audience modes, explanation paths, and
+follow-on tranches are package-level metadata rather than untracked UI prose.
+
+The major platform work still belongs in separate governed tranches:
+
+- bitemporal snapshot registry and diff lens;
+- causality, guard, evidence, correlation, containment, and projection relation
+  semantics that are distinct from edge direction;
+- uncertainty classes, contradiction groups, competing evidence, and confidence
+  basis categories;
+- source adapter provenance chains and verification receipts;
+- visible invariant registry and aggregation/lossiness ledger.
+
 ## Recheck Commands
 
 Run these from `~/projects/hapax-council` after changing the seed graph or viewer:

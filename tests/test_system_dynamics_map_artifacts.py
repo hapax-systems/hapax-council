@@ -644,6 +644,7 @@ def test_generated_schemas_validate_artifacts_and_reject_bad_shapes():
     bad_manifest["default_projection"] = {}
     bad_manifest["provenance"] = {}
     bad_manifest.pop("claim_contract")
+    bad_manifest.pop("workbench_contract")
     bad_manifest.pop("lenses")
     bad_manifest.pop("validation")
     manifest_errors = "\n".join(_schema_errors(bad_manifest, view_manifest_schema))
@@ -651,6 +652,7 @@ def test_generated_schemas_validate_artifacts_and_reject_bad_shapes():
     assert "visible_node_ids" in manifest_errors
     assert "hidden_node_ids" in manifest_errors
     assert "claim_contract" in manifest_errors
+    assert "workbench_contract" in manifest_errors
     assert "lenses" in manifest_errors
     assert "validation" in manifest_errors
     assert "generated" in manifest_errors
@@ -895,6 +897,31 @@ def test_shacl_shapes_and_view_manifest_cover_the_durable_contract():
         "observation_count": len(_load_observations()),
         "relation_count": len(json.loads(RELATIONS_PATH.read_text(encoding="utf-8"))["relations"]),
     }
+    workbench = manifest["workbench_contract"]
+    assert workbench["schema"] == "system-dynamics-map-workbench-contract-v1"
+    assert "source notation" in workbench["purpose"]
+    assert {mode["id"] for mode in workbench["inquiry_modes"]} == {
+        "release-gates",
+        "stuck-work",
+        "changed",
+        "stale-evidence",
+        "trust",
+        "missing-context",
+    }
+    assert workbench["audience_modes"] == [
+        "operator",
+        "newcomer",
+        "collaborator",
+        "reviewer",
+        "executive",
+    ]
+    assert {path["id"] for path in workbench["explanation_paths"]} == {
+        "release-readiness",
+        "evidence-trust",
+    }
+    assert any("bitemporal snapshot" in item for item in workbench["follow_on_tranches"])
+    assert any("causality" in item for item in workbench["follow_on_tranches"])
+    assert any("contradiction groups" in item for item in workbench["follow_on_tranches"])
     assert manifest["default_projection"]["default_focus"] == seed["default_focus"]
     assert manifest["default_projection"]["lens"] == "topology"
     assert manifest["default_projection"]["runtime_asset"] == "vendor/cytoscape-3.34.0.min.js"

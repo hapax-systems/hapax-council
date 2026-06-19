@@ -205,5 +205,107 @@
     "package_gate": "scripts/system-dynamics-map-gate",
     "pytest": "uv run pytest tests/test_system_dynamics_map_artifacts.py"
   },
-  "version": "1.0.0"
+  "version": "1.0.0",
+  "workbench_contract": {
+    "audience_modes": [
+      "operator",
+      "newcomer",
+      "collaborator",
+      "reviewer",
+      "executive"
+    ],
+    "explanation_paths": [
+      {
+        "id": "release-readiness",
+        "must_include": [
+          "source-neutral identity",
+          "temporal state separation",
+          "gate path",
+          "trust basis",
+          "what this does not prove"
+        ],
+        "scene_count": 5
+      },
+      {
+        "id": "evidence-trust",
+        "must_include": [
+          "explicit claim records",
+          "validation before trust",
+          "stale evidence visibility"
+        ],
+        "scene_count": 3
+      }
+    ],
+    "follow_on_tranches": [
+      "bitemporal snapshot registry and diff lens",
+      "causality, guard, evidence, correlation, containment, and projection relation semantics",
+      "uncertainty classes, contradiction groups, competing evidence, and confidence basis categories",
+      "source adapter provenance chains and verification receipts",
+      "visible invariant registry and aggregation/lossiness ledger"
+    ],
+    "inquiry_modes": [
+      {
+        "answer_shape": [
+          "ordered gate path",
+          "first non-ready state",
+          "evidence basis",
+          "scope caveat"
+        ],
+        "id": "release-gates",
+        "label": "What gates release?"
+      },
+      {
+        "answer_shape": [
+          "first waiting or blocking state",
+          "upstream context",
+          "downstream consequence",
+          "supporting observation"
+        ],
+        "id": "stuck-work",
+        "label": "What is stuck?"
+      },
+      {
+        "answer_shape": [
+          "snapshot identity",
+          "prior snapshot requirement",
+          "current export basis",
+          "diff-tranche caveat"
+        ],
+        "id": "changed",
+        "label": "What changed?"
+      },
+      {
+        "answer_shape": [
+          "visible stale evidence",
+          "hidden stale evidence",
+          "expiry basis",
+          "state/topology separation"
+        ],
+        "id": "stale-evidence",
+        "label": "What is stale?"
+      },
+      {
+        "answer_shape": [
+          "confidence basis",
+          "authority ceiling",
+          "candidate elements",
+          "contradiction readiness"
+        ],
+        "id": "trust",
+        "label": "What do I trust?"
+      },
+      {
+        "answer_shape": [
+          "hidden nodes",
+          "hidden edges",
+          "aggregation/lossiness",
+          "invalid conclusions"
+        ],
+        "id": "missing-context",
+        "label": "What am I missing?"
+      }
+    ],
+    "purpose": "Question-first sensemaking and explanation contract for rendering topology, state, evidence, projection scope, and trust caveats without centering any single source notation.",
+    "schema": "system-dynamics-map-workbench-contract-v1"
+  }
 }
