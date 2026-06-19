@@ -150,6 +150,52 @@ def test_cli_writes_shadow_catalog_json(tmp_path: Path, monkeypatch) -> None:
     assert catalog.is_file()
 
 
+def test_cli_catalog_text_output_reports_failure_next_action(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_source(source_root / "tasks" / "missing-route.md", include_route_metadata=False)
+    export_result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            str(source),
+            "--bundle-id",
+            "gap-bundle",
+            "--source-root",
+            str(source_root),
+            "--source-root-id",
+            "repo:test",
+            "--generated-at",
+            GENERATED_AT,
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert export_result.returncode == 0, export_result.stderr
+
+    catalog_result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--catalog",
+            "--generated-at",
+            GENERATED_AT,
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert catalog_result.returncode == 1
+    assert "FAIL " in catalog_result.stdout
+    assert "bundles\t1" in catalog_result.stdout
+    assert "findings\t" in catalog_result.stdout
+    assert "next-action\tinspect catalog findings and regenerate invalid bundles" in (
+        catalog_result.stdout
+    )
+
+
 def test_cli_value_error_formatter_adds_fallback_next_action() -> None:
     module = runpy.run_path(str(SCRIPT))
     format_value_error = module["_format_value_error"]
@@ -161,20 +207,25 @@ def test_cli_value_error_formatter_adds_fallback_next_action() -> None:
     )
 
 
-def _write_source(path: Path) -> Path:
+def _write_source(path: Path, *, include_route_metadata: bool = True) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     frontmatter = {
         "type": "cc-task",
         "task_id": "demo-task",
         "title": "Demo task",
         "status": "done",
-        "authority_case": "CASE-SDLC-REFORM-001",
-        "parent_spec": "/redacted/spec.md",
-        "route_metadata_schema": 1,
-        "quality_floor": "frontier_required",
-        "mutation_surface": "source",
-        "authority_level": "authoritative",
     }
+    if include_route_metadata:
+        frontmatter.update(
+            {
+                "authority_case": "CASE-SDLC-REFORM-001",
+                "parent_spec": "/redacted/spec.md",
+                "route_metadata_schema": 1,
+                "quality_floor": "frontier_required",
+                "mutation_surface": "source",
+                "authority_level": "authoritative",
+            }
+        )
     path.write_text(
         "---\n" + yaml.safe_dump(frontmatter, sort_keys=False) + "---\n\n# Demo\n",
         encoding="utf-8",

@@ -499,6 +499,78 @@ def test_exporter_rolls_back_existing_bundle_when_replace_fails(
     assert not (result.bundle_path.parent / ".demo-bundle.previous").exists()
 
 
+def test_exporter_reports_secondary_rollback_failure(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    result = export_shadow_bundle(
+        [source],
+        bundle_id="demo-bundle",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+    original_replace = Path.replace
+
+    def fail_tmp_and_backup_replace(self: Path, target: Path | str) -> Path:
+        target_path = Path(target)
+        if self.name == ".demo-bundle.tmp" and target_path.name == "demo-bundle":
+            raise OSError("forced replace failure")
+        if self.name == ".demo-bundle.previous" and target_path.name == "demo-bundle":
+            raise OSError("forced rollback failure")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_tmp_and_backup_replace)
+
+    with pytest.raises(ValueError) as exc_info:
+        export_shadow_bundle(
+            [source],
+            bundle_id="demo-bundle",
+            source_root=source_root,
+            source_root_id="repo:test",
+            generated_at="2026-06-18T20:04:41Z",
+        )
+
+    message = str(exc_info.value)
+    assert "rollback failed" in message
+    assert "forced replace failure" in message
+    assert "forced rollback failure" in message
+    assert "next-action" in message
+    assert not (result.bundle_path.parent / ".demo-bundle.tmp").exists()
+    assert (result.bundle_path.parent / ".demo-bundle.previous").is_dir()
+
+
+def test_exporter_cleans_index_temp_when_atomic_index_replace_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    original_replace = Path.replace
+
+    def fail_index_tmp_replace(self: Path, target: Path | str) -> Path:
+        target_path = Path(target)
+        if self.name == ".demo-bundle.jsonl.tmp" and target_path.name == "demo-bundle.jsonl":
+            raise OSError("forced index replace failure")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_index_tmp_replace)
+
+    with pytest.raises(ValueError) as exc_info:
+        export_shadow_bundle(
+            [source],
+            bundle_id="demo-bundle",
+            source_root=source_root,
+            source_root_id="repo:test",
+            generated_at=GENERATED_AT,
+        )
+
+    assert "failed to write HKP derived index atomically" in str(exc_info.value)
+    assert "next-action" in str(exc_info.value)
+    index_root = tmp_path / "home" / ".cache" / "hapax" / "hkp-shadow-index"
+    assert not (index_root / ".demo-bundle.jsonl.tmp").exists()
+
+
 def test_manifest_and_checksums_are_excluded_from_tree_hash(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     source_root = tmp_path / "repo"

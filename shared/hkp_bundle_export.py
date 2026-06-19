@@ -1014,15 +1014,25 @@ def _replace_cache_directory(
             backup_created = True
         tmp_path.replace(target_path)
     except Exception as exc:
+        rollback_error: Exception | None = None
         if backup_created:
-            _restore_cache_backup(
-                target_path,
-                backup_path,
-                label=label,
-                trusted_root=trusted_root,
-            )
+            try:
+                _restore_cache_backup(
+                    target_path,
+                    backup_path,
+                    label=label,
+                    trusted_root=trusted_root,
+                )
+            except Exception as restore_exc:
+                rollback_error = restore_exc
         if tmp_path.exists():
             _remove_cache_path(tmp_path, f"{label} temporary path", trusted_root=trusted_root)
+        if rollback_error is not None:
+            raise ValueError(
+                f"failed to replace {label} atomically and rollback failed: {rollback_error}; "
+                f"original error: {exc}; next-action: inspect {target_path} and {backup_path}, "
+                "restore the backup manually if needed, then rerun HKP export"
+            ) from rollback_error
         if isinstance(exc, ValueError):
             raise
         raise ValueError(
