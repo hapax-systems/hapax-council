@@ -6468,17 +6468,22 @@
       banner.textContent = dataHealthMessages.join(" ");
     }
 
-    function setActionStatus(message, variant = "info", html = "") {
+    function setActionStatus(message, variant = "info") {
       const notice = document.getElementById("action-status");
       if (!notice) {
         return;
       }
       notice.className = `notice ${variant} active`;
-      if (html) {
-        notice.innerHTML = html;
-      } else {
-        notice.textContent = message;
+      notice.textContent = message;
+    }
+
+    function setActionStatusContent(variant, ...children) {
+      const notice = document.getElementById("action-status");
+      if (!notice) {
+        return;
       }
+      notice.className = `notice ${variant} active`;
+      notice.replaceChildren(...children);
     }
 
     function clearActionStatus() {
@@ -6784,7 +6789,7 @@
         <div class="legend-item"><span class="swatch" style="border-color: ${freshColor}; border-width: 3px;"></span><span>Teal ring: element has fresh temporal evidence</span></div>
         <div class="legend-item"><span class="swatch" style="border-color: ${staleColor}; border-width: 3px;"></span><span>Red ring: element has stale temporal evidence</span></div>
         <div class="legend-item"><span class="swatch line"></span><span>Edge width: relation confidence</span></div>
-        <p>Edge labels appear on hover or selection; relation semantics remain in the details panel.</p>
+        <p>Edge labels appear on hover, selection, or when Edge Labels is enabled. Relation categories add line cues: dashed governance, dotted observational, vee execution arrows, and diamond projection arrows.</p>
       `;
     }
 
@@ -6917,17 +6922,20 @@
     function renderHiddenSelectionNotice(selection) {
       lastHiddenSelection = selection;
       const label = elementDisplayLabel(selection);
-      setActionStatus(
-        `${label} hidden by the active view or filters; details reset.`,
-        "warning",
-        `
-          <span>${escapeHtml(label)} hidden by the active view or filters; details reset.</span>
-          <button type="button" id="show-hidden-selection">Show in Topology</button>
-          <button type="button" id="dismiss-action-status">Dismiss</button>
-        `
-      );
-      document.getElementById("show-hidden-selection")?.addEventListener("click", () => showElementInTopology(lastHiddenSelection));
-      document.getElementById("dismiss-action-status")?.addEventListener("click", clearActionStatus);
+      const message = `${label} hidden by the active view or filters; details reset.`;
+      const text = document.createElement("span");
+      const show = document.createElement("button");
+      const dismiss = document.createElement("button");
+      text.textContent = message;
+      show.type = "button";
+      show.id = "show-hidden-selection";
+      show.textContent = "Show in Topology";
+      dismiss.type = "button";
+      dismiss.id = "dismiss-action-status";
+      dismiss.textContent = "Dismiss";
+      show.addEventListener("click", () => showElementInTopology(lastHiddenSelection));
+      dismiss.addEventListener("click", clearActionStatus);
+      setActionStatusContent("warning", text, show, dismiss);
     }
 
     function reconcileSelectedElement() {
@@ -7032,21 +7040,21 @@
       const visibleEdges = cy.edges().filter((edge) => !edge.hasClass("hidden"));
       const allNodeMatches = cy.nodes().filter((node) => search && elementText(node.data()).includes(search));
       const allEdgeMatches = cy.edges().filter((edge) => search && elementText(edge.data()).includes(search));
-      const visibleNodeItems = visibleNodes.map((node) => ({
+      const visibleNodeItems = visibleNodes.filter((node) => elementText(node.data()).includes(search)).map((node) => ({
         group: "nodes",
         id: node.id(),
         label: node.data("label"),
         meta: `${node.data("kind")} / ${node.data("layer")}`,
         hidden: false,
-        rank: search && elementText(node.data()).includes(search) ? 0 : 2
+        rank: 0
       }));
-      const visibleEdgeItems = visibleEdges.map((edge) => ({
+      const visibleEdgeItems = visibleEdges.filter((edge) => elementText(edge.data()).includes(search)).map((edge) => ({
         group: "edges",
         id: edge.id(),
         label: relationLabel(edge.data("relation")),
         meta: `${edge.source().data("label")} -> ${edge.target().data("label")}`,
         hidden: false,
-        rank: search && elementText(edge.data()).includes(search) ? 0 : 1
+        rank: 0
       }));
       if (!search) {
         activeSearchResults = [];
@@ -7059,10 +7067,10 @@
         return;
       }
       const resultLimit = search ? 12 : 4;
-      const visibleItems = [...visibleNodeItems, ...visibleEdgeItems]
+      const visibleMatches = [...visibleNodeItems, ...visibleEdgeItems]
         .sort((left, right) => left.rank - right.rank || left.label.localeCompare(right.label))
-        .slice(0, resultLimit);
-      const hiddenItems = [
+      const visibleItems = visibleMatches.slice(0, resultLimit);
+      const hiddenMatches = [
         ...allNodeMatches.filter((node) => node.hasClass("hidden")).map((node) => ({
           group: "nodes",
           id: node.id(),
@@ -7079,7 +7087,8 @@
           hidden: true,
           rank: 0
         }))
-      ].sort((left, right) => left.label.localeCompare(right.label)).slice(0, 8);
+      ].sort((left, right) => left.label.localeCompare(right.label));
+      const hiddenItems = hiddenMatches.slice(0, 8);
       const items = [...visibleItems, ...hiddenItems];
       activeSearchResults = items;
       activeSearchIndex = items.length > 0 ? Math.max(0, Math.min(activeSearchIndex, items.length - 1)) : -1;
@@ -7093,11 +7102,12 @@
         document.getElementById("reset-filters").addEventListener("click", resetToTopology);
         return;
       }
-      const heading = `${visibleItems.length} visible matches`;
-      const hiddenHeading = `${hiddenItems.length} hidden by current view or filters`;
+      const totalMatches = visibleMatches.length + hiddenMatches.length;
+      const heading = `${visibleMatches.length} visible matches`;
+      const hiddenHeading = `${hiddenMatches.length} hidden by current view or filters`;
       live.textContent = `${heading}; ${hiddenHeading}. Use arrow keys to move through results and Enter to select or reveal.`;
       resultBox.innerHTML = `
-        <p>${escapeHtml(heading)}. ${escapeHtml(hiddenHeading)}. Showing ${escapeHtml(items.length)} keyboard-selectable results.</p>
+        <p>${escapeHtml(heading)}. ${escapeHtml(hiddenHeading)}. Showing ${escapeHtml(items.length)} of ${escapeHtml(totalMatches)} keyboard-selectable matches.</p>
         <ul class="result-list" aria-label="Element result choices">
           ${items.map((item, index) => `
             <li>
@@ -7191,6 +7201,7 @@
       const layers = checkedValues("layer");
       const statuses = checkedValues("status");
       const relationCategories = checkedValues("relation");
+      const relationFilterCount = document.querySelectorAll('input[data-filter="relation"]').length;
       activeRelationCategories = relationCategories;
       const lens = activeLensData();
       const lensNodeIds = new Set(lens?.visible_node_ids || []);
@@ -7224,7 +7235,7 @@
         const relationCategory = relationCategoryForEdge(data);
         const baseVisible = layers.has(data.layer)
           && statuses.has(data.status)
-          && (relationCategories.size === 0 || relationCategories.has(relationCategory))
+          && (relationFilterCount === 0 || relationCategories.has(relationCategory))
           && Number(data.resolution) <= maxResolution
           && (lensEdgeIds.size === 0 || lensEdgeIds.has(data.id))
           && nodeBaseVisibility.get(data.source)

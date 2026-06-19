@@ -93,11 +93,17 @@ def test_system_dynamics_viewer_core_interactions():
             Object.defineProperty(navigator, "clipboard", {
               value: {
                 writeText: async (text) => {
+                  if (window.__rejectClipboard) {
+                    throw new Error("clipboard blocked by test");
+                  }
+                  window.__clipboardWrites.push(text);
                   window.__copiedViewJson = text;
                 }
               },
               configurable: true
             });
+            window.__clipboardWrites = [];
+            window.__rejectClipboard = false;
             window.__downloadClicks = [];
             HTMLAnchorElement.prototype.click = function () {
               window.__downloadClicks.push({
@@ -181,6 +187,26 @@ def test_system_dynamics_viewer_core_interactions():
                 "Fix by recomputing visible edge state from the explicit visible node set."
             )
 
+            page.get_by_label("Search").fill("a")
+            result_summary = page.locator("#search-results > p").inner_text()
+            result_match = re.search(
+                r"(\d+) visible matches\. (\d+) hidden by current view or filters\. "
+                r"Showing (\d+) of (\d+) keyboard-selectable matches\.",
+                result_summary,
+            )
+            assert result_match, (
+                "search result summary did not expose visible, hidden, shown, and total counts."
+            )
+            assert int(result_match.group(3)) < int(result_match.group(4)), (
+                "broad search summary reported capped result count as the total match count. "
+                "Fix by computing headings before slicing rendered search results."
+            )
+            assert (
+                f"{result_match.group(1)} visible matches; "
+                f"{result_match.group(2)} hidden by current view or filters"
+                in page.locator("#search-live").inner_text()
+            )
+
             page.get_by_label("Search").fill("model")
             second_search_result = page.locator("#search-results [data-result-id]").nth(1)
             second_result_id = second_search_result.get_attribute("data-result-id")
@@ -230,6 +256,35 @@ def test_system_dynamics_viewer_core_interactions():
             page.locator('input[data-filter="relation"][value="governance"]').uncheck()
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().edges < 42")
             page.locator('input[data-filter="relation"][value="governance"]').check()
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().edges === 42")
+            page.evaluate(
+                """
+                document.querySelectorAll('input[data-filter="relation"]').forEach((input) => {
+                  if (input.checked) {
+                    input.click();
+                  }
+                });
+                """
+            )
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().edges === 0")
+            assert (
+                page.evaluate(
+                    "window.systemDynamicsMapRuntime.currentViewPayload().visible_relation_categories"
+                )
+                == []
+            ), (
+                "unchecked relation categories exported no active categories but still showed edges. "
+                "Fix by treating an empty checked relation set as show none when filter controls exist."
+            )
+            page.evaluate(
+                """
+                document.querySelectorAll('input[data-filter="relation"]').forEach((input) => {
+                  if (!input.checked) {
+                    input.click();
+                  }
+                });
+                """
+            )
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().edges === 42")
             page.locator('input[data-filter="status"][value="candidate"]').uncheck()
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes < 35")
@@ -434,6 +489,22 @@ def test_system_dynamics_viewer_core_interactions():
             )
             assert "dmn-to-sbvr" not in lens_edge_payload["visible_edge_ids"]
             assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 0
+            assert (
+                "DMN -> SBVR hidden by the active view or filters"
+                in page.locator("#action-status").inner_text()
+            )
+            page.get_by_role("button", name="Show in Topology").click()
+            page.wait_for_function("window.systemDynamicsMapRuntime.activeLens() === 'topology'")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "edges",
+                "id": "dmn-to-sbvr",
+            }
+            page.get_by_label("View").select_option("operating-slice")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeLens() === 'operating-slice'"
+            )
             error_message = _browser_error_message(
                 page, "window.systemDynamicsMapRuntime.selectEdge('dmn-to-sbvr')"
             )
@@ -443,15 +514,58 @@ def test_system_dynamics_viewer_core_interactions():
             page.get_by_label("View").select_option("topology")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
             _assert_no_viewer_selection(page)
+            traversal_items = page.evaluate("window.systemDynamicsMapRuntime.traversalItems()")
+            assert len(traversal_items) > 2
+
             page.locator("#cy").focus()
-            page.keyboard.press("ArrowDown")
-            graph_selected = page.evaluate(
+            page.keyboard.press("Home")
+            assert page.evaluate(
                 "window.systemDynamicsMapRuntime.currentViewPayload().selected"
-            )
-            assert graph_selected is not None
+            ) == {
+                "group": traversal_items[0]["group"],
+                "id": traversal_items[0]["id"],
+            }
+            page.keyboard.press("End")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": traversal_items[-1]["group"],
+                "id": traversal_items[-1]["id"],
+            }
+            page.keyboard.press("ArrowLeft")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": traversal_items[-2]["group"],
+                "id": traversal_items[-2]["id"],
+            }
+            page.keyboard.press("ArrowRight")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": traversal_items[-1]["group"],
+                "id": traversal_items[-1]["id"],
+            }
+            page.keyboard.press("Enter")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": traversal_items[-1]["group"],
+                "id": traversal_items[-1]["id"],
+            }
+            page.keyboard.press("Space")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": traversal_items[-1]["group"],
+                "id": traversal_items[-1]["id"],
+            }
             assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
             page.keyboard.press("Escape")
             _assert_no_viewer_selection(page)
+            page.locator("#cy").focus()
+            page.keyboard.press("/")
+            assert page.evaluate("document.activeElement.id") == "search"
             page.get_by_role("button", name="Directed").click()
             page.wait_for_function(
                 "window.systemDynamicsMapRuntime.activeLayout() === 'breadthfirst'"
@@ -637,6 +751,148 @@ def test_system_dynamics_viewer_core_interactions():
                 page, "window.systemDynamicsMapRuntime.selectNode('missing-node')"
             )
             assert error_message is not None and "nodes[].id" in error_message
+        finally:
+            browser.close()
+
+
+def test_system_dynamics_viewer_toolbar_and_panel_actions_are_operable():
+    with _static_server() as base_url, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.add_init_script(
+            """
+            Object.defineProperty(navigator, "clipboard", {
+              value: {
+                writeText: async (text) => {
+                  if (window.__rejectClipboard) {
+                    throw new Error("clipboard blocked by test");
+                  }
+                  window.__clipboardWrites.push(text);
+                }
+              },
+              configurable: true
+            });
+            window.__clipboardWrites = [];
+            window.__rejectClipboard = false;
+            window.__downloadClicks = [];
+            HTMLAnchorElement.prototype.click = function () {
+              window.__downloadClicks.push({
+                download: this.download,
+                href: this.href
+              });
+            };
+            """
+        )
+        try:
+            page.goto(f"{base_url}/system-dynamics-map-viewer.html")
+            page.locator("#cy canvas").first.wait_for(timeout=10_000)
+            page.wait_for_function("window.systemDynamicsMapRuntime")
+            page.wait_for_function(NONBLANK_CANVAS_SCRIPT, timeout=10_000)
+
+            page.evaluate("window.systemDynamicsMapRuntime.selectNode('opentelemetry')")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "opentelemetry",
+            }
+            page.locator('#panel [data-panel-action="copy-id"]').click()
+            page.wait_for_function("window.__clipboardWrites.at(-1) === 'opentelemetry'")
+            assert "Element ID copied." in page.locator("#action-status").inner_text()
+
+            page.evaluate("window.__rejectClipboard = true")
+            page.locator('#panel [data-panel-action="copy-id"]').click()
+            assert "Element ID: opentelemetry" in page.locator("#action-status").inner_text()
+            page.evaluate("window.__rejectClipboard = false")
+
+            page.locator('#panel [data-panel-action="neighborhood"]').click()
+            assert (
+                "OpenTelemetry neighborhood framed." in page.locator("#action-status").inner_text()
+            )
+            page.locator('#panel [data-panel-action="fit-selected"]').click()
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "opentelemetry",
+            }
+            page.locator("#fit-selected").click()
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "opentelemetry",
+            }
+
+            zoom_before = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().viewport.zoom"
+            )
+            page.locator("#zoom-in").click()
+            page.wait_for_function(
+                "(zoomBefore) => "
+                "window.systemDynamicsMapRuntime.currentViewPayload().viewport.zoom "
+                "> zoomBefore",
+                arg=zoom_before,
+            )
+            zoom_after_in = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().viewport.zoom"
+            )
+            page.locator("#zoom-out").click()
+            page.wait_for_function(
+                "(zoomAfterIn) => "
+                "window.systemDynamicsMapRuntime.currentViewPayload().viewport.zoom "
+                "< zoomAfterIn",
+                arg=zoom_after_in,
+            )
+            page.locator("#zoom-reset").click()
+            assert isinstance(
+                page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload().viewport.zoom"),
+                (int, float),
+            )
+
+            assert (
+                page.evaluate(
+                    "window.systemDynamicsMapRuntime.currentViewPayload().edge_labels_visible"
+                )
+                is False
+            )
+            page.locator("#edge-labels").click()
+            assert page.locator("#edge-labels").get_attribute("aria-pressed") == "true"
+            assert (
+                page.evaluate(
+                    "window.systemDynamicsMapRuntime.currentViewPayload().edge_labels_visible"
+                )
+                is True
+            )
+            assert "Edge labels shown." in page.locator("#action-status").inner_text()
+
+            page.evaluate("window.systemDynamicsMapRuntime.selectEdge('dmn-to-sbvr')")
+            page.locator('#panel [data-panel-action="source"]').click()
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "dmn",
+            }
+            page.evaluate("window.systemDynamicsMapRuntime.selectEdge('dmn-to-sbvr')")
+            page.locator('#panel [data-panel-action="target"]').click()
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "sbvr",
+            }
+
+            page.evaluate("window.__rejectClipboard = true")
+            page.get_by_role("button", name="Copy View JSON").click()
+            page.wait_for_function(
+                "window.__downloadClicks.some((item) => "
+                "item.download === 'system-dynamics-current-view.json')"
+            )
+            assert (
+                "Clipboard unavailable; current view JSON downloaded."
+                in page.locator("#action-status").inner_text()
+            )
         finally:
             browser.close()
 
