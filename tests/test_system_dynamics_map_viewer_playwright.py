@@ -167,6 +167,18 @@ def test_system_dynamics_viewer_core_interactions():
                 .get_attribute("href")
                 .endswith("/system-dynamics-map.observations.jsonl")
             )
+            page.locator("details.data-drawer summary").click()
+            provenance_text = page.locator("#data-provenance").inner_text().lower()
+            assert "map" in provenance_text and "system-dynamics-map-v1" in provenance_text
+            assert "version" in provenance_text and "1.0.0" in provenance_text
+            assert (
+                "authority" in provenance_text and "case-system-dynamics-map-v1" in provenance_text
+            )
+            assert "nodes" in provenance_text and "35" in provenance_text
+            assert "edges" in provenance_text and "42" in provenance_text
+            assert "claims" in provenance_text
+            assert "observations" in provenance_text
+            assert "relations" in provenance_text
             assert "VISIBLE" in page.locator("#lens-summary").inner_text()
             encoding_legend = page.locator("#encoding-legend").inner_text()
             assert "circle structural arrowheads" in encoding_legend
@@ -1107,12 +1119,13 @@ def test_system_dynamics_viewer_reports_missing_local_cytoscape():
         page.route("**/vendor/cytoscape-3.34.0.min.js", lambda route: route.abort())
         try:
             page.goto(f"{base_url}/system-dynamics-map-viewer.html")
-            error = page.locator("#cy .error")
+            error = page.get_by_role("alert")
             error.wait_for(timeout=10_000)
             assert (
                 error.inner_text()
                 == "Cytoscape.js did not load. Check that ./vendor/cytoscape-3.34.0.min.js is present."
             )
+            assert page.evaluate("document.activeElement.getAttribute('role')") == "alert"
             assert page.evaluate("window.systemDynamicsMapRuntime") is None, (
                 "viewer exposed runtime APIs after Cytoscape failed to load. "
                 "Fix by returning before runtime initialization when the local asset is missing."

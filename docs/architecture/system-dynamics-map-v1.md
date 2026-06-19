@@ -277,16 +277,21 @@ rg -n '#[0-9A-Fa-f]{3,8}\b' \
   tests/test_system_dynamics_map_viewer_playwright.py
 ```
 
-The hardcoded-hex scan should return no matches. The viewer uses intrinsic flex
-wrapping for narrow screens; it should not contain conditional CSS at-rules:
+The hardcoded-hex scan should return no matches. The viewer intentionally uses
+two conditional media rules: one mobile/narrow layout rule and one
+forced-colors accessibility rule. It should not contain container queries or
+unregistered media rules:
 
 ```bash
 python3 - <<'PY'
+import re
 from pathlib import Path
 
 text = Path("docs/architecture/system-dynamics-map-viewer.html").read_text()
-for token in ("@" + "container", "@" + "media"):
-    assert token not in text, f"unexpected conditional CSS at-rule: {token}"
+assert "@" + "container" not in text, "unexpected container query"
+expected_media = {"@media (max-width: 860px)", "@media (forced-colors: active)"}
+found_media = set(re.findall(r"@media\s*\([^)]+\)", text))
+assert found_media == expected_media, found_media
 PY
 ```
 
