@@ -57,6 +57,10 @@ GLMCP_HASHED_ADMISSION_EVIDENCE_REF = GLMCP_ADMISSION_EVIDENCE_REF.replace(
     "glmcp-quota-admission.yaml",
     "unsafe-receipt-name-sha256:0123456789abcdef",
 )
+GLMCP_SECRETISH_WITNESS_EVIDENCE_REF = GLMCP_ADMISSION_EVIDENCE_REF.replace(
+    "witness:supported-tool-usage-witness:",
+    "witness:sk-live-secret-token-000000000000000000000000:",
+)
 
 
 def _payload() -> dict[str, Any]:
@@ -395,6 +399,39 @@ def test_receipt_bounded_route_accepts_writer_hashed_admission_label() -> None:
 
     assert state is SubscriptionQuotaState.FRESH
     assert refs == (GLMCP_HASHED_ADMISSION_EVIDENCE_REF,)
+
+
+def test_receipt_bounded_route_rejects_and_redacts_secretish_witness() -> None:
+    payload = _active_budget_payload()
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-review-direct-secretish-witness",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [GLMCP_SECRETISH_WITNESS_EVIDENCE_REF],
+            "operator_visible_reason": "fixture secretish glmcp admission witness",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "glmcp.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert GLMCP_SECRETISH_WITNESS_EVIDENCE_REF not in refs
+    assert any(ref.startswith("quota-evidence-ref:redacted-secretish-sha256:") for ref in refs)
+    assert (
+        "quota-snapshot:quota-glmcp-review-direct-secretish-witness:untrusted_glmcp_admission_evidence"
+    ) in refs
 
 
 def test_overdue_reconciliation_freezes_otherwise_valid_budget() -> None:

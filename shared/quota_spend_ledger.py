@@ -7,6 +7,7 @@ dispatch work, or mutate runtime state.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import UTC, datetime
@@ -49,6 +50,12 @@ GLMCP_ADMISSION_RECEIPT_LABEL_RE = re.compile(
     r"unsafe-receipt-name-sha256:[0-9a-f]{16})"
     r":witness:"
 )
+GLMCP_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
+GLMCP_ADMISSION_SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
+GLMCP_ADMISSION_WITNESS_REF_RE = re.compile(r":witness:([^:]+):supported_tool:")
 GLMCP_ADMISSION_SUPPORTED_TOOL_REF_RE = re.compile(r":supported_tool:([a-z0-9_.+-]+):")
 
 
@@ -1117,9 +1124,11 @@ def subscription_quota_state_for_route(
             SubscriptionQuotaState.UNKNOWN,
             (f"quota-snapshot:{normalized_route_id}:missing",),
         )
-    evidence_refs = tuple(ref for snapshot in snapshots for ref in snapshot.evidence_refs) or (
-        f"quota-snapshot:{normalized_route_id}:no-evidence",
-    )
+    evidence_refs = tuple(
+        _redact_secretish_quota_evidence_ref(ref)
+        for snapshot in snapshots
+        for ref in snapshot.evidence_refs
+    ) or (f"quota-snapshot:{normalized_route_id}:no-evidence",)
     expired_refs = tuple(
         f"quota-snapshot:{snapshot.snapshot_id}:fresh_until_expired:{snapshot.fresh_until.isoformat().replace('+00:00', 'Z')}"
         for snapshot in snapshots
@@ -1219,6 +1228,7 @@ def _subscription_quota_missing_required_admission_evidence(
 def _is_glmcp_admission_evidence_ref(ref: str) -> bool:
     return (
         GLMCP_ADMISSION_RECEIPT_LABEL_RE.match(ref) is not None
+        and _has_safe_glmcp_admission_witness(ref)
         and _has_glmcp_admission_tool_endpoint_pair(ref)
         and any(f":model:{model}:" in ref for model in GLMCP_ADMISSION_MODELS)
         and ":observed_at:" in ref
@@ -1236,6 +1246,24 @@ def _has_glmcp_admission_tool_endpoint_pair(ref: str) -> bool:
     tool = tool_matches[0]
     endpoint = endpoint_matches[0]
     return endpoint in GLMCP_ADMISSION_TOOL_ENDPOINTS.get(tool, frozenset())
+
+
+def _has_safe_glmcp_admission_witness(ref: str) -> bool:
+    witness_matches = GLMCP_ADMISSION_WITNESS_REF_RE.findall(ref)
+    if len(witness_matches) != 1:
+        return False
+    witness = witness_matches[0]
+    return (
+        GLMCP_ADMISSION_EVIDENCE_REF_RE.fullmatch(witness) is not None
+        and GLMCP_ADMISSION_SECRETISH_RE.search(witness) is None
+    )
+
+
+def _redact_secretish_quota_evidence_ref(ref: str) -> str:
+    if GLMCP_ADMISSION_SECRETISH_RE.search(ref) is None:
+        return ref
+    digest = hashlib.sha256(ref.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return f"quota-evidence-ref:redacted-secretish-sha256:{digest}"
 
 
 def _subscription_quota_fresh_until_expired(
