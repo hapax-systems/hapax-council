@@ -100,6 +100,7 @@ printf '%s\\n' 'auto route ok'
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "auto route ok\n"
+    assert "WARNING fallback selected auto" in result.stderr
     call_lines = [line for line in calls.read_text().split("\0") if line]
     assert len(call_lines) == 2
     assert "gemini-3.1-pro-preview" in call_lines[0]

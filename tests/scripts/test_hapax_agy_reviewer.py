@@ -58,3 +58,36 @@ def test_agy_reviewer_rejects_non_agy_binary_name(tmp_path: Path) -> None:
 
     assert result.returncode == 64
     assert "must point to agy" in result.stderr
+
+
+def test_agy_reviewer_reports_missing_agy_binary(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [str(WRAPPER), "--agy-bin", str(tmp_path / "agy")],
+        input="review\n",
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 2
+    assert "failed to launch" in result.stderr
+
+
+def test_agy_reviewer_preserves_nonzero_agy_exit(tmp_path: Path) -> None:
+    fake_agy = tmp_path / "agy"
+    fake_agy.write_text(
+        "#!/usr/bin/env bash\nprintf 'agy failed\\n' >&2\nexit 7\n",
+        encoding="utf-8",
+    )
+    fake_agy.chmod(0o755)
+
+    result = subprocess.run(
+        [str(WRAPPER), "--agy-bin", str(fake_agy)],
+        input="review\n",
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 7
+    assert "agy failed" in result.stderr

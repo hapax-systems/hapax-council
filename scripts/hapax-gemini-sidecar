@@ -348,6 +348,13 @@ def main(argv: list[str] | None = None) -> int:
         if final_code == 0 or not _fallbackable(combined):
             break
 
+    if final_code == 0 and final_model != attempts[0]:
+        warning = (
+            "hapax-gemini-sidecar: WARNING fallback selected "
+            f"{final_model} after requested model {attempts[0]} failed\n"
+        )
+        final_stderr = f"{final_stderr.rstrip()}\n{warning}" if final_stderr else warning
+
     artifact_path = _artifact_path(args.artifact_dir, mode=args.mode, model=final_model)
     _write_artifact(artifact_path, stdout=final_stdout, stderr=final_stderr)
     duration_ms = round((time.monotonic() - started) * 1000)

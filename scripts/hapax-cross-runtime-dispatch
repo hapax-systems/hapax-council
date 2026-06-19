@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# hapax-cross-runtime-dispatch — invoke Claude/Codex with orchestration receipts.
+# hapax-cross-runtime-dispatch — invoke active Hapax runtimes with orchestration receipts.
 #
 # Reads team metadata registry (Slice 3A), checks freshness gates,
 # validates session protection and duplicate checks, then dispatches
@@ -29,8 +29,8 @@ usage() {
 hapax-cross-runtime-dispatch — cross-runtime dispatch with orchestration receipts
 
 Options:
-  --lane LANE          Target lane (e.g., beta, cx-red, iota)
-  --platform PLATFORM  Target platform (claude, codex)
+  --lane LANE          Target lane (e.g., beta, cx-red, antigrav)
+  --platform PLATFORM  Target platform (claude, codex, vibe, antigrav)
   --task TASK_ID       cc-task to dispatch
   --case CASE_ID       AuthorityCase reference (optional)
   --mq-message-id ID   Durable relay MQ dispatch message id
@@ -254,7 +254,7 @@ if [[ -z "$LANE" || -z "$PLATFORM" ]]; then
     exit 2
 fi
 case "$PLATFORM" in
-    claude|codex) ;;
+    claude|codex|vibe|antigrav) ;;
     *)
         echo "error: unsupported platform: $PLATFORM" >&2
         exit 2
@@ -390,6 +390,16 @@ case "$PLATFORM" in
         ;;
     codex)
         LAUNCHER="$SCRIPT_DIR/hapax-codex"
+        ARGS=(--session "$LANE" --terminal tmux)
+        [[ -n "$TASK" ]] && ARGS+=(--task "$TASK")
+        ;;
+    vibe)
+        LAUNCHER="$SCRIPT_DIR/hapax-vibe"
+        ARGS=(--session "$LANE" --terminal tmux)
+        [[ -n "$TASK" ]] && ARGS+=(--task "$TASK")
+        ;;
+    antigrav)
+        LAUNCHER="$SCRIPT_DIR/hapax-antigrav"
         ARGS=(--session "$LANE" --terminal tmux)
         [[ -n "$TASK" ]] && ARGS+=(--task "$TASK")
         ;;

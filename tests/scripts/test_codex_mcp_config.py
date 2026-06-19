@@ -15,6 +15,7 @@ TAVILY_WRAPPER = REPO_ROOT / "scripts" / "hapax-tavily-mcp"
 PLAYWRIGHT_WRAPPER = REPO_ROOT / "scripts" / "hapax-playwright-mcp"
 GITHUB_WRAPPER = REPO_ROOT / "scripts" / "hapax-github-mcp"
 CONTEXT7_WRAPPER = REPO_ROOT / "scripts" / "hapax-context7-mcp"
+GEMINI_MCP_WRAPPER = REPO_ROOT / "scripts" / "hapax-gemini-mcp"
 
 
 def _installed_config(tmp_path: Path) -> dict:
@@ -103,6 +104,19 @@ def test_gemini_cli_mcp_is_not_installed(tmp_path: Path) -> None:
     assert "gemini-cli" not in config["mcp_servers"]
     assert "mcp_servers.gemini-cli" not in launcher
     assert "hapax-gemini-mcp" not in launcher
+
+
+def test_gemini_cli_mcp_wrapper_fails_closed() -> None:
+    result = subprocess.run(
+        [str(GEMINI_MCP_WRAPPER)],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 64
+    assert "hapax-gemini-mcp is retired" in result.stderr
+    assert "agy-backed" in result.stderr
 
 
 def test_github_mcp_uses_secret_loading_wrapper(tmp_path: Path) -> None:
