@@ -31,7 +31,30 @@ CONSUMER_NAME = "research_viewer"
 SUPPORT_LABEL = "support_non_authoritative_projection_state"
 REPORT_DIRNAME = "hkp-reports"
 FORBIDDEN_REPORT_FIELDS = frozenset({"body", "private_source_path", "secret"})
-POLICY_ALLOWLISTED_REPORT_FIELDS = frozenset({"title", "description", "source_refs", "authority"})
+POLICY_ALLOWLISTED_REPORT_FIELDS = frozenset(
+    {
+        "title",
+        "description",
+        "source_refs",
+        "authority",
+        "source_freshness",
+        "freshness_state",
+        "privacy_class",
+        "egress_state",
+        "public_export_allowed",
+        "denied_consumers",
+        "findings",
+        "bundle_uid",
+        "output_tree_hash",
+    }
+)
+POLICY_ALLOWED_FIELD_ALIASES = {
+    "freshness": frozenset({"freshness_state", "source_freshness"}),
+    "posture": frozenset(
+        {"privacy_class", "egress_state", "public_export_allowed", "denied_consumers"}
+    ),
+    "validator_findings": frozenset({"findings"}),
+}
 POLICY_FORBIDDEN_FIELD_ALIASES = {
     "freshness": frozenset({"freshness_state", "source_freshness"}),
     "posture": frozenset(
@@ -65,6 +88,12 @@ REPORT_ROW_FIELDS = frozenset(
     }
 )
 _SAFE_REPORT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
+PRIVATE_PATH_RE = re.compile(r"(?:file://)?/home/hapax/[^\s)'\"`,|]+")
+SECRET_ASSIGNMENT_RE = re.compile(
+    r"\b[A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|API[_-]?KEY|PRIVATE[_-]?KEY)"
+    r"[A-Za-z0-9_]*\s*=\s*[^\s,;]+",
+    re.IGNORECASE,
+)
 __all__ = [
     "REPORT_ROW_FIELDS",
     "SUPPORT_LABEL",
@@ -398,7 +427,11 @@ def _assert_research_viewer_concept_allowed(
 
 
 def _policy_allowed_output_fields(consumer_row: dict[str, Any]) -> frozenset[str]:
-    return frozenset(str(field) for field in consumer_row.get("allowed_fields") or [])
+    allowed = {str(field) for field in consumer_row.get("allowed_fields") or []}
+    expanded = set(allowed)
+    for field in allowed:
+        expanded.update(POLICY_ALLOWED_FIELD_ALIASES.get(field, ()))
+    return frozenset(expanded)
 
 
 def _policy_forbidden_output_fields(consumer_row: dict[str, Any]) -> frozenset[str]:
@@ -437,13 +470,13 @@ def _finding_summary(row: dict[str, Any], *, bundle: Path) -> dict[str, Any]:
     path = str(row.get("path") or "")
     if path:
         path = _safe_bundle_relative_path(path, bundle)
-    subject = str(row.get("subject") or path)
+    subject = _redact_report_text(row.get("subject") or path)
     return {
-        "severity": str(row.get("severity") or "warning"),
-        "code": str(row.get("code") or "unknown"),
+        "severity": _redact_report_text(row.get("severity") or "warning"),
+        "code": _redact_report_text(row.get("code") or "unknown"),
         "subject": subject,
         "path": path,
-        "message": str(row.get("message") or ""),
+        "message": _redact_report_text(row.get("message") or ""),
     }
 
 
@@ -455,6 +488,12 @@ def _safe_bundle_relative_path(value: str, bundle: Path) -> str:
         return candidate.resolve().relative_to(bundle.resolve()).as_posix()
     except ValueError:
         return "[outside-bundle-path-redacted]"
+
+
+def _redact_report_text(value: Any) -> str:
+    text = str(value)
+    text = PRIVATE_PATH_RE.sub("[private-path-redacted]", text)
+    return SECRET_ASSIGNMENT_RE.sub("[secret-redacted]", text)
 
 
 def _resolve_bundle_refs(

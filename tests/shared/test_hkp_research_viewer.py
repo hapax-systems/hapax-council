@@ -130,6 +130,58 @@ def test_report_omits_fields_absent_from_consumer_policy_allowed_fields(
     assert '"description"' not in json.dumps(result.as_dict(), sort_keys=True)
 
 
+def test_report_omits_support_fields_absent_from_consumer_policy_aliases(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    export = export_shadow_bundle(
+        [source],
+        bundle_id="viewer-demo",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+    policy_path = export.bundle_path / "_hkp" / "consumer_policy.yaml"
+    policy = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+    for row in policy["consumers"]:
+        if row["consumer"] == "research_viewer":
+            for field in (
+                "freshness",
+                "posture",
+                "validator_findings",
+                "bundle_uid",
+                "output_tree_hash",
+            ):
+                row["allowed_fields"].remove(field)
+    policy_path.write_text(yaml.safe_dump(policy, sort_keys=False), encoding="utf-8")
+
+    result = build_research_viewer_report(
+        [export.bundle_path],
+        report_id="viewer-support-allowlist-report",
+        generated_at=GENERATED_AT,
+    )
+
+    bundle = result.as_dict()["bundles"][0]
+    assert "bundle_uid" not in bundle
+    assert "output_tree_hash" not in bundle
+    assert "findings" not in bundle
+    row = bundle["rows"][0]
+    for field in (
+        "bundle_uid",
+        "output_tree_hash",
+        "source_freshness",
+        "freshness_state",
+        "privacy_class",
+        "egress_state",
+        "public_export_allowed",
+        "denied_consumers",
+        "findings",
+    ):
+        assert field not in row
+
+
 def test_report_rejects_denied_research_viewer_consumer_policy(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     source_root = tmp_path / "repo"
@@ -217,6 +269,48 @@ def test_report_includes_findings_and_source_freshness_markers(tmp_path: Path, m
     assert "support_non_authoritative_projection_state" in result.markdown_path.read_text(
         encoding="utf-8"
     )
+
+
+def test_report_redacts_private_path_and_secret_text_from_findings(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    export = export_shadow_bundle(
+        [source],
+        bundle_id="viewer-demo",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+    private_path = "/home/hapax/Documents/Personal/private.md"
+    export.index_path.write_text(
+        json.dumps(
+            {
+                "record_type": "finding",
+                "severity": "warning",
+                "subject": f"{private_path} SECRET_TOKEN=do-not-leak",
+                "path": private_path,
+                "message": f"leaked {private_path} SECRET_TOKEN=do-not-leak",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = build_research_viewer_report(
+        [export.bundle_path],
+        report_id="viewer-finding-redaction-report",
+        generated_at=GENERATED_AT,
+    )
+
+    serialized = json.dumps(result.as_dict(), sort_keys=True)
+    assert "/home/hapax" not in serialized
+    assert "SECRET_TOKEN" not in serialized
+    assert "[private-path-redacted]" in serialized
+    assert "[secret-redacted]" in serialized
+    assert "[outside-bundle-path-redacted]" in serialized
 
 
 def test_report_default_discovery_reads_real_cache_bundles(tmp_path: Path, monkeypatch) -> None:
