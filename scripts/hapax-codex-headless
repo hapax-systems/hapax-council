@@ -141,6 +141,30 @@ print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).deco
 PYEOF
 }
 
+remote_worktree_payload_b64() {
+  python3 - "$WORKDIR" "$COUNCIL_DIR" "$SESSION" \
+    "${HAPAX_CODEX_WORKTREE_BASE:-main}" "${HAPAX_CODEX_BRANCH_PREFIX:-codex}" \
+    "${HAPAX_CODEX_CREATE_WORKTREE:-1}" "$WORKDIR_EXPLICIT" <<'PYEOF'
+import base64
+import json
+import sys
+
+workdir, council_dir, session, base_ref, branch_prefix, create_worktree, workdir_explicit = (
+    sys.argv[1:8]
+)
+payload = {
+    "workdir": workdir,
+    "council_dir": council_dir,
+    "session": session,
+    "base_ref": base_ref or "main",
+    "branch": f"{branch_prefix or 'codex'}/{session}",
+    "create_worktree": create_worktree == "1",
+    "workdir_explicit": workdir_explicit == "1",
+}
+print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode())
+PYEOF
+}
+
 remote_exec_payload_b64() {
   local proof_file="$1"
   shift
@@ -194,7 +218,43 @@ print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).deco
 PYEOF
 }
 
-REMOTE_PREFLIGHT_PY='import base64,json,os,shutil,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); ok=all(os.path.isdir(path) for path in p.get("required_dirs",())) and all(os.path.isfile(path) and os.access(path, os.X_OK) for path in p.get("executables",())) and all(shutil.which(binary) for binary in p.get("binaries",())); sys.exit(0 if ok else 1)'
+REMOTE_PREFLIGHT_PY='import base64,json,os,shutil,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"]));
+missing_dirs=[path for path in p.get("required_dirs",()) if not os.path.isdir(path)]
+missing_exec=[path for path in p.get("executables",()) if not (os.path.isfile(path) and os.access(path, os.X_OK))]
+missing_bins=[binary for binary in p.get("binaries",()) if not shutil.which(binary)]
+if missing_dirs or missing_exec or missing_bins:
+    print("remote preflight failed: missing_dirs="+json.dumps(missing_dirs)+" missing_executables="+json.dumps(missing_exec)+" missing_binaries="+json.dumps(missing_bins)+"; next action: ssh to the dispatch host and install or repair the missing paths before retrying", file=sys.stderr)
+    sys.exit(1)
+sys.exit(0)'
+REMOTE_WORKTREE_PY='import base64,json,os,shutil,subprocess,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); workdir=p["workdir"]; council=p["council_dir"];
+def fail(message):
+    print("remote worktree bootstrap refused: "+message+"; next action: ssh to the dispatch host and verify the council checkout, target worktree path, git binary, and HAPAX_CODEX_CREATE_WORKTREE before retrying", file=sys.stderr)
+    sys.exit(1)
+if os.path.isdir(workdir):
+    sys.exit(0)
+if p.get("workdir_explicit"):
+    fail("explicit HAPAX_CODEX_HEADLESS_WORKDIR is missing on dispatch host: "+workdir)
+if not p.get("create_worktree"):
+    fail("worktree creation disabled by HAPAX_CODEX_CREATE_WORKTREE=0 and default workdir is missing on dispatch host: "+workdir)
+if not os.path.isdir(council):
+    fail("council checkout missing on dispatch host: "+council)
+if shutil.which("git") is None:
+    fail("git binary missing on dispatch host")
+if subprocess.run(["git","-C",council,"rev-parse","--is-inside-work-tree"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode != 0:
+    fail("council checkout is not a git worktree: "+council)
+os.makedirs(os.path.dirname(workdir),exist_ok=True)
+base=p.get("base_ref") or "main"
+if subprocess.run(["git","-C",council,"rev-parse","--verify","--quiet",base],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode != 0:
+    base="HEAD"
+branch=p.get("branch") or "codex/"+p.get("session","cx-headless")
+if subprocess.run(["git","-C",council,"show-ref","--verify","--quiet","refs/heads/"+branch],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode == 0:
+    cmd=["git","-C",council,"worktree","add",workdir,branch]
+else:
+    cmd=["git","-C",council,"worktree","add","-b",branch,workdir,base]
+result=subprocess.run(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+if result.returncode != 0 or not os.path.isdir(workdir):
+    fail("git worktree add failed for "+workdir+" using branch "+branch+" (rc="+str(result.returncode)+")")
+sys.exit(0)'
 REMOTE_EXEC_PY='import base64,json,os,socket,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); os.chdir(p["workdir"]); os.environ.update(p.get("env",{})); proof=p.get("proof_file",""); cgroup="";
 try:
     cgroup=open("/proc/self/cgroup",encoding="utf-8").read()
@@ -310,8 +370,14 @@ if [[ "$FORCE" -ne 1 ]] && relay_retired "$SESSION"; then
 fi
 
 # Worktree selection mirrors hapax-codex's codex-native default.
-WORKDIR="${HAPAX_CODEX_HEADLESS_WORKDIR:-$HOME/projects/hapax-council--$SESSION}"
-if [[ ! -d "$WORKDIR" ]]; then
+WORKDIR_EXPLICIT=0
+if [[ -n "${HAPAX_CODEX_HEADLESS_WORKDIR:-}" ]]; then
+  WORKDIR="$HAPAX_CODEX_HEADLESS_WORKDIR"
+  WORKDIR_EXPLICIT=1
+else
+  WORKDIR="$HOME/projects/hapax-council--$SESSION"
+fi
+if [[ ! -d "$WORKDIR" && "$WORKDIR_EXPLICIT" -eq 0 ]]; then
   WORKDIR="$COUNCIL_DIR"
 fi
 [[ -d "$WORKDIR" ]] || { echo "hapax-codex-headless: worktree not found: $WORKDIR" >&2; exit 3; }
@@ -319,45 +385,6 @@ WORKDIR="$(cd "$WORKDIR" && pwd)"
 
 HOOK="$COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh"
 [[ -x "$HOOK" ]] || { echo "hapax-codex-headless: hook adapter not executable: $HOOK" >&2; exit 6; }
-
-DISPATCH_HOST_REQUESTED="${HAPAX_DISPATCH_HOST:-}"
-DISPATCH_HOST=""
-DISPATCH_FALLBACK_REASON=""
-if [[ -n "$DISPATCH_HOST_REQUESTED" ]]; then
-  if dispatch_host_is_local "$DISPATCH_HOST_REQUESTED"; then
-    DISPATCH_HOST_REQUESTED=""
-  else
-    PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64)"
-    PREFLIGHT_COMMAND="$(remote_python_command "$PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
-    if ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
-        -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST_REQUESTED" \
-        "$PREFLIGHT_COMMAND" 2>/dev/null; then
-      DISPATCH_HOST="$DISPATCH_HOST_REQUESTED"
-      echo "hapax-codex-headless: dispatch -> $DISPATCH_HOST (codex exec on appendix)" >&2
-    elif [[ "${HAPAX_DISPATCH_HOST_FALLBACK:-}" == "local" ]]; then
-      DISPATCH_FALLBACK_REASON="dispatch_host_unready:$DISPATCH_HOST_REQUESTED"
-      echo "hapax-codex-headless: dispatch_host_unready ($DISPATCH_HOST_REQUESTED) -- explicit local fallback" >&2
-    else
-      echo "hapax-codex-headless: dispatch_host_unready ($DISPATCH_HOST_REQUESTED) -- refusing local fallback without HAPAX_DISPATCH_HOST_FALLBACK=local" >&2
-      exit 75
-    fi
-  fi
-fi
-
-if [[ -n "$DISPATCH_HOST" ]]; then
-  LOGOS_BASE_URL="${HAPAX_DISPATCH_LOGOS_URL:-http://192.168.68.85:8051/api}"
-else
-  LOGOS_BASE_URL="${LOGOS_BASE_URL:-http://localhost:8051/api}"
-fi
-COCKPIT_BASE_URL="${COCKPIT_BASE_URL:-$LOGOS_BASE_URL}"
-
-CODEX_BIN=""
-if [[ -z "$DISPATCH_HOST" ]]; then
-  CODEX_BIN="$(command -v codex || true)"
-  [[ -n "$CODEX_BIN" ]] || { echo "hapax-codex-headless: codex not found in PATH" >&2; exit 4; }
-else
-  CODEX_BIN="codex"
-fi
 
 # Identity env — same contract as hapax-codex so the gate keys a session-scoped
 # claim lease (reform Phase 1, FM-2) and the hooks recover this lane's role.
@@ -489,6 +516,80 @@ with open(proof_file, "w", encoding="utf-8") as fh:
 PYEOF
 }
 
+# Refuse to double-launch a live lane before any remote dispatch-host mutation.
+# --force only reactivates retired relay state; it must not bypass the
+# single-live-headless-lane invariant.
+if [[ -f "$PID_FILE" ]]; then
+  EXISTING_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
+  if [[ -n "$EXISTING_PID" ]] && kill -0 "$EXISTING_PID" 2>/dev/null; then
+    echo "hapax-codex-headless: lane '$SESSION' already live (pid=$EXISTING_PID); stop the live lane or remove the stale pid after verifying it is gone" >&2
+    exit 11
+  fi
+fi
+
+DISPATCH_HOST_REQUESTED="${HAPAX_DISPATCH_HOST:-}"
+DISPATCH_HOST=""
+DISPATCH_FALLBACK_REASON=""
+if [[ -n "$DISPATCH_HOST_REQUESTED" ]]; then
+  if dispatch_host_is_local "$DISPATCH_HOST_REQUESTED"; then
+    DISPATCH_HOST_REQUESTED=""
+  else
+    WORKTREE_PAYLOAD="$(remote_worktree_payload_b64)"
+    WORKTREE_COMMAND="$(remote_python_command "$WORKTREE_PAYLOAD" "$REMOTE_WORKTREE_PY")"
+    PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64)"
+    PREFLIGHT_COMMAND="$(remote_python_command "$PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
+    WORKTREE_ERR=""
+    PREFLIGHT_ERR=""
+    if ! WORKTREE_ERR="$(
+      ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
+        -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST_REQUESTED" \
+        "$WORKTREE_COMMAND" 2>&1 >/dev/null
+    )"; then
+      DISPATCH_FALLBACK_REASON="dispatch_host_unready:$DISPATCH_HOST_REQUESTED"
+      echo "hapax-codex-headless: remote worktree bootstrap failed ($DISPATCH_HOST_REQUESTED)" >&2
+      [[ -n "$WORKTREE_ERR" ]] && printf '  detail: %s\n' "$WORKTREE_ERR" >&2
+      if [[ "${HAPAX_DISPATCH_HOST_FALLBACK:-}" == "local" ]]; then
+        echo "hapax-codex-headless: dispatch_host_unready ($DISPATCH_HOST_REQUESTED) -- explicit local fallback" >&2
+      else
+        echo "  next action: ssh $DISPATCH_HOST_REQUESTED and verify $WORKDIR, $COUNCIL_DIR, git, and HAPAX_CODEX_CREATE_WORKTREE before retrying; refusing local fallback without HAPAX_DISPATCH_HOST_FALLBACK=local" >&2
+        exit 75
+      fi
+    elif ! PREFLIGHT_ERR="$(
+      ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
+        -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST_REQUESTED" \
+        "$PREFLIGHT_COMMAND" 2>&1 >/dev/null
+    )"; then
+      DISPATCH_FALLBACK_REASON="dispatch_host_unready:$DISPATCH_HOST_REQUESTED"
+      echo "hapax-codex-headless: remote preflight failed ($DISPATCH_HOST_REQUESTED)" >&2
+      [[ -n "$PREFLIGHT_ERR" ]] && printf '  detail: %s\n' "$PREFLIGHT_ERR" >&2
+      if [[ "${HAPAX_DISPATCH_HOST_FALLBACK:-}" == "local" ]]; then
+        echo "hapax-codex-headless: dispatch_host_unready ($DISPATCH_HOST_REQUESTED) -- explicit local fallback" >&2
+      else
+        echo "  next action: ssh $DISPATCH_HOST_REQUESTED and verify $WORKDIR, $COUNCIL_DIR, $HOME/projects/hapax-mcp, python3, codex, and the hook adapter before retrying; refusing local fallback without HAPAX_DISPATCH_HOST_FALLBACK=local" >&2
+        exit 75
+      fi
+    else
+      DISPATCH_HOST="$DISPATCH_HOST_REQUESTED"
+      echo "hapax-codex-headless: dispatch -> $DISPATCH_HOST (codex exec on appendix)" >&2
+    fi
+  fi
+fi
+
+if [[ -n "$DISPATCH_HOST" ]]; then
+  LOGOS_BASE_URL="${HAPAX_DISPATCH_LOGOS_URL:-http://192.168.68.85:8051/api}"
+else
+  LOGOS_BASE_URL="${LOGOS_BASE_URL:-http://localhost:8051/api}"
+fi
+COCKPIT_BASE_URL="${COCKPIT_BASE_URL:-$LOGOS_BASE_URL}"
+
+CODEX_BIN=""
+if [[ -z "$DISPATCH_HOST" ]]; then
+  CODEX_BIN="$(command -v codex || true)"
+  [[ -n "$CODEX_BIN" ]] || { echo "hapax-codex-headless: codex not found in PATH" >&2; exit 4; }
+else
+  CODEX_BIN="codex"
+fi
+
 SDLC_PREAMBLE="SDLC DISCIPLINE (MANDATORY):
 1. Work only on the task named in this dispatch.
 2. Run cc-claim for that exact task before mutation.
@@ -529,16 +630,6 @@ CODEX_ARGS=(
 )
 CODEX_ARGS+=("${CODEX_EXTRA[@]}")
 CODEX_ARGS+=("$INITIAL_MSG")
-
-# Refuse to double-launch a live lane. --force only reactivates retired relay
-# state; it must not bypass the single-live-headless-lane invariant.
-if [[ -f "$PID_FILE" ]]; then
-  EXISTING_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
-  if [[ -n "$EXISTING_PID" ]] && kill -0 "$EXISTING_PID" 2>/dev/null; then
-    echo "hapax-codex-headless: lane '$SESSION' already live (pid=$EXISTING_PID); stop the live lane or remove the stale pid after verifying it is gone" >&2
-    exit 11
-  fi
-fi
 
 echo "hapax-codex-headless: starting $SESSION (task=$CODEX_TASK) in $WORKDIR"
 echo "  log: $LOG_FILE"
