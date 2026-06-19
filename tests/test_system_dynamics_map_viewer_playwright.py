@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from PIL import Image, ImageChops, ImageStat
 
 playwright_sync_api = pytest.importorskip("playwright.sync_api", reason="playwright not installed")
 sync_playwright = playwright_sync_api.sync_playwright
@@ -14,6 +15,20 @@ sync_playwright = playwright_sync_api.sync_playwright
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ARCHITECTURE_DIR = REPO_ROOT / "docs" / "architecture"
 VIEWER_PATH = ARCHITECTURE_DIR / "system-dynamics-map-viewer.html"
+REFERENCE_CAPTURE_SPECS = (
+    (
+        {"width": 1440, "height": 960},
+        ARCHITECTURE_DIR / "system-dynamics-map-viewer-desktop.png",
+    ),
+    (
+        {"width": 390, "height": 844},
+        ARCHITECTURE_DIR / "system-dynamics-map-viewer-mobile.png",
+    ),
+)
+# Merge-queue Chromium produced a 14.19 mean delta for the accepted reference
+# render from font and canvas antialiasing variance; 20.0 leaves CI headroom
+# while still catching blank, stale, or substantially shifted captures.
+REFERENCE_CAPTURE_MAX_MEAN_DELTA = 20.0
 HIDDEN_SELECTION_MESSAGE = "hidden by the active lens or filters"
 HIDDEN_SELECTION_RECOVERY = "Clear filters or choose a lens that includes it"
 NONBLANK_CANVAS_SCRIPT = """
@@ -84,6 +99,28 @@ def _assert_no_viewer_selection(page) -> None:
     assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 0
 
 
+def _assert_valid_viewport(page) -> None:
+    assert page.evaluate(
+        """
+        () => {
+          const { viewport } = window.systemDynamicsMapRuntime.currentViewPayload();
+          return Number.isFinite(viewport.zoom)
+            && Number.isFinite(viewport.pan.x)
+            && Number.isFinite(viewport.pan.y);
+        }
+        """
+    )
+
+
+def _mean_image_delta(left_path: Path, right_path: Path) -> float:
+    with Image.open(left_path) as left_image, Image.open(right_path) as right_image:
+        left = left_image.convert("RGB")
+        right = right_image.convert("RGB")
+        assert left.size == right.size
+        diff = ImageChops.difference(left, right)
+        return float(sum(ImageStat.Stat(diff).mean) / 3)
+
+
 def test_system_dynamics_viewer_core_interactions():
     with _static_server() as base_url, sync_playwright() as playwright:
         browser = playwright.chromium.launch()
@@ -93,11 +130,17 @@ def test_system_dynamics_viewer_core_interactions():
             Object.defineProperty(navigator, "clipboard", {
               value: {
                 writeText: async (text) => {
+                  if (window.__rejectClipboard) {
+                    throw new Error("clipboard blocked by test");
+                  }
+                  window.__clipboardWrites.push(text);
                   window.__copiedViewJson = text;
                 }
               },
               configurable: true
             });
+            window.__clipboardWrites = [];
+            window.__rejectClipboard = false;
             window.__downloadClicks = [];
             HTMLAnchorElement.prototype.click = function () {
               window.__downloadClicks.push({
@@ -161,7 +204,31 @@ def test_system_dynamics_viewer_core_interactions():
                 .get_attribute("href")
                 .endswith("/system-dynamics-map.observations.jsonl")
             )
+            page.locator("details.data-drawer summary").click()
+            provenance_text = page.locator("#data-provenance").inner_text().lower()
+            assert "map" in provenance_text and "system-dynamics-map-v1" in provenance_text
+            assert "version" in provenance_text and "1.0.0" in provenance_text
+            assert (
+                "authority" in provenance_text and "case-system-dynamics-map-v1" in provenance_text
+            )
+            assert "nodes" in provenance_text and "35" in provenance_text
+            assert "edges" in provenance_text and "42" in provenance_text
+            assert "claims" in provenance_text
+            assert "observations" in provenance_text
+            assert "relations" in provenance_text
             assert "VISIBLE" in page.locator("#lens-summary").inner_text()
+            encoding_legend = page.locator("#encoding-legend").inner_text()
+            assert "circle structural arrowheads" in encoding_legend
+            assert "dashed governance" in encoding_legend
+            assert "dotted observational" in encoding_legend
+            assert "vee execution arrows" in encoding_legend
+            assert "diamond projection arrows" in encoding_legend
+            relation_cues = page.evaluate("window.systemDynamicsMapRuntime.relationVisualCues()")
+            assert relation_cues["structural"]["target_arrow_shape"] == "circle"
+            assert relation_cues["governance"]["line_style"] == "dashed"
+            assert relation_cues["observational"]["line_style"] == "dotted"
+            assert relation_cues["execution"]["target_arrow_shape"] == "vee"
+            assert relation_cues["projection"]["target_arrow_shape"] == "diamond"
 
             page.get_by_label("Search").fill("telemetry")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes < 35")
@@ -181,6 +248,60 @@ def test_system_dynamics_viewer_core_interactions():
                 "Fix by recomputing visible edge state from the explicit visible node set."
             )
 
+            page.get_by_label("Search").fill("a")
+            result_summary = page.locator("#search-results > p").inner_text()
+            result_match = re.search(
+                r"(\d+) visible matches\. (\d+) hidden by current view or filters\. "
+                r"Showing (\d+) of (\d+) keyboard-selectable matches\.",
+                result_summary,
+            )
+            assert result_match, (
+                "search result summary did not expose visible, hidden, shown, and total counts."
+            )
+            assert int(result_match.group(3)) < int(result_match.group(4)), (
+                "broad search summary reported capped result count as the total match count. "
+                "Fix by computing headings before slicing rendered search results."
+            )
+            assert (
+                f"{result_match.group(1)} visible matches; "
+                f"{result_match.group(2)} hidden by current view or filters"
+                in page.locator("#search-live").inner_text()
+            )
+
+            page.get_by_label("Search").fill("model")
+            result_count = page.locator("#search-results [data-result-id]").count()
+            assert result_count > 1
+            second_search_result = page.locator("#search-results [data-result-id]").nth(1)
+            second_result_id = second_search_result.get_attribute("data-result-id")
+            second_result_group = second_search_result.get_attribute("data-result-group")
+            page.get_by_label("Search").press("End")
+            assert page.get_by_label("Search").get_attribute("aria-activedescendant") == (
+                f"search-result-{result_count - 1}"
+            )
+            page.get_by_label("Search").press("Home")
+            assert page.get_by_label("Search").get_attribute("aria-activedescendant") == (
+                "search-result-0"
+            )
+            page.get_by_label("Search").press("ArrowUp")
+            assert page.get_by_label("Search").get_attribute("aria-activedescendant") == (
+                f"search-result-{result_count - 1}"
+            )
+            page.get_by_label("Search").press("ArrowDown")
+            assert page.get_by_label("Search").get_attribute("aria-activedescendant") == (
+                "search-result-0"
+            )
+            page.get_by_label("Search").press("ArrowDown")
+            assert page.get_by_label("Search").get_attribute("aria-activedescendant") == (
+                "search-result-1"
+            )
+            page.get_by_label("Search").press("Enter")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": second_result_group,
+                "id": second_result_id,
+            }
+
             page.get_by_label("Search").fill("advances_to")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().edges >= 1")
             first_search_result = page.locator("#search-results [data-result-id]").first
@@ -198,9 +319,11 @@ def test_system_dynamics_viewer_core_interactions():
             copied_payload = page.evaluate("JSON.parse(window.__copiedViewJson)")
             assert copied_payload["search"] == "advances_to"
             assert "sdlc-intake-to-claim" in copied_payload["visible_edge_ids"]
+            assert "viewport" in copied_payload
+            assert "visible_relation_categories" in copied_payload
             assert (
                 "Current view JSON copied to clipboard."
-                in page.locator("#data-health").inner_text()
+                in page.locator("#action-status").inner_text()
             )
             page.get_by_role("button", name="PNG").click()
             download_click = page.evaluate("window.__downloadClicks.at(-1)")
@@ -209,6 +332,63 @@ def test_system_dynamics_viewer_core_interactions():
 
             page.get_by_label("Search").fill("")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
+            page.locator('input[data-filter="relation"][value="governance"]').uncheck()
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().edges < 42")
+            page.locator('input[data-filter="relation"][value="governance"]').check()
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().edges === 42")
+            page.evaluate(
+                """
+                document.querySelectorAll('input[data-filter="relation"]').forEach((input) => {
+                  if (input.checked) {
+                    input.click();
+                  }
+                });
+                """
+            )
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().edges === 0")
+            assert (
+                page.evaluate(
+                    "window.systemDynamicsMapRuntime.currentViewPayload().visible_relation_categories"
+                )
+                == []
+            ), (
+                "unchecked relation categories exported no active categories but still showed edges. "
+                "Fix by treating an empty checked relation set as show none when filter controls exist."
+            )
+            page.evaluate(
+                """
+                document.querySelectorAll('input[data-filter="relation"]').forEach((input) => {
+                  if (!input.checked) {
+                    input.click();
+                  }
+                });
+                """
+            )
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().edges === 42")
+            page.get_by_label("Search").fill("zzzznomatchq")
+            assert (
+                "No visible or hidden elements match"
+                in page.locator("#search-results").inner_text()
+            )
+            page.locator("#cy").focus()
+            page.keyboard.press("ArrowDown")
+            assert (
+                "No visible graph elements to select. Clear search or reset filters to recover."
+                in page.locator("#action-status").inner_text()
+            )
+            page.locator("#cy").focus()
+            page.keyboard.press("/")
+            assert page.evaluate("document.activeElement.id") == "search"
+            page.locator("#cy").focus()
+            page.keyboard.press("Escape")
+            assert page.get_by_label("Search").input_value() == ""
+            assert page.locator("#panel").inner_text().startswith("RDF / OWL Knowledge Graph")
+            page.get_by_label("Search").fill("zzzznomatchq")
+            page.get_by_role("button", name="Reset to Topology").click()
+            page.wait_for_function("window.systemDynamicsMapRuntime.activeLens() === 'topology'")
+            assert page.get_by_label("Search").input_value() == ""
+            assert "Reset to Topology." in page.locator("#action-status").inner_text()
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().edges === 42")
             page.locator('input[data-filter="status"][value="candidate"]').uncheck()
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes < 35")
             assert page.evaluate(
@@ -219,7 +399,7 @@ def test_system_dynamics_viewer_core_interactions():
             )
 
             page.locator('input[data-filter="status"][value="candidate"]').check()
-            page.get_by_label("Lens").select_option("operating-slice")
+            page.get_by_label("View").select_option("operating-slice")
             page.wait_for_function(
                 "window.systemDynamicsMapRuntime.activeLens() === 'operating-slice'"
             )
@@ -229,6 +409,10 @@ def test_system_dynamics_viewer_core_interactions():
                 "Fix by honoring visible_node_ids and visible_edge_ids in applyFilters()."
             )
             lens_summary = page.locator("#lens-summary").inner_text()
+            lens_summary_lower = lens_summary.lower()
+            assert "focus on current operating state" in lens_summary_lower
+            assert "trust basis" in lens_summary_lower
+            assert "projection" in lens_summary_lower
             assert "8 nodes / 7 edges" in lens_summary
             assert "27 nodes / 35 edges" in lens_summary
             assert "observed" in lens_summary
@@ -338,8 +522,8 @@ def test_system_dynamics_viewer_core_interactions():
 
             page.evaluate("window.systemDynamicsMapRuntime.selectEdge('sdlc-intake-to-claim')")
             assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
-            page.get_by_label("Lens").focus()
-            page.get_by_label("Lens").press("Escape")
+            page.get_by_label("View").focus()
+            page.get_by_label("View").press("Escape")
             select_escape_payload = page.evaluate(
                 "window.systemDynamicsMapRuntime.currentViewPayload()"
             )
@@ -352,12 +536,12 @@ def test_system_dynamics_viewer_core_interactions():
                 "Fix by routing focused select Escape through clearSelection()."
             )
 
-            page.get_by_label("Lens").select_option("topology")
+            page.get_by_label("View").select_option("topology")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
             page.evaluate("window.systemDynamicsMapRuntime.selectNode('dmn')")
             assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
             assert page.locator("#panel").inner_text().startswith("DMN")
-            page.get_by_label("Lens").select_option("operating-slice")
+            page.get_by_label("View").select_option("operating-slice")
             page.wait_for_function(
                 "window.systemDynamicsMapRuntime.activeLens() === 'operating-slice'"
             )
@@ -369,18 +553,40 @@ def test_system_dynamics_viewer_core_interactions():
             assert "dmn" not in lens_payload["visible_node_ids"]
             assert page.locator("#panel").inner_text().startswith("RDF / OWL Knowledge Graph")
             assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 0
+            assert (
+                "DMN hidden by the active view or filters"
+                in page.locator("#action-status").inner_text()
+            )
+            page.get_by_role("button", name="Dismiss").click()
+            assert page.locator("#action-status").inner_text() == ""
             error_message = _browser_error_message(
                 page, "window.systemDynamicsMapRuntime.selectNode('dmn')"
             )
             assert HIDDEN_SELECTION_MESSAGE in error_message
             assert HIDDEN_SELECTION_RECOVERY in error_message
+            page.get_by_label("Search").fill("dmn")
+            hidden_result = page.locator(
+                '#search-results [data-hidden="true"][data-result-id="dmn"]'
+            )
+            assert "DMN" in hidden_result.inner_text()
+            hidden_result.click()
+            page.wait_for_function("window.systemDynamicsMapRuntime.activeLens() === 'topology'")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "dmn",
+            }
+            assert "DMN revealed in Topology." in page.locator("#action-status").inner_text()
+            page.keyboard.press("Escape")
+            _assert_no_viewer_selection(page)
 
-            page.get_by_label("Lens").select_option("topology")
+            page.get_by_label("View").select_option("topology")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
             _assert_no_viewer_selection(page)
             page.evaluate("window.systemDynamicsMapRuntime.selectEdge('dmn-to-sbvr')")
             assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
-            page.get_by_label("Lens").select_option("operating-slice")
+            page.get_by_label("View").select_option("operating-slice")
             page.wait_for_function(
                 "window.systemDynamicsMapRuntime.activeLens() === 'operating-slice'"
             )
@@ -393,15 +599,86 @@ def test_system_dynamics_viewer_core_interactions():
             )
             assert "dmn-to-sbvr" not in lens_edge_payload["visible_edge_ids"]
             assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 0
+            assert (
+                "DMN -> SBVR hidden by the active view or filters"
+                in page.locator("#action-status").inner_text()
+            )
+            page.get_by_role("button", name="Show in Topology").click()
+            page.wait_for_function("window.systemDynamicsMapRuntime.activeLens() === 'topology'")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "edges",
+                "id": "dmn-to-sbvr",
+            }
+            assert (
+                "DMN -> SBVR revealed in Topology." in page.locator("#action-status").inner_text()
+            )
+            page.get_by_label("View").select_option("operating-slice")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeLens() === 'operating-slice'"
+            )
             error_message = _browser_error_message(
                 page, "window.systemDynamicsMapRuntime.selectEdge('dmn-to-sbvr')"
             )
             assert HIDDEN_SELECTION_MESSAGE in error_message
             assert HIDDEN_SELECTION_RECOVERY in error_message
 
-            page.get_by_label("Lens").select_option("topology")
+            page.get_by_label("View").select_option("topology")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes === 35")
             _assert_no_viewer_selection(page)
+            traversal_items = page.evaluate("window.systemDynamicsMapRuntime.traversalItems()")
+            assert len(traversal_items) > 2
+
+            page.locator("#cy").focus()
+            page.keyboard.press("Home")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": traversal_items[0]["group"],
+                "id": traversal_items[0]["id"],
+            }
+            page.keyboard.press("End")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": traversal_items[-1]["group"],
+                "id": traversal_items[-1]["id"],
+            }
+            page.keyboard.press("ArrowLeft")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": traversal_items[-2]["group"],
+                "id": traversal_items[-2]["id"],
+            }
+            page.keyboard.press("ArrowRight")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": traversal_items[-1]["group"],
+                "id": traversal_items[-1]["id"],
+            }
+            page.keyboard.press("Enter")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": traversal_items[-1]["group"],
+                "id": traversal_items[-1]["id"],
+            }
+            page.keyboard.press("Space")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": traversal_items[-1]["group"],
+                "id": traversal_items[-1]["id"],
+            }
+            assert page.evaluate("window.systemDynamicsMapRuntime.selectedElementCount()") == 1
+            page.keyboard.press("Escape")
+            _assert_no_viewer_selection(page)
+            page.locator("#cy").focus()
+            page.keyboard.press("/")
+            assert page.evaluate("document.activeElement.id") == "search"
             page.get_by_role("button", name="Directed").click()
             page.wait_for_function(
                 "window.systemDynamicsMapRuntime.activeLayout() === 'breadthfirst'"
@@ -591,6 +868,194 @@ def test_system_dynamics_viewer_core_interactions():
             browser.close()
 
 
+def test_system_dynamics_viewer_toolbar_and_panel_actions_are_operable():
+    with _static_server() as base_url, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.add_init_script(
+            """
+            Object.defineProperty(navigator, "clipboard", {
+              value: {
+                writeText: async (text) => {
+                  if (window.__rejectClipboard) {
+                    throw new Error("clipboard blocked by test");
+                  }
+                  window.__clipboardWrites.push(text);
+                }
+              },
+              configurable: true
+            });
+            window.__clipboardWrites = [];
+            window.__rejectClipboard = false;
+            window.__downloadClicks = [];
+            HTMLAnchorElement.prototype.click = function () {
+              window.__downloadClicks.push({
+                download: this.download,
+                href: this.href
+              });
+            };
+            """
+        )
+        try:
+            page.goto(f"{base_url}/system-dynamics-map-viewer.html")
+            page.locator("#cy canvas").first.wait_for(timeout=10_000)
+            page.wait_for_function("window.systemDynamicsMapRuntime")
+            page.wait_for_function(NONBLANK_CANVAS_SCRIPT, timeout=10_000)
+
+            page.evaluate("window.systemDynamicsMapRuntime.selectNode('opentelemetry')")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "opentelemetry",
+            }
+            page.locator('#panel [data-panel-action="copy-id"]').click()
+            page.wait_for_function("window.__clipboardWrites.at(-1) === 'opentelemetry'")
+            assert "Element ID copied." in page.locator("#action-status").inner_text()
+
+            page.evaluate("window.__rejectClipboard = true")
+            page.locator('#panel [data-panel-action="copy-id"]').click()
+            assert "Element ID: opentelemetry" in page.locator("#action-status").inner_text()
+            page.evaluate("window.__rejectClipboard = false")
+
+            page.locator('#panel [data-panel-action="neighborhood"]').click()
+            assert (
+                "OpenTelemetry neighborhood framed." in page.locator("#action-status").inner_text()
+            )
+            page.locator("#zoom-out").click()
+            page.locator("#zoom-out").click()
+            page.locator('#panel [data-panel-action="fit-selected"]').click()
+            page.wait_for_timeout(250)
+            _assert_valid_viewport(page)
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "opentelemetry",
+            }
+            page.locator("#zoom-out").click()
+            page.locator("#fit-selected").click()
+            page.wait_for_timeout(250)
+            _assert_valid_viewport(page)
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "opentelemetry",
+            }
+
+            zoom_before = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().viewport.zoom"
+            )
+            page.locator("#zoom-in").click()
+            page.wait_for_function(
+                "(zoomBefore) => "
+                "window.systemDynamicsMapRuntime.currentViewPayload().viewport.zoom "
+                "> zoomBefore",
+                arg=zoom_before,
+            )
+            zoom_after_in = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().viewport.zoom"
+            )
+            page.locator("#zoom-out").click()
+            page.wait_for_function(
+                "(zoomAfterIn) => "
+                "window.systemDynamicsMapRuntime.currentViewPayload().viewport.zoom "
+                "< zoomAfterIn",
+                arg=zoom_after_in,
+            )
+            page.locator("#zoom-reset").click()
+            assert isinstance(
+                page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload().viewport.zoom"),
+                (int, float),
+            )
+
+            assert (
+                page.evaluate(
+                    "window.systemDynamicsMapRuntime.currentViewPayload().edge_labels_visible"
+                )
+                is False
+            )
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.edgeLabelState('dmn-to-sbvr')"
+            ) == {
+                "hasShowLabel": False,
+                "label": "",
+            }
+            page.locator("#edge-labels").click()
+            assert page.locator("#edge-labels").get_attribute("aria-pressed") == "true"
+            assert (
+                page.evaluate(
+                    "window.systemDynamicsMapRuntime.currentViewPayload().edge_labels_visible"
+                )
+                is True
+            )
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.edgeLabelState('dmn-to-sbvr')"
+            ) == {
+                "hasShowLabel": True,
+                "label": "Adjacent Vocabulary",
+            }
+            assert "Edge labels shown." in page.locator("#action-status").inner_text()
+
+            page.evaluate("window.systemDynamicsMapRuntime.selectEdge('dmn-to-sbvr')")
+            page.locator('#panel [data-panel-action="source"]').click()
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "dmn",
+            }
+            page.evaluate("window.systemDynamicsMapRuntime.selectEdge('dmn-to-sbvr')")
+            page.locator('#panel [data-panel-action="target"]').click()
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "sbvr",
+            }
+
+            page.evaluate("window.__rejectClipboard = true")
+            page.get_by_role("button", name="Copy View JSON").click()
+            page.wait_for_function(
+                "window.__downloadClicks.some((item) => "
+                "item.download === 'system-dynamics-current-view.json')"
+            )
+            assert (
+                "Clipboard unavailable; current view JSON downloaded."
+                in page.locator("#action-status").inner_text()
+            )
+        finally:
+            browser.close()
+
+
+def test_system_dynamics_viewer_reference_captures_match_current_served_render(tmp_path):
+    with _static_server() as base_url, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            for viewport, reference_path in REFERENCE_CAPTURE_SPECS:
+                page = browser.new_page(viewport=viewport)
+                try:
+                    page.goto(f"{base_url}/system-dynamics-map-viewer.html")
+                    page.locator("#cy canvas").first.wait_for(timeout=10_000)
+                    page.wait_for_function("window.systemDynamicsMapRuntime")
+                    page.wait_for_function(NONBLANK_CANVAS_SCRIPT, timeout=10_000)
+                    page.wait_for_timeout(500)
+                    current_path = tmp_path / reference_path.name
+                    page.screenshot(path=str(current_path), full_page=False)
+                finally:
+                    page.close()
+
+                mean_delta = _mean_image_delta(reference_path, current_path)
+                assert mean_delta < REFERENCE_CAPTURE_MAX_MEAN_DELTA, (
+                    f"{reference_path}: committed capture drifted from the current served viewer "
+                    f"(mean pixel delta {mean_delta:.2f}). Regenerate the reference PNG at "
+                    f"{viewport['width']}x{viewport['height']}."
+                )
+        finally:
+            browser.close()
+
+
 def test_system_dynamics_viewer_direct_file_mode_preserves_supplemental_data():
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
@@ -680,6 +1145,64 @@ def test_system_dynamics_viewer_reports_served_seed_fallback():
             browser.close()
 
 
+def test_system_dynamics_viewer_mobile_layout_remains_operable():
+    with _static_server() as base_url, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        try:
+            page.goto(f"{base_url}/system-dynamics-map-viewer.html")
+            page.locator("#cy canvas").first.wait_for(timeout=10_000)
+            page.wait_for_function("window.systemDynamicsMapRuntime")
+            assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+            assert page.get_by_role("searchbox", name="Search").is_visible()
+            assert page.locator("#cy").is_visible()
+            mobile_layout = page.evaluate(
+                """
+                () => {
+                  const styleFor = (selector) => getComputedStyle(document.querySelector(selector));
+                  const app = styleFor(".app");
+                  const controls = styleFor(".controls");
+                  const details = styleFor(".details");
+                  const workspace = document.querySelector(".workspace");
+                  const graph = styleFor("#cy");
+                  return {
+                    appDisplay: app.display,
+                    appOverflowY: app.overflowY,
+                    controlsMaxHeight: controls.maxHeight,
+                    controlsOverflowY: controls.overflowY,
+                    controlsWidth: Math.round(document.querySelector(".controls").getBoundingClientRect().width),
+                    detailsMaxHeight: details.maxHeight,
+                    detailsOverflowY: details.overflowY,
+                    detailsWidth: Math.round(document.querySelector(".details").getBoundingClientRect().width),
+                    graphMinHeight: graph.minHeight,
+                    viewportWidth: window.innerWidth,
+                    workspaceHeight: Math.round(workspace.getBoundingClientRect().height)
+                  };
+                }
+                """
+            )
+            assert mobile_layout["appDisplay"] == "block"
+            assert mobile_layout["appOverflowY"] == "visible"
+            assert mobile_layout["controlsMaxHeight"] == "none"
+            assert mobile_layout["controlsOverflowY"] == "visible"
+            assert mobile_layout["detailsMaxHeight"] == "none"
+            assert mobile_layout["detailsOverflowY"] == "visible"
+            assert mobile_layout["controlsWidth"] <= mobile_layout["viewportWidth"]
+            assert mobile_layout["detailsWidth"] <= mobile_layout["viewportWidth"]
+            assert mobile_layout["graphMinHeight"] == "340px"
+            assert mobile_layout["workspaceHeight"] >= 420
+            page.get_by_role("searchbox", name="Search").fill("dmn")
+            assert page.locator("#search-results [data-result-id]").first.is_visible()
+            page.locator("#cy").focus()
+            page.keyboard.press("ArrowDown")
+            assert (
+                page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload().selected")
+                is not None
+            )
+        finally:
+            browser.close()
+
+
 def test_system_dynamics_viewer_respects_reduced_motion():
     with _static_server() as base_url, sync_playwright() as playwright:
         browser = playwright.chromium.launch()
@@ -698,6 +1221,72 @@ def test_system_dynamics_viewer_respects_reduced_motion():
             browser.close()
 
 
+def test_system_dynamics_viewer_forced_colors_keeps_focus_and_boundaries_visible():
+    with _static_server() as base_url, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(
+            viewport={"width": 1280, "height": 900},
+            forced_colors="active",
+        )
+        try:
+            page.goto(f"{base_url}/system-dynamics-map-viewer.html")
+            page.locator("#cy canvas").first.wait_for(timeout=10_000)
+            page.wait_for_function("window.systemDynamicsMapRuntime")
+            assert page.evaluate("window.matchMedia('(forced-colors: active)').matches")
+            forced_color_styles = page.evaluate(
+                """
+                () => {
+                  const cyStyle = getComputedStyle(document.querySelector("#cy"));
+                  const buttonStyle = getComputedStyle(document.querySelector("button"));
+                  return {
+                    borderColor: cyStyle.borderTopColor,
+                    borderStyle: cyStyle.borderTopStyle,
+                    borderWidth: cyStyle.borderTopWidth,
+                    buttonTextColor: buttonStyle.color,
+                    canvasColor: cyStyle.backgroundColor
+                  };
+                }
+                """
+            )
+            assert forced_color_styles["borderStyle"] == "solid"
+            assert forced_color_styles["borderWidth"] != "0px"
+            assert forced_color_styles["borderColor"] == forced_color_styles["buttonTextColor"]
+            assert forced_color_styles["borderColor"] != forced_color_styles["canvasColor"], (
+                "forced-colors mode did not render a contrastive graph boundary. "
+                "Fix by keeping #cy in the forced-colors border-color rule."
+            )
+            page.locator("#cy").focus()
+            graph_focus_style = page.evaluate(
+                """
+                () => {
+                  const graph = document.querySelector("#cy");
+                  const style = getComputedStyle(graph);
+                  return {
+                    activeElementId: document.activeElement.id,
+                    outlineStyle: style.outlineStyle,
+                    outlineWidth: style.outlineWidth
+                  };
+                }
+                """
+            )
+            assert graph_focus_style["activeElementId"] == "cy"
+            assert graph_focus_style["outlineStyle"] == "solid"
+            assert graph_focus_style["outlineWidth"] != "0px"
+            page.get_by_role("button", name="Force").focus()
+            focus_style = page.evaluate(
+                """
+                () => {
+                  const style = getComputedStyle(document.activeElement);
+                  return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth };
+                }
+                """
+            )
+            assert focus_style["outlineStyle"] == "solid"
+            assert focus_style["outlineWidth"] != "0px"
+        finally:
+            browser.close()
+
+
 def test_system_dynamics_viewer_reports_missing_local_cytoscape():
     with _static_server() as base_url, sync_playwright() as playwright:
         browser = playwright.chromium.launch()
@@ -705,12 +1294,13 @@ def test_system_dynamics_viewer_reports_missing_local_cytoscape():
         page.route("**/vendor/cytoscape-3.34.0.min.js", lambda route: route.abort())
         try:
             page.goto(f"{base_url}/system-dynamics-map-viewer.html")
-            error = page.locator("#cy .error")
+            error = page.get_by_role("alert")
             error.wait_for(timeout=10_000)
             assert (
                 error.inner_text()
                 == "Cytoscape.js did not load. Check that ./vendor/cytoscape-3.34.0.min.js is present."
             )
+            assert page.evaluate("document.activeElement.getAttribute('role')") == "alert"
             assert page.evaluate("window.systemDynamicsMapRuntime") is None, (
                 "viewer exposed runtime APIs after Cytoscape failed to load. "
                 "Fix by returning before runtime initialization when the local asset is missing."

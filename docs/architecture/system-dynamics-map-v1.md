@@ -277,16 +277,21 @@ rg -n '#[0-9A-Fa-f]{3,8}\b' \
   tests/test_system_dynamics_map_viewer_playwright.py
 ```
 
-The hardcoded-hex scan should return no matches. The viewer uses intrinsic flex
-wrapping for narrow screens; it should not contain conditional CSS at-rules:
+The hardcoded-hex scan should return no matches. The viewer intentionally uses
+two conditional media rules: one mobile/narrow layout rule and one
+forced-colors accessibility rule. It should not contain container queries or
+unregistered media rules:
 
 ```bash
 python3 - <<'PY'
+import re
 from pathlib import Path
 
 text = Path("docs/architecture/system-dynamics-map-viewer.html").read_text()
-for token in ("@" + "container", "@" + "media"):
-    assert token not in text, f"unexpected conditional CSS at-rule: {token}"
+assert "@" + "container" not in text, "unexpected container query"
+expected_media = {"@media (max-width: 860px)", "@media (forced-colors: active)"}
+found_media = set(re.findall(r"@media\s*\([^)]+\)", text))
+assert found_media == expected_media, found_media
 PY
 ```
 
@@ -303,12 +308,41 @@ The committed reference captures are:
 - `docs/architecture/system-dynamics-map-viewer-desktop.png`
 - `docs/architecture/system-dynamics-map-viewer-mobile.png`
 
-The portable recheck for committed reference captures is:
+The maintained recheck target for the Pillow-backed shape/nonblank guard is:
 
 ```bash
-test -f docs/architecture/system-dynamics-map-viewer-desktop.png
-test -f docs/architecture/system-dynamics-map-viewer-mobile.png
+.venv/bin/pytest -q tests/test_system_dynamics_map_artifacts.py::test_committed_viewer_reference_captures_have_expected_shape_and_nonblank_content
 ```
+
+For standalone use outside the repo environment, install Pillow first and run
+the equivalent portable recheck. Keep this snippet's dimensions and color
+threshold in sync with the maintained pytest target above if either guard
+changes:
+
+```bash
+python3 - <<'PY'
+from pathlib import Path
+
+try:
+    from PIL import Image
+except ImportError as error:
+    raise SystemExit("Install Pillow before running this standalone recheck.") from error
+
+expected = {
+    Path("docs/architecture/system-dynamics-map-viewer-desktop.png"): (1440, 960),
+    Path("docs/architecture/system-dynamics-map-viewer-mobile.png"): (390, 844),
+}
+for path, dimensions in expected.items():
+    with Image.open(path) as image:
+        assert image.size == dimensions, (path, image.size)
+        colors = image.convert("RGB").getcolors(maxcolors=1_000_000)
+        assert colors is not None and len(colors) > 50, path
+PY
+```
+
+The `>50` color threshold is a blank/sparse-image guard; the Playwright viewer
+suite performs the stronger current-served-render comparison against these
+committed references.
 
 The AV-SDLC task evidence also carries operator-local copies under the closing
 task evidence directory named in the cc-task dossier.
@@ -334,11 +368,12 @@ while time.time() < deadline:
 raise SystemExit("local docs server did not start on 127.0.0.1:8765")
 PY
 
+# The reference files are viewport captures; do not add --full-page here.
 npx playwright screenshot --browser chromium --viewport-size 1440,960 \
-  --wait-for-selector '#cy canvas' --wait-for-timeout 3000 --full-page \
+  --wait-for-selector '#cy canvas' --wait-for-timeout 3000 \
   http://127.0.0.1:8765/system-dynamics-map-viewer.html docs/architecture/system-dynamics-map-viewer-desktop.png
 npx playwright screenshot --browser chromium --viewport-size 390,844 \
-  --wait-for-selector '#cy canvas' --wait-for-timeout 3000 --full-page \
+  --wait-for-selector '#cy canvas' --wait-for-timeout 3000 \
   http://127.0.0.1:8765/system-dynamics-map-viewer.html docs/architecture/system-dynamics-map-viewer-mobile.png
 kill "$server_pid" 2>/dev/null || true
 trap - EXIT
