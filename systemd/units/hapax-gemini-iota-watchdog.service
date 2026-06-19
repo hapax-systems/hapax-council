@@ -1,6 +1,5 @@
 [Unit]
 Description=Retired Hapax Gemini iota lane watchdog compatibility unit
-Documentation=file:///home/hapax/projects/hapax-council/scripts/hapax-gemini-watchdog
 After=default.target
 PartOf=hapax-control-plane.target
 
@@ -10,6 +9,10 @@ ExecStart=/usr/bin/true
 RemainAfterExit=yes
 
 # Retained only so stale installs do not respawn the retired Gemini CLI lane.
+# This unit intentionally emits no sd_notify readiness signal; no current repo
+# units require or want hapax-gemini-iota-watchdog.service.
+# Deployed copies reconcile through the normal post-merge source-activation and
+# user-systemd reload path.
 MemoryMax=64M
 CPUQuota=5%
 

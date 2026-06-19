@@ -133,6 +133,22 @@ def test_unexpired_quota_wall_marks_platform_exhausted(tmp_path: Path) -> None:
     assert summary["quota_walls"] == {"claude": 1}
 
 
+def test_retired_gemini_quota_wall_receipts_warn_and_do_not_seed_routes(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _wall_receipt(relay, "gemini-iota", "2026-06-10T06:00:00Z")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "WARNING ignoring retired Gemini quota-wall receipt" in result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    route_ids = {snapshot["route_id"] for snapshot in payload["quota_snapshots"]}
+    assert all(not route_id.startswith("gemini.") for route_id in route_ids)
+    summary = json.loads(result.stdout)
+    assert "retired-gemini" not in summary["quota_walls"]
+
+
 def test_resource_probe_failure_fails_closed_to_unknown(tmp_path: Path) -> None:
     result, out = _run_writer(tmp_path, nvidia_body="exit 9")
 

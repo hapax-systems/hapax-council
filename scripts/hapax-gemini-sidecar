@@ -257,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
         if Path(args.legacy_gemini_bin).name != "agy":
             raise SystemExit("hapax-gemini-sidecar: --gemini-bin is retired; use --agy-bin agy")
         args.agy_bin = args.legacy_gemini_bin
+    if Path(args.agy_bin).name != "agy":
+        raise SystemExit("hapax-gemini-sidecar: --agy-bin must point to agy")
     prompt = _build_prompt(args.mode, _prompt_from_args(args))
     attempts = (
         _strict_model_attempts(args.mode, args.model)

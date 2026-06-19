@@ -6,10 +6,10 @@ test-gap analysis, but it must not become a production train engine.
 
 ## Model Policy
 
-Use the latest highest-capability agy Gemini-family selector:
+Use the latest highest-capability agy Gemini-family selector through the sidecar:
 
 ```bash
-gemini-3.1-pro-preview
+scripts/hapax-gemini-sidecar --agy-bin agy --model gemini-3.1-pro-preview --strict-model --dry-run --prompt "selector recheck"
 ```
 
 This is intentionally strict. The junior team fails closed if the selector is
@@ -62,3 +62,10 @@ It refreshes:
 
 Codex or Claude must verify and graduate any useful packet into normal
 cc-task/branch/PR flow.
+
+## Recheck
+
+```bash
+agy --help
+scripts/hapax-gemini-jr-team dispatch --dry-run --role jr-reviewer --task-id recheck --title "Agy JR recheck" --prompt "Confirm packet route only."
+```

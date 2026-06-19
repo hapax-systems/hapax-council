@@ -149,6 +149,13 @@ def active_quota_walls(
             if detected_at is None or now - detected_at > WALL_WITHOUT_RESET_TTL:
                 continue
         platform = role_platform(role)
+        if platform == "retired-gemini":
+            print(
+                "hapax-quota-telemetry-writer: WARNING ignoring retired Gemini "
+                f"quota-wall receipt {path.name}; legacy Gemini CLI lanes are retired",
+                file=sys.stderr,
+            )
+            continue
         walls.setdefault(platform, []).append(
             f"relay-receipt:{path.name}:resets_at:{fields.get('resets_at') or 'unknown'}"
         )

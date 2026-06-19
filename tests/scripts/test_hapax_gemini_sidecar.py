@@ -343,7 +343,7 @@ def test_missing_binary_yields_exit_code_2(tmp_path: Path) -> None:
         [
             str(WRAPPER),
             "--agy-bin",
-            str(tmp_path / "no-such-binary"),
+            str(tmp_path / "agy"),
             "--prompt",
             "noop",
             "--strict-model",
@@ -361,6 +361,29 @@ def test_missing_binary_yields_exit_code_2(tmp_path: Path) -> None:
     assert "failed to launch" in result.stderr
     metadata = json.loads((tmp_path / "metadata.jsonl").read_text().splitlines()[0])
     assert metadata["exit_code"] == 2
+
+
+def test_agy_bin_rejects_non_agy_binary_name(tmp_path: Path) -> None:
+    fake_legacy = tmp_path / "gemini"
+    fake_legacy.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_legacy.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(WRAPPER),
+            "--dry-run",
+            "--agy-bin",
+            str(fake_legacy),
+            "--prompt",
+            "noop",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode != 0
+    assert "--agy-bin must point to agy" in result.stderr
 
 
 def test_global_timeout_during_fallback_yields_124(tmp_path: Path) -> None:
