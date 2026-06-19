@@ -6,9 +6,9 @@
       "sha256": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e"
     },
     {
-      "bytes": 287512,
+      "bytes": 293252,
       "path": "docs/architecture/system-dynamics-map-viewer.html",
-      "sha256": "f269dc0a736792657ac8eb9161fcc122afca2edbd73fdfe9960ac91fed56d367"
+      "sha256": "9fc9b3e8b7a4b9b321fb1f8373ce0d323129daad54a568ff79130d16f64df890"
     },
     {
       "bytes": 435328,
@@ -51,9 +51,9 @@
       "sha256": "56c382e4afa373f2d989676e2f3d0c533d7fe91743b1893199cf19c4923e653b"
     },
     {
-      "bytes": 8487,
+      "bytes": 15908,
       "path": "docs/architecture/system-dynamics-map.view-manifest.json",
-      "sha256": "f05bb83c849eeed17e3abeca07a251b9ce45de9146515a5374d110352bf9b6e1"
+      "sha256": "5b21c54b6d995709ff82d0e96a19f6e4dc54603b9f3fd29cd2f3a64ab196b2a9"
     },
     {
       "bytes": 3369,
@@ -86,9 +86,9 @@
       "sha256": "d90e150c456f4ebc38609039389c00073efb830dbb95bd02d5d302b6cb2fe933"
     },
     {
-      "bytes": 7932,
+      "bytes": 12184,
       "path": "schemas/system-dynamics-map/view-manifest.schema.json",
-      "sha256": "c8c5a48c4643269cf658994968d7bf864e6c460b8ee59d57cc0cea5e49fcbd83"
+      "sha256": "1e04e4eec988552f2ef9e1f5bb57ed4e53c0d56e4fe3395dd491c857639ed829"
     }
   ],
   "authority_case": "CASE-SYSTEM-DYNAMICS-MAP-V1-ENHANCEMENT-20260618",

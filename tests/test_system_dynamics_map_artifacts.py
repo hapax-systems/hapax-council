@@ -656,6 +656,22 @@ def test_generated_schemas_validate_artifacts_and_reject_bad_shapes():
     assert "lenses" in manifest_errors
     assert "validation" in manifest_errors
     assert "generated" in manifest_errors
+    malformed_workbench_manifest = copy.deepcopy(
+        json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    )
+    malformed_workbench_manifest["workbench_contract"]["audience_modes"][0] = "operator"
+    malformed_workbench_manifest["workbench_contract"]["explanation_paths"][0]["scene_count"] = "5"
+    malformed_workbench_manifest["workbench_contract"]["explanation_paths"][0]["must_include"] = (
+        "gate path"
+    )
+    malformed_workbench_manifest["workbench_contract"]["explanation_paths"][0]["scenes"][0][
+        "selection"
+    ]["group"] = "node"
+    workbench_errors = "\n".join(_schema_errors(malformed_workbench_manifest, view_manifest_schema))
+    assert "operator" in workbench_errors
+    assert "'5' is not of type 'integer'" in workbench_errors
+    assert "'gate path' is not of type 'array'" in workbench_errors
+    assert "node" in workbench_errors
 
     bad_package = copy.deepcopy(json.loads(PACKAGE_PATH.read_text(encoding="utf-8")))
     bad_package["artifacts"][0]["sha256"] = "not-a-sha"
@@ -908,17 +924,31 @@ def test_shacl_shapes_and_view_manifest_cover_the_durable_contract():
         "trust",
         "missing-context",
     }
-    assert workbench["audience_modes"] == [
+    assert [mode["id"] for mode in workbench["audience_modes"]] == [
         "operator",
         "newcomer",
         "collaborator",
         "reviewer",
         "executive",
     ]
+    assert workbench["defaults"] == {
+        "inquiry_mode": "release-gates",
+        "audience_mode": "operator",
+        "explanation_path": "release-readiness",
+    }
+    assert all(mode["prompt"] for mode in workbench["inquiry_modes"])
+    assert all("focus_node_ids" in mode for mode in workbench["inquiry_modes"])
     assert {path["id"] for path in workbench["explanation_paths"]} == {
         "release-readiness",
         "evidence-trust",
     }
+    assert all(
+        path["scene_count"] == len(path["scenes"]) for path in workbench["explanation_paths"]
+    )
+    assert all(
+        path["scenes"][0]["selection"]["group"] in {"nodes", "edges"}
+        for path in workbench["explanation_paths"]
+    )
     assert any("bitemporal snapshot" in item for item in workbench["follow_on_tranches"])
     assert any("causality" in item for item in workbench["follow_on_tranches"])
     assert any("contradiction groups" in item for item in workbench["follow_on_tranches"])

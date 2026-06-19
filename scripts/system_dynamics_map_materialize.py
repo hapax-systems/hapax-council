@@ -456,7 +456,137 @@ def generate_sdlc_fixture(seed: dict[str, Any]) -> dict[str, Any]:
 
 
 def generate_workbench_contract(seed: dict[str, Any]) -> dict[str, Any]:
-    _ = seed
+    sdlc_gate_node_ids = [
+        "sdlc-intake",
+        "cc-task-claim",
+        "review-dossier",
+        "pr-ci-checks",
+        "merge-release",
+    ]
+    sdlc_gate_edge_ids = [
+        "sdlc-intake-to-claim",
+        "claim-to-review-dossier",
+        "review-dossier-to-pr-ci",
+        "pr-ci-to-merge-release",
+    ]
+    explanation_paths = [
+        {
+            "id": "release-readiness",
+            "label": "Release readiness path",
+            "summary": (
+                "Teach how topology, state observations, review gates, PR/CI, and release "
+                "closure relate without treating the graph as live authority."
+            ),
+            "must_include": [
+                "source-neutral identity",
+                "temporal state separation",
+                "gate path",
+                "trust basis",
+                "what this does not prove",
+            ],
+            "scenes": [
+                {
+                    "title": "Start from source-neutral identity",
+                    "lens": "topology",
+                    "selection": {"group": "nodes", "id": seed["default_focus"]},
+                    "takeaway": (
+                        "The backbone names identities and relations; source models and "
+                        "telemetry are inputs, not the center."
+                    ),
+                    "caveat": "This proves the model shape, not live operational truth.",
+                },
+                {
+                    "title": "Separate topology from temporal state",
+                    "lens": "operating-slice",
+                    "selection": {"group": "nodes", "id": "temporal-state-events"},
+                    "takeaway": (
+                        "State is carried by observations with time, source, freshness, and "
+                        "expiry instead of overwriting topology."
+                    ),
+                    "caveat": (
+                        "The fixture has only a small observation corpus and should not be read "
+                        "as a full history."
+                    ),
+                },
+                {
+                    "title": "Follow the gate path",
+                    "lens": "operating-slice",
+                    "selection": {"group": "edges", "id": "review-dossier-to-pr-ci"},
+                    "takeaway": (
+                        "The path exposes how review state gates PR/CI readiness and downstream "
+                        "release closure."
+                    ),
+                    "caveat": "Edge direction shows declared relation flow, not automatically causal proof.",
+                },
+                {
+                    "title": "Read the trust basis",
+                    "lens": "evidence-risk",
+                    "selection": {"group": "nodes", "id": "prov-o"},
+                    "takeaway": (
+                        "Claims and observations need provenance, confidence, authority ceiling, "
+                        "and validation before being trusted."
+                    ),
+                    "caveat": "Generated confidence is an evidence cue, not independent acceptance.",
+                },
+                {
+                    "title": "State what this does not prove",
+                    "lens": "evidence-risk",
+                    "selection": {"group": "nodes", "id": "view-manifest"},
+                    "takeaway": (
+                        "Every focused view hides scope; shareable explanations must carry hidden "
+                        "counts and lossiness caveats."
+                    ),
+                    "caveat": (
+                        "A clear projection can still be misleading if hidden evidence or stale "
+                        "sources would change the conclusion."
+                    ),
+                },
+            ],
+        },
+        {
+            "id": "evidence-trust",
+            "label": "Evidence and trust path",
+            "summary": (
+                "Explain how evidence, validation, provenance, stale observations, and claim "
+                "confidence make the map auditable."
+            ),
+            "must_include": [
+                "explicit claim records",
+                "validation before trust",
+                "stale evidence visibility",
+            ],
+            "scenes": [
+                {
+                    "title": "Claims are explicit records",
+                    "lens": "evidence-risk",
+                    "selection": {"group": "nodes", "id": seed["default_focus"]},
+                    "takeaway": (
+                        "Rendered elements are backed by claim fragments with provenance and "
+                        "confidence basis."
+                    ),
+                    "caveat": "A rendered node is not enough; inspect its claim and observation records.",
+                },
+                {
+                    "title": "Validation precedes trust",
+                    "lens": "evidence-risk",
+                    "selection": {"group": "nodes", "id": "shacl-contracts"},
+                    "takeaway": "Schema and SHACL-style gates constrain whether the package is safe to interpret.",
+                    "caveat": "A passing render is weaker than a passing validation contract.",
+                },
+                {
+                    "title": "Stale evidence remains visible",
+                    "lens": "evidence-risk",
+                    "selection": {"group": "nodes", "id": "view-manifest"},
+                    "takeaway": "The stale canary keeps expiry and hidden stale evidence legible.",
+                    "caveat": (
+                        "This slice surfaces stale evidence; full snapshot diff is the next governed "
+                        "tranche."
+                    ),
+                },
+            ],
+        },
+    ]
+    explanation_paths = [{**path, "scene_count": len(path["scenes"])} for path in explanation_paths]
     return {
         "schema": "system-dynamics-map-workbench-contract-v1",
         "purpose": (
@@ -464,10 +594,19 @@ def generate_workbench_contract(seed: dict[str, Any]) -> dict[str, Any]:
             "state, evidence, projection scope, and trust caveats without centering any "
             "single source notation."
         ),
+        "defaults": {
+            "inquiry_mode": "release-gates",
+            "audience_mode": "operator",
+            "explanation_path": "release-readiness",
+        },
         "inquiry_modes": [
             {
                 "id": "release-gates",
                 "label": "What gates release?",
+                "prompt": "Follow the current intake-to-release path and identify the first non-ready gate.",
+                "lens": "operating-slice",
+                "focus_node_ids": sdlc_gate_node_ids,
+                "focus_edge_ids": sdlc_gate_edge_ids,
                 "answer_shape": [
                     "ordered gate path",
                     "first non-ready state",
@@ -478,6 +617,10 @@ def generate_workbench_contract(seed: dict[str, Any]) -> dict[str, Any]:
             {
                 "id": "stuck-work",
                 "label": "What is stuck?",
+                "prompt": "Find the first blocking or waiting state and its upstream/downstream context.",
+                "lens": "operating-slice",
+                "focus_node_ids": sdlc_gate_node_ids,
+                "focus_edge_ids": sdlc_gate_edge_ids,
                 "answer_shape": [
                     "first waiting or blocking state",
                     "upstream context",
@@ -488,6 +631,10 @@ def generate_workbench_contract(seed: dict[str, Any]) -> dict[str, Any]:
             {
                 "id": "changed",
                 "label": "What changed?",
+                "prompt": "Show what this static package can and cannot say about change over time.",
+                "lens": "topology",
+                "focus_node_ids": ["view-manifest", "temporal-state-events", "operating-lens"],
+                "focus_edge_ids": ["temporal-state-to-sdlc", "kg-to-view-manifest"],
                 "answer_shape": [
                     "snapshot identity",
                     "prior snapshot requirement",
@@ -498,6 +645,22 @@ def generate_workbench_contract(seed: dict[str, Any]) -> dict[str, Any]:
             {
                 "id": "stale-evidence",
                 "label": "What is stale?",
+                "prompt": (
+                    "Expose stale temporal evidence in scope and stale evidence hidden by the "
+                    "current projection."
+                ),
+                "lens": "evidence-risk",
+                "focus_node_ids": [
+                    "view-manifest",
+                    "temporal-state-events",
+                    "shacl-contracts",
+                    "prov-o",
+                ],
+                "focus_edge_ids": [
+                    "kg-to-view-manifest",
+                    "shacl-to-view-manifest",
+                    "prov-to-view-manifest",
+                ],
                 "answer_shape": [
                     "visible stale evidence",
                     "hidden stale evidence",
@@ -508,6 +671,10 @@ def generate_workbench_contract(seed: dict[str, Any]) -> dict[str, Any]:
             {
                 "id": "trust",
                 "label": "What do I trust?",
+                "prompt": "Summarize confidence, authority ceilings, candidate claims, and contradiction readiness.",
+                "lens": "evidence-risk",
+                "focus_node_ids": ["rdf-owl-kg", "prov-o", "shacl-contracts", "review-dossier"],
+                "focus_edge_ids": ["kg-to-prov", "kg-to-shacl", "prov-to-review-dossier"],
                 "answer_shape": [
                     "confidence basis",
                     "authority ceiling",
@@ -518,6 +685,13 @@ def generate_workbench_contract(seed: dict[str, Any]) -> dict[str, Any]:
             {
                 "id": "missing-context",
                 "label": "What am I missing?",
+                "prompt": (
+                    "State what the active view hides and which conclusions the projection cannot "
+                    "support."
+                ),
+                "lens": "topology",
+                "focus_node_ids": ["operating-lens", "view-manifest", "rdf-owl-kg"],
+                "focus_edge_ids": ["kg-to-view-manifest", "view-to-cytoscape"],
                 "answer_shape": [
                     "hidden nodes",
                     "hidden edges",
@@ -527,34 +701,33 @@ def generate_workbench_contract(seed: dict[str, Any]) -> dict[str, Any]:
             },
         ],
         "audience_modes": [
-            "operator",
-            "newcomer",
-            "collaborator",
-            "reviewer",
-            "executive",
-        ],
-        "explanation_paths": [
             {
-                "id": "release-readiness",
-                "scene_count": 5,
-                "must_include": [
-                    "source-neutral identity",
-                    "temporal state separation",
-                    "gate path",
-                    "trust basis",
-                    "what this does not prove",
-                ],
+                "id": "operator",
+                "label": "Operator",
+                "emphasis": "diagnostic next action, trust calibration, and resumable investigation",
             },
             {
-                "id": "evidence-trust",
-                "scene_count": 3,
-                "must_include": [
-                    "explicit claim records",
-                    "validation before trust",
-                    "stale evidence visibility",
-                ],
+                "id": "newcomer",
+                "label": "Newcomer",
+                "emphasis": "plain-language meaning, glossary density, and why the view exists",
+            },
+            {
+                "id": "collaborator",
+                "label": "Collaborator",
+                "emphasis": "interfaces, dependencies, evidence, and implementation handoff",
+            },
+            {
+                "id": "reviewer",
+                "label": "Reviewer / Auditor",
+                "emphasis": "scope, provenance, confidence, validation, and what cannot be concluded",
+            },
+            {
+                "id": "executive",
+                "label": "Executive",
+                "emphasis": "state, risk, decision points, and caveats without graph mechanics",
             },
         ],
+        "explanation_paths": explanation_paths,
         "follow_on_tranches": [
             "bitemporal snapshot registry and diff lens",
             "causality, guard, evidence, correlation, containment, and projection relation semantics",
@@ -1148,6 +1321,7 @@ def generate_schema_artifacts() -> dict[Path, str]:
             "required": [
                 "schema",
                 "purpose",
+                "defaults",
                 "inquiry_modes",
                 "audience_modes",
                 "explanation_paths",
@@ -1160,28 +1334,110 @@ def generate_schema_artifacts() -> dict[Path, str]:
                     "const": "system-dynamics-map-workbench-contract-v1",
                 },
                 "purpose": {"type": "string", "minLength": 1},
+                "defaults": {
+                    "type": "object",
+                    "required": ["inquiry_mode", "audience_mode", "explanation_path"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "inquiry_mode": {"type": "string", "minLength": 1},
+                        "audience_mode": {"type": "string", "minLength": 1},
+                        "explanation_path": {"type": "string", "minLength": 1},
+                    },
+                },
                 "inquiry_modes": {
                     "type": "array",
                     "minItems": 6,
                     "items": {
                         "type": "object",
-                        "required": ["id", "label", "answer_shape"],
-                        "additionalProperties": True,
+                        "required": [
+                            "id",
+                            "label",
+                            "prompt",
+                            "lens",
+                            "focus_node_ids",
+                            "focus_edge_ids",
+                            "answer_shape",
+                        ],
+                        "additionalProperties": False,
                         "properties": {
                             "id": {"type": "string", "minLength": 1},
                             "label": {"type": "string", "minLength": 1},
+                            "prompt": {"type": "string", "minLength": 1},
+                            "lens": {"type": "string", "minLength": 1},
+                            "focus_node_ids": _string_array_schema(),
+                            "focus_edge_ids": _string_array_schema(),
                             "answer_shape": _string_array_schema(),
                         },
                     },
                 },
-                "audience_modes": _string_array_schema(),
+                "audience_modes": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "required": ["id", "label", "emphasis"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "id": {"type": "string", "minLength": 1},
+                            "label": {"type": "string", "minLength": 1},
+                            "emphasis": {"type": "string", "minLength": 1},
+                        },
+                    },
+                },
                 "explanation_paths": {
                     "type": "array",
                     "minItems": 1,
                     "items": {
                         "type": "object",
-                        "required": ["id", "scene_count", "must_include"],
-                        "additionalProperties": True,
+                        "required": [
+                            "id",
+                            "label",
+                            "summary",
+                            "scene_count",
+                            "must_include",
+                            "scenes",
+                        ],
+                        "additionalProperties": False,
+                        "properties": {
+                            "id": {"type": "string", "minLength": 1},
+                            "label": {"type": "string", "minLength": 1},
+                            "summary": {"type": "string", "minLength": 1},
+                            "scene_count": {"type": "integer", "minimum": 1},
+                            "must_include": _string_array_schema(),
+                            "scenes": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                    "type": "object",
+                                    "required": [
+                                        "title",
+                                        "lens",
+                                        "selection",
+                                        "takeaway",
+                                        "caveat",
+                                    ],
+                                    "additionalProperties": False,
+                                    "properties": {
+                                        "title": {"type": "string", "minLength": 1},
+                                        "lens": {"type": "string", "minLength": 1},
+                                        "selection": {
+                                            "type": "object",
+                                            "required": ["group", "id"],
+                                            "additionalProperties": False,
+                                            "properties": {
+                                                "group": {
+                                                    "type": "string",
+                                                    "enum": ["nodes", "edges"],
+                                                },
+                                                "id": {"type": "string", "minLength": 1},
+                                            },
+                                        },
+                                        "takeaway": {"type": "string", "minLength": 1},
+                                        "caveat": {"type": "string", "minLength": 1},
+                                    },
+                                },
+                            },
+                        },
                     },
                 },
                 "follow_on_tranches": _string_array_schema(),
@@ -1714,6 +1970,7 @@ def generate_viewer(seed: dict[str, Any]) -> str:
     html = VIEWER_PATH.read_text(encoding="utf-8")
     embedded_blocks = {
         "seed-data": seed,
+        "workbench-contract-data": generate_workbench_contract(seed),
         "claims-data": generate_claims(seed),
         "lenses-data": generate_lenses(seed),
         "observations-data": generate_observations(seed),

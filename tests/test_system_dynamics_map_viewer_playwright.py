@@ -1,6 +1,7 @@
 import contextlib
 import functools
 import http.server
+import json
 import re
 import threading
 from collections.abc import Iterator
@@ -241,6 +242,15 @@ def test_system_dynamics_viewer_core_interactions():
                 "release-readiness",
                 "evidence-trust",
             }
+            manifest_contract = json.loads(
+                (ARCHITECTURE_DIR / "system-dynamics-map.view-manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )["workbench_contract"]
+            assert (
+                page.evaluate("window.systemDynamicsMapRuntime.workbenchContract()")
+                == manifest_contract
+            )
             assert page.evaluate("window.systemDynamicsMapRuntime.activeInquiryMode()") == (
                 "release-gates"
             )
