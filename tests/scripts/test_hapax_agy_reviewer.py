@@ -71,7 +71,20 @@ def test_agy_reviewer_rejects_non_agy_binary_name(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 64
-    assert "must point to agy" in result.stderr
+    assert "absolute path named agy" in result.stderr
+
+
+def test_agy_reviewer_rejects_path_lookup_for_agy() -> None:
+    result = subprocess.run(
+        [str(WRAPPER), "--agy-bin", "agy"],
+        input="review\n",
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 64
+    assert "absolute path named agy" in result.stderr
 
 
 def test_agy_reviewer_reports_missing_agy_binary(tmp_path: Path) -> None:

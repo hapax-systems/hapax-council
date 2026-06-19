@@ -16,6 +16,9 @@ This is intentionally strict. The junior team fails closed if the selector is
 unavailable rather than silently falling back to Flash or a lower-capability
 model. The local CLI executable is `agy`; legacy `gemini` and `antigravity`
 executables are not supported Hapax launch paths.
+The dry-run succeeds when it emits JSON whose `command` starts with
+`["agy", "--sandbox", "--print-timeout", "120s", "--model",
+"gemini-3.1-pro-preview", "--print", ...]`.
 
 ## Authority
 

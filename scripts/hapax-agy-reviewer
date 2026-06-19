@@ -12,6 +12,7 @@ from pathlib import Path
 
 DEFAULT_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_PRINT_TIMEOUT = "20m0s"
+DEFAULT_AGY_BIN = "/usr/bin/agy"
 
 REVIEW_PROMPT = """You are a blind PR reviewer invoked non-interactively through agy --print.
 Review ONLY the dossier supplied below on stdin. You have no repository access and must not
@@ -40,7 +41,7 @@ and no prose.
 
 
 def _default_agy_bin() -> str:
-    return os.environ.get("HAPAX_AGY_BIN") or os.environ.get("AGY_BIN") or "agy"
+    return os.environ.get("HAPAX_AGY_BIN") or os.environ.get("AGY_BIN") or DEFAULT_AGY_BIN
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -51,7 +52,6 @@ def _parser() -> argparse.ArgumentParser:
         "--print-timeout",
         default=os.environ.get("HAPAX_AGY_REVIEW_PRINT_TIMEOUT", DEFAULT_PRINT_TIMEOUT),
     )
-    parser.add_argument("--no-sandbox", action="store_true")
     return parser
 
 
@@ -84,8 +84,9 @@ def _review_env(workdir: Path) -> dict[str, str]:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    if Path(args.agy_bin).name != "agy":
-        print("hapax-agy-reviewer: --agy-bin must point to agy", file=sys.stderr)
+    agy_bin = Path(args.agy_bin)
+    if agy_bin.name != "agy" or not agy_bin.is_absolute():
+        print("hapax-agy-reviewer: --agy-bin must be an absolute path named agy", file=sys.stderr)
         return 64
 
     dossier = sys.stdin.read()
@@ -93,14 +94,13 @@ def main(argv: list[str] | None = None) -> int:
     with tempfile.TemporaryDirectory(prefix="hapax-agy-review-") as tmp:
         workdir = Path(tmp)
         cmd = [
-            args.agy_bin,
+            str(agy_bin),
             "--print-timeout",
             args.print_timeout,
             "--log-file",
             str(workdir / "agy.log"),
+            "--sandbox",
         ]
-        if not args.no_sandbox:
-            cmd.append("--sandbox")
         if args.model:
             cmd.extend(["--model", args.model])
         cmd.extend(["--print", prompt])
@@ -114,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
                 env=_review_env(workdir),
             )
         except OSError as exc:
-            print(f"hapax-agy-reviewer: failed to launch {args.agy_bin}: {exc}", file=sys.stderr)
+            print(f"hapax-agy-reviewer: failed to launch {agy_bin}: {exc}", file=sys.stderr)
             return 2
     return result.returncode
 
