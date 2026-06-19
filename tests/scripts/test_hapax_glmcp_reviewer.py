@@ -247,6 +247,30 @@ def test_zai_http_status_fallback_classification(
     assert info.action == expected_action
 
 
+def test_zai_error_boolean_structured_fields_are_not_coerced() -> None:
+    module = _load_module()
+    detail = json.dumps(
+        {
+            "error": {
+                "code": True,
+                "message": False,
+                "next_flush_time": True,
+            }
+        }
+    )
+
+    info = module.classify_zai_error(503, detail)
+    message = module.format_zai_error(503, detail, secret="test-secret-token")
+
+    assert info.code is None
+    assert info.message is None
+    assert info.resets_at is None
+    assert "zai_error_code=True" not in message
+    assert "message=False" not in message
+    assert "resets_at=True" not in message
+    assert "error_class=provider_error" in message
+
+
 @pytest.mark.parametrize(
     ("status", "detail", "expected_class", "expected_action"),
     [

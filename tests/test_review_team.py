@@ -1018,6 +1018,12 @@ class TestFamilyOutageDegradation:
             "error_class=plan_model_unavailable; action=switch_model_or_upgrade_plan",
             process_failed=True,
         )
+        assert rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 429; "
+            "error_class=quota_exhausted; action=hold_until_reset; "
+            "message=provider echoed action=not_a_control_token",
+            process_failed=True,
+        )
         assert not rt.is_quota_wall(
             "wrapper failed while reviewing text containing "
             "error_class=quota_exhausted action=hold_until_reset",

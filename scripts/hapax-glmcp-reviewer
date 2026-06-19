@@ -288,7 +288,7 @@ def _first_string(*values: object) -> str | None:
     for value in values:
         if isinstance(value, str) and value.strip():
             return value.strip()
-        if isinstance(value, int):
+        if isinstance(value, int) and not isinstance(value, bool):
             return str(value)
     return None
 
@@ -298,7 +298,7 @@ def _extract_reset_hint(error_obj: dict[str, Any], message: str | None) -> str |
         value = error_obj.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
-        if isinstance(value, int):
+        if isinstance(value, int) and not isinstance(value, bool):
             return str(value)
     if message:
         match = _RESET_RE.search(message)
