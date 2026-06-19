@@ -183,11 +183,13 @@ def _bundle_report(bundle: Path, *, shadow_root: Path, index_root: Path) -> dict
         _finding_summary(finding.as_dict(), bundle=bundle) for finding in validation.findings
     ]
     consumer_row = _consumer_policy_row(policy)
+    _assert_research_viewer_consumer_allowed(manifest, consumer_row, bundle=bundle)
     policy_forbidden_fields = _policy_forbidden_output_fields(consumer_row)
     denied_consumers = _denied_consumers(manifest, policy)
     rows: list[dict[str, Any]] = []
     for concept_path in _concept_paths(bundle, shadow_root=shadow_root):
         concept = _read_concept(concept_path)
+        _assert_research_viewer_concept_allowed(concept, concept_path=concept_path)
         subject_findings = [
             finding
             for finding in [*index_findings, *validation_findings]
@@ -361,6 +363,35 @@ def _consumer_policy_row(policy: dict[str, Any]) -> dict[str, Any]:
         f"HKP consumer policy lacks {CONSUMER_NAME} row; next-action: regenerate the bundle "
         "with a fail-closed consumer policy"
     )
+
+
+def _assert_research_viewer_consumer_allowed(
+    manifest: dict[str, Any], consumer_row: dict[str, Any], *, bundle: Path
+) -> None:
+    allowed = set(manifest.get("allowed_consumers") or [])
+    forbidden = set(manifest.get("forbidden_consumers") or [])
+    if CONSUMER_NAME not in allowed or CONSUMER_NAME in forbidden:
+        raise ValueError(
+            f"HKP bundle {bundle.name} does not allow {CONSUMER_NAME}; next-action: "
+            "regenerate the bundle with an explicit research_viewer allow row before viewing"
+        )
+    if consumer_row.get("default") != "allow_read_only":
+        raise ValueError(
+            f"HKP consumer policy for {bundle.name} denies {CONSUMER_NAME}; next-action: "
+            "regenerate the bundle with research_viewer default allow_read_only before viewing"
+        )
+
+
+def _assert_research_viewer_concept_allowed(
+    concept: HkpConceptFrontmatter, *, concept_path: Path
+) -> None:
+    allowed = set(concept.posture.allowed_consumers)
+    forbidden = set(concept.posture.forbidden_consumers)
+    if CONSUMER_NAME not in allowed or CONSUMER_NAME in forbidden:
+        raise ValueError(
+            f"HKP concept posture denies {CONSUMER_NAME}: {concept_path.name}; "
+            "next-action: regenerate or purge the bundle before viewing"
+        )
 
 
 def _policy_forbidden_output_fields(consumer_row: dict[str, Any]) -> frozenset[str]:

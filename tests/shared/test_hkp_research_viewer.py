@@ -93,6 +93,60 @@ def test_report_omits_fields_forbidden_by_consumer_policy(tmp_path: Path, monkey
     assert '"description"' not in serialized
 
 
+def test_report_rejects_denied_research_viewer_consumer_policy(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    export = export_shadow_bundle(
+        [source],
+        bundle_id="viewer-demo",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+    policy_path = export.bundle_path / "_hkp" / "consumer_policy.yaml"
+    policy = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+    for row in policy["consumers"]:
+        if row["consumer"] == "research_viewer":
+            row["default"] = "deny"
+            row["allowed_fields"] = []
+    policy_path.write_text(yaml.safe_dump(policy, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="denies research_viewer"):
+        build_research_viewer_report(
+            [export.bundle_path],
+            report_id="viewer-policy-deny-report",
+            generated_at=GENERATED_AT,
+        )
+
+
+def test_report_rejects_concept_posture_forbidden_research_viewer(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    export = export_shadow_bundle(
+        [source],
+        bundle_id="viewer-demo",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+    concept_path = next((export.bundle_path / "concepts").glob("*.md"))
+    frontmatter, body = _read_hkp_markdown(concept_path)
+    frontmatter["posture"]["allowed_consumers"].remove("research_viewer")
+    frontmatter["posture"]["forbidden_consumers"].append("research_viewer")
+    _write_hkp_markdown(concept_path, frontmatter, body)
+
+    with pytest.raises(ValueError, match="concept posture denies research_viewer"):
+        build_research_viewer_report(
+            [export.bundle_path],
+            report_id="viewer-posture-deny-report",
+            generated_at=GENERATED_AT,
+        )
+
+
 def test_report_includes_findings_and_source_freshness_markers(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     source_root = tmp_path / "repo"
@@ -284,3 +338,16 @@ def _write_task(path: Path, *, body: str = "body\n") -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def _read_hkp_markdown(path: Path) -> tuple[dict[str, object], str]:
+    text = path.read_text(encoding="utf-8")
+    _, frontmatter_text, body = text.split("---", 2)
+    return yaml.safe_load(frontmatter_text), body
+
+
+def _write_hkp_markdown(path: Path, frontmatter: dict[str, object], body: str) -> None:
+    path.write_text(
+        "---\n" + yaml.safe_dump(frontmatter, sort_keys=False) + "---" + body,
+        encoding="utf-8",
+    )
