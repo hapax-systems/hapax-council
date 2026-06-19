@@ -1029,6 +1029,13 @@ def test_system_dynamics_viewer_workbench_modes_and_explanations_are_complete():
                 "group": "nodes",
                 "id": "rdf-owl-kg",
             }
+            page.locator('#workbench-readout [data-workbench-id="kg-to-prov"]').first.click()
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "edges",
+                "id": "kg-to-prov",
+            }
             page.evaluate("window.systemDynamicsMapRuntime.selectNode('prov-o')")
             page.locator('#companion-readout [data-workbench-id="rdf-owl-kg"]').first.click()
             assert page.evaluate(
@@ -1053,9 +1060,39 @@ def test_system_dynamics_viewer_workbench_modes_and_explanations_are_complete():
                 "id": "dmn",
             }
             assert "DMN revealed in Topology." in page.locator("#action-status").inner_text()
+            page.get_by_label("View").select_option("operating-slice")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeLens() === 'operating-slice'"
+            )
+            page.evaluate(
+                "window.systemDynamicsMapRuntime.focusWorkbenchElementForTest('edges', 'dmn-to-sbvr')"
+            )
+            page.wait_for_function("window.systemDynamicsMapRuntime.activeLens() === 'topology'")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "edges",
+                "id": "dmn-to-sbvr",
+            }
+            assert (
+                "DMN -> SBVR revealed in Topology." in page.locator("#action-status").inner_text()
+            )
             assert "No lens contract is loaded" in page.evaluate(
                 "window.systemDynamicsMapRuntime.lensScopeWarningForTest(null)"
             )
+
+            page.get_by_label("Search").fill("zzzznomatchq")
+            page.evaluate("window.systemDynamicsMapRuntime.applyInquiryMode('release-gates')")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeInquiryMode() === 'release-gates'"
+            )
+            assert (
+                page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload().selected")
+                is None
+            )
+            assert page.evaluate("window.systemDynamicsMapRuntime.visibleCounts().nodes") == 0
+            page.get_by_label("Search").fill("")
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes > 0")
 
             page.get_by_label("Explanation Path").select_option("release-readiness")
             page.evaluate("window.systemDynamicsMapRuntime.applyExplanationScene(0)")
@@ -1414,6 +1451,25 @@ def test_system_dynamics_viewer_mobile_layout_remains_operable():
                 page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload().selected")
                 is not None
             )
+            page.get_by_role("searchbox", name="Search").fill("")
+            page.get_by_label("Inquiry").select_option("trust")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeInquiryMode() === 'trust'"
+            )
+            mobile_workbench_text = page.locator("#workbench-readout").inner_text()
+            assert "What do I trust?" in mobile_workbench_text
+            assert "candidate elements" in mobile_workbench_text
+            page.get_by_label("Audience").select_option("newcomer")
+            assert "plain-language meaning" in page.locator("#workbench-readout").inner_text()
+            page.get_by_role("button", name="Next").click()
+            assert (
+                page.evaluate("window.systemDynamicsMapRuntime.activeExplanationScene().title")
+                == "Separate topology from temporal state"
+            )
+            mobile_companion_text = page.locator("#companion-readout").inner_text()
+            assert "Companion Readout" in mobile_companion_text
+            assert "Table view for the active projection" in mobile_companion_text
+            assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
         finally:
             browser.close()
 
