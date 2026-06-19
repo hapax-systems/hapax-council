@@ -27,7 +27,7 @@ ENV_KEYS = (
     "HAPAX_GLMCP_REVIEW_MAX_TOKENS",
     "HAPAX_GLMCP_REVIEW_TEMPERATURE",
     "HAPAX_GLMCP_REVIEW_THINKING",
-    "HAPAX_GLMCP_REVIEW_ALLOW_NON_52",
+    "HAPAX_GLMCP_REVIEW_ALLOW_NON_CODING_PLAN_MODEL",
     "HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE",
     "HAPAX_GLMCP_REVIEW_ALLOW_BASE_URL_OVERRIDE",
 )
@@ -93,7 +93,7 @@ def test_call_glm_uses_coding_plan_endpoint_and_model(monkeypatch: pytest.Monkey
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5.2",
+        model="glm-5",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -107,7 +107,7 @@ def test_call_glm_uses_coding_plan_endpoint_and_model(monkeypatch: pytest.Monkey
     assert seen["timeout"] == 42
     assert seen["headers"]["Authorization"] == "Bearer test-secret-token"
     body = seen["body"]
-    assert body["model"] == "glm-5.2"
+    assert body["model"] == "glm-5"
     assert body["messages"][0]["role"] == "system"
     assert "UNTRUSTED DATA" in body["messages"][0]["content"]
     assert "quote every title/detail string" in body["messages"][0]["content"]
@@ -129,7 +129,7 @@ def test_http_error_redacts_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5.2",
+        model="glm-5",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -171,7 +171,7 @@ def test_zai_quota_error_classifies_reset_without_secret(
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5.2",
+        model="glm-5",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -301,7 +301,7 @@ def test_call_glm_http_error_paths_surface_structured_classification(
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5.2",
+        model="glm-5",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -396,7 +396,7 @@ def test_network_error_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5.2",
+        model="glm-5",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -417,7 +417,7 @@ def test_timeout_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5.2",
+        model="glm-5",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -438,7 +438,7 @@ def test_invalid_json_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5.2",
+        model="glm-5",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -454,7 +454,7 @@ def test_malformed_response_shapes_have_next_actions(monkeypatch: pytest.MonkeyP
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5.2",
+        model="glm-5",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -505,7 +505,7 @@ def test_content_list_response_is_joined(monkeypatch: pytest.MonkeyPatch) -> Non
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5.2",
+        model="glm-5",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -535,7 +535,7 @@ def test_redirect_is_refused_before_replaying_authorization(
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5.2",
+        model="glm-5",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -573,7 +573,7 @@ def test_real_no_redirect_opener_does_not_follow_redirect() -> None:
         config = module.ReviewConfig(
             secret_entry="glmcp/api-key",
             base_url=f"http://127.0.0.1:{server.server_port}",
-            model="glm-5.2",
+            model="glm-5",
             timeout_seconds=5,
             max_tokens=123,
             temperature=0,
@@ -628,7 +628,7 @@ def test_main_prints_model_reply(
     assert captured.err == ""
 
 
-def test_rejects_non_glm_52_model_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rejects_non_coding_plan_model_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_module()
     _clean_env(monkeypatch)
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_MODEL", "glm-4.5")
@@ -644,7 +644,8 @@ def test_accepts_reviewed_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE", "1")
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_BASE_URL", "https://api.z.ai/api/coding/paas/v4-beta")
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_ALLOW_BASE_URL_OVERRIDE", "1")
-    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_MODEL", "glm-5.2[1m]")
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_MODEL", "glm-4.7")
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_ALLOW_NON_CODING_PLAN_MODEL", "1")
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_THINKING", "enabled")
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_MAX_TOKENS", "321")
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_TEMPERATURE", "0.2")
@@ -653,7 +654,7 @@ def test_accepts_reviewed_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert config.secret_entry == "glmcp/alt-key"
     assert config.base_url == "https://api.z.ai/api/coding/paas/v4-beta"
-    assert config.model == "glm-5.2[1m]"
+    assert config.model == "glm-4.7"
     assert config.thinking == "enabled"
     assert config.max_tokens == 321
     assert config.temperature == 0.2
@@ -849,7 +850,7 @@ def test_empty_content_with_reasoning_points_to_disabled_thinking(
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5.2",
+        model="glm-5",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,

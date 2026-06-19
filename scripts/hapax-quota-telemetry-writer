@@ -118,7 +118,9 @@ GLMCP_ADMISSION_ENDPOINTS = frozenset(
 )
 # Keep this fail-closed. Recheck before edits against Z.ai Coding Plan docs
 # (`/websites/z_ai_devpack`) and the official GLM-5 repo (`/zai-org/glm-5`).
-GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2", "glm-5.2[1m]"})
+# The latest open-weights release is GLM-5.2, but the Coding Plan custom-tool
+# docs currently use ``glm-5`` as the API model id for Max/Pro GLM-5 access.
+GLMCP_ADMISSION_MODELS = frozenset({"glm-5"})
 GLMCP_ADMISSION_FIELDS = frozenset(
     {
         "capacity_pool",
@@ -402,7 +404,7 @@ def active_glmcp_admission_receipts(
         if model not in GLMCP_ADMISSION_MODELS:
             reject(
                 path,
-                "model missing or unsupported; expected GLM-5.2",
+                "model missing or unsupported; expected documented Coding Plan model id glm-5",
             )
             continue
         receipt_evidence_ref = fields.get("evidence_ref", "").strip()

@@ -34,7 +34,10 @@ GLMCP_ADMISSION_SUPPORTED_TOOLS = frozenset({"hapax-glmcp-reviewer", "claude_cod
 GLMCP_ADMISSION_ENDPOINTS = frozenset(
     {"https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/anthropic"}
 )
-GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2", "glm-5.2[1m]"})
+# Mirrors scripts/hapax-quota-telemetry-writer: Coding Plan docs currently use
+# ``glm-5`` as the API model id even though the newest open-weights release is
+# GLM-5.2.
+GLMCP_ADMISSION_MODELS = frozenset({"glm-5"})
 
 
 class QuotaSpendLedgerError(ValueError):
