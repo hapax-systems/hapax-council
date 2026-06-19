@@ -168,6 +168,18 @@ def test_system_dynamics_viewer_core_interactions():
                 .endswith("/system-dynamics-map.observations.jsonl")
             )
             assert "VISIBLE" in page.locator("#lens-summary").inner_text()
+            encoding_legend = page.locator("#encoding-legend").inner_text()
+            assert "circle structural arrowheads" in encoding_legend
+            assert "dashed governance" in encoding_legend
+            assert "dotted observational" in encoding_legend
+            assert "vee execution arrows" in encoding_legend
+            assert "diamond projection arrows" in encoding_legend
+            relation_cues = page.evaluate("window.systemDynamicsMapRuntime.relationVisualCues()")
+            assert relation_cues["structural"]["target_arrow_shape"] == "circle"
+            assert relation_cues["governance"]["line_style"] == "dashed"
+            assert relation_cues["observational"]["line_style"] == "dotted"
+            assert relation_cues["execution"]["target_arrow_shape"] == "vee"
+            assert relation_cues["projection"]["target_arrow_shape"] == "diamond"
 
             page.get_by_label("Search").fill("telemetry")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes < 35")
@@ -208,9 +220,27 @@ def test_system_dynamics_viewer_core_interactions():
             )
 
             page.get_by_label("Search").fill("model")
+            result_count = page.locator("#search-results [data-result-id]").count()
+            assert result_count > 1
             second_search_result = page.locator("#search-results [data-result-id]").nth(1)
             second_result_id = second_search_result.get_attribute("data-result-id")
             second_result_group = second_search_result.get_attribute("data-result-group")
+            page.get_by_label("Search").press("End")
+            assert page.get_by_label("Search").get_attribute("aria-activedescendant") == (
+                f"search-result-{result_count - 1}"
+            )
+            page.get_by_label("Search").press("Home")
+            assert page.get_by_label("Search").get_attribute("aria-activedescendant") == (
+                "search-result-0"
+            )
+            page.get_by_label("Search").press("ArrowUp")
+            assert page.get_by_label("Search").get_attribute("aria-activedescendant") == (
+                f"search-result-{result_count - 1}"
+            )
+            page.get_by_label("Search").press("ArrowDown")
+            assert page.get_by_label("Search").get_attribute("aria-activedescendant") == (
+                "search-result-0"
+            )
             page.get_by_label("Search").press("ArrowDown")
             assert page.get_by_label("Search").get_attribute("aria-activedescendant") == (
                 "search-result-1"
@@ -286,6 +316,16 @@ def test_system_dynamics_viewer_core_interactions():
                 """
             )
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().edges === 42")
+            page.get_by_label("Search").fill("zzzznomatchq")
+            assert (
+                "No visible or hidden elements match"
+                in page.locator("#search-results").inner_text()
+            )
+            page.get_by_role("button", name="Reset to Topology").click()
+            page.wait_for_function("window.systemDynamicsMapRuntime.activeLens() === 'topology'")
+            assert page.get_by_label("Search").input_value() == ""
+            assert "Reset to Topology." in page.locator("#action-status").inner_text()
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().edges === 42")
             page.locator('input[data-filter="status"][value="candidate"]').uncheck()
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes < 35")
             assert page.evaluate(
@@ -306,6 +346,10 @@ def test_system_dynamics_viewer_core_interactions():
                 "Fix by honoring visible_node_ids and visible_edge_ids in applyFilters()."
             )
             lens_summary = page.locator("#lens-summary").inner_text()
+            lens_summary_lower = lens_summary.lower()
+            assert "focus on current operating state" in lens_summary_lower
+            assert "trust basis" in lens_summary_lower
+            assert "projection" in lens_summary_lower
             assert "8 nodes / 7 edges" in lens_summary
             assert "27 nodes / 35 edges" in lens_summary
             assert "observed" in lens_summary
@@ -468,6 +512,7 @@ def test_system_dynamics_viewer_core_interactions():
                 "group": "nodes",
                 "id": "dmn",
             }
+            assert "DMN revealed in Topology." in page.locator("#action-status").inner_text()
             page.keyboard.press("Escape")
             _assert_no_viewer_selection(page)
 
@@ -501,6 +546,9 @@ def test_system_dynamics_viewer_core_interactions():
                 "group": "edges",
                 "id": "dmn-to-sbvr",
             }
+            assert (
+                "DMN -> SBVR revealed in Topology." in page.locator("#action-status").inner_text()
+            )
             page.get_by_label("View").select_option("operating-slice")
             page.wait_for_function(
                 "window.systemDynamicsMapRuntime.activeLens() === 'operating-slice'"
@@ -809,14 +857,35 @@ def test_system_dynamics_viewer_toolbar_and_panel_actions_are_operable():
             assert (
                 "OpenTelemetry neighborhood framed." in page.locator("#action-status").inner_text()
             )
+            page.locator("#zoom-out").click()
+            page.locator("#zoom-out").click()
+            panel_fit_zoom_before = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().viewport.zoom"
+            )
             page.locator('#panel [data-panel-action="fit-selected"]').click()
+            page.wait_for_function(
+                "(zoomBefore) => "
+                "window.systemDynamicsMapRuntime.currentViewPayload().viewport.zoom "
+                "> zoomBefore",
+                arg=panel_fit_zoom_before,
+            )
             assert page.evaluate(
                 "window.systemDynamicsMapRuntime.currentViewPayload().selected"
             ) == {
                 "group": "nodes",
                 "id": "opentelemetry",
             }
+            page.locator("#zoom-out").click()
+            toolbar_fit_zoom_before = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().viewport.zoom"
+            )
             page.locator("#fit-selected").click()
+            page.wait_for_function(
+                "(zoomBefore) => "
+                "window.systemDynamicsMapRuntime.currentViewPayload().viewport.zoom "
+                "> zoomBefore",
+                arg=toolbar_fit_zoom_before,
+            )
             assert page.evaluate(
                 "window.systemDynamicsMapRuntime.currentViewPayload().selected"
             ) == {

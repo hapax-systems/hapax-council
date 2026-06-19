@@ -6789,7 +6789,7 @@
         <div class="legend-item"><span class="swatch" style="border-color: ${freshColor}; border-width: 3px;"></span><span>Teal ring: element has fresh temporal evidence</span></div>
         <div class="legend-item"><span class="swatch" style="border-color: ${staleColor}; border-width: 3px;"></span><span>Red ring: element has stale temporal evidence</span></div>
         <div class="legend-item"><span class="swatch line"></span><span>Edge width: relation confidence</span></div>
-        <p>Edge labels appear on hover, selection, or when Edge Labels is enabled. Relation categories add line cues: dashed governance, dotted observational, vee execution arrows, and diamond projection arrows.</p>
+        <p>Edge labels appear on hover, selection, or when Edge Labels is enabled. Relation categories add line cues: circle structural arrowheads, dashed governance, dotted observational, vee execution arrows, and diamond projection arrows.</p>
       `;
     }
 
@@ -7440,6 +7440,12 @@
       } else if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         selectTraversalItem(graphCursorIndex >= 0 ? graphCursorIndex : 0);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        clearSelection({ renderPanel: true });
+      } else if (event.key === "/") {
+        event.preventDefault();
+        document.getElementById("search").focus();
       }
     }
 
@@ -7614,6 +7620,12 @@
       ];
 
       const relationCategoryStyles = [
+        {
+          selector: "edge.relation-structural",
+          style: {
+            "target-arrow-shape": "circle"
+          }
+        },
         {
           selector: "edge.relation-governance",
           style: {
@@ -7854,6 +7866,15 @@
         pngDataUri: () => cy.png({ output: "base64uri", bg: "white", full: false }),
         relatedClaims: (id) => claimRows(id),
         relationFor: (id) => relationEntry(id),
+        relationVisualCues: () => Object.fromEntries(
+          Array.from(new Set((relations.relations || []).map((relation) => relation.category || "uncategorized"))).map((category) => {
+            const edge = cy.edges(`.relation-${className(category)}`).first();
+            return [category, edge.empty() ? null : {
+              line_style: edge.style("line-style"),
+              target_arrow_shape: edge.style("target-arrow-shape")
+            }];
+          })
+        ),
         searchResults: () => activeSearchResults,
         selectEdge: focusEdge,
         selectedElementCount,
