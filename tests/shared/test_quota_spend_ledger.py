@@ -36,6 +36,15 @@ from shared.quota_spend_ledger import (
 
 NOW = datetime(2026, 5, 17, 8, 0, 0, tzinfo=UTC)
 CURRENT_REFRESH_NOW = datetime(2026, 6, 4, 17, 10, 0, tzinfo=UTC)
+GLMCP_ADMISSION_EVIDENCE_REF = (
+    "relay-receipt:glmcp-quota-admission.yaml:"
+    "witness:supported-tool-usage-witness:"
+    "supported_tool:hapax-glmcp-reviewer:"
+    "endpoint:https://api.z.ai/api/coding/paas/v4:"
+    "model:glm-5.2:"
+    "observed_at:2026-05-17T07:59:00Z:"
+    "fresh_until:2026-05-17T08:05:00Z"
+)
 
 
 def _payload() -> dict[str, Any]:
@@ -209,6 +218,7 @@ def test_cap_exhaustion_refuses_paid_route() -> None:
 
 def test_route_subscription_snapshot_fresh_until_expires_independently() -> None:
     payload = _active_budget_payload()
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
     payload["quota_snapshots"].append(
         {
             "quota_snapshot_schema": 1,
@@ -219,7 +229,7 @@ def test_route_subscription_snapshot_fresh_until_expires_independently() -> None
             "provider": "z_ai-glm-coding-plan",
             "capacity_pool": "subscription_quota",
             "subscription_quota_state": "fresh",
-            "evidence_refs": ["relay-receipt:glmcp-quota-admission.yaml"],
+            "evidence_refs": [GLMCP_ADMISSION_EVIDENCE_REF],
             "operator_visible_reason": "fixture GLMCP admission",
         }
     )
@@ -237,7 +247,7 @@ def test_route_subscription_snapshot_fresh_until_expires_independently() -> None
     )
 
     assert fresh_state is SubscriptionQuotaState.FRESH
-    assert fresh_refs == ("relay-receipt:glmcp-quota-admission.yaml",)
+    assert fresh_refs == (GLMCP_ADMISSION_EVIDENCE_REF,)
     assert stale_state is SubscriptionQuotaState.STALE
     assert (
         "quota-snapshot:quota-glmcp-review-direct-fresh:fresh_until_expired:2026-05-17T08:05:00Z"
@@ -247,6 +257,7 @@ def test_route_subscription_snapshot_fresh_until_expires_independently() -> None
 
 def test_receipt_bounded_route_fresh_snapshot_requires_fresh_until() -> None:
     payload = _active_budget_payload()
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
     payload["quota_snapshots"].append(
         {
             "quota_snapshot_schema": 1,
@@ -256,7 +267,7 @@ def test_receipt_bounded_route_fresh_snapshot_requires_fresh_until() -> None:
             "provider": "z_ai-glm-coding-plan",
             "capacity_pool": "subscription_quota",
             "subscription_quota_state": "fresh",
-            "evidence_refs": ["relay-receipt:glmcp-quota-admission.yaml"],
+            "evidence_refs": [GLMCP_ADMISSION_EVIDENCE_REF],
             "operator_visible_reason": "fixture GLMCP admission missing expiry",
         }
     )
@@ -270,6 +281,38 @@ def test_receipt_bounded_route_fresh_snapshot_requires_fresh_until() -> None:
 
     assert state is SubscriptionQuotaState.UNKNOWN
     assert "quota-snapshot:quota-glmcp-review-direct-fresh:fresh_until_missing" in refs
+
+
+def test_receipt_bounded_route_fresh_snapshot_requires_glmcp_admission_evidence() -> None:
+    payload = _active_budget_payload()
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-review-direct-forged-fresh",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "glmcp.review.direct",
+            "provider": "some-other-provider",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": ["relay-receipt:forged-quota-green"],
+            "operator_visible_reason": "fixture forged glmcp fresh snapshot",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "glmcp.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert "relay-receipt:forged-quota-green" in refs
+    assert (
+        "quota-snapshot:quota-glmcp-review-direct-forged-fresh:untrusted_glmcp_admission_evidence"
+    ) in refs
 
 
 def test_overdue_reconciliation_freezes_otherwise_valid_budget() -> None:

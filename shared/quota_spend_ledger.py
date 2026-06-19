@@ -26,6 +26,15 @@ DEFAULT_QUOTA_SPEND_LEDGER_LIVE = (
 
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
 RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset({"glmcp.review.direct"})
+RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
+    "glmcp.review.direct": "z_ai-glm-coding-plan",
+}
+GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"
+GLMCP_ADMISSION_SUPPORTED_TOOLS = frozenset({"hapax-glmcp-reviewer", "claude_code"})
+GLMCP_ADMISSION_ENDPOINTS = frozenset(
+    {"https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/anthropic"}
+)
+GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2", "glm-5.2[1m]"})
 
 
 class QuotaSpendLedgerError(ValueError):
@@ -1047,17 +1056,20 @@ def _subscription_quota_state(
     if not snapshots:
         return SubscriptionQuotaState.UNKNOWN
     if any(
-        _effective_subscription_quota_state(snapshot, now=now) is SubscriptionQuotaState.FRESH
+        _effective_subscription_quota_state(ledger, snapshot, now=now)
+        is SubscriptionQuotaState.FRESH
         for snapshot in snapshots
     ):
         return SubscriptionQuotaState.FRESH
     if any(
-        _effective_subscription_quota_state(snapshot, now=now) is SubscriptionQuotaState.EXHAUSTED
+        _effective_subscription_quota_state(ledger, snapshot, now=now)
+        is SubscriptionQuotaState.EXHAUSTED
         for snapshot in snapshots
     ):
         return SubscriptionQuotaState.EXHAUSTED
     if any(
-        _effective_subscription_quota_state(snapshot, now=now) is SubscriptionQuotaState.STALE
+        _effective_subscription_quota_state(ledger, snapshot, now=now)
+        is SubscriptionQuotaState.STALE
         for snapshot in snapshots
     ):
         return SubscriptionQuotaState.STALE
@@ -1103,35 +1115,46 @@ def subscription_quota_state_for_route(
         for snapshot in snapshots
         if _subscription_quota_missing_required_fresh_until(snapshot)
     )
-    return _strict_subscription_quota_state(snapshots, now=checked_at), (
+    untrusted_fresh_refs = tuple(
+        f"quota-snapshot:{snapshot.snapshot_id}:untrusted_glmcp_admission_evidence"
+        for snapshot in snapshots
+        if _subscription_quota_missing_required_admission_evidence(ledger, snapshot)
+    )
+    return _strict_subscription_quota_state(ledger, snapshots, now=checked_at), (
         *evidence_refs,
         *expired_refs,
         *missing_fresh_until_refs,
+        *untrusted_fresh_refs,
     )
 
 
 def _strict_subscription_quota_state(
+    ledger: QuotaSpendLedger,
     snapshots: tuple[QuotaSnapshot, ...],
     *,
     now: datetime,
 ) -> SubscriptionQuotaState:
     if any(
-        _effective_subscription_quota_state(snapshot, now=now) is SubscriptionQuotaState.EXHAUSTED
+        _effective_subscription_quota_state(ledger, snapshot, now=now)
+        is SubscriptionQuotaState.EXHAUSTED
         for snapshot in snapshots
     ):
         return SubscriptionQuotaState.EXHAUSTED
     if any(
-        _effective_subscription_quota_state(snapshot, now=now) is SubscriptionQuotaState.STALE
+        _effective_subscription_quota_state(ledger, snapshot, now=now)
+        is SubscriptionQuotaState.STALE
         for snapshot in snapshots
     ):
         return SubscriptionQuotaState.STALE
     if any(
-        _effective_subscription_quota_state(snapshot, now=now) is SubscriptionQuotaState.UNKNOWN
+        _effective_subscription_quota_state(ledger, snapshot, now=now)
+        is SubscriptionQuotaState.UNKNOWN
         for snapshot in snapshots
     ):
         return SubscriptionQuotaState.UNKNOWN
     if any(
-        _effective_subscription_quota_state(snapshot, now=now) is SubscriptionQuotaState.FRESH
+        _effective_subscription_quota_state(ledger, snapshot, now=now)
+        is SubscriptionQuotaState.FRESH
         for snapshot in snapshots
     ):
         return SubscriptionQuotaState.FRESH
@@ -1139,10 +1162,13 @@ def _strict_subscription_quota_state(
 
 
 def _effective_subscription_quota_state(
+    ledger: QuotaSpendLedger,
     snapshot: QuotaSnapshot,
     *,
     now: datetime,
 ) -> SubscriptionQuotaState:
+    if _subscription_quota_missing_required_admission_evidence(ledger, snapshot):
+        return SubscriptionQuotaState.UNKNOWN
     if _subscription_quota_missing_required_fresh_until(snapshot):
         return SubscriptionQuotaState.UNKNOWN
     if _subscription_quota_fresh_until_expired(snapshot, now=now):
@@ -1155,6 +1181,36 @@ def _subscription_quota_missing_required_fresh_until(snapshot: QuotaSnapshot) ->
         snapshot.subscription_quota_state is SubscriptionQuotaState.FRESH
         and _normalize_route_id(snapshot.route_id) in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
         and snapshot.fresh_until is None
+    )
+
+
+def _subscription_quota_missing_required_admission_evidence(
+    ledger: QuotaSpendLedger,
+    snapshot: QuotaSnapshot,
+) -> bool:
+    if snapshot.subscription_quota_state is not SubscriptionQuotaState.FRESH:
+        return False
+    normalized_route_id = _normalize_route_id(snapshot.route_id)
+    expected_provider = RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS.get(normalized_route_id)
+    if expected_provider is None:
+        return False
+    if GLMCP_QUOTA_TELEMETRY_WRITER_REF not in ledger.generated_from:
+        return True
+    if snapshot.provider != expected_provider:
+        return True
+    return not any(_is_glmcp_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+
+
+def _is_glmcp_admission_evidence_ref(ref: str) -> bool:
+    return (
+        ref.startswith("relay-receipt:")
+        and "glmcp-quota-admission" in ref
+        and ":witness:" in ref
+        and any(f":supported_tool:{tool}:" in ref for tool in GLMCP_ADMISSION_SUPPORTED_TOOLS)
+        and any(f":endpoint:{endpoint}:" in ref for endpoint in GLMCP_ADMISSION_ENDPOINTS)
+        and any(f":model:{model}:" in ref for model in GLMCP_ADMISSION_MODELS)
+        and ":observed_at:" in ref
+        and ":fresh_until:" in ref
     )
 
 

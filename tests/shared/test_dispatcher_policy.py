@@ -36,6 +36,15 @@ if TYPE_CHECKING:
     import pytest
 
 NOW = datetime(2026, 5, 9, 22, 30, tzinfo=UTC)
+GLMCP_ADMISSION_EVIDENCE_REF = (
+    "relay-receipt:glmcp-quota-admission.yaml:"
+    "witness:supported-tool-usage-witness:"
+    "supported_tool:hapax-glmcp-reviewer:"
+    "endpoint:https://api.z.ai/api/coding/paas/v4:"
+    "model:glm-5.2:"
+    "observed_at:2026-05-09T22:00:00Z:"
+    "fresh_until:2026-05-09T23:00:00Z"
+)
 
 
 def _capability(**overrides: object) -> RouteCapabilityState:
@@ -232,6 +241,10 @@ def _ledger_with_route_subscription_state(
     payload = json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
     if ledger_captured_at is not None:
         payload["captured_at"] = ledger_captured_at
+    evidence_refs = [f"relay-receipt:{route_id}:quota:{state}"]
+    if route_id == "glmcp.review.direct" and state == "fresh":
+        evidence_refs = [GLMCP_ADMISSION_EVIDENCE_REF]
+        payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
     snapshot = {
         "quota_snapshot_schema": 1,
         "snapshot_id": f"quota-{route_id.replace('.', '-')}-{state}",
@@ -240,9 +253,11 @@ def _ledger_with_route_subscription_state(
         "provider": "test-subscription",
         "capacity_pool": "subscription_quota",
         "subscription_quota_state": state,
-        "evidence_refs": [f"relay-receipt:{route_id}:quota:{state}"],
+        "evidence_refs": evidence_refs,
         "operator_visible_reason": f"test route quota {state}",
     }
+    if route_id == "glmcp.review.direct" and state == "fresh":
+        snapshot["provider"] = "z_ai-glm-coding-plan"
     if fresh_until is not None:
         snapshot["fresh_until"] = fresh_until
     payload["quota_snapshots"].append(snapshot)
