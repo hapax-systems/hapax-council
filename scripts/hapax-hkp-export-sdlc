@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Scheduled HKP exporter.
+
+Projects the live SDLC cc-task corpus (active + closed, single bundle so
+``depends_on`` edges resolve) into the cache-only ``sdlc`` HKP bundle, re-run on
+a timer so HKP keeps a fresh, navigable projection. Cache-only,
+support-non-authoritative; no source/runtime/dashboard/Qdrant/public/provider
+effect beyond writing under ``~/.cache/hapax/hkp-shadow/``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.hkp_bundle_export import HkpExportResult, export_shadow_bundle  # noqa: E402
+
+DEFAULT_VAULT = Path.home() / "Documents" / "Personal"
+BUNDLE_ID = "sdlc"
+
+
+def sdlc_sources(vault_root: Path) -> list[Path]:
+    cct = vault_root / "20-projects" / "hapax-cc-tasks"
+    return sorted([*(cct / "active").glob("*.md"), *(cct / "closed").glob("*.md")])
+
+
+def run_sdlc_export(
+    *,
+    vault_root: Path = DEFAULT_VAULT,
+    generated_at: str | None = None,
+    output_root: Path | None = None,
+    index_root: Path | None = None,
+) -> HkpExportResult:
+    sources = sdlc_sources(vault_root)
+    if not sources:
+        raise SystemExit(f"hapax-hkp-export-sdlc: no cc-task sources under {vault_root}")
+    now = generated_at or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return export_shadow_bundle(
+        sources,
+        bundle_id=BUNDLE_ID,
+        source_root=vault_root,
+        source_root_id="vault:Personal",
+        source_commit=f"vault-snapshot-{now}",
+        generated_at=now,
+        output_root=output_root,
+        index_root=index_root,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Project the live SDLC corpus to the sdlc HKP bundle."
+    )
+    parser.add_argument("--vault-root", type=Path, default=DEFAULT_VAULT)
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+    result = run_sdlc_export(vault_root=args.vault_root)
+    error_findings = sum(1 for f in result.findings if getattr(f, "severity", "") == "error")
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "bundle_path": str(result.bundle_path),
+                    "concept_count": result.concept_count,
+                    "edge_count": result.edge_count,
+                    "error_findings": error_findings,
+                }
+            )
+        )
+    else:
+        print(
+            f"hkp sdlc export: {result.concept_count} concepts, {result.edge_count} edges, "
+            f"{error_findings} error-findings -> {result.bundle_path}"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

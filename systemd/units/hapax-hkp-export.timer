@@ -1,0 +1,11 @@
+[Unit]
+Description=HKP scheduled exporter (every 6h) — keeps the SDLC projection fresh
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
