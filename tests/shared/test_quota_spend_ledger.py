@@ -45,6 +45,14 @@ GLMCP_ADMISSION_EVIDENCE_REF = (
     "observed_at:2026-05-17T07:59:00Z:"
     "fresh_until:2026-05-17T08:05:00Z"
 )
+GLMCP_MISMATCHED_TOOL_ENDPOINT_EVIDENCE_REF = GLMCP_ADMISSION_EVIDENCE_REF.replace(
+    "supported_tool:hapax-glmcp-reviewer:",
+    "supported_tool:claude_code:",
+)
+GLMCP_HASHED_ADMISSION_EVIDENCE_REF = GLMCP_ADMISSION_EVIDENCE_REF.replace(
+    "glmcp-quota-admission.yaml",
+    "unsafe-receipt-name-sha256:0123456789abcdef",
+)
 
 
 def _payload() -> dict[str, Any]:
@@ -313,6 +321,67 @@ def test_receipt_bounded_route_fresh_snapshot_requires_glmcp_admission_evidence(
     assert (
         "quota-snapshot:quota-glmcp-review-direct-forged-fresh:untrusted_glmcp_admission_evidence"
     ) in refs
+
+
+def test_receipt_bounded_route_rejects_mismatched_tool_endpoint_evidence() -> None:
+    payload = _active_budget_payload()
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-review-direct-mismatch",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [GLMCP_MISMATCHED_TOOL_ENDPOINT_EVIDENCE_REF],
+            "operator_visible_reason": "fixture mismatched glmcp admission evidence",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "glmcp.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert GLMCP_MISMATCHED_TOOL_ENDPOINT_EVIDENCE_REF in refs
+    assert (
+        "quota-snapshot:quota-glmcp-review-direct-mismatch:untrusted_glmcp_admission_evidence"
+    ) in refs
+
+
+def test_receipt_bounded_route_accepts_writer_hashed_admission_label() -> None:
+    payload = _active_budget_payload()
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-review-direct-hashed-label",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [GLMCP_HASHED_ADMISSION_EVIDENCE_REF],
+            "operator_visible_reason": "fixture hashed glmcp admission receipt label",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "glmcp.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.FRESH
+    assert refs == (GLMCP_HASHED_ADMISSION_EVIDENCE_REF,)
 
 
 def test_overdue_reconciliation_freezes_otherwise_valid_budget() -> None:

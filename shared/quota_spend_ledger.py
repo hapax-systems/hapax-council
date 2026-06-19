@@ -8,6 +8,7 @@ dispatch work, or mutate runtime state.
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -30,14 +31,24 @@ RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
     "glmcp.review.direct": "z_ai-glm-coding-plan",
 }
 GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"
-GLMCP_ADMISSION_SUPPORTED_TOOLS = frozenset({"hapax-glmcp-reviewer", "claude_code"})
+GLMCP_ADMISSION_TOOL_ENDPOINTS = {
+    "hapax-glmcp-reviewer": frozenset({"https://api.z.ai/api/coding/paas/v4"}),
+    "claude_code": frozenset({"https://api.z.ai/api/anthropic"}),
+}
+GLMCP_ADMISSION_SUPPORTED_TOOLS = frozenset(GLMCP_ADMISSION_TOOL_ENDPOINTS)
 GLMCP_ADMISSION_ENDPOINTS = frozenset(
-    {"https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/anthropic"}
+    endpoint for endpoints in GLMCP_ADMISSION_TOOL_ENDPOINTS.values() for endpoint in endpoints
 )
 # Mirrors scripts/hapax-quota-telemetry-writer: Coding Plan docs currently use
 # ``glm-5`` as the API model id even though the newest open-weights release is
 # GLM-5.2.
 GLMCP_ADMISSION_MODELS = frozenset({"glm-5"})
+GLMCP_ADMISSION_RECEIPT_LABEL_RE = re.compile(
+    r"\Arelay-receipt:"
+    r"(?:[a-z0-9_.+-]*glmcp-quota-admission[a-z0-9_.+-]*\.yaml|"
+    r"unsafe-receipt-name-sha256:[0-9a-f]{16})"
+    r":witness:"
+)
 
 
 class QuotaSpendLedgerError(ValueError):
@@ -1206,14 +1217,19 @@ def _subscription_quota_missing_required_admission_evidence(
 
 def _is_glmcp_admission_evidence_ref(ref: str) -> bool:
     return (
-        ref.startswith("relay-receipt:")
-        and "glmcp-quota-admission" in ref
-        and ":witness:" in ref
-        and any(f":supported_tool:{tool}:" in ref for tool in GLMCP_ADMISSION_SUPPORTED_TOOLS)
-        and any(f":endpoint:{endpoint}:" in ref for endpoint in GLMCP_ADMISSION_ENDPOINTS)
+        GLMCP_ADMISSION_RECEIPT_LABEL_RE.match(ref) is not None
+        and _has_glmcp_admission_tool_endpoint_pair(ref)
         and any(f":model:{model}:" in ref for model in GLMCP_ADMISSION_MODELS)
         and ":observed_at:" in ref
         and ":fresh_until:" in ref
+    )
+
+
+def _has_glmcp_admission_tool_endpoint_pair(ref: str) -> bool:
+    return any(
+        f":supported_tool:{tool}:" in ref
+        and any(f":endpoint:{endpoint}:" in ref for endpoint in endpoints)
+        for tool, endpoints in GLMCP_ADMISSION_TOOL_ENDPOINTS.items()
     )
 
 
