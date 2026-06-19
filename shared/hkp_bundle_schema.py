@@ -10,6 +10,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
@@ -23,6 +24,11 @@ from shared.frontmatter import parse_frontmatter_with_diagnostics
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 UID_RE = re.compile(r"^hkp:[A-Za-z0-9_.:-]+$")
 EDGE_ID_RE = re.compile(r"^hkp-edge:[A-Za-z0-9_.:-]+$")
+SOURCE_REF_URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+ISO8601_DURATION_RE = re.compile(
+    r"^P(?:\d+W|(?=\d|T)(?:\d+Y)?(?:\d+M)?(?:\d+D)?"
+    r"(?:T(?=\d)(?:\d+H)?(?:\d+M)?(?:\d+(?:\.\d+)?S)?)?)$"
+)
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 MARKDOWN_REFERENCE_LINK_RE = re.compile(r"(?m)^\s{0,3}\[[^\]]+\]:\s*(\S+)")
 LOCAL_PATH_RE = re.compile(r"^(?:/|~(?:/|$)|file://|[A-Za-z]:[\\/])")
@@ -60,7 +66,24 @@ AUTHORITY_SOURCE_CLASSES = {
     "public_claim",
     "provider_spend",
 }
-STALE_SOURCE_STATES = {"stale", "missing", "contradictory", "unparseable", "unknown"}
+STALE_SOURCE_STATES = {
+    "stale",
+    "missing",
+    "contradictory",
+    "unparseable",
+    "manual_assertion",
+    "unknown",
+}
+ALLOWED_SOURCE_REF_URI_SCHEMES = {
+    "repo",
+    "git",
+    "https",
+    "http",
+    "vault",
+    "qdrant",
+    "coord",
+    "urn",
+}
 CONCEPT_TYPES = {
     "cc-task",
     "authority-case",
@@ -262,9 +285,28 @@ class HkpSourceRef(_HkpModel):
     @field_validator("uri")
     @classmethod
     def _uri_is_not_local_path_leak(cls, value: str) -> str:
-        if LOCAL_PATH_RE.match(value) or ".." in Path(value).parts:
+        uri_tail = value.split(":", 1)[1] if ":" in value else value
+        uri_tail_parts = [part for part in re.split(r"[\\/]+", uri_tail) if part]
+        match = SOURCE_REF_URI_SCHEME_RE.match(value)
+        scheme = value.split(":", 1)[0].lower() if match else ""
+        if LOCAL_PATH_RE.match(value) or ".." in Path(value).parts or ".." in uri_tail_parts:
             raise ValueError(
-                "source ref uri must not expose a local path or ..; use a logical repo: or https: id"
+                "source ref uri must not expose a local path or ..; "
+                "next-action: use a logical repo: or https: id"
+            )
+        if scheme not in ALLOWED_SOURCE_REF_URI_SCHEMES:
+            allowed = ", ".join(sorted(ALLOWED_SOURCE_REF_URI_SCHEMES))
+            raise ValueError(
+                f"source ref uri must use an allowed logical scheme: {allowed}; "
+                "next-action: rewrite the source_ref uri as repo:<path> or https://<host>/<path>"
+            )
+        scheme_tail_is_local = scheme not in {"http", "https"} and (
+            uri_tail.startswith(("/", "~")) or re.match(r"^[A-Za-z]:[\\/]", uri_tail)
+        )
+        if scheme_tail_is_local:
+            raise ValueError(
+                "source ref uri must not expose a local path or ..; "
+                "next-action: use a logical repo: or https: id"
             )
         return value
 
@@ -277,6 +319,26 @@ class HkpSourceRef(_HkpModel):
 
     @model_validator(mode="after")
     def _authority_refs_are_hashed(self) -> HkpSourceRef:
+        for timestamp in (self.observed_at, self.checked_at):
+            if timestamp is None:
+                continue
+            try:
+                parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise ValueError(
+                    "source ref timestamps must be ISO 8601 datetimes; "
+                    "next-action: use a value like 2026-06-18T16:43:11Z"
+                ) from exc
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                raise ValueError(
+                    "source ref timestamps must include a timezone; "
+                    "next-action: append Z or an explicit offset such as +00:00"
+                )
+        if self.stale_after is not None and not ISO8601_DURATION_RE.match(self.stale_after):
+            raise ValueError(
+                "stale_after must be an ISO 8601 duration such as P7D; "
+                "next-action: use an ISO duration like P7D or PT24H"
+            )
         requires_hash = (
             self.data_role in AUTHORITY_SOURCE_ROLES
             or self.source_authority_class in AUTHORITY_SOURCE_CLASSES
@@ -298,7 +360,10 @@ class HkpSourceRef(_HkpModel):
         if missing:
             raise ValueError(f"authority/evidence source ref requires {', '.join(missing)}")
         if self.freshness_state in STALE_SOURCE_STATES:
-            raise ValueError(f"authority/evidence source ref cannot be {self.freshness_state}")
+            raise ValueError(
+                f"authority/evidence source ref cannot be {self.freshness_state}; "
+                "next-action: refresh the source and set freshness_state to fresh"
+            )
         return self
 
 
