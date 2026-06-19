@@ -1185,6 +1185,40 @@ def test_system_dynamics_viewer_workbench_modes_and_explanations_are_complete():
                 page.evaluate("window.systemDynamicsMapRuntime.activeExplanationScene().title")
                 == "State what this does not prove"
             )
+            page.get_by_label("Explanation Path").select_option("evidence-trust")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeExplanationScene().title "
+                "=== 'Claims are explicit records'"
+            )
+            assert (
+                page.evaluate(
+                    "window.systemDynamicsMapRuntime.currentWorkbenchPayload().explanation_path"
+                )
+                == "evidence-trust"
+            )
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "rdf-owl-kg",
+            }
+            page.get_by_role("button", name="Next").click()
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeExplanationScene().title "
+                "=== 'Validation precedes trust'"
+            )
+            assert page.evaluate("window.systemDynamicsMapRuntime.activeLens()") == "evidence-risk"
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "shacl-contracts",
+            }
+            evidence_payload = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentWorkbenchPayload()"
+            )
+            assert evidence_payload["explanation_label"] == "Evidence and trust path"
+            assert evidence_payload["scene_title"] == "Validation precedes trust"
         finally:
             browser.close()
 

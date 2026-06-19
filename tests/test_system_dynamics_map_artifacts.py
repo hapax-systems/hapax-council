@@ -949,6 +949,16 @@ def test_shacl_shapes_and_view_manifest_cover_the_durable_contract():
         path["scenes"][0]["selection"]["group"] in {"nodes", "edges"}
         for path in workbench["explanation_paths"]
     )
+    node_ids = {node["id"] for node in seed["nodes"]}
+    edge_ids = {edge["id"] for edge in seed["edges"]}
+    for path in workbench["explanation_paths"]:
+        for scene in path["scenes"]:
+            selection = scene["selection"]
+            candidates = node_ids if selection["group"] == "nodes" else edge_ids
+            assert selection["id"] in candidates, (
+                f"{path['id']} scene {scene['title']!r} references missing "
+                f"{selection['group']} id {selection['id']!r}"
+            )
     assert any("bitemporal snapshot" in item for item in workbench["follow_on_tranches"])
     assert any("causality" in item for item in workbench["follow_on_tranches"])
     assert any("contradiction groups" in item for item in workbench["follow_on_tranches"])
