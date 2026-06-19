@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -77,13 +78,6 @@ class TestWpctlNodeResolution:
         )
 
         assert _resolve_wpctl_node_id("hapax-broadcast-master") == "80"
-        mock_run.assert_called_once_with(
-            ["pw-dump"],
-            capture_output=True,
-            text=True,
-            timeout=5.0,
-            check=False,
-        )
 
     @patch("subprocess.run")
     def test_returns_none_when_node_name_missing(self, mock_run: MagicMock) -> None:
@@ -95,6 +89,77 @@ class TestWpctlNodeResolution:
                         "id": 80,
                         "type": "PipeWire:Interface:Node",
                         "info": {"props": {"node.name": "other-node"}},
+                    }
+                ]
+            ),
+            stderr="",
+        )
+
+        assert _resolve_wpctl_node_id("hapax-broadcast-master") is None
+
+    @pytest.mark.parametrize(
+        "exc",
+        (
+            FileNotFoundError("missing pw-dump"),
+            subprocess.TimeoutExpired(["pw-dump"], 5.0),
+            OSError("pipewire unavailable"),
+        ),
+    )
+    @patch("subprocess.run")
+    def test_returns_none_when_pw_dump_raises_with_next_action(
+        self,
+        mock_run: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+        exc: Exception,
+    ) -> None:
+        mock_run.side_effect = exc
+
+        with caplog.at_level("WARNING", logger="agents.studio_compositor.lufs_panic_cap"):
+            assert _resolve_wpctl_node_id("hapax-broadcast-master") is None
+
+        assert "Next action:" in caplog.text
+        assert "wpctl status" in caplog.text
+        assert "hapax-broadcast-master" in caplog.text
+
+    @patch("subprocess.run")
+    def test_returns_none_when_pw_dump_returns_nonzero_with_next_action(
+        self,
+        mock_run: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="pw server down")
+
+        with caplog.at_level("WARNING", logger="agents.studio_compositor.lufs_panic_cap"):
+            assert _resolve_wpctl_node_id("hapax-broadcast-master") is None
+
+        assert "pw server down" in caplog.text
+        assert "Next action:" in caplog.text
+        assert "pw-dump" in caplog.text
+
+    @patch("subprocess.run")
+    def test_returns_none_when_pw_dump_emits_invalid_json_with_next_action(
+        self,
+        mock_run: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="{", stderr="")
+
+        with caplog.at_level("WARNING", logger="agents.studio_compositor.lufs_panic_cap"):
+            assert _resolve_wpctl_node_id("hapax-broadcast-master") is None
+
+        assert "invalid JSON" in caplog.text
+        assert "Next action:" in caplog.text
+
+    @patch("subprocess.run")
+    def test_ignores_node_id_with_unusable_type(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=json.dumps(
+                [
+                    {
+                        "id": {"nested": 80},
+                        "type": "PipeWire:Interface:Node",
+                        "info": {"props": {"node.name": "hapax-broadcast-master"}},
                     }
                 ]
             ),
@@ -392,6 +457,85 @@ class TestWpctlVolumeControl:
 
         assert mock_run.call_args_list[0].args[0] == ["wpctl", "set-volume", "80", "0.2500"]
         assert mock_run.call_args_list[2].args[0] == ["wpctl", "set-volume", "81", "0.2500"]
+
+    @patch("agents.studio_compositor.lufs_panic_cap._resolve_wpctl_node_id")
+    @patch("subprocess.run")
+    def test_read_volume_returns_fallback_when_target_cannot_resolve(
+        self,
+        mock_run: MagicMock,
+        mock_resolve: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        mock_resolve.return_value = None
+        cap = LufsPanicCap(sink_name="hapax-broadcast-master")
+
+        with caplog.at_level("WARNING", logger="agents.studio_compositor.lufs_panic_cap"):
+            assert cap._read_sink_volume() == pytest.approx(1.0)
+
+        mock_run.assert_not_called()
+        assert "Could not resolve PipeWire node" in caplog.text
+        assert "Next action:" in caplog.text
+
+    @patch("agents.studio_compositor.lufs_panic_cap._resolve_wpctl_node_id")
+    @patch("subprocess.run")
+    def test_read_volume_refreshes_stale_cached_node_id(
+        self,
+        mock_run: MagicMock,
+        mock_resolve: MagicMock,
+    ) -> None:
+        stale_failure = MagicMock(returncode=1, stdout="", stderr="not found")
+        retry_success = MagicMock(returncode=0, stdout="Volume: 0.75\n", stderr="")
+        mock_run.side_effect = [stale_failure, retry_success]
+        mock_resolve.return_value = "81"
+
+        cap = LufsPanicCap(sink_name="hapax-broadcast-master")
+        cap._wpctl_target_id = "80"
+
+        assert cap._read_sink_volume() == pytest.approx(0.75)
+        assert mock_run.call_args_list[0].args[0] == ["wpctl", "get-volume", "80"]
+        assert mock_run.call_args_list[1].args[0] == ["wpctl", "get-volume", "81"]
+
+    @patch("subprocess.run")
+    def test_wpctl_exception_logs_next_action(
+        self,
+        mock_run: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        mock_run.side_effect = OSError("wpctl unavailable")
+        cap = LufsPanicCap(sink_name="hapax-broadcast-master")
+        cap._wpctl_target_id = "80"
+
+        with caplog.at_level("WARNING", logger="agents.studio_compositor.lufs_panic_cap"):
+            cap._set_sink_volume(0.25)
+
+        assert "wpctl set-volume failed" in caplog.text
+        assert "Next action:" in caplog.text
+        assert "wpctl get-volume <node-id>" in caplog.text
+
+    @patch("agents.studio_compositor.lufs_panic_cap._resolve_wpctl_node_id")
+    @patch("subprocess.run")
+    def test_set_volume_warns_when_retry_exhausted(
+        self,
+        mock_run: MagicMock,
+        mock_resolve: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        stale_failure = MagicMock(returncode=1, stdout="", stderr="old id missing")
+        retry_failure = MagicMock(returncode=1, stdout="", stderr="new id missing")
+        mock_run.side_effect = [stale_failure, retry_failure]
+        mock_resolve.return_value = "81"
+
+        cap = LufsPanicCap(sink_name="hapax-broadcast-master")
+        cap._wpctl_target_id = "80"
+
+        with caplog.at_level("WARNING", logger="agents.studio_compositor.lufs_panic_cap"):
+            cap._set_sink_volume(0.25)
+
+        assert mock_run.call_args_list[0].args[0] == ["wpctl", "set-volume", "80", "0.2500"]
+        assert mock_run.call_args_list[1].args[0] == ["wpctl", "set-volume", "81", "0.2500"]
+        assert "wpctl set-volume failed" in caplog.text
+        assert "target_id=81" in caplog.text
+        assert "Next action:" in caplog.text
 
 
 class TestNotifyCallback:

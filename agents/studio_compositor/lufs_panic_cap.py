@@ -73,6 +73,15 @@ SAMPLE_FORMAT: str = "s32le"
 SAMPLE_BYTES_PER_FRAME: int = 4 * CHANNEL_COUNT
 
 
+def _pipewire_control_next_action(node_name: str) -> str:
+    return (
+        "Next action: run `wpctl status` and inspect `pw-dump` for node.name "
+        f"`{node_name}`, then run `wpctl get-volume <node-id>`; if the node is "
+        "absent, restore the PipeWire/WirePlumber graph before restarting "
+        "`hapax-lufs-panic-cap.service`."
+    )
+
+
 def _resolve_wpctl_node_id(node_name: str) -> str | None:
     """Resolve a PipeWire ``node.name`` to the numeric ID expected by ``wpctl``."""
     if node_name.isdecimal():
@@ -86,16 +95,31 @@ def _resolve_wpctl_node_id(node_name: str) -> str | None:
             check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        log.warning("pw-dump failed while resolving %s for LUFS panic-cap: %s", node_name, exc)
+        log.warning(
+            "pw-dump failed while resolving %s for LUFS panic-cap: %s. %s",
+            node_name,
+            exc,
+            _pipewire_control_next_action(node_name),
+        )
         return None
     if result.returncode != 0:
         stderr = result.stderr.strip() if result.stderr else f"rc={result.returncode}"
-        log.warning("pw-dump failed while resolving %s for LUFS panic-cap: %s", node_name, stderr)
+        log.warning(
+            "pw-dump failed while resolving %s for LUFS panic-cap: %s. %s",
+            node_name,
+            stderr,
+            _pipewire_control_next_action(node_name),
+        )
         return None
     try:
         nodes = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
-        log.warning("pw-dump emitted invalid JSON while resolving %s: %s", node_name, exc)
+        log.warning(
+            "pw-dump emitted invalid JSON while resolving %s: %s. %s",
+            node_name,
+            exc,
+            _pipewire_control_next_action(node_name),
+        )
         return None
     for node in nodes:
         if node.get("type") != "PipeWire:Interface:Node":
@@ -406,8 +430,9 @@ class LufsPanicCap:
             self._wpctl_target_id = _resolve_wpctl_node_id(self._sink_name)
             if self._wpctl_target_id is None:
                 log.warning(
-                    "Could not resolve PipeWire node %s for LUFS panic-cap ducking",
+                    "Could not resolve PipeWire node %s for LUFS panic-cap ducking. %s",
                     self._sink_name,
+                    _pipewire_control_next_action(self._sink_name),
                 )
         return self._wpctl_target_id
 
@@ -431,7 +456,13 @@ class LufsPanicCap:
                 check=False,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-            log.warning("wpctl %s failed for %s: %s", args[0], self._sink_name, exc)
+            log.warning(
+                "wpctl %s failed for %s: %s. %s",
+                args[0],
+                self._sink_name,
+                exc,
+                _pipewire_control_next_action(self._sink_name),
+            )
             return None
         if result.returncode == 0:
             return result
@@ -440,11 +471,12 @@ class LufsPanicCap:
             return self._run_wpctl(args, text=text, retry_on_failure=False)
         stderr = result.stderr.strip() if result.stderr else f"rc={result.returncode}"
         log.warning(
-            "wpctl %s failed for %s (target_id=%s): %s",
+            "wpctl %s failed for %s (target_id=%s): %s. %s",
             args[0],
             self._sink_name,
             target_id,
             stderr,
+            _pipewire_control_next_action(self._sink_name),
         )
         return None
 
