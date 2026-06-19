@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from jsonschema import Draft202012Validator, FormatChecker
+from PIL import Image
 from rdflib import RDF, Dataset, Graph, Literal, Namespace, URIRef
 
 from scripts import system_dynamics_map_materialize as materialize
@@ -15,6 +16,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 ARCHITECTURE_DIR = REPO_ROOT / "docs" / "architecture"
 SEED_PATH = ARCHITECTURE_DIR / "system-dynamics-map.seed.json"
 VIEWER_PATH = ARCHITECTURE_DIR / "system-dynamics-map-viewer.html"
+DESKTOP_CAPTURE_PATH = ARCHITECTURE_DIR / "system-dynamics-map-viewer-desktop.png"
+MOBILE_CAPTURE_PATH = ARCHITECTURE_DIR / "system-dynamics-map-viewer-mobile.png"
 VENDOR_PATH = ARCHITECTURE_DIR / "vendor" / "cytoscape-3.34.0.min.js"
 TRIG_PATH = ARCHITECTURE_DIR / "system-dynamics-map.canonical.trig"
 SHACL_PATH = ARCHITECTURE_DIR / "system-dynamics-map.shacl.ttl"
@@ -369,7 +372,7 @@ def test_viewer_uses_committed_local_cytoscape_asset():
     )
 
 
-def test_viewer_layout_uses_intrinsic_wrapping_without_conditional_at_rules():
+def test_viewer_layout_uses_intrinsic_wrapping_with_explicit_mobile_rules():
     html, _ = _load_viewer()
     assert "flex-wrap: wrap" in html, (
         "viewer layout no longer declares intrinsic wrapping. "
@@ -379,10 +382,30 @@ def test_viewer_layout_uses_intrinsic_wrapping_without_conditional_at_rules():
         "viewer reintroduced container queries. "
         "Fix by using intrinsic wrapping or updating the visual witnesses and review notes."
     )
-    assert "@media" not in html, (
-        "viewer reintroduced media queries. "
-        "Fix by using intrinsic wrapping or updating the visual witnesses and review notes."
+    media_rules = set(re.findall(r"@media\s*\([^)]+\)", html))
+    assert media_rules == {"@media (max-width: 860px)", "@media (forced-colors: active)"}, (
+        "viewer media-rule contract drifted. "
+        "Fix by keeping only the reviewed mobile and forced-colors media rules, "
+        f"or updating the architecture recheck contract. Found: {sorted(media_rules)}"
     )
+
+
+def test_committed_viewer_reference_captures_have_expected_shape_and_nonblank_content():
+    expected = {
+        DESKTOP_CAPTURE_PATH: (1440, 960),
+        MOBILE_CAPTURE_PATH: (390, 844),
+    }
+    for path, dimensions in expected.items():
+        with Image.open(path) as image:
+            assert image.size == dimensions, (
+                f"{path}: stale or wrong-sized reference capture. "
+                "Fix by regenerating from the served viewer at the documented viewport."
+            )
+            colors = image.convert("RGB").getcolors(maxcolors=1_000_000)
+            assert colors is not None and len(colors) > 50, (
+                f"{path}: reference capture is blank or too visually sparse. "
+                "Fix by recapturing after the viewer renders visible UI and graph content."
+            )
 
 
 def test_system_dynamics_artifacts_do_not_use_hardcoded_hex_colors():
