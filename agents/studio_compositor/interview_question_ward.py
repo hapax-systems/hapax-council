@@ -1,7 +1,8 @@
 """Interview question card ward — displays current interview question + source pressure.
 
 Reads from /dev/shm/hapax-compositor/interview-state.json, which the
-interview agent (logos/interview.py) writes after each question ask.
+interview conductor writes after each successful question playback and when the
+interview returns inactive.
 Fades in when an INTERVIEW programme activates, fades out when it ends.
 
 CASE-INTERVIEW-SEGMENT-SYSTEM-20260518 Task N1.

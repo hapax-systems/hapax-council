@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_INTERVIEW_STATE_PATH = Path("/dev/shm/hapax-compositor/interview-state.json")
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -153,13 +155,17 @@ class InterviewConductor:
         """
         facts: list[InterviewFact] = []
         total = len(self._questions)
+        wrote_inactive = False
         for question in self._questions:
-            self._write_state(question, active=True, facts=facts, topics_total=total)
             if not await self._ask(question.text):
                 # The question never reached air — nothing to answer. The drop was already
                 # witnessed in _ask; record an abstention and skip the listen leg entirely.
                 facts.append(InterviewFact(question=question.text, answer="", abstained=True))
+                await self._write_state(None, active=False, facts=facts, topics_total=total)
+                wrote_inactive = True
                 continue
+            await self._write_state(question, active=True, facts=facts, topics_total=total)
+            wrote_inactive = False
             self._runner.begin_interview_silence()
             answer = await self._listen()
             if answer.strip():
@@ -167,10 +173,11 @@ class InterviewConductor:
             else:
                 # Silence / blank transcription is an abstention, not a fabricated fact.
                 facts.append(InterviewFact(question=question.text, answer="", abstained=True))
-        self._write_state(None, active=False, facts=facts, topics_total=total)
+        if not wrote_inactive:
+            await self._write_state(None, active=False, facts=facts, topics_total=total)
         return facts
 
-    def _write_state(
+    async def _write_state(
         self,
         question: InterviewQuestion | None,
         *,
@@ -180,19 +187,21 @@ class InterviewConductor:
     ) -> None:
         if self._state_writer is None:
             return
-        self._state_writer(
-            InterviewStateSnapshot(
-                active=active,
-                current_question=question.text if question is not None else "",
-                topic=question.topic if question is not None else "",
-                depth=question.depth if question is not None else "",
-                rationale=question.rationale if question is not None else "",
-                source_refs=question.source_refs if question is not None else (),
-                topics_explored=len(facts),
-                topics_total=topics_total,
-                facts_recorded=sum(1 for fact in facts if not fact.abstained),
-            )
+        snapshot = InterviewStateSnapshot(
+            active=active,
+            current_question=question.text if question is not None else "",
+            topic=question.topic if question is not None else "",
+            depth=question.depth if question is not None else "",
+            rationale=question.rationale if question is not None else "",
+            source_refs=question.source_refs if question is not None else (),
+            topics_explored=len(facts),
+            topics_total=topics_total,
+            facts_recorded=sum(1 for fact in facts if not fact.abstained),
         )
+        try:
+            await asyncio.to_thread(self._state_writer, snapshot)
+        except Exception:
+            LOGGER.warning("interview_state_write_failed", exc_info=True)
 
     async def _ask(self, text: str) -> bool:
         """Synthesize + play one question. Returns True iff it actually reached air.

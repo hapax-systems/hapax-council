@@ -181,6 +181,49 @@ async def test_conductor_state_counts_abstentions_without_recording_facts() -> N
     )
 
 
+async def test_unplayed_question_state_writer_emits_inactive_without_active_prompt() -> None:
+    states: list[InterviewStateSnapshot] = []
+    pipeline = _mock_pipeline()
+    pipeline._play_guarded_pcm = AsyncMock(return_value=False)
+    with patch("agents.hapax_daimonion.voice_output_witness.record_drop"):
+        conductor = InterviewConductor(
+            pipeline=pipeline,
+            runner=MagicMock(),
+            questions=["Q1"],
+            capture_answer=AsyncMock(),
+            state_writer=states.append,
+        )
+        facts = await conductor.run()
+
+    assert facts == [InterviewFact(question="Q1", answer="", abstained=True)]
+    assert states == [
+        InterviewStateSnapshot(
+            active=False,
+            topics_explored=1,
+            topics_total=1,
+            facts_recorded=0,
+        )
+    ]
+
+
+async def test_state_writer_failure_does_not_abort_interview_turn() -> None:
+    state_writer = MagicMock(side_effect=OSError("shm unavailable"))
+    pipeline = _mock_pipeline(answer="answer still recorded")
+    conductor = InterviewConductor(
+        pipeline=pipeline,
+        runner=MagicMock(),
+        questions=["Q1"],
+        capture_answer=AsyncMock(return_value=b"A"),
+        state_writer=state_writer,
+    )
+
+    facts = await conductor.run()
+
+    assert facts == [InterviewFact(question="Q1", answer="answer still recorded")]
+    assert state_writer.call_count == 2
+    pipeline.process_utterance.assert_not_called()
+
+
 async def test_conductor_turn_ordering_ask_then_arm_then_listen() -> None:
     calls: list[str] = []
     pipeline = MagicMock()
