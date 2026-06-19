@@ -215,8 +215,6 @@ def test_coherence_check_quarantines_degraded_ruler(monkeypatch: pytest.MonkeyPa
 
 def _patch_axis_b_prep_happy_path(
     monkeypatch: pytest.MonkeyPatch,
-    *,
-    axis_b_report: dict[str, Any],
 ) -> None:
     import shared.segment_disconfirmation as disc
     import shared.segment_narrative_critique as narr
@@ -297,11 +295,6 @@ def _patch_axis_b_prep_happy_path(
         prep,
         "validate_live_event_viability",
         lambda _viability: {"ok": True, "violations": []},
-    )
-    monkeypatch.setattr(
-        prep,
-        "_axis_b_ndcvb_report_for_segment",
-        lambda **_kwargs: axis_b_report,
     )
 
 
@@ -2575,6 +2568,55 @@ def test_compose_refusal_reason_refuses_non_viable_segment() -> None:
     )
 
 
+def test_axis_b_ndcvb_report_for_segment_reads_precomputed_sources() -> None:
+    report = evaluate_ndcvb_axis_b(["sycophancy: corroborated@0.88"])
+
+    assert (
+        prep._axis_b_ndcvb_report_for_segment(
+            programme=None,
+            prep_session={"axis_b_ndcvb_reports": {"prog-axis-b": report}},
+            programme_id="prog-axis-b",
+            prepared_script=["script"],
+            segment_beats=["beat"],
+            segment_prep_contract={},
+            segment_prep_contract_report={},
+            segment_live_event_report={},
+            live_event_viability_report={},
+        )
+        == report
+    )
+    assert (
+        prep._axis_b_ndcvb_report_for_segment(
+            programme=SimpleNamespace(
+                content=SimpleNamespace(ndcvb_axis_b_report=report),
+            ),
+            prep_session={},
+            programme_id="prog-axis-b",
+            prepared_script=["script"],
+            segment_beats=["beat"],
+            segment_prep_contract={},
+            segment_prep_contract_report={},
+            segment_live_event_report={},
+            live_event_viability_report={},
+        )
+        == report
+    )
+    assert (
+        prep._axis_b_ndcvb_report_for_segment(
+            programme=None,
+            prep_session={},
+            programme_id="prog-axis-b",
+            prepared_script=["script"],
+            segment_beats=["beat"],
+            segment_prep_contract={},
+            segment_prep_contract_report={},
+            segment_live_event_report={},
+            live_event_viability_report={},
+        )
+        is None
+    )
+
+
 def test_prep_segment_axis_b_dissociated_veto_writes_diagnostic_only_refusal(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2585,7 +2627,7 @@ def test_prep_segment_axis_b_dissociated_veto_writes_diagnostic_only_refusal(
             "consistency: dissociated@0.80",
         ]
     )
-    _patch_axis_b_prep_happy_path(monkeypatch, axis_b_report=report)
+    _patch_axis_b_prep_happy_path(monkeypatch)
     programme = SimpleNamespace(
         programme_id="prog-axis-b-dissociated",
         role=SimpleNamespace(value="rant"),
@@ -2599,6 +2641,7 @@ def test_prep_segment_axis_b_dissociated_veto_writes_diagnostic_only_refusal(
         "prep_session_id": "segment-prep-test",
         "model_id": prep.RESIDENT_PREP_MODEL,
         "llm_calls": [],
+        "axis_b_ndcvb_reports": {"prog-axis-b-dissociated": report},
     }
 
     saved = prep.prep_segment(programme, tmp_path, prep_session=session)
@@ -2618,6 +2661,7 @@ def test_prep_segment_axis_b_dissociated_veto_writes_diagnostic_only_refusal(
     assert diagnostic["runtime_boundary"] == "closed"
     assert diagnostic["loadable"] is False
     assert diagnostic["axis_b_ndcvb_report"]["dissociated_veto_required"] is True
+    assert diagnostic["operator_next_action"] == prep.AXIS_B_DISSOCIATED_VETO_NEXT_ACTION
     ledger_row = json.loads(
         (tmp_path / prep.PREP_DIAGNOSTIC_LEDGER_FILENAME).read_text(encoding="utf-8")
     )
@@ -2627,6 +2671,10 @@ def test_prep_segment_axis_b_dissociated_veto_writes_diagnostic_only_refusal(
     dossier = json.loads(Path(ledger_row["dossier_ref"]).read_text(encoding="utf-8"))
     assert dossier["diagnostic_refs"] == [str(diagnostic_path)]
     assert dossier["refusal_metadata"]["axis_b_ndcvb_report"]["dissociated_veto_required"] is True
+    assert (
+        dossier["refusal_metadata"]["operator_next_action"]
+        == prep.AXIS_B_DISSOCIATED_VETO_NEXT_ACTION
+    )
 
 
 @pytest.mark.parametrize(
@@ -2649,7 +2697,7 @@ def test_prep_segment_axis_b_non_dissociated_reports_do_not_hard_veto(
     report: dict[str, Any],
 ) -> None:
     assert report["dissociated_veto_required"] is False
-    _patch_axis_b_prep_happy_path(monkeypatch, axis_b_report=report)
+    _patch_axis_b_prep_happy_path(monkeypatch)
     programme = SimpleNamespace(
         programme_id=programme_id,
         role=SimpleNamespace(value="rant"),
@@ -2663,6 +2711,7 @@ def test_prep_segment_axis_b_non_dissociated_reports_do_not_hard_veto(
         "prep_session_id": "segment-prep-test",
         "model_id": prep.RESIDENT_PREP_MODEL,
         "llm_calls": [],
+        "axis_b_ndcvb_reports": {programme_id: report},
     }
 
     saved = prep.prep_segment(programme, tmp_path, prep_session=session)

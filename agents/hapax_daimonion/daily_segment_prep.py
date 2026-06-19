@@ -249,6 +249,20 @@ AXIS_B_NDCVB_REPORT_MAP_KEYS = (
 )
 AXIS_B_DISSOCIATED_VETO_REASON = "axis_b_dissociated_veto"
 AXIS_B_DISSOCIATED_VETO_NOT_LOADABLE = "axis-B NDCVB dissociated@r honesty veto"
+AXIS_B_DISSOCIATED_VETO_NEXT_ACTION = (
+    "Inspect the preserved Axis-B NDCVB report, withhold this segment from release, "
+    "revise the candidate or source basis, and re-run the Axis-B scorer before prep release."
+)
+AXIS_B_NDCVB_REPORT_KEYS = (
+    "axis_b_ndcvb_report",
+    "ndcvb_axis_b_report",
+    "axis_b_report",
+)
+AXIS_B_NDCVB_REPORT_MAP_KEYS = (
+    "axis_b_ndcvb_reports",
+    "ndcvb_axis_b_reports",
+    "axis_b_reports",
+)
 PREP_STATUS_VERSION = 1
 PREP_STATUS_FILENAME = "prep-status.json"
 # A3: per-day store for downstream council/disconfirmation substance rationale,
@@ -3259,6 +3273,8 @@ def prep_segment(
         return None
 
     axis_b_ndcvb_report = _axis_b_ndcvb_report_for_segment(
+        programme=programme,
+        prep_session=prep_session,
         programme_id=prog_id,
         prepared_script=script,
         segment_beats=[str(item) for item in beats],
@@ -3295,6 +3311,7 @@ def prep_segment(
             "live_event_viability": live_event_viability,
             "live_event_viability_report": live_event_viability_report,
             "axis_b_ndcvb_report": dict(axis_b_ndcvb_report or {}),
+            "operator_next_action": AXIS_B_DISSOCIATED_VETO_NEXT_ACTION,
             "prepped_at": datetime.now(tz=UTC).isoformat(),
             "prep_session_id": prep_session["prep_session_id"],
             "model_id": prep_session["model_id"],
@@ -3319,7 +3336,10 @@ def prep_segment(
             not_loadable_reason=AXIS_B_DISSOCIATED_VETO_NOT_LOADABLE,
             source_hashes=source_hashes,
             diagnostic_refs=[str(diagnostic_path)],
-            refusal_metadata={"axis_b_ndcvb_report": dict(axis_b_ndcvb_report or {})},
+            refusal_metadata={
+                "axis_b_ndcvb_report": dict(axis_b_ndcvb_report or {}),
+                "operator_next_action": AXIS_B_DISSOCIATED_VETO_NEXT_ACTION,
+            },
         )
         return None
 
@@ -4548,6 +4568,8 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
 
 def _axis_b_ndcvb_report_for_segment(
     *,
+    programme: Any | None,
+    prep_session: Mapping[str, Any] | None,
     programme_id: str,
     prepared_script: list[str],
     segment_beats: list[str],
@@ -4559,19 +4581,65 @@ def _axis_b_ndcvb_report_for_segment(
     """Return a precomputed Axis-B NDCVB report for a segment, if one is available.
 
     This is deliberately a source-only seam: daily segment prep does not invoke
-    NDCVB probes, live endpoints, or model workers here. Later wiring can feed an
-    externally produced report into this boundary; the write gate below only
-    enforces the report's dissociated@r veto when present.
+    NDCVB probes, live endpoints, or model workers here. It only consumes reports
+    already supplied by the caller/session/programme metadata; the write gate
+    below enforces the report's dissociated@r veto when present.
     """
+    for source in (
+        _axis_b_ndcvb_report_from_mapping(prep_session, programme_id),
+        _axis_b_ndcvb_report_from_object(programme, programme_id),
+        _axis_b_ndcvb_report_from_object(getattr(programme, "content", None), programme_id),
+        _axis_b_ndcvb_report_from_mapping(segment_prep_contract, programme_id),
+    ):
+        if source is not None:
+            return source
     _ = (
-        programme_id,
         prepared_script,
         segment_beats,
-        segment_prep_contract,
         segment_prep_contract_report,
         segment_live_event_report,
         live_event_viability_report,
     )
+    return None
+
+
+def _axis_b_ndcvb_report_from_mapping(
+    source: Mapping[str, Any] | None,
+    programme_id: str,
+) -> Mapping[str, Any] | None:
+    if not isinstance(source, Mapping):
+        return None
+    for key in AXIS_B_NDCVB_REPORT_MAP_KEYS:
+        reports = source.get(key)
+        if isinstance(reports, Mapping):
+            report = reports.get(programme_id)
+            if isinstance(report, Mapping):
+                return report
+    for key in AXIS_B_NDCVB_REPORT_KEYS:
+        report = source.get(key)
+        if isinstance(report, Mapping):
+            return report
+    return None
+
+
+def _axis_b_ndcvb_report_from_object(
+    source: Any | None,
+    programme_id: str,
+) -> Mapping[str, Any] | None:
+    if source is None:
+        return None
+    if isinstance(source, Mapping):
+        return _axis_b_ndcvb_report_from_mapping(source, programme_id)
+    for key in AXIS_B_NDCVB_REPORT_MAP_KEYS:
+        reports = getattr(source, key, None)
+        if isinstance(reports, Mapping):
+            report = reports.get(programme_id)
+            if isinstance(report, Mapping):
+                return report
+    for key in AXIS_B_NDCVB_REPORT_KEYS:
+        report = getattr(source, key, None)
+        if isinstance(report, Mapping):
+            return report
     return None
 
 
