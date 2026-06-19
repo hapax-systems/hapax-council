@@ -4291,3 +4291,10 @@ from shared.platform_capability_registry import (  # noqa: E402
 )
 
 _capadapter_descriptor_variant
+
+# hooks/scripts/no-dev-on-podium-guard.sh invokes decide_block via an inline
+# `python3 -c` dynamic entrypoint outside vulture's scanned call graph
+# (the PreToolUse no-dev-on-podium enforcement). D-migration-20260619.
+from shared.host_confinement import decide_block as _no_dev_decide_block  # noqa: E402
+
+_no_dev_decide_block
