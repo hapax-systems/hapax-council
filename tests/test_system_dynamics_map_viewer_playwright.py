@@ -255,11 +255,65 @@ def test_system_dynamics_viewer_core_interactions():
             workbench_payload = page.evaluate(
                 "window.systemDynamicsMapRuntime.currentWorkbenchPayload()"
             )
+            expected_stale_observations = page.evaluate(
+                """
+                () => {
+                  const visibleNodeIds = new Set(
+                    window.systemDynamicsMapRuntime.currentViewPayload().visible_node_ids
+                  );
+                  let count = 0;
+                  visibleNodeIds.forEach((id) => {
+                    window.systemDynamicsMapRuntime.observationsFor(id).forEach((observation) => {
+                      if (observation.freshness === "stale") {
+                        count += 1;
+                      }
+                    });
+                  });
+                  return count;
+                }
+                """
+            )
+            assert set(workbench_payload) == {
+                "schema",
+                "inquiry_mode",
+                "inquiry_label",
+                "audience_mode",
+                "audience_label",
+                "explanation_path",
+                "explanation_label",
+                "explanation_step",
+                "scene_title",
+                "visible_counts",
+                "evidence_summary",
+                "scope_warning",
+                "does_not_prove",
+            }
             assert workbench_payload["schema"] == "system-dynamics-map-explanation-view-v1"
             assert workbench_payload["inquiry_mode"] == "release-gates"
+            assert workbench_payload["inquiry_label"] == "What gates release?"
             assert workbench_payload["audience_mode"] == "operator"
-            assert workbench_payload["evidence_summary"]["stale_observations"] == 1
-            assert "does_not_prove" in workbench_payload
+            assert workbench_payload["audience_label"] == "Operator"
+            assert workbench_payload["explanation_path"] == "release-readiness"
+            assert workbench_payload["explanation_label"] == "Release readiness path"
+            assert workbench_payload["explanation_step"] == 0
+            assert workbench_payload["scene_title"] == "Start from source-neutral identity"
+            assert set(workbench_payload["visible_counts"]) == {"nodes", "edges"}
+            assert set(workbench_payload["evidence_summary"]) == {
+                "observations",
+                "stale_observations",
+                "hidden_stale_observations",
+                "claim_fragments",
+                "weak_claims",
+                "candidate_elements",
+                "contradictions",
+            }
+            assert (
+                workbench_payload["evidence_summary"]["stale_observations"]
+                == expected_stale_observations
+            )
+            assert isinstance(workbench_payload["scope_warning"], str)
+            assert workbench_payload["scope_warning"]
+            assert workbench_payload["does_not_prove"]
             view_payload = page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload()")
             assert view_payload["workbench"]["inquiry_mode"] == "release-gates"
             assert view_payload["workbench"]["explanation_path"] == "release-readiness"
@@ -290,9 +344,14 @@ def test_system_dynamics_viewer_core_interactions():
             ) == {"group": "nodes", "id": "temporal-state-events"}
             page.get_by_role("button", name="Copy Explanation JSON").click()
             copied_explanation = page.evaluate("JSON.parse(window.__clipboardWrites.at(-1))")
+            assert set(copied_explanation) == set(workbench_payload)
             assert copied_explanation["schema"] == "system-dynamics-map-explanation-view-v1"
             assert copied_explanation["audience_mode"] == "reviewer"
             assert copied_explanation["explanation_step"] == 1
+            assert copied_explanation["scene_title"] == "Separate topology from temporal state"
+            assert copied_explanation["scope_warning"]
+            assert copied_explanation["audience_label"] == "Reviewer / Auditor"
+            assert copied_explanation["explanation_label"] == "Release readiness path"
             page.get_by_label("View").select_option("topology")
             page.wait_for_function("window.systemDynamicsMapRuntime.activeLens() === 'topology'")
 

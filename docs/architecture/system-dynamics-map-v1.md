@@ -288,7 +288,10 @@ The major platform work still belongs in separate governed tranches:
 
 ## Recheck Commands
 
-Run these from `~/projects/hapax-council` after changing the seed graph or viewer:
+Run these from `~/projects/hapax-council-system-dynamics-hardening` after
+changing the seed graph, viewer, or workbench contract. The Playwright command
+covers the question-first workbench, audience modes, explanation export payload,
+mobile workbench rendering, and companion readout behavior.
 
 ```bash
 uv run pytest tests/test_system_dynamics_map_artifacts.py
