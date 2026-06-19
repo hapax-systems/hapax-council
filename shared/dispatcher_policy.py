@@ -1948,6 +1948,8 @@ def _quota_freshness_green(request: DispatchRequest) -> bool:
         )
         and capability.freshness_ok
     ):
+        if not _requires_route_specific_subscription_quota(capability.route_id):
+            return not any("quota" in error for error in capability.freshness_errors)
         if capability.capacity_pool != "subscription_quota":
             return False
         quota = request.quota
@@ -2319,14 +2321,14 @@ def _subscription_quota_hold_reasons(
     capability: RouteCapabilityState,
 ) -> tuple[str, ...]:
     requires_route_specific_quota = _requires_route_specific_subscription_quota(capability.route_id)
-    if capability.capacity_pool != "subscription_quota":
-        if requires_route_specific_quota:
-            return (
-                "subscription_route_capacity_pool_mismatch",
-                f"capacity_pool:{capability.capacity_pool or 'missing'}",
-                f"route_id:{normalize_route_id(capability.route_id)}",
-            )
+    if not requires_route_specific_quota:
         return ()
+    if capability.capacity_pool != "subscription_quota":
+        return (
+            "subscription_route_capacity_pool_mismatch",
+            f"capacity_pool:{capability.capacity_pool or 'missing'}",
+            f"route_id:{normalize_route_id(capability.route_id)}",
+        )
     quota = request.quota
     if quota is None or not quota.available:
         return ("subscription_route_quota_unavailable",)
