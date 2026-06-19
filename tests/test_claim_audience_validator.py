@@ -221,3 +221,24 @@ def test_public_claim_with_public_safe_evidence_passes() -> None:
 
     assert result.allowed
     assert result.blockers == []
+
+
+def test_enterprise_claim_blocks_pii_hidden_in_linked_evidence() -> None:
+    # Leak-audit gap: PII in a linked evidence record's free-text (not the
+    # claim's own text) must still block an enterprise-audience claim.
+    evidence = _evidence(evidence_id="EV-LEAK", public_safe=True).model_copy(
+        update={"value_summary": "detail in vault:/30-areas/private-x/notes.md"}
+    )
+    claim = ClaimRecord(
+        claim_id="CL-ENT-LEAK",
+        text="A portable governance primitive is available.",
+        claim_kind="current_state",
+        audience_scope=["enterprise_testbed"],
+        evidence_refs=["EV-LEAK"],
+        status="approved_internal",
+    )
+
+    result = validate_claim_for_audiences(claim, [evidence], now=110.0)
+
+    assert not result.allowed
+    assert "cross_boundary_pii:private_path" in result.blockers

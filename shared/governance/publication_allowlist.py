@@ -346,6 +346,16 @@ _EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}
 # pair (single decimals like "version 1.0") do not match.
 _GPS_PATTERN = re.compile(r"-?\d{1,3}\.\d{2,}\s*,\s*-?\d{1,3}\.\d{2,}")
 
+# Operator-private path: a ``vault:`` logical URI or an absolute path under an
+# operator-private root. Either leaks operator-private project structure across
+# a trust boundary (Alliant / public). Kept conservative (named private roots
+# only) so legitimate relative paths and public URLs do not match.
+_PRIVATE_PATH_PATTERN = re.compile(
+    r"(?:\bvault:[^\s)'\"`,|<>]+"
+    r"|(?<![\w.])/(?:home|store|root|srv)/[^\s)'\"`,|<>]+"
+    r"|(?<![\w.])/data2?/[^\s)'\"`,|<>]+)"
+)
+
 REDACTION_MARKER: Final[str] = "[REDACTED]"
 
 
@@ -397,6 +407,45 @@ def apply_named_transform(name: str, content: str) -> str:
     if transform is None:
         raise RedactionTransformNotFound(f"unknown redaction transform: {name!r}")
     return transform(content)
+
+
+def legal_name_guard_operational() -> bool:
+    """True iff the legal-name guard can actually run.
+
+    The legal-name detector keys off ``HAPAX_OPERATOR_NAME``; when it is unset
+    the guard cannot verify the absence of the operator's legal name and a pass
+    would be vacuous. Cross-boundary EMIT paths must refuse rather than emit when
+    this returns False (the bridge does not ship if its legal-name guard is off).
+    """
+    return bool(os.environ.get("HAPAX_OPERATOR_NAME", "").strip())
+
+
+def cross_boundary_pii_blockers(text: str) -> list[str]:
+    """Content-inspection detectors for cross-boundary egress (Alliant / public).
+
+    Returns a stable, deduped list of blocker codes for any operator legal name,
+    email address, GPS coordinate, or operator-private path (``vault:`` logical
+    URI or an absolute path under a private root) found in ``text``. This is the
+    single content-detection source the determination-packet and claim/audience
+    validators share; it complements (does not replace) the author-asserted
+    redaction-flag checks, which content inspection cannot trust on their own.
+
+    The legal-name detector only fires when ``HAPAX_OPERATOR_NAME`` is set; the
+    env-unset case is a guard-operability concern enforced separately on the
+    EMIT path via :func:`legal_name_guard_operational` (so validation of clean
+    packets is not gated on the env var, but cross-boundary emission is).
+    """
+    blockers: list[str] = []
+    legal_name = os.environ.get("HAPAX_OPERATOR_NAME", "").strip()
+    if legal_name and re.search(re.escape(legal_name), text, flags=re.IGNORECASE):
+        blockers.append("operator_legal_name")
+    if _EMAIL_PATTERN.search(text):
+        blockers.append("email_address")
+    if _GPS_PATTERN.search(text):
+        blockers.append("gps_coordinate")
+    if _PRIVATE_PATH_PATTERN.search(text):
+        blockers.append("private_path")
+    return list(dict.fromkeys(blockers))
 
 
 def _apply_redactions(payload: dict | str, redactions: tuple[str, ...]) -> tuple[dict | str, bool]:

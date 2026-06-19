@@ -22,6 +22,11 @@ from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, Field, ValidationError
 
+from shared.governance.publication_allowlist import (
+    cross_boundary_pii_blockers,
+    legal_name_guard_operational,
+)
+
 if TYPE_CHECKING:
     from shared.coord_event_log import CoordEventLog
 
@@ -657,9 +662,18 @@ def validate_determination_exchange_packet(
     for field_name, blocker in _DETERMINATION_BRIDGE_FLAGS.items():
         if bool(getattr(model, field_name)):
             blockers.append(blocker)
+    packet_text = _packet_text_for_sensitive_scan(model)
     for blocker, pattern in _DETERMINATION_SENSITIVE_PATTERNS:
-        if pattern.search(_packet_text_for_sensitive_scan(model)):
+        if pattern.search(packet_text):
             blockers.append(f"sensitive_text:{blocker}")
+    for code in cross_boundary_pii_blockers(packet_text):
+        blockers.append(f"cross_boundary_pii:{code}")
+    if not legal_name_guard_operational():
+        # Content inspection cannot verify legal-name absence without
+        # HAPAX_OPERATOR_NAME. Surface it here; the cross-boundary EMIT path
+        # (HKP adapter) escalates this to a hard refusal so the bridge never
+        # ships with its legal-name guard inoperative.
+        warnings.append("legal_name_guard_inoperative_env_unset")
 
     if model.synthetic_example and not model.public_safe:
         blockers.append("synthetic_example_not_public_safe")
@@ -977,6 +991,29 @@ def _claim_text_for_scan(claim: ClaimRecord) -> str:
     )
 
 
+def _evidence_text_for_scan(records: Sequence[LegibilityEvidenceRecord]) -> str:
+    """Free-text from linked evidence records — the fields an HKP (or other)
+    adapter populates (value_summary/source_command/source_url/repo/path/
+    raw_artifact_ref/redaction_notes/error). Scanned for cross-boundary PII
+    alongside the claim's own text so a leak hidden in evidence cannot reach an
+    enterprise audience unscanned."""
+    parts: list[str] = []
+    for record in records:
+        parts.extend(
+            [
+                record.value_summary,
+                record.source_command,
+                record.source_url,
+                record.repo,
+                record.path,
+                record.raw_artifact_ref,
+                record.redaction_notes,
+                record.error,
+            ]
+        )
+    return " ".join(part for part in parts if part)
+
+
 def _evidence_status(
     *,
     evidence_ref_count: int,
@@ -1052,10 +1089,14 @@ def validate_claim_for_audiences(
                 blockers.append(f"public_claim_without_public_safe_evidence:{record.evidence_id}")
 
     if _claim_targets_enterprise_context(claim, audiences):
-        scan_text = _claim_text_for_scan(claim)
+        scan_text = " ".join(
+            part for part in (_claim_text_for_scan(claim), _evidence_text_for_scan(records)) if part
+        )
         for inference_name, pattern in _ENTERPRISE_FORBIDDEN_PATTERNS:
             if pattern.search(scan_text):
                 blockers.append(f"enterprise_forbidden_inference:{inference_name}")
+        for code in cross_boundary_pii_blockers(scan_text):
+            blockers.append(f"cross_boundary_pii:{code}")
 
     blockers = list(dict.fromkeys(blockers))
     warnings = list(dict.fromkeys(warnings))
