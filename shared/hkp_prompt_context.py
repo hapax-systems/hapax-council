@@ -278,6 +278,65 @@ def build_prompt_context(bundle: Path) -> PromptContextResult:
     return PromptContextResult(text=text, snippets=snippets, concept_count=len(snippets))
 
 
+def _depends_on_neighbours(bundle: Path, from_uid: str) -> list[str]:
+    edges_path = bundle / "_hkp" / "edges.jsonl"
+    if not edges_path.is_file():
+        return []
+    out: list[str] = []
+    for line in edges_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        edge = json.loads(line)
+        if (
+            edge.get("from_uid") == from_uid
+            and edge.get("rel") == "depends_on"
+            and edge.get("to_uid")
+        ):
+            out.append(str(edge["to_uid"]))
+    return out
+
+
+def context_for_task(
+    task_id: str, *, shadow_root: Path | None = None, bundle_id: str = "sdlc"
+) -> str:
+    """Support-only HKP context for a cc-task's dependency neighbourhood.
+
+    Reads the live cache bundle, gathers the task's concept plus its resolved
+    1-hop ``depends_on`` neighbours, and renders the same support-only snippet
+    (banner + allow-listed fields + redaction) the adapter produces.
+
+    Fail-OPEN: returns "" on ANY problem (missing bundle/task, denied policy,
+    parse error). HKP context is optional support and must NEVER block or break
+    the dispatch/handoff flow that consults it.
+    """
+    import yaml  # local import; pyyaml is a council dependency
+
+    try:
+        from shared.hkp_bundle_export import default_shadow_root
+
+        bundle = (shadow_root or default_shadow_root()) / bundle_id
+        if not bundle.is_dir():
+            return ""
+        policy_path = bundle / "_hkp" / "consumer_policy.yaml"
+        policy: dict[str, Any] | None = None
+        if policy_path.is_file() and not policy_path.is_symlink():
+            policy = yaml.safe_load(policy_path.read_text(encoding="utf-8")) or {}
+        allowed = _effective_allowed_fields(policy)
+        if not allowed:
+            return ""
+        by_uid = {c.concept_uid: c for c in _read_concepts(bundle)}
+        target = by_uid.get(f"hkp:cc-task:{task_id}")
+        if target is None:
+            return ""
+        neighbours = _depends_on_neighbours(bundle, target.concept_uid)
+        selected = [target] + [by_uid[u] for u in neighbours if u in by_uid]
+        snippets = [_snippet_for_concept(c, allowed) for c in selected]
+        return _assert_clean(_render_text(snippets))
+    except Exception:  # noqa: BLE001 — fail-open is the contract for a dispatch augment
+        return ""
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Assemble local support-only HKP prompt context from a cache bundle."

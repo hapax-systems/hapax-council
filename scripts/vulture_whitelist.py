@@ -4274,3 +4274,10 @@ from shared.hkp_bundle_export import (
 _hkp_build_derived_index
 _hkp_build_shadow_catalog
 _hkp_export_shadow_bundle
+
+# scripts/hapax-hkp-context + hapax-methodology-dispatch.build_prompt consume
+# context_for_task outside vulture's scanned Python-module call graph
+# (an extensionless CLI + a fail-open function-local import). S5-HKP-PROMOTION-20260619.
+from shared.hkp_prompt_context import context_for_task as _hkp_context_for_task  # noqa: E402
+
+_hkp_context_for_task

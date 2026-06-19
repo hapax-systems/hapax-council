@@ -978,7 +978,7 @@ def build_prompt(
         "If claim ownership is absent, rejected for another reason, or assigned to another lane, "
         "stop and write a relay receipt."
     )
-    return "\n".join(
+    base = "\n".join(
         [
             "SDLC GOVERNED DISPATCH.",
             f"Lane: {lane}",
@@ -1006,6 +1006,20 @@ def build_prompt(
             "8. Do not downgrade profile or platform unless quota, resource pressure, or explicit operator hold requires it and the resulting route remains quality-equivalent for this task.",
         ]
     )
+    # Optional, fail-open HKP support context (projection, not authority). Never
+    # blocks dispatch: any failure yields no section.
+    try:
+        from shared.hkp_prompt_context import context_for_task
+
+        hkp = context_for_task(task_id)
+    except Exception:  # noqa: BLE001 — HKP is optional support; never break dispatch
+        hkp = ""
+    if hkp:
+        base += (
+            "\n\nHKP support context (projection, NOT authority — advisory; verify "
+            "against the cited source before acting):\n" + hkp
+        )
+    return base
 
 
 def write_receipt(
