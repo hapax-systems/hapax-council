@@ -30,6 +30,11 @@ verdict: <accept|accept-with-findings|block>
 findings: []
 checklist: {}
 
+The checklist value must be nested by lens id. Never put checklist item slugs
+directly under checklist. Bad: checklist: {diff-behavior-coverage: pass}. Good:
+checklist: {tests-cover-the-diff: {diff-behavior-coverage: pass}}. Every lens
+named in the reviewer dossier needs its own nested checklist mapping.
+
 Use verdict accept-with-findings when you report minor or major findings. Never emit legacy
 verdict words such as minor_finding, major_finding, pass, fail, accepted, rejected, or
 needs_changes. Finding objects must use severity, lens, file, line, title, and detail keys.

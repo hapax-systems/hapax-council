@@ -54,6 +54,9 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     assert "no repository access" in args
     assert "Do not inspect files" in args
     assert "Your entire stdout must be exactly one fenced yaml code block" in args
+    assert "must be nested by lens id" in args
+    assert "checklist item slugs" in args
+    assert "directly under checklist" in args
     assert "Never emit legacy" in args
     assert "minor_finding" in args
     assert "severity, lens, file, line, title, and detail" in args
