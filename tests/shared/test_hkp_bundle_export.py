@@ -547,10 +547,13 @@ def test_exporter_cleans_index_temp_when_atomic_index_replace_fails(
     source_root = tmp_path / "repo"
     source = _write_task(source_root / "tasks" / "demo.md")
     original_replace = Path.replace
+    failed_tmp_path: Path | None = None
 
     def fail_index_tmp_replace(self: Path, target: Path | str) -> Path:
+        nonlocal failed_tmp_path
         target_path = Path(target)
-        if self.name == ".demo-bundle.jsonl.tmp" and target_path.name == "demo-bundle.jsonl":
+        if target_path.name == "demo-bundle.jsonl":
+            failed_tmp_path = self
             raise OSError("forced index replace failure")
         return original_replace(self, target)
 
@@ -567,8 +570,8 @@ def test_exporter_cleans_index_temp_when_atomic_index_replace_fails(
 
     assert "failed to write HKP derived index atomically" in str(exc_info.value)
     assert "next-action" in str(exc_info.value)
-    index_root = tmp_path / "home" / ".cache" / "hapax" / "hkp-shadow-index"
-    assert not (index_root / ".demo-bundle.jsonl.tmp").exists()
+    assert failed_tmp_path is not None
+    assert not failed_tmp_path.exists()
 
 
 def test_manifest_and_checksums_are_excluded_from_tree_hash(tmp_path: Path, monkeypatch) -> None:
