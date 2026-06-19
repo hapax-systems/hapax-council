@@ -1518,6 +1518,39 @@ def test_system_dynamics_viewer_reports_served_seed_fallback():
             browser.close()
 
 
+def test_system_dynamics_viewer_reports_malformed_workbench_contract():
+    with _static_server() as base_url, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        broken_html = re.sub(
+            r'(<script type="application/json" id="workbench-contract-data">\s*).*?(\s*</script>)',
+            r"\1{}\2",
+            VIEWER_PATH.read_text(encoding="utf-8"),
+            count=1,
+            flags=re.S,
+        )
+
+        def route_broken_workbench(route):
+            route.fulfill(status=200, content_type="text/html", body=broken_html)
+
+        page.route("**/system-dynamics-map-viewer.html", route_broken_workbench)
+        try:
+            page.goto(f"{base_url}/system-dynamics-map-viewer.html")
+            page.locator("#cy canvas").first.wait_for(timeout=10_000)
+            page.wait_for_function("window.systemDynamicsMapRuntime")
+            assert page.evaluate("window.systemDynamicsMapRuntime.inquiryModeIds()") == [
+                "contract-missing"
+            ]
+            assert "Workbench Contract Missing" in page.locator("#workbench-readout").inner_text()
+            assert page.locator("#data-health.active").is_visible()
+            assert (
+                "Workbench contract data is missing or malformed"
+                in page.locator("#data-health").inner_text()
+            )
+        finally:
+            browser.close()
+
+
 def test_system_dynamics_viewer_mobile_layout_remains_operable():
     with _static_server() as base_url, sync_playwright() as playwright:
         browser = playwright.chromium.launch()
