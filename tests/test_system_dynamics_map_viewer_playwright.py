@@ -1207,6 +1207,23 @@ def test_system_dynamics_viewer_forced_colors_keeps_focus_and_boundaries_visible
                 "forced-colors mode did not render a contrastive graph boundary. "
                 "Fix by keeping #cy in the forced-colors border-color rule."
             )
+            page.locator("#cy").focus()
+            graph_focus_style = page.evaluate(
+                """
+                () => {
+                  const graph = document.querySelector("#cy");
+                  const style = getComputedStyle(graph);
+                  return {
+                    activeElementId: document.activeElement.id,
+                    outlineStyle: style.outlineStyle,
+                    outlineWidth: style.outlineWidth
+                  };
+                }
+                """
+            )
+            assert graph_focus_style["activeElementId"] == "cy"
+            assert graph_focus_style["outlineStyle"] == "solid"
+            assert graph_focus_style["outlineWidth"] != "0px"
             page.get_by_role("button", name="Force").focus()
             focus_style = page.evaluate(
                 """
