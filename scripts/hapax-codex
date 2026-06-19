@@ -67,7 +67,7 @@ slugify() {
 
 relay_retired() {
   local relay_name="$1"
-  local relay_file="$HOME/.cache/hapax/relay/$relay_name.yaml"
+  local relay_file="${HAPAX_RELAY_DIR:-$HOME/.cache/hapax/relay}/$relay_name.yaml"
   local value
   [ -f "$relay_file" ] || return 1
   while IFS= read -r value; do
@@ -122,19 +122,23 @@ relay_current_values() {
 
 relay_value_is_retired() {
   local value="$1"
-  local normalized
+  local normalized first_word
   normalized="$(printf '%s' "$value" | sed "s/^[[:space:]\"']*//; s/[[:space:]\"']*$//" | tr '[:lower:]' '[:upper:]')"
-  case "$normalized" in
-    # NOTE: ANTIGRAVITY* was removed here (coordination reform Phase 1) — antigrav
-    # is a LIVE interface (scripts/hapax-antigrav), not a retired relay status, so
-    # treating its relay value as retired wrongly blocked reactivation.
-    RETIR*|SUPERSEDED*|CLOSED*)
+  first_word="${normalized%%[[:space:]]*}"
+  case "$first_word" in
+    # NOTE: the broad ANTIGRAVITY* glob stays out (coordination reform Phase 1):
+    # antigrav is a LIVE interface. The exact ANTIGRAVITY_TAKEOVER terminal
+    # marker remains valid relay history.
+    RETIRED*|SUPERSEDED*|CLOSED*|IDLE_WOUND_DOWN*|WIND_DOWN_IDLE*|WOUND_DOWN*|WIND_DOWN*|WINDING_DOWN*|ANTIGRAVITY_TAKEOVER)
       return 0
       ;;
-    *)
-      return 1
+  esac
+  case "$normalized" in
+    RETIRED*|SUPERSEDED*|CLOSED*|IDLE_WOUND_DOWN*|WIND_DOWN_IDLE*|WOUND_DOWN*|WIND_DOWN*|WINDING_DOWN*|ANTIGRAVITY_TAKEOVER)
+      return 0
       ;;
   esac
+  return 1
 }
 
 session_is_protected() {
@@ -334,6 +338,7 @@ remote_python_command() {
   local payload="$1" code="$2"
   local code_b64="" bash_script="" quoted_script="" quoted_payload="" quoted_code=""
   code_b64="$(printf '%s' "$code" | python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())')"
+  # shellcheck disable=SC2016
   bash_script='export HAPAX_REMOTE_PAYLOAD="$1"; export HAPAX_REMOTE_CODE="$2"; exec python3 -c "import base64,os; exec(base64.b64decode(os.environ[\"HAPAX_REMOTE_CODE\"]))"'
   quoted_script="${bash_script//\'/\'\\\'\'}"
   quoted_payload="${payload//\'/\'\\\'\'}"
@@ -845,7 +850,8 @@ assert_protected_terminal_launch_allowed "$SESSION" "$TERMINAL"
 
 if [ "$FORCE" -ne 1 ]; then
   if relay_retired "$SESSION"; then
-    echo "hapax-codex: relay '$SESSION' is retired/superseded; pass --force to reactivate" >&2
+    RELAY_STATUS_FILE="${HAPAX_RELAY_DIR:-$HOME/.cache/hapax/relay}/$SESSION.yaml"
+    echo "hapax-codex: relay '$SESSION' is retired/wound-down ($RELAY_STATUS_FILE); recheck: sed -n '1,80p' \"$RELAY_STATUS_FILE\"; pass --force to reactivate (P0 drain lanes do this automatically)" >&2
     exit 6
   fi
 fi

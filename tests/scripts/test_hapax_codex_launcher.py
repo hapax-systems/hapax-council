@@ -41,6 +41,7 @@ printf 'TAVILY_API_KEY=%s\\n' "${{TAVILY_API_KEY:-}}" >> {env_file}
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_TERMINAL"] = "none"
     env["XDG_CACHE_HOME"] = str(tmp_path / "cache")
     env["HOME"] = str(tmp_path / "home")
     env.pop("CODEX_THREAD_NAME", None)
@@ -189,6 +190,102 @@ def test_valid_codex_session_execs_codex_with_no_ask_flags(tmp_path: Path) -> No
     assert "HAPAX_WORKTREE_ROLE=alpha" in launched_env
     assert "CODEX_THREAD_NAME=cx-red" in launched_env
     assert "HAPAX_IDLE_UPDATE_SECONDS=270" in launched_env
+
+
+def test_launcher_blocks_wound_down_relay_without_force(tmp_path: Path) -> None:
+    env, args_file, _env_file = _env_with_fake_codex(tmp_path)
+    relay = Path(env["HOME"]) / ".cache" / "hapax" / "relay"
+    relay.mkdir(parents=True)
+    relay_file = relay / "cx-green.yaml"
+    relay_file.write_text("status: wind_down_idle\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-green",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--",
+            "mcp",
+            "list",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 6
+    assert "retired/wound-down" in result.stderr
+    assert str(relay_file) in result.stderr
+    assert not args_file.exists()
+
+
+def test_launcher_blocks_suffixed_terminal_relay_state_without_force(tmp_path: Path) -> None:
+    env, args_file, _env_file = _env_with_fake_codex(tmp_path)
+    relay = Path(env["HOME"]) / ".cache" / "hapax" / "relay"
+    relay.mkdir(parents=True)
+    (relay / "cx-green.yaml").write_text("status: superseded_by_live_advance\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-green",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--",
+            "mcp",
+            "list",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 6
+    assert "retired/wound-down" in result.stderr
+    assert not args_file.exists()
+
+
+def test_launcher_uses_configured_relay_dir_for_retired_check(tmp_path: Path) -> None:
+    env, args_file, _env_file = _env_with_fake_codex(tmp_path)
+    relay = tmp_path / "configured-relay"
+    relay.mkdir()
+    relay_file = relay / "cx-green.yaml"
+    relay_file.write_text("status: wind_down_idle\n", encoding="utf-8")
+    env["HAPAX_RELAY_DIR"] = str(relay)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-green",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--",
+            "mcp",
+            "list",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 6
+    assert str(relay_file) in result.stderr
+    assert f"recheck: sed -n '1,80p' \"{relay_file}\"" in result.stderr
+    assert "$RELAY_STATUS_FILE" not in result.stderr
+    assert not args_file.exists()
 
 
 def test_appendix_codex_exec_uses_remote_payload_without_shell_interpolation(
@@ -658,7 +755,7 @@ def test_current_session_relay_retirement_blocks_without_force(tmp_path: Path) -
     )
 
     assert result.returncode == 6
-    assert "relay 'cx-red' is retired/superseded" in result.stderr
+    assert "relay 'cx-red' is retired/wound-down" in result.stderr
 
 
 def test_terminal_tmux_starts_codex_runner_without_parent_claim(tmp_path: Path) -> None:

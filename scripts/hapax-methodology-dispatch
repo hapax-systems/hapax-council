@@ -88,6 +88,7 @@ CAPACITY_INVARIANT = (
     "degradation is permitted. Capacity may be reduced only by task-platform "
     "fit, quota state, resource contention, or explicit operator hold."
 )
+DEFAULT_P0_CODEX_DRAIN_LANES = ("cx-p0", "cx-crit")
 
 
 @dataclass(frozen=True)
@@ -303,6 +304,68 @@ def field_tokens(value: str | list[str] | None) -> set[str]:
     for ch in "[],:;":
         raw = raw.replace(ch, " ")
     return {part.strip() for part in raw.split() if part.strip()}
+
+
+def split_lane_list(value: str | None) -> set[str]:
+    if not value:
+        return set()
+    return {part for part in re.split(r"[\s,]+", value.strip()) if part}
+
+
+def p0_codex_drain_lanes() -> set[str]:
+    for name in (
+        "HAPAX_P0_CODEX_DRAIN_LANES",
+        "HAPAX_SUPERVISOR_P0_CODEX_LANES",
+        "HAPAX_SUPERVISOR_P0_CODEX_LANE",
+    ):
+        if name in os.environ:
+            return split_lane_list(os.environ.get(name))
+    return set(DEFAULT_P0_CODEX_DRAIN_LANES)
+
+
+def _field_value_text(value: Any) -> str:
+    if isinstance(value, list):
+        return " ".join(_field_value_text(item) for item in value)
+    if isinstance(value, dict):
+        return " ".join(_field_value_text(item) for item in value.values())
+    return strip_scalar(str(value)) if value is not None else ""
+
+
+def task_is_p0_incident(task_id: str, validation: Validation) -> bool:
+    if validation.task is None:
+        return False
+    fields = validation.task.fields
+    priority = strip_scalar(str(fields.get("priority", ""))).lower()
+    if priority != "p0":
+        return False
+    raw = " ".join(
+        [
+            task_id,
+            _field_value_text(fields.get("title")),
+            _field_value_text(fields.get("kind")),
+            _field_value_text(fields.get("tags")),
+            _field_value_text(fields.get("incident_kind")),
+            _field_value_text(fields.get("incident_fingerprint")),
+        ]
+    ).lower()
+    normalized = raw.replace("_", "-")
+    return any(
+        marker in normalized
+        for marker in (
+            "p0-incident",
+            "incident-intake",
+            "technical-alert",
+            "sdlc-task-stalled",
+        )
+    )
+
+
+def allow_codex_p0_local_dispatch_fallback(
+    task_id: str,
+    lane: str,
+    validation: Validation,
+) -> bool:
+    return lane in p0_codex_drain_lanes() and task_is_p0_incident(task_id, validation)
 
 
 def parse_frontmatter(text: str) -> dict[str, Any]:
@@ -1336,7 +1399,9 @@ def launch_codex_headless(
     status = ""
     if validation.task is not None:
         status = strip_scalar(str(validation.task.fields.get("status", "")))
-    args = [str(launcher), "--task", task_id, "--force"]
+    args = [str(launcher), "--task", task_id]
+    if allow_codex_p0_local_dispatch_fallback(task_id, lane, validation):
+        args.append("--force")
     if status in {"claimed", "in_progress"}:
         args.append("--no-claim")
     args.extend([lane, prompt])
@@ -1353,6 +1418,10 @@ def launch_codex_headless(
     env = os.environ.copy()
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("codex", "headless")
+    if allow_codex_p0_local_dispatch_fallback(task_id, lane, validation):
+        # Preserve a caller/operator-provided fallback value; the P0 drain rule
+        # only supplies the default local fallback when the env is otherwise unset.
+        env.setdefault("HAPAX_DISPATCH_HOST_FALLBACK", "local")
     return _sliced_call(args, env)
 
 

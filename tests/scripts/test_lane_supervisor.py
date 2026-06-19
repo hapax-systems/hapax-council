@@ -147,6 +147,30 @@ def _write_offered_p0_incident(env: dict[str, str], task_id: str) -> None:
     )
 
 
+def _write_p0_incident_claim(
+    env: dict[str, str], lane: str, task_id: str, *, status: str = "claimed"
+) -> None:
+    claim_dir = Path(env["HOME"]) / ".cache" / "hapax"
+    claim_dir.mkdir(parents=True, exist_ok=True)
+    (claim_dir / f"cc-active-task-{lane}").write_text(f"{task_id}\n", encoding="utf-8")
+    active = Path(env["HAPAX_SUPERVISOR_VAULT_ROOT"]) / "active"
+    active.mkdir(parents=True, exist_ok=True)
+    (active / f"{task_id}.md").write_text(
+        (
+            "---\n"
+            f"task_id: {task_id}\n"
+            f'title: "P0 incident {task_id}"\n'
+            f"status: {status}\n"
+            f"assigned_to: {lane}\n"
+            "priority: p0\n"
+            "kind: recovery_triage\n"
+            "tags: [incident-intake, technical-alert]\n"
+            "---\n"
+        ),
+        encoding="utf-8",
+    )
+
+
 def _write_session_claim(
     env: dict[str, str], lane: str, task_id: str, *, status: str = "claimed"
 ) -> None:
@@ -366,6 +390,175 @@ def test_supervisor_appendix_only_allows_idle_lane_for_offered_p0_incident(
     assert "P0 incident backlog exists" in result.stdout
 
 
+def test_supervisor_appendix_only_adds_codex_p0_drain_lane_for_offered_p0_incident(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_LOCAL_DEV_MAINTENANCE_MODE="appendix-only",
+        HAPAX_SUPERVISOR_P0_CODEX_LANES="cx-p0",
+    )
+    _make_worktree(env, "cx-p0")
+    _write_offered_p0_incident(env, "p0-incident-notification-drain")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    codex = _reads(calls, "codex.txt")
+    assert "--session cx-p0" in codex
+    assert "--no-claim" in codex
+    assert "--force" in codex
+    assert "P0 incident backlog exists — adding codex drain lane cx-p0" in result.stdout
+    assert "cx-p0 (codex): DEAD with no active task but P0 incident backlog exists" in result.stdout
+
+
+def test_supervisor_codex_p0_drain_backlog_reason_wins_when_claim_also_exists(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_LOCAL_DEV_MAINTENANCE_MODE="appendix-only",
+        HAPAX_SUPERVISOR_P0_CODEX_LANES="cx-p0",
+    )
+    _make_worktree(env, "cx-p0")
+    _write_offered_p0_incident(env, "p0-incident-notification-drain")
+    _write_p0_incident_claim(env, "cx-p0", "p0-incident-claimed-drain")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    codex = _reads(calls, "codex.txt")
+    assert "--session cx-p0" in codex
+    assert "--force" in codex
+    assert "P0 incident backlog exists — adding codex drain lane cx-p0" in result.stdout
+    assert "P0 incident task is claimed by codex drain lane cx-p0" not in result.stdout
+
+
+def test_supervisor_appendix_only_forces_rostered_codex_p0_drain_lane(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_LOCAL_DEV_MAINTENANCE_MODE="appendix-only",
+        HAPAX_SUPERVISOR_CODEX_LANES="cx-p0",
+        HAPAX_SUPERVISOR_P0_CODEX_LANES="cx-p0",
+    )
+    _make_worktree(env, "cx-p0")
+    _write_offered_p0_incident(env, "p0-incident-notification-drain")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    codex = _reads(calls, "codex.txt")
+    assert "--session cx-p0" in codex
+    assert "--force" in codex
+    assert "P0 incident backlog exists — adding codex drain lane cx-p0" not in result.stdout
+
+
+def test_supervisor_appendix_only_does_not_add_codex_p0_drain_lane_without_worktree(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_LOCAL_DEV_MAINTENANCE_MODE="appendix-only",
+    )
+    _write_offered_p0_incident(env, "p0-incident-notification-drain")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert _reads(calls, "codex.txt") == ""
+    assert "P0 incident drain lane cx-p0 is needed (backlog) but has no worktree" in result.stdout
+    assert (
+        f"recheck: test -d {env['HAPAX_SUPERVISOR_WORKTREE_ROOT']}/hapax-council--cx-p0"
+        in result.stdout
+    )
+    assert "provision" in result.stdout
+    assert "HAPAX_SUPERVISOR_P0_CODEX_LANES" in result.stdout
+    assert "P0 incident drain lane cx-crit is needed (backlog) but has no worktree" in result.stdout
+
+
+def test_supervisor_appendix_only_respects_empty_codex_p0_drain_roster(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_LOCAL_DEV_MAINTENANCE_MODE="appendix-only",
+        HAPAX_SUPERVISOR_P0_CODEX_LANES="",
+    )
+    _make_worktree(env, "cx-p0")
+    _make_worktree(env, "cx-crit")
+    _write_offered_p0_incident(env, "p0-incident-notification-drain")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert _reads(calls, "codex.txt") == ""
+    assert "P0 incident backlog exists" not in result.stdout
+
+
+def test_supervisor_primary_codex_p0_drain_roster_override_matches_dispatch(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_LOCAL_DEV_MAINTENANCE_MODE="appendix-only",
+        HAPAX_P0_CODEX_DRAIN_LANES="cx-hot",
+        HAPAX_SUPERVISOR_P0_CODEX_LANES="cx-p0",
+    )
+    _make_worktree(env, "cx-hot")
+    _make_worktree(env, "cx-p0")
+    _write_offered_p0_incident(env, "p0-incident-notification-drain")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    codex = _reads(calls, "codex.txt")
+    assert "--session cx-hot" in codex
+    assert "--session cx-p0" not in codex
+    assert "--force" in codex
+
+
+def test_supervisor_primary_codex_p0_drain_roster_accepts_commas(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_LOCAL_DEV_MAINTENANCE_MODE="appendix-only",
+        HAPAX_P0_CODEX_DRAIN_LANES="cx-hot,cx-warm",
+    )
+    _make_worktree(env, "cx-hot")
+    _make_worktree(env, "cx-warm")
+    _write_offered_p0_incident(env, "p0-incident-notification-drain")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    codex = _reads(calls, "codex.txt")
+    assert "--session cx-hot" in codex
+    assert "--session cx-warm" in codex
+    assert "--force" in codex
+
+
+def test_supervisor_legacy_singular_codex_p0_drain_roster(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_LOCAL_DEV_MAINTENANCE_MODE="appendix-only",
+        HAPAX_SUPERVISOR_P0_CODEX_LANE="cx-legacy",
+    )
+    _make_worktree(env, "cx-legacy")
+    _write_offered_p0_incident(env, "p0-incident-notification-drain")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    codex = _reads(calls, "codex.txt")
+    assert "--session cx-legacy" in codex
+    assert "--force" in codex
+
+
 def test_supervisor_respawns_dead_claude_lane_with_claimed_task(tmp_path: Path) -> None:
     """A dead claude lane WITH a claimed task resumes via the headless launcher."""
     env, calls = _base(tmp_path, HAPAX_SUPERVISOR_CLAUDE_LANES="delta")
@@ -464,6 +657,209 @@ def test_supervisor_respawns_dead_codex_lane(tmp_path: Path) -> None:
     codex = _reads(calls, "codex.txt")
     assert "--session cx-amber" in codex
     assert "--no-claim" in codex
+    assert "--force" not in codex
+
+
+def test_supervisor_real_codex_launcher_blocks_wound_down_non_p0_lane(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_CODEX_LANES="cx-amber",
+        HAPAX_CODEX_BIN=str(REPO_ROOT / "scripts" / "hapax-codex"),
+    )
+    fake_codex = tmp_path / "bin" / "codex"
+    _write_recorder(fake_codex, tmp_path / "real-codex.txt")
+    env["HAPAX_CODEX_BIN_PATH"] = str(fake_codex)
+    _make_worktree(env, "cx-amber")
+    relay = Path(env["HOME"]) / ".cache" / "hapax" / "relay"
+    relay.mkdir(parents=True)
+    relay_file = relay / "cx-amber.yaml"
+    relay_file.write_text("status: wind_down_idle\n", encoding="utf-8")
+    supervisor_log = Path("/tmp/hapax-supervisor-cx-amber.log")
+    supervisor_log.unlink(missing_ok=True)
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert _reads(calls, "codex.txt") == ""
+    log = supervisor_log.read_text(encoding="utf-8")
+    assert "retired/wound-down" in log
+    assert str(relay_file) in log
+
+
+def test_supervisor_p0_drain_real_codex_launcher_supplies_appendix_local_fallback(
+    tmp_path: Path,
+) -> None:
+    env, _calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_P0_CODEX_LANES="cx-p0",
+        HAPAX_CODEX_BIN=str(REPO_ROOT / "scripts" / "hapax-codex"),
+        HAPAX_COUNCIL_DIR=str(REPO_ROOT),
+        HAPAX_DISPATCH_HOST="appendix",
+    )
+    fallback_env = tmp_path / "fallback-env.txt"
+    _write_executable(
+        tmp_path / "bin" / "ssh",
+        f"""printf '%s\\n' "${{HAPAX_DISPATCH_HOST_FALLBACK:-}}" > "{fallback_env}"
+exit 255
+""",
+    )
+    fake_codex = tmp_path / "bin" / "codex"
+    _write_recorder(fake_codex, tmp_path / "real-codex.txt")
+    env["HAPAX_CODEX_BIN_PATH"] = str(fake_codex)
+    _make_worktree(env, "cx-p0")
+    _write_offered_p0_incident(env, "p0-incident-notification-drain")
+    supervisor_log = Path("/tmp/hapax-supervisor-cx-p0.log")
+    supervisor_log.unlink(missing_ok=True)
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert fallback_env.read_text(encoding="utf-8") == "local\n"
+    log = supervisor_log.read_text(encoding="utf-8")
+    assert "dispatch_host_unready (appendix) -- explicit local fallback" in log
+    assert "refusing local fallback" not in log
+    assert "respawn command exited rc=75" not in result.stdout
+
+
+def test_supervisor_does_not_force_configured_codex_p0_drain_lane_without_incident(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_CODEX_LANES="cx-p0",
+        HAPAX_SUPERVISOR_P0_CODEX_LANES="cx-p0",
+    )
+    _make_worktree(env, "cx-p0")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    codex = _reads(calls, "codex.txt")
+    assert "--session cx-p0" in codex
+    assert "--force" not in codex
+
+
+def test_supervisor_forces_configured_codex_p0_drain_lane_with_claimed_incident(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_CODEX_LANES="cx-p0",
+        HAPAX_SUPERVISOR_P0_CODEX_LANES="cx-p0",
+    )
+    _make_worktree(env, "cx-p0")
+    _write_p0_incident_claim(env, "cx-p0", "p0-incident-claimed-drain")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    codex = _reads(calls, "codex.txt")
+    assert "--session cx-p0" in codex
+    assert "--force" in codex
+    assert "P0 incident backlog exists" not in result.stdout
+
+
+def test_supervisor_does_not_force_configured_codex_p0_drain_lane_with_non_incident_claim(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_CODEX_LANES="cx-p0",
+        HAPAX_SUPERVISOR_P0_CODEX_LANES="cx-p0",
+    )
+    _make_worktree(env, "cx-p0")
+    _write_claim(env, "cx-p0", "ordinary-claimed-task")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    codex = _reads(calls, "codex.txt")
+    assert "--session cx-p0" in codex
+    assert "--force" not in codex
+    assert "P0 incident task is claimed by codex drain lane cx-p0" not in result.stdout
+
+
+def test_supervisor_does_not_force_codex_p0_drain_lane_with_backlog_and_non_incident_claim(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_P0_CODEX_LANES="cx-p0",
+    )
+    _make_worktree(env, "cx-p0")
+    _write_offered_p0_incident(env, "p0-incident-notification-drain")
+    _write_claim(env, "cx-p0", "ordinary-claimed-task")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    codex = _reads(calls, "codex.txt")
+    assert "--session cx-p0" in codex
+    assert "--force" not in codex
+    assert "P0 incident backlog exists" in result.stdout
+    assert "P0 incident task is claimed by codex drain lane cx-p0" not in result.stdout
+
+
+def test_supervisor_preserves_dynamic_codex_p0_drain_lane_after_claimed_incident(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_P0_CODEX_LANES="cx-p0",
+    )
+    _make_worktree(env, "cx-p0")
+    _write_p0_incident_claim(env, "cx-p0", "p0-incident-claimed-drain")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    codex = _reads(calls, "codex.txt")
+    assert "--session cx-p0" in codex
+    assert "--force" in codex
+    assert "P0 incident task is claimed by codex drain lane cx-p0" in result.stdout
+    assert "P0 incident backlog exists" not in result.stdout
+
+
+def test_supervisor_preserves_dynamic_codex_p0_drain_lane_after_pr_open_incident(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_P0_CODEX_LANES="cx-p0",
+    )
+    _make_worktree(env, "cx-p0")
+    _write_p0_incident_claim(env, "cx-p0", "p0-incident-pr-open-drain", status="pr_open")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    codex = _reads(calls, "codex.txt")
+    assert "--session cx-p0" in codex
+    assert "--force" in codex
+    assert "P0 incident task is claimed by codex drain lane cx-p0" in result.stdout
+    assert "P0 incident backlog exists" not in result.stdout
+
+
+def test_supervisor_preserves_dynamic_codex_p0_drain_lane_for_ready_family_incident(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_P0_CODEX_LANES="cx-p0",
+    )
+    _make_worktree(env, "cx-p0")
+    _write_p0_incident_claim(env, "cx-p0", "p0-incident-ready-drain", status="ready_for_merge")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    codex = _reads(calls, "codex.txt")
+    assert "--session cx-p0" in codex
+    assert "--force" in codex
+    assert "P0 incident task is claimed by codex drain lane cx-p0" in result.stdout
+    assert "P0 incident backlog exists" not in result.stdout
 
 
 def test_supervisor_appendix_only_suppresses_unclaimed_codex_lane(

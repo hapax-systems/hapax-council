@@ -1006,7 +1006,7 @@ def test_launches_codex_headless_through_codex_launcher(tmp_path: Path) -> None:
     fake_launcher.parent.mkdir(parents=True, exist_ok=True)
     fake_launcher.write_text(
         f"""#!/usr/bin/env bash
-printf '%s\\n' "$HAPAX_DISPATCH_HOST" > {launcher_env}
+printf 'host=%s\\nfallback=%s\\n' "$HAPAX_DISPATCH_HOST" "${{HAPAX_DISPATCH_HOST_FALLBACK:-}}" > {launcher_env}
 printf '%s\\n' "$@" > {launcher_args}
 """,
         encoding="utf-8",
@@ -1031,11 +1031,11 @@ printf '%s\\n' "$@" > {launcher_args}
     )
 
     assert result.returncode == 0, result.stderr
-    # hapax-codex-headless takes `--task <id> --force <lane> <prompt>`; the prompt
-    # is passed inline (multi-line), so assert the flag prefix then the prompt
-    # body in the raw recorded args.
+    # hapax-codex-headless takes `--task <id> <lane> <prompt>` for ordinary
+    # launches. `--force` is reserved for the P0 incident drain-lane path.
     recorded = launcher_args.read_text(encoding="utf-8")
-    assert recorded.startswith("--task\ngoverned-build\n--force\ncx-green\n")
+    assert recorded.startswith("--task\ngoverned-build\ncx-green\n")
+    assert "\n--force\n" not in recorded
     assert "SDLC GOVERNED DISPATCH." in recorded
     assert "Task: governed-build" in recorded
     assert "AuthorityCase: CASE-TEST-001" in recorded
@@ -1058,7 +1058,354 @@ printf '%s\\n' "$@" > {launcher_args}
     assert receipt["coord_dispatch_replayed"] is False
     assert receipt["coord_dispatch_cleanup_state"] == "processed"
     assert receipt["dispatch_host"] == "appendix"
-    assert launcher_env.read_text(encoding="utf-8").strip() == "appendix"
+    assert launcher_env.read_text(encoding="utf-8").splitlines() == [
+        "host=appendix",
+        "fallback=",
+    ]
+
+
+def test_codex_p0_incident_drain_lane_allows_local_fallback(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    task_id = "p0-incident-sdlc-task-stalled-test"
+    _task(
+        tmp_path / "tasks",
+        task_id,
+        f"""
+        kind: build
+        priority: p0
+        tags: [cc-task, p0, incident-intake, technical-alert]
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_env = tmp_path / "launcher-env.txt"
+    launcher_args = tmp_path / "launcher-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf 'host=%s\\nfallback=%s\\n' "$HAPAX_DISPATCH_HOST" "${{HAPAX_DISPATCH_HOST_FALLBACK:-}}" > {launcher_env}
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        task_id,
+        "--lane",
+        "cx-p0",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert launcher_env.read_text(encoding="utf-8").splitlines() == [
+        "host=appendix",
+        "fallback=local",
+    ]
+    recorded = launcher_args.read_text(encoding="utf-8")
+    assert recorded.startswith(f"--task\n{task_id}\n--force\ncx-p0\n")
+
+
+def test_codex_p0_incident_drain_lane_force_preserves_live_pid_guard(tmp_path: Path) -> None:
+    worktree = _worktree(tmp_path / "worktree")
+    (worktree / "scripts" / "cc-claim").chmod(0o755)
+    spec = _spec(tmp_path / "isap-test.md")
+    task_id = "p0-incident-sdlc-task-stalled-test"
+    _task(
+        tmp_path / "tasks",
+        task_id,
+        f"""
+        kind: build
+        priority: p0
+        tags: [cc-task, p0, incident-intake, technical-alert]
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    home = tmp_path / "home"
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    pid_dir = tmp_path / "pids"
+    pid_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    codex_args = tmp_path / "codex-args.txt"
+    _write(
+        bin_dir / "codex",
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > {codex_args}\n",
+    )
+    (bin_dir / "codex").chmod(0o755)
+
+    live = subprocess.Popen(["sleep", "60"])
+    try:
+        (pid_dir / "cx-p0.pid").write_text(f"{live.pid}\n", encoding="utf-8")
+        result = _run(
+            tmp_path,
+            "--task",
+            task_id,
+            "--lane",
+            "cx-p0",
+            "--platform",
+            "codex",
+            "--mode",
+            "headless",
+            "--launch",
+            extra_env={
+                "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(
+                    REPO_ROOT / "scripts" / "hapax-codex-headless"
+                ),
+                "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+                "HAPAX_CODEX_HEADLESS_ALLOW": "1",
+                "HAPAX_CODEX_HEADLESS_WORKDIR": str(tmp_path / "worktree"),
+                "HAPAX_CODEX_HEADLESS_PID_DIR": str(pid_dir),
+                "XDG_CACHE_HOME": str(tmp_path / "cache"),
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            },
+        )
+    finally:
+        live.terminate()
+        live.wait(timeout=5)
+
+    assert result.returncode == 11
+    assert "already live" in result.stderr
+    assert not codex_args.exists()
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["launched"] is False
+    assert receipt["launch_returncode"] == 11
+    assert receipt["coord_dispatch_cleanup_state"] == "deferred"
+
+
+def test_codex_headless_dispatch_propagates_retired_relay_block(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+        status="claimed",
+        assigned_to="cx-green",
+    )
+    home = tmp_path / "home"
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    relay = home / ".cache" / "hapax" / "relay"
+    relay.mkdir(parents=True)
+    (relay / "cx-green.yaml").write_text("status: wind_down_idle\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    codex_args = tmp_path / "codex-args.txt"
+    _write(
+        bin_dir / "codex",
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > {codex_args}\n",
+    )
+    (bin_dir / "codex").chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(REPO_ROOT / "scripts" / "hapax-codex-headless"),
+            "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+            "HAPAX_CODEX_HEADLESS_ALLOW": "1",
+            "HAPAX_CODEX_HEADLESS_WORKDIR": str(tmp_path / "worktree"),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        },
+    )
+
+    assert result.returncode == 6
+    assert "retired/wound-down" in result.stderr
+    assert not codex_args.exists()
+
+
+def test_split_lane_list_accepts_commas_and_whitespace() -> None:
+    module = _dispatcher_module()
+
+    assert module.split_lane_list(" cx-p0,cx-crit  cx-hot\ncx-extra ") == {
+        "cx-p0",
+        "cx-crit",
+        "cx-hot",
+        "cx-extra",
+    }
+    assert module.split_lane_list(" \t\n ") == set()
+    assert module.split_lane_list(None) == set()
+
+
+def test_codex_p0_incident_local_fallback_rejects_non_drain_lane(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    monkeypatch.setenv("HAPAX_P0_CODEX_DRAIN_LANES", "cx-p0")
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "priority": "p0",
+                "title": "P0 incident",
+                "kind": "recovery_triage",
+                "tags": ["incident-intake", "technical-alert"],
+            },
+        ),
+    )
+
+    assert not module.allow_codex_p0_local_dispatch_fallback(
+        "p0-incident-sdlc-task-stalled-test", "cx-green", validation
+    )
+
+
+def test_codex_p0_incident_local_fallback_rejects_non_incident_drain_task(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    monkeypatch.setenv("HAPAX_P0_CODEX_DRAIN_LANES", "cx-p0")
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "priority": "p0",
+                "title": "Ordinary source change",
+                "kind": "build",
+                "tags": ["cc-task", "p0"],
+            },
+        ),
+    )
+
+    assert not module.allow_codex_p0_local_dispatch_fallback(
+        "ordinary-p0-build", "cx-p0", validation
+    )
+
+
+def test_codex_p0_incident_local_fallback_rejects_priority_mismatch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    monkeypatch.setenv("HAPAX_P0_CODEX_DRAIN_LANES", "cx-p0")
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "priority": "p1",
+                "title": "P0 incident marker in title",
+                "kind": "recovery_triage",
+                "tags": ["incident-intake", "technical-alert"],
+            },
+        ),
+    )
+
+    assert not module.allow_codex_p0_local_dispatch_fallback(
+        "p0-incident-priority-mismatch", "cx-p0", validation
+    )
+
+
+def test_codex_p0_incident_local_fallback_uses_primary_drain_lane_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    monkeypatch.setenv("HAPAX_SUPERVISOR_P0_CODEX_LANES", "cx-p0")
+    monkeypatch.setenv("HAPAX_P0_CODEX_DRAIN_LANES", "cx-hot")
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "priority": "p0",
+                "title": "P0 incident",
+                "kind": "recovery_triage",
+                "tags": ["incident-intake", "technical-alert"],
+            },
+        ),
+    )
+
+    assert module.allow_codex_p0_local_dispatch_fallback(
+        "p0-incident-custom-drain", "cx-hot", validation
+    )
+    assert not module.allow_codex_p0_local_dispatch_fallback(
+        "p0-incident-custom-drain", "cx-p0", validation
+    )
+
+
+def test_codex_p0_incident_local_fallback_uses_legacy_singular_drain_lane(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    monkeypatch.delenv("HAPAX_P0_CODEX_DRAIN_LANES", raising=False)
+    monkeypatch.delenv("HAPAX_SUPERVISOR_P0_CODEX_LANES", raising=False)
+    monkeypatch.setenv("HAPAX_SUPERVISOR_P0_CODEX_LANE", "cx-hot")
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "priority": "p0",
+                "title": "P0 incident",
+                "kind": "recovery_triage",
+                "tags": ["incident-intake", "technical-alert"],
+            },
+        ),
+    )
+
+    assert module.allow_codex_p0_local_dispatch_fallback(
+        "p0-incident-legacy-drain", "cx-hot", validation
+    )
+    assert not module.allow_codex_p0_local_dispatch_fallback(
+        "p0-incident-legacy-drain", "cx-p0", validation
+    )
+
+
+def test_codex_p0_incident_local_fallback_respects_empty_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    monkeypatch.setenv("HAPAX_SUPERVISOR_P0_CODEX_LANES", "cx-p0")
+    monkeypatch.setenv("HAPAX_P0_CODEX_DRAIN_LANES", "")
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "priority": "p0",
+                "title": "P0 incident",
+                "kind": "recovery_triage",
+                "tags": ["incident-intake", "technical-alert"],
+            },
+        ),
+    )
+
+    assert not module.allow_codex_p0_local_dispatch_fallback(
+        "p0-incident-empty-drain-roster", "cx-p0", validation
+    )
 
 
 def test_launch_idempotency_replays_without_second_launcher_call(tmp_path: Path) -> None:

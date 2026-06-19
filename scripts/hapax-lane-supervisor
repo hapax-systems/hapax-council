@@ -46,11 +46,25 @@ VAULT_ROOT="${HAPAX_SUPERVISOR_VAULT_ROOT:-$HOME/Documents/Personal/20-projects/
 # HAPAX_SUPERVISOR_CODEX_LANES / HAPAX_SUPERVISOR_ANTIGRAV_LANES (e.g. a systemd
 # drop-in) to supervise specific lanes — a rostered lane that lacks a worktree now
 # ESCALATES (below) instead of being silently skipped.
+# P0 incident intake is the exception: when an offered P0 incident backlog exists,
+# the supervisor may temporarily add HAPAX_P0_CODEX_DRAIN_LANES or
+# HAPAX_SUPERVISOR_P0_CODEX_LANES (default: cx-p0 cx-crit, with
+# HAPAX_SUPERVISOR_P0_CODEX_LANE as a legacy singular fallback) as Codex drain
+# lanes, still gated by real worktrees and the same restart limits.
 # `${VAR-default}` (not `:-`): an explicitly-set empty roster means "supervise no
 # lanes of this kind", not "fall back to the default". Only an UNSET var defaults.
 CLAUDE_LANES="${HAPAX_SUPERVISOR_CLAUDE_LANES-beta gamma delta epsilon zeta eta theta}"
 CODEX_LANES="${HAPAX_SUPERVISOR_CODEX_LANES-}"
 ANTIGRAV_LANES="${HAPAX_SUPERVISOR_ANTIGRAV_LANES-}"
+if [ "${HAPAX_P0_CODEX_DRAIN_LANES+x}" = x ]; then
+  P0_CODEX_LANES="$HAPAX_P0_CODEX_DRAIN_LANES"
+elif [ "${HAPAX_SUPERVISOR_P0_CODEX_LANES+x}" = x ]; then
+  P0_CODEX_LANES="$HAPAX_SUPERVISOR_P0_CODEX_LANES"
+else
+  P0_CODEX_LANES="${HAPAX_SUPERVISOR_P0_CODEX_LANE-cx-p0 cx-crit}"
+fi
+P0_CODEX_LANES="${P0_CODEX_LANES//,/ }"
+P0_CODEX_DRAIN_ACTIVE=""
 
 RESTART_COOLDOWN_S="${HAPAX_SUPERVISOR_RESTART_COOLDOWN_S:-120}"
 BURST_LIMIT="${HAPAX_SUPERVISOR_BURST_LIMIT:-5}"
@@ -187,6 +201,128 @@ sys.exit(1)
 PY
 }
 
+task_note_is_p0_incident() {
+  local task_id="$1"
+  [ -n "$task_id" ] || return 1
+  python3 - "$VAULT_ROOT/active" "$task_id" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+active, task_id = Path(sys.argv[1]), sys.argv[2]
+if not active.is_dir():
+    sys.exit(1)
+
+note = active / f"{task_id}.md"
+if not note.is_file():
+    note = next(iter(sorted(active.glob(f"{task_id}-*.md"))), None)
+if note is None or not note.is_file():
+    sys.exit(1)
+
+text = note.read_text(encoding="utf-8", errors="replace")
+if not text.startswith("---"):
+    sys.exit(1)
+parts = text.split("---", 2)
+if len(parts) < 3:
+    sys.exit(1)
+frontmatter = parts[1]
+
+def field(key: str) -> str:
+    match = re.search(rf"(?im)^{re.escape(key)}:\s*(.*)$", frontmatter)
+    return match.group(1).strip().strip("\"'") if match else ""
+
+if field("priority").lower() != "p0":
+    sys.exit(1)
+
+haystack = " ".join(
+    (
+        note.stem,
+        field("title"),
+        field("kind"),
+        field("tags"),
+        field("incident_kind"),
+        field("incident_fingerprint"),
+    )
+).lower().replace("_", "-")
+markers = ("p0-incident", "incident-intake", "technical-alert", "sdlc-task-stalled")
+sys.exit(0 if any(marker in haystack for marker in markers) else 1)
+PY
+}
+
+codex_p0_drain_lane_configured() {
+  [ -n "$P0_CODEX_LANES" ] || return 1
+  [ "$P0_CODEX_LANES" != "none" ] || return 1
+  local lane="$1" configured
+  for configured in $P0_CODEX_LANES; do
+    [ "$configured" = "none" ] && continue
+    [ "$configured" = "$lane" ] && return 0
+  done
+  return 1
+}
+
+codex_p0_drain_lane_active() {
+  case " $P0_CODEX_DRAIN_ACTIVE " in
+    *" $1 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+codex_drain_lane_has_claimed_p0_incident() {
+  local lane="$1" task_line task_id
+  task_line="$(resolve_claimed_task "$lane")"
+  IFS=$'\t' read -r task_id _ <<< "$task_line"
+  [ -n "$task_id" ] || return 1
+  task_note_is_p0_incident "$task_id"
+}
+
+codex_should_force_respawn() {
+  local lane="$1" task_id="${2:-}"
+  if [ -n "$task_id" ]; then
+    codex_p0_drain_lane_configured "$lane" && task_note_is_p0_incident "$task_id"
+    return
+  fi
+  codex_p0_drain_lane_active "$lane"
+}
+
+activate_p0_codex_drain_lane() {
+  [ -n "$P0_CODEX_LANES" ] || return 0
+  [ "$P0_CODEX_LANES" != "none" ] || return 0
+  local backlog_present=0 lane activation_reason=""
+  if p0_intake_backlog_present; then
+    backlog_present=1
+  fi
+  for lane in $P0_CODEX_LANES; do
+    [ "$lane" != "none" ] || continue
+    activation_reason=""
+    if [ "$backlog_present" = "1" ]; then
+      activation_reason="backlog"
+    elif codex_drain_lane_has_claimed_p0_incident "$lane"; then
+      activation_reason="claimed"
+    else
+      continue
+    fi
+    if ! lane_has_worktree "$lane"; then
+      log "P0 incident drain lane $lane is needed ($activation_reason) but has no worktree — cannot add drain capacity; recheck: test -d $WORKTREE_ROOT/hapax-council--$lane; provision: git -C $WORKTREE_ROOT/hapax-council worktree add $WORKTREE_ROOT/hapax-council--$lane -b codex/$lane origin/main; or remove/override it via HAPAX_P0_CODEX_DRAIN_LANES, HAPAX_SUPERVISOR_P0_CODEX_LANES, HAPAX_SUPERVISOR_P0_CODEX_LANE, or the built-in default"
+      continue
+    fi
+    case " $P0_CODEX_DRAIN_ACTIVE " in
+      *" $lane "*) ;;
+      *) P0_CODEX_DRAIN_ACTIVE="${P0_CODEX_DRAIN_ACTIVE:+$P0_CODEX_DRAIN_ACTIVE }$lane" ;;
+    esac
+    case " $CODEX_LANES " in
+      *" $lane "*) ;;
+      *)
+        CODEX_LANES="${CODEX_LANES:+$CODEX_LANES }$lane"
+        if [ "$activation_reason" = "claimed" ]; then
+          log "P0 incident task is claimed by codex drain lane $lane — preserving drain supervision"
+        else
+          log "P0 incident backlog exists — adding codex drain lane $lane"
+        fi
+        ;;
+    esac
+  done
+}
+
 # ── liveness ──────────────────────────────────────────────────────────────────
 
 claude_alive() {
@@ -307,8 +443,10 @@ lane_has_worktree() {
   return 1
 }
 
-# Active claim → "task_id<TAB>title", else empty. The claim file names the task;
-# the vault note is the authority for status/assignment.
+# Active owned task → "task_id<TAB>title", else empty. The claim file names the
+# task; the vault note is the authority for status/assignment. Keep the accepted
+# statuses aligned with shared.sdlc_lifecycle.TASK_MUTABLE_STATUSES without
+# importing from systemd-launched embedded Python.
 resolve_claimed_task() {
   local lane="$1"
   python3 - "$VAULT_ROOT" "$lane" "$HOME/.cache/hapax/cc-active-task-$lane" <<'PY' 2>/dev/null || true
@@ -340,7 +478,18 @@ for candidate in sorted(
     if note is None or not note.is_file():
         continue
     text = note.read_text(errors="replace")
-    if field("status") in {"claimed", "in_progress"} and field("assigned_to") == lane:
+    active_owned_statuses = {
+        "claimed",
+        "in_progress",
+        "pr_open",
+        "merge_queue",
+        "ci_green",
+        "ready",
+        "ready_for_review",
+        "review_ready",
+        "ready_for_merge",
+    }
+    if field("status") in active_owned_statuses and field("assigned_to") == lane:
         print(f"{task_id}\t{field('title')}")
         sys.exit(0)
 PY
@@ -367,9 +516,7 @@ guard() {
   local lane="$1" kind="$2" worktree="$WORKTREE_ROOT/hapax-council--$1"
   local task_line task_id title
   task_line="$(resolve_claimed_task "$lane")"
-  task_id="${task_line%%	*}"
-  title="${task_line#*	}"
-  [ "$title" = "$task_line" ] && title=""
+  IFS=$'\t' read -r task_id title _ <<< "$task_line"
 
   # A rostered lane with no worktree can never be launched. Don't silently skip
   # it forever — count the cycles and escalate once it crosses the threshold, so
@@ -449,7 +596,17 @@ guard() {
       ;;
     codex)
       log "$lane ($kind): DEAD — respawning tmux lane (idle-await; lane reads its own claim)"
-      respawn_sync "$lane" "$CODEX_BIN" --session "$lane" --no-claim --terminal tmux || respawn_rc=$?
+      codex_force=0
+      codex_args=("$CODEX_BIN" --session "$lane" --no-claim --terminal tmux)
+      if codex_should_force_respawn "$lane" "$task_id"; then
+        codex_args+=(--force)
+        codex_force=1
+      fi
+      if [ "$codex_force" = "1" ]; then
+        respawn_sync "$lane" env HAPAX_DISPATCH_HOST_FALLBACK=local "${codex_args[@]}" || respawn_rc=$?
+      else
+        respawn_sync "$lane" "${codex_args[@]}" || respawn_rc=$?
+      fi
       respawn_tracked=1
       ;;
     antigrav)
@@ -601,6 +758,7 @@ fifo_nudge() {
   [ -p "$fifo" ] || { log "$1: no stdin fifo at $fifo — cannot nudge live launcher"; return 1; }
   json="$(progress_resume_prompt "$2" | python3 -c 'import sys, json; print(json.dumps({"type":"user","message":{"role":"user","content":[{"type":"text","text":sys.stdin.read()}]}}, separators=(",", ":")))' 2>/dev/null || true)"
   [ -n "$json" ] || return 1
+  # shellcheck disable=SC2016 # $1/$2 are bash -c positional args.
   timeout 5 bash -c 'printf "%s\n" "$1" > "$2"' _ "$json" "$fifo"
 }
 
@@ -964,6 +1122,8 @@ reap_guard() {
 }
 
 # ── sweep ─────────────────────────────────────────────────────────────────────
+
+activate_p0_codex_drain_lane
 
 for lane in $CLAUDE_LANES;   do guard "$lane" claude;   done
 for lane in $CODEX_LANES;    do guard "$lane" codex;     done
