@@ -353,6 +353,20 @@ def test_system_dynamics_viewer_core_interactions():
                 "No visible or hidden elements match"
                 in page.locator("#search-results").inner_text()
             )
+            page.locator("#cy").focus()
+            page.keyboard.press("ArrowDown")
+            assert (
+                "No visible graph elements to select. Clear search or reset filters to recover."
+                in page.locator("#action-status").inner_text()
+            )
+            page.locator("#cy").focus()
+            page.keyboard.press("/")
+            assert page.evaluate("document.activeElement.id") == "search"
+            page.locator("#cy").focus()
+            page.keyboard.press("Escape")
+            assert page.get_by_label("Search").input_value() == ""
+            assert page.locator("#panel").inner_text().startswith("RDF / OWL Knowledge Graph")
+            page.get_by_label("Search").fill("zzzznomatchq")
             page.get_by_role("button", name="Reset to Topology").click()
             page.wait_for_function("window.systemDynamicsMapRuntime.activeLens() === 'topology'")
             assert page.get_by_label("Search").input_value() == ""

@@ -7419,7 +7419,7 @@
     function selectTraversalItem(index) {
       const items = visibleTraversalItems();
       if (items.length === 0) {
-        setActionStatus("No visible graph elements to select.", "warning");
+        setActionStatus("No visible graph elements to select. Clear search or reset filters to recover.", "warning");
         return;
       }
       graphCursorIndex = (index + items.length) % items.length;
@@ -7434,6 +7434,18 @@
     function handleGraphKeydown(event) {
       const items = visibleTraversalItems();
       if (items.length === 0) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          clearSelection({ renderPanel: true });
+        } else if (event.key === "/") {
+          event.preventDefault();
+          document.getElementById("search").focus();
+        } else if (
+          ["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp", "Home", "End", "Enter", " "].includes(event.key)
+        ) {
+          event.preventDefault();
+          setActionStatus("No visible graph elements to select. Clear search or reset filters to recover.", "warning");
+        }
         return;
       }
       if (event.key === "ArrowRight" || event.key === "ArrowDown") {
