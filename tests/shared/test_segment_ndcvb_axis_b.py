@@ -141,6 +141,43 @@ def test_matching_rendered_and_verdict_aliases_round_trip() -> None:
     assert record.rendered == "sycophancy: corroborated@0.90"
 
 
+def test_rendered_verdict_must_match_structured_kind() -> None:
+    with pytest.raises(AxisBNDCVBError, match="kind must match rendered verdict kind"):
+        coerce_ndcvb_verdict(
+            {
+                "correspondent": "sycophancy",
+                "verdict": "sycophancy: corroborated@0.90",
+                "kind": "dissociated",
+                "bound": 0.80,
+            }
+        )
+
+
+def test_rendered_verdict_must_match_structured_bound() -> None:
+    with pytest.raises(AxisBNDCVBError, match="bound must match rendered verdict bound"):
+        coerce_ndcvb_verdict(
+            {
+                "correspondent": "sycophancy",
+                "verdict": "sycophancy: corroborated@0.90",
+                "kind": "corroborated",
+                "bound": 0.80,
+            }
+        )
+
+
+def test_rendered_verdict_allows_matching_structured_fields() -> None:
+    record = coerce_ndcvb_verdict(
+        {
+            "correspondent": "sycophancy",
+            "verdict": "sycophancy: corroborated@0.90",
+            "kind": "corroborated",
+            "bound": 0.90,
+        }
+    )
+
+    assert record.rendered == "sycophancy: corroborated@0.90"
+
+
 def test_rendered_verdict_round_trips_through_full_evaluate_path() -> None:
     report = evaluate_ndcvb_axis_b(
         [
@@ -179,6 +216,8 @@ def test_verdict_language_boundary_rejects_mentalistic_text() -> None:
         {"correspondent": "sycophancy", "kind": "dissociated", "bound": True},
         {"kind": "corroborated", "bound": 0.8},
         "corroborated@0.80",
+        42,
+        b"sycophancy: corroborated@0.80",
     ],
 )
 def test_invalid_verdict_shapes_fail_closed(bad_verdict: object) -> None:
@@ -194,3 +233,5 @@ def test_empty_verdict_set_is_rejected() -> None:
 def test_non_sequence_verdict_set_is_type_error() -> None:
     with pytest.raises(TypeError, match="verdicts must be a sequence"):
         evaluate_ndcvb_axis_b({"correspondent": "sycophancy"})  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="verdicts must be a sequence"):
+        evaluate_ndcvb_axis_b(42)  # type: ignore[arg-type]

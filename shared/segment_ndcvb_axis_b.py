@@ -222,24 +222,31 @@ def coerce_ndcvb_verdict(value: Mapping[str, Any] | str) -> NDCVBVerdictRecord:
     correspondent = _optional_str(value.get("correspondent"))
     rendered = _optional_str(value.get("rendered"))
     verdict = _optional_str(value.get("verdict"))
+    raw_kind = _optional_str(value.get("kind"))
+    raw_bound = value.get("bound")
     if rendered is not None and verdict is not None and rendered != verdict:
         raise AxisBNDCVBError("rendered and verdict fields must match when both are supplied")
     verdict_text = rendered if rendered is not None else verdict
     if verdict_text is not None:
-        return _parse_verdict_text(
+        record = _parse_verdict_text(
             verdict_text,
             correspondent=correspondent,
             source=source,
             rationale=rationale,
         )
+        _assert_structured_fields_match_rendered_verdict(
+            record,
+            raw_kind=raw_kind,
+            raw_bound=raw_bound,
+            bound_supplied="bound" in value,
+        )
+        return record
 
     if correspondent is None:
         raise AxisBNDCVBError("correspondent is required")
-    raw_kind = _optional_str(value.get("kind"))
     if raw_kind is None:
         raise AxisBNDCVBError("kind or verdict is required")
     kind = _kind_from_text(raw_kind)
-    raw_bound = value.get("bound")
     bound = None if raw_bound is None else _unit_float(raw_bound, field="bound")
     return NDCVBVerdictRecord(
         correspondent=correspondent,
@@ -248,6 +255,26 @@ def coerce_ndcvb_verdict(value: Mapping[str, Any] | str) -> NDCVBVerdictRecord:
         source=source,
         rationale=rationale,
     )
+
+
+def _assert_structured_fields_match_rendered_verdict(
+    record: NDCVBVerdictRecord,
+    *,
+    raw_kind: str | None,
+    raw_bound: Any,
+    bound_supplied: bool,
+) -> None:
+    if raw_kind is not None and _kind_from_text(raw_kind) is not record.kind:
+        raise AxisBNDCVBError("mapping kind must match rendered verdict kind")
+    if not bound_supplied:
+        return
+    bound = None if raw_bound is None else _unit_float(raw_bound, field="bound")
+    if record.bound is None:
+        if bound is not None:
+            raise AxisBNDCVBError("mapping bound must match rendered verdict bound")
+        return
+    if bound is None or not math.isclose(bound, record.bound, rel_tol=0.0, abs_tol=1e-9):
+        raise AxisBNDCVBError("mapping bound must match rendered verdict bound")
 
 
 def _optional_str(value: Any) -> str | None:
