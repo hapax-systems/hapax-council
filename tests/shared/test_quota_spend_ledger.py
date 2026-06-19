@@ -45,9 +45,13 @@ GLMCP_ADMISSION_EVIDENCE_REF = (
     "observed_at:2026-05-17T07:59:00Z:"
     "fresh_until:2026-05-17T08:05:00Z"
 )
-GLMCP_MISMATCHED_TOOL_ENDPOINT_EVIDENCE_REF = GLMCP_ADMISSION_EVIDENCE_REF.replace(
+GLMCP_CLAUDE_TOOL_REVIEWER_ENDPOINT_EVIDENCE_REF = GLMCP_ADMISSION_EVIDENCE_REF.replace(
     "supported_tool:hapax-glmcp-reviewer:",
     "supported_tool:claude_code:",
+)
+GLMCP_REVIEWER_TOOL_CLAUDE_ENDPOINT_EVIDENCE_REF = GLMCP_ADMISSION_EVIDENCE_REF.replace(
+    "endpoint:https://api.z.ai/api/coding/paas/v4:",
+    "endpoint:https://api.z.ai/api/anthropic:",
 )
 GLMCP_HASHED_ADMISSION_EVIDENCE_REF = GLMCP_ADMISSION_EVIDENCE_REF.replace(
     "glmcp-quota-admission.yaml",
@@ -323,7 +327,16 @@ def test_receipt_bounded_route_fresh_snapshot_requires_glmcp_admission_evidence(
     ) in refs
 
 
-def test_receipt_bounded_route_rejects_mismatched_tool_endpoint_evidence() -> None:
+@pytest.mark.parametrize(
+    "evidence_ref",
+    [
+        GLMCP_CLAUDE_TOOL_REVIEWER_ENDPOINT_EVIDENCE_REF,
+        GLMCP_REVIEWER_TOOL_CLAUDE_ENDPOINT_EVIDENCE_REF,
+    ],
+)
+def test_receipt_bounded_route_rejects_mismatched_tool_endpoint_evidence(
+    evidence_ref: str,
+) -> None:
     payload = _active_budget_payload()
     payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
     payload["quota_snapshots"].append(
@@ -336,7 +349,7 @@ def test_receipt_bounded_route_rejects_mismatched_tool_endpoint_evidence() -> No
             "provider": "z_ai-glm-coding-plan",
             "capacity_pool": "subscription_quota",
             "subscription_quota_state": "fresh",
-            "evidence_refs": [GLMCP_MISMATCHED_TOOL_ENDPOINT_EVIDENCE_REF],
+            "evidence_refs": [evidence_ref],
             "operator_visible_reason": "fixture mismatched glmcp admission evidence",
         }
     )
@@ -349,7 +362,7 @@ def test_receipt_bounded_route_rejects_mismatched_tool_endpoint_evidence() -> No
     )
 
     assert state is SubscriptionQuotaState.UNKNOWN
-    assert GLMCP_MISMATCHED_TOOL_ENDPOINT_EVIDENCE_REF in refs
+    assert evidence_ref in refs
     assert (
         "quota-snapshot:quota-glmcp-review-direct-mismatch:untrusted_glmcp_admission_evidence"
     ) in refs

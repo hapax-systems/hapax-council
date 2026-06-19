@@ -49,6 +49,7 @@ GLMCP_ADMISSION_RECEIPT_LABEL_RE = re.compile(
     r"unsafe-receipt-name-sha256:[0-9a-f]{16})"
     r":witness:"
 )
+GLMCP_ADMISSION_SUPPORTED_TOOL_REF_RE = re.compile(r":supported_tool:([a-z0-9_.+-]+):")
 
 
 class QuotaSpendLedgerError(ValueError):
@@ -1226,11 +1227,15 @@ def _is_glmcp_admission_evidence_ref(ref: str) -> bool:
 
 
 def _has_glmcp_admission_tool_endpoint_pair(ref: str) -> bool:
-    return any(
-        f":supported_tool:{tool}:" in ref
-        and any(f":endpoint:{endpoint}:" in ref for endpoint in endpoints)
-        for tool, endpoints in GLMCP_ADMISSION_TOOL_ENDPOINTS.items()
-    )
+    tool_matches = GLMCP_ADMISSION_SUPPORTED_TOOL_REF_RE.findall(ref)
+    endpoint_matches = [
+        endpoint for endpoint in GLMCP_ADMISSION_ENDPOINTS if f":endpoint:{endpoint}:" in ref
+    ]
+    if len(tool_matches) != 1 or len(endpoint_matches) != 1:
+        return False
+    tool = tool_matches[0]
+    endpoint = endpoint_matches[0]
+    return endpoint in GLMCP_ADMISSION_TOOL_ENDPOINTS.get(tool, frozenset())
 
 
 def _subscription_quota_fresh_until_expired(
