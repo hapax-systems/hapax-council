@@ -6,7 +6,7 @@
 # title) must be one of the governance-approved lanes — the canonical
 # vocabulary (SSOT: hooks/scripts/agent-role.sh assert-identity):
 #
-#   greek slots: alpha beta gamma delta epsilon zeta eta theta iota
+#   greek slots: alpha beta gamma delta epsilon zeta eta theta
 #   antigrav    — IDE-bound lane
 #   cx-<color>  — Codex thread identity (for example cx-red)
 #   cc-<name>   — relay-coordinated Claude lane (for example cc-zai)
@@ -45,10 +45,10 @@ if [ -z "${WHOAMI_BIN}" ] || [ ! -x "${WHOAMI_BIN}" ]; then
 fi
 
 # Approved session-name set — the canonical lane vocabulary (mirror of
-# hooks/scripts/agent-role.sh assert-identity): greek slots alpha..iota + antigrav.
+# hooks/scripts/agent-role.sh assert-identity): greek slots alpha..theta + antigrav.
 # Codex cx-<color>, Claude relay cc-<name>, and Vibe vbe-<n> lanes are approved by
 # regex below so each lane does not need a governance amendment.
-APPROVED_NAMES="alpha beta gamma delta epsilon zeta eta theta iota antigrav"
+APPROVED_NAMES="alpha beta gamma delta epsilon zeta eta theta antigrav"
 
 quiet=false
 expected=""

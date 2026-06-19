@@ -831,7 +831,7 @@ class TestRelayInference:
 
 
 class TestGeneralizedPathRecovery:
-    """hapax_agent_role_from_path covers all greek slots + cx-*/antigrav/vbe-*."""
+    """hapax_agent_role_from_path covers live greek slots + cx-*/antigrav/vbe-*."""
 
     @pytest.mark.parametrize(
         "dirname,expected",
@@ -846,7 +846,6 @@ class TestGeneralizedPathRecovery:
             ("hapax-council--gamma", "gamma"),
             ("hapax-council--zeta", "zeta"),
             ("hapax-council--eta", "eta"),
-            ("hapax-council--iota", "iota"),
             ("hapax-council--cx-red", "cx-red"),
             ("hapax-council--cx-blue-scratch", "cx-blue"),
             ("hapax-council--antigrav", "antigrav"),
@@ -863,6 +862,12 @@ class TestGeneralizedPathRecovery:
 
     def test_unrecognized_path_returns_nonzero(self, tmp_path: Path) -> None:
         wt = tmp_path / "not-a-council-worktree"
+        wt.mkdir()
+        r = _role_helper(f'hapax_agent_role_from_path "{wt}"')
+        assert r.returncode != 0
+
+    def test_retired_iota_path_returns_nonzero(self, tmp_path: Path) -> None:
+        wt = tmp_path / "hapax-council--iota"
         wt.mkdir()
         r = _role_helper(f'hapax_agent_role_from_path "{wt}"')
         assert r.returncode != 0

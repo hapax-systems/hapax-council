@@ -4,14 +4,14 @@
 # Blocks Bash commands that reference a non-approved session name.
 # Canonical lane vocabulary (mirror of hooks/scripts/agent-role.sh assert-identity):
 #
-#   greek slots: alpha beta gamma delta epsilon zeta eta theta iota  (+ antigrav)
+#   greek slots: alpha beta gamma delta epsilon zeta eta theta  (+ antigrav)
 #
 # Codex thread names use `cx-<color-word>`, Claude relay lanes `cc-<name>`, and
 # Vibe lanes `vbe-<n>` — distinct namespaces, not greek-letter-shaped, so the
 # greek deny-list below never touches them.
 #
-# Only greek-letter-shaped tokens BEYOND the approved slots (kappa, lambda, mu,
-# nu, xi, omicron, pi, rho, sigma, tau, upsilon, phi, chi, psi, omega) are blocked
+# Only greek-letter-shaped tokens outside the approved slots (iota, kappa, lambda,
+# mu, nu, xi, omicron, pi, rho, sigma, tau, upsilon, phi, chi, psi, omega) are blocked
 # when they appear as a session identifier. Must match the UNAPPROVED regex below.
 #
 # False-positive shield — the hook is conservative. It only fires
@@ -58,7 +58,7 @@ CMD_STRIPPED="$(printf '%s' "$CMD" | sed -zE "s/'[^']*'//g; s/\"[^\"]*\"//g")"
 # Case-insensitive. This is an explicit deny-list rather than an
 # approved-only allow-list — over-matching on allow-list would
 # false-positive on `alpha-bearing-string` etc.
-UNAPPROVED='kappa|lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega'
+UNAPPROVED='iota|kappa|lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega'
 
 # Assemble the regex for where an unapproved name can appear.
 # Each pattern is an anchor that strongly implies "this is being
@@ -90,7 +90,7 @@ done
 
 if [ -n "$violation" ]; then
     echo "BLOCKED: Unknown session name referenced: '$violation'" >&2
-    echo "  Approved lanes: greek slots alpha..iota, antigrav, cx-<color>, cc-<name>, vbe-<n>" >&2
+    echo "  Approved lanes: greek slots alpha..theta, antigrav, cx-<color>, cc-<name>, vbe-<n>" >&2
     echo "  (canonical vocabulary SSOT: hooks/scripts/agent-role.sh assert-identity)" >&2
     echo "  Governance: docs/governance/ (session-naming invariant, task #152)" >&2
     echo "  Command: $(echo "$CMD" | head -c 120)" >&2

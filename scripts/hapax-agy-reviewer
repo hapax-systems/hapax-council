@@ -57,7 +57,6 @@ def _parser() -> argparse.ArgumentParser:
 
 def _review_env(workdir: Path) -> dict[str, str]:
     preserved = (
-        "HOME",
         "PATH",
         "LANG",
         "LC_ALL",
@@ -70,6 +69,7 @@ def _review_env(workdir: Path) -> dict[str, str]:
     env.update(
         {
             "CI": "1",
+            "HOME": str(workdir / "home"),
             "NO_UPDATE_NOTIFIER": "1",
             "NPM_CONFIG_AUDIT": "false",
             "NPM_CONFIG_FUND": "false",

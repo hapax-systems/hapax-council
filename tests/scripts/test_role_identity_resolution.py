@@ -61,7 +61,7 @@ def test_whoami_marker_still_resolves_when_no_env(tmp_path: Path) -> None:
 # --- hapax-whoami-audit.sh: approved-set == canonical lane vocabulary ---
 
 
-@pytest.mark.parametrize("name", ["cc-zai", "cx-red", "zeta", "iota", "antigrav", "vbe-2"])
+@pytest.mark.parametrize("name", ["cc-zai", "cx-red", "zeta", "theta", "antigrav", "vbe-2"])
 def test_audit_accepts_full_vocabulary(tmp_path: Path, name: str) -> None:
     r = _run(["bash", str(AUDIT)], tmp_path, {"HAPAX_AGENT_ROLE": name})
     assert r.returncode == 0, f"{name}: {r.stderr}"
@@ -70,6 +70,11 @@ def test_audit_accepts_full_vocabulary(tmp_path: Path, name: str) -> None:
 
 def test_audit_rejects_unknown(tmp_path: Path) -> None:
     r = _run(["bash", str(AUDIT)], tmp_path, {"HAPAX_AGENT_ROLE": "bogus123"})
+    assert r.returncode == 2
+
+
+def test_audit_rejects_retired_iota(tmp_path: Path) -> None:
+    r = _run(["bash", str(AUDIT)], tmp_path, {"HAPAX_AGENT_ROLE": "iota"})
     assert r.returncode == 2
 
 
@@ -109,13 +114,13 @@ def _hook(command: str, home: Path) -> subprocess.CompletedProcess[str]:
 
 
 def test_enforcement_allows_canonical_greek_slot(tmp_path: Path) -> None:
-    # zeta..iota are canonical lanes now — referencing them must NOT be blocked.
+    # zeta..theta are canonical lanes now — referencing them must NOT be blocked.
     r = _hook("hapax-claude --session zeta", tmp_path)
     assert r.returncode == 0, r.stderr
 
 
-@pytest.mark.parametrize("name", ["kappa", "pi", "rho", "omega"])
-def test_enforcement_blocks_greek_beyond_iota(tmp_path: Path, name: str) -> None:
+@pytest.mark.parametrize("name", ["iota", "kappa", "pi", "rho", "omega"])
+def test_enforcement_blocks_retired_or_unapproved_greek_slots(tmp_path: Path, name: str) -> None:
     r = _hook(f"hapax-claude --session {name}", tmp_path)
     assert r.returncode == 2
 
@@ -166,7 +171,7 @@ def test_whoami_env_beats_present_and_reachable_marker(tmp_path: Path) -> None:
     [
         ("claude cc-zai", "cc-zai"),
         ("spinner theta - foo", "theta"),
-        ("iota", "iota"),
+        ("iota", ""),
         ("cx-red", "cx-red"),
         ("no identity here", ""),
     ],

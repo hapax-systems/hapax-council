@@ -356,6 +356,8 @@ def writer_family_for_lane(lane: str | None, registry: Mapping[str, Any]) -> str
     lane_norm = (lane or "").strip().lower()
     if not lane_norm:
         return lane_families["default"]
+    if lane_norm in set(lane_families.get("retired") or []):
+        raise ValueError(f"retired authoring lane is not admissible: {lane_norm}")
     exact = lane_families.get("exact") or {}
     if lane_norm in exact:
         return exact[lane_norm]

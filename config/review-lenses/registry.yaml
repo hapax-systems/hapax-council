@@ -139,4 +139,6 @@ lane_families:
     vbe-: vibe
     antigrav-: gemini
     agy-: gemini
+  retired:
+    - iota
   default: claude

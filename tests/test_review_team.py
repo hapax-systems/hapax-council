@@ -192,6 +192,7 @@ class TestLensRegistry:
         assert lane_families["exact"]["glmcp"] == "glm"
         assert lane_families["prefixes"]["cx-"] == "codex"
         assert lane_families["prefixes"]["glm-"] == "glm"
+        assert "iota" in lane_families["retired"]
         assert lane_families["default"] == "claude"
 
 
@@ -379,7 +380,6 @@ class TestConstitution:
         reg = rt.load_lens_registry()
         assert rt.writer_family_for_lane("zeta", reg) == "claude"
         assert rt.writer_family_for_lane("cx-gold", reg) == "codex"
-        assert rt.writer_family_for_lane("iota", reg) == "claude"
         assert rt.writer_family_for_lane("antigrav", reg) == "gemini"
         assert rt.writer_family_for_lane("antigrav-2", reg) == "gemini"
         assert rt.writer_family_for_lane("agy-review", reg) == "gemini"
@@ -388,6 +388,14 @@ class TestConstitution:
         assert rt.writer_family_for_lane("glm-alpha", reg) == "glm"
         assert rt.writer_family_for_lane(None, reg) == "claude"
         assert rt.writer_family_for_lane("mystery-lane", reg) == "claude"
+
+    def test_retired_iota_writer_family_fails_closed(self) -> None:
+        import pytest
+
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        with pytest.raises(ValueError, match="retired authoring lane"):
+            rt.writer_family_for_lane("iota", reg)
 
 
 def _review(

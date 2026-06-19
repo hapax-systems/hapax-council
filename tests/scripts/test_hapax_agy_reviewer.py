@@ -15,12 +15,15 @@ def test_agy_reviewer_invokes_sandboxed_print_mode(tmp_path: Path) -> None:
     bin_dir.mkdir()
     calls = tmp_path / "calls.txt"
     cwd_file = tmp_path / "cwd.txt"
+    home_file = tmp_path / "home.txt"
     secret_file = tmp_path / "secret.txt"
+    operator_home = tmp_path / "operator-home"
     fake_agy = bin_dir / "agy"
     fake_agy.write_text(
         f"""#!/usr/bin/env bash
 printf '%s\\n' "$@" > {calls}
 pwd > {cwd_file}
+printf '%s\\n' "$HOME" > {home_file}
 printf '%s\\n' "${{HAPAX_SHOULD_NOT_LEAK:-unset}}" > {secret_file}
 printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
 """,
@@ -28,7 +31,7 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     )
     fake_agy.chmod(0o755)
 
-    env = {"HAPAX_SHOULD_NOT_LEAK": "secret", **os.environ}
+    env = {**os.environ, "HAPAX_SHOULD_NOT_LEAK": "secret", "HOME": str(operator_home)}
     result = subprocess.run(
         [str(WRAPPER), "--agy-bin", str(fake_agy), "--model", "gemini-3.1-pro-preview"],
         input="diff --git a/x b/x\n+change\n",
@@ -50,6 +53,7 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     assert "UNIFIED DIFF" in args
     assert "no repository access" in args
     assert not cwd_file.read_text(encoding="utf-8").strip().startswith(str(REPO_ROOT))
+    assert home_file.read_text(encoding="utf-8").strip() != str(operator_home)
     assert secret_file.read_text(encoding="utf-8").strip() == "unset"
 
 
