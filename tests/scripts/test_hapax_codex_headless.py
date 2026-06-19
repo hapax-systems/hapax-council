@@ -311,6 +311,47 @@ exit 99
     assert workdir.exists()
 
 
+def test_codex_headless_claim_mismatch_refuses_before_remote_bootstrap(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-cx-amber").write_text("other-task\n", encoding="utf-8")
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    ssh_log = tmp_path / "ssh.log"
+    _write_executable(
+        bin_dir / "ssh",
+        f"""printf 'ssh invoked\\n' >> "{ssh_log}"
+exit 99
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 13
+    assert "already claims 'other-task'" in result.stderr
+    assert not ssh_log.exists()
+
+
 def test_codex_headless_remote_bootstrap_refuses_missing_explicit_workdir(
     tmp_path: Path,
 ) -> None:
@@ -349,6 +390,9 @@ def test_codex_headless_remote_bootstrap_refuses_missing_explicit_workdir(
     assert ssh_log.read_text(encoding="utf-8").splitlines() == ["worktree"]
     assert "remote worktree bootstrap failed" in result.stderr
     assert "explicit" in result.stderr
+    assert "next action:" in result.stderr
+    assert "verify" in result.stderr
+    assert "HAPAX_CODEX_CREATE_WORKTREE" in result.stderr
 
 
 def test_codex_headless_remote_bootstrap_refuses_disabled_worktree_creation(
@@ -531,6 +575,9 @@ def test_codex_headless_remote_preflight_reports_missing_codex_binary(
     assert "remote preflight failed" in result.stderr
     assert "missing_binaries" in result.stderr
     assert "codex" in result.stderr
+    assert "next action:" in result.stderr
+    assert "hook adapter" in result.stderr
+    assert "HAPAX_DISPATCH_HOST_FALLBACK=local" in result.stderr
 
 
 def test_codex_headless_remote_bootstrap_reports_missing_git(
