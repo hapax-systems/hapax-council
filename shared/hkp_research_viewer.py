@@ -179,8 +179,6 @@ def build_research_viewer_report(
         "bundle_count": len(bundle_reports),
         "row_count": sum(len(bundle["rows"]) for bundle in bundle_reports),
         "validator_version": VALIDATOR_VERSION,
-        "shadow_root": str(_absolute_without_symlink_resolution(shadow_root)),
-        "index_root": str(_absolute_without_symlink_resolution(index_root)),
         "bundles": bundle_reports,
     }
     _assert_no_forbidden_report_fields(payload)
