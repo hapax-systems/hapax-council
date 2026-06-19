@@ -9,6 +9,7 @@ ISAP: SLICE-003A-TEAM-METADATA (CASE-SDLC-REFORM-001)
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Literal
@@ -19,6 +20,18 @@ REGISTRY_DIR = Path.home() / ".cache" / "hapax" / "team-registry"
 
 Platform = Literal["claude-code", "codex", "vibe", "antigrav"]
 FreshnessResult = Literal["fresh", "stale", "unknown", "blocked"]
+
+
+def _normalize_legacy_payload(raw: str) -> str:
+    """Map retired persisted registry values into current platform vocabulary."""
+
+    payload = json.loads(raw)
+    if payload.get("platform") == "gemini-cli":
+        payload["platform"] = "antigrav"
+        note = str(payload.get("notes") or "").strip()
+        legacy_note = "legacy platform gemini-cli normalized to antigrav"
+        payload["notes"] = f"{note}; {legacy_note}" if note else legacy_note
+    return json.dumps(payload)
 
 
 class LaneMetadata(BaseModel):
@@ -95,7 +108,7 @@ class TeamRegistry:
         if not path.exists():
             return None
         try:
-            return LaneMetadata.model_validate_json(path.read_text())
+            return LaneMetadata.model_validate_json(_normalize_legacy_payload(path.read_text()))
         except Exception:
             return None
 
@@ -103,7 +116,9 @@ class TeamRegistry:
         lanes = []
         for p in sorted(self._dir.glob("*.json")):
             try:
-                lanes.append(LaneMetadata.model_validate_json(p.read_text()))
+                lanes.append(
+                    LaneMetadata.model_validate_json(_normalize_legacy_payload(p.read_text()))
+                )
             except Exception:
                 continue
         return lanes

@@ -114,7 +114,11 @@ def main(argv: list[str] | None = None) -> int:
                 env=_review_env(workdir),
             )
         except OSError as exc:
-            print(f"hapax-agy-reviewer: failed to launch {agy_bin}: {exc}", file=sys.stderr)
+            print(
+                "hapax-agy-reviewer: failed to launch "
+                f"{agy_bin}: {exc}; install agy or pass --agy-bin /absolute/path/to/agy",
+                file=sys.stderr,
+            )
             return 2
     return result.returncode
 

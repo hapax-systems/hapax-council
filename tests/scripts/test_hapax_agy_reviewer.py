@@ -98,6 +98,23 @@ def test_agy_reviewer_reports_missing_agy_binary(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert "failed to launch" in result.stderr
+    assert "install agy or pass --agy-bin /absolute/path/to/agy" in result.stderr
+
+
+def test_agy_reviewer_reports_missing_configured_default_agy_binary(tmp_path: Path) -> None:
+    env = {**os.environ, "HAPAX_AGY_BIN": str(tmp_path / "agy")}
+    result = subprocess.run(
+        [str(WRAPPER)],
+        input="review\n",
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 2
+    assert "failed to launch" in result.stderr
+    assert "install agy or pass --agy-bin /absolute/path/to/agy" in result.stderr
 
 
 def test_agy_reviewer_preserves_nonzero_agy_exit(tmp_path: Path) -> None:

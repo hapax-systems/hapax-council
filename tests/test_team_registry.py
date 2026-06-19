@@ -5,6 +5,7 @@ ISAP: SLICE-003A-TEAM-METADATA (CASE-SDLC-REFORM-001)
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -80,6 +81,30 @@ class TestTeamRegistry:
     def test_read_missing(self, tmp_path: Path) -> None:
         reg = TeamRegistry(tmp_path)
         assert reg.read("nonexistent") is None
+
+    def test_read_normalizes_legacy_gemini_cli_platform(self, tmp_path: Path) -> None:
+        reg = TeamRegistry(tmp_path)
+        (tmp_path / "antigrav.json").write_text(
+            json.dumps(
+                {
+                    "lane_id": "antigrav",
+                    "platform": "gemini-cli",
+                    "model_id": "gemini-3.1-pro-preview",
+                    "context_window": 1_000_000,
+                    "tools_available": ["Bash"],
+                    "last_probe_utc": time.time(),
+                    "freshness_ttl_s": 3600.0,
+                    "notes": "old cache",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        loaded = reg.read("antigrav")
+
+        assert loaded is not None
+        assert loaded.platform == "antigrav"
+        assert "gemini-cli normalized to antigrav" in loaded.notes
 
     def test_all_lanes(self, tmp_path: Path) -> None:
         reg = TeamRegistry(tmp_path)

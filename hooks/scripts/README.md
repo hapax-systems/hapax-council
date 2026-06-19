@@ -76,6 +76,9 @@ rhetorical choices — and the tooling assumes them:
 Recheck commands (verify these claims after any change):
 - `agent-role.sh whoami` — the resolved role for this session (the SSOT path).
 - `scripts/hapax-whoami-audit.sh` — exits non-zero on a name outside the vocabulary.
+- `rg -n 'gemini-(session|tool)-adapter' hooks tests config scripts` — confirms
+  the Gemini hook adapters are retained only as dormant adapter fixtures, not
+  launch or dispatch paths.
 - `uv run pytest tests/scripts/test_role_identity_resolution.py tests/hooks/test_session_name_enforcement.py`
   — exercises env-first resolution, the audit approved-set, the assert-identity vocab,
   and the enforcement deny-list against the canonical vocabulary above.
