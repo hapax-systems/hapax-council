@@ -97,7 +97,10 @@ class FortressDaemon:
         from agents._affordance import CapabilityRecord
         from agents._affordance_pipeline import AffordancePipeline
 
-        self._affordance_pipeline = AffordancePipeline()
+        self._affordance_pipeline = AffordancePipeline(
+            posterior_mode="reader",
+            posterior_client_id="fortress",
+        )
         self._affordance_pipeline.index_capability(
             CapabilityRecord(
                 name="fortress_governance",

@@ -226,7 +226,10 @@ class ReactiveEngine:
         self._convert_event = _convert
         self._rule_capability_class = RuleCapability
         self._generate_rule_description = generate_rule_description
-        self._affordance_pipeline = AffordancePipeline()
+        self._affordance_pipeline = AffordancePipeline(
+            posterior_mode="reader",
+            posterior_client_id="logos_engine",
+        )
         self._cascade_initialized = False
         self._rule_capability_record_class = CapabilityRecord
 
