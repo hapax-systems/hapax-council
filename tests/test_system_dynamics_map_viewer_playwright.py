@@ -1074,8 +1074,33 @@ def test_system_dynamics_viewer_workbench_modes_and_explanations_are_complete():
             trust_payload = page.evaluate(
                 "window.systemDynamicsMapRuntime.currentWorkbenchPayload()"
             )
-            assert trust_payload["evidence_summary"]["weak_claims"] > 0
-            assert trust_payload["evidence_summary"]["candidate_elements"] > 0
+            seed_data = json.loads(
+                (ARCHITECTURE_DIR / "system-dynamics-map.seed.json").read_text(encoding="utf-8")
+            )
+            claim_data = json.loads(
+                (ARCHITECTURE_DIR / "system-dynamics-map.claims.json").read_text(encoding="utf-8")
+            )["claims"]
+            expected_weak_claims = sum(
+                1
+                for claim in claim_data
+                if float(claim.get("confidence_basis", {}).get("score", 1)) < 0.85
+            )
+            expected_candidate_elements = sum(
+                1
+                for item in [*seed_data["nodes"], *seed_data["edges"]]
+                if item.get("status") == "candidate"
+            )
+            expected_contradictions = sum(
+                1
+                for claim in claim_data
+                if claim.get("contradiction_state") and claim.get("contradiction_state") != "none"
+            )
+            assert trust_payload["evidence_summary"]["weak_claims"] == expected_weak_claims
+            assert (
+                trust_payload["evidence_summary"]["candidate_elements"]
+                == expected_candidate_elements
+            )
+            assert trust_payload["evidence_summary"]["contradictions"] == expected_contradictions
 
             audience_expectations = {
                 "operator": "diagnostic next action",

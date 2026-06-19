@@ -294,9 +294,11 @@ audience modes, explanation export payload, mobile workbench rendering, and
 companion readout behavior.
 
 ```bash
+uv run python scripts/system_dynamics_map_materialize.py --check
 uv run --extra ci pytest tests/test_system_dynamics_map_artifacts.py
 uv run --extra ci playwright install chromium
 uv run --extra ci pytest tests/test_system_dynamics_map_viewer_playwright.py
+uv run pytest tests/scripts/test_hapax_agy_reviewer.py
 scripts/system-dynamics-map-gate
 ```
 
