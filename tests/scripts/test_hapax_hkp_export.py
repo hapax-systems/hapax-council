@@ -103,6 +103,53 @@ def test_cli_rejects_unsafe_bundle_id(tmp_path: Path, monkeypatch) -> None:
     assert "next-action" in result.stderr
 
 
+def test_cli_writes_shadow_catalog_json(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_source(source_root / "tasks" / "demo.md")
+    export_result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            str(source),
+            "--bundle-id",
+            "cli-bundle",
+            "--source-root",
+            str(source_root),
+            "--source-root-id",
+            "repo:test",
+            "--generated-at",
+            GENERATED_AT,
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert export_result.returncode == 0, export_result.stderr
+
+    catalog_result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--catalog",
+            "--generated-at",
+            GENERATED_AT,
+            "--json",
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert catalog_result.returncode == 0, catalog_result.stderr
+    payload = json.loads(catalog_result.stdout)
+    assert payload["ok"] is True
+    assert payload["bundle_count"] == 1
+    catalog = Path(payload["catalog_path"])
+    assert catalog.is_relative_to(tmp_path / "home" / ".cache" / "hapax" / "hkp-shadow-index")
+    assert catalog.is_file()
+
+
 def test_cli_value_error_formatter_adds_fallback_next_action() -> None:
     module = runpy.run_path(str(SCRIPT))
     format_value_error = module["_format_value_error"]

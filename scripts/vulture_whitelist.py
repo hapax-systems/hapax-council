@@ -4265,8 +4265,12 @@ from shared.hkp_bundle_export import (  # noqa: E402
     build_derived_index as _hkp_build_derived_index,
 )
 from shared.hkp_bundle_export import (
+    build_shadow_catalog as _hkp_build_shadow_catalog,
+)
+from shared.hkp_bundle_export import (
     export_shadow_bundle as _hkp_export_shadow_bundle,
 )
 
 _hkp_build_derived_index
+_hkp_build_shadow_catalog
 _hkp_export_shadow_bundle

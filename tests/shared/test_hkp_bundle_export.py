@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from shared.hkp_bundle_export import _tree_hash, build_derived_index, export_shadow_bundle
+from shared.hkp_bundle_export import (
+    _tree_hash,
+    build_derived_index,
+    build_shadow_catalog,
+    export_shadow_bundle,
+)
 from shared.hkp_bundle_schema import STALE_SOURCE_STATES, validate_bundle
 
 GENERATED_AT = "2026-06-18T20:03:41Z"
@@ -381,6 +386,140 @@ def test_exporter_preserves_duplicate_source_ids_for_index_findings(
     assert len(concept_paths) == 2
     assert concept_paths[0] != concept_paths[1]
     assert "duplicate_concept_uid" in {finding.code for finding in result.findings}
+    rows = _jsonl_rows(result.index_path)
+    assert any(
+        row["record_type"] == "finding" and row["code"] == "duplicate_concept_uid" for row in rows
+    )
+
+
+def test_exporter_rejects_bundle_regular_file_collision(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    shadow_root = tmp_path / "home" / ".cache" / "hapax" / "hkp-shadow"
+    shadow_root.mkdir(parents=True)
+    (shadow_root / "demo-bundle").write_text("not a bundle\n", encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc_info:
+        export_shadow_bundle(
+            [source],
+            bundle_id="demo-bundle",
+            source_root=source_root,
+            source_root_id="repo:test",
+            generated_at=GENERATED_AT,
+        )
+
+    assert "path collision is not a directory" in str(exc_info.value)
+    assert "next-action" in str(exc_info.value)
+    assert (shadow_root / "demo-bundle").read_text(encoding="utf-8") == "not a bundle\n"
+
+
+def test_exporter_cleans_stale_temp_and_backup_regular_files(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    shadow_root = tmp_path / "home" / ".cache" / "hapax" / "hkp-shadow"
+    shadow_root.mkdir(parents=True)
+    (shadow_root / ".demo-bundle.tmp").write_text("stale temp\n", encoding="utf-8")
+    (shadow_root / ".demo-bundle.previous").write_text("stale backup\n", encoding="utf-8")
+
+    result = export_shadow_bundle(
+        [source],
+        bundle_id="demo-bundle",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+
+    assert validate_bundle(result.bundle_path).ok is True
+    assert not (shadow_root / ".demo-bundle.tmp").exists()
+    assert not (shadow_root / ".demo-bundle.previous").exists()
+
+
+def test_exporter_rejects_symlinked_temp_path(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    shadow_root = tmp_path / "home" / ".cache" / "hapax" / "hkp-shadow"
+    shadow_root.mkdir(parents=True)
+    outside = tmp_path / "outside-temp"
+    outside.mkdir()
+    (shadow_root / ".demo-bundle.tmp").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError) as exc_info:
+        export_shadow_bundle(
+            [source],
+            bundle_id="demo-bundle",
+            source_root=source_root,
+            source_root_id="repo:test",
+            generated_at=GENERATED_AT,
+        )
+
+    assert "must not traverse symlink component" in str(exc_info.value)
+    assert "next-action" in str(exc_info.value)
+
+
+def test_exporter_rolls_back_existing_bundle_when_replace_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    result = export_shadow_bundle(
+        [source],
+        bundle_id="demo-bundle",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+    original_log = (result.bundle_path / "log.md").read_text(encoding="utf-8")
+    original_replace = Path.replace
+
+    def fail_tmp_replace(self: Path, target: Path | str) -> Path:
+        target_path = Path(target)
+        if self.name == ".demo-bundle.tmp" and target_path.name == "demo-bundle":
+            raise OSError("forced replace failure")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_tmp_replace)
+
+    with pytest.raises(ValueError) as exc_info:
+        export_shadow_bundle(
+            [source],
+            bundle_id="demo-bundle",
+            source_root=source_root,
+            source_root_id="repo:test",
+            generated_at="2026-06-18T20:04:41Z",
+        )
+
+    assert "failed to replace HKP bundle output atomically" in str(exc_info.value)
+    assert "next-action" in str(exc_info.value)
+    assert (result.bundle_path / "log.md").read_text(encoding="utf-8") == original_log
+    assert not (result.bundle_path.parent / ".demo-bundle.tmp").exists()
+    assert not (result.bundle_path.parent / ".demo-bundle.previous").exists()
+
+
+def test_manifest_and_checksums_are_excluded_from_tree_hash(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    result = export_shadow_bundle(
+        [source],
+        bundle_id="demo-bundle",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+    initial_tree_hash = _tree_hash(result.bundle_path)
+
+    manifest_path = result.bundle_path / "_hkp" / "manifest.yaml"
+    manifest_path.write_text(manifest_path.read_text(encoding="utf-8") + "# ignored\n")
+    checksums_path = result.bundle_path / "_hkp" / "checksums.json"
+    checksums_path.write_text(checksums_path.read_text(encoding="utf-8") + "\n")
+
+    assert _tree_hash(result.bundle_path) == initial_tree_hash
+    (result.bundle_path / "index.md").write_text("changed\n", encoding="utf-8")
+    assert _tree_hash(result.bundle_path) != initial_tree_hash
 
 
 def test_derived_index_reports_validation_and_route_findings(tmp_path: Path, monkeypatch) -> None:
@@ -591,6 +730,128 @@ def test_derived_index_reports_duplicate_source_ids(tmp_path: Path, monkeypatch)
     findings = build_derived_index(result.bundle_path, index_path=index_path)
 
     assert "duplicate_concept_uid" in {finding.code for finding in findings}
+
+
+def test_shadow_catalog_summarizes_bundle_findings(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    clean_source = _write_task(source_root / "tasks" / "clean.md")
+    gap_source = _write_task(
+        source_root / "tasks" / "missing-route.md",
+        include_route_metadata=False,
+    )
+    clean = export_shadow_bundle(
+        [clean_source],
+        bundle_id="clean-bundle",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+    gap = export_shadow_bundle(
+        [gap_source],
+        bundle_id="gap-bundle",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+
+    result = build_shadow_catalog(generated_at=GENERATED_AT)
+
+    assert result.catalog_path.is_relative_to(
+        tmp_path / "home" / ".cache" / "hapax" / "hkp-shadow-index"
+    )
+    assert result.bundle_count == 2
+    assert result.finding_count >= 1
+    assert result.error_count >= 1
+    rows = _jsonl_rows(result.catalog_path)
+    assert rows[0]["record_type"] == "catalog"
+    assert {row["bundle_id"] for row in rows if row["record_type"] == "bundle_summary"} == {
+        "clean-bundle",
+        "gap-bundle",
+    }
+    gap_summary = next(
+        row
+        for row in rows
+        if row["record_type"] == "bundle_summary" and row["bundle_id"] == "gap-bundle"
+    )
+    assert gap_summary["validator_ok"] is True
+    assert gap_summary["catalog_ok"] is False
+    assert any(
+        row["record_type"] == "finding"
+        and row["bundle_id"] == "gap-bundle"
+        and row["code"] == "route_metadata_gap"
+        for row in rows
+    )
+    assert clean.bundle_path.is_dir()
+    assert gap.bundle_path.is_dir()
+
+
+def test_shadow_catalog_writes_empty_catalog_when_shadow_root_is_absent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    result = build_shadow_catalog(generated_at=GENERATED_AT)
+
+    assert result.ok is True
+    assert result.bundle_count == 0
+    assert result.catalog_path.is_file()
+    assert _jsonl_rows(result.catalog_path) == [
+        {
+            "record_type": "catalog",
+            "generated_at": GENERATED_AT,
+            "shadow_root": str(tmp_path / "home" / ".cache" / "hapax" / "hkp-shadow"),
+            "bundle_count": 0,
+            "finding_count": 0,
+            "error_count": 0,
+        }
+    ]
+
+
+def test_shadow_catalog_rejects_non_cache_roots(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    with pytest.raises(ValueError) as shadow_exc:
+        build_shadow_catalog(shadow_root=tmp_path / "outside-shadow")
+    assert "HKP shadow catalog input must be under" in str(shadow_exc.value)
+    assert "next-action" in str(shadow_exc.value)
+
+    with pytest.raises(ValueError) as index_exc:
+        build_shadow_catalog(index_root=tmp_path / "outside-index")
+    assert "HKP shadow catalog must be under" in str(index_exc.value)
+    assert "next-action" in str(index_exc.value)
+
+
+def test_shadow_catalog_rejects_symlinked_shadow_bundle_child(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    shadow_root = tmp_path / "home" / ".cache" / "hapax" / "hkp-shadow"
+    shadow_root.mkdir(parents=True)
+    outside = tmp_path / "outside-bundle"
+    outside.mkdir()
+    (shadow_root / "linked-bundle").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError) as exc_info:
+        build_shadow_catalog(generated_at=GENERATED_AT)
+
+    assert "must not traverse symlink component" in str(exc_info.value)
+    assert "next-action" in str(exc_info.value)
+
+
+def test_shadow_catalog_rejects_non_directory_index_root(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    index_root = tmp_path / "home" / ".cache" / "hapax" / "hkp-shadow-index"
+    index_root.parent.mkdir(parents=True)
+    index_root.write_text("not a directory\n", encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc_info:
+        build_shadow_catalog(generated_at=GENERATED_AT)
+
+    assert "HKP shadow catalog output must be a directory" in str(exc_info.value)
+    assert "next-action" in str(exc_info.value)
+
+
+def _jsonl_rows(path: Path) -> list[dict[str, object]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
 def _write_task(path: Path, *, include_route_metadata: bool = True) -> Path:
