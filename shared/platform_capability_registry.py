@@ -137,6 +137,25 @@ class Quantization(StrEnum):
     NOT_APPLICABLE = "not_applicable"
 
 
+class ModelId(StrEnum):
+    """Closed catalog of dated, concrete model identities — the structured replacement for the
+    coarse free-text ``model_or_engine``. A provider model swap is one enum edit here.
+    ``UNKNOWN`` covers routes whose backing model is not a single dated identity (e.g. a
+    receipt-only maintenance route)."""
+
+    CLAUDE_OPUS_4_8 = "claude-opus-4-8"
+    CLAUDE_SONNET_4_6 = "claude-sonnet-4-6"
+    CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
+    CLAUDE_FABLE_5 = "claude-fable-5"
+    GPT_5_5 = "gpt-5.5"
+    GPT_5_3_CODEX_SPARK = "gpt-5.3-codex-spark"
+    COMMAND_R_08_2024 = "command-r-08-2024"
+    MISTRAL_MEDIUM_3_5 = "mistral-medium-3.5"
+    GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
+    Z_AI_GLM_5 = "z_ai-glm-5"
+    UNKNOWN = "unknown"
+
+
 class RouteState(StrEnum):
     ACTIVE = "active"
     BLOCKED = "blocked"
@@ -277,7 +296,7 @@ class ExecutionDescriptor(StrictModel):
     free-text ``model_or_engine``). Modeled here so a capability is the FULL descriptor;
     the 3-segment ``route_id`` stays the human key (no combinatorial blow-up)."""
 
-    model_id: str
+    model_id: ModelId
     effort: Effort
     context_mode: ContextMode = ContextMode.STANDARD
     fast_mode: FastMode = FastMode.OFF
@@ -526,6 +545,8 @@ class PlatformCapabilityRoute(StrictModel):
     route_state: RouteState
     blocked_reasons: list[str] = Field(default_factory=list)
     model_or_engine: str | None
+    execution_descriptor: ExecutionDescriptor
+    descriptor_variants: list[DescriptorVariant] = Field(default_factory=list)
     paid_provider: str | None = None
     paid_profile: str | None = None
     approval_posture: ApprovalPosture
@@ -606,6 +627,28 @@ class PlatformCapabilityRoute(StrictModel):
             and QualityFloor.FRONTIER_REQUIRED not in self.quality_envelope.eligible_quality_floors
         ):
             raise ValueError("authoritative routes must declare frontier_required eligibility")
+
+        if self.descriptor_variants:
+            axes = set(ExecutionDescriptor.model_fields)
+            seen: set[str] = set()
+            for variant in self.descriptor_variants:
+                if variant.variant_id in seen:
+                    raise ValueError(f"duplicate descriptor variant_id: {variant.variant_id}")
+                seen.add(variant.variant_id)
+                bad_knobs = set(variant.knobs_override) - axes
+                if bad_knobs:
+                    raise ValueError(
+                        f"variant {variant.variant_id} overrides non-descriptor knobs: {sorted(bad_knobs)}"
+                    )
+                bad_scores = set(variant.score_delta) - set(CapabilityScores.model_fields)
+                if bad_scores:
+                    raise ValueError(
+                        f"variant {variant.variant_id} delta on unknown scores: {sorted(bad_scores)}"
+                    )
+                if not variant.knobs_override and not variant.blocked_reasons:
+                    raise ValueError(
+                        f"variant {variant.variant_id} is inert (no knob change, no blocker)"
+                    )
 
         return self
 
@@ -1237,38 +1280,85 @@ _SMUGGLED_EFFORT_SUFFIXES: dict[str, Effort] = {
     "-low": Effort.LOW,
 }
 
+#: Best-effort projection of legacy free-text ``model_or_engine`` strings onto the dated
+#: :class:`ModelId` catalog (used by ``derive_execution_descriptor`` to GENERATE the
+#: per-route backfill and to surface the smuggle). Unmapped strings project to ``UNKNOWN``.
+_MODEL_OR_ENGINE_TO_MODEL_ID: dict[str, ModelId] = {
+    "claude-code-default": ModelId.CLAUDE_OPUS_4_8,
+    "claude-opus": ModelId.CLAUDE_OPUS_4_8,
+    "claude-sonnet": ModelId.CLAUDE_SONNET_4_6,
+    "claude-haiku": ModelId.CLAUDE_HAIKU_4_5,
+    "gpt-5.5": ModelId.GPT_5_5,
+    "gpt-5.3-codex-spark": ModelId.GPT_5_3_CODEX_SPARK,
+    "mistral-vibe": ModelId.MISTRAL_MEDIUM_3_5,
+    "google-antigravity-cli-agy": ModelId.GEMINI_3_1_PRO_PREVIEW,
+    "z_ai-glm-coding-plan:glm-5": ModelId.Z_AI_GLM_5,
+    "litellm.anthropic.claude-opus-4-cloud-burst": ModelId.CLAUDE_OPUS_4_8,
+    "litellm.provider-gateway-maintenance": ModelId.GEMINI_3_1_PRO_PREVIEW,
+}
+
 
 def derive_execution_descriptor(route: PlatformCapabilityRoute) -> ExecutionDescriptor:
-    """Project a route's CURRENT implicit execution descriptor from its existing fields.
+    """Project a route's implicit execution descriptor from its legacy ``model_or_engine``.
 
-    Best-effort and read-only: it surfaces effort smuggled into ``model_or_engine``
-    (``gpt-5.5-xhigh`` -> model_id ``gpt-5.5`` + effort ``XHIGH``), but cannot recover what
-    the data never carried — effort is otherwise UNKNOWN-at-rest (``Effort.NONE``), and
-    context_mode/quantization stay at their conservative defaults until a route declares a
-    structured ``execution_descriptor`` (a later slice that also makes ``model_id`` a strict
-    dated identity and backfills quantization for local routes). This is the foundation the
-    completeness gate's registry-site detector and the future backfill build on.
+    Best-effort: it surfaces effort smuggled into the model string (``gpt-5.5-xhigh`` ->
+    model_id ``gpt-5.5`` + effort ``XHIGH``) and maps the model onto the dated
+    :class:`ModelId` catalog (unmapped -> ``ModelId.UNKNOWN``). effort that the data never
+    carried is ``Effort.NONE``; context_mode/quantization stay at conservative defaults.
+    Used to GENERATE the stored ``execution_descriptor`` backfill and demonstrate the
+    smuggle-split; the stored field — not this projection — is the source of truth once set.
     """
 
     raw = (route.model_or_engine or "").strip()
     effort = Effort.NONE
-    model_id = raw
+    model_str = raw
     for suffix, eff in _SMUGGLED_EFFORT_SUFFIXES.items():
         if raw.endswith(suffix):
             effort = eff
-            model_id = raw[: -len(suffix)]
+            model_str = raw[: -len(suffix)]
             break
-    return ExecutionDescriptor(model_id=model_id or "unknown", effort=effort)
+    model_id = _MODEL_OR_ENGINE_TO_MODEL_ID.get(model_str, ModelId.UNKNOWN)
+    return ExecutionDescriptor(model_id=model_id, effort=effort)
 
 
 def materialize_descriptors(
     registry: PlatformCapabilityRegistry,
 ) -> dict[str, ExecutionDescriptor]:
-    """The current implicit execution descriptor for every route — the dispatch plane's
-    capability *leaf set* made explicit. Foundation for the completeness gate and the later
-    stored-and-strict ``execution_descriptor`` route field + backfill."""
+    """The stored execution descriptor for every route — the dispatch plane's capability
+    *leaf set* made explicit. Reads the structured ``execution_descriptor`` field (the source
+    of truth) rather than re-deriving from the legacy ``model_or_engine`` string."""
 
-    return {route.route_id: derive_execution_descriptor(route) for route in registry.routes}
+    return {route.route_id: route.execution_descriptor for route in registry.routes}
+
+
+def materialize_variant_leaf(
+    route: PlatformCapabilityRoute, variant: DescriptorVariant
+) -> ExecutionDescriptor:
+    """Resolve one sparse variant into its full ExecutionDescriptor by applying the
+    variant's ``knobs_override`` onto the route's base descriptor. Fails closed: an
+    override naming a non-descriptor knob raises (validated at load, re-checked here)."""
+
+    knobs = route.execution_descriptor.model_dump()
+    knobs.update(variant.knobs_override)
+    return ExecutionDescriptor(**knobs)
+
+
+def materialize_descriptor_leaves(
+    registry: PlatformCapabilityRegistry,
+) -> dict[str, ExecutionDescriptor]:
+    """The FULL capability leaf set: every route's base descriptor plus each sparse
+    variant as its own leaf keyed ``route_id#variant_id``. This is where a knob like
+    ``context_mode=extended_1m`` becomes a distinct, materially-present capability —
+    impossible to distinguish under the old bare ``max_context_class`` enum."""
+
+    leaves: dict[str, ExecutionDescriptor] = {}
+    for route in registry.routes:
+        leaves[route.route_id] = route.execution_descriptor
+        for variant in route.descriptor_variants:
+            leaves[f"{route.route_id}#{variant.variant_id}"] = materialize_variant_leaf(
+                route, variant
+            )
+    return leaves
 
 
 _DYNAMIC_ENTRYPOINTS = (
@@ -1284,4 +1374,6 @@ _DYNAMIC_ENTRYPOINTS = (
     load_platform_capability_registry,
     derive_execution_descriptor,
     materialize_descriptors,
+    materialize_variant_leaf,
+    materialize_descriptor_leaves,
 )

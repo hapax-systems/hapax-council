@@ -38,6 +38,13 @@
         "quota_telemetry_unknown"
       ],
       "model_or_engine": "google-antigravity-cli-agy",
+      "execution_descriptor": {
+        "model_id": "gemini-3.1-pro-preview",
+        "effort": "none",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
       "auth_surface": "operator_session",
       "capacity_pool": "subscription_quota",
       "mutability": {
@@ -303,6 +310,13 @@
         "no_secret_egress_receipt_absent"
       ],
       "model_or_engine": "litellm.anthropic.claude-opus-4-cloud-burst",
+      "execution_descriptor": {
+        "model_id": "claude-opus-4-8",
+        "effort": "none",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
       "auth_surface": "api_key",
       "capacity_pool": "api_paid_spend",
       "mutability": {
@@ -571,6 +585,13 @@
         "provider_budget_receipt_absent"
       ],
       "model_or_engine": "litellm.provider-gateway-maintenance",
+      "execution_descriptor": {
+        "model_id": "gemini-3.1-pro-preview",
+        "effort": "none",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
       "paid_provider": "google",
       "paid_profile": "frontier-fast",
       "auth_surface": "api_key",
@@ -833,7 +854,14 @@
       "blocked_reasons": [
         "account_live_quota_receipt_absent"
       ],
-      "model_or_engine": "claude-code-default",
+      "model_or_engine": "claude-opus",
+      "execution_descriptor": {
+        "model_id": "claude-opus-4-8",
+        "effort": "xhigh",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
       "auth_surface": "subscription",
       "capacity_pool": "subscription_quota",
       "mutability": {
@@ -1141,7 +1169,14 @@
       "blocked_reasons": [
         "account_live_quota_receipt_absent"
       ],
-      "model_or_engine": "claude-code-default",
+      "model_or_engine": "claude-opus",
+      "execution_descriptor": {
+        "model_id": "claude-opus-4-8",
+        "effort": "max",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
       "auth_surface": "subscription",
       "capacity_pool": "subscription_quota",
       "mutability": {
@@ -1451,6 +1486,23 @@
         "account_live_quota_receipt_absent"
       ],
       "model_or_engine": "claude-opus",
+      "execution_descriptor": {
+        "model_id": "claude-opus-4-8",
+        "effort": "xhigh",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
+      "descriptor_variants": [
+        {
+          "variant_id": "opus@extended_1m",
+          "knobs_override": {
+            "context_mode": "extended_1m"
+          },
+          "scores_inherited_from": "claude.headless.opus",
+          "blocked_reasons": []
+        }
+      ],
       "auth_surface": "subscription",
       "capacity_pool": "subscription_quota",
       "mutability": {
@@ -1760,6 +1812,23 @@
         "account_live_quota_receipt_absent"
       ],
       "model_or_engine": "claude-sonnet",
+      "execution_descriptor": {
+        "model_id": "claude-sonnet-4-6",
+        "effort": "xhigh",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
+      "descriptor_variants": [
+        {
+          "variant_id": "sonnet@effort_low",
+          "knobs_override": {
+            "effort": "low"
+          },
+          "scores_inherited_from": "claude.headless.sonnet",
+          "blocked_reasons": []
+        }
+      ],
       "auth_surface": "subscription",
       "capacity_pool": "subscription_quota",
       "mutability": {
@@ -2068,6 +2137,13 @@
         "account_live_quota_receipt_absent"
       ],
       "model_or_engine": "gpt-5.5-xhigh",
+      "execution_descriptor": {
+        "model_id": "gpt-5.5",
+        "effort": "xhigh",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
       "auth_surface": "subscription",
       "capacity_pool": "subscription_quota",
       "mutability": {
@@ -2380,6 +2456,13 @@
         "account_live_quota_receipt_absent"
       ],
       "model_or_engine": "gpt-5.3-codex-spark",
+      "execution_descriptor": {
+        "model_id": "gpt-5.3-codex-spark",
+        "effort": "xhigh",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
       "auth_surface": "subscription",
       "capacity_pool": "subscription_quota",
       "mutability": {
@@ -2693,6 +2776,13 @@
         "account_live_quota_receipt_absent"
       ],
       "model_or_engine": "mistral-vibe",
+      "execution_descriptor": {
+        "model_id": "mistral-medium-3.5",
+        "effort": "none",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
       "auth_surface": "subscription",
       "capacity_pool": "subscription_quota",
       "mutability": {
@@ -2959,6 +3049,13 @@
         "quota_telemetry_unknown"
       ],
       "model_or_engine": "z_ai-glm-coding-plan:glm-5",
+      "execution_descriptor": {
+        "model_id": "z_ai-glm-5",
+        "effort": "none",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
       "auth_surface": "subscription",
       "capacity_pool": "subscription_quota",
       "mutability": {

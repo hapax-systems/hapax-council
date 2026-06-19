@@ -334,6 +334,68 @@
         "evidence": {"$ref": "#/$defs/freshness_evidence"}
       }
     },
+    "model_id": {
+      "enum": [
+        "claude-opus-4-8",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+        "claude-fable-5",
+        "gpt-5.5",
+        "gpt-5.3-codex-spark",
+        "command-r-08-2024",
+        "mistral-medium-3.5",
+        "gemini-3.1-pro-preview",
+        "z_ai-glm-5",
+        "unknown"
+      ]
+    },
+    "effort": {
+      "enum": ["none", "low", "medium", "high", "xhigh", "max"]
+    },
+    "context_mode": {
+      "enum": ["standard", "extended_1m", "not_applicable"]
+    },
+    "fast_mode": {
+      "enum": ["off", "fast", "not_applicable"]
+    },
+    "quantization": {
+      "enum": ["none", "exl3_4_0bpw", "exl3_5_0bpw", "not_applicable"]
+    },
+    "execution_descriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_id", "effort", "context_mode", "fast_mode", "quantization"],
+      "properties": {
+        "model_id": {"$ref": "#/$defs/model_id"},
+        "effort": {"$ref": "#/$defs/effort"},
+        "context_mode": {"$ref": "#/$defs/context_mode"},
+        "fast_mode": {"$ref": "#/$defs/fast_mode"},
+        "quantization": {"$ref": "#/$defs/quantization"}
+      }
+    },
+    "descriptor_variant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["variant_id"],
+      "properties": {
+        "variant_id": {"type": "string", "minLength": 1},
+        "knobs_override": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        },
+        "score_delta": {
+          "type": "object",
+          "additionalProperties": {"type": "integer"}
+        },
+        "scores_inherited_from": {
+          "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+        },
+        "blocked_reasons": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
     "platform_capability_route": {
       "type": "object",
       "additionalProperties": false,
@@ -350,6 +412,7 @@
         "route_state",
         "blocked_reasons",
         "model_or_engine",
+        "execution_descriptor",
         "approval_posture",
         "capability_tier",
         "worker_tier",
@@ -384,6 +447,11 @@
         },
         "model_or_engine": {
           "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+        },
+        "execution_descriptor": {"$ref": "#/$defs/execution_descriptor"},
+        "descriptor_variants": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/descriptor_variant"}
         },
         "paid_provider": {
           "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
