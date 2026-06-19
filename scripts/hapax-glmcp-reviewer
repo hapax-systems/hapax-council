@@ -323,8 +323,14 @@ def classify_zai_error(status: int, detail: str) -> ZaiErrorInfo:
         else:
             error_obj = payload
 
-    message = _first_string(error_obj.get("message"), payload.get("message") if payload else None)
-    code = _first_string(error_obj.get("code"), payload.get("code") if payload else None)
+    message = _first_string(
+        error_obj.get("message"),
+        payload.get("message") if payload is not None else None,
+    )
+    code = _first_string(
+        error_obj.get("code"),
+        payload.get("code") if payload is not None else None,
+    )
     resets_at = _extract_reset_hint(error_obj, message)
 
     if code in _ZAI_ERROR_CLASS_BY_CODE:

@@ -1073,6 +1073,27 @@ def test_unreadable_glmcp_admission_receipt_keeps_glmcp_unknown(tmp_path: Path) 
     assert summary["glmcp_admissions"] == 0
 
 
+def test_ignored_glmcp_admission_warning_omits_secretish_receipt_dir(tmp_path: Path) -> None:
+    secretish_dir = tmp_path / "sk-secret-token-relay-receipts-000000000000000000000000"
+    secretish_dir.mkdir()
+    (secretish_dir / "glmcp-quota-admission-invalid-utf8.yaml").write_bytes(b"\xff\xfe\xfa")
+
+    result, out = _run_writer(tmp_path, "--relay-receipt-dir", str(secretish_dir))
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["glmcp.review.direct"] == "unknown"
+    assert "unreadable receipt UnicodeDecodeError" in result.stderr
+    assert secretish_dir.name not in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
+    assert summary["glmcp_ignored_admissions"] == 1
+
+
 def test_resource_probe_failure_fails_closed_to_unknown(tmp_path: Path) -> None:
     result, out = _run_writer(tmp_path, nvidia_body="exit 9")
 
