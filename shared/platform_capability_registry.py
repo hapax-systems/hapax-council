@@ -630,24 +630,31 @@ class PlatformCapabilityRoute(StrictModel):
 
         if self.descriptor_variants:
             axes = set(ExecutionDescriptor.model_fields)
+            scores = set(CapabilityScores.model_fields)
             seen: set[str] = set()
             for variant in self.descriptor_variants:
                 if variant.variant_id in seen:
-                    raise ValueError(f"duplicate descriptor variant_id: {variant.variant_id}")
+                    raise ValueError(
+                        f"duplicate descriptor variant_id {variant.variant_id!r} on {self.route_id}; "
+                        "give each variant a unique variant_id or remove the duplicate"
+                    )
                 seen.add(variant.variant_id)
                 bad_knobs = set(variant.knobs_override) - axes
                 if bad_knobs:
                     raise ValueError(
-                        f"variant {variant.variant_id} overrides non-descriptor knobs: {sorted(bad_knobs)}"
+                        f"variant {variant.variant_id!r} overrides non-descriptor knobs {sorted(bad_knobs)}; "
+                        f"knobs_override keys must be ExecutionDescriptor axes ({sorted(axes)})"
                     )
-                bad_scores = set(variant.score_delta) - set(CapabilityScores.model_fields)
+                bad_scores = set(variant.score_delta) - scores
                 if bad_scores:
                     raise ValueError(
-                        f"variant {variant.variant_id} delta on unknown scores: {sorted(bad_scores)}"
+                        f"variant {variant.variant_id!r} score_delta targets unknown scores {sorted(bad_scores)}; "
+                        "use CapabilityScores field names"
                     )
                 if not variant.knobs_override and not variant.blocked_reasons:
                     raise ValueError(
-                        f"variant {variant.variant_id} is inert (no knob change, no blocker)"
+                        f"variant {variant.variant_id!r} is inert; give it a knobs_override that changes an "
+                        "axis or a blocked_reasons entry, or remove the variant"
                     )
 
         return self
@@ -685,6 +692,19 @@ class PlatformCapabilityRegistry(StrictModel):
 
         if self.capacity_invariant != CAPACITY_INVARIANT:
             raise ValueError("capacity invariant drifted from governed dispatch invariant")
+
+        # descriptor variant provenance is a cross-route reference; only the registry can
+        # verify it resolves (the per-route validator cannot see sibling routes).
+        known_ids = set(route_ids)
+        for route in self.routes:
+            for variant in route.descriptor_variants:
+                ref = variant.scores_inherited_from
+                if ref is not None and ref not in known_ids:
+                    raise ValueError(
+                        f"variant {variant.variant_id!r} on {route.route_id} inherits scores from "
+                        f"unknown route_id {ref!r}; scores_inherited_from must name a registry route "
+                        "(or be null to inherit the variant's own route)"
+                    )
 
         return self
 

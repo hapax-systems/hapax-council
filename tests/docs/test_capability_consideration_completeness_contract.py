@@ -262,9 +262,16 @@ def test_capacity_pool_positive_control() -> None:
     )
     # and confirm the gap axes are genuinely undetected today (the asymmetry the gate guards).
     # Post-backfill the registry-site axes are all modeled, so the remaining genuine gaps are
-    # on the dispatcher scoring plane and the spend ledger.
+    # on the dispatcher scoring plane and the spend ledger. Recheck:
+    #   uv run pytest tests/docs/test_capability_consideration_completeness_contract.py
     assert not _is_modeled("effort", universes["dispatcher_scoring"])
     assert not _is_modeled("quantization", universes["quota_ledger"])
+    # detector discrimination pinned against SYNTHETIC universes — immune to a sibling slice
+    # mutating the live field sets, so the gap findings above can never be a vacuous pass.
+    assert _is_modeled("effort", {"effort_fit", "grounding"})
+    assert not _is_modeled("effort", {"grounding", "architecture"})
+    assert _is_modeled("quantization", {"quantization"})
+    assert not _is_modeled("quantization", {"model_or_engine", "cost_usd"})
 
 
 def test_route_ids_stay_three_segment() -> None:

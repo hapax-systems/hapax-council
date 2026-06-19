@@ -18,6 +18,8 @@ from shared.platform_capability_registry import (
     ExecutionDescriptor,
     FastMode,
     ModelId,
+    PlatformCapabilityRegistry,
+    PlatformCapabilityRoute,
     Quantization,
     derive_execution_descriptor,
     load_platform_capability_registry,
@@ -137,3 +139,71 @@ def test_variant_leaf_fails_closed_on_non_descriptor_knob() -> None:
     bogus = DescriptorVariant(variant_id="bogus", knobs_override={"not_a_knob": "1"})
     with pytest.raises(ValueError):
         materialize_variant_leaf(route, bogus)
+
+
+def _route_with_variants(route_id: str, variants: list[dict]) -> PlatformCapabilityRoute:
+    """Re-validate a real route with injected descriptor_variants — exercises the route
+    contract validator directly (model_validate re-runs validators; model_copy does not)."""
+    registry = load_platform_capability_registry()
+    data = registry.require(route_id).model_dump()
+    data["descriptor_variants"] = variants
+    return PlatformCapabilityRoute.model_validate(data)
+
+
+def test_route_rejects_duplicate_variant_id() -> None:
+    import pytest
+
+    good = {"variant_id": "dup", "knobs_override": {"effort": "low"}}
+    with pytest.raises(ValueError, match="duplicate descriptor variant_id"):
+        _route_with_variants("claude.headless.opus", [good, dict(good)])
+
+
+def test_route_rejects_non_descriptor_knob_override() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="non-descriptor knobs"):
+        _route_with_variants(
+            "claude.headless.opus",
+            [{"variant_id": "x", "knobs_override": {"nonsense": "1"}}],
+        )
+
+
+def test_route_rejects_unknown_score_delta() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="unknown scores"):
+        _route_with_variants(
+            "claude.headless.opus",
+            [
+                {
+                    "variant_id": "x",
+                    "knobs_override": {"effort": "low"},
+                    "score_delta": {"not_a_real_score": 1},
+                }
+            ],
+        )
+
+
+def test_route_rejects_inert_variant() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="inert"):
+        _route_with_variants("claude.headless.opus", [{"variant_id": "x"}])
+
+
+def test_registry_rejects_variant_inheriting_unknown_route() -> None:
+    import pytest
+
+    registry = load_platform_capability_registry()
+    data = registry.model_dump()
+    for route in data["routes"]:
+        if route["route_id"] == "claude.headless.opus":
+            route["descriptor_variants"] = [
+                {
+                    "variant_id": "x",
+                    "knobs_override": {"effort": "low"},
+                    "scores_inherited_from": "no.such.route",
+                }
+            ]
+    with pytest.raises(ValueError, match="unknown route_id"):
+        PlatformCapabilityRegistry.model_validate(data)
