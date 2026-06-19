@@ -1,0 +1,149 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from shared.hkp_bundle_export import export_shadow_bundle
+from shared.hkp_research_viewer import (
+    REPORT_ROW_FIELDS,
+    SUPPORT_LABEL,
+    build_research_viewer_report,
+)
+
+GENERATED_AT = "2026-06-19T06:10:00Z"
+
+
+def test_report_redacts_forbidden_fields_and_labels_rows(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(
+        source_root / "tasks" / "demo.md",
+        body="private body with SECRET_TOKEN=do-not-leak\n",
+    )
+    export = export_shadow_bundle(
+        [source],
+        bundle_id="viewer-demo",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+
+    result = build_research_viewer_report(
+        [export.bundle_path],
+        report_id="viewer-report",
+        generated_at=GENERATED_AT,
+    )
+
+    payload = result.as_dict()
+    assert payload["support_label"] == SUPPORT_LABEL
+    row = payload["bundles"][0]["rows"][0]
+    assert row["support_label"] == SUPPORT_LABEL
+    assert set(row) <= REPORT_ROW_FIELDS
+    assert row["authority"] == {
+        "level": "support_non_authoritative",
+        "may_authorize": False,
+        "ceiling_family": "evidence",
+        "ceiling": "support_only",
+        "promotion_required": "cc-task-with-authority-case",
+    }
+    serialized = json.dumps(payload, sort_keys=True)
+    assert "do-not-leak" not in serialized
+    assert "SECRET_TOKEN" not in serialized
+    assert '"body"' not in serialized
+    assert "private_source_path" not in serialized
+    assert '"secret"' not in serialized
+    assert result.markdown_path.is_relative_to(
+        tmp_path / "home" / ".cache" / "hapax" / "hkp-reports"
+    )
+    assert result.json_path.is_file()
+
+
+def test_report_includes_findings_and_source_freshness_markers(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = source_root / "scripts" / "tool.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("print('no frontmatter')\n", encoding="utf-8")
+    export_shadow_bundle(
+        [source],
+        bundle_id="viewer-code",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+
+    result = build_research_viewer_report(
+        ["viewer-code"],
+        report_id="viewer-code-report",
+        generated_at=GENERATED_AT,
+    )
+
+    bundle = result.as_dict()["bundles"][0]
+    row = bundle["rows"][0]
+    assert bundle["validator_ok"] is True
+    assert row["source_freshness"] == ["fresh"]
+    assert row["freshness_state"] == "fresh"
+    assert row["privacy_class"] == "internal"
+    assert row["egress_state"] == "private"
+    assert "source_frontmatter_unparseable" in {finding["code"] for finding in row["findings"]}
+    assert "qdrant_rag" in row["denied_consumers"]
+    assert "public_export" in row["denied_consumers"]
+    assert "support_non_authoritative_projection_state" in result.markdown_path.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_report_rejects_inputs_and_outputs_outside_cache(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    outside = tmp_path / "outside-bundle"
+    outside.mkdir()
+
+    with pytest.raises(ValueError, match="must be under"):
+        build_research_viewer_report([outside])
+    with pytest.raises(ValueError, match="must be under"):
+        build_research_viewer_report(report_root=tmp_path / "reports-outside-cache")
+    with pytest.raises(ValueError, match="must be under"):
+        build_research_viewer_report(index_root=tmp_path / "index-outside-cache")
+
+
+def test_report_rejects_unsafe_report_id(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source_root = tmp_path / "repo"
+    source = _write_task(source_root / "tasks" / "demo.md")
+    export = export_shadow_bundle(
+        [source],
+        bundle_id="viewer-demo",
+        source_root=source_root,
+        source_root_id="repo:test",
+        generated_at=GENERATED_AT,
+    )
+
+    with pytest.raises(ValueError, match="report_id is not a safe cache path component"):
+        build_research_viewer_report([export.bundle_path], report_id="../escape")
+
+
+def _write_task(path: Path, *, body: str = "body\n") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            [
+                "---",
+                "type: cc-task",
+                "task_id: viewer-demo",
+                'title: "Viewer Demo"',
+                "authority_case: CASE-HKP-TEST",
+                "parent_spec: /tmp/spec.md",
+                "route_metadata_schema: 1",
+                "quality_floor: deterministic_ok",
+                "mutation_surface: source",
+                "authority_level: authoritative",
+                "---",
+                "",
+                body,
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return path
