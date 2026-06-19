@@ -2,31 +2,31 @@
   "generated_at": "2026-06-18T00:00:00Z",
   "generated_hashes": {
     "docs/architecture/fixtures/system-dynamics-map/sdlc-operating-slice.json": "b405bf4be92d1a7e4fcecbb4ab640e3b9f9b2dedae73d22bcbcd2189b6b78c1f",
-    "docs/architecture/system-dynamics-map-viewer.html": "856e9b6a9184fbedc9a5ef732e05e5b658fbe9ef6bef35fe2c14eb5e854a7443",
+    "docs/architecture/system-dynamics-map-viewer.html": "c1d94845dd0855e523963fb2fd0b90f9ef252ce2893c59f3e549cce27a983bc0",
     "docs/architecture/system-dynamics-map.canonical.trig": "180cb9af6e6052265528a0829d43786862f91f3e3992c678d16887addceb6328",
     "docs/architecture/system-dynamics-map.claims.json": "b52f80e5eeb3b4cd8abf5b37e4a49b8e457bf823fa0ecdf838872b56ea1e641d",
     "docs/architecture/system-dynamics-map.lenses.json": "d7ef9c7773ad04c5d76597378414277089137028416e406559490e87512eef7f",
-    "docs/architecture/system-dynamics-map.observations.jsonl": "30c490a0cffaa31b38aa75f8773282cda6eeede984b102ecbdfc21481fa4b44e",
+    "docs/architecture/system-dynamics-map.observations.jsonl": "fc97a6c8fc7cc0af56fc3c5ef063a3cd1cf607e7601793d868dca987c5e8c0ba",
     "docs/architecture/system-dynamics-map.relations.json": "382cdd0fa36e9a1cba9feea58d78d6c6280e1416092e704770d822fe912b0e9d",
     "docs/architecture/system-dynamics-map.shacl.ttl": "56c382e4afa373f2d989676e2f3d0c533d7fe91743b1893199cf19c4923e653b",
-    "docs/architecture/system-dynamics-map.view-manifest.json": "eba1f4216f08012090ef9e381b1baa244b956be907cefcea3415c9bcae844ebc",
+    "docs/architecture/system-dynamics-map.view-manifest.json": "f7d40460849001bf2919ab5ee2248acf2f22ba7f39faecbd063d3541cbc7433e",
     "schemas/system-dynamics-map/claim-fragment.schema.json": "216e994c467405aecdc3f380184eae3915906e77f9cef909eceaf8ca96a19ccc",
     "schemas/system-dynamics-map/lens.schema.json": "e21cb9a38417749768eab11d0ce1fc847395cd3010883f61c04eab1ce2a5b9ee",
     "schemas/system-dynamics-map/observation.schema.json": "b67365b33792c5eaf991900fc3154e05cff8b434100585d5d418710ad5334422",
     "schemas/system-dynamics-map/package.schema.json": "762f25abc960fd7d214cea0c010cfd4a58f1bd9d8afc2d4e58195a448d6d0438",
     "schemas/system-dynamics-map/relation-vocabulary.schema.json": "ed48c46de224801cfe2c1c85383ee17313aded2eaad918064b799ef56344c888",
     "schemas/system-dynamics-map/seed.schema.json": "d90e150c456f4ebc38609039389c00073efb830dbb95bd02d5d302b6cb2fe933",
-    "schemas/system-dynamics-map/view-manifest.schema.json": "002e805c4d832b5017aea204e6c62698c046785dbc722897157a501314bc7ad2"
+    "schemas/system-dynamics-map/view-manifest.schema.json": "f11904e6f7121ec770d531e64267bd2a31f4e69244ce280990e678fcd9a6d878"
   },
   "git_sha": "unknown",
   "git_sha_role": "not_recorded",
   "map_id": "system-dynamics-map-v1",
-  "package_hash": "7b1d140fd816455707d3e527479e74749b75996f60057c3de48f6d44cb81e23c",
+  "package_hash": "001f65df0b342eb43e537ba7edd182e526e6ae265378d957e1a2c895150eca82",
   "schema": "system-dynamics-map-lock-v1",
   "source_hashes": {
     "seed": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
     "vendor": "9c2a3bf2592e0b14a1f7bec07c03a54f16dedf32af9cd0af155c716aa6c87bc3",
-    "viewer": "856e9b6a9184fbedc9a5ef732e05e5b658fbe9ef6bef35fe2c14eb5e854a7443"
+    "viewer": "c1d94845dd0855e523963fb2fd0b90f9ef252ce2893c59f3e549cce27a983bc0"
   },
   "staleness_policy": "Generated hashes must match rendered materializer output. git_sha is intentionally unknown and is not a staleness key because an artifact committed to Git cannot contain its own self-referential future commit SHA.",
   "version": "1.0.0"

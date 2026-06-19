@@ -1,6 +1,7 @@
 import contextlib
 import functools
 import http.server
+import json
 import re
 import threading
 from collections.abc import Iterator
@@ -229,6 +230,149 @@ def test_system_dynamics_viewer_core_interactions():
             assert relation_cues["observational"]["line_style"] == "dotted"
             assert relation_cues["execution"]["target_arrow_shape"] == "vee"
             assert relation_cues["projection"]["target_arrow_shape"] == "diamond"
+            assert set(page.evaluate("window.systemDynamicsMapRuntime.inquiryModeIds()")) == {
+                "release-gates",
+                "stuck-work",
+                "changed",
+                "stale-evidence",
+                "trust",
+                "missing-context",
+            }
+            assert set(page.evaluate("window.systemDynamicsMapRuntime.explanationPathIds()")) == {
+                "release-readiness",
+                "evidence-trust",
+            }
+            manifest_contract = json.loads(
+                (ARCHITECTURE_DIR / "system-dynamics-map.view-manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )["workbench_contract"]
+            assert (
+                page.evaluate("window.systemDynamicsMapRuntime.workbenchContract()")
+                == manifest_contract
+            )
+            assert page.evaluate("window.systemDynamicsMapRuntime.activeInquiryMode()") == (
+                "release-gates"
+            )
+            workbench_text = page.locator("#workbench-readout").inner_text()
+            assert "What gates release?" in workbench_text
+            assert "First diagnostic stop: Review Dossier is pending." in workbench_text
+            assert "What this does not prove" in workbench_text
+            assert "Audience emphasis: diagnostic next action" in workbench_text
+            companion_text = page.locator("#companion-readout").inner_text()
+            assert "Companion Readout" in companion_text
+            assert "Table view for the active projection" in companion_text
+            initial_view_payload = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload()"
+            )
+            assert page.locator('#companion-readout tr[data-companion-row="node"]').count() == len(
+                initial_view_payload["visible_node_ids"]
+            )
+            assert page.locator('#companion-readout tr[data-companion-row="edge"]').count() == len(
+                initial_view_payload["visible_edge_ids"]
+            )
+            workbench_payload = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentWorkbenchPayload()"
+            )
+            expected_stale_observations = page.evaluate(
+                """
+                () => {
+                  const visibleNodeIds = new Set(
+                    window.systemDynamicsMapRuntime.currentViewPayload().visible_node_ids
+                  );
+                  let count = 0;
+                  visibleNodeIds.forEach((id) => {
+                    window.systemDynamicsMapRuntime.observationsFor(id).forEach((observation) => {
+                      if (observation.freshness === "stale") {
+                        count += 1;
+                      }
+                    });
+                  });
+                  return count;
+                }
+                """
+            )
+            assert set(workbench_payload) == {
+                "schema",
+                "inquiry_mode",
+                "inquiry_label",
+                "audience_mode",
+                "audience_label",
+                "explanation_path",
+                "explanation_label",
+                "explanation_step",
+                "scene_title",
+                "visible_counts",
+                "evidence_summary",
+                "scope_warning",
+                "does_not_prove",
+            }
+            assert workbench_payload["schema"] == "system-dynamics-map-explanation-view-v1"
+            assert workbench_payload["inquiry_mode"] == "release-gates"
+            assert workbench_payload["inquiry_label"] == "What gates release?"
+            assert workbench_payload["audience_mode"] == "operator"
+            assert workbench_payload["audience_label"] == "Operator"
+            assert workbench_payload["explanation_path"] == "release-readiness"
+            assert workbench_payload["explanation_label"] == "Release readiness path"
+            assert workbench_payload["explanation_step"] == 0
+            assert workbench_payload["scene_title"] == "Start from source-neutral identity"
+            assert set(workbench_payload["visible_counts"]) == {"nodes", "edges"}
+            assert set(workbench_payload["evidence_summary"]) == {
+                "observations",
+                "stale_observations",
+                "hidden_stale_observations",
+                "claim_fragments",
+                "weak_claims",
+                "candidate_elements",
+                "contradictions",
+            }
+            assert (
+                workbench_payload["evidence_summary"]["stale_observations"]
+                == expected_stale_observations
+            )
+            assert isinstance(workbench_payload["scope_warning"], str)
+            assert workbench_payload["scope_warning"]
+            assert workbench_payload["does_not_prove"]
+            view_payload = page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload()")
+            assert view_payload["workbench"]["inquiry_mode"] == "release-gates"
+            assert view_payload["workbench"]["explanation_path"] == "release-readiness"
+
+            page.get_by_label("Audience").select_option("reviewer")
+            reviewer_text = page.locator("#workbench-readout").inner_text()
+            assert "Reviewer / Auditor" in reviewer_text
+            assert "scope, provenance, confidence, validation" in reviewer_text
+            page.get_by_label("Inquiry").select_option("changed")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeInquiryMode() === 'changed'"
+            )
+            changed_text = page.locator("#workbench-readout").inner_text()
+            assert "No prior snapshot is loaded" in changed_text
+            assert "bitemporal snapshot registry" in changed_text
+            assert page.evaluate("window.systemDynamicsMapRuntime.activeLens()") == "topology"
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {"group": "nodes", "id": "view-manifest"}
+            page.get_by_role("button", name="Next").click()
+            scene = page.evaluate("window.systemDynamicsMapRuntime.activeExplanationScene()")
+            assert scene["title"] == "Separate topology from temporal state"
+            assert page.evaluate("window.systemDynamicsMapRuntime.activeLens()") == (
+                "operating-slice"
+            )
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {"group": "nodes", "id": "temporal-state-events"}
+            page.get_by_role("button", name="Copy Explanation JSON").click()
+            copied_explanation = page.evaluate("JSON.parse(window.__clipboardWrites.at(-1))")
+            assert set(copied_explanation) == set(workbench_payload)
+            assert copied_explanation["schema"] == "system-dynamics-map-explanation-view-v1"
+            assert copied_explanation["audience_mode"] == "reviewer"
+            assert copied_explanation["explanation_step"] == 1
+            assert copied_explanation["scene_title"] == "Separate topology from temporal state"
+            assert copied_explanation["scope_warning"]
+            assert copied_explanation["audience_label"] == "Reviewer / Auditor"
+            assert copied_explanation["explanation_label"] == "Release readiness path"
+            page.get_by_label("View").select_option("topology")
+            page.wait_for_function("window.systemDynamicsMapRuntime.activeLens() === 'topology'")
 
             page.get_by_label("Search").fill("telemetry")
             page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes < 35")
@@ -868,6 +1012,251 @@ def test_system_dynamics_viewer_core_interactions():
             browser.close()
 
 
+def test_system_dynamics_viewer_workbench_modes_and_explanations_are_complete():
+    with _static_server() as base_url, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        try:
+            page.goto(f"{base_url}/system-dynamics-map-viewer.html")
+            page.locator("#cy canvas").first.wait_for(timeout=10_000)
+            page.wait_for_function("window.systemDynamicsMapRuntime")
+            page.wait_for_function(NONBLANK_CANVAS_SCRIPT, timeout=10_000)
+
+            inquiry_expectations = {
+                "release-gates": [
+                    "First diagnostic stop",
+                    "Path states:",
+                    "Evidence basis:",
+                ],
+                "stuck-work": [
+                    "First diagnostic stop",
+                    "Path states:",
+                    "Evidence basis:",
+                ],
+                "changed": [
+                    "No prior snapshot is loaded",
+                    "bitemporal snapshot registry",
+                ],
+                "stale-evidence": [
+                    "stale observations are visible",
+                    "Stale evidence is temporal evidence",
+                ],
+                "trust": [
+                    "lower-confidence claims",
+                    "candidate elements",
+                    "contradiction records in the package",
+                ],
+                "missing-context": [
+                    "Do not conclude absence",
+                    "hidden scope",
+                ],
+            }
+            for mode_id, expected_fragments in inquiry_expectations.items():
+                page.get_by_label("Inquiry").select_option(mode_id)
+                page.wait_for_function(
+                    "(modeId) => window.systemDynamicsMapRuntime.activeInquiryMode() === modeId",
+                    arg=mode_id,
+                )
+                readout_text = page.locator("#workbench-readout").inner_text()
+                for expected_fragment in expected_fragments:
+                    assert expected_fragment in readout_text
+                payload = page.evaluate("window.systemDynamicsMapRuntime.currentWorkbenchPayload()")
+                assert payload["inquiry_mode"] == mode_id
+                assert (
+                    page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload().workbench")
+                    == payload
+                )
+
+            page.get_by_label("Inquiry").select_option("trust")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeInquiryMode() === 'trust'"
+            )
+            trust_payload = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentWorkbenchPayload()"
+            )
+            seed_data = json.loads(
+                (ARCHITECTURE_DIR / "system-dynamics-map.seed.json").read_text(encoding="utf-8")
+            )
+            claim_data = json.loads(
+                (ARCHITECTURE_DIR / "system-dynamics-map.claims.json").read_text(encoding="utf-8")
+            )["claims"]
+            expected_weak_claims = sum(
+                1
+                for claim in claim_data
+                if float(claim.get("confidence_basis", {}).get("score", 1)) < 0.85
+            )
+            expected_candidate_elements = sum(
+                1
+                for item in [*seed_data["nodes"], *seed_data["edges"]]
+                if item.get("status") == "candidate"
+            )
+            expected_contradictions = sum(
+                1
+                for claim in claim_data
+                if claim.get("contradiction_state") and claim.get("contradiction_state") != "none"
+            )
+            assert trust_payload["evidence_summary"]["weak_claims"] == expected_weak_claims
+            assert (
+                trust_payload["evidence_summary"]["candidate_elements"]
+                == expected_candidate_elements
+            )
+            assert trust_payload["evidence_summary"]["contradictions"] == expected_contradictions
+
+            audience_expectations = {
+                "operator": "diagnostic next action",
+                "newcomer": "plain-language meaning",
+                "collaborator": "interfaces, dependencies",
+                "reviewer": "scope, provenance, confidence, validation",
+                "executive": "state, risk, decision points",
+            }
+            for audience_id, expected_fragment in audience_expectations.items():
+                page.get_by_label("Audience").select_option(audience_id)
+                page.wait_for_function(
+                    "(audienceId) => "
+                    "window.systemDynamicsMapRuntime.activeAudienceMode() === audienceId",
+                    arg=audience_id,
+                )
+                readout_text = page.locator("#workbench-readout").inner_text()
+                assert expected_fragment in readout_text
+                assert (
+                    page.evaluate(
+                        "window.systemDynamicsMapRuntime.currentWorkbenchPayload().audience_mode"
+                    )
+                    == audience_id
+                )
+
+            page.locator('#workbench-readout [data-workbench-id="rdf-owl-kg"]').first.click()
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "rdf-owl-kg",
+            }
+            page.locator('#workbench-readout [data-workbench-id="kg-to-prov"]').first.click()
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "edges",
+                "id": "kg-to-prov",
+            }
+            page.evaluate("window.systemDynamicsMapRuntime.selectNode('prov-o')")
+            page.locator('#companion-readout [data-workbench-id="rdf-owl-kg"]').first.click()
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "rdf-owl-kg",
+            }
+
+            page.get_by_label("View").select_option("operating-slice")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeLens() === 'operating-slice'"
+            )
+            page.evaluate(
+                "window.systemDynamicsMapRuntime.focusWorkbenchElementForTest('nodes', 'dmn')"
+            )
+            page.wait_for_function("window.systemDynamicsMapRuntime.activeLens() === 'topology'")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "dmn",
+            }
+            assert "DMN revealed in Topology." in page.locator("#action-status").inner_text()
+            page.get_by_label("View").select_option("operating-slice")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeLens() === 'operating-slice'"
+            )
+            page.evaluate(
+                "window.systemDynamicsMapRuntime.focusWorkbenchElementForTest('edges', 'dmn-to-sbvr')"
+            )
+            page.wait_for_function("window.systemDynamicsMapRuntime.activeLens() === 'topology'")
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "edges",
+                "id": "dmn-to-sbvr",
+            }
+            assert (
+                "DMN -> SBVR revealed in Topology." in page.locator("#action-status").inner_text()
+            )
+            assert "No lens contract is loaded" in page.evaluate(
+                "window.systemDynamicsMapRuntime.lensScopeWarningForTest(null)"
+            )
+
+            page.get_by_label("Search").fill("zzzznomatchq")
+            page.evaluate("window.systemDynamicsMapRuntime.applyInquiryMode('release-gates')")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeInquiryMode() === 'release-gates'"
+            )
+            assert (
+                page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload().selected")
+                is None
+            )
+            assert page.evaluate("window.systemDynamicsMapRuntime.visibleCounts().nodes") == 0
+            page.get_by_label("Search").fill("")
+            page.wait_for_function("window.systemDynamicsMapRuntime.visibleCounts().nodes > 0")
+
+            page.get_by_label("Explanation Path").select_option("release-readiness")
+            page.evaluate("window.systemDynamicsMapRuntime.applyExplanationScene(0)")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeExplanationScene().title "
+                "=== 'Start from source-neutral identity'"
+            )
+            page.get_by_role("button", name="Previous").click()
+            assert (
+                page.evaluate("window.systemDynamicsMapRuntime.activeExplanationScene().title")
+                == "Start from source-neutral identity"
+            )
+            for _ in range(10):
+                page.get_by_role("button", name="Next").click()
+            assert (
+                page.evaluate("window.systemDynamicsMapRuntime.activeExplanationScene().title")
+                == "State what this does not prove"
+            )
+            page.get_by_role("button", name="Next").click()
+            assert (
+                page.evaluate("window.systemDynamicsMapRuntime.activeExplanationScene().title")
+                == "State what this does not prove"
+            )
+            page.get_by_label("Explanation Path").select_option("evidence-trust")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeExplanationScene().title "
+                "=== 'Claims are explicit records'"
+            )
+            assert (
+                page.evaluate(
+                    "window.systemDynamicsMapRuntime.currentWorkbenchPayload().explanation_path"
+                )
+                == "evidence-trust"
+            )
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "rdf-owl-kg",
+            }
+            page.get_by_role("button", name="Next").click()
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeExplanationScene().title "
+                "=== 'Validation precedes trust'"
+            )
+            assert page.evaluate("window.systemDynamicsMapRuntime.activeLens()") == "evidence-risk"
+            assert page.evaluate(
+                "window.systemDynamicsMapRuntime.currentViewPayload().selected"
+            ) == {
+                "group": "nodes",
+                "id": "shacl-contracts",
+            }
+            evidence_payload = page.evaluate(
+                "window.systemDynamicsMapRuntime.currentWorkbenchPayload()"
+            )
+            assert evidence_payload["explanation_label"] == "Evidence and trust path"
+            assert evidence_payload["scene_title"] == "Validation precedes trust"
+        finally:
+            browser.close()
+
+
 def test_system_dynamics_viewer_toolbar_and_panel_actions_are_operable():
     with _static_server() as base_url, sync_playwright() as playwright:
         browser = playwright.chromium.launch()
@@ -1025,6 +1414,15 @@ def test_system_dynamics_viewer_toolbar_and_panel_actions_are_operable():
                 "Clipboard unavailable; current view JSON downloaded."
                 in page.locator("#action-status").inner_text()
             )
+            page.get_by_role("button", name="Copy Explanation JSON").click()
+            page.wait_for_function(
+                "window.__downloadClicks.some((item) => "
+                "item.download === 'system-dynamics-explanation-view.json')"
+            )
+            assert (
+                "Clipboard unavailable; explanation JSON downloaded."
+                in page.locator("#action-status").inner_text()
+            )
         finally:
             browser.close()
 
@@ -1145,6 +1543,85 @@ def test_system_dynamics_viewer_reports_served_seed_fallback():
             browser.close()
 
 
+def _viewer_html_with_workbench_contract(contract: object) -> str:
+    return re.sub(
+        r'(<script type="application/json" id="workbench-contract-data">\s*).*?(\s*</script>)',
+        rf"\1{json.dumps(contract)}\2",
+        VIEWER_PATH.read_text(encoding="utf-8"),
+        count=1,
+        flags=re.S,
+    )
+
+
+def _assert_malformed_workbench_contract_falls_back(broken_html: str) -> None:
+    with _static_server() as base_url, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+
+        def route_broken_workbench(route):
+            route.fulfill(status=200, content_type="text/html", body=broken_html)
+
+        page.route("**/system-dynamics-map-viewer.html", route_broken_workbench)
+        try:
+            page.goto(f"{base_url}/system-dynamics-map-viewer.html")
+            page.locator("#cy canvas").first.wait_for(timeout=10_000)
+            page.wait_for_function("window.systemDynamicsMapRuntime")
+            assert page.evaluate("window.systemDynamicsMapRuntime.inquiryModeIds()") == [
+                "contract-missing"
+            ]
+            assert "Workbench Contract Missing" in page.locator("#workbench-readout").inner_text()
+            assert page.locator("#data-health.active").is_visible()
+            assert (
+                "Workbench contract data is missing or malformed"
+                in page.locator("#data-health").inner_text()
+            )
+        finally:
+            browser.close()
+
+
+def test_system_dynamics_viewer_reports_malformed_workbench_contract():
+    _assert_malformed_workbench_contract_falls_back(_viewer_html_with_workbench_contract({}))
+
+
+def test_system_dynamics_viewer_rejects_partial_workbench_contract_arrays():
+    _assert_malformed_workbench_contract_falls_back(
+        _viewer_html_with_workbench_contract(
+            {
+                "schema": "system-dynamics-map-workbench-contract-v1",
+                "defaults": {
+                    "inquiry_mode": "partial",
+                    "audience_mode": "operator",
+                    "explanation_path": "missing-scenes",
+                },
+                "inquiry_modes": [
+                    {
+                        "id": "partial",
+                        "label": "Partial",
+                        "prompt": "This contract is intentionally incomplete.",
+                    }
+                ],
+                "audience_modes": [
+                    {
+                        "id": "operator",
+                        "label": "Operator",
+                    }
+                ],
+                "explanation_paths": [
+                    {
+                        "id": "missing-scenes",
+                        "label": "Missing scenes",
+                        "summary": "Array-shaped but unusable.",
+                        "scene_count": 0,
+                        "must_include": [],
+                        "scenes": [],
+                    }
+                ],
+                "follow_on_tranches": [],
+            }
+        )
+    )
+
+
 def test_system_dynamics_viewer_mobile_layout_remains_operable():
     with _static_server() as base_url, sync_playwright() as playwright:
         browser = playwright.chromium.launch()
@@ -1199,6 +1676,25 @@ def test_system_dynamics_viewer_mobile_layout_remains_operable():
                 page.evaluate("window.systemDynamicsMapRuntime.currentViewPayload().selected")
                 is not None
             )
+            page.get_by_role("searchbox", name="Search").fill("")
+            page.get_by_label("Inquiry").select_option("trust")
+            page.wait_for_function(
+                "window.systemDynamicsMapRuntime.activeInquiryMode() === 'trust'"
+            )
+            mobile_workbench_text = page.locator("#workbench-readout").inner_text()
+            assert "What do I trust?" in mobile_workbench_text
+            assert "candidate elements" in mobile_workbench_text
+            page.get_by_label("Audience").select_option("newcomer")
+            assert "plain-language meaning" in page.locator("#workbench-readout").inner_text()
+            page.get_by_role("button", name="Next").click()
+            assert (
+                page.evaluate("window.systemDynamicsMapRuntime.activeExplanationScene().title")
+                == "Separate topology from temporal state"
+            )
+            mobile_companion_text = page.locator("#companion-readout").inner_text()
+            assert "Companion Readout" in mobile_companion_text
+            assert "Table view for the active projection" in mobile_companion_text
+            assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
         finally:
             browser.close()
 

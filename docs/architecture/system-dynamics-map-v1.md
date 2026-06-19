@@ -242,17 +242,64 @@ The viewer tests also cover direct file-open supplemental data, lens-scoped
 freshness, relation-vocabulary detail panels, finder-driven keyboard selection,
 current-view export payloads, ARIA layout state, and reduced-motion behavior.
 
+## V2 Sensemaking Workbench Slice
+
+The viewer now treats question-first sensemaking and explanation as part of the
+projection contract. The map still renders source-neutral topology, state,
+evidence, projection, and governance; it does not make any notation the center.
+
+The v2 workbench layer adds:
+
+- inquiry modes for recurring operator questions: what gates release, what is
+  stuck, what changed, what is stale, what is trustworthy, and what context is
+  missing;
+- synthesized readouts that derive from visible topology, relation paths,
+  claim fragments, observations, stale evidence, hidden scope, and lens
+  aggregation metadata;
+- audience modes for operator, newcomer, collaborator, reviewer/auditor, and
+  executive explanations without changing graph truth;
+- guided explanation paths with scene-level focus, takeaway, and an explicit
+  "what this does not prove" warning;
+- an explanation export payload embedded in the current-view export, carrying
+  `schema`, `inquiry_mode`, `inquiry_label`, `audience_mode`,
+  `audience_label`, `explanation_path`, `explanation_label`,
+  `explanation_step`, `scene_title`, visible counts, evidence summary,
+  `scope_warning`, and `does_not_prove`;
+- a non-canvas companion readout for visible nodes, states, relations, and
+  relation categories.
+
+This remains a static-file viewer. The workbench is intentionally derived from
+the existing seed, claims, observations, relation vocabulary, lenses, and
+manifest metadata. It is not a second source of truth.
+
+The generated `system-dynamics-map.view-manifest.json` declares a
+`workbench_contract` so inquiry modes, audience modes, explanation paths, and
+follow-on tranches are package-level metadata rather than untracked UI prose.
+
+The major platform work still belongs in separate governed tranches:
+
+- bitemporal snapshot registry and diff lens;
+- causality, guard, evidence, correlation, containment, and projection relation
+  semantics that are distinct from edge direction;
+- uncertainty classes, contradiction groups, competing evidence, and confidence
+  basis categories;
+- source adapter provenance chains and verification receipts;
+- visible invariant registry and aggregation/lossiness ledger.
+
 ## Recheck Commands
 
-Run these from `~/projects/hapax-council` after changing the seed graph or viewer:
+Run these from the repository root after changing the seed graph, viewer, or
+workbench contract. The Playwright command covers the question-first workbench,
+audience modes, explanation export payload, mobile workbench rendering, and
+companion readout behavior.
 
 ```bash
-uv run pytest tests/test_system_dynamics_map_artifacts.py
-```
-
-```bash
+uv run python scripts/system_dynamics_map_materialize.py --check
+uv run --extra ci pytest tests/test_system_dynamics_map_artifacts.py
 uv run --extra ci playwright install chromium
 uv run --extra ci pytest tests/test_system_dynamics_map_viewer_playwright.py
+uv run --extra ci pytest tests/scripts/test_hapax_agy_reviewer.py
+scripts/system-dynamics-map-gate
 ```
 
 ```bash

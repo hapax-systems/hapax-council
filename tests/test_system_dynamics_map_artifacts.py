@@ -644,6 +644,7 @@ def test_generated_schemas_validate_artifacts_and_reject_bad_shapes():
     bad_manifest["default_projection"] = {}
     bad_manifest["provenance"] = {}
     bad_manifest.pop("claim_contract")
+    bad_manifest.pop("workbench_contract")
     bad_manifest.pop("lenses")
     bad_manifest.pop("validation")
     manifest_errors = "\n".join(_schema_errors(bad_manifest, view_manifest_schema))
@@ -651,9 +652,28 @@ def test_generated_schemas_validate_artifacts_and_reject_bad_shapes():
     assert "visible_node_ids" in manifest_errors
     assert "hidden_node_ids" in manifest_errors
     assert "claim_contract" in manifest_errors
+    assert "workbench_contract" in manifest_errors
     assert "lenses" in manifest_errors
     assert "validation" in manifest_errors
     assert "generated" in manifest_errors
+    malformed_workbench_manifest = copy.deepcopy(
+        json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    )
+    malformed_workbench_manifest["workbench_contract"]["audience_modes"][0] = "operator"
+    malformed_workbench_manifest["workbench_contract"]["explanation_paths"][0]["scene_count"] = "5"
+    malformed_workbench_manifest["workbench_contract"]["explanation_paths"][0]["must_include"] = (
+        "gate path"
+    )
+    malformed_workbench_manifest["workbench_contract"]["explanation_paths"][0]["scenes"][0][
+        "selection"
+    ]["group"] = "node"
+    malformed_workbench_manifest["workbench_contract"]["unexpected_top_level"] = True
+    workbench_errors = "\n".join(_schema_errors(malformed_workbench_manifest, view_manifest_schema))
+    assert "operator" in workbench_errors
+    assert "'5' is not of type 'integer'" in workbench_errors
+    assert "'gate path' is not of type 'array'" in workbench_errors
+    assert "node" in workbench_errors
+    assert "unexpected_top_level" in workbench_errors
 
     bad_package = copy.deepcopy(json.loads(PACKAGE_PATH.read_text(encoding="utf-8")))
     bad_package["artifacts"][0]["sha256"] = "not-a-sha"
@@ -895,6 +915,60 @@ def test_shacl_shapes_and_view_manifest_cover_the_durable_contract():
         "observation_count": len(_load_observations()),
         "relation_count": len(json.loads(RELATIONS_PATH.read_text(encoding="utf-8"))["relations"]),
     }
+    workbench = manifest["workbench_contract"]
+    assert workbench["schema"] == "system-dynamics-map-workbench-contract-v1"
+    assert "source notation" in workbench["purpose"]
+    assert {mode["id"] for mode in workbench["inquiry_modes"]} == {
+        "release-gates",
+        "stuck-work",
+        "changed",
+        "stale-evidence",
+        "trust",
+        "missing-context",
+    }
+    assert [mode["id"] for mode in workbench["audience_modes"]] == [
+        "operator",
+        "newcomer",
+        "collaborator",
+        "reviewer",
+        "executive",
+    ]
+    assert workbench["defaults"] == {
+        "inquiry_mode": "release-gates",
+        "audience_mode": "operator",
+        "explanation_path": "release-readiness",
+    }
+    assert all(mode["prompt"] for mode in workbench["inquiry_modes"])
+    assert all("focus_node_ids" in mode for mode in workbench["inquiry_modes"])
+    assert {path["id"] for path in workbench["explanation_paths"]} == {
+        "release-readiness",
+        "evidence-trust",
+    }
+    assert all(
+        path["scene_count"] == len(path["scenes"]) for path in workbench["explanation_paths"]
+    )
+    assert all(
+        path["scenes"][0]["selection"]["group"] in {"nodes", "edges"}
+        for path in workbench["explanation_paths"]
+    )
+    node_ids = {node["id"] for node in seed["nodes"]}
+    edge_ids = {edge["id"] for edge in seed["edges"]}
+    for mode in workbench["inquiry_modes"]:
+        for node_id in mode["focus_node_ids"]:
+            assert node_id in node_ids, f"{mode['id']} references missing node id {node_id!r}"
+        for edge_id in mode["focus_edge_ids"]:
+            assert edge_id in edge_ids, f"{mode['id']} references missing edge id {edge_id!r}"
+    for path in workbench["explanation_paths"]:
+        for scene in path["scenes"]:
+            selection = scene["selection"]
+            candidates = node_ids if selection["group"] == "nodes" else edge_ids
+            assert selection["id"] in candidates, (
+                f"{path['id']} scene {scene['title']!r} references missing "
+                f"{selection['group']} id {selection['id']!r}"
+            )
+    assert any("bitemporal snapshot" in item for item in workbench["follow_on_tranches"])
+    assert any("causality" in item for item in workbench["follow_on_tranches"])
+    assert any("contradiction groups" in item for item in workbench["follow_on_tranches"])
     assert manifest["default_projection"]["default_focus"] == seed["default_focus"]
     assert manifest["default_projection"]["lens"] == "topology"
     assert manifest["default_projection"]["runtime_asset"] == "vendor/cytoscape-3.34.0.min.js"
