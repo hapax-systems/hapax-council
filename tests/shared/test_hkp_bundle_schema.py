@@ -6,10 +6,12 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 from shared.hkp_bundle_schema import (
     ALLOWED_CONSUMERS,
+    STALE_SOURCE_STATES,
     VALIDATOR_FIRST_ALLOWED_CONSUMERS,
     VALIDATOR_FIRST_DENY_CONSUMERS,
     HkpProjectionEvent,
@@ -19,6 +21,16 @@ from shared.hkp_bundle_schema import (
 HASH = "sha256:" + "a" * 64
 TREE_HASH = "sha256:" + "b" * 64
 PREV_HASH = "sha256:" + "c" * 64
+SOURCE_REF_STATES = (
+    "fresh",
+    "stale",
+    "missing",
+    "contradictory",
+    "unparseable",
+    "manual_assertion",
+    "unknown",
+)
+STALE_AUTHORITY_SOURCE_REF_STATES = tuple(sorted(STALE_SOURCE_STATES))
 
 
 def test_valid_hkp_bundle_passes(tmp_path: Path) -> None:
@@ -82,6 +94,43 @@ def test_stale_authority_source_refs_fail_closed(tmp_path: Path) -> None:
     assert "authority/evidence source ref cannot be stale" in _messages(result)
 
 
+@pytest.mark.parametrize("state", SOURCE_REF_STATES)
+def test_non_authority_source_ref_states_validate(tmp_path: Path, state: str) -> None:
+    source_ref = valid_source_ref()
+    source_ref["data_role"] = "projection"
+    source_ref["source_authority_class"] = "none"
+    source_ref["freshness_state"] = state
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is True
+
+
+@pytest.mark.parametrize("state", STALE_AUTHORITY_SOURCE_REF_STATES)
+def test_authority_source_ref_unfresh_states_fail_closed(tmp_path: Path, state: str) -> None:
+    source_ref = valid_source_ref()
+    source_ref["freshness_state"] = state
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert f"authority/evidence source ref cannot be {state}" in _messages(result)
+    assert "next-action" in _messages(result)
+
+
+def test_fresh_authority_source_ref_accepts_p7d_stale_after(tmp_path: Path) -> None:
+    source_ref = valid_source_ref()
+    source_ref["freshness_state"] = "fresh"
+    source_ref["stale_after"] = "P7D"
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is True
+
+
 def test_source_ref_uri_path_leaks_fail(tmp_path: Path) -> None:
     source_ref = valid_source_ref()
     source_ref["uri"] = "file:///home/hapax/projects/hapax-council/task.md"
@@ -91,6 +140,7 @@ def test_source_ref_uri_path_leaks_fail(tmp_path: Path) -> None:
 
     assert result.ok is False
     assert "source ref uri must not expose a local path" in _messages(result)
+    assert "next-action" in _messages(result)
 
 
 def test_source_ref_uri_parent_traversal_fails(tmp_path: Path) -> None:
@@ -102,6 +152,116 @@ def test_source_ref_uri_parent_traversal_fails(tmp_path: Path) -> None:
 
     assert result.ok is False
     assert "source ref uri must not expose a local path or .." in _messages(result)
+    assert "next-action" in _messages(result)
+
+
+@pytest.mark.parametrize("uri", ("repo:../secret.md", "repo:tasks/../secret.md"))
+def test_source_ref_scheme_qualified_parent_traversal_fails(tmp_path: Path, uri: str) -> None:
+    source_ref = valid_source_ref()
+    source_ref["uri"] = uri
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "source ref uri must not expose a local path or .." in _messages(result)
+    assert "next-action" in _messages(result)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    (
+        "repo:/home/hapax/projects/hapax-council/task.md",
+        "repo:C:\\Users\\hapax\\task.md",
+    ),
+)
+def test_source_ref_scheme_qualified_local_paths_fail(tmp_path: Path, uri: str) -> None:
+    source_ref = valid_source_ref()
+    source_ref["uri"] = uri
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "source ref uri must not expose a local path or .." in _messages(result)
+    assert "next-action" in _messages(result)
+
+
+def test_source_ref_uri_requires_allowed_scheme(tmp_path: Path) -> None:
+    source_ref = valid_source_ref()
+    source_ref["uri"] = "task.md"
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "source ref uri must use an allowed logical scheme" in _messages(result)
+    assert "next-action" in _messages(result)
+
+
+def test_source_ref_uri_rejects_unsupported_scheme(tmp_path: Path) -> None:
+    source_ref = valid_source_ref()
+    source_ref["uri"] = "ftp://example.test/task.md"
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "source ref uri must use an allowed logical scheme" in _messages(result)
+    assert "next-action" in _messages(result)
+
+
+@pytest.mark.parametrize("field", ("observed_at", "checked_at"))
+def test_source_ref_timestamps_require_timezone(tmp_path: Path, field: str) -> None:
+    source_ref = valid_source_ref()
+    source_ref[field] = "2026-06-18T16:43:11"
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "source ref timestamps must include a timezone" in _messages(result)
+    assert "next-action" in _messages(result)
+
+
+@pytest.mark.parametrize("field", ("observed_at", "checked_at"))
+def test_source_ref_timestamps_must_parse(tmp_path: Path, field: str) -> None:
+    source_ref = valid_source_ref()
+    source_ref[field] = "not-a-timestamp"
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "source ref timestamps must be ISO 8601 datetimes" in _messages(result)
+    assert "next-action" in _messages(result)
+
+
+def test_source_ref_stale_after_requires_iso_duration(tmp_path: Path) -> None:
+    source_ref = valid_source_ref()
+    source_ref["stale_after"] = "7d"
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "stale_after must be an ISO 8601 duration such as P7D" in _messages(result)
+    assert "next-action" in _messages(result)
+
+
+@pytest.mark.parametrize("duration", ("", "P", "P1DT", "P1WT1H", "P1Y2W", "PT"))
+def test_source_ref_stale_after_rejects_malformed_iso_duration(
+    tmp_path: Path, duration: str
+) -> None:
+    source_ref = valid_source_ref()
+    source_ref["stale_after"] = duration
+    bundle = write_bundle(tmp_path, concept_updates={"source_refs": [source_ref]})
+
+    result = validate_bundle(bundle)
+
+    assert result.ok is False
+    assert "stale_after must be an ISO 8601 duration such as P7D" in _messages(result)
+    assert "next-action" in _messages(result)
 
 
 def test_privacy_ambiguity_fails_closed(tmp_path: Path) -> None:
