@@ -1,0 +1,44 @@
+name: HKP Advisory
+
+# pull_request ONLY (never merge_group): structurally non-blocking, never a
+# required check / merge-queue input. Support-non-authoritative advisory comments.
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: hkp-advisory-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  hkp-advisory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+      - name: Compose and post HKP advisory
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$BASE_REF" --depth=1 || true
+          mapfile -t files < <(git diff --name-only "origin/$BASE_REF...HEAD" -- '*.md' || true)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no changed markdown; nothing to advise"
+            exit 0
+          fi
+          body="$(uv run python scripts/hapax-hkp-ci-advisory --changed "${files[@]}")"
+          if [ -n "$body" ]; then
+            printf '%s\n' "$body" | gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -F body=@-
+          else
+            echo "no warning-severity advisory findings"
+          fi
