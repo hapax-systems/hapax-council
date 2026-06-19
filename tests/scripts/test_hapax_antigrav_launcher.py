@@ -290,3 +290,31 @@ def test_launcher_env_override_missing_fails_closed(tmp_path: Path) -> None:
 
     assert result.returncode == 4
     assert "Antigravity CLI not found" in result.stderr
+
+
+def test_launcher_env_override_non_agy_fails_closed(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    fake_gemini = tmp_path / "gemini"
+    _write_executable(fake_gemini, "#!/usr/bin/env bash\nexit 0\n")
+    env["HAPAX_ANTIGRAV_BIN"] = str(fake_gemini)
+    workdir = tmp_path / "projects" / "hapax-council--antigrav"
+    workdir.mkdir(parents=True)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "antigrav",
+            "--cd",
+            str(workdir),
+            "--terminal",
+            "current",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 4
+    assert "HAPAX_ANTIGRAV_BIN must point to an agy executable" in result.stderr

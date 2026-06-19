@@ -8,7 +8,9 @@ Spec: ~/Documents/Personal/30-areas/hapax/pr-review-team-design-2026-06-11.md
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -1234,6 +1236,29 @@ class TestFamilyOutageDegradation:
             missing_agy,
             process_failed=True,
             model_stdout="```yaml\nverdict: accept\n```",
+        )
+
+    def test_agy_missing_binary_stderr_classifies_as_route_unavailable(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        wrapper = REPO_ROOT / "scripts" / "hapax-agy-reviewer"
+        env = {**os.environ, "HAPAX_AGY_BIN": str(tmp_path / "agy")}
+
+        result = subprocess.run(
+            [str(wrapper)],
+            input="review\n",
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=5,
+        )
+
+        assert result.returncode == 2
+        assert rt.is_reviewer_route_unavailable(
+            result.stderr,
+            process_failed=True,
+            model_stdout=result.stdout,
         )
 
     def test_clean_exit_text_never_counts_as_wall_evidence(self) -> None:
