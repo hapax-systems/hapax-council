@@ -284,15 +284,19 @@ def test_report_redacts_private_path_and_secret_text_from_findings(
         source_root_id="repo:test",
         generated_at=GENERATED_AT,
     )
-    private_path = "/home/hapax/Documents/Personal/private.md"
     export.index_path.write_text(
         json.dumps(
             {
                 "record_type": "finding",
                 "severity": "warning",
-                "subject": f"{private_path} SECRET_TOKEN=do-not-leak",
-                "path": private_path,
-                "message": f"leaked {private_path} SECRET_TOKEN=do-not-leak",
+                "subject": "/home/hapax/Documents/Personal/private.md AKIA1111111111111111",
+                "path": "../relative/private.md",
+                "message": (
+                    "leaked /root/private.md /etc/passwd /mnt/secrets/key "
+                    "file:///tmp/private.md SECRET_TOKEN=do-not-leak "
+                    "Bearer abcdefghijklmnop "
+                    "eyJabcdefghijklmnop.qrstuvwxyz012345.abcdefghijklmnopqrstuvwxyz"
+                ),
             }
         )
         + "\n",
@@ -307,10 +311,18 @@ def test_report_redacts_private_path_and_secret_text_from_findings(
 
     serialized = json.dumps(result.as_dict(), sort_keys=True)
     assert "/home/hapax" not in serialized
+    assert "/root/private.md" not in serialized
+    assert "/etc/passwd" not in serialized
+    assert "/mnt/secrets/key" not in serialized
+    assert "../relative/private.md" not in serialized
+    assert "file:///tmp/private.md" not in serialized
     assert "SECRET_TOKEN" not in serialized
-    assert "[private-path-redacted]" in serialized
-    assert "[secret-redacted]" in serialized
-    assert "[outside-bundle-path-redacted]" in serialized
+    assert "AKIA1111111111111111" not in serialized
+    assert "Bearer abcdefghijklmnop" not in serialized
+    assert "eyJabcdefghijklmnop" not in serialized
+    assert "[finding-subject-redacted]" in serialized
+    assert "[finding-message-redacted]" in serialized
+    assert "[path-redacted]" in serialized
 
 
 def test_report_default_discovery_reads_real_cache_bundles(tmp_path: Path, monkeypatch) -> None:

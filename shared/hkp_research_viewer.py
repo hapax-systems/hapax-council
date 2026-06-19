@@ -88,12 +88,22 @@ REPORT_ROW_FIELDS = frozenset(
     }
 )
 _SAFE_REPORT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
-PRIVATE_PATH_RE = re.compile(r"(?:file://)?/home/hapax/[^\s)'\"`,|]+")
+ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_.:-])(?:file://)?/[^\s)'\"`,|<>]+")
+BEARER_TOKEN_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}", re.IGNORECASE)
+AWS_ACCESS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")
+JWT_TOKEN_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")
+PRIVATE_KEY_HEADER_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 SECRET_ASSIGNMENT_RE = re.compile(
     r"\b[A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|API[_-]?KEY|PRIVATE[_-]?KEY)"
     r"[A-Za-z0-9_]*\s*=\s*[^\s,;]+",
     re.IGNORECASE,
 )
+SECRET_CONTEXT_RE = re.compile(
+    r"\b(?:secret|token|password|api[_-]?key|private[_-]?key|bearer)\b",
+    re.IGNORECASE,
+)
+SAFE_DIAGNOSTIC_TEXT_RE = re.compile(r"^[A-Za-z0-9_.:@ -]{1,160}$")
+SAFE_BUNDLE_RELATIVE_PATH_PART_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 __all__ = [
     "REPORT_ROW_FIELDS",
     "SUPPORT_LABEL",
@@ -465,33 +475,88 @@ def _denied_consumers(manifest: dict[str, Any], policy: dict[str, Any]) -> list[
 
 
 def _finding_summary(row: dict[str, Any], *, bundle: Path) -> dict[str, Any]:
-    path = str(row.get("path") or "")
-    if path:
-        path = _safe_bundle_relative_path(path, bundle)
-    subject = _redact_report_text(row.get("subject") or path)
+    raw_path = str(row.get("path") or "")
+    path = _safe_bundle_relative_path(raw_path, bundle) if raw_path else ""
+    subject = _safe_finding_text(
+        row.get("subject") or path,
+        fallback="[finding-subject-redacted]",
+        reject_secret_words=True,
+    )
     return {
-        "severity": _redact_report_text(row.get("severity") or "warning"),
-        "code": _redact_report_text(row.get("code") or "unknown"),
+        "severity": _safe_finding_text(
+            row.get("severity") or "warning",
+            fallback="warning",
+            reject_secret_words=True,
+        ),
+        "code": _safe_finding_text(
+            row.get("code") or "unknown",
+            fallback="unknown",
+            reject_secret_words=True,
+        ),
         "subject": subject,
         "path": path,
-        "message": _redact_report_text(row.get("message") or ""),
+        "message": _safe_finding_text(
+            row.get("message") or "",
+            fallback="[finding-message-redacted]",
+            reject_secret_words=True,
+        ),
     }
 
 
 def _safe_bundle_relative_path(value: str, bundle: Path) -> str:
-    candidate = Path(value)
+    raw = value.removeprefix("file://")
+    candidate = Path(raw)
     if not candidate.is_absolute():
-        return candidate.as_posix()
+        path = candidate.as_posix()
+        return path if _is_safe_bundle_relative_path(path) else "[path-redacted]"
     try:
-        return candidate.resolve().relative_to(bundle.resolve()).as_posix()
+        path = candidate.resolve().relative_to(bundle.resolve()).as_posix()
     except ValueError:
         return "[outside-bundle-path-redacted]"
+    return path if _is_safe_bundle_relative_path(path) else "[path-redacted]"
 
 
 def _redact_report_text(value: Any) -> str:
     text = str(value)
-    text = PRIVATE_PATH_RE.sub("[private-path-redacted]", text)
-    return SECRET_ASSIGNMENT_RE.sub("[secret-redacted]", text)
+    text = ABSOLUTE_PATH_RE.sub("[private-path-redacted]", text)
+    text = SECRET_ASSIGNMENT_RE.sub("[secret-redacted]", text)
+    text = BEARER_TOKEN_RE.sub("[secret-redacted]", text)
+    text = AWS_ACCESS_KEY_RE.sub("[secret-redacted]", text)
+    text = JWT_TOKEN_RE.sub("[secret-redacted]", text)
+    return PRIVATE_KEY_HEADER_RE.sub("[secret-redacted]", text)
+
+
+def _safe_finding_text(
+    value: Any,
+    *,
+    fallback: str,
+    reject_secret_words: bool,
+) -> str:
+    text = " ".join(_redact_report_text(value).split())
+    if not text:
+        return fallback
+    if _looks_path_or_secret_like(text, reject_secret_words=reject_secret_words):
+        return fallback
+    if not SAFE_DIAGNOSTIC_TEXT_RE.fullmatch(text):
+        return fallback
+    return text
+
+
+def _looks_path_or_secret_like(text: str, *, reject_secret_words: bool) -> bool:
+    lowered = text.lower()
+    if "/" in text or "\\" in text or "~" in text or ".." in text or "file:" in lowered:
+        return True
+    return bool(reject_secret_words and SECRET_CONTEXT_RE.search(text))
+
+
+def _is_safe_bundle_relative_path(path: str) -> bool:
+    lowered = path.lower()
+    if not path or "\\" in path or "~" in path or "file:" in lowered or Path(path).is_absolute():
+        return False
+    parts = Path(path).parts
+    if any(part in {"", ".", ".."} for part in parts):
+        return False
+    return all(SAFE_BUNDLE_RELATIVE_PATH_PART_RE.fullmatch(part) for part in parts)
 
 
 def _resolve_bundle_refs(

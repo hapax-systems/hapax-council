@@ -46,6 +46,7 @@ def test_exporter_emits_validator_clean_cache_bundle(tmp_path: Path, monkeypatch
     assert result.edge_count == 1
 
     manifest = yaml.safe_load((result.bundle_path / "_hkp" / "manifest.yaml").read_text())
+    assert manifest["generator_version"] == "0.1.1"
     assert manifest["source_root"] == "repo:test"
     assert manifest["cache_only"] is True
     assert manifest["output_tree_hash"] == _tree_hash(result.bundle_path)
@@ -53,6 +54,21 @@ def test_exporter_emits_validator_clean_cache_bundle(tmp_path: Path, monkeypatch
     assert {"qdrant_rag", "public_export", "dispatcher", "close_gate"} <= set(
         manifest["forbidden_consumers"]
     )
+    policy = yaml.safe_load((result.bundle_path / "_hkp" / "consumer_policy.yaml").read_text())
+    policy_by_consumer = {row["consumer"]: row for row in policy["consumers"]}
+    expected_read_only_fields = {
+        "title",
+        "description",
+        "source_refs",
+        "authority",
+        "freshness",
+        "posture",
+        "bundle_uid",
+        "output_tree_hash",
+        "validator_findings",
+    }
+    for consumer in ("research_viewer", "local_prompt_context"):
+        assert expected_read_only_fields <= set(policy_by_consumer[consumer]["allowed_fields"])
 
     concept_text = next((result.bundle_path / "concepts").glob("*.md")).read_text()
     assert str(source_root) not in concept_text
