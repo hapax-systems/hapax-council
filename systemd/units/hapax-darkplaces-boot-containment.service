@@ -1,0 +1,28 @@
+[Unit]
+Description=DarkPlaces attended-only boot containment — strip the runtime gate at every boot
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/docs/audits/2026-05-23-screwm-quake-runtime-reset-containment.md
+# The DarkPlaces renderer is ATTENDED-ONLY (2026-05-23 AMD data-fabric sync-flood
+# host hard-reset; the sp5100_tco hardware watchdog is denylisted, so a recurrence
+# has no reset path). scripts/darkplaces-promote.sh clears the renderer for an
+# attended session by creating the persistent gate
+# ~/.config/hapax/enable-darkplaces-runtime. The renderer units, however, are
+# boot-pulled (their own WantedBy=default.target AND hapax-visual-stack.target's
+# Wants=). If the gate survives a reboot, the renderer would auto-start UNATTENDED
+# — exactly what the audit forbids and what darkplaces-promote.sh warns against
+# ("unattended boot-enable is a separate tier").
+#
+# This oneshot runs before the renderer units evaluate their ConditionPathExists
+# and strips the gate, so EVERY boot starts contained. An attended operator
+# re-arms with scripts/darkplaces-promote.sh (the soak receipt stays valid 24h).
+After=local-fs.target
+Before=hapax-visual-stack.target hapax-darkplaces-v4l2.service hapax-darkplaces-obs-media-stream.service hapax-darkplaces-bridge.service hapax-screwm-speech-wave-producer.service hapax-darkplaces.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Idempotent: -f never fails when the gate is already absent.
+ExecStart=/usr/bin/rm -f %h/.config/hapax/enable-darkplaces-runtime
+SyslogIdentifier=hapax-darkplaces-boot-containment
+
+[Install]
+WantedBy=default.target graphical-session.target
