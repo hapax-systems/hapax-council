@@ -177,6 +177,19 @@ def _composability_gate_accepts_default(monkeypatch: pytest.MonkeyPatch) -> None
     )
 
 
+@pytest.fixture(autouse=True)
+def _s2_reframe_off_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default the S2 compose-on-reject reframe OFF for residency tests.
+
+    These tests pin the PURE reject->abstain contract (and predate the reframe),
+    so the reframe must not fire — it would otherwise make a live capable-model
+    gateway call and append a second producer-DV ledger entry. The reframe's own
+    behavior is pinned in test_s2_compose_on_reject.py. A test wanting reframe-on
+    sets HAPAX_SEGMENT_PREP_S2_REFRAME explicitly (later monkeypatch wins).
+    """
+    monkeypatch.setenv("HAPAX_SEGMENT_PREP_S2_REFRAME", "off")
+
+
 def test_coherence_check_quarantines_degraded_ruler(monkeypatch: pytest.MonkeyPatch) -> None:
     """#6 (review-plane degradation pattern -> the SCED ruler): a verdict from a
     DEGRADED roster (served_substitutions>0 — a seat served by a substitute family
@@ -1922,6 +1935,8 @@ def test_prep_segment_uncomposable_gate_reject_writes_diagnostic_and_feedback(
     assert s2_row["terminal_reason"] == "uncomposable_topic_type"
     assert s2_row["producer_gate"] == {
         "accepted": False,
+        "errored": False,
+        "fail_open": False,
         "criterion": prep._COHERENCE_CRITERION,
         "gate": prep.S2_COMPOSABILITY_GATE_NAME,
         "reason": reason,

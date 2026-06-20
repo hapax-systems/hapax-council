@@ -245,3 +245,104 @@ def assess_composability(
         f"{parsed.get('opening_hook', '')}"
     )
     return CompositionGateResult(accept, reason, signals={**parsed, "served_model": served_model})
+
+
+# ── compose-on-reject reframe (RED-1) ────────────────────────────────────────
+# The resident grounding model frames topics EXPOSITORY ("a rant on the importance
+# of X", beats = "highlight / emphasize / make the case") which this gate correctly
+# rejects as parallel_list. Neither more arc-exhortation nor role-restriction fixes
+# the topic FRAMING (empirically: arc-role `rant` still produced expository topics).
+# So, on a real reject, rewrite (topic, beats) into a true arc with the SAME capable
+# eval model the gate uses, then RE-VERIFY with assess_composability — a bad reframe
+# just fails the gate again, so this never airs an un-composable segment.
+
+_REFRAME_MODEL = os.environ.get("HAPAX_S2_REFRAME_MODEL") or GATE_MODEL
+_REFRAME_MAX_TOKENS_ENV = "HAPAX_S2_REFRAME_MAX_TOKENS"
+_REFRAME_MAX_TOKENS_DEFAULT = 2048
+
+
+def _reframe_max_tokens() -> int:
+    raw = os.environ.get(_REFRAME_MAX_TOKENS_ENV, str(_REFRAME_MAX_TOKENS_DEFAULT))
+    try:
+        return max(512, int(raw))
+    except ValueError:
+        return _REFRAME_MAX_TOKENS_DEFAULT
+
+
+_REFRAME_PROMPT = """You re-frame a spoken-word broadcast segment that a STRICT structural composability
+gate just REJECTED as a PARALLEL LIST (not a building narrative arc). The gate's two tests, BOTH of
+which must pass:
+  TEST 1 (specific-opening resolution): the OPENING beat states a SPECIFIC hook — a concrete paradox /
+    disputed claim / failure — and the FINAL beat resolves THAT specific hook (not "conclude / land
+    the list / make the case").
+  TEST 2 (reorder-invariance): REORDERING the middle beats must BREAK the conclusion — each beat builds
+    on the previous one.
+
+REJECTED plan:
+  role/type: {role}
+  topic: {topic}
+  beats:
+{beats}
+  gate verdict: {reason}
+
+Rewrite it into a TRUE ARC on the SAME subject, keeping EVERY `src:N` source citation that appears in
+the beats. Do NOT make it expository: forbid "the importance of X", "X is an asset", "highlight",
+"emphasize", "review", "make the case". Open on a concrete specific hook; let each beat depend on the
+last; resolve THAT hook at the end. The topic must NAME the tension/turn the arc resolves, not a label.
+
+Answer ONLY compact JSON, no prose:
+{{"topic": "<one line naming the specific tension/turn>", "beats": ["<beat 1: the specific hook>",
+"<beat 2 builds>", "...", "<final beat: pays off the hook>"]}}"""
+
+
+def reframe_to_arc(
+    role: str, topic: str, beats: list[str], *, reason: str = "", timeout: float = 60.0
+) -> tuple[str, list[str]] | None:
+    """Rewrite an expository (parallel-list) plan into a building arc via the capable eval model.
+
+    Returns ``(new_topic, new_beats)`` or ``None`` on any error / empty / malformed response. The
+    CALLER must re-verify the result with :func:`assess_composability` before using it — this function
+    only proposes; it never asserts the rewrite is composable. Best-effort and fail-quiet (a reframe
+    failure must never block prep): every error path returns ``None`` so the caller falls back to the
+    existing abstain.
+    """
+    if not beats:
+        return None
+    url, key = _gateway()
+    prompt = _REFRAME_PROMPT.format(
+        role=role,
+        topic=topic,
+        reason=reason or "parallel_list",
+        beats="\n".join(f"    - {b}" for b in beats),
+    )
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    payload = {
+        "model": _REFRAME_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": _reframe_max_tokens(),
+        "temperature": 0.2,
+    }
+    try:
+        req = urllib.request.Request(url, json.dumps(payload).encode(), headers, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+        choice = (data.get("choices") or [{}])[0]
+        if str(choice.get("finish_reason") or "") == "length":
+            log.warning("S2 reframe truncated (finish_reason=length) — skipping reframe")
+            return None
+        content = (choice.get("message") or {}).get("content") or ""
+        m = re.search(r"\{.*\}", content, re.DOTALL)
+        parsed = json.loads(m.group(0)) if m else {}
+    except Exception as exc:  # noqa: BLE001 — a reframe error must never block prep
+        log.warning("S2 reframe could not run (skipping): %s", exc)
+        return None
+    new_topic = str(parsed.get("topic") or "").strip()
+    raw_beats = parsed.get("beats")
+    if not new_topic or not isinstance(raw_beats, list):
+        return None
+    new_beats = [str(b).strip() for b in raw_beats if str(b).strip()]
+    if len(new_beats) < 2:
+        return None
+    return new_topic, new_beats
