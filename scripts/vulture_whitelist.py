@@ -4355,6 +4355,12 @@ from shared.capability_adapter_protocol import (  # noqa: E402
     CapabilityAdapter as _CapabilityAdapter,
 )
 from shared.capability_adapter_protocol import (  # noqa: E402
+    ClaudeAdapter as _ClaudeAdapter,
+)
+from shared.capability_adapter_protocol import (  # noqa: E402
+    CodexAdapter as _CodexAdapter,
+)
+from shared.capability_adapter_protocol import (  # noqa: E402
     ReviewSeatAdapter as _ReviewSeatAdapter,
 )
 from shared.capability_adapter_protocol import (  # noqa: E402
@@ -4375,3 +4381,5 @@ _SendCapableAdapter.send
 _BudgetAuthorityAdapter
 _ReviewSeatAdapter
 _AntigravAdapter
+_ClaudeAdapter
+_CodexAdapter

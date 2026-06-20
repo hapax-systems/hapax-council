@@ -99,15 +99,20 @@ def _require_launch_authority(decision: RouteDecision, *, op: str) -> None:
         raise AuthorityViolation(
             f"{op} not authorized for route {decision.route_id}: "
             f"action={decision.action} launch_allowed={decision.launch_allowed} "
-            f"reason_codes={decision.reason_codes}"
+            f"reason_codes={decision.reason_codes}. "
+            f"Next: only a LAUNCH decision with launch_allowed=True may {op}; confirm this "
+            "RouteDecision came straight from evaluate_dispatch_policy (via .admit) and was not "
+            "mutated, then re-evaluate rather than forcing the call."
         )
 
 
 # Worker-CLI (claude/codex) failure signatures -> FailureCode. Minimal + verbatim-derived,
-# NOT invented: the quota shapes mirror scripts/review_team.py:_QUOTA_WALL_SHAPE_RE (the
-# canonical Claude subscription-wall detector); the auth + transient shapes are the documented
-# Anthropic/provider API error families (authentication_error, overloaded_error/529, 503).
-# UNKNOWN is the no-auto-degrade default. Extend as real signatures are observed — do not invent.
+# NOT invented: the quota shapes are informed by the same documented Claude subscription-wall
+# signatures as scripts/review_team.py:_QUOTA_WALL_SHAPE_RE, but kept deliberately minimal and
+# INDEPENDENT (not a literal mirror — this table does not silently drift if that regex changes);
+# the auth + transient shapes are the documented Anthropic/provider API error families
+# (authentication_error, overloaded_error/529, 503). UNKNOWN is the no-auto-degrade default.
+# Extend as real signatures are observed — do not invent.
 _CLI_QUOTA_RE = re.compile(
     r"(?i)(usage limit\s+(?:reached|exceeded|hit)|weekly limit|"
     r"purchase more credits|credit balance is too low)"
