@@ -41,6 +41,9 @@ runtimes:
         - matcher: "Edit|Write|MultiEdit|NotebookEdit"
           hooks:
             - registry-guard.sh
+        - matcher: "Edit|Write|MultiEdit|NotebookEdit"
+          hooks:
+            - no-dev-on-podium-guard.sh
         - matcher: "Bash"
           hooks:
             - safe-stash-guard.sh
