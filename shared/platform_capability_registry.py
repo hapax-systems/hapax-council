@@ -44,12 +44,14 @@ REQUIRED_ROUTE_IDS = frozenset(
         "api.headless.api_frontier",
         "api.headless.provider_gateway",
         "claude.headless.full",
+        "claude.headless.haiku",
         "claude.headless.opus",
         "claude.headless.sonnet",
         "claude.interactive.full",
         "codex.headless.full",
         "codex.headless.spark",
         "glmcp.review.direct",
+        "local_tool.local.worker",
         "vibe.headless.full",
     }
 )
@@ -92,6 +94,7 @@ class Profile(StrEnum):
     DIRECT = "direct"
     FLASH = "flash"
     FULL = "full"
+    HAIKU = "haiku"
     JR = "jr"
     LITE = "lite"
     OPUS = "opus"

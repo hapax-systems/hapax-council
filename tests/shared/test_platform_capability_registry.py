@@ -573,3 +573,39 @@ def test_supply_descriptor_excludes_blocked_variants_fail_closed() -> None:
     assert descriptor is not None
     assert "extended_1m" not in descriptor.reachable_context_modes
     assert "extended_1m" not in descriptor.context_mode_to_variant
+
+
+# --------------------------------------------------------------------------------------
+# haiku + local_tool routes (capability-haiku-localtool-routes slice) — closing the
+# enum-without-route holes: claude-haiku-4-5 routable, Platform.LOCAL_TOOL/Mode.LOCAL materialized.
+# --------------------------------------------------------------------------------------
+def test_haiku_and_local_tool_routes_are_required_and_routable() -> None:
+    from shared.platform_capability_registry import (
+        Mode,
+        ModelId,
+        Platform,
+        materialize_descriptor_leaves,
+    )
+
+    registry = load_platform_capability_registry()
+    assert {"claude.headless.haiku", "local_tool.local.worker"} <= REQUIRED_ROUTE_IDS
+    assert {"claude.headless.haiku", "local_tool.local.worker"} <= set(registry.route_map())
+
+    haiku = registry.require("claude.headless.haiku")
+    assert (
+        haiku.execution_descriptor.model_id is ModelId.CLAUDE_HAIKU_4_5
+    )  # claude-haiku now routable
+    assert haiku.route_state is RouteState.BLOCKED  # materialized but honestly not yet live
+
+    local = registry.require("local_tool.local.worker")
+    assert (
+        local.platform is Platform.LOCAL_TOOL
+    )  # the verified-unused enum members now have a route
+    assert local.mode is Mode.LOCAL
+    assert local.execution_descriptor.model_id is ModelId.COMMAND_R_08_2024
+    assert local.execution_descriptor.quantization.value == "exl3_4_0bpw"
+
+    # the podium 5.0bpw tier is a materialized descriptor leaf
+    leaves = materialize_descriptor_leaves(registry)
+    variant_leaf = leaves["local_tool.local.worker#worker@quantization_exl3_5_0bpw"]
+    assert variant_leaf.quantization.value == "exl3_5_0bpw"

@@ -84,6 +84,15 @@ class AuthSurface(StrEnum):
     UNKNOWN = "unknown"
 
 
+class Quantization(StrEnum):
+    # byte-identical to shared.platform_capability_registry.Quantization, mirrored here so the
+    # low-dependency ledger never imports the registry (a value-set drift-pin guards the parity).
+    NONE = "none"
+    EXL3_4_0BPW = "exl3_4_0bpw"
+    EXL3_5_0BPW = "exl3_5_0bpw"
+    NOT_APPLICABLE = "not_applicable"
+
+
 class BudgetApproval(StrEnum):
     OPERATOR = "operator"
     LATER_AUTHORITY_PACKET = "later_authority_packet"
@@ -269,6 +278,9 @@ class SpendReceipt(StrictModel):
     budget_id: str | None = None
     provider: str = Field(min_length=1)
     model_or_engine: str | None = None
+    # the local-inference quantization (EXL3 4.0 vs 5.0 bpw) is part of the metered model
+    # identity — separable per receipt and shared with the route's execution_descriptor.
+    quantization: Quantization = Quantization.NOT_APPLICABLE
     auth_surface: AuthSurface
     quality_floor: str = Field(min_length=1)
     quality_preservation_reason: str = Field(min_length=1)
@@ -327,6 +339,7 @@ class SpendReceipt(StrictModel):
                 self.budget_id,
                 self.provider,
                 self.model_or_engine,
+                self.quantization.value,
                 self.quality_floor,
                 self.quality_preservation_reason,
                 self.reconciliation_reason,
@@ -1405,6 +1418,7 @@ __all__ = [
     "ProviderDependencyRecord",
     "QuotaSnapshot",
     "QuotaSpendDashboard",
+    "Quantization",
     "QuotaSpendLedger",
     "QuotaSpendLedgerError",
     "RenewalRecord",

@@ -86,12 +86,27 @@ EXECUTOR_REGISTRY: dict[str, ExecutorCapabilities] = {
     "claude": ExecutorCapabilities(
         platform="claude",
         modes=("headless", "interactive"),
-        profiles=("full", "opus", "sonnet"),
+        profiles=("full", "opus", "sonnet", "haiku"),
         mutates=True,
         claims=True,
         hooks_wired=True,
         headless=True,
         notes="stream-json headless lane (hapax-claude-headless) + tmux interactive",
+    ),
+    "local_tool": ExecutorCapabilities(
+        platform="local_tool",
+        modes=(),
+        profiles=("worker",),
+        mutates=False,
+        claims=False,
+        hooks_wired=False,
+        headless=False,
+        read_only=True,
+        notes=(
+            "receipt-only local-inference route (local_tool.local.worker); Command-R "
+            "35B EXL3 served by TabbyAPI :5000 and reached via the LiteLLM local alias, "
+            "not a launchable mutating lane (modes=())"
+        ),
     ),
     "codex": ExecutorCapabilities(
         platform="codex",
