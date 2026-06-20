@@ -4316,3 +4316,23 @@ from shared.evidence_ledger import collect_hkp_evidence as _hkp_collect_evidence
 
 _hkp_build_packet
 _hkp_collect_evidence
+
+# classify_failure is the review-plane measurement-spine API (CapabilityAdapter thread): it maps the
+# channel-trust classifiers to a shared FailureReceipt. Consumed by the forthcoming worker-path +
+# dispatch-telemetry slices, not yet by a static caller. capability-adapter-failure-classification.
+try:
+    from scripts.review_team import (
+        classify_failure as _adapter_classify_failure,  # noqa: F401, E402
+    )
+
+    _adapter_classify_failure
+except ImportError:
+    pass
+
+# failure_code_for_zai maps a Z.ai error_class -> FailureCode; the public mapping API consumed by the
+# forthcoming glmcp-telemetry + worker-path adapter slices (and the unit tests), no static caller yet.
+from shared.failure_classification import (
+    failure_code_for_zai as _adapter_failure_code_for_zai,  # noqa: F401, E402
+)
+
+_adapter_failure_code_for_zai
