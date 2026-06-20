@@ -258,7 +258,12 @@ def assess_composability(
 
 _REFRAME_MODEL = os.environ.get("HAPAX_S2_REFRAME_MODEL") or GATE_MODEL
 _REFRAME_MAX_TOKENS_ENV = "HAPAX_S2_REFRAME_MAX_TOKENS"
-_REFRAME_MAX_TOKENS_DEFAULT = 2048
+# Generous by design: the reframe emits a topic + several beats, and the eval route
+# may serve a REASONING model (the gemini fallback when the Claude seat is down)
+# that burns budget on hidden CoT before the JSON. 2048 truncated gemini-3.1-pro on
+# the live RED-1 input; 8192 completes a gate-passing arc. A non-reasoning model
+# (sonnet) stops early at finish_reason=stop, so this is a ceiling, not a target.
+_REFRAME_MAX_TOKENS_DEFAULT = 8192
 
 
 def _reframe_max_tokens() -> int:
