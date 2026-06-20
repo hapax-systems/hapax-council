@@ -35,17 +35,24 @@ def _ensure_slot_dir() -> bool:
 
 
 @contextmanager
-def gpu_slot():
+def gpu_slot(block: bool = True):
     """Acquire a GPU embedding slot, yield, then release.
 
-    Tries each slot with non-blocking flock. If all slots are taken,
-    blocks on slot 0 until it becomes available. The kernel releases
-    the lock automatically if the process crashes.
+    Tries each slot with non-blocking flock. If all slots are taken and
+    ``block`` is True (default), blocks on slot 0 until one frees. If ``block``
+    is False, raises ``BlockingIOError`` immediately instead of blocking — for
+    best-effort callers on a latency-critical path (e.g. the reactive embed
+    running on the asyncio event loop) that must DEGRADE rather than wedge.
+    (Resource Constitution: best-effort work degrades first; a CPU best-effort
+    task must never block the event loop on the GPU semaphore.) The kernel
+    releases the lock automatically if the process crashes.
 
     Usage::
 
-        with gpu_slot():
+        with gpu_slot():            # blocking — intentional GPU work
             result = ollama_client.embed(model=model, input=text)
+        with gpu_slot(block=False): # best-effort — skip if GPU saturated
+            ...
     """
     if not _ensure_slot_dir():
         log.debug("gpu_slot: slot dir unavailable, running without GPU semaphore")
@@ -66,7 +73,12 @@ def gpu_slot():
                 os.close(fd)
                 fd = -1
 
-        # All slots taken — block on slot 0
+        # All slots taken
+        if not block:
+            log.debug("gpu_slot: all %d slots busy, non-blocking caller skips", _NUM_SLOTS)
+            raise BlockingIOError("all GPU semaphore slots busy (non-blocking gpu_slot)")
+
+        # Block on slot 0
         slot_path = _SLOT_DIR / "slot.0"
         fd = os.open(str(slot_path), os.O_CREAT | os.O_RDWR)
         log.debug("gpu_slot: all %d slots taken, blocking on slot 0", _NUM_SLOTS)
