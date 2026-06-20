@@ -470,16 +470,26 @@ def _get_ollama_client():
     return ollama.Client(timeout=120)
 
 
-def embed(text: str, model: str | None = None, prefix: str = "search_query") -> list[float]:
+def embed(
+    text: str,
+    model: str | None = None,
+    prefix: str = "search_query",
+    block_gpu: bool = True,
+) -> list[float]:
     """Generate embedding via Ollama (local, not routed through LiteLLM).
 
     Args:
         text: Text to embed.
         model: Ollama model name. Defaults to EMBEDDING_MODEL.
         prefix: nomic prefix — "search_query" for queries, "search_document" for indexing.
+        block_gpu: when False, acquire the GPU semaphore NON-blocking and raise on
+            contention instead of blocking. Required on the asyncio event loop (the
+            reactive affordance-recruitment embed) so a saturated GPU can't wedge
+            logos-api :8051 — the embed is CPU (nomic-embed-cpu) and the caller
+            degrades gracefully (keyword-match fallback) when it returns None.
 
     Raises:
-        RuntimeError: If the Ollama embed call fails.
+        RuntimeError: If the Ollama embed call fails (or skips on GPU contention).
     """
     model_name = model or EMBEDDING_MODEL
     # Capture calling agent name from parent span before entering new span
@@ -499,8 +509,14 @@ def embed(text: str, model: str | None = None, prefix: str = "search_query") -> 
             from shared.gpu_semaphore import gpu_slot
 
             client = _get_ollama_client()
-            with gpu_slot():
+            with gpu_slot(block=block_gpu):
                 result = client.embed(model=model_name, input=prefixed)
+        except BlockingIOError as exc:
+            # best-effort caller (reactive recruitment on the event loop), GPU
+            # semaphore saturated -> skip rather than wedge the asyncio loop
+            # (Resource Constitution: best-effort degrades first; the embed is CPU).
+            span.set_attribute("rag.embed.skipped_gpu_busy", True)
+            raise RuntimeError("embed skipped: GPU semaphore saturated (best-effort)") from exc
         except Exception as exc:
             span.set_attribute("rag.error", str(exc)[:500])
             raise RuntimeError(f"Embedding failed (model={model_name}): {exc}") from exc
@@ -520,17 +536,21 @@ def embed(text: str, model: str | None = None, prefix: str = "search_query") -> 
 
 
 def embed_safe(
-    text: str, model: str | None = None, prefix: str = "search_query"
+    text: str, model: str | None = None, prefix: str = "search_query", block_gpu: bool = True
 ) -> list[float] | None:
     """Generate embedding via Ollama with graceful degradation (cb-degrade-001).
 
     Returns None instead of raising when Ollama is unavailable. Callers
-    decide how to handle: skip, cache, or notify.
+    decide how to handle: skip, cache, or notify. Pass ``block_gpu=False`` on the
+    asyncio event loop (the reactive recruitment embed) so a saturated GPU skips
+    the optional embedding (-> None, keyword-match fallback) instead of wedging.
     """
     try:
-        return embed(text, model=model, prefix=prefix)
+        return embed(text, model=model, prefix=prefix, block_gpu=block_gpu)
     except RuntimeError:
-        _log.warning("embed_safe: Ollama unavailable, returning None")
+        _log.warning(
+            "embed_safe: embedding unavailable (Ollama down or GPU saturated), returning None"
+        )
         return None
 
 

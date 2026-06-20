@@ -137,6 +137,34 @@ def test_embedding_cache_eviction():
     assert cache.get({"a": 1}) is None and cache.get({"c": 3}) == [0.3]
 
 
+def test_get_embedding_is_nonblocking_for_event_loop():
+    """The reactive recruitment embed MUST be non-blocking (block_gpu=False):
+    _get_embedding runs synchronously in the logos-api asyncio loop via
+    _handle_change -> select, so a blocking GPU-semaphore acquire there wedges
+    the :8051 API (the logos-api hang)."""
+    from unittest.mock import patch
+
+    from shared.affordance_pipeline import AffordancePipeline
+
+    captured: dict[str, object] = {}
+
+    def fake_embed_safe(text, model=None, prefix="search_query", block_gpu=True):
+        captured["block_gpu"] = block_gpu
+        return None
+
+    p = AffordancePipeline()
+    imp = Impingement(
+        timestamp=time.time(),
+        source="dmn",
+        type=ImpingementType.ABSOLUTE_THRESHOLD,
+        strength=1.0,
+        content={"metric": "x"},
+    )
+    with patch("shared.config.embed_safe", fake_embed_safe):
+        p._get_embedding(imp)
+    assert captured.get("block_gpu") is False
+
+
 def test_interrupt_bypass():
     from shared.affordance_pipeline import AffordancePipeline
 
