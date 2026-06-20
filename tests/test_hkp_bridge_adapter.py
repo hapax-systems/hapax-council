@@ -174,3 +174,28 @@ def test_collect_refuses_public_export_concept() -> None:
     concept.posture.public_export_allowed = True
     with pytest.raises(HkpBridgeRefusal):
         collect_hkp_evidence(concept)
+
+
+def test_claim_gate_is_load_bearing_distinct_from_packet_validator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Defense-in-depth proof (review finding): the ClaimRecord enterprise-audience
+    # gate catches an enterprise-forbidden inference ("certified") that the
+    # determination-packet content scan does NOT — so the gate is load-bearing,
+    # not a no-op duplicating the packet validator. The refusal must come from the
+    # claim-audience layer.
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Jane Q. Operator")
+    concept = _concept(
+        privacy_class="public",
+        egress_state="public",
+        title="certified production-ready by the enterprise",
+    )
+    with pytest.raises(HkpBridgeRefusal) as exc:
+        build_hkp_determination_packet(
+            [concept],
+            reviewer="operator",
+            reviewed_at="2026-06-20T00:00:00Z",
+            purpose="x",
+            portability_ledger_ref="hkp/13",
+        )
+    assert "enterprise-audience validation" in str(exc.value)
