@@ -253,16 +253,6 @@ AXIS_B_DISSOCIATED_VETO_NEXT_ACTION = (
     "Inspect the preserved Axis-B NDCVB report, withhold this segment from release, "
     "revise the candidate or source basis, and re-run the Axis-B scorer before prep release."
 )
-AXIS_B_NDCVB_REPORT_KEYS = (
-    "axis_b_ndcvb_report",
-    "ndcvb_axis_b_report",
-    "axis_b_report",
-)
-AXIS_B_NDCVB_REPORT_MAP_KEYS = (
-    "axis_b_ndcvb_reports",
-    "ndcvb_axis_b_reports",
-    "axis_b_reports",
-)
 PREP_STATUS_VERSION = 1
 PREP_STATUS_FILENAME = "prep-status.json"
 # A3: per-day store for downstream council/disconfirmation substance rationale,
