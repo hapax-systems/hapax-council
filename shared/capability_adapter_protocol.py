@@ -114,8 +114,16 @@ def _require_launch_authority(decision: RouteDecision, *, op: str) -> None:
 # (authentication_error, overloaded_error/529, 503). UNKNOWN is the no-auto-degrade default.
 # Extend as real signatures are observed — do not invent.
 _CLI_QUOTA_RE = re.compile(
-    r"(?i)(usage limit\s+(?:reached|exceeded|hit)|weekly limit|"
-    r"purchase more credits|credit balance is too low)"
+    r"(?i)("
+    # the actual Claude Code subscription-wall phrasing (verb BEFORE 'limit'), aligned with the
+    # canonical review_team._QUOTA_WALL_SHAPE_RE — the common case the old pattern silently missed
+    r"you(?:'ve| have) hit your (?:weekly|usage|session|5-hour) limit"
+    r"|usage limit\s+(?:reached|exceeded|hit)|weekly limit"
+    r"|rate.?limit\s+(?:reached|exceeded|hit)"
+    r"|quota\s+(?:reached|exceeded|exhausted|hit)"
+    r"|RESOURCE_EXHAUSTED|HTTP 429|Too Many Requests"
+    r"|purchase more credits|credit balance is too low"
+    r")"
 )
 _CLI_AUTH_RE = re.compile(
     r"(?i)(authentication[_ ]error|invalid\s+(?:x-)?api[_ -]?key|"

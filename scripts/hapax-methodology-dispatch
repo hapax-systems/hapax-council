@@ -12,6 +12,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1268,6 +1269,36 @@ def _classify_and_witness_terminal_failure(
     update_worker_family_availability(family=platform, code=code, now_iso=now_iso)
 
 
+def classify_and_witness_launch(
+    launch_fn: Callable[[], int],
+    *,
+    task_id: str,
+    lane: str,
+    platform: str,
+    mode: str,
+    profile: str,
+) -> int:
+    """Run the worker spawn ``launch_fn``; on a TERMINAL failure (rc != 0) classify it + write the
+    guarded family-availability witness. Strictly FAIL-OPEN — classification NEVER changes the
+    returncode or the dispatch outcome (coord_dispatch still records the terminal event). Returns
+    ``launch_fn``'s returncode verbatim. Module-level (not nested) so it is unit-testable."""
+
+    rc = launch_fn()
+    if rc != 0:
+        try:
+            _classify_and_witness_terminal_failure(
+                rc,
+                task_id=task_id,
+                lane=lane,
+                platform=platform,
+                mode=mode,
+                profile=profile,
+            )
+        except Exception:  # noqa: BLE001 — classification must never break dispatch
+            pass
+    return rc
+
+
 def launch_claude_headless(task_id: str, lane: str, prompt: str, route: PlatformPath) -> int:
     launcher = Path(
         os.environ.get(
@@ -2090,25 +2121,6 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             return launch()
 
-        def classify_and_witness_launch() -> int:
-            # Wrap the worker spawn: on a TERMINAL failure, append a classification receipt + write
-            # the GUARDED family-availability witness. Strictly FAIL-OPEN — classification never
-            # changes rc or the dispatch outcome (coord_dispatch still records the terminal event).
-            rc = run_platform_launch()
-            if rc != 0:
-                try:
-                    _classify_and_witness_terminal_failure(
-                        rc,
-                        task_id=args.task,
-                        lane=args.lane,
-                        platform=args.platform,
-                        mode=args.mode,
-                        profile=args.profile,
-                    )
-                except Exception:  # noqa: BLE001 — classification must never break dispatch
-                    pass
-            return rc
-
         dispatch_launch: DispatchLaunchResult | None = None
         if route.mutable and not validation.exempt_read_only:
             assert validation.task is not None
@@ -2130,7 +2142,15 @@ def main(argv: list[str] | None = None) -> int:
                         event_log=coord_event_log_from_env(),
                         idempotency_key=args.idempotency_key,
                     ),
-                    classify_and_witness_launch,
+                    functools.partial(
+                        classify_and_witness_launch,
+                        run_platform_launch,
+                        task_id=args.task,
+                        lane=args.lane,
+                        platform=args.platform,
+                        mode=args.mode,
+                        profile=args.profile,
+                    ),
                 )
                 rc = dispatch_launch.launch_returncode
             except CoordDispatchError as exc:
