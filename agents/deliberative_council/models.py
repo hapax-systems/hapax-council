@@ -58,6 +58,8 @@ class CouncilConfig(BaseModel):
         "local-fast",
         "web-research",
         "mistral-large",
+        "deepseek",
+        "glm",
     )
     shortcircuit_iqr_threshold: float = 1.0
     contested_iqr_threshold: float = 2.0
@@ -66,12 +68,15 @@ class CouncilConfig(BaseModel):
     # Replaces the dead ``family_correlation_penalty_threshold``. A convergence
     # verdict is trustworthy ONLY when INDEPENDENT model families agree;
     # correlated members (same family) add no independent evidence. The default
-    # panel is 6 members across 5 families (anthropic x2, google, cohere,
-    # perplexity, mistral). The floor is FAMILY COVERAGE, not a tuned magic
-    # constant:
+    # panel is 8 members across 7 families (anthropic x2, google, cohere,
+    # perplexity, mistral, deepseek, zhipu/glm — deepseek + glm added 2026-06-20
+    # for cap-resilient diversity, all cloud so no Resource-Constitution/GPU
+    # conflict). The floor is FAMILY COVERAGE, not a tuned magic constant; it is
+    # kept at the prior absolute values so the added families are REDUNDANCY
+    # (more ways to satisfy the floor under a provider outage), not a stricter bar:
     #   - min_valid_families: >= this many DISTINCT families must emit a valid
-    #     scored result (default 4 of 5 — tolerates losing at most one family).
-    #   - min_valid_members:  >= this many valid members (default 4 of 6).
+    #     scored result (default 4 — now of 7; tolerates losing up to 3 families).
+    #   - min_valid_members:  >= this many valid members (default 4 of 8).
     # A panel below the floor -> ConvergenceStatus.REFUSED (never CONVERGED).
     # FLAGGED FOR OPERATOR RATIFICATION: "CCTV full-power" implies 6 members /
     # 5 families; the operator may ratify that stricter floor by raising these.

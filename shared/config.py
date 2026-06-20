@@ -149,6 +149,10 @@ MODELS: dict[str, str] = {
     "opus": "claude-opus",
     "gemini-3-pro": "gemini-pro",
     "mistral-large": "mistral-large",
+    # Cap-resilient cloud-diversity seats (2026-06-20): DeepSeek + Z.ai/GLM —
+    # distinct families, no GPU/Resource-Constitution conflict.
+    "deepseek": "deepseek",
+    "glm": "glm",
 }
 
 EMBEDDING_MODEL: str = "nomic-embed-cpu"
