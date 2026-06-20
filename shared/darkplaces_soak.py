@@ -83,7 +83,17 @@ class SoakEvaluator:
             self.faults.append(f"renderer process not alive at {tag}")
         if not obs.feeder_alive:
             self.faults.append(f"feeder (Xorg/Xvfb) not alive at {tag}")
-        if c.expected_gl_renderer and c.expected_gl_renderer not in obs.gl_renderer:
+        # Only a NON-EMPTY observed renderer that differs is a GPU re-selection.
+        # An empty observation means the renderer has not yet logged GL_RENDERER
+        # (true at t=0, before the launch log is populated); treating that as a
+        # mismatch false-fails every soak at startup. The launch-time gl-preflight
+        # already proved the GPU, and a real mid-run re-selection yields a
+        # non-empty differing string, which this still catches.
+        if (
+            c.expected_gl_renderer
+            and obs.gl_renderer
+            and c.expected_gl_renderer not in obs.gl_renderer
+        ):
             self.faults.append(
                 f"GL_RENDERER mismatch at {tag}: observed {obs.gl_renderer!r}, "
                 f"expected substring {c.expected_gl_renderer!r} (GPU re-selection)"

@@ -106,6 +106,24 @@ def test_gpu_reselection_is_fail() -> None:
     assert any("GL_RENDERER" in r or "renderer" in r.lower() for r in reasons)
 
 
+def test_empty_observed_renderer_at_startup_is_not_a_reselection_fault() -> None:
+    """At t=0 the renderer has not yet written its GL_RENDERER to the launch log,
+    so the monitor observes ''. An empty observation means 'not yet known', NOT a
+    GPU re-selection: the startup gl-preflight already proved the GPU, and a real
+    mid-run re-selection yields a NON-EMPTY differing string (see
+    test_gpu_reselection_is_fail). Faulting on empty-observed false-fails every
+    soak at t=0 (the 2026-06-20 bring-up bug)."""
+    gpu = "NVIDIA GeForce RTX 5090"
+    crit = SoakCriteria(soak_duration_s=10.0, expected_gl_renderer=gpu)
+    ev = SoakEvaluator(criteria=crit, started_at=0.0)
+    ev.record(_ok_obs(0.0, ""))  # startup: GL_RENDERER not yet logged
+    ev.record(_ok_obs(1.0, ""))
+    assert ev.verdict(now=1.0)[0] == "running", ev.verdict(now=1.0)[1]
+    # once the renderer logs the correct GPU, the soak still completes clean
+    ev.record(_ok_obs(2.0, gpu))
+    assert ev.verdict(now=10.0)[0] == "pass"
+
+
 def test_empty_expected_renderer_skips_gl_assertion() -> None:
     """When no expected renderer is configured, a differing GL_RENDERER is not a
     fault (assertion intentionally skipped)."""
