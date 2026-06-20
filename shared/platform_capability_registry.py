@@ -517,6 +517,21 @@ class SupplyFreshness(StrictModel):
         return self
 
 
+class SupplyDescriptor(StrictModel):
+    """The execution-axis SUPPLY a route offers the dispatcher: its base descriptor plus the
+    set of context-modes / efforts REACHABLE via the route's (non-blocked) descriptor variants.
+    The ``*_to_variant`` maps point each reachable axis value at the variant_id that provides it
+    (``None`` = the base descriptor already provides it), so the dispatcher can both SCORE
+    satisfiability and RESOLVE the selected leaf without re-reading the route."""
+
+    base_context_mode: str
+    base_effort: str
+    reachable_context_modes: tuple[str, ...]
+    reachable_efforts: tuple[str, ...]
+    context_mode_to_variant: dict[str, str | None]
+    effort_to_variant: dict[str, str | None]
+
+
 class SupplyVector(StrictModel):
     supply_vector_schema: Literal[1] = 1
     routing_model_version: Literal["capacity-dimensional-v1"] = "capacity-dimensional-v1"
@@ -530,6 +545,9 @@ class SupplyVector(StrictModel):
     historical_performance: HistoricalPerformance = Field(default_factory=HistoricalPerformance)
     operator_constraints: OperatorConstraints = Field(default_factory=OperatorConstraints)
     freshness: SupplyFreshness
+    # the operator-steered execution axes (optional: only build_supply_vector populates it;
+    # direct constructors leave it None and the dispatcher fails closed on a None descriptor)
+    supply_descriptor: SupplyDescriptor | None = None
 
 
 class PlatformCapabilityRoute(StrictModel):
@@ -994,6 +1012,31 @@ def _resource_pressure_state(source: str) -> str:
     return "unknown" if source in UNKNOWN_TELEMETRY_SOURCES else "green"
 
 
+def _build_supply_descriptor(route: PlatformCapabilityRoute) -> SupplyDescriptor:
+    """The route's reachable execution-axis surface: base descriptor + every non-blocked
+    variant. First-writer-wins keeps the BASE as the provider when a value is reachable both
+    ways (a ``None`` variant means "base already provides it"). Blocked variants are excluded
+    (fail-closed) so a blocked variant can neither satisfy a demand nor be resolved as a leaf."""
+
+    base = route.execution_descriptor
+    context_mode_to_variant: dict[str, str | None] = {base.context_mode.value: None}
+    effort_to_variant: dict[str, str | None] = {base.effort.value: None}
+    for variant in route.descriptor_variants:
+        if variant.blocked_reasons:
+            continue
+        leaf = materialize_variant_leaf(route, variant)
+        context_mode_to_variant.setdefault(leaf.context_mode.value, variant.variant_id)
+        effort_to_variant.setdefault(leaf.effort.value, variant.variant_id)
+    return SupplyDescriptor(
+        base_context_mode=base.context_mode.value,
+        base_effort=base.effort.value,
+        reachable_context_modes=tuple(context_mode_to_variant),
+        reachable_efforts=tuple(effort_to_variant),
+        context_mode_to_variant=context_mode_to_variant,
+        effort_to_variant=effort_to_variant,
+    )
+
+
 def build_supply_vector(
     route: PlatformCapabilityRoute,
     *,
@@ -1050,6 +1093,7 @@ def build_supply_vector(
                 *route.quality_envelope.explicit_equivalence_records,
             ],
         ),
+        supply_descriptor=_build_supply_descriptor(route),
     )
 
 

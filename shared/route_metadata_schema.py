@@ -186,6 +186,14 @@ class VerificationDemand(_RouteModel):
         return _coerce_string_list(value)
 
 
+# The operator-steered execution-axis DEMANDS. The VALUE strings mirror the supply-side
+# Effort / ContextMode StrEnums owned by shared.platform_capability_registry — but that module
+# is HIGHER (it imports ToolAuthorityUse from here), so this lower module speaks the value strings
+# and a drift-pin test binds these tuples to the registry enums (see test_route_metadata_schema).
+_EFFORT_DEMAND_VALUES = ("none", "low", "medium", "high", "xhigh", "max")
+_CONTEXT_MODE_DEMAND_VALUES = ("standard", "extended_1m", "not_applicable")
+
+
 class TaskDemand(_RouteModel):
     authority_class: AuthorityClass
     grounding_criticality: int = Field(ge=0, le=5)
@@ -206,6 +214,29 @@ class TaskDemand(_RouteModel):
     branch_worktree_conflict_risk: int = Field(ge=0, le=5)
     operator_insight_dependency: int = Field(ge=0, le=5)
     failure_cost: int = Field(ge=0, le=5)
+    # conditional execution-axis demands; None = undemanded (the non-perturbation default)
+    effort_demand: str | None = None
+    context_mode_demand: str | None = None
+
+    @field_validator("effort_demand")
+    @classmethod
+    def _effort_demand_in_vocab(cls, value: str | None) -> str | None:
+        if value is not None and value not in _EFFORT_DEMAND_VALUES:
+            raise ValueError(
+                f"effort_demand {value!r} is not a known effort; "
+                f"use one of {_EFFORT_DEMAND_VALUES} or omit it"
+            )
+        return value
+
+    @field_validator("context_mode_demand")
+    @classmethod
+    def _context_mode_demand_in_vocab(cls, value: str | None) -> str | None:
+        if value is not None and value not in _CONTEXT_MODE_DEMAND_VALUES:
+            raise ValueError(
+                f"context_mode_demand {value!r} is not a known context mode; "
+                f"use one of {_CONTEXT_MODE_DEMAND_VALUES} or omit it"
+            )
+        return value
 
 
 class PriorityContext(_RouteModel):
