@@ -365,16 +365,33 @@ def _make_repo_with_remote(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _add_remote_deleted_branch(
-    repo: Path, bare: Path, tmp_path: Path, now: int, name: str = "squashed"
+    repo: Path,
+    bare: Path,
+    tmp_path: Path,
+    now: int,
+    name: str = "squashed",
+    *,
+    land_on_main: bool = True,
 ) -> Path:
     """A REAL squash-merge signature: a branch pushed to origin (so it tracks), with a
-    commit NOT in main (ancestry MISSES it), whose remote ref GitHub auto-deleted on
-    merge — simulated by deleting it from the bare remote + pruning locally."""
+    commit NOT an ancestor of main (ancestry MISSES it), whose remote ref GitHub
+    auto-deleted on merge — simulated by deleting it from the bare remote + pruning.
+
+    ``land_on_main`` controls whether the branch's CONTENT actually reaches main (the
+    squash commit). True = a genuine squash-merge: main carries the same net change,
+    so content-equivalence holds and the branch is reapable. False = the data-loss
+    trap: the remote vanished (closed-without-merge / manual delete) but the unique
+    work is NOT in main, so it must be PRESERVED, never force-deleted."""
     wt = tmp_path / f"hapax-council--{name}"
     _git(repo, "branch", name, "main")
     _git(repo, "worktree", "add", str(wt), name)
     _commit(wt, "feature.txt", "squashed away\n", "work that was squash-merged")
     _git(wt, "push", "-u", "origin", name)  # real tracking + real origin/<name>
+    if land_on_main:
+        # The squash commit lands the SAME net content on main, so the branch's work
+        # is provably present in base (content-equivalence) — a true merge.
+        _commit(repo, "feature.txt", "squashed away\n", f"squash-merge of {name}")
+        _git(repo, "push", "origin", "main")
     subprocess.run(["git", "-C", str(bare), "branch", "-D", name], check=True)  # auto-delete
     _git(repo, "fetch", "--prune", "origin")  # origin/<name> pruned; tracking config remains
     _age_path(wt, now=now, seconds_old=49 * 3600)
@@ -403,6 +420,34 @@ def test_squash_merged_branch_is_reaped_via_remote_delete_signal(tmp_path: Path)
     assert not wt.exists()  # squash-merged worktree reaped
     assert _git(repo, "branch", "--list", "squashed") == ""  # local branch ref reaped
     assert "deleted merged local branch squashed" in result.stdout
+
+
+def test_remote_deleted_but_unmerged_content_is_preserved(tmp_path: Path) -> None:
+    """DATA-LOSS guard (4/4 review block, #4142): a branch that was pushed and then had
+    its remote deleted WITHOUT the work landing in main — a closed-without-merge PR or a
+    manual ``git push origin --delete`` — has byte-identical local state to a real
+    squash-merge (tracks origin, origin/<name> gone), but its commits are REAL unmerged
+    work. The remote-delete signal alone would force-delete it with ``-D``. The required
+    content-equivalence guard (branch_content_merged) sees the work is NOT in base and
+    PRESERVES the branch."""
+    repo, bare = _make_repo_with_remote(tmp_path)
+    now = int(time.time())
+    wt = _add_remote_deleted_branch(repo, bare, tmp_path, now, name="orphaned", land_on_main=False)
+    # sanity: ancestry misses it AND its content is genuinely absent from main
+    assert (
+        subprocess.run(
+            ["git", "-C", str(repo), "merge-base", "--is-ancestor", "orphaned", "main"],
+            capture_output=True,
+        ).returncode
+        != 0
+    )
+
+    result = _run_gc(repo, now, _curl_env(tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert wt.exists()  # PRESERVED — remote vanished but the work is not in base
+    assert _git(repo, "branch", "--list", "orphaned").strip().endswith("orphaned")
+    assert "deleted merged local branch orphaned" not in result.stdout
 
 
 def test_branch_with_live_remote_not_reaped(tmp_path: Path) -> None:

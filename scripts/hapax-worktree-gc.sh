@@ -301,6 +301,29 @@ branch_remote_deleted() {
     ! git -C "$repo" rev-parse --verify --quiet "refs/remotes/origin/${name}" >/dev/null 2>&1
 }
 
+# branch_content_merged <repo> <branch-ref> <base_ref>
+# True (0) iff merging <branch-ref> into <base_ref> adds NOTHING — i.e. the branch's
+# content is already fully present in base. POSITIVE merge evidence, not a remote-
+# state heuristic: a squash/rebase merge breaks ancestry but leaves the content in
+# base, so merge-tree against base yields base's own tree. Conversely a branch that
+# was closed-WITHOUT-merge or had its remote MANUALLY deleted still carries real
+# unique commits, so the merge adds them (or conflicts) and the tree differs — it is
+# NOT content-merged and must never be force-deleted. Git-only (no GH_TOKEN) and
+# purely ref-based, so it is correct from a detached deploy worktree whose HEAD lags
+# base_ref. This guard makes branch_remote_deleted's residual false-positive (manual
+# remote delete of unmerged work) non-destructive.
+branch_content_merged() {
+    local repo="$1" branch="$2" base="$3" base_tree out rc merged_tree
+    base_tree="$(git -C "$repo" rev-parse --verify --quiet "${base}^{tree}")" || return 1
+    # merge-tree --write-tree prints the merged tree OID on line 1; a NONZERO exit
+    # means the merge conflicts => the branch is not cleanly contained => unmerged.
+    out="$(git -C "$repo" merge-tree --write-tree "$base" "$branch" 2>/dev/null)"
+    rc=$?
+    ((rc == 0)) || return 1
+    merged_tree="${out%%$'\n'*}"
+    [[ -n "$merged_tree" && "$merged_tree" == "$base_tree" ]]
+}
+
 process_worktree() {
     local path="$worktree_path"
     local branch="$branch_ref"
@@ -398,16 +421,22 @@ process_worktree() {
 
     # A branch is "merged" (its work is in base) if EITHER its commits are ancestors
     # of base_ref (merge-commit / fast-forward merges) OR it was squash/rebase-merged
-    # and GitHub auto-deleted + we pruned its remote (branch_remote_deleted; ancestry
-    # MISSES squash merges, the council's default — without this arm the GC never
-    # reaps squash-merged worktrees, which all fall through to the unmerged-alert
-    # path). Both signals are evaluated against base_ref / the remote, NOT against the
-    # local HEAD — important because the deploy GC runs from a detached activation
-    # worktree whose HEAD lags base_ref.
+    # — detected by the conjunction of (a) GitHub auto-deleted + we pruned its remote
+    # (branch_remote_deleted; ancestry MISSES squash merges, the council's default)
+    # AND (b) the branch's content is positively present in base (branch_content_merged).
+    # The content check is REQUIRED, not optional: branch_remote_deleted alone has a
+    # data-loss false-positive (a closed-without-merge PR or a manual
+    # `git push origin --delete` leaves identical local state but with REAL unmerged
+    # commits), and the reaping path force-deletes the local ref with `-D`. Requiring
+    # positive content evidence means an unmerged branch whose remote merely vanished
+    # is NOT classed as merged and is never force-deleted. Both signals are evaluated
+    # against base_ref / refs, NOT the local HEAD — important because the deploy GC
+    # runs from a detached activation worktree whose HEAD lags base_ref.
     merged=0
     if git -C "$repo" merge-base --is-ancestor "$branch" "$base_ref" >/dev/null 2>&1; then
         merged=1
-    elif branch_remote_deleted "$repo" "$branch_label"; then
+    elif branch_remote_deleted "$repo" "$branch_label" \
+        && branch_content_merged "$repo" "$branch" "$base_ref"; then
         merged=1
     fi
 
@@ -439,18 +468,20 @@ process_worktree() {
             git -C "$repo" worktree remove "$path"
             printf 'hapax-worktree-gc: removed %s\n' "$path"
             removed=$((removed + 1))
-            # Delete the now-orphaned LOCAL branch ref with `-D`, NOT `-d`. merged=1 is
-            # guaranteed here, and the merged predicate was evaluated AUTHORITATIVELY
-            # against base_ref / the remote. `git branch -d` instead re-checks ancestry
-            # against the branch's upstream or the CURRENT HEAD — and the deploy GC runs
-            # from a detached activation worktree whose HEAD lags base_ref, so `-d`
-            # wrongly REFUSES an already-merged branch (and refuses every squash-merged
-            # branch, which is never an ancestor of anything). So `-d` is the bug, not
-            # the safety: the authoritative predicate is the gate; `-D` just executes
-            # its verdict. Use the BARE name (branch_label) — $branch is the full
-            # refs/heads/<name> ref, which `git branch` would not match. Worktree-remove
-            # must precede the delete (git refuses to delete a checked-out branch); if
-            # the `-D` then fails, WARN loudly — never swallow.
+            # Delete the now-orphaned LOCAL branch ref with `-D`, NOT `-d`. This is safe
+            # ONLY because the merged predicate above now requires POSITIVE content
+            # evidence (branch_content_merged): merged=1 means the branch's content is
+            # provably in base_ref (ancestry) or that the squash landed AND the merge
+            # adds nothing to base. `git branch -d` cannot be used here: it re-checks
+            # ancestry against the branch's upstream or the CURRENT HEAD, and the deploy
+            # GC runs from a detached activation worktree whose HEAD lags base_ref, so
+            # `-d` wrongly REFUSES an already-merged branch (and refuses every squash-
+            # merged branch, which is never an ancestor of anything). So `-D` executes a
+            # verdict that the content gate already proved; it never force-deletes work
+            # that is not already in base. Use the BARE name (branch_label) — $branch is
+            # the full refs/heads/<name> ref, which `git branch` would not match.
+            # Worktree-remove must precede the delete (git refuses to delete a checked-out
+            # branch); if the `-D` then fails, WARN loudly — never swallow.
             if [[ -n "$branch_label" ]]; then
                 if git -C "$repo" branch -D "$branch_label" >/dev/null 2>&1; then
                     printf 'hapax-worktree-gc: deleted merged local branch %s\n' "$branch_label"

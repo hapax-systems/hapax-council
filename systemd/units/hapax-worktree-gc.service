@@ -1,6 +1,10 @@
 [Unit]
 Description=Hapax stale worktree garbage collection
-Documentation=file:%h/projects/hapax-council/systemd/README.md
+# Doc path resolves through the activated deploy tree, NOT the mutable primary
+# worktree this unit deliberately stopped running from (see ExecStart rationale).
+# Reinstall + `systemctl --user daemon-reload` after editing this unit, or the
+# running timer keeps the old ExecStart/WorkingDirectory until the next deploy.
+Documentation=file:%h/.cache/hapax/source-activation/worktree/systemd/README.md
 
 [Service]
 Type=oneshot
