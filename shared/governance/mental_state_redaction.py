@@ -191,8 +191,7 @@ _AFFECT_STEMS: tuple[str, ...] = (
     "afraid",
     "fearful",
     "scared",
-    "worried",
-    "worry",
+    "worr",  # worry, worried, worries, worrying
     "lonely",
     "loneliness",
     "ashamed",
