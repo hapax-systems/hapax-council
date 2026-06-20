@@ -32,9 +32,10 @@ from __future__ import annotations
 import json
 import os
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 # Mirrors agents.hapax_daimonion.daily_segment_prep.COUNCIL_DECISIONS_LEDGER_FILENAME and
 # DEFAULT_PREP_DIR. Re-declared (not imported) to keep this reader free of the heavy
@@ -42,6 +43,10 @@ from pathlib import Path
 COUNCIL_DECISIONS_LEDGER_FILENAME = "council-decisions.ndjson"
 S2_COMPOSABILITY_LEDGER_RECORD_TYPE = "producer_s2_composability_ledger_entry"
 S2_COMPOSABILITY_GATE_NAME = "s2_composability"
+DUAL_READOUT_SCHEMA_VERSION = 1
+DUAL_READOUT_RECORD_TYPE = "segment_dual_readout"
+AXIS_A_READOUT_KEY = "axis_a_grounding_efficacy"
+AXIS_B_READOUT_KEY = "axis_b_integration_honesty"
 _RELEASED_TERMINAL_STATUS = "released"
 # C_k is a float read from an env var; round the grouping key so float-repr noise
 # (3.0000000001) can never split one phase into two.
@@ -59,6 +64,18 @@ def default_prep_base() -> Path:
 
 
 @dataclass(frozen=True)
+class AxisReadout:
+    """One optional dual-readout axis report carried by a producer observation."""
+
+    axis_id: str
+    score_0_100: float | None
+    score_1_5: float | None
+    ok: bool | None
+    coverage_ok: bool | None
+    report: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class ProducerObservation:
     """One pre-gate producer observation reconstructed from a ledger row."""
 
@@ -68,6 +85,8 @@ class ProducerObservation:
     criterion: float
     released: bool
     source: str
+    axis_a: AxisReadout | None = None
+    axis_b: AxisReadout | None = None
 
 
 @dataclass(frozen=True)
@@ -143,6 +162,45 @@ def _iter_rows_in_file(path: Path) -> Iterator[dict]:
             yield row
 
 
+def _number_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _axis_readout_from_report(report: Any, *, axis_id: str) -> AxisReadout | None:
+    if not isinstance(report, Mapping):
+        return None
+    coverage = report.get("coverage")
+    coverage_ok = _bool_or_none(coverage.get("ok")) if isinstance(coverage, Mapping) else None
+    return AxisReadout(
+        axis_id=axis_id,
+        score_0_100=_number_or_none(report.get("score_0_100")),
+        score_1_5=_number_or_none(report.get("score_1_5")),
+        ok=_bool_or_none(report.get("ok")),
+        coverage_ok=coverage_ok,
+        report=dict(report),
+    )
+
+
+def _dual_readout_from_row(row: dict) -> tuple[AxisReadout | None, AxisReadout | None]:
+    dual_readout = row.get("dual_readout")
+    if not isinstance(dual_readout, Mapping):
+        return None, None
+    if dual_readout.get("schema_version") != DUAL_READOUT_SCHEMA_VERSION:
+        return None, None
+    if dual_readout.get("record_type") != DUAL_READOUT_RECORD_TYPE:
+        return None, None
+    return (
+        _axis_readout_from_report(dual_readout.get(AXIS_A_READOUT_KEY), axis_id="A"),
+        _axis_readout_from_report(dual_readout.get(AXIS_B_READOUT_KEY), axis_id="B"),
+    )
+
+
 def _observation_from_row(row: dict, *, source: str) -> ProducerObservation | None:
     """Extract a producer observation, or None if the row carries no pre-gate score.
 
@@ -163,6 +221,7 @@ def _observation_from_row(row: dict, *, source: str) -> ProducerObservation | No
         return None
     if not isinstance(criterion, (int, float)) or isinstance(criterion, bool):
         return None
+    axis_a, axis_b = _dual_readout_from_row(row)
     return ProducerObservation(
         programme_id=str(row.get("programme_id", "")),
         ledgered_at=str(row.get("ledgered_at", "")),
@@ -170,6 +229,8 @@ def _observation_from_row(row: dict, *, source: str) -> ProducerObservation | No
         criterion=float(criterion),
         released=row.get("terminal_status") == _RELEASED_TERMINAL_STATUS,
         source=source,
+        axis_a=axis_a,
+        axis_b=axis_b,
     )
 
 
@@ -342,6 +403,11 @@ def _main(argv: list[str] | None = None) -> int:
     s2_phases = summarize_s2_composability(s2_attempts)
     report: dict = {
         "n_observations": len(observations),
+        "n_axis_a_observations": sum(1 for obs in observations if obs.axis_a is not None),
+        "n_axis_b_observations": sum(1 for obs in observations if obs.axis_b is not None),
+        "n_dual_readout_complete_observations": sum(
+            1 for obs in observations if obs.axis_a is not None and obs.axis_b is not None
+        ),
         "n_s2_composability_attempts": len(s2_attempts),
         "phases": [
             {

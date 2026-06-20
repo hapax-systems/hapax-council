@@ -16,6 +16,7 @@ def _row(
     ledgered_at: str,
     *,
     coherence: dict | None = None,
+    dual_readout: dict | None = None,
 ) -> dict:
     """A ledger row matching daily_segment_prep._append_council_decisions_ledger."""
     if coherence is None:
@@ -24,13 +25,31 @@ def _row(
             coherence["mean_score"] = mean_score
         if criterion is not None:
             coherence["criterion"] = criterion
-    return {
+    row = {
         "schema_version": 1,
         "record_type": "council_decisions_ledger_entry",
         "ledgered_at": ledgered_at,
         "programme_id": programme_id,
         "terminal_status": terminal_status,
         "council_decisions": {"coherence": coherence},
+    }
+    if dual_readout is not None:
+        row["dual_readout"] = dual_readout
+    return row
+
+
+def _dual_readout(*, axis_a: dict | None = None, axis_b: dict | None = None) -> dict:
+    return {
+        "schema_version": reader.DUAL_READOUT_SCHEMA_VERSION,
+        "record_type": reader.DUAL_READOUT_RECORD_TYPE,
+        "programme_id": "prog-dual",
+        "available_axes": [
+            axis for axis, report in (("A", axis_a), ("B", axis_b)) if report is not None
+        ],
+        "missing_axes": [axis for axis, report in (("A", axis_a), ("B", axis_b)) if report is None],
+        "complete": axis_a is not None and axis_b is not None,
+        reader.AXIS_A_READOUT_KEY: axis_a,
+        reader.AXIS_B_READOUT_KEY: axis_b,
     }
 
 
@@ -93,6 +112,107 @@ def test_reads_observations_and_reconstructs_released(tmp_path: Path) -> None:
     assert [o.criterion for o in obs] == [3.0, 3.0, 3.0]
     # released? is reconstructed solely from terminal_status == "released".
     assert [o.released for o in obs] == [True, False, False]
+
+
+def test_reads_dual_readout_axis_reports_without_fabricating_missing_axes(
+    tmp_path: Path,
+) -> None:
+    base = tmp_path / "segment-prep"
+    axis_a_report = {
+        "axis_id": "A",
+        "score_0_100": 82,
+        "score_1_5": 4.28,
+        "ok": True,
+        "coverage": {"ok": True, "required_scored": 3},
+    }
+    axis_b_report = {
+        "axis_id": "B",
+        "score_0_100": 88,
+        "score_1_5": 4.52,
+        "ok": True,
+        "coverage": {"ok": True, "n_correspondents": 2},
+    }
+    _write_ledger(
+        base,
+        "2026-06-16",
+        [
+            _row(
+                "prog-complete",
+                4.2,
+                3.5,
+                "released",
+                "2026-06-16T04:00:00Z",
+                dual_readout=_dual_readout(axis_a=axis_a_report, axis_b=axis_b_report),
+            ),
+            _row(
+                "prog-partial",
+                3.8,
+                3.5,
+                "released",
+                "2026-06-16T04:01:00Z",
+                dual_readout=_dual_readout(axis_a=axis_a_report),
+            ),
+            _row("prog-old", 3.2, 3.0, "released", "2026-06-16T04:02:00Z"),
+        ],
+    )
+
+    complete, partial, old = reader.read_producer_observations(base)
+
+    assert complete.axis_a is not None
+    assert complete.axis_a.axis_id == "A"
+    assert complete.axis_a.score_0_100 == 82.0
+    assert complete.axis_a.score_1_5 == 4.28
+    assert complete.axis_a.ok is True
+    assert complete.axis_a.coverage_ok is True
+    assert complete.axis_a.report == axis_a_report
+    assert complete.axis_b is not None
+    assert complete.axis_b.axis_id == "B"
+    assert complete.axis_b.score_0_100 == 88.0
+    assert complete.axis_b.score_1_5 == 4.52
+    assert complete.axis_b.ok is True
+    assert complete.axis_b.coverage_ok is True
+    assert complete.axis_b.report == axis_b_report
+
+    assert partial.axis_a is not None
+    assert partial.axis_b is None
+    assert old.axis_a is None
+    assert old.axis_b is None
+
+
+def test_ignores_malformed_dual_readout_schema_tags(tmp_path: Path) -> None:
+    base = tmp_path / "segment-prep"
+    axis_a_report = {"axis_id": "A", "score_0_100": 82, "score_1_5": 4.28, "ok": True}
+    wrong_version = _dual_readout(axis_a=axis_a_report)
+    wrong_version["schema_version"] = 99
+    wrong_record_type = _dual_readout(axis_a=axis_a_report)
+    wrong_record_type["record_type"] = "future_dual_readout"
+    _write_ledger(
+        base,
+        "2026-06-16",
+        [
+            _row(
+                "bad-version",
+                4.2,
+                3.5,
+                "released",
+                "2026-06-16T04:00:00Z",
+                dual_readout=wrong_version,
+            ),
+            _row(
+                "bad-type",
+                4.2,
+                3.5,
+                "released",
+                "2026-06-16T04:01:00Z",
+                dual_readout=wrong_record_type,
+            ),
+        ],
+    )
+
+    observations = reader.read_producer_observations(base)
+
+    assert len(observations) == 2
+    assert all(obs.axis_a is None and obs.axis_b is None for obs in observations)
 
 
 def test_summarize_phases_groups_by_criterion_and_orders_by_time(tmp_path: Path) -> None:
@@ -257,6 +377,10 @@ def test_cli_reports_phase_summary_and_bctau(tmp_path: Path, capsys) -> None:
         _row(f"i{i}", v, 3.5, "released", f"2026-06-16T05:0{i}:00Z")
         for i, v in enumerate([4.2, 4.0, 4.4, 4.1])
     ]
+    axis_a_report = {"axis_id": "A", "score_0_100": 82, "score_1_5": 4.28, "ok": True}
+    axis_b_report = {"axis_id": "B", "score_0_100": 88, "score_1_5": 4.52, "ok": True}
+    rows[0]["dual_readout"] = _dual_readout(axis_a=axis_a_report, axis_b=axis_b_report)
+    rows[4]["dual_readout"] = _dual_readout(axis_a=axis_a_report)
     _write_ledger(base, "2026-06-16", rows)
     _write_ledger(
         base,
@@ -273,6 +397,9 @@ def test_cli_reports_phase_summary_and_bctau(tmp_path: Path, capsys) -> None:
     assert rc == 0
     report = json.loads(capsys.readouterr().out)
     assert report["n_observations"] == 8
+    assert report["n_axis_a_observations"] == 2
+    assert report["n_axis_b_observations"] == 1
+    assert report["n_dual_readout_complete_observations"] == 1
     assert report["n_s2_composability_attempts"] == 2
     assert [p["criterion"] for p in report["phases"]] == [3.0, 3.5]
     assert report["s2_composability"] == [
@@ -300,6 +427,10 @@ def test_constants_mirror_the_writer(monkeypatch) -> None:
     from agents.hapax_daimonion import daily_segment_prep as prep
 
     assert reader.COUNCIL_DECISIONS_LEDGER_FILENAME == prep.COUNCIL_DECISIONS_LEDGER_FILENAME
+    assert reader.DUAL_READOUT_SCHEMA_VERSION == prep.DUAL_READOUT_SCHEMA_VERSION
+    assert reader.DUAL_READOUT_RECORD_TYPE == prep.DUAL_READOUT_RECORD_TYPE
+    assert reader.AXIS_A_READOUT_KEY == prep.AXIS_A_READOUT_KEY
+    assert reader.AXIS_B_READOUT_KEY == prep.AXIS_B_READOUT_KEY
 
     # default_prep_base resolves the env var the same way DEFAULT_PREP_DIR does.
     monkeypatch.delenv("HAPAX_SEGMENT_PREP_DIR", raising=False)

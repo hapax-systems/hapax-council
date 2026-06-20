@@ -1230,6 +1230,479 @@ def test_record_substance_feedback_accumulates_and_skips_blank() -> None:
     ]
 
 
+def test_dual_readout_for_segment_reads_precomputed_axis_reports() -> None:
+    axis_a_report = {
+        "axis_id": "A",
+        "score_0_100": 82,
+        "score_1_5": 4.28,
+        "ok": True,
+        "coverage": {"ok": True},
+    }
+    axis_b_report = {
+        "axis_id": "B",
+        "score_0_100": 88,
+        "score_1_5": 4.52,
+        "ok": True,
+        "coverage": {"ok": True},
+    }
+
+    dual_readout = prep._dual_readout_for_segment(
+        programme=SimpleNamespace(content=SimpleNamespace()),
+        prep_session={
+            "axis_a_grounding_efficacy_reports": {"prog-dual": axis_a_report},
+            "axis_b_ndcvb_reports": {"prog-dual": axis_b_report},
+        },
+        programme_id="prog-dual",
+        segment_prep_contract={},
+    )
+
+    assert dual_readout == {
+        "schema_version": prep.DUAL_READOUT_SCHEMA_VERSION,
+        "record_type": prep.DUAL_READOUT_RECORD_TYPE,
+        "programme_id": "prog-dual",
+        "available_axes": ["A", "B"],
+        "missing_axes": [],
+        "complete": True,
+        "axis_a_grounding_efficacy": axis_a_report,
+        "axis_b_integration_honesty": axis_b_report,
+    }
+
+
+def test_dual_readout_for_segment_reads_programme_carrier_reports() -> None:
+    axis_a_report = {
+        "axis_id": "A",
+        "score_0_100": 78,
+        "score_1_5": 4.12,
+        "ok": True,
+        "coverage": {"ok": True},
+    }
+    axis_b_report = {
+        "axis_id": "B",
+        "score_0_100": 71,
+        "score_1_5": 3.84,
+        "ok": True,
+        "coverage": {"ok": True},
+    }
+    programme = SimpleNamespace(
+        axis_a_grounding_efficacy_reports={"prog-carrier": axis_a_report},
+        content=SimpleNamespace(axis_b_ndcvb_report=axis_b_report),
+    )
+
+    dual_readout = prep._dual_readout_for_segment(
+        programme=programme,
+        prep_session={},
+        programme_id="prog-carrier",
+        segment_prep_contract={},
+    )
+
+    assert dual_readout is not None
+    assert dual_readout["available_axes"] == ["A", "B"]
+    assert dual_readout[prep.AXIS_A_READOUT_KEY] == axis_a_report
+    assert dual_readout[prep.AXIS_B_READOUT_KEY] == axis_b_report
+
+
+def test_dual_readout_for_segment_allows_partial_contract_metadata_reports() -> None:
+    axis_a_report = {
+        "axis_id": "A",
+        "score_0_100": 64,
+        "score_1_5": 3.56,
+        "ok": False,
+        "coverage": {"ok": True},
+    }
+
+    dual_readout = prep._dual_readout_for_segment(
+        programme=SimpleNamespace(content=SimpleNamespace()),
+        prep_session={},
+        programme_id="prog-partial",
+        segment_prep_contract={
+            "metadata": {"axis_a_grounding_efficacy_report": axis_a_report},
+        },
+    )
+
+    assert dual_readout is not None
+    assert dual_readout["available_axes"] == ["A"]
+    assert dual_readout["missing_axes"] == ["B"]
+    assert dual_readout["complete"] is False
+    assert dual_readout["axis_a_grounding_efficacy"] == axis_a_report
+    assert dual_readout["axis_b_integration_honesty"] is None
+
+
+def test_dual_readout_for_segment_reads_canonical_contract_envelope() -> None:
+    axis_a_report = {"axis_id": "A", "score_0_100": 82, "score_1_5": 4.28, "ok": True}
+    axis_b_report = {"axis_id": "B", "score_0_100": 88, "score_1_5": 4.52, "ok": True}
+
+    dual_readout = prep._dual_readout_for_segment(
+        programme=SimpleNamespace(content=SimpleNamespace()),
+        prep_session={},
+        programme_id="prog-canonical",
+        segment_prep_contract={
+            "dual_readout": {
+                "schema_version": prep.DUAL_READOUT_SCHEMA_VERSION,
+                "record_type": prep.DUAL_READOUT_RECORD_TYPE,
+                prep.AXIS_A_READOUT_KEY: axis_a_report,
+                prep.AXIS_B_READOUT_KEY: axis_b_report,
+            },
+        },
+    )
+
+    assert dual_readout is not None
+    assert dual_readout["available_axes"] == ["A", "B"]
+    assert dual_readout[prep.AXIS_A_READOUT_KEY] == axis_a_report
+    assert dual_readout[prep.AXIS_B_READOUT_KEY] == axis_b_report
+
+
+def test_dual_readout_for_segment_does_not_reuse_session_level_direct_report() -> None:
+    axis_a_report = {
+        "axis_id": "A",
+        "score_0_100": 64,
+        "score_1_5": 3.56,
+        "ok": False,
+        "coverage": {"ok": True},
+    }
+
+    assert (
+        prep._dual_readout_for_segment(
+            programme=SimpleNamespace(content=SimpleNamespace()),
+            prep_session={"axis_a_grounding_efficacy_report": axis_a_report},
+            programme_id="prog-not-keyed",
+            segment_prep_contract={},
+        )
+        is None
+    )
+
+
+def test_council_decisions_ledger_records_dual_readout(tmp_path: Path) -> None:
+    dual_readout = {
+        "schema_version": prep.DUAL_READOUT_SCHEMA_VERSION,
+        "record_type": prep.DUAL_READOUT_RECORD_TYPE,
+        "programme_id": "prog-dual",
+        "available_axes": ["A", "B"],
+        "missing_axes": [],
+        "complete": True,
+        "axis_a_grounding_efficacy": {"score_0_100": 82, "ok": True},
+        "axis_b_integration_honesty": {"score_0_100": 88, "ok": True},
+    }
+
+    prep._append_council_decisions_ledger(
+        tmp_path,
+        "prog-dual",
+        {"coherence": {"mean_score": 4.0, "criterion": 3.5}},
+        terminal_status="released",
+        dual_readout=dual_readout,
+    )
+
+    row = json.loads((tmp_path / prep.COUNCIL_DECISIONS_LEDGER_FILENAME).read_text())
+    assert row["programme_id"] == "prog-dual"
+    assert row["terminal_status"] == "released"
+    assert row["dual_readout"] == dual_readout
+
+
+def test_prep_deadline_exceeded_records_budget_terminal_dual_readout(tmp_path: Path) -> None:
+    dual_readout = {
+        "schema_version": prep.DUAL_READOUT_SCHEMA_VERSION,
+        "record_type": prep.DUAL_READOUT_RECORD_TYPE,
+        "programme_id": "prog-budget",
+        "available_axes": ["A", "B"],
+        "missing_axes": [],
+        "complete": True,
+        prep.AXIS_A_READOUT_KEY: {
+            "axis_id": "A",
+            "score_0_100": 74,
+            "score_1_5": 3.96,
+            "ok": True,
+        },
+        prep.AXIS_B_READOUT_KEY: {
+            "axis_id": "B",
+            "score_0_100": 86,
+            "score_1_5": 4.44,
+            "ok": True,
+        },
+    }
+
+    exceeded = prep._prep_deadline_exceeded(
+        0.0,
+        prep_dir=tmp_path,
+        prep_session={
+            "prep_session_id": "segment-prep-test",
+            "model_id": prep.RESIDENT_PREP_MODEL,
+            "llm_calls": [],
+        },
+        programme_id="prog-budget",
+        role="rant",
+        topic="A budget-exhausted dual-readout witness",
+        beats=["source-backed beat"],
+        council_decisions={"coherence": {"mean_score": 4.2}},
+        dual_readout=dual_readout,
+        phase="coherence_check",
+    )
+
+    assert exceeded is True
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / prep.COUNCIL_DECISIONS_LEDGER_FILENAME)
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    terminal_row = [row for row in rows if row["record_type"] == "council_decisions_ledger_entry"][
+        -1
+    ]
+    assert terminal_row["terminal_status"] == "budget_exhausted_no_release"
+    assert terminal_row["dual_readout"] == dual_readout
+
+
+def test_prep_segment_release_preserves_dual_readout_in_artifact_and_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import agents.hapax_daimonion.angle_resolver as angle_resolver
+    import shared.segment_disconfirmation as disc
+    import shared.segment_narrative_critique as narr
+    from agents.deliberative_council.models import (
+        ConvergenceStatus,
+        NarrativeVerdict,
+        NarrativeVerdictStatus,
+    )
+
+    axis_a_report = {"axis_id": "A", "score_0_100": 82, "score_1_5": 4.28, "ok": True}
+    axis_b_report = {"axis_id": "B", "score_0_100": 88, "score_1_5": 4.52, "ok": True}
+    programme = SimpleNamespace(
+        programme_id="prog-dual-release",
+        role=SimpleNamespace(value="rant"),
+        content=_ready_content(
+            narrative_beat="A source-visible dual-readout release",
+            segment_beats=["argue the point with a source receipt"],
+            role="rant",
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+    }
+    model_contract = {
+        "dual_readout": {
+            "schema_version": prep.DUAL_READOUT_SCHEMA_VERSION,
+            "record_type": prep.DUAL_READOUT_RECORD_TYPE,
+            prep.AXIS_A_READOUT_KEY: axis_a_report,
+            prep.AXIS_B_READOUT_KEY: axis_b_report,
+        }
+    }
+
+    monkeypatch.setattr(angle_resolver, "resolve_angle", lambda _topic: None)
+    monkeypatch.setattr(prep, "_build_seed", lambda _programme: "seed")
+    monkeypatch.setattr(prep, "_build_full_segment_prompt", lambda _programme, _seed: "prompt")
+    monkeypatch.setattr(
+        prep,
+        "_call_llm",
+        lambda _prompt, **_kwargs: json.dumps(
+            {
+                "prepared_script": [
+                    "According to the receipt, the launch claim changes once the source is visible."
+                ],
+                "segment_prep_contract": model_contract,
+            }
+        ),
+    )
+    monkeypatch.setattr(prep, "_refine_script", lambda script, _programme, **_kwargs: script)
+    monkeypatch.setattr(prep, "_emit_self_evaluation", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(prep, "retrieve_fore_understanding", lambda **_kwargs: [])
+    monkeypatch.setattr(prep, "compute_hermeneutic_delta", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(prep, "persist_source_consequences", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(disc, "extract_claims", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        narr,
+        "run_narrative_critique",
+        lambda _text, _pid: NarrativeVerdict(
+            scores={},
+            confidence_bands={},
+            convergence_status=ConvergenceStatus.CONVERGED,
+            verdict_status=NarrativeVerdictStatus.BROADCAST_READY,
+            receipt={"mean_score": 4.0},
+        ),
+    )
+    actionability = {
+        "ok": True,
+        "prepared_script": ["According to the receipt, the source changes the claim."],
+        "beat_action_intents": [],
+        "diagnostic_sanitized_script": [],
+        "removed_unsupported_action_lines": [],
+        "personage_violations": [],
+        "template_leaks": [],
+        "role_contract_failures": [],
+        "detector_theater_lines": [],
+    }
+    layout = {
+        "ok": True,
+        "violations": [],
+        "beat_layout_intents": [],
+        "hosting_context": {},
+        "layout_decision_contract": {},
+        "runtime_layout_validation": {},
+        "layout_decision_receipts": [],
+    }
+    monkeypatch.setattr(prep, "validate_segment_actionability", lambda *_a, **_k: actionability)
+    monkeypatch.setattr(prep, "validate_layout_responsibility", lambda *_a, **_k: layout)
+    monkeypatch.setattr(prep, "_with_tier_list_placement_gate", lambda report, **_k: report)
+    monkeypatch.setattr(prep, "build_live_event_viability", lambda *_a, **_k: {})
+    monkeypatch.setattr(prep, "build_readback_obligations", lambda *_a, **_k: [])
+    monkeypatch.setattr(prep, "build_segment_prep_contract", lambda **_k: {})
+    monkeypatch.setattr(prep, "validate_segment_prep_contract", lambda *_a, **_k: {"ok": True})
+    monkeypatch.setattr(
+        prep,
+        "evaluate_segment_live_event_quality",
+        lambda *_a, **_k: {"ok": True, "score": 90, "band": "good"},
+    )
+    monkeypatch.setattr(prep, "validate_live_event_viability", lambda *_a, **_k: {"ok": True})
+    monkeypatch.setattr(prep, "_compose_refusal_reason", lambda **_k: None)
+
+    saved = prep.prep_segment(programme, tmp_path, prep_session=session)
+
+    assert saved == tmp_path / "prog-dual-release.json"
+    payload = json.loads(saved.read_text(encoding="utf-8"))
+    assert payload["dual_readout"][prep.AXIS_A_READOUT_KEY] == axis_a_report
+    assert payload["dual_readout"][prep.AXIS_B_READOUT_KEY] == axis_b_report
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / prep.COUNCIL_DECISIONS_LEDGER_FILENAME).read_text().splitlines()
+    ]
+    terminal_row = [row for row in rows if row["record_type"] == "council_decisions_ledger_entry"][
+        -1
+    ]
+    assert terminal_row["terminal_status"] == "released"
+    assert terminal_row["dual_readout"] == payload["dual_readout"]
+
+
+def test_prep_segment_refusal_preserves_dual_readout_in_terminal_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import agents.hapax_daimonion.angle_resolver as angle_resolver
+
+    axis_a_report = {"axis_id": "A", "score_0_100": 52, "score_1_5": 3.08, "ok": False}
+    axis_b_report = {"axis_id": "B", "score_0_100": 88, "score_1_5": 4.52, "ok": True}
+    programme = SimpleNamespace(
+        programme_id="prog-dual-refusal",
+        role=SimpleNamespace(value="rant"),
+        content=_ready_content(
+            narrative_beat="A source-visible dual-readout refusal",
+            segment_beats=["argue the point with a source receipt"],
+            role="rant",
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+        "axis_a_grounding_efficacy_reports": {"prog-dual-refusal": axis_a_report},
+        "axis_b_ndcvb_reports": {"prog-dual-refusal": axis_b_report},
+    }
+
+    monkeypatch.setattr(angle_resolver, "resolve_angle", lambda _topic: None)
+    monkeypatch.setattr(prep, "_build_seed", lambda _programme: "seed")
+    monkeypatch.setattr(prep, "_build_full_segment_prompt", lambda _programme, _seed: "prompt")
+    monkeypatch.setattr(
+        prep,
+        "_call_llm",
+        lambda _prompt, **_kwargs: json.dumps(
+            ["According to the receipt, the launch claim changes once the source is visible."]
+        ),
+    )
+    monkeypatch.setattr(prep, "_refine_script", lambda script, _programme, **_kwargs: script)
+    monkeypatch.setattr(prep, "_emit_self_evaluation", lambda *_args, **_kwargs: None)
+
+    def _low(_script: str, _pid: str) -> Any:
+        return prep._CoherenceOutcome(
+            passed=False,
+            refused=False,
+            feedback="Council coherence scores (mean=1.5, min=1):",
+            council_decisions={"check": "coherence", "mean_score": 1.5, "axis_min": 1},
+        )
+
+    monkeypatch.setattr(prep, "_council_coherence_check", _low)
+
+    assert prep.prep_segment(programme, tmp_path, prep_session=session) is None
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / prep.COUNCIL_DECISIONS_LEDGER_FILENAME).read_text().splitlines()
+    ]
+    terminal_row = [row for row in rows if row["record_type"] == "council_decisions_ledger_entry"][
+        -1
+    ]
+    assert terminal_row["terminal_status"] == "low_coherence_no_release"
+    assert terminal_row["dual_readout"][prep.AXIS_A_READOUT_KEY] == axis_a_report
+    assert terminal_row["dual_readout"][prep.AXIS_B_READOUT_KEY] == axis_b_report
+
+
+def test_prep_segment_refusal_reads_dual_readout_from_model_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import agents.hapax_daimonion.angle_resolver as angle_resolver
+
+    axis_a_report = {"axis_id": "A", "score_0_100": 49, "score_1_5": 2.96, "ok": False}
+    axis_b_report = {"axis_id": "B", "score_0_100": 82, "score_1_5": 4.28, "ok": True}
+    programme = SimpleNamespace(
+        programme_id="prog-contract-refusal",
+        role=SimpleNamespace(value="rant"),
+        content=_ready_content(
+            narrative_beat="A contract-carried dual-readout refusal",
+            segment_beats=["argue the point with a source receipt"],
+            role="rant",
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+    }
+    model_contract = {
+        "metadata": {
+            "axis_a_grounding_efficacy_report": axis_a_report,
+            "axis_b_ndcvb_report": axis_b_report,
+        }
+    }
+
+    monkeypatch.setattr(angle_resolver, "resolve_angle", lambda _topic: None)
+    monkeypatch.setattr(prep, "_build_seed", lambda _programme: "seed")
+    monkeypatch.setattr(prep, "_build_full_segment_prompt", lambda _programme, _seed: "prompt")
+    monkeypatch.setattr(
+        prep,
+        "_call_llm",
+        lambda _prompt, **_kwargs: json.dumps(
+            {
+                "prepared_script": [
+                    "According to the receipt, the launch claim changes once the source is visible."
+                ],
+                "segment_prep_contract": model_contract,
+            }
+        ),
+    )
+    monkeypatch.setattr(prep, "_refine_script", lambda script, _programme, **_kwargs: script)
+    monkeypatch.setattr(prep, "_emit_self_evaluation", lambda *_args, **_kwargs: None)
+
+    def _low(_script: str, _pid: str) -> Any:
+        return prep._CoherenceOutcome(
+            passed=False,
+            refused=False,
+            feedback="Council coherence scores (mean=1.5, min=1):",
+            council_decisions={"check": "coherence", "mean_score": 1.5, "axis_min": 1},
+        )
+
+    monkeypatch.setattr(prep, "_council_coherence_check", _low)
+
+    assert prep.prep_segment(programme, tmp_path, prep_session=session) is None
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / prep.COUNCIL_DECISIONS_LEDGER_FILENAME).read_text().splitlines()
+    ]
+    terminal_row = [row for row in rows if row["record_type"] == "council_decisions_ledger_entry"][
+        -1
+    ]
+    assert terminal_row["terminal_status"] == "low_coherence_no_release"
+    assert terminal_row["dual_readout"][prep.AXIS_A_READOUT_KEY] == axis_a_report
+    assert terminal_row["dual_readout"][prep.AXIS_B_READOUT_KEY] == axis_b_report
+
+
 def test_prep_segment_records_substance_feedback_on_no_candidate(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
