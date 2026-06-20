@@ -4328,3 +4328,13 @@ try:
     _adapter_classify_failure
 except ImportError:
     pass
+
+# failure_code_for_zai derives a FailureCode from a Z.ai error_class. Its only non-test consumer is
+# the extensionless executable scripts/hapax-glmcp-reviewer (live: failure_code=failure_code_for_zai(
+# error_class) in classify_zai_error). Vulture scans .py modules but NOT no-extension script
+# entrypoints, so it cannot see that call site. capability-adapter-failure-classification.
+from shared.failure_classification import (
+    failure_code_for_zai as _glmcp_failure_code_for_zai,  # noqa: F401, E402
+)
+
+_glmcp_failure_code_for_zai
