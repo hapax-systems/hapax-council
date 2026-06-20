@@ -242,3 +242,24 @@ def test_enterprise_claim_blocks_pii_hidden_in_linked_evidence() -> None:
 
     assert not result.allowed
     assert "cross_boundary_pii:private_path" in result.blockers
+
+
+def test_enterprise_claim_blocks_operator_mental_state_in_linked_evidence() -> None:
+    # Operator affect hidden in a linked evidence record must block an
+    # enterprise-audience claim (cross-boundary egress, fail-closed).
+    evidence = _evidence(evidence_id="EV-AFFECT", public_safe=True).model_copy(
+        update={"value_summary": "note: the operator felt exhausted and demoralized here"}
+    )
+    claim = ClaimRecord(
+        claim_id="CL-AFFECT",
+        text="A portable governance primitive is available.",
+        claim_kind="current_state",
+        audience_scope=["enterprise_testbed"],
+        evidence_refs=["EV-AFFECT"],
+        status="approved_internal",
+    )
+
+    result = validate_claim_for_audiences(claim, [evidence], now=110.0)
+
+    assert not result.allowed
+    assert "cross_boundary_pii:operator_mental_state" in result.blockers
