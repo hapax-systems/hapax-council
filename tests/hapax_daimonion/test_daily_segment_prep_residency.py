@@ -10,6 +10,9 @@ import pytest
 
 from agents.hapax_daimonion import daily_segment_prep as prep
 from agents.hapax_daimonion import programme_loop
+from agents.hapax_daimonion.segment_composability_gate import (
+    assess_composability as _REAL_ASSESS_COMPOSABILITY,
+)
 from shared.programme_store import ProgrammePlanStore
 from shared.segment_candidate_selection import SEGMENT_CANDIDATE_SELECTION_VERSION
 from shared.segment_ndcvb_axis_b import evaluate_ndcvb_axis_b
@@ -1970,16 +1973,35 @@ def test_prep_segment_reframes_uncomposable_into_released_row(
         "resolve: src:0 flips the claim to operator-must-be-present",
     ]
 
-    def _gate(role: str, topic: str, beats: list, *, timeout: float = 60.0) -> object:
-        # live-shaped: REJECT the expository framing, ACCEPT the reframed arc.
-        if "importance" in topic.lower():
-            return gate.CompositionGateResult(False, "un-composable parallel_list (test)")
-        return gate.CompositionGateResult(True, "composable building arc")
+    # Exercise the REAL gate + REAL reframe code (only the HTTP is mocked) so this pins the actual
+    # decision/parse/propagation seam, not stubbed high-level functions. Restore the real
+    # assess_composability past the module's autouse accept-stub; reframe_to_arc is already real.
+    monkeypatch.setattr(gate, "assess_composability", _REAL_ASSESS_COMPOSABILITY)
 
-    monkeypatch.setattr(gate, "assess_composability", _gate)
-    monkeypatch.setattr(
-        gate, "reframe_to_arc", lambda *_a, **_k: (arc_topic, arc_narrative, list(arc_beats))
-    )
+    def _route_gateway(req: Any, *_args: Any, **_kwargs: Any) -> _FakeResponse:
+        prompt = json.loads(req.data.decode())["messages"][0]["content"]
+        if "Rewrite it into a TRUE ARC" in prompt:  # the reframe prompt
+            payload = {
+                "topic": arc_topic,
+                "narrative_beat": arc_narrative,
+                "beats": list(arc_beats),
+            }
+        else:  # the gate prompt — REJECT the expository framing, ACCEPT the reframed arc.
+            # Route on the arc topic (carried only by the re-verify call); the gate PROMPT
+            # template itself contains "importance", so keying on that would reject everything.
+            is_arc = arc_topic in prompt
+            payload = {
+                "opening_hook": "hook",
+                "test1_resolves_specific_hook": is_arc,
+                "test2_reorder_breaks_it": is_arc,
+                "arc_or_list": "arc" if is_arc else "parallel_list",
+                "score": 4 if is_arc else 2,
+            }
+        return _FakeResponse(
+            {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(payload)}}]}
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", _route_gateway)
 
     content = _ready_content(
         narrative_beat="A rant on the importance of operator presence and authority",
