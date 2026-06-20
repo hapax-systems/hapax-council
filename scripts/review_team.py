@@ -339,9 +339,10 @@ def classify_failure(
     the review + worker planes). ADDITIVE: the dispatch verdict path (cc-pr-review-dispatch.py) still
     calls the three booleans directly and OWNS the canonical verdict; this helper applies the SAME
     priority order (quota > route > provider > UNKNOWN) for telemetry and does NOT change any verdict.
-    The equivalence is pinned by a test, not prose — test_classify_failure_priority_pinned_to_dispatch
-    trips if either else-if chain is reordered. Defaults to UNKNOWN (no auto-degrade) when no
-    classifier fires."""
+    No production consumer calls this helper yet, so there is no live parity to enforce; behavioral
+    parity against the dispatch path is pinned by the worker-path slice that makes dispatch consume
+    this helper (capability-adapter-worker-path-classify-failure). Defaults to UNKNOWN (no
+    auto-degrade) when no classifier fires."""
 
     if is_quota_wall(text, process_failed=process_failed, model_stdout=model_stdout):
         code = FailureCode.QUOTA_EXHAUSTION
