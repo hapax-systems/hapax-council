@@ -26,6 +26,7 @@ Gemini Flash, human-reviewed) is done by
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from shared.stream_mode import is_publicly_visible
@@ -144,3 +145,126 @@ def redact_query_result(
         new_pt["payload"] = redacted
         result.append(new_pt)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Content-class detector (cross-boundary egress)
+#
+# The redactor above is collection-scoped (Qdrant read-side) and is a no-op for
+# arbitrary free text — so operator affect embedded in an HKP concept title /
+# description (which is not one of the five collections nor a named field) would
+# cross a trust boundary unredacted. This detector inspects *content* for the
+# operator-mental-state class so the cross-boundary egress scan
+# (publication_allowlist.cross_boundary_pii_blockers) can fail closed on it. It
+# is a conservative content gate (favours over-detection → operator review), NOT
+# a clinical classifier; it does not replace the collection-scoped redactor.
+
+# Self-referent tokens: the ratified non-formal referents (shared.operator_referent
+# REFERENTS — The Operator / Oudepode / OTO) plus generic "operator" and
+# first-person markers, so operator affect is caught in third person ("the
+# operator is overwhelmed") and first person ("I'm exhausted lately").
+_SELF_REFERENT_RE = re.compile(
+    r"\b(?:operator|oudepode|oto|i|i'?m|i\s+am|my|me|myself|mine)\b",
+    re.IGNORECASE,
+)
+
+# Mental-/emotional-/cognitive-state vocabulary (stems, boundary-anchored so
+# "danger" does not match "anger"). Deliberately excludes bare "feel"/opinion
+# verbs to avoid flagging judgements ("I feel this is correct").
+_AFFECT_STEMS: tuple[str, ...] = (
+    "anxi",  # anxious, anxiety, anxieties
+    "stress",
+    "distress",
+    "overwhelm",
+    "burnout",
+    "burned out",
+    "burnt out",
+    "burn-out",
+    "exhaust",  # exhausted, exhaustion
+    "fatigue",
+    "depress",  # depressed, depression
+    "despair",
+    "hopeless",
+    "helpless",
+    "panic",
+    "dread",
+    "afraid",
+    "fearful",
+    "scared",
+    "worr",  # worry, worried, worries, worrying
+    "lonely",
+    "loneliness",
+    "ashamed",
+    "shame",
+    "guilt",  # guilt, guilty
+    "frustrat",  # frustrated, frustration
+    "anger",
+    "angry",
+    "enraged",
+    "elated",
+    "excited",
+    "ecstatic",
+    "demoraliz",
+    "demotivat",
+    "miserable",
+    "misery",
+    "agitated",
+    "restless",
+    "grief",
+    "grieving",
+    "mournful",
+    "mood",
+    "morale",
+    "well-being",
+    "wellbeing",
+    "mental state",
+    "emotional state",
+    "cognitive state",
+    "psychological state",
+    "mental health",
+    "emotional health",
+    "mentally",
+    "emotionally",
+    "overwrought",
+    "demoralised",
+)
+_AFFECT_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(stem) for stem in _AFFECT_STEMS) + r")",
+    re.IGNORECASE,
+)
+
+# Standalone phrases that are the mental-state content class regardless of a
+# nearby self-referent (the phrase itself names operator-internal state).
+_STANDALONE_AFFECT_RE = re.compile(
+    r"\b(?:operator['’]s?\s+(?:mood|morale|burnout|anxiety|stress|"
+    r"mental\s+state|emotional\s+state|well-?being|mental\s+health))\b",
+    re.IGNORECASE,
+)
+
+_AFFECT_PROXIMITY_WINDOW = 80
+
+
+def operator_mental_state_present(text: str, *, window: int = _AFFECT_PROXIMITY_WINDOW) -> bool:
+    """Heuristic content-class detector for operator mental/emotional/cognitive
+    state in free text.
+
+    Returns True when the text names operator-internal affect — either a
+    standalone operator-affect phrase, or a self-referent token within
+    ``window`` characters of an affect/mental-state term. Conservative
+    (over-detects) by design: the cross-boundary egress gate must fail closed on
+    operator affect, and a false positive only forces operator review. Requiring
+    self-referent proximity keeps domain/feature uses ("anxiety detection
+    feature") from tripping the gate.
+    """
+    if not text:
+        return False
+    if _STANDALONE_AFFECT_RE.search(text):
+        return True
+    referent_positions = [m.start() for m in _SELF_REFERENT_RE.finditer(text)]
+    if not referent_positions:
+        return False
+    for affect in _AFFECT_RE.finditer(text):
+        pos = affect.start()
+        if any(abs(pos - ref) <= window for ref in referent_positions):
+            return True
+    return False

@@ -445,6 +445,12 @@ def cross_boundary_pii_blockers(text: str) -> list[str]:
         blockers.append("gps_coordinate")
     if _PRIVATE_PATH_PATTERN.search(text):
         blockers.append("private_path")
+    # Operator mental/emotional/cognitive-state content (local import: the
+    # detector lives in a sibling governance module and is only needed here).
+    from shared.governance.mental_state_redaction import operator_mental_state_present
+
+    if operator_mental_state_present(text):
+        blockers.append("operator_mental_state")
     return list(dict.fromkeys(blockers))
 
 

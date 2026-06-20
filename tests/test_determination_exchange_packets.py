@@ -199,3 +199,14 @@ def test_operator_legal_name_detected_when_env_set(monkeypatch: pytest.MonkeyPat
 
     assert not result.allowed
     assert "cross_boundary_pii:operator_legal_name" in result.blockers
+
+
+def test_cross_boundary_operator_mental_state_rejects_packet() -> None:
+    packet = synthetic_outbound_determination_packet().model_copy(
+        update={"summary": "the operator has been overwhelmed and anxious about this"}
+    )
+
+    result = validate_determination_exchange_packet(packet)
+
+    assert not result.allowed
+    assert "cross_boundary_pii:operator_mental_state" in result.blockers
