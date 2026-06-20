@@ -303,3 +303,49 @@ def test_demand_vector_freshness_stales_when_frontmatter_changes(tmp_path) -> No
 
     assert freshness.freshness_state is FreshnessState.STALE
     assert "frontmatter_hash_changed" in freshness.stale_reasons
+
+
+# --------------------------------------------------------------------------------------
+# Execution-axis demands (effort_demand / context_mode_demand) — the dispatcher-dims slice
+# --------------------------------------------------------------------------------------
+def test_demand_axis_vocabulary_pins_the_registry_enums() -> None:
+    """FORK 1 closed without an import cycle: the lower module's demand value tuples MUST track
+    the supply-side Effort/ContextMode enums exactly (drift either way fails this pin)."""
+    from shared.platform_capability_registry import ContextMode, Effort
+    from shared.route_metadata_schema import (
+        _CONTEXT_MODE_DEMAND_VALUES,
+        _EFFORT_DEMAND_VALUES,
+    )
+
+    assert {e.value for e in Effort} == set(_EFFORT_DEMAND_VALUES)
+    assert {c.value for c in ContextMode} == set(_CONTEXT_MODE_DEMAND_VALUES)
+
+
+def _demand_frontmatter(**task_demand: object) -> dict[str, object]:
+    payload = _explicit_metadata()
+    payload["task_id"] = "demand-axis-test"
+    payload["authority_case"] = "CASE-TEST-001"
+    if task_demand:
+        payload["task_demand"] = dict(task_demand)
+    return payload
+
+
+def test_task_demand_execution_axes_default_to_none() -> None:
+    demand = build_demand_vector(_demand_frontmatter())
+    assert demand.task_demand.effort_demand is None
+    assert demand.task_demand.context_mode_demand is None
+
+
+def test_task_demand_accepts_valid_execution_axis_demands() -> None:
+    demand = build_demand_vector(
+        _demand_frontmatter(effort_demand="low", context_mode_demand="extended_1m")
+    )
+    assert demand.task_demand.effort_demand == "low"
+    assert demand.task_demand.context_mode_demand == "extended_1m"
+
+
+def test_task_demand_rejects_out_of_vocab_execution_axis_demand() -> None:
+    with pytest.raises((ValidationError, ValueError)):
+        build_demand_vector(_demand_frontmatter(effort_demand="galaxy"))
+    with pytest.raises((ValidationError, ValueError)):
+        build_demand_vector(_demand_frontmatter(context_mode_demand="hypercontext"))

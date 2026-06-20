@@ -111,29 +111,13 @@ APPLICABLE: dict[str, frozenset[str]] = {
 # test_waivers_name_real_absences and must be removed — forcing full consideration.
 # ----------------------------------------------------------------------------------
 _EXP = "2026-09-30T00:00:00Z"  # P4 build horizon; bump only with a tracked extension
-_DESCRIPTOR_TASK = "capability-execution-descriptor-enums-20260619"
-_BACKFILL_TASK = "capability-route-descriptor-backfill-20260619"
 _LOCAL_TASK = "capability-haiku-localtool-routes-20260619"
 _WAIVER_TASK = "capability-consideration-waivers-20260619"
-_RECEIPT_TASK = "capability-receipt-drift-20260619"
+_RECEIPT_TASK = "capability-receipt-drift-detection-20260619"
 
 WAIVERS: tuple[dict[str, str], ...] = (
-    # effort — NOW modeled at registry (ExecutionDescriptor.effort, backfilled); the
-    # remaining gaps are the dispatcher scoring/demand dims and the spend ledger.
-    {
-        "axis": "effort",
-        "site": "dispatcher_scoring",
-        "expires_at": _EXP,
-        "tracking_ref": _DESCRIPTOR_TASK,
-        "reason": "no effort_fit dimension in DIMENSION_WEIGHTS; add conditional effort_fit",
-    },
-    {
-        "axis": "effort",
-        "site": "dispatcher_demand",
-        "expires_at": _EXP,
-        "tracking_ref": _DESCRIPTOR_TASK,
-        "reason": "TaskDemand has no effort_demand; mirror the scored supply axis",
-    },
+    # effort — NOW modeled at registry (ExecutionDescriptor.effort) AND at the dispatcher
+    # (DIMENSION_WEIGHTS.effort_fit + TaskDemand.effort_demand); only the spend ledger remains.
     {
         "axis": "effort",
         "site": "quota_ledger",
@@ -141,22 +125,8 @@ WAIVERS: tuple[dict[str, str], ...] = (
         "tracking_ref": _RECEIPT_TASK,
         "reason": "SpendReceipt key omits effort; effort changes token spend and must be metered",
     },
-    # context_mode (1M vs standard) — NOW modeled at registry (ExecutionDescriptor.context_mode);
-    # the dispatcher scoring/demand fit dims are the remaining gaps.
-    {
-        "axis": "context_mode",
-        "site": "dispatcher_scoring",
-        "expires_at": _EXP,
-        "tracking_ref": _DESCRIPTOR_TASK,
-        "reason": "no context_mode_fit; add conditional dimension so extended_1m is satisfiable only by an extended_1m leaf",
-    },
-    {
-        "axis": "context_mode",
-        "site": "dispatcher_demand",
-        "expires_at": _EXP,
-        "tracking_ref": _DESCRIPTOR_TASK,
-        "reason": "TaskDemand has no context_mode_demand",
-    },
+    # context_mode (1M vs standard) — NOW fully modeled: registry (ExecutionDescriptor.context_mode),
+    # dispatcher scoring (context_mode_fit) and demand (TaskDemand.context_mode_demand). No waiver.
     # model_id (structured, dated) — NOW modeled at registry (ExecutionDescriptor.model_id: ModelId),
     # which splits the gpt-5.5-xhigh smuggle; the spend ledger still keys on free-text model_or_engine.
     {
@@ -260,11 +230,11 @@ def test_capacity_pool_positive_control() -> None:
     assert _is_modeled("capacity_pool", universes["quota_ledger"]), (
         "detector failed on the spend-ledger key"
     )
-    # and confirm the gap axes are genuinely undetected today (the asymmetry the gate guards).
-    # Post-backfill the registry-site axes are all modeled, so the remaining genuine gaps are
-    # on the dispatcher scoring plane and the spend ledger. Recheck:
+    # The detector fires on a now-modeled live axis (effort_fit landed in DIMENSION_WEIGHTS with
+    # this slice) and stays silent on a genuine remaining gap (quantization is absent from the
+    # spend ledger). Recheck:
     #   uv run pytest tests/docs/test_capability_consideration_completeness_contract.py
-    assert not _is_modeled("effort", universes["dispatcher_scoring"])
+    assert _is_modeled("effort", universes["dispatcher_scoring"])
     assert not _is_modeled("quantization", universes["quota_ledger"])
     # detector discrimination pinned against SYNTHETIC universes — immune to a sibling slice
     # mutating the live field sets, so the gap findings above can never be a vacuous pass.
