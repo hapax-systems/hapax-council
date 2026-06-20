@@ -21,6 +21,9 @@ enable hapax-security-signal-intake.timer
 enable hapax-source-activate.timer
 enable hapax-darkplaces-live-texture-rebuild.path
 enable hapax-screwm-gpu-drift-rebuild.path
+# Attended-only boot containment: strips the DarkPlaces runtime gate at every
+# boot so the renderer never auto-starts unattended (2026-05-23 audit).
+enable hapax-darkplaces-boot-containment.service
 enable hapax-content-candidate-discovery.timer
 enable hapax-private-monitor-recover.timer
 enable hapax-mail-monitor-fallback.timer
