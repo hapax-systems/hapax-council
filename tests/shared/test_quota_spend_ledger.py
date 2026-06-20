@@ -19,6 +19,8 @@ from shared.quota_spend_ledger import (
     BootstrapDependencyState,
     BudgetLifecycleState,
     DependencyState,
+    Effort,
+    ModelId,
     PaidApiBudgetState,
     PaidRouteRequest,
     Quantization,
@@ -742,3 +744,34 @@ def test_spend_receipt_quantization_defaults_and_separates() -> None:
     assert four_bpw.quantization is Quantization.EXL3_4_0BPW
     assert five_bpw.quantization is Quantization.EXL3_5_0BPW
     assert four_bpw.quantization is not five_bpw.quantization
+
+
+def test_effort_and_model_id_enum_parity_with_registry() -> None:
+    """The ledger mirrors the registry Effort/ModelId enums (it must not import the registry — the
+    inert ledger is low-dependency). These drift-pins keep the value sets byte-identical so a
+    receipt's metered effort/model_id matches a route descriptor's exactly."""
+    from shared.platform_capability_registry import Effort as RegistryEffort
+    from shared.platform_capability_registry import ModelId as RegistryModelId
+
+    assert {e.value for e in Effort} == {e.value for e in RegistryEffort}
+    assert {m.value for m in ModelId} == {m.value for m in RegistryModelId}
+
+
+def test_spend_receipt_meters_effort_and_structured_model_id() -> None:
+    """effort defaults to NONE and model_id to None (free-text model_or_engine is retained), and a
+    receipt can record a structured dated model_id + the effort the spend was incurred at — so the
+    spend plane keys on the same execution axes the route descriptor does."""
+    ledger = QuotaSpendLedger.model_validate(
+        json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
+    )
+    base = ledger.spend_receipts[0]
+    assert base.effort is Effort.NONE
+    assert base.model_id is None  # legacy receipts carry only free-text model_or_engine
+
+    payload = base.model_dump(mode="json")
+    payload["model_id"] = "claude-opus-4-8"
+    payload["effort"] = "xhigh"
+    metered = SpendReceipt.model_validate(payload)
+    assert metered.model_id is ModelId.CLAUDE_OPUS_4_8
+    assert metered.effort is Effort.XHIGH
+    assert metered.model_or_engine == base.model_or_engine  # free-text identity retained alongside

@@ -153,6 +153,8 @@
       "budget_id": "tb-20260509-bootstrap-expired",
       "provider": "opaque-provider-a",
       "model_or_engine": "opaque-engine-a",
+      "model_id": null,
+      "effort": "none",
       "quantization": "not_applicable",
       "auth_surface": "api_key",
       "quality_floor": "frontier_required",

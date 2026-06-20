@@ -112,29 +112,13 @@ APPLICABLE: dict[str, frozenset[str]] = {
 # ----------------------------------------------------------------------------------
 _EXP = "2026-09-30T00:00:00Z"  # P4 build horizon; bump only with a tracked extension
 _WAIVER_TASK = "capability-consideration-waivers-20260619"
-_RECEIPT_TASK = "capability-receipt-drift-detection-20260619"
 
 WAIVERS: tuple[dict[str, str], ...] = (
-    # effort — NOW modeled at registry (ExecutionDescriptor.effort) AND at the dispatcher
-    # (DIMENSION_WEIGHTS.effort_fit + TaskDemand.effort_demand); only the spend ledger remains.
-    {
-        "axis": "effort",
-        "site": "quota_ledger",
-        "expires_at": _EXP,
-        "tracking_ref": _RECEIPT_TASK,
-        "reason": "SpendReceipt key omits effort; effort changes token spend and must be metered",
-    },
-    # context_mode (1M vs standard) — NOW fully modeled: registry (ExecutionDescriptor.context_mode),
-    # dispatcher scoring (context_mode_fit) and demand (TaskDemand.context_mode_demand). No waiver.
-    # model_id (structured, dated) — NOW modeled at registry (ExecutionDescriptor.model_id: ModelId),
-    # which splits the gpt-5.5-xhigh smuggle; the spend ledger still keys on free-text model_or_engine.
-    {
-        "axis": "model_id",
-        "site": "quota_ledger",
-        "expires_at": _EXP,
-        "tracking_ref": _RECEIPT_TASK,
-        "reason": "SpendReceipt carries free-text model_or_engine; key on structured model_id",
-    },
+    # effort — NOW fully modeled: registry (ExecutionDescriptor.effort), dispatcher (effort_fit +
+    # TaskDemand.effort_demand) AND the spend ledger (SpendReceipt.effort). No waiver.
+    # context_mode — NOW fully modeled (registry + dispatcher scoring/demand). No waiver.
+    # model_id — NOW fully modeled: registry (ExecutionDescriptor.model_id: ModelId) AND the spend
+    # ledger (SpendReceipt.model_id, the structured replacement for free-text model_or_engine). No waiver.
     # fast_mode — NOW modeled at registry (ExecutionDescriptor.fast_mode); still a client-side
     # harness flag with no governed launch path, so the spend-ledger metering stays deferred.
     {
@@ -222,11 +206,13 @@ def test_capacity_pool_positive_control() -> None:
     assert _is_modeled("capacity_pool", universes["quota_ledger"]), (
         "detector failed on the spend-ledger key"
     )
-    # The detector fires on now-modeled live axes (effort_fit in DIMENSION_WEIGHTS; quantization in
-    # the SpendReceipt) and stays silent on a genuine remaining gap (fast_mode is still absent from
-    # the spend ledger). Recheck:
+    # The detector fires on now-modeled live axes — effort_fit in DIMENSION_WEIGHTS and the
+    # SpendReceipt now carries effort / model_id / quantization — and stays silent on the one
+    # genuine remaining gap (fast_mode is still absent from the spend ledger). Recheck:
     #   uv run pytest tests/docs/test_capability_consideration_completeness_contract.py
     assert _is_modeled("effort", universes["dispatcher_scoring"])
+    assert _is_modeled("effort", universes["quota_ledger"])
+    assert _is_modeled("model_id", universes["quota_ledger"])
     assert _is_modeled("quantization", universes["quota_ledger"])
     assert not _is_modeled("fast_mode", universes["quota_ledger"])
     # detector discrimination pinned against SYNTHETIC universes — immune to a sibling slice
