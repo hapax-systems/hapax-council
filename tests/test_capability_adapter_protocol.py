@@ -273,6 +273,24 @@ def test_codex_classify_failure_shares_the_cli_table() -> None:
     assert adapter.classify_failure("x").platform == Platform.CODEX.value
 
 
+def test_antigrav_classify_failure_maps_launcher_exit_codes() -> None:
+    a = AntigravAdapter()
+    # the two codes with a genuine availability/claim meaning map; everything else stays UNKNOWN
+    assert a.classify_failure("agy not found", exit_code=4).code is FailureCode.ROUTE_UNAVAILABLE
+    assert a.classify_failure("cc-claim failed", exit_code=8).code is FailureCode.CLAIM_CONFLICT
+    for ec in (2, 3, 5, 6, 9, 99):  # usage/env/setup + unmapped -> no auto-degrade
+        assert a.classify_failure("x", exit_code=ec).code is FailureCode.UNKNOWN
+    assert a.classify_failure("no exit code given").code is FailureCode.UNKNOWN
+    receipt = a.classify_failure("Antigravity CLI not found", exit_code=4)
+    assert receipt.platform == Platform.ANTIGRAV.value
+    assert receipt.raw_signal == "Antigravity CLI not found"  # lossless
+    # neither mapped code degrades family availability (not in the witness allowlist)
+    from shared.worker_failure_witness import WORKER_AVAILABILITY_DEGRADE_CODES
+
+    assert FailureCode.ROUTE_UNAVAILABLE not in WORKER_AVAILABILITY_DEGRADE_CODES
+    assert FailureCode.CLAIM_CONFLICT not in WORKER_AVAILABILITY_DEGRADE_CODES
+
+
 # --- mixin hygiene -----------------------------------------------------------------------------
 
 

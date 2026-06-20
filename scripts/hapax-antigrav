@@ -25,6 +25,15 @@ RELAY_DIR="$HOME/.cache/hapax/relay"
 SPAWN_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/antigrav-spawns"
 mkdir -p "$SPAWN_DIR" "$RELAY_DIR"
 
+# Shared governed enable-latch helper (capability-adapter glue). Resolve relative to THIS script
+# (via readlink) so the source-activation-deployed symlink finds its sibling, independent of
+# COUNCIL_DIR. A missing helper degrades to no-latch (deployment integrity is enforced by
+# hooks-doctor CLOSURE_SIBLINGS) rather than bricking the live lane.
+_HAPAX_ANTIGRAV_SELF_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+_HAPAX_LATCH_HELPER="$_HAPAX_ANTIGRAV_SELF_DIR/../hooks/scripts/hapax_check_enable_latch.sh"
+# shellcheck source=../hooks/scripts/hapax_check_enable_latch.sh
+[ -f "$_HAPAX_LATCH_HELPER" ] && . "$_HAPAX_LATCH_HELPER"
+
 usage() {
   cat <<'EOF'
 usage: hapax-antigrav [--session antigrav] [--task TASK_ID] [--cd DIR]
@@ -71,6 +80,12 @@ EOF
 # normalizes agy's payload into Claude hook JSON, then delegates to
 # cc-task-gate.sh — the same governance chokepoint Claude Code and Codex enforce.
 # The matcher lists agy's native mutation tool names (gate runs pre-translation).
+#
+# AUTHORITY EXCLUSION (#3802): this gate covers ONLY agy's native mutation tools (the matcher
+# below). Direct IDE Edit/Write is outside agy's hook mechanism, hence outside this gate's
+# authority — closing it would require Claude Code settings.json wiring, not agy hooks.json. This
+# is a scoped, documented exclusion (mirrored in capability_adapter_protocol.AntigravAdapter), not
+# a silent gap.
 #
 # Returns 0 when the gate is (now) wired; non-zero when wiring is refused (a
 # foreign, non-Hapax hooks.json is present) or the adapter/gate are missing. The
@@ -439,11 +454,31 @@ echo "hapax-antigrav: refreshed compatibility $COMPAT_RULE_PATH" >&2
 
 # ---- agy enforcing hook wiring (Antigrav parity P0) -----------------------
 # Activate the PreToolUse gate on every launch (idempotent re-write). Full
-# rationale + strace provenance live on wire_agy_hooks() above. A foreign
-# hooks.json or a missing adapter is advisory here (the launch still proceeds);
-# `hapax-antigrav --wire-hooks-only` is the path that surfaces wiring failure as
-# a non-zero exit and is how the gate is activated live without an IDE window.
-wire_agy_hooks || true
+# rationale + strace provenance live on wire_agy_hooks() above. FAIL-CLOSED on the
+# interactive launch: a foreign hooks.json or a missing/non-exec adapter refuses the
+# spawn (exit 6) so agy never launches UNGATED. Documented operator override:
+# HAPAX_ANTIGRAV_OVERRIDE_HOOK_WIRING=1 (per-invocation, preferred) or the file
+# $HOME/.cache/hapax/antigrav-hook-override (HAPAX_ANTIGRAV_HOOK_OVERRIDE_FILE) -> loud
+# warning then proceed. --wire-hooks-only (above) stays fail-closed with NO override.
+if ! wire_agy_hooks; then
+  if [ "${HAPAX_ANTIGRAV_OVERRIDE_HOOK_WIRING:-}" = "1" ] \
+    || [ -e "${HAPAX_ANTIGRAV_HOOK_OVERRIDE_FILE:-$HOME/.cache/hapax/antigrav-hook-override}" ]; then
+    echo "hapax-antigrav: WARNING agy hook wiring refused but OVERRIDDEN — agy launching UNGATED" >&2
+  elif [ "$OPEN_IDE" -eq 1 ]; then
+    echo "hapax-antigrav: launch refused — agy PreToolUse hook wiring failed; set HAPAX_ANTIGRAV_OVERRIDE_HOOK_WIRING=1 to override" >&2
+    exit 6
+  fi
+fi
+
+# ---- governed enable-latch (capability-adapter glue) ----------------------
+# Refuse the interactive agy spawn when the governed enable-latch is absent, honoring the
+# registry's DEFAULT_DENY_ENABLE_LATCH posture (antigrav-only; vibe is auto-approve-task-scoped,
+# not a latch gap). OPEN_IDE-gated so --no-open / --wire-hooks-only provisioning is unaffected;
+# hooks are already wired above, so a refusal leaves no half state. Skipped if the helper is absent
+# (deployment integrity is enforced by hooks-doctor) to avoid bricking on a deploy bug.
+if [ "$OPEN_IDE" -eq 1 ] && command -v hapax_check_enable_latch >/dev/null 2>&1; then
+  hapax_check_enable_latch antigrav || exit 7
+fi
 
 # ---- export identity envs (for cc-claim and downstream tools) -------------
 
