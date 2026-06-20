@@ -4338,3 +4338,40 @@ from shared.failure_classification import (
 )
 
 _glmcp_failure_code_for_zai
+
+# CapabilityAdapter protocol surface (capability-adapter-protocol-module). The whole adapter
+# layer is the thin uniform facade the dispatch/worker path WILL consume; this slice lands the
+# protocol + type hierarchy ahead of its consumers (worker-path / antigrav-glue / vibe-glue /
+# glmcp-reviewseat-coordination wire the live call sites). Until then only the test suite
+# exercises the methods, which the production vulture pass does not count. Reference the
+# consumer-pending surface so the unused-callable gate sees the use.
+from shared.capability_adapter_protocol import (  # noqa: E402
+    AntigravAdapter as _AntigravAdapter,
+)
+from shared.capability_adapter_protocol import (  # noqa: E402
+    BudgetAuthorityAdapter as _BudgetAuthorityAdapter,
+)
+from shared.capability_adapter_protocol import (  # noqa: E402
+    CapabilityAdapter as _CapabilityAdapter,
+)
+from shared.capability_adapter_protocol import (  # noqa: E402
+    ReviewSeatAdapter as _ReviewSeatAdapter,
+)
+from shared.capability_adapter_protocol import (  # noqa: E402
+    SendCapableAdapter as _SendCapableAdapter,
+)
+from shared.capability_adapter_protocol import (  # noqa: E402
+    WorkerAdapter as _WorkerAdapter,
+)
+
+_CapabilityAdapter.describe
+_CapabilityAdapter.admit
+_CapabilityAdapter.observe
+_CapabilityAdapter.collect_receipts
+_CapabilityAdapter.preflight
+_CapabilityAdapter.classify_failure
+_WorkerAdapter.launch
+_SendCapableAdapter.send
+_BudgetAuthorityAdapter
+_ReviewSeatAdapter
+_AntigravAdapter
