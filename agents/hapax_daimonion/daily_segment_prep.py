@@ -253,16 +253,6 @@ AXIS_B_DISSOCIATED_VETO_NEXT_ACTION = (
     "Inspect the preserved Axis-B NDCVB report, withhold this segment from release, "
     "revise the candidate or source basis, and re-run the Axis-B scorer before prep release."
 )
-AXIS_B_NDCVB_REPORT_KEYS = (
-    "axis_b_ndcvb_report",
-    "ndcvb_axis_b_report",
-    "axis_b_report",
-)
-AXIS_B_NDCVB_REPORT_MAP_KEYS = (
-    "axis_b_ndcvb_reports",
-    "ndcvb_axis_b_reports",
-    "axis_b_reports",
-)
 PREP_STATUS_VERSION = 1
 PREP_STATUS_FILENAME = "prep-status.json"
 # A3: per-day store for downstream council/disconfirmation substance rationale,
@@ -2000,6 +1990,91 @@ def _capture_episode_impingements(trace: Any, *, since: float) -> None:
         )
 
 
+def _s2_reframe_enabled() -> bool:
+    """Compose-on-reject reframe is on by default; reversible via the env killswitch."""
+    return os.environ.get("HAPAX_SEGMENT_PREP_S2_REFRAME", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _record_s2_reframe_provenance(prep_session: dict[str, Any] | None, programme_id: str) -> None:
+    """Mark (best-effort) that this segment's plan was reframed by the capable model, so downstream
+    artifact/ledger consumers can label the aired segment honestly."""
+    if prep_session is None:
+        return
+    try:
+        reframed = prep_session.setdefault("s2_reframed_programmes", [])
+        if programme_id not in reframed:
+            reframed.append(programme_id)
+    except Exception:  # noqa: BLE001 — provenance bookkeeping must never break prep
+        log.debug("prep_segment: could not record S2 reframe provenance for %s", programme_id)
+
+
+def _attempt_s2_reframe(
+    prep_dir: Path,
+    *,
+    prep_session: dict[str, Any] | None,
+    programme_id: str,
+    role: str,
+    topic: str,
+    beats: list[str],
+    reason: str,
+    timeout: float,
+    deadline_monotonic: float | None = None,
+) -> tuple[str, str, list[str]] | None:
+    """Reframe an S2-rejected expository plan into an arc via the capable model, RE-VERIFIED by the
+    same gate. Returns ``(new_topic, new_narrative_beat, new_beats)`` iff the reframe PASSES the gate;
+    else ``None``.
+
+    Appends a second, labeled producer-DV ledger entry for the reframe outcome — the raw 35B reject
+    was already logged by the caller, so the SCED signal records BOTH "did the resident model
+    compose?" (no) and "did the system produce a composable segment?" (the reframe verdict).
+
+    The reframe adds TWO synchronous gateway calls (reframe + re-verify); each is bounded to the LIVE
+    remaining prep deadline, and the attempt is skipped entirely when too little budget remains, so the
+    rescue path can never overrun PREP_BUDGET_S near deadline exhaustion.
+    """
+    from agents.hapax_daimonion.segment_composability_gate import (
+        assess_composability,
+        reframe_to_arc,
+    )
+
+    def _remaining() -> float:
+        if deadline_monotonic is None:
+            return timeout
+        return max(0.0, deadline_monotonic - time.monotonic())
+
+    # Need budget for BOTH calls; skip the rescue rather than blow the deadline.
+    if deadline_monotonic is not None and _remaining() < 10.0:
+        return None
+    reframed = reframe_to_arc(
+        role, topic, beats, reason=reason, timeout=max(5.0, min(timeout, _remaining()))
+    )
+    if reframed is None:
+        return None
+    new_topic, new_narrative, new_beats = reframed
+    recheck = assess_composability(
+        role, new_topic, list(new_beats), timeout=max(5.0, min(timeout, _remaining()))
+    )
+    recheck_errored = bool(getattr(recheck, "errored", False))
+    _append_s2_composability_ledger(
+        prep_dir,
+        programme_id=programme_id,
+        role=role,
+        topic=new_topic,
+        segment_beats=list(new_beats),
+        accepted=recheck.accept,
+        reason=f"[reframed] {recheck.reason}",
+        errored=recheck_errored,
+    )
+    if recheck_errored or not recheck.accept:
+        return None
+    return new_topic, new_narrative, list(new_beats)
+
+
 def prep_segment(
     programme: Any,
     prep_dir: Path,
@@ -2104,36 +2179,78 @@ def prep_segment(
     # rubber-stamp aired as if it were a clean accept).
     if _gate_errored or not _composability.accept:
         _abstain = _gate_errored and _composability.accept
-        log.info(
-            "prep_segment: %s %s, skipping: %s",
-            prog_id,
-            "S2 gate degraded (fail-open, unverified — abstaining)"
-            if _abstain
-            else "un-composable topic+type",
-            _composability.reason,
-        )
-        _write_prep_diagnostic_outcome(
-            prep_dir,
-            prep_session=prep_session,
-            programme_id=prog_id,
-            role=role,
-            topic=topic,
-            segment_beats=list(beats),
-            terminal_status="no_candidate",
-            terminal_reason="s2_gate_errored_abstain" if _abstain else "uncomposable_topic_type",
-            not_loadable_reason=(
-                f"S2 gate degraded/unverified (abstain): {_composability.reason}"
+        # Compose-on-reject (RED-1): on a REAL reject (not a degraded/errored gate), rewrite the
+        # expository plan into an arc with the capable eval model, re-verified by the same gate. The
+        # raw 35B verdict is already in the ledger above, so the SCED producer-DV signal is preserved;
+        # only a GATE-PASSING reframe is propagated into content (declared_topic/narrative_beat/
+        # segment_beats) and we fall through to compose. A bad reframe just fails the gate again ->
+        # abstain below, so this NEVER airs an un-composable segment.
+        _reframe_accepted = False
+        if not _abstain and not _gate_errored and content is not None and _s2_reframe_enabled():
+            _reframed = _attempt_s2_reframe(
+                prep_dir,
+                prep_session=prep_session,
+                programme_id=prog_id,
+                role=role,
+                topic=topic,
+                beats=list(beats),
+                reason=_composability.reason,
+                timeout=_gate_timeout,
+                deadline_monotonic=deadline_monotonic,
+            )
+            if _reframed is not None:
+                new_topic, new_narrative, new_beats = _reframed
+                try:
+                    content.declared_topic = new_topic
+                    content.narrative_beat = new_narrative
+                    content.segment_beats = list(new_beats)
+                except Exception:  # noqa: BLE001 — immutable content: do not air a stale plan
+                    log.warning(
+                        "prep_segment: %s S2 reframe passed but content is immutable — abstaining",
+                        prog_id,
+                    )
+                else:
+                    topic = new_topic
+                    beats = new_beats
+                    _reframe_accepted = True
+                    _record_s2_reframe_provenance(prep_session, prog_id)
+                    log.info(
+                        "prep_segment: %s S2-reframed an expository plan into a gate-verified arc",
+                        prog_id,
+                    )
+        if not _reframe_accepted:
+            log.info(
+                "prep_segment: %s %s, skipping: %s",
+                prog_id,
+                "S2 gate degraded (fail-open, unverified — abstaining)"
                 if _abstain
-                else f"un-composable topic+type: {_composability.reason}"
-            ),
-            no_candidate_metadata={
-                "candidate_source": "segment_composability_gate",
-                "candidate_count": 0,
-                "role": role,
-            },
-        )
-        _record_substance_feedback(prep_session, prog_id, _composability.reason)
-        return None
+                else "un-composable topic+type",
+                _composability.reason,
+            )
+            _write_prep_diagnostic_outcome(
+                prep_dir,
+                prep_session=prep_session,
+                programme_id=prog_id,
+                role=role,
+                topic=topic,
+                segment_beats=list(beats),
+                terminal_status="no_candidate",
+                terminal_reason="s2_gate_errored_abstain"
+                if _abstain
+                else "uncomposable_topic_type",
+                not_loadable_reason=(
+                    f"S2 gate degraded/unverified (abstain): {_composability.reason}"
+                    if _abstain
+                    else f"un-composable topic+type: {_composability.reason}"
+                ),
+                no_candidate_metadata={
+                    "candidate_source": "segment_composability_gate",
+                    "candidate_count": 0,
+                    "role": role,
+                },
+            )
+            _record_substance_feedback(prep_session, prog_id, _composability.reason)
+            return None
 
     source_readiness = programme_source_readiness(programme)
     if source_readiness.get("ok") is not True:
