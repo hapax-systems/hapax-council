@@ -115,16 +115,11 @@ _DESCRIPTOR_TASK = "capability-execution-descriptor-enums-20260619"
 _BACKFILL_TASK = "capability-route-descriptor-backfill-20260619"
 _LOCAL_TASK = "capability-haiku-localtool-routes-20260619"
 _WAIVER_TASK = "capability-consideration-waivers-20260619"
+_RECEIPT_TASK = "capability-receipt-drift-20260619"
 
 WAIVERS: tuple[dict[str, str], ...] = (
-    # effort — promoted to registry/dispatcher/demand by the descriptor task; metered by backfill
-    {
-        "axis": "effort",
-        "site": "registry",
-        "expires_at": _EXP,
-        "tracking_ref": _DESCRIPTOR_TASK,
-        "reason": "effort lives only at launch (hapax-claude:253 max / hapax-claude-headless:171 xhigh); promote to ExecutionDescriptor",
-    },
+    # effort — NOW modeled at registry (ExecutionDescriptor.effort, backfilled); the
+    # remaining gaps are the dispatcher scoring/demand dims and the spend ledger.
     {
         "axis": "effort",
         "site": "dispatcher_scoring",
@@ -143,17 +138,11 @@ WAIVERS: tuple[dict[str, str], ...] = (
         "axis": "effort",
         "site": "quota_ledger",
         "expires_at": _EXP,
-        "tracking_ref": _BACKFILL_TASK,
+        "tracking_ref": _RECEIPT_TASK,
         "reason": "SpendReceipt key omits effort; effort changes token spend and must be metered",
     },
-    # context_mode (1M vs standard)
-    {
-        "axis": "context_mode",
-        "site": "registry",
-        "expires_at": _EXP,
-        "tracking_ref": _DESCRIPTOR_TASK,
-        "reason": "only coarse max_context_class; opus[1m] not distinguishable — add ContextMode to the descriptor",
-    },
+    # context_mode (1M vs standard) — NOW modeled at registry (ExecutionDescriptor.context_mode);
+    # the dispatcher scoring/demand fit dims are the remaining gaps.
     {
         "axis": "context_mode",
         "site": "dispatcher_scoring",
@@ -168,29 +157,17 @@ WAIVERS: tuple[dict[str, str], ...] = (
         "tracking_ref": _DESCRIPTOR_TASK,
         "reason": "TaskDemand has no context_mode_demand",
     },
-    # model_id (structured, dated) — replaces free-text model_or_engine; splits the gpt-5.5-xhigh smuggle
-    {
-        "axis": "model_id",
-        "site": "registry",
-        "expires_at": _EXP,
-        "tracking_ref": _BACKFILL_TASK,
-        "reason": "model identity is free-text model_or_engine ('claude-code-default'); promote a structured dated model_id",
-    },
+    # model_id (structured, dated) — NOW modeled at registry (ExecutionDescriptor.model_id: ModelId),
+    # which splits the gpt-5.5-xhigh smuggle; the spend ledger still keys on free-text model_or_engine.
     {
         "axis": "model_id",
         "site": "quota_ledger",
         "expires_at": _EXP,
-        "tracking_ref": _BACKFILL_TASK,
+        "tracking_ref": _RECEIPT_TASK,
         "reason": "SpendReceipt carries free-text model_or_engine; key on structured model_id",
     },
-    # fast_mode — client-side harness flag; carried as a quota/latency modifier until a /fast routing hook lands
-    {
-        "axis": "fast_mode",
-        "site": "registry",
-        "expires_at": _EXP,
-        "tracking_ref": _WAIVER_TASK,
-        "reason": "Opus fast-mode is a client-side harness flag with no governed launch path",
-    },
+    # fast_mode — NOW modeled at registry (ExecutionDescriptor.fast_mode); still a client-side
+    # harness flag with no governed launch path, so the spend-ledger metering stays deferred.
     {
         "axis": "fast_mode",
         "site": "quota_ledger",
@@ -198,14 +175,8 @@ WAIVERS: tuple[dict[str, str], ...] = (
         "tracking_ref": _WAIVER_TASK,
         "reason": "fast-mode shifts latency/billing; meter once a governed /fast hook exists",
     },
-    # quantization (local EXL3 4.0/5.0bpw) — lands with the local_tool route
-    {
-        "axis": "quantization",
-        "site": "registry",
-        "expires_at": _EXP,
-        "tracking_ref": _LOCAL_TASK,
-        "reason": "no local_tool route; quantization lives only inside LiteLLM model strings",
-    },
+    # quantization (local EXL3 4.0/5.0bpw) — NOW modeled at registry (ExecutionDescriptor.quantization);
+    # separate exl3 spend metering still lands with the local_tool route.
     {
         "axis": "quantization",
         "site": "quota_ledger",
@@ -289,9 +260,18 @@ def test_capacity_pool_positive_control() -> None:
     assert _is_modeled("capacity_pool", universes["quota_ledger"]), (
         "detector failed on the spend-ledger key"
     )
-    # and confirm the gap axes are genuinely undetected today (the asymmetry the gate guards)
+    # and confirm the gap axes are genuinely undetected today (the asymmetry the gate guards).
+    # Post-backfill the registry-site axes are all modeled, so the remaining genuine gaps are
+    # on the dispatcher scoring plane and the spend ledger. Recheck:
+    #   uv run pytest tests/docs/test_capability_consideration_completeness_contract.py
     assert not _is_modeled("effort", universes["dispatcher_scoring"])
-    assert not _is_modeled("fast_mode", universes["registry"])
+    assert not _is_modeled("quantization", universes["quota_ledger"])
+    # detector discrimination pinned against SYNTHETIC universes — immune to a sibling slice
+    # mutating the live field sets, so the gap findings above can never be a vacuous pass.
+    assert _is_modeled("effort", {"effort_fit", "grounding"})
+    assert not _is_modeled("effort", {"grounding", "architecture"})
+    assert _is_modeled("quantization", {"quantization"})
+    assert not _is_modeled("quantization", {"model_or_engine", "cost_usd"})
 
 
 def test_route_ids_stay_three_segment() -> None:

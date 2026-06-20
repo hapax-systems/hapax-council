@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import jsonschema
 
@@ -12,7 +13,7 @@ SCHEMA = REPO_ROOT / "schemas" / "platform-capability-registry.schema.json"
 REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 
 
-def _json(path: Path) -> dict[str, object]:
+def _json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -42,6 +43,7 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
         "capability_tier",
         "worker_tier",
         "model_or_engine",
+        "execution_descriptor",
         "auth_surface",
         "capacity_pool",
         "mutability",
@@ -83,6 +85,51 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
     )
     assert "read_only_sidecar" in set(schema["$defs"]["worker_tier"]["enum"])
     assert "evidence" in schema["$defs"]["freshness"]["required"]
+
+
+def test_schema_pins_execution_descriptor_axes_and_model_catalog() -> None:
+    """The execution_descriptor sub-object is a required route field carrying the five
+    operator-steered axes, and model_id is a STRUCTURED dated catalog that splits the
+    gpt-5.5-xhigh smuggle (gpt-5.5 distinct from the codex spark)."""
+    schema = _json(SCHEMA)
+    desc = schema["$defs"]["execution_descriptor"]
+    assert set(desc["required"]) == {
+        "model_id",
+        "effort",
+        "context_mode",
+        "fast_mode",
+        "quantization",
+    }
+    assert desc["additionalProperties"] is False
+    assert set(schema["$defs"]["effort"]["enum"]) == {
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    }
+    assert "extended_1m" in set(schema["$defs"]["context_mode"]["enum"])
+    model_ids = set(schema["$defs"]["model_id"]["enum"])
+    assert {"gpt-5.5", "gpt-5.3-codex-spark", "claude-opus-4-8"} <= model_ids
+    # the retired placeholder must NOT be a structured model identity
+    assert "claude-code-default" not in model_ids
+
+
+def test_seed_registry_retires_claude_code_default_and_splits_the_smuggle() -> None:
+    """No route keeps the free-text 'claude-code-default' placeholder, and the smuggled
+    'gpt-5.5-xhigh' is split into structured model_id + effort on codex.headless.full."""
+    registry = _json(REGISTRY)
+    routes = {r["route_id"]: r for r in registry["routes"]}
+
+    for route in routes.values():
+        assert route["model_or_engine"] != "claude-code-default", (
+            f"{route['route_id']} still carries the retired placeholder"
+        )
+
+    codex = routes["codex.headless.full"]["execution_descriptor"]
+    assert codex["model_id"] == "gpt-5.5"
+    assert codex["effort"] == "xhigh"
 
 
 def test_seed_registry_keeps_absent_evidence_blocked_unless_explicitly_seeded() -> None:
