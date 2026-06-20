@@ -3,12 +3,14 @@
   "status": "operative_required",
   "scope": "Screwm aggregate runtime ports retained after Logos/Tauri frontend retirement",
   "runtime_witness_policy": "This source contract proves owner and test anchors only. Live capture, restart, broadcast egress, and audiovisual quality remain separate AVSDLC/runtime gates.",
+  "ownership_policy": "Each port declares one owner. carve = DarkPlaces/Screwm visual substrate (cc-cns lane: layout/programme, temporal/glfeedback, camera live-texture, drift currency). carrier = audio governance + recording/HLS egress (stays with the broadcast carrier). Source-only routing, not a runtime boundary. Caveat: camera_resilience_live_texture is carve-owned but its v4l2_stall_recovery anchor (agents/studio_compositor/v4l2_stall_recovery.py) is a carrier air-path concern straddling the boundary; coordinate carve/carrier edits to that file.",
   "retired_surfaces": [
     "logos_tauri_frontend"
   ],
   "required_ports": [
     {
       "id": "audio_governance",
+      "owner": "carrier",
       "required_capabilities": [
         "ducking",
         "vad",
@@ -122,6 +124,7 @@
     },
     {
       "id": "layout_programme_control",
+      "owner": "carve",
       "required_capabilities": [
         "layout_switching",
         "segment_responsibility",
@@ -220,6 +223,7 @@
     },
     {
       "id": "temporal_glfeedback_effects",
+      "owner": "carve",
       "required_capabilities": [
         "glfeedback_chain",
         "pre_fx",
@@ -316,6 +320,7 @@
     },
     {
       "id": "recording_hls_egress",
+      "owner": "carrier",
       "required_capabilities": [
         "hls_branch",
         "no_cache_serving",
@@ -390,6 +395,7 @@
     },
     {
       "id": "camera_resilience_live_texture",
+      "owner": "carve",
       "required_capabilities": [
         "stable_by_id_devices",
         "role_local_fallback",
@@ -472,6 +478,7 @@
     },
     {
       "id": "drift_modulation_currency",
+      "owner": "carve",
       "required_capabilities": [
         "unified_reactivity_export",
         "slotdrift_currency",
