@@ -93,6 +93,33 @@ class Quantization(StrEnum):
     NOT_APPLICABLE = "not_applicable"
 
 
+class Effort(StrEnum):
+    # mirrored from shared.platform_capability_registry.Effort (dependency-direction: the inert
+    # ledger never imports the registry); a value-set drift-pin guards the parity.
+    NONE = "none"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    XHIGH = "xhigh"
+    MAX = "max"
+
+
+class ModelId(StrEnum):
+    # mirrored from shared.platform_capability_registry.ModelId — the structured dated identity that
+    # replaces the coarse free-text model_or_engine for spend metering; drift-pinned to the registry.
+    CLAUDE_OPUS_4_8 = "claude-opus-4-8"
+    CLAUDE_SONNET_4_6 = "claude-sonnet-4-6"
+    CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
+    CLAUDE_FABLE_5 = "claude-fable-5"
+    GPT_5_5 = "gpt-5.5"
+    GPT_5_3_CODEX_SPARK = "gpt-5.3-codex-spark"
+    COMMAND_R_08_2024 = "command-r-08-2024"
+    MISTRAL_MEDIUM_3_5 = "mistral-medium-3.5"
+    GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
+    Z_AI_GLM_5 = "z_ai-glm-5"
+    UNKNOWN = "unknown"
+
+
 class BudgetApproval(StrEnum):
     OPERATOR = "operator"
     LATER_AUTHORITY_PACKET = "later_authority_packet"
@@ -278,8 +305,12 @@ class SpendReceipt(StrictModel):
     budget_id: str | None = None
     provider: str = Field(min_length=1)
     model_or_engine: str | None = None
-    # the local-inference quantization (EXL3 4.0 vs 5.0 bpw) is part of the metered model
-    # identity — separable per receipt and shared with the route's execution_descriptor.
+    # structured execution-axis metering, shared with the route's execution_descriptor:
+    #   model_id  — the structured dated identity (model_or_engine stays as the legacy free text)
+    #   effort    — reasoning effort the spend was incurred at (changes token cost)
+    #   quantization — local-inference EXL3 bpw (separable per receipt)
+    model_id: ModelId | None = None
+    effort: Effort = Effort.NONE
     quantization: Quantization = Quantization.NOT_APPLICABLE
     auth_surface: AuthSurface
     quality_floor: str = Field(min_length=1)
@@ -339,6 +370,8 @@ class SpendReceipt(StrictModel):
                 self.budget_id,
                 self.provider,
                 self.model_or_engine,
+                self.model_id.value if self.model_id is not None else None,
+                self.effort.value,
                 self.quantization.value,
                 self.quality_floor,
                 self.quality_preservation_reason,
@@ -1411,7 +1444,9 @@ __all__ = [
     "BudgetLifecycleState",
     "CapacityPool",
     "DependencyState",
+    "Effort",
     "LocalResourceState",
+    "ModelId",
     "PaidApiBudgetState",
     "PaidRouteEligibility",
     "PaidRouteRequest",
