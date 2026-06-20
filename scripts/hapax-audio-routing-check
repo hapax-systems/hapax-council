@@ -37,12 +37,39 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# ── M3: differential wet-return level witness — pure verdict core + test seam ──
+# Chain 2 verifies the S-4 wet-return LINKS exist but not that signal flows; a
+# dead S-4 (links up, analog return silent) used to pass GREEN. The witness
+# samples the DRY send and the WET return and compares them differentially, so
+# it only fails on the green-while-silent state and never at idle:
+#   dry < floor                  -> IDLE  (no voice being sent; cannot witness)
+#   dry >= floor and wet < floor -> DEAD  (voice sent into the S-4, none returns)
+#   both >= floor                -> LIVE  (wet return alive)
+wet_return_verdict() {
+    local dry="${1:-0}" wet="${2:-0}" floor="${3:-0.001}"
+    awk -v dry="$dry" -v wet="$wet" -v floor="$floor" 'BEGIN {
+        if (dry + 0 < floor + 0) { print "IDLE"; exit 0 }
+        if (wet + 0 < floor + 0) { print "DEAD"; exit 0 }
+        print "LIVE"; exit 0
+    }'
+}
+
+# Testable seam: emit the pure verdict and exit BEFORE any PipeWire call, so CI /
+# dev hosts with no audio stack can pin the decision core.
+if [ "${1:-}" = "--wet-return-verdict" ]; then
+    wet_return_verdict "${2:-0}" "${3:-0}" "${4:-0.001}"
+    exit 0
+fi
+
 # mk5 ACP pro-audio node names (pinned by wireplumber 14-hapax-mk5-pro-audio.conf).
 MK5_OUT="alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0"
 MK5_IN="alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0"
 
 GRAPH=$(pw-link -l 2>&1) || { echo -e "${RED}FAIL: PipeWire not running${NC}"; exit 2; }
 FAILURES=0
+# Set when the S-4 wet-return capture link is present; gates the level witness
+# below so it never double-counts the link-down case (Chain 2 owns that).
+S4_WET_RETURN_LINK_OK=0
 
 link_present() {
     local source_port="$1"
@@ -165,6 +192,7 @@ echo "Chain 2: S-4 Wet Voice Return (mk5 IN 3/4 → livestream)"
 if link_present "${MK5_IN}:capture_AUX2" "hapax-voice-wet-capture:input_AUX2" \
     && link_present "${MK5_IN}:capture_AUX3" "hapax-voice-wet-capture:input_AUX3"; then
     check "mk5 IN AUX2/3 → voice-wet-capture (S-4 return)" "PASS"
+    S4_WET_RETURN_LINK_OK=1
 else
     check "mk5 IN AUX2/3 → voice-wet-capture (S-4 return)" "link missing — S-4 wet voice not captured"
 fi
@@ -582,6 +610,54 @@ check_signal_flow() {
     fi
 }
 
+# Fail-closed DIFFERENTIAL witness for the S-4 analog wet return (M3). The
+# advisory checks above only WARN; this one increments FAILURES (exit 1) on the
+# green-while-silent state. It is gated on the wet-return link being present
+# (Chain 2 owns link-down) and is differential — it only fails when dry voice is
+# actively flowing yet the wet return is silent, so it never false-fails at idle.
+# Mode: HAPAX_WET_RETURN_WITNESS=enforce|warn|off (default enforce).
+check_wet_return_witness() {
+    local mode floor dry_line wet_line dry_rms wet_rms verdict
+    mode="${HAPAX_WET_RETURN_WITNESS:-enforce}"
+    [ "$mode" = "off" ] && return 0
+    if [ "${S4_WET_RETURN_LINK_OK:-0}" -ne 1 ]; then
+        echo -e "  ${YELLOW}[SKIP]${NC} S-4 wet-return witness: link absent (Chain 2 owns this)"
+        return 0
+    fi
+    floor="${HAPAX_WET_RETURN_RMS_MIN:-0.001}"
+    if ! dry_line=$(sample_rms_with_parec "$(resolve_parec_target hapax-loudnorm-playback)"); then
+        echo -e "  ${YELLOW}[WARN]${NC} S-4 wet-return witness: cannot sample dry send — cannot witness"
+        FLOW_WARNINGS=$((FLOW_WARNINGS + 1))
+        return 0
+    fi
+    if ! wet_line=$(sample_rms_with_parec "$(resolve_parec_target hapax-voice-wet-playback)"); then
+        # Transient/tooling capture failure is not positive evidence of silence.
+        echo -e "  ${YELLOW}[WARN]${NC} S-4 wet-return witness: cannot sample wet return"
+        FLOW_WARNINGS=$((FLOW_WARNINGS + 1))
+        return 0
+    fi
+    dry_rms=$(printf '%s\n' "$dry_line" | awk '{print $1}')
+    wet_rms=$(printf '%s\n' "$wet_line" | awk '{print $1}')
+    verdict=$(wet_return_verdict "$dry_rms" "$wet_rms" "$floor")
+    case "$verdict" in
+        IDLE)
+            echo -e "  ${GREEN}[OK]${NC}   S-4 wet-return witness: IDLE (no dry voice to witness; dry RMS=$dry_rms)"
+            ;;
+        LIVE)
+            echo -e "  ${GREEN}[OK]${NC}   S-4 wet-return witness: LIVE (dry=$dry_rms wet=$wet_rms)"
+            ;;
+        DEAD)
+            if [ "$mode" = "warn" ]; then
+                echo -e "  ${YELLOW}[WARN]${NC} S-4 wet-return SILENT while dry voice flows (dry=$dry_rms wet=$wet_rms < $floor) — S-4 insert dead [witness=warn]"
+                FLOW_WARNINGS=$((FLOW_WARNINGS + 1))
+            else
+                check "S-4 wet-return level (dry voice flows but wet return silent)" \
+                    "dry=$dry_rms wet=$wet_rms below $floor — S-4 insert DEAD, modulated voice NOT on air"
+            fi
+            ;;
+    esac
+}
+
 if ! command -v parec &>/dev/null; then
     echo "  [SKIP] parec not available — signal flow check skipped"
 elif ! command -v python3 &>/dev/null; then
@@ -590,6 +666,7 @@ else
     check_signal_flow "hapax-livestream-tap.monitor" "Livestream tap"
     check_signal_flow "hapax-broadcast-master.monitor" "Broadcast master"
     check_signal_flow "hapax-obs-broadcast-remap" "OBS broadcast remap"
+    check_wet_return_witness
 
     if [ "$FLOW_WARNINGS" -gt 0 ]; then
         echo -e "  ${YELLOW}Signal flow: $FLOW_WARNINGS node(s) below RMS floor or unavailable${NC}"
