@@ -139,3 +139,38 @@ def test_build_packet_blocks_operator_mental_state_in_public_title(
             purpose="x",
             portability_ledger_ref="hkp/13",
         )
+
+
+def test_public_concept_content_crosses_clean(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Positive cross path: a clean public title/description IS allowed across and
+    # appears in the packet's evidence_summaries (the review flagged the absence
+    # of a positive content-crossing assertion).
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Jane Q. Operator")
+    concept = _concept(
+        privacy_class="public",
+        egress_state="public",
+        title="Portable governance primitive",
+        description="A reusable, non-authoritative adoption pattern.",
+    )
+    packet = build_hkp_determination_packet(
+        [concept],
+        reviewer="operator",
+        reviewed_at="2026-06-20T00:00:00Z",
+        purpose="Pilot: share a public HKP capability.",
+        portability_ledger_ref="hkp/13",
+    )
+    assert validate_determination_exchange_packet(packet).allowed
+    assert any("Portable governance primitive" in s for s in packet.evidence_summaries)
+
+
+def test_collect_non_fresh_freshness_marks_failed() -> None:
+    assert collect_hkp_evidence(_concept(freshness="missing")).status == "failed"
+    assert collect_hkp_evidence(_concept(freshness="stale")).status == "ok"
+    assert collect_hkp_evidence(_concept(freshness="fresh")).status == "ok"
+
+
+def test_collect_refuses_public_export_concept() -> None:
+    concept = _concept()
+    concept.posture.public_export_allowed = True
+    with pytest.raises(HkpBridgeRefusal):
+        collect_hkp_evidence(concept)

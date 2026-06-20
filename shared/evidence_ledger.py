@@ -1479,6 +1479,13 @@ def collect_hkp_evidence(
             f"HKP concept {concept.concept_uid} claims may_authorize=True; HKP is "
             "support-non-authoritative and may not cross as authority"
         )
+    if getattr(posture, "public_export_allowed", False):
+        # Structural public-export guard, mirroring hkp_bundle_schema.py's
+        # producer-strict raise: an HKP projection is never public-export.
+        raise HkpBridgeRefusal(
+            f"HKP concept {concept.concept_uid} posture.public_export_allowed=True; "
+            "next-action: HKP is never public-export — fix the projection posture before bridging"
+        )
 
     is_public = posture.privacy_class == "public" and posture.egress_state == "public"
     parts = [
@@ -1543,13 +1550,14 @@ def build_hkp_determination_packet(
 
     if not portability_ledger_ref.strip():
         raise HkpBridgeRefusal(
-            "portability_ledger_ref is required: no HKP packet may reference an "
-            "artifact absent from the portability ledger"
+            "portability_ledger_ref is required: no HKP packet may reference an artifact "
+            "absent from the portability ledger; next-action: add/confirm the HKP row in "
+            "hrl-portability-ledger and pass its ref"
         )
     if not legal_name_guard_operational():
         raise HkpBridgeRefusal(
-            "legal-name guard inoperative (HAPAX_OPERATOR_NAME unset); refusing "
-            "cross-boundary HKP emit"
+            "legal-name guard inoperative; next-action: set HAPAX_OPERATOR_NAME so the "
+            "cross-boundary egress can verify the operator's legal name is absent"
         )
 
     records = [
@@ -1558,6 +1566,28 @@ def build_hkp_determination_packet(
     ]
     evidence_summaries = [record.value_summary for record in records]
     all_public = bool(records) and all(record.public_safe for record in records)
+
+    # Enterprise-audience gate: wrap the evidence as a ClaimRecord scoped to the
+    # enterprise_testbed audience and validate it. This applies the audience
+    # forbidden-inference checks AND the claim-path content scan (cross_boundary
+    # PII + operator mental-state over the claim text + linked evidence) before
+    # the packet is even assembled — a second, audience-aware fail-closed layer.
+    claim = ClaimRecord(
+        claim_id=f"CL-{packet_id}",
+        text=(
+            "HKP support-non-authoritative SDLC projection digest offered to the "
+            "enterprise testbed for adoption review."
+        ),
+        claim_kind="capability",
+        audience_scope=["enterprise_testbed"],
+        evidence_refs=[record.evidence_id for record in records],
+        status="approved_internal",
+    )
+    claim_result = validate_claim_for_audiences(claim, records)
+    if not claim_result.allowed:
+        raise HkpBridgeRefusal(
+            "HKP claim failed enterprise-audience validation: " + ", ".join(claim_result.blockers)
+        )
 
     packet = DeterminationExchangePacket(
         packet_id=packet_id,
