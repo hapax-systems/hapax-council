@@ -4128,6 +4128,14 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
         "members_valid": health.get("members_valid"),
         "families_valid": health.get("families_valid"),
         "failed_members": verdict.receipt.get("failed_members", []),
+        # #6 (review-plane degradation pattern -> the ruler): WITNESS the served
+        # ruler roster on every SCED row so a degraded ruling is auditable and the
+        # analysis can exclude it. served_substitutions>0 means an anthropic (or
+        # other) seat was served by a substitute family on the wire (e.g. gemini
+        # under an Anthropic cap) — the verdict is quarantined below.
+        "served_substitutions": health.get("served_substitutions"),
+        "ruler_substituted": (health.get("served_substitutions") or 0) > 0,
+        "served_models": verdict.receipt.get("served_models", []),
         "mean_score": round(mean_score, 2) if mean_score is not None else None,
         # G4 (producer-DV capture): stamp the in-force criterion C_k alongside the
         # PRE-gate producer mean so each council-decisions ledger row is a complete
@@ -4152,6 +4160,28 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
             len(valid_scores),
             programme_id,
         )
+        return _CoherenceOutcome(
+            passed=False, feedback="", refused=True, council_decisions=decision
+        )
+
+    # #6 review-plane pattern -> the SCED ruler: QUARANTINE a verdict from a
+    # DEGRADED roster. If a family was substituted on the wire (served_substitutions
+    # > 0 — e.g. the anthropic seat answered by gemini under an Anthropic cap), the
+    # frozen ruler did NOT actually convene its genuine family-diverse panel, so the
+    # ruling is invalid data: it can never become a released SCED row. This is the
+    # council analog of the review plane's externally-witnessed degraded-family
+    # outage (loud + recorded on the decision + non-promotable). Refuse, like a
+    # below-quorum REFUSAL — the segment re-rules once the roster is healthy, rather
+    # than stamping a criterion-passing row scored by a substitute family.
+    if (health.get("served_substitutions") or 0) > 0:
+        log.warning(
+            "_council_coherence_check: ruler DEGRADED (served_substitutions=%s, served=%s) "
+            "— QUARANTINED, no release for %s",
+            health.get("served_substitutions"),
+            verdict.receipt.get("served_models"),
+            programme_id,
+        )
+        decision["quarantined"] = "ruler_substituted"
         return _CoherenceOutcome(
             passed=False, feedback="", refused=True, council_decisions=decision
         )
