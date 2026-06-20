@@ -153,6 +153,42 @@ def _composability_gate_accepts_default(monkeypatch: pytest.MonkeyPatch) -> None
     )
 
 
+def test_coherence_check_quarantines_degraded_ruler(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#6 (review-plane degradation pattern -> the SCED ruler): a verdict from a
+    DEGRADED roster (served_substitutions>0 — a seat served by a substitute family
+    under a cap, e.g. anthropic->gemini) is QUARANTINED: refused, no release, even
+    when CONVERGED with high scores. The frozen ruler's validity is its genuine
+    family-diverse panel; a substitute-family ruling is invalid SCED data."""
+    from agents.deliberative_council import engine as council_engine
+    from agents.deliberative_council.models import ConvergenceStatus, CouncilVerdict
+
+    async def _degraded(council_input: Any, mode: Any, rubric: Any, config: Any = None) -> Any:
+        return CouncilVerdict(
+            scores={"coherence": 5, "specificity": 5},
+            confidence_bands={},
+            convergence_status=ConvergenceStatus.CONVERGED,
+            disagreement_log=[],
+            research_findings=[],
+            evidence_matrix=None,
+            receipt={
+                "council_health": {
+                    "members_valid": 6,
+                    "families_valid": 5,
+                    "served_substitutions": 2,
+                },
+                "served_models": ["gemini-3.1-pro-preview", "gemini-3.1-pro-preview"],
+            },
+        )
+
+    monkeypatch.setattr(council_engine, "deliberate", _degraded)
+    outcome = prep._council_coherence_check("a fine and coherent script", "prog-quarantine-1")
+    assert outcome.passed is False
+    assert outcome.refused is True
+    assert outcome.council_decisions["ruler_substituted"] is True
+    assert outcome.council_decisions["served_substitutions"] == 2
+    assert outcome.council_decisions.get("quarantined") == "ruler_substituted"
+
+
 def test_prep_model_is_command_r_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HAPAX_SEGMENT_PREP_MODEL", raising=False)
     assert prep._prep_model() == prep.RESIDENT_PREP_MODEL
