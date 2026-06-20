@@ -2617,6 +2617,47 @@ def test_axis_b_ndcvb_report_for_segment_reads_precomputed_sources() -> None:
     )
 
 
+def test_axis_b_report_lookup_prefers_dissociated_veto_over_earlier_no_veto() -> None:
+    """#4203 codex critical: a dissociated@r veto from ANY source must NOT be
+    masked by an EARLIER non-veto report. prep_session (first source) carries a
+    no-veto report; segment_prep_contract (later source) carries a veto report —
+    the lookup must return the VETO report so the write gate fires."""
+    no_veto = {"dissociated_veto_required": False, "verdict": "corroborated"}
+    veto = {"dissociated_veto_required": True, "verdict": "dissociated"}
+
+    masked = prep._axis_b_ndcvb_report_for_segment(
+        programme=None,
+        prep_session={"axis_b_ndcvb_reports": {"prog-mask": no_veto}},
+        programme_id="prog-mask",
+        prepared_script=["script"],
+        segment_beats=["beat"],
+        segment_prep_contract={"axis_b_ndcvb_reports": {"prog-mask": veto}},
+        segment_prep_contract_report={},
+        segment_live_event_report={},
+        live_event_viability_report={},
+    )
+    assert masked == veto
+    assert prep._axis_b_dissociated_veto_required(masked) is True
+
+    # No veto anywhere -> original source precedence (prep_session first).
+    first = prep._axis_b_ndcvb_report_for_segment(
+        programme=None,
+        prep_session={"axis_b_ndcvb_reports": {"prog-mask": no_veto}},
+        programme_id="prog-mask",
+        prepared_script=["script"],
+        segment_beats=["beat"],
+        segment_prep_contract={
+            "axis_b_ndcvb_reports": {
+                "prog-mask": {"dissociated_veto_required": False, "verdict": "undetermined"}
+            }
+        },
+        segment_prep_contract_report={},
+        segment_live_event_report={},
+        live_event_viability_report={},
+    )
+    assert first == no_veto
+
+
 def test_prep_segment_axis_b_dissociated_veto_writes_diagnostic_only_refusal(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

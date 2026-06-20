@@ -4585,14 +4585,22 @@ def _axis_b_ndcvb_report_for_segment(
     already supplied by the caller/session/programme metadata; the write gate
     below enforces the report's dissociated@r veto when present.
     """
-    for source in (
+    candidates = [
         _axis_b_ndcvb_report_from_mapping(prep_session, programme_id),
         _axis_b_ndcvb_report_from_object(programme, programme_id),
         _axis_b_ndcvb_report_from_object(getattr(programme, "content", None), programme_id),
         _axis_b_ndcvb_report_from_mapping(segment_prep_contract, programme_id),
-    ):
-        if source is not None:
-            return source
+    ]
+    present = [report for report in candidates if report is not None]
+    # codex critical (PR #4203 review): a dissociated@r veto from ANY source must
+    # NOT be masked by an EARLIER non-veto report (corroborated/UNDETERMINED).
+    # Prefer a veto-requiring report so the write gate below fires whenever any
+    # source demands it; otherwise keep the original source precedence.
+    for report in present:
+        if _axis_b_dissociated_veto_required(report):
+            return report
+    if present:
+        return present[0]
     _ = (
         prepared_script,
         segment_beats,
