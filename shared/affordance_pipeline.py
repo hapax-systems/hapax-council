@@ -1351,7 +1351,12 @@ class AffordancePipeline:
             return cached
         from shared.config import embed_safe
 
-        embedding = embed_safe(text, prefix="search_query")
+        # block_gpu=False: this runs synchronously inside the logos-api asyncio
+        # event loop (reactive _handle_change -> select -> _get_embedding). A
+        # BLOCKING GPU-semaphore acquire here wedges the whole :8051 API when the
+        # GPU is saturated (the logos-api hang). On contention the embed returns
+        # None and _select_candidates falls back to keyword matching.
+        embedding = embed_safe(text, prefix="search_query", block_gpu=False)
         if embedding is not None:
             self._embed_cache.put_by_text(text, embedding)
         return embedding

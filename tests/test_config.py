@@ -119,6 +119,32 @@ def test_embed_dimension_validation_correct():
         assert len(result) == 768
 
 
+def test_embed_safe_nonblocking_skips_on_gpu_contention():
+    """block_gpu=False -> embed_safe returns None (skips) instead of blocking when the
+    GPU semaphore is saturated. Regression for the logos-api :8051 event-loop hang
+    (the reactive affordance-recruitment embed on the asyncio loop)."""
+    import contextlib
+
+    from shared.config import embed_safe
+
+    @contextlib.contextmanager
+    def fake_slot(block: bool = True):
+        if not block:
+            raise BlockingIOError("all GPU slots busy")
+        yield
+
+    mock_client = MagicMock()
+    mock_client.embed.return_value = {"embeddings": [[0.1] * 768]}
+    with (
+        patch("shared.config._get_ollama_client", return_value=mock_client),
+        patch("shared.gpu_semaphore.gpu_slot", fake_slot),
+    ):
+        # saturated GPU + non-blocking -> skip (None), NEVER blocks the loop
+        assert embed_safe("hi", block_gpu=False) is None
+        # default (blocking) still acquires + embeds normally
+        assert embed_safe("hi") == [0.1] * 768
+
+
 # ── Centralized path constants ──────────────────────────────────────────────
 
 
