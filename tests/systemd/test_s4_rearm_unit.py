@@ -53,6 +53,9 @@ def test_rearm_service_structure() -> None:
         "%h/.cache/hapax/source-activation/worktree/scripts/hapax-s4-arm"
     )
     assert "uv run" not in exec_start
+    assert (
+        "/home/hapax" not in exec_start
+    )  # use the %h specifier, not a hardcoded home (review: gemini-1)
     # separate receipt so the recurring re-arm never clobbers the boot/manual one
     assert "--receipt-path /dev/shm/hapax-audio/s4-rearm-receipt.json" in exec_start
     assert "s4-boot-arm-receipt.json" not in exec_start
@@ -71,6 +74,9 @@ def test_rearm_timer_is_recurring_and_restart_resilient() -> None:
     assert timer.get("Timer", "OnUnitActiveSec") == "120s"
     assert timer.get("Timer", "Persistent") == "true"
     assert timer.get("Install", "WantedBy") == "timers.target"
+    # No Requires= on the timer — it would pull the service immediately at boot,
+    # bypassing the OnBootSec settle delay (review: gemini-1).
+    assert not timer.has_option("Unit", "Requires")
 
 
 def test_daimonion_dropin_pulls_rearm_on_restart() -> None:

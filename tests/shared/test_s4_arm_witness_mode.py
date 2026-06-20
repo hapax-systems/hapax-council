@@ -149,3 +149,39 @@ def test_default_witness_mode_is_tone() -> None:
             probe_runner=runner,
         )
     assert calls == ["initial_marker_witness"]  # default behaviour = tone
+
+
+# ── CLI flag + silent-path red branch (review-finding coverage) ───────────────
+
+
+def test_parse_args_witness_mode_flag_and_default() -> None:
+    # The systemd recurring unit depends on this flag resolving to "none"; a
+    # silent revert to the "tone" default would beep 1397 Hz to air every tick.
+    assert s4_arm.parse_args(["--witness-mode", "none"]).witness_mode == "none"
+    assert s4_arm.parse_args([]).witness_mode == "tone"
+
+
+def test_none_mode_red_when_ladder_emits_but_not_ok() -> None:
+    # Silent path with a present port but a FAILED ladder assertion (not
+    # midi_output_missing): verdict must still be red, and still no probe.
+    runner, calls = _spy()
+    bad = s4_arm.MidiAssertionResult(
+        expected=5,
+        emitted=3,
+        ok=False,
+        without_program_change=True,
+        failures=("ladder_emit_failed:index=3",),
+    )
+    with (
+        patch("shared.s4_midi._MIDO_AVAILABLE", True),
+        patch("shared.s4_arm.assert_gain_ladder", return_value=bad),
+    ):
+        receipt = s4_arm.run_s4_arm(
+            witness_mode="none",
+            receipt_path=None,
+            midi_output_factory=lambda: MagicMock(),
+            probe_runner=runner,
+        )
+    assert receipt["verdict"] == "red"
+    assert receipt["ladder_assertion"]["ok"] is False
+    assert calls == []

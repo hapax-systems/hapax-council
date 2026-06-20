@@ -1,6 +1,9 @@
 [Unit]
 Description=Re-assert the S-4 gain ladder silently at boot + every 2 minutes
-Requires=hapax-s4-rearm.service
+# No Requires=hapax-s4-rearm.service: a .timer activates its same-named .service
+# on schedule by default. A Requires= here would also pull the service the moment
+# the timer starts at boot, bypassing the OnBootSec=60s settle delay and exposing
+# it to the cold-boot enumeration race (review finding, gemini-1).
 
 [Timer]
 # OnBootSec=60s lets PipeWire/WirePlumber + the S-4 USB-MIDI enumerate before
@@ -12,6 +15,9 @@ Requires=hapax-s4-rearm.service
 OnBootSec=60s
 OnUnitActiveSec=120s
 AccuracySec=10s
+# Persistent= is a no-op on monotonic timers (OnBootSec/OnUnitActiveSec, no
+# OnCalendar) — kept only to match the hapax-audio-topology-assertion.timer
+# precedent. OnUnitActiveSec is what actually carries the recurrence.
 Persistent=true
 
 [Install]
