@@ -12,6 +12,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,6 +31,12 @@ from executor_contract import (  # noqa: E402
     supports_route,
 )
 
+from shared.capability_adapter_protocol import (
+    AntigravAdapter,
+    CapabilityAdapter,
+    ClaudeAdapter,
+    CodexAdapter,
+)
 from shared.coord_dispatch import (
     CoordDispatchError,
     DispatchLaunchRequest,
@@ -46,7 +53,9 @@ from shared.dispatcher_policy import (
     route_decision_receipt_payload,
     write_route_decision_receipt,
 )
+from shared.failure_classification import FailureCode, FailureReceipt
 from shared.frontmatter import parse_frontmatter as parse_document_frontmatter
+from shared.quota_wall import QUOTA_WALL_EXIT_CODE
 from shared.route_metadata_schema import assess_route_metadata
 from shared.sdlc_lifecycle import TASK_DISPATCHABLE_STATUSES
 from shared.sdlc_pressure_gate import (
@@ -54,6 +63,10 @@ from shared.sdlc_pressure_gate import (
     admission_state,
     sdlc_slice_wrap,
     wait_until_admitted,
+)
+from shared.worker_failure_witness import (
+    append_failure_receipt_record,
+    update_worker_family_availability,
 )
 
 MUTATION_TOKENS = {
@@ -1203,6 +1216,89 @@ def _await_sdlc_admission(args: argparse.Namespace) -> None:
     print(f"sdlc-pressure cleared ({final.state}): proceeding with {args.task}", file=sys.stderr)
 
 
+# Worker-lane terminal-failure classification -> guarded family-availability witness
+# (cc-task capability-adapter-worker-path-classify-failure). Best-effort + strictly FAIL-OPEN:
+# classification NEVER changes the dispatch returncode or outcome. The guard, single-key write, and
+# no-sibling-flip invariants live in shared.worker_failure_witness.
+_WORKER_FAILURE_ADAPTERS: dict[str, type[CapabilityAdapter]] = {
+    "claude": ClaudeAdapter,
+    "codex": CodexAdapter,
+    "antigrav": AntigravAdapter,
+}
+
+
+def _read_worker_failure_text(platform: str, mode: str, lane: str) -> str:
+    """Best-available worker error text. Claude headless writes a per-lane output.jsonl
+    (LOG_DIR=~/.cache/hapax/claude-headless/<role>); read its tail so the adapter can classify the
+    quota/auth/transient signature. Soft coupling — a missing/unreadable file yields '' (-> UNKNOWN,
+    no witness), never an error."""
+
+    if platform == "claude" and mode == "headless":
+        out = Path.home() / ".cache" / "hapax" / "claude-headless" / lane / "output.jsonl"
+        try:
+            return "\n".join(out.read_text(encoding="utf-8").splitlines()[-50:])
+        except OSError:
+            return ""
+    return ""
+
+
+def _classify_and_witness_terminal_failure(
+    rc: int, *, task_id: str, lane: str, platform: str, mode: str, profile: str
+) -> None:
+    """Append a classification receipt + a GUARDED family-availability witness for a terminal worker
+    failure. Caller wraps this in try/except (fail-open)."""
+
+    route_id = f"{platform}.{mode}.{profile}"
+    text = _read_worker_failure_text(platform, mode, lane)
+    adapter_cls = _WORKER_FAILURE_ADAPTERS.get(platform)
+    if adapter_cls is not None:
+        receipt = adapter_cls().classify_failure(text, process_failed=True, route_id=route_id)
+    else:
+        receipt = FailureReceipt(
+            code=FailureCode.UNKNOWN, raw_signal=text, platform=platform, route_id=route_id
+        )
+    # The headless supervisor's quota-wall exit code is a high-confidence QUOTA signal even when the
+    # output.jsonl tail did not capture the rate-limit line (fast terminal failure).
+    code = FailureCode.QUOTA_EXHAUSTION if rc == QUOTA_WALL_EXIT_CODE else receipt.code
+    if code is not receipt.code:
+        receipt = receipt.model_copy(update={"code": code})
+    now_iso = datetime.now(UTC).isoformat()
+    append_failure_receipt_record(
+        task_id=task_id, lane=lane, returncode=rc, receipt=receipt, now_iso=now_iso
+    )
+    update_worker_family_availability(family=platform, code=code, now_iso=now_iso)
+
+
+def classify_and_witness_launch(
+    launch_fn: Callable[[], int],
+    *,
+    task_id: str,
+    lane: str,
+    platform: str,
+    mode: str,
+    profile: str,
+) -> int:
+    """Run the worker spawn ``launch_fn``; on a TERMINAL failure (rc != 0) classify it + write the
+    guarded family-availability witness. Strictly FAIL-OPEN — classification NEVER changes the
+    returncode or the dispatch outcome (coord_dispatch still records the terminal event). Returns
+    ``launch_fn``'s returncode verbatim. Module-level (not nested) so it is unit-testable."""
+
+    rc = launch_fn()
+    if rc != 0:
+        try:
+            _classify_and_witness_terminal_failure(
+                rc,
+                task_id=task_id,
+                lane=lane,
+                platform=platform,
+                mode=mode,
+                profile=profile,
+            )
+        except Exception:  # noqa: BLE001 — classification must never break dispatch
+            pass
+    return rc
+
+
 def launch_claude_headless(task_id: str, lane: str, prompt: str, route: PlatformPath) -> int:
     launcher = Path(
         os.environ.get(
@@ -2046,7 +2142,15 @@ def main(argv: list[str] | None = None) -> int:
                         event_log=coord_event_log_from_env(),
                         idempotency_key=args.idempotency_key,
                     ),
-                    run_platform_launch,
+                    functools.partial(
+                        classify_and_witness_launch,
+                        run_platform_launch,
+                        task_id=args.task,
+                        lane=args.lane,
+                        platform=args.platform,
+                        mode=args.mode,
+                        profile=args.profile,
+                    ),
                 )
                 rc = dispatch_launch.launch_returncode
             except CoordDispatchError as exc:

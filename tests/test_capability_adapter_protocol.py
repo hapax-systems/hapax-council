@@ -249,6 +249,14 @@ def test_claude_classify_failure_table() -> None:
         is FailureCode.QUOTA_EXHAUSTION
     )
     assert adapter.classify_failure("usage limit reached").code is FailureCode.QUOTA_EXHAUSTION
+    # the actual Claude Code phrasing (verb before 'limit') — the common case the old pattern missed
+    assert (
+        adapter.classify_failure("You've hit your usage limit · resets 5pm").code
+        is FailureCode.QUOTA_EXHAUSTION
+    )
+    assert (
+        adapter.classify_failure("Error: RESOURCE_EXHAUSTED").code is FailureCode.QUOTA_EXHAUSTION
+    )
     assert adapter.classify_failure("invalid x-api-key provided").code is FailureCode.AUTH_FAILURE
     assert adapter.classify_failure("Error: overloaded_error (529)").code is FailureCode.TRANSIENT
     unknown = adapter.classify_failure("a perfectly ordinary review of some code")

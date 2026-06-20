@@ -4383,3 +4383,17 @@ _ReviewSeatAdapter
 _AntigravAdapter
 _ClaudeAdapter
 _CodexAdapter
+
+# worker_failure_witness (capability-adapter-worker-path): the receipt-append + guarded
+# family-availability witness are invoked by the extensionless launcher
+# scripts/hapax-methodology-dispatch (classify_and_witness_launch), which vulture does not scan as a
+# static importer. Reference them so the unused-callable gate sees the use.
+from shared.worker_failure_witness import (  # noqa: E402
+    append_failure_receipt_record as _append_failure_receipt_record,
+)
+from shared.worker_failure_witness import (  # noqa: E402
+    update_worker_family_availability as _update_worker_family_availability,
+)
+
+_append_failure_receipt_record
+_update_worker_family_availability
