@@ -4328,11 +4328,3 @@ try:
     _adapter_classify_failure
 except ImportError:
     pass
-
-# failure_code_for_zai maps a Z.ai error_class -> FailureCode; the public mapping API consumed by the
-# forthcoming glmcp-telemetry + worker-path adapter slices (and the unit tests), no static caller yet.
-from shared.failure_classification import (
-    failure_code_for_zai as _adapter_failure_code_for_zai,  # noqa: F401, E402
-)
-
-_adapter_failure_code_for_zai

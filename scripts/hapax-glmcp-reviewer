@@ -29,7 +29,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from shared.failure_classification import ZAI_ERROR_CLASS_BY_CODE  # noqa: E402
+from shared.failure_classification import (  # noqa: E402
+    ZAI_ERROR_CLASS_BY_CODE,
+    FailureCode,
+    failure_code_for_zai,
+)
 
 DEFAULT_SECRET_ENTRY = "glmcp/api-key"
 DEFAULT_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
@@ -81,6 +85,9 @@ class ZaiErrorInfo:
     action: str
     resets_at: str | None
     message: str | None
+    # the shared structured taxonomy code, derived from error_class (telemetry; format_zai_error
+    # does not read it, so the formatted ApiError string is unchanged).
+    failure_code: FailureCode = FailureCode.UNKNOWN
 
 
 class NoRedirectHTTPHandler(urllib.request.HTTPRedirectHandler):
@@ -353,6 +360,7 @@ def classify_zai_error(status: int, detail: str) -> ZaiErrorInfo:
         action=action,
         resets_at=resets_at,
         message=message,
+        failure_code=failure_code_for_zai(error_class),
     )
 
 

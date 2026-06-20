@@ -224,6 +224,25 @@ def test_zai_business_error_code_classification(
     assert info.action == expected_action
 
 
+def test_classify_zai_error_derives_shared_failure_code() -> None:
+    """classify_zai_error derives the shared FailureCode live (not just imports the table). cc-task
+    pins 1310/1312/1313 -> QUOTA_EXHAUSTION / PROVIDER_OUTAGE / FAIR_USE_RESTRICTED; the 5xx fallback
+    -> PROVIDER_OUTAGE; the terminal api_error -> UNKNOWN (no auto-degrade)."""
+    module = _load_module()
+    from shared.failure_classification import FailureCode
+
+    def code_for(zai_code: str) -> FailureCode:
+        return module.classify_zai_error(
+            429, json.dumps({"error": {"code": zai_code, "message": "m"}})
+        ).failure_code
+
+    assert code_for("1310") is FailureCode.QUOTA_EXHAUSTION
+    assert code_for("1312") is FailureCode.PROVIDER_OUTAGE
+    assert code_for("1313") is FailureCode.FAIR_USE_RESTRICTED
+    assert module.classify_zai_error(503, "down").failure_code is FailureCode.PROVIDER_OUTAGE
+    assert module.classify_zai_error(418, "weird").failure_code is FailureCode.UNKNOWN
+
+
 @pytest.mark.parametrize(
     ("status", "detail", "expected_class", "expected_action"),
     [

@@ -2298,3 +2298,61 @@ def test_gemini_review_family_uses_agy_wrapper_not_legacy_cli():
     assert "--print" in wrapper
     assert "--model" in wrapper
     assert "agy" in wrapper
+
+
+class TestClassifyFailureReceipt:
+    """The additive classify_failure() helper — the review-plane measurement-spine API. It must mirror
+    the dispatch priority (quota > route > provider > else) and never auto-degrade (UNKNOWN default).
+    These pin the branch mapping + priority so a future reorder cannot silently diverge the receipt
+    code from the dispatch verdict."""
+
+    def test_quota_wall_maps_to_quota_exhaustion_lossless(self) -> None:
+        rt = _load_review_team_module()
+        from shared.failure_classification import FailureCode
+
+        receipt = rt.classify_failure(
+            "You've hit your weekly limit · resets 5pm America/Chicago",
+            process_failed=True,
+            platform="claude",
+            route_id="claude.headless.opus",
+        )
+        assert receipt.code is FailureCode.QUOTA_EXHAUSTION
+        assert receipt.raw_signal.startswith("You've hit")  # lossless
+        assert receipt.platform == "claude" and receipt.route_id == "claude.headless.opus"
+
+    def test_route_unavailable_maps_to_route_unavailable(self) -> None:
+        rt = _load_review_team_module()
+        from shared.failure_classification import FailureCode
+
+        receipt = rt.classify_failure(
+            "IneligibleTierError: client tier not allowed", process_failed=True
+        )
+        assert receipt.code is FailureCode.ROUTE_UNAVAILABLE
+
+    def test_provider_outage_maps_to_provider_outage(self) -> None:
+        rt = _load_review_team_module()
+        from shared.failure_classification import FailureCode
+
+        receipt = rt.classify_failure("HTTP 503; service unavailable", process_failed=True)
+        assert receipt.code is FailureCode.PROVIDER_OUTAGE
+
+    def test_no_classifier_fires_defaults_to_unknown_no_degrade(self) -> None:
+        rt = _load_review_team_module()
+        from shared.failure_classification import FailureCode
+
+        # not a process failure -> the anti-forge short-circuits fire -> nothing classifies -> UNKNOWN
+        receipt = rt.classify_failure(
+            "model prose mentioning quota and overload", process_failed=False
+        )
+        assert receipt.code is FailureCode.UNKNOWN
+
+    def test_route_takes_priority_over_provider_outage(self) -> None:
+        rt = _load_review_team_module()
+        from shared.failure_classification import FailureCode
+
+        # a text that fires BOTH is_reviewer_route_unavailable AND is_provider_outage; classify_failure
+        # checks route before provider (mirroring the dispatch else-if), so route must win.
+        text = "HTTP 503 service unavailable; IneligibleTierError"
+        assert rt.is_reviewer_route_unavailable(text, process_failed=True)
+        assert rt.is_provider_outage(text, process_failed=True)
+        assert rt.classify_failure(text, process_failed=True).code is FailureCode.ROUTE_UNAVAILABLE

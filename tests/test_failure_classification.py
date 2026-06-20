@@ -100,6 +100,12 @@ def test_structured_allowlists_are_covered_by_code_map_or_fallback_ladder() -> N
     assert not missing, f"structured allowlist classes not producible anywhere: {sorted(missing)}"
 
 
+def test_quota_and_provider_outage_allowlists_are_disjoint() -> None:
+    """The QUOTA and PROVIDER_OUTAGE class buckets must not overlap — a class in both would make
+    is_quota_wall and is_provider_outage fight over the same signal and the dispatch verdict ambiguous."""
+    assert STRUCTURED_QUOTA_ERROR_CLASSES.isdisjoint(STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES)
+
+
 def test_zai_table_has_twenty_one_entries() -> None:
     # the verbatim table sourced from hapax-glmcp-reviewer (21 codes); guards an accidental edit
     assert len(ZAI_ERROR_CLASS_BY_CODE) == 21
