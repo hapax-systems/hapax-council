@@ -1252,7 +1252,11 @@ def _classify_and_witness_terminal_failure(
     text = _read_worker_failure_text(platform, mode, lane)
     adapter_cls = _WORKER_FAILURE_ADAPTERS.get(platform)
     if adapter_cls is not None:
-        receipt = adapter_cls().classify_failure(text, process_failed=True, route_id=route_id)
+        # exit_code feeds the antigrav launcher exit-code table; text-classifier adapters
+        # (claude/codex) ignore it and classify from the output text.
+        receipt = adapter_cls().classify_failure(
+            text, process_failed=True, route_id=route_id, exit_code=rc
+        )
     else:
         receipt = FailureReceipt(
             code=FailureCode.UNKNOWN, raw_signal=text, platform=platform, route_id=route_id

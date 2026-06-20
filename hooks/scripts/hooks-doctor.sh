@@ -37,7 +37,7 @@ COGNITION_MARKER="is_cognition_path()"
 # (cc-task-gate-bootstrap.py, section 3b), plus the doctor itself. SINGLE source
 # of truth for deploy + health-check, so a new impl dependency is registered in
 # exactly one place and can never be silently dropped from the deployed gate.
-CLOSURE_SIBLINGS=(agent-role.sh escape-grant.sh cc-task-gate-bootstrap.py hooks-doctor.sh)
+CLOSURE_SIBLINGS=(agent-role.sh escape-grant.sh hapax_check_enable_latch.sh cc-task-gate-bootstrap.py hooks-doctor.sh)
 
 MODE=session
 FROM=""

@@ -29,6 +29,10 @@ def _base_env(tmp_path: Path) -> dict[str, str]:
             "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
             "HAPAX_VIBE_WORKTREE_ROOT": str(tmp_path / "projects"),
             "XDG_CACHE_HOME": str(tmp_path / "cache"),
+            # Bypass the governed enable-latch (capability-adapter-antigrav-glue): these tests
+            # exercise agy wiring / AGENTS.md / tmux, not the latch (which is covered by
+            # test_hapax_antigrav_gate.py). Without this the default-deny latch refuses (exit 7).
+            "HAPAX_ANTIGRAV_ALLOW": "1",
         }
     )
     return env

@@ -244,6 +244,7 @@ class CapabilityAdapter:
         model_stdout: str = "",
         route_id: str | None = None,
         error_class: str | None = None,
+        exit_code: int | None = None,
     ) -> FailureReceipt:
         """Overridable. Map a platform failure signal to a lossless :class:`FailureReceipt`.
 
@@ -323,6 +324,7 @@ class ReviewSeatAdapter(CapabilityAdapter):
         model_stdout: str = "",
         route_id: str | None = None,
         error_class: str | None = None,
+        exit_code: int | None = None,
     ) -> FailureReceipt:
         code = failure_code_for_zai(error_class) if error_class else FailureCode.UNKNOWN
         return FailureReceipt(
@@ -349,6 +351,7 @@ class ClaudeAdapter(WorkerAdapter, SendCapableAdapter):
         model_stdout: str = "",
         route_id: str | None = None,
         error_class: str | None = None,
+        exit_code: int | None = None,
     ) -> FailureReceipt:
         return FailureReceipt(
             code=_classify_cli_failure(text, model_stdout),
@@ -372,6 +375,7 @@ class CodexAdapter(WorkerAdapter, SendCapableAdapter):
         model_stdout: str = "",
         route_id: str | None = None,
         error_class: str | None = None,
+        exit_code: int | None = None,
     ) -> FailureReceipt:
         return FailureReceipt(
             code=_classify_cli_failure(text, model_stdout),
@@ -382,10 +386,51 @@ class CodexAdapter(WorkerAdapter, SendCapableAdapter):
         )
 
 
+# Antigrav LAUNCHER exit codes (scripts/hapax-antigrav) -> FailureCode. Only the two codes with a
+# genuine availability/claim meaning are mapped; usage/env/setup errors (2/3/5/6/9) stay UNKNOWN
+# (no auto-degrade). Verbatim from the launcher: exit 4 = agy binary not found (route gone),
+# exit 8 = cc-claim failed (claim conflict — the reserved CLAIM_CONFLICT code's first producer).
+_ANTIGRAV_EXIT_CODE_TO_FAILURE: dict[int, FailureCode] = {
+    4: FailureCode.ROUTE_UNAVAILABLE,
+    8: FailureCode.CLAIM_CONFLICT,
+}
+
+
 class AntigravAdapter(WorkerAdapter):
     """Antigrav worker lane: a WorkerAdapter that does NOT mix in :class:`SendCapableAdapter`, so it
-    has no ``send`` (criterion: "antigrav adapter has no send"). The per-platform classify_failure
-    table + preflight are fleshed out by the antigrav-glue slice; here it is pure reuse.
+    has no ``send`` (criterion: "antigrav adapter has no send"). Interactive-only (the ``agy`` CLI).
+
+    ``classify_failure`` maps the launcher's exit codes to a FailureCode (UNKNOWN default, lossless).
+    Neither mapped code (ROUTE_UNAVAILABLE/CLAIM_CONFLICT) is in the worker-availability degrade
+    allowlist, so an antigrav failure yields a receipt but never degrades family availability.
+
+    AUTHORITY EXCLUSION (#3802): the antigrav PreToolUse gate (wired into agy's hooks.json) covers
+    ONLY agy's native mutation tools. Direct IDE Edit/Write is outside agy's hook mechanism and thus
+    outside this adapter's gated authority — closing it would require Claude Code settings.json
+    wiring, not agy hooks.json. A scoped, documented exclusion, not a silent gap.
     """
 
     PLATFORM: ClassVar[Platform] = Platform.ANTIGRAV
+
+    def classify_failure(
+        self,
+        text: str,
+        *,
+        process_failed: bool = False,
+        model_stdout: str = "",
+        route_id: str | None = None,
+        error_class: str | None = None,
+        exit_code: int | None = None,
+    ) -> FailureReceipt:
+        code = (
+            _ANTIGRAV_EXIT_CODE_TO_FAILURE.get(exit_code, FailureCode.UNKNOWN)
+            if exit_code is not None
+            else FailureCode.UNKNOWN
+        )
+        return FailureReceipt(
+            code=code,
+            raw_signal=text,
+            platform=self.PLATFORM.value,
+            route_id=route_id,
+            error_class=error_class,
+        )
