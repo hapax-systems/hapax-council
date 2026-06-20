@@ -247,6 +247,22 @@ AXIS_B_NDCVB_REPORT_MAP_KEYS = (
     "ndcvb_axis_b_reports",
     "axis_b_reports",
 )
+AXIS_B_DISSOCIATED_VETO_REASON = "axis_b_dissociated_veto"
+AXIS_B_DISSOCIATED_VETO_NOT_LOADABLE = "axis-B NDCVB dissociated@r honesty veto"
+AXIS_B_DISSOCIATED_VETO_NEXT_ACTION = (
+    "Inspect the preserved Axis-B NDCVB report, withhold this segment from release, "
+    "revise the candidate or source basis, and re-run the Axis-B scorer before prep release."
+)
+AXIS_B_NDCVB_REPORT_KEYS = (
+    "axis_b_ndcvb_report",
+    "ndcvb_axis_b_report",
+    "axis_b_report",
+)
+AXIS_B_NDCVB_REPORT_MAP_KEYS = (
+    "axis_b_ndcvb_reports",
+    "ndcvb_axis_b_reports",
+    "axis_b_reports",
+)
 PREP_STATUS_VERSION = 1
 PREP_STATUS_FILENAME = "prep-status.json"
 # A3: per-day store for downstream council/disconfirmation substance rationale,
@@ -3256,6 +3272,77 @@ def prep_segment(
         )
         return None
 
+    axis_b_ndcvb_report = _axis_b_ndcvb_report_for_segment(
+        programme=programme,
+        prep_session=prep_session,
+        programme_id=prog_id,
+        prepared_script=script,
+        segment_beats=[str(item) for item in beats],
+        segment_prep_contract=segment_prep_contract,
+        segment_prep_contract_report=segment_prep_contract_report,
+        segment_live_event_report=segment_live_event_report,
+        live_event_viability_report=live_event_viability_report,
+    )
+    if _axis_b_dissociated_veto_required(axis_b_ndcvb_report):
+        log.warning("prep_segment: Axis-B NDCVB dissociated@r veto for %s — no release", prog_id)
+        diagnostic_path = prep_dir / _programme_artifact_name(
+            prog_id,
+            suffix=".axis-b-dissociated-veto.json",
+        )
+        boundary = _diagnostic_boundary_contract()
+        diagnostic = {
+            "schema_version": PREP_ARTIFACT_SCHEMA_VERSION,
+            "record_type": "prep_failure_diagnostic",
+            "authority": PREP_DIAGNOSTIC_AUTHORITY,
+            **boundary,
+            "terminal": True,
+            "terminal_status": "refused_no_release",
+            "terminal_reason": AXIS_B_DISSOCIATED_VETO_REASON,
+            "programme_id": prog_id,
+            "role": role,
+            "topic": topic,
+            "segment_beats": list(beats),
+            "prepared_script_candidate": script,
+            "segment_prep_contract_version": SEGMENT_PREP_CONTRACT_VERSION,
+            "segment_prep_contract": segment_prep_contract,
+            "segment_prep_contract_report": segment_prep_contract_report,
+            "segment_live_event_rubric_version": LIVE_EVENT_RUBRIC_VERSION,
+            "segment_live_event_report": segment_live_event_report,
+            "live_event_viability": live_event_viability,
+            "live_event_viability_report": live_event_viability_report,
+            "axis_b_ndcvb_report": dict(axis_b_ndcvb_report or {}),
+            "operator_next_action": AXIS_B_DISSOCIATED_VETO_NEXT_ACTION,
+            "prepped_at": datetime.now(tz=UTC).isoformat(),
+            "prep_session_id": prep_session["prep_session_id"],
+            "model_id": prep_session["model_id"],
+            "prompt_sha256": source_hashes["prompt_sha256"],
+            "seed_sha256": source_hashes["seed_sha256"],
+            "not_loadable_reason": AXIS_B_DISSOCIATED_VETO_NOT_LOADABLE,
+            "boundary_contract": boundary,
+        }
+        diagnostic["artifact_sha256"] = _artifact_hash(diagnostic)
+        tmp = diagnostic_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(diagnostic, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(diagnostic_path)
+        _write_prep_diagnostic_outcome(
+            prep_dir,
+            prep_session=prep_session,
+            programme_id=prog_id,
+            role=role,
+            topic=topic,
+            segment_beats=list(beats),
+            terminal_status="refused_no_release",
+            terminal_reason=AXIS_B_DISSOCIATED_VETO_REASON,
+            not_loadable_reason=AXIS_B_DISSOCIATED_VETO_NOT_LOADABLE,
+            source_hashes=source_hashes,
+            diagnostic_refs=[str(diagnostic_path)],
+            refusal_metadata={
+                "axis_b_ndcvb_report": dict(axis_b_ndcvb_report or {}),
+                "operator_next_action": AXIS_B_DISSOCIATED_VETO_NEXT_ACTION,
+            },
+        )
+        return None
+
     # Save to disk
     out_path = prep_dir / artifact_name
     final_avg = sum(len(b) for b in script) / max(len(script), 1)
@@ -4477,6 +4564,95 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
     return _CoherenceOutcome(
         passed=True, feedback=feedback, refused=False, council_decisions=decision
     )
+
+
+def _axis_b_ndcvb_report_for_segment(
+    *,
+    programme: Any | None,
+    prep_session: Mapping[str, Any] | None,
+    programme_id: str,
+    prepared_script: list[str],
+    segment_beats: list[str],
+    segment_prep_contract: Mapping[str, Any],
+    segment_prep_contract_report: Mapping[str, Any],
+    segment_live_event_report: Mapping[str, Any],
+    live_event_viability_report: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    """Return a precomputed Axis-B NDCVB report for a segment, if one is available.
+
+    This is deliberately a source-only seam: daily segment prep does not invoke
+    NDCVB probes, live endpoints, or model workers here. It only consumes reports
+    already supplied by the caller/session/programme metadata; the write gate
+    below enforces the report's dissociated@r veto when present.
+    """
+    candidates = [
+        _axis_b_ndcvb_report_from_mapping(prep_session, programme_id),
+        _axis_b_ndcvb_report_from_object(programme, programme_id),
+        _axis_b_ndcvb_report_from_object(getattr(programme, "content", None), programme_id),
+        _axis_b_ndcvb_report_from_mapping(segment_prep_contract, programme_id),
+    ]
+    present = [report for report in candidates if report is not None]
+    # codex critical (PR #4203 review): a dissociated@r veto from ANY source must
+    # NOT be masked by an EARLIER non-veto report (corroborated/UNDETERMINED).
+    # Prefer a veto-requiring report so the write gate below fires whenever any
+    # source demands it; otherwise keep the original source precedence.
+    for report in present:
+        if _axis_b_dissociated_veto_required(report):
+            return report
+    if present:
+        return present[0]
+    _ = (
+        prepared_script,
+        segment_beats,
+        segment_prep_contract_report,
+        segment_live_event_report,
+        live_event_viability_report,
+    )
+    return None
+
+
+def _axis_b_ndcvb_report_from_mapping(
+    source: Mapping[str, Any] | None,
+    programme_id: str,
+) -> Mapping[str, Any] | None:
+    if not isinstance(source, Mapping):
+        return None
+    for key in AXIS_B_NDCVB_REPORT_MAP_KEYS:
+        reports = source.get(key)
+        if isinstance(reports, Mapping):
+            report = reports.get(programme_id)
+            if isinstance(report, Mapping):
+                return report
+    for key in AXIS_B_NDCVB_REPORT_KEYS:
+        report = source.get(key)
+        if isinstance(report, Mapping):
+            return report
+    return None
+
+
+def _axis_b_ndcvb_report_from_object(
+    source: Any | None,
+    programme_id: str,
+) -> Mapping[str, Any] | None:
+    if source is None:
+        return None
+    if isinstance(source, Mapping):
+        return _axis_b_ndcvb_report_from_mapping(source, programme_id)
+    for key in AXIS_B_NDCVB_REPORT_MAP_KEYS:
+        reports = getattr(source, key, None)
+        if isinstance(reports, Mapping):
+            report = reports.get(programme_id)
+            if isinstance(report, Mapping):
+                return report
+    for key in AXIS_B_NDCVB_REPORT_KEYS:
+        report = getattr(source, key, None)
+        if isinstance(report, Mapping):
+            return report
+    return None
+
+
+def _axis_b_dissociated_veto_required(report: Mapping[str, Any] | None) -> bool:
+    return isinstance(report, Mapping) and report.get("dissociated_veto_required") is True
 
 
 def _compose_refusal_reason(
