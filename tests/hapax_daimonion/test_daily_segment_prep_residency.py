@@ -1946,6 +1946,78 @@ def test_prep_segment_uncomposable_gate_reject_writes_diagnostic_and_feedback(
     }
 
 
+def test_prep_segment_reframes_uncomposable_into_released_row(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """E2E seam (reproducible): an expository, S2-REJECTED plan is RESCUED by compose-on-reject
+    into a RELEASED row. The gate REJECTS the expository plan, reframe_to_arc proposes an arc, the
+    gate ACCEPTS the reframe, and prep_segment PROPAGATES it (declared_topic / narrative_beat /
+    segment_beats) and SAVES a segment. Pins the reject -> reframe -> propagate -> compose seam +
+    the n>0 exit predicate the unit tests do not cover (the durable form of the live witness)."""
+    import agents.hapax_daimonion.segment_composability_gate as gate
+
+    _patch_axis_b_prep_happy_path(monkeypatch)
+    monkeypatch.setenv(
+        "HAPAX_SEGMENT_PREP_S2_REFRAME", "1"
+    )  # override the residency reframe-off default
+
+    arc_topic = "operator-now is sufficient was the lie src:0 exposes"
+    arc_narrative = "Build from the optional-operator assumption to the receipt that overturns it."
+    arc_beats = [
+        "open on the disputed claim that operator-now is sufficient (src:0)",
+        "trace the specific failure that the absence produced",
+        "resolve: src:0 flips the claim to operator-must-be-present",
+    ]
+
+    def _gate(role: str, topic: str, beats: list, *, timeout: float = 60.0) -> object:
+        # live-shaped: REJECT the expository framing, ACCEPT the reframed arc.
+        if "importance" in topic.lower():
+            return gate.CompositionGateResult(False, "un-composable parallel_list (test)")
+        return gate.CompositionGateResult(True, "composable building arc")
+
+    monkeypatch.setattr(gate, "assess_composability", _gate)
+    monkeypatch.setattr(
+        gate, "reframe_to_arc", lambda *_a, **_k: (arc_topic, arc_narrative, list(arc_beats))
+    )
+
+    content = _ready_content(
+        narrative_beat="A rant on the importance of operator presence and authority",
+        segment_beats=[
+            "Highlight the importance of operator presence",
+            "Emphasize the risks of absence",
+            "Make the case for constant involvement",
+        ],
+        role="rant",
+    )
+    content.declared_topic = "A rant on the importance of operator presence and authority"
+    programme = SimpleNamespace(
+        programme_id="prog-reframe-rescue", role=SimpleNamespace(value="rant"), content=content
+    )
+    session = {"prep_session_id": "seg", "model_id": prep.RESIDENT_PREP_MODEL, "llm_calls": []}
+
+    saved = prep.prep_segment(programme, tmp_path, prep_session=session)
+
+    assert saved is not None  # RELEASED row (n=1) from the rescued plan
+    # propagation: each field gets its semantically-correct reframed value
+    assert content.declared_topic == arc_topic
+    assert content.narrative_beat == arc_narrative  # distinct prose intent, NOT the topic restated
+    assert content.segment_beats == arc_beats
+    assert session.get("s2_reframed_programmes") == ["prog-reframe-rescue"]
+    # the producer-DV journal records BOTH the raw reject AND the reframe-accept
+    s2_rows = [
+        json.loads(line)
+        for line in (tmp_path / prep.COUNCIL_DECISIONS_LEDGER_FILENAME).read_text().splitlines()
+        if line.strip()
+    ]
+    reframe_rows = [
+        r
+        for r in s2_rows
+        if str(r.get("producer_gate", {}).get("reason", "")).startswith("[reframed]")
+    ]
+    assert reframe_rows and reframe_rows[-1]["producer_gate"]["accepted"] is True
+
+
 def test_prep_segment_s2_accept_writes_nonterminal_attempt_before_later_reject(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

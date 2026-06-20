@@ -45,6 +45,7 @@ def _urlopen(*, content: str, finish_reason: str = "stop") -> mock.Mock:
 _BEATS = ["highlight the importance of X", "emphasize the risk", "make the case"]
 _ARC = {
     "topic": "X was treated as optional until src:0 showed it silently breaks the system",
+    "narrative_beat": "Build from the optional-X assumption to the moment src:0 forces its reversal.",
     "beats": [
         "open on the specific claim that X is optional (src:0)",
         "trace the concrete failure that followed",
@@ -56,13 +57,21 @@ _ARC = {
 # ── reframe_to_arc ───────────────────────────────────────────────────────────
 
 
-def test_reframe_parses_topic_and_beats() -> None:
+def test_reframe_parses_topic_narrative_and_beats() -> None:
     with mock.patch("urllib.request.urlopen", _urlopen(content=json.dumps(_ARC))):
         result = reframe_to_arc("rant", "the importance of X", _BEATS)
     assert result is not None
-    new_topic, new_beats = result
+    new_topic, new_narrative, new_beats = result
     assert new_topic == _ARC["topic"]
+    assert new_narrative == _ARC["narrative_beat"]  # distinct prose intent, not the topic restated
     assert new_beats == _ARC["beats"]
+
+
+def test_reframe_narrative_falls_back_to_topic_when_omitted() -> None:
+    payload = {"topic": _ARC["topic"], "beats": _ARC["beats"]}  # no narrative_beat
+    with mock.patch("urllib.request.urlopen", _urlopen(content=json.dumps(payload))):
+        result = reframe_to_arc("rant", "t", _BEATS)
+    assert result == (_ARC["topic"], _ARC["topic"], _ARC["beats"])
 
 
 def test_reframe_none_on_network_error() -> None:
@@ -111,7 +120,9 @@ def test_reframe_none_on_empty_input_beats() -> None:
 
 def test_attempt_reframe_returns_plan_when_recheck_accepts(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
-        gate, "reframe_to_arc", lambda *a, **k: (_ARC["topic"], list(_ARC["beats"]))
+        gate,
+        "reframe_to_arc",
+        lambda *a, **k: (_ARC["topic"], _ARC["narrative_beat"], list(_ARC["beats"])),
     )
     monkeypatch.setattr(
         gate,
@@ -133,7 +144,7 @@ def test_attempt_reframe_returns_plan_when_recheck_accepts(tmp_path, monkeypatch
         reason="parallel_list",
         timeout=5.0,
     )
-    assert result == (_ARC["topic"], _ARC["beats"])
+    assert result == (_ARC["topic"], _ARC["narrative_beat"], _ARC["beats"])
     # The reframe outcome is logged as a second, labeled producer-DV entry.
     assert len(ledger_calls) == 1
     assert ledger_calls[0]["accepted"] is True
@@ -143,7 +154,9 @@ def test_attempt_reframe_returns_plan_when_recheck_accepts(tmp_path, monkeypatch
 
 def test_attempt_reframe_none_when_recheck_rejects(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
-        gate, "reframe_to_arc", lambda *a, **k: (_ARC["topic"], list(_ARC["beats"]))
+        gate,
+        "reframe_to_arc",
+        lambda *a, **k: (_ARC["topic"], _ARC["narrative_beat"], list(_ARC["beats"])),
     )
     monkeypatch.setattr(
         gate,
@@ -167,7 +180,9 @@ def test_attempt_reframe_none_when_recheck_rejects(tmp_path, monkeypatch) -> Non
 def test_attempt_reframe_none_when_recheck_errored(tmp_path, monkeypatch) -> None:
     # A degraded/unverified re-check must NOT air the reframe (it is not a real ACCEPT).
     monkeypatch.setattr(
-        gate, "reframe_to_arc", lambda *a, **k: (_ARC["topic"], list(_ARC["beats"]))
+        gate,
+        "reframe_to_arc",
+        lambda *a, **k: (_ARC["topic"], _ARC["narrative_beat"], list(_ARC["beats"])),
     )
     monkeypatch.setattr(
         gate,

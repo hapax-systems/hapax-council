@@ -256,7 +256,15 @@ def assess_composability(
 # eval model the gate uses, then RE-VERIFY with assess_composability — a bad reframe
 # just fails the gate again, so this never airs an un-composable segment.
 
-_REFRAME_MODEL = os.environ.get("HAPAX_S2_REFRAME_MODEL") or GATE_MODEL
+_REFRAME_MODEL_ENV = "HAPAX_S2_REFRAME_MODEL"
+
+
+def _reframe_model() -> str:
+    """Resolve the reframe model at CALL time (not import) so an env override —
+    or a re-resolved GATE_MODEL — takes effect at runtime."""
+    return os.environ.get(_REFRAME_MODEL_ENV) or GATE_MODEL
+
+
 _REFRAME_MAX_TOKENS_ENV = "HAPAX_S2_REFRAME_MAX_TOKENS"
 # Generous by design: the reframe emits a topic + several beats, and the eval route
 # may serve a REASONING model (the gemini fallback when the Claude seat is down)
@@ -296,18 +304,22 @@ the beats. Do NOT make it expository: forbid "the importance of X", "X is an ass
 last; resolve THAT hook at the end. The topic must NAME the tension/turn the arc resolves, not a label.
 
 Answer ONLY compact JSON, no prose:
-{{"topic": "<one line naming the specific tension/turn>", "beats": ["<beat 1: the specific hook>",
-"<beat 2 builds>", "...", "<final beat: pays off the hook>"]}}"""
+{{"topic": "<one line (<=240 chars) naming the specific tension/turn>",
+"narrative_beat": "<1-2 sentence prose INTENT/direction for the segment (NOT the topic restated)>",
+"beats": ["<beat 1: the specific hook>", "<beat 2 builds>", "...", "<final beat: pays off the hook>"]}}"""
 
 
 def reframe_to_arc(
     role: str, topic: str, beats: list[str], *, reason: str = "", timeout: float = 60.0
-) -> tuple[str, list[str]] | None:
+) -> tuple[str, str, list[str]] | None:
     """Rewrite an expository (parallel-list) plan into a building arc via the capable eval model.
 
-    Returns ``(new_topic, new_beats)`` or ``None`` on any error / empty / malformed response. The
-    CALLER must re-verify the result with :func:`assess_composability` before using it — this function
-    only proposes; it never asserts the rewrite is composable. Best-effort and fail-quiet (a reframe
+    Returns ``(new_topic, new_narrative_beat, new_beats)`` or ``None`` on any error / empty /
+    malformed response. ``new_topic`` is the concrete tension (for ``declared_topic``);
+    ``new_narrative_beat`` is the 1-2 sentence prose intent/direction (for ``narrative_beat`` —
+    distinct from the topic), falling back to the topic only if the model omits it. The CALLER must
+    re-verify the result with :func:`assess_composability` before using it — this function only
+    proposes; it never asserts the rewrite is composable. Best-effort and fail-quiet (a reframe
     failure must never block prep): every error path returns ``None`` so the caller falls back to the
     existing abstain.
     """
@@ -324,7 +336,7 @@ def reframe_to_arc(
     if key:
         headers["Authorization"] = f"Bearer {key}"
     payload = {
-        "model": _REFRAME_MODEL,
+        "model": _reframe_model(),
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": _reframe_max_tokens(),
         "temperature": 0.2,
@@ -350,4 +362,7 @@ def reframe_to_arc(
     new_beats = [str(b).strip() for b in raw_beats if str(b).strip()]
     if len(new_beats) < 2:
         return None
-    return new_topic, new_beats
+    # narrative_beat is a distinct 1-2 sentence prose intent (NOT the topic restated);
+    # fall back to the topic only if the model omits it.
+    new_narrative = str(parsed.get("narrative_beat") or "").strip() or new_topic
+    return new_topic, new_narrative, new_beats

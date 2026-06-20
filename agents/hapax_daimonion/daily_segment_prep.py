@@ -2023,24 +2023,42 @@ def _attempt_s2_reframe(
     beats: list[str],
     reason: str,
     timeout: float,
-) -> tuple[str, list[str]] | None:
+    deadline_monotonic: float | None = None,
+) -> tuple[str, str, list[str]] | None:
     """Reframe an S2-rejected expository plan into an arc via the capable model, RE-VERIFIED by the
-    same gate. Returns ``(new_topic, new_beats)`` iff the reframe PASSES the gate; else ``None``.
+    same gate. Returns ``(new_topic, new_narrative_beat, new_beats)`` iff the reframe PASSES the gate;
+    else ``None``.
 
     Appends a second, labeled producer-DV ledger entry for the reframe outcome — the raw 35B reject
     was already logged by the caller, so the SCED signal records BOTH "did the resident model
     compose?" (no) and "did the system produce a composable segment?" (the reframe verdict).
+
+    The reframe adds TWO synchronous gateway calls (reframe + re-verify); each is bounded to the LIVE
+    remaining prep deadline, and the attempt is skipped entirely when too little budget remains, so the
+    rescue path can never overrun PREP_BUDGET_S near deadline exhaustion.
     """
     from agents.hapax_daimonion.segment_composability_gate import (
         assess_composability,
         reframe_to_arc,
     )
 
-    reframed = reframe_to_arc(role, topic, beats, reason=reason, timeout=timeout)
+    def _remaining() -> float:
+        if deadline_monotonic is None:
+            return timeout
+        return max(0.0, deadline_monotonic - time.monotonic())
+
+    # Need budget for BOTH calls; skip the rescue rather than blow the deadline.
+    if deadline_monotonic is not None and _remaining() < 10.0:
+        return None
+    reframed = reframe_to_arc(
+        role, topic, beats, reason=reason, timeout=max(5.0, min(timeout, _remaining()))
+    )
     if reframed is None:
         return None
-    new_topic, new_beats = reframed
-    recheck = assess_composability(role, new_topic, list(new_beats), timeout=timeout)
+    new_topic, new_narrative, new_beats = reframed
+    recheck = assess_composability(
+        role, new_topic, list(new_beats), timeout=max(5.0, min(timeout, _remaining()))
+    )
     recheck_errored = bool(getattr(recheck, "errored", False))
     _append_s2_composability_ledger(
         prep_dir,
@@ -2054,7 +2072,7 @@ def _attempt_s2_reframe(
     )
     if recheck_errored or not recheck.accept:
         return None
-    return new_topic, list(new_beats)
+    return new_topic, new_narrative, list(new_beats)
 
 
 def prep_segment(
@@ -2178,12 +2196,13 @@ def prep_segment(
                 beats=list(beats),
                 reason=_composability.reason,
                 timeout=_gate_timeout,
+                deadline_monotonic=deadline_monotonic,
             )
             if _reframed is not None:
-                new_topic, new_beats = _reframed
+                new_topic, new_narrative, new_beats = _reframed
                 try:
                     content.declared_topic = new_topic
-                    content.narrative_beat = new_topic
+                    content.narrative_beat = new_narrative
                     content.segment_beats = list(new_beats)
                 except Exception:  # noqa: BLE001 — immutable content: do not air a stale plan
                     log.warning(
