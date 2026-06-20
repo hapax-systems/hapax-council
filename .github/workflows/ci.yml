@@ -267,6 +267,26 @@ jobs:
             git fetch --quiet origin "$PUSH_BEFORE_SHA" || true
             uv run python scripts/check-producer-consumers.py --diff-range "$PUSH_BEFORE_SHA..HEAD"
           fi
+      # system-dynamics map freshness gate. The architecture map
+      # (docs/architecture/system-dynamics-map.* + schemas/system-dynamics-map/)
+      # is codebase-derived, so any structural change can stale it. Its currency
+      # test (test_materialized_semantic_artifacts_are_current) lives in the
+      # merge_group full suite (test-full-shard), which is SKIPPED on
+      # pull_request — so without this gate a structural PR passes PR CI and only
+      # fails once queued, ambushing the merge queue. The materializer is
+      # deterministic and stdlib-only; running it here and diffing shifts the
+      # check left to PR time. Source: scripts/system_dynamics_map_materialize.py,
+      # tests/test_system_dynamics_map_artifacts.py.
+      - name: System-dynamics map freshness gate
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
+        run: |
+          uv run python scripts/system_dynamics_map_materialize.py
+          if ! git diff --quiet -- 'docs/architecture/system-dynamics-map*' 'schemas/system-dynamics-map'; then
+            echo "::error::system-dynamics architecture map is stale. It is codebase-derived and your changes altered it. Fix: run 'uv run python scripts/system_dynamics_map_materialize.py', then 'git add -- docs/architecture/system-dynamics-map.* schemas/system-dynamics-map/' and commit." >&2
+            git --no-pager diff --stat -- 'docs/architecture/system-dynamics-map*' 'schemas/system-dynamics-map' >&2
+            exit 1
+          fi
+          echo "system-dynamics map is fresh."
       - name: Anti-personification linter
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         run: uv run python scripts/lint_personification.py

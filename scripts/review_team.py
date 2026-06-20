@@ -37,6 +37,18 @@ from typing import Any
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.failure_classification import (  # noqa: E402
+    STRUCTURED_PROVIDER_OUTAGE_ACTIONS,
+    STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES,
+    STRUCTURED_QUOTA_ACTIONS,
+    STRUCTURED_QUOTA_ERROR_CLASSES,
+    FailureCode,
+    FailureReceipt,
+)
+
 DEFAULT_REGISTRY_PATH = REPO_ROOT / "config" / "review-lenses" / "registry.yaml"
 LENS_DIR = REPO_ROOT / "config" / "review-lenses"
 
@@ -124,34 +136,11 @@ _STRUCTURED_ZAI_ENVELOPE_RE = re.compile(
     re.IGNORECASE,
 )
 _STRUCTURED_FIELD_VALUE_RE = re.compile(r"\A[A-Za-z0-9_:-]+\Z")
-_STRUCTURED_QUOTA_ERROR_CLASSES = frozenset(
-    {
-        "account_balance_or_arrears",
-        "account_hard_hold",
-        "daily_limit_exhausted",
-        "fair_use_restricted",
-        "plan_model_unavailable",
-        "quota_exhausted",
-        "rate_limited",
-        "rate_limited_concurrency",
-        "rate_limited_frequency",
-        "subscription_expired",
-    }
-)
-_STRUCTURED_QUOTA_ACTIONS = frozenset(
-    {
-        "backoff",
-        "backoff_reduce_concurrency",
-        "backoff_reduce_frequency",
-        "contact_provider",
-        "hold_no_payg_fallback",
-        "hold_until_limit_reset",
-        "hold_until_manual_clear",
-        "hold_until_reset",
-        "hold_until_subscription_restored",
-        "switch_model_or_upgrade_plan",
-    }
-)
+# The structured-envelope allowlists now live in shared/failure_classification.py (single source
+# across the review + worker planes). Aliased here byte-identically; the classifier logic below is
+# unchanged. NEVER move a class between QUOTA and PROVIDER_OUTAGE — verdicts would drift.
+_STRUCTURED_QUOTA_ERROR_CLASSES = STRUCTURED_QUOTA_ERROR_CLASSES
+_STRUCTURED_QUOTA_ACTIONS = STRUCTURED_QUOTA_ACTIONS
 
 _PROVIDER_OUTAGE_SHAPE_RE = re.compile(
     r"\bHTTP\s+(?:429|5\d\d)\b",
@@ -170,18 +159,8 @@ _UNSUPPORTED_REVIEWER_CLIENT_RE = re.compile(
     r"(?:IneligibleTierError|UNSUPPORTED_CLIENT|failed to launch .*?\bagy\b.*?install agy)",
     re.IGNORECASE,
 )
-_STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES = frozenset(
-    {
-        "provider_error",
-        "provider_high_traffic",
-    }
-)
-_STRUCTURED_PROVIDER_OUTAGE_ACTIONS = frozenset(
-    {
-        "backoff_or_switch_model",
-        "retry_later",
-    }
-)
+_STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES = STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES
+_STRUCTURED_PROVIDER_OUTAGE_ACTIONS = STRUCTURED_PROVIDER_OUTAGE_ACTIONS
 
 #: The dispatcher's family-outage witness state (canonical path; the
 #: dispatcher aliases this). Admission consults it so a forged dossier
@@ -346,6 +325,36 @@ def is_reviewer_route_unavailable(
     if len(stripped) > _REVIEWER_ROUTE_UNAVAILABLE_MAX_CHARS:
         return False
     return bool(_UNSUPPORTED_REVIEWER_CLIENT_RE.search(stripped))
+
+
+def classify_failure(
+    text: str,
+    *,
+    process_failed: bool = False,
+    model_stdout: str = "",
+    platform: str | None = None,
+    route_id: str | None = None,
+) -> FailureReceipt:
+    """Map the channel-trust classifiers to a structured FailureReceipt (the shared taxonomy across
+    the review + worker planes). ADDITIVE: the dispatch verdict path (cc-pr-review-dispatch.py) still
+    calls the three booleans directly and OWNS the canonical verdict; this helper applies the SAME
+    priority order (quota > route > provider > UNKNOWN) for telemetry and does NOT change any verdict.
+    No production consumer calls this helper yet, so there is no live parity to enforce; behavioral
+    parity against the dispatch path is pinned by the worker-path slice that makes dispatch consume
+    this helper (capability-adapter-worker-path-classify-failure). Defaults to UNKNOWN (no
+    auto-degrade) when no classifier fires."""
+
+    if is_quota_wall(text, process_failed=process_failed, model_stdout=model_stdout):
+        code = FailureCode.QUOTA_EXHAUSTION
+    elif is_reviewer_route_unavailable(
+        text, process_failed=process_failed, model_stdout=model_stdout
+    ):
+        code = FailureCode.ROUTE_UNAVAILABLE
+    elif is_provider_outage(text, process_failed=process_failed, model_stdout=model_stdout):
+        code = FailureCode.PROVIDER_OUTAGE
+    else:
+        code = FailureCode.UNKNOWN
+    return FailureReceipt(code=code, raw_signal=text, platform=platform, route_id=route_id)
 
 
 def _parse_iso_datetime(value: Any) -> datetime:
