@@ -221,15 +221,36 @@ def _dimensional_request(
 # NON-PERTURBATION REGRESSION PIN — the load-bearing safety test
 # ----------------------------------------------------------------------------------
 def test_undemanded_scoring_is_byte_identical_to_pre_change() -> None:
-    """An undemanded task (no effort_demand / context_mode_demand) MUST score exactly as it did
-    before this slice: the 7 legacy dimensions in order, NO conditional dims, and the frozen
-    aggregate (4.06 for codex.headless.full @ score 4, captured from origin/main @ 59a404f8)."""
-    request = _dimensional_request("codex.headless.full", score=4)
-    scores = _score_candidate(request)
-    assert tuple(s.dimension for s in scores) == _LEGACY_DIMENSIONS
-    assert "effort_fit" not in {s.dimension for s in scores}
-    assert "context_mode_fit" not in {s.dimension for s in scores}
-    assert _aggregate_score(scores) == 4.06
+    """The central safety claim: adding the conditional dims does NOT perturb undemanded dispatch.
+
+    Proven non-circularly — a DEMANDED variant of the SAME route adds the conditional dims ON TOP
+    and leaves every legacy DimensionalScore (name/demand/supply/score/confidence/evidence_refs)
+    byte-identical to the undemanded computation. The frozen 4.06 is kept only as a concrete drift
+    tripwire, not the proof."""
+    undemanded = _score_candidate(_dimensional_request("codex.headless.full", score=4))
+    assert tuple(s.dimension for s in undemanded) == _LEGACY_DIMENSIONS
+    assert {s.dimension for s in undemanded}.isdisjoint({"effort_fit", "context_mode_fit"})
+
+    # the SAME route under a full execution-axis demand: strip the conditional dims and assert the
+    # legacy scores are byte-identical DimensionalScore objects (==, not a single rounded float).
+    demanded = _score_candidate(
+        _dimensional_request(
+            "codex.headless.full",
+            score=4,
+            demand=_demand(
+                task_demand={"context_mode_demand": "extended_1m", "effort_demand": "low"}
+            ),
+        )
+    )
+    demanded_legacy = tuple(
+        s for s in demanded if s.dimension not in {"effort_fit", "context_mode_fit"}
+    )
+    assert demanded_legacy == undemanded  # full byte-identity of the legacy scores
+    assert _aggregate_score(demanded_legacy) == _aggregate_score(undemanded)
+
+    # frozen concrete anchor captured from origin/main @ 59a404f8 — a tripwire if a legacy weight or
+    # score drifts; the byte-identity above is the load-bearing guarantee.
+    assert _aggregate_score(undemanded) == 4.06
 
 
 def test_legacy_dimension_weights_unchanged_and_new_keys_present() -> None:
