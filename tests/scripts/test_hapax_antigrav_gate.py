@@ -70,6 +70,13 @@ def test_launcher_refuses_interactive_launch_when_latch_absent(tmp_path) -> None
     assert "enable-latch" in result.stderr
 
 
+def test_launcher_refuses_when_disable_file_present(tmp_path) -> None:
+    # disable file forces refusal THROUGH the launcher even though the enable file is also present.
+    result = _run_launcher(tmp_path, latch="disabled")
+    assert result.returncode == 7
+    assert "disable latch present" in result.stderr
+
+
 def test_launcher_proceeds_past_latch_with_enable_file(tmp_path) -> None:
     result = _run_launcher(tmp_path, latch="enabled")
     assert result.returncode != 7  # passed the latch (proceeds to the stubbed agy spawn)
