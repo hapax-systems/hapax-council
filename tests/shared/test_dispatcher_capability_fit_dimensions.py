@@ -26,6 +26,7 @@ from shared.dispatcher_policy import (
     evaluate_dispatch_policy,
 )
 from shared.platform_capability_registry import (
+    DescriptorVariant,
     PlatformCapabilityRoute,
     build_supply_vector,
     load_platform_capability_registry,
@@ -243,6 +244,9 @@ def test_legacy_dimension_weights_unchanged_and_new_keys_present() -> None:
     }
     for dimension, weight in expected_legacy.items():
         assert DIMENSION_WEIGHTS[dimension] == weight
+    # the legacy weights still sum to 100 — the conditional dims sit ON TOP and only ever
+    # participate in the denominator when present (demanded), so undemanded scoring is unchanged.
+    assert sum(expected_legacy.values()) == 100
     assert DIMENSION_WEIGHTS["effort_fit"] == 12
     assert DIMENSION_WEIGHTS["context_mode_fit"] == 12
 
@@ -268,10 +272,9 @@ def test_extended_1m_demand_selects_the_extended_1m_leaf() -> None:
 
 
 def test_effort_low_demand_resolves_the_effort_low_leaf() -> None:
-    """The effort axis shares the leaf resolver proven through a full LAUNCH by the extended_1m
-    golden; here we pin the effort-specific discrimination on the REAL registry variant. (The
-    live claude.headless.sonnet is a fallback/support profile the policy gate correctly refuses
-    under an authoritative demand, so this asserts the resolver + score directly, not a LAUNCH.)"""
+    """Effort-specific discrimination on the REAL registry variant. (The live claude.headless.sonnet
+    is a fallback/support profile the policy gate correctly refuses under an authoritative demand,
+    so this asserts the resolver + score directly; the end-to-end LAUNCH path is covered below.)"""
     demand = _demand(task_demand={"effort_demand": "low"})
     sonnet = _dimensional_request("claude.headless.sonnet", score=5, demand=demand)
 
@@ -280,6 +283,45 @@ def test_effort_low_demand_resolves_the_effort_low_leaf() -> None:
     assert _resolve_descriptor_leaf(sonnet) == "claude.headless.sonnet#sonnet@effort_low"
     fit = {s.dimension: s.score for s in _score_candidate(sonnet)}
     assert fit["effort_fit"] == 5.0  # xhigh base meets-or-exceeds the 'low' demand
+
+
+def _effort_variant_request(route_id: str, *, score: int, demand: DemandVector) -> DispatchRequest:
+    """An ACTIVE authoritative route carrying a synthetic effort_low variant — so the EFFORT axis
+    can be exercised through a real LAUNCH (the live effort_low variant lives only on the sonnet
+    fallback route the gate refuses)."""
+    route = _active_route(route_id, score=score)
+    variant = DescriptorVariant(
+        variant_id="effort_low_synth",
+        knobs_override={"effort": "low"},
+        scores_inherited_from=route_id,
+    )
+    route = route.model_copy(update={"descriptor_variants": [*route.descriptor_variants, variant]})
+    parts = route_id.split(".")
+    return _request(
+        route_id=route_id,
+        platform=parts[0],
+        mode=parts[1],
+        profile=parts[2],
+        capability=_capability(route_id=route_id),
+        demand_vector=demand,
+        supply_vector=build_supply_vector(route, now=NOW),
+    )
+
+
+def test_effort_demand_resolves_the_effort_leaf_through_a_full_launch() -> None:
+    """End-to-end effort axis: a synthetic ACTIVE route carrying an effort_low variant LAUNCHes
+    under an effort=low demand and resolves the cheaper leaf — proving the effort branch's wiring
+    into RouteDecision.selected_descriptor_leaf through the real dispatch path."""
+    demand = _demand(task_demand={"effort_demand": "low"})
+    primary = _effort_variant_request("codex.headless.full", score=5, demand=demand)
+    weaker_sibling = _dimensional_request("claude.headless.full", score=3, demand=demand)
+
+    decision = evaluate_dispatch_policy(
+        primary, candidate_requests=(primary, weaker_sibling), now=NOW
+    )
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.route_id == "codex.headless.full"
+    assert decision.selected_descriptor_leaf == "codex.headless.full#effort_low_synth"
 
 
 def test_standard_context_mode_demand_does_not_emit_context_mode_fit() -> None:

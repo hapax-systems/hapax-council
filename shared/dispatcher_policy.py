@@ -1178,7 +1178,6 @@ def _evaluate_dimensional_candidate_set(
                 selected_route_id=request.route_id,
                 degraded_mode=True,
                 degraded_authority_ref=request.degraded_mode_authority_ref,
-                selected_descriptor_leaf=_resolve_descriptor_leaf(request),
             )
         reason = (
             "dimensional_candidates_incomparable_hold"
@@ -1226,7 +1225,6 @@ def _evaluate_dimensional_candidate_set(
         authority_allowed=True,
         dimensional_candidates=updated,
         selected_route_id=winner.route_id,
-        selected_descriptor_leaf=_resolve_descriptor_leaf(request),
     )
 
 
@@ -2027,7 +2025,6 @@ def _decision(
     degraded_authority_ref: str | None = None,
     compatibility_mode: Literal["none", "rollback_full_profile"] = "none",
     degraded_state: str | None = None,
-    selected_descriptor_leaf: str | None = None,
 ) -> RouteDecision:
     compatibility_degraded = compatibility_mode != "none" or degraded_state is not None
     route_policy_green = action is DispatchAction.LAUNCH and not compatibility_degraded
@@ -2059,7 +2056,11 @@ def _decision(
         route_selection_authority=False,
         quality_floor_satisfied=quality_floor_satisfied,
         authority_allowed=authority_allowed,
-        selected_descriptor_leaf=selected_descriptor_leaf,
+        # resolve the descriptor leaf for EVERY launch path (dimensional, single-route,
+        # compatibility-rollback) — centralized here so no launch site can silently drop it.
+        selected_descriptor_leaf=(
+            _resolve_descriptor_leaf(request) if action is DispatchAction.LAUNCH else None
+        ),
         **cloud_burst_receipt,
         reason_codes=tuple(reason for reason in reasons if reason),
         message="; ".join(reason for reason in reasons if reason) or action.value,
