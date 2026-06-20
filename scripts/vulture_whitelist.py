@@ -4298,3 +4298,11 @@ _capadapter_descriptor_variant
 from shared.host_confinement import decide_block as _no_dev_decide_block  # noqa: E402
 
 _no_dev_decide_block
+
+# dispatcher-dims slice (capability-dispatcher-dims-20260619): Pydantic field_validator hooks on
+# TaskDemand (effort_demand / context_mode_demand fail-closed vocabulary), invoked dynamically at
+# model_validate time — vulture cannot trace through the @field_validator decorator.
+from shared.route_metadata_schema import TaskDemand as _capdims_task_demand  # noqa: E402
+
+_capdims_task_demand._effort_demand_in_vocab
+_capdims_task_demand._context_mode_demand_in_vocab

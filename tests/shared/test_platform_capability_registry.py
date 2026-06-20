@@ -543,3 +543,33 @@ def test_api_receipt_does_not_open_cloud_burst_release_gate() -> None:
         "cloud_runner_resource_receipt_absent"
         in route["freshness"]["evidence"]["resource"]["blocked_reasons"]
     )
+
+
+# --------------------------------------------------------------------------------------
+# SupplyDescriptor — the execution-axis supply the dispatcher scores satisfiability against
+# --------------------------------------------------------------------------------------
+def test_supply_vector_carries_supply_descriptor_with_reachable_variants() -> None:
+    """build_supply_vector exposes the route's reachable execution axes: base + every non-blocked
+    variant, with maps pointing each reachable value at the providing variant (None = base)."""
+    registry = load_platform_capability_registry()
+    descriptor = build_supply_vector(registry.require("claude.headless.opus")).supply_descriptor
+    assert descriptor is not None
+    assert descriptor.base_context_mode == "standard"
+    assert "extended_1m" in descriptor.reachable_context_modes
+    assert descriptor.context_mode_to_variant["extended_1m"] == "opus@extended_1m"
+    assert descriptor.context_mode_to_variant["standard"] is None  # base provides standard
+
+
+def test_supply_descriptor_excludes_blocked_variants_fail_closed() -> None:
+    """A descriptor variant carrying blocked_reasons cannot make its route reachable for the
+    blocked axis nor be resolved as a leaf — fail-closed."""
+    registry = load_platform_capability_registry()
+    payload = registry.require("claude.headless.opus").model_dump(mode="json")
+    for variant in payload["descriptor_variants"]:
+        if variant["variant_id"] == "opus@extended_1m":
+            variant["blocked_reasons"] = ["entitlement_absent"]
+    route = PlatformCapabilityRoute.model_validate(payload)
+    descriptor = build_supply_vector(route).supply_descriptor
+    assert descriptor is not None
+    assert "extended_1m" not in descriptor.reachable_context_modes
+    assert "extended_1m" not in descriptor.context_mode_to_variant

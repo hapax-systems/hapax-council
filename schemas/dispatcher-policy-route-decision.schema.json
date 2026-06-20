@@ -33,6 +33,7 @@
     "cloud_burst_spike_reasons",
     "cloud_burst_guard_reasons",
     "local_execution_target",
+    "selected_descriptor_leaf",
     "reason_codes",
     "message",
     "quota_evidence_refs",
@@ -96,6 +97,7 @@
       "items": {"type": "string", "minLength": 1}
     },
     "local_execution_target": {"type": ["string", "null"]},
+    "selected_descriptor_leaf": {"type": ["string", "null"]},
     "reason_codes": {
       "type": "array",
       "items": {"type": "string", "minLength": 1}

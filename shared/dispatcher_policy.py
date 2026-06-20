@@ -26,9 +26,11 @@ from shared.platform_capability_receipts import (
 )
 from shared.platform_capability_registry import (
     PLATFORM_CAPABILITY_REGISTRY,
+    Effort,
     PlatformCapabilityRegistry,
     PlatformCapabilityRegistryError,
     PlatformCapabilityRoute,
+    SupplyDescriptor,
     SupplyVector,
     build_supply_vector,
     check_registry_freshness,
@@ -336,6 +338,10 @@ class RouteDecision(_PolicyModel):
     route_selection_authority: Literal[False] = False
     quality_floor_satisfied: bool
     authority_allowed: bool
+    # advisory result metadata: the descriptor LEAF (route_id#variant_id) the launcher should run
+    # for the demanded execution axes, or None when the base descriptor satisfies. The base
+    # route_id stays the dispatch key; the launcher reads this to set the effort/context knob.
+    selected_descriptor_leaf: str | None = None
     cloud_burst_eligible: bool = False
     cloud_burst_guard_state: str = "not_applicable"
     cloud_burst_spike_reasons: tuple[str, ...] = Field(default=())
@@ -1083,7 +1089,17 @@ DIMENSION_WEIGHTS: Mapping[str, int] = {
     "coordination_worktree_fit": 10,
     "historical_local_calibration": 8,
     "quota_latency_scarcity": 6,
+    # conditional execution-axis dimensions: present in a candidate's scores ONLY when the
+    # task declares the matching demand, so _aggregate_score (which normalizes over PRESENT
+    # dimensions) leaves undemanded-task scoring byte-identical. The raw sum is no longer 100;
+    # _aggregate_score never assumes a constant divisor, so this is harmless.
+    "effort_fit": 12,
+    "context_mode_fit": 12,
 }
+
+#: The reasoning-effort ordinal ladder (none < low < ... < max), derived from the supply-side
+#: Effort enum so a future reorder cannot silently mis-score; pinned by the demand drift test.
+_EFFORT_LADDER: tuple[str, ...] = tuple(e.value for e in Effort)
 
 
 def _evaluate_dimensional_candidate_set(
@@ -1449,7 +1465,7 @@ def _score_candidate(request: DispatchRequest) -> tuple[DimensionalScore, ...]:
     if demand is None or supply is None:
         return ()
     scores = supply.capability_scores
-    return (
+    legacy: tuple[DimensionalScore, ...] = (
         _dimension_score(
             "grounding_governance_fit",
             demand.task_demand.grounding_criticality,
@@ -1497,6 +1513,126 @@ def _score_candidate(request: DispatchRequest) -> tuple[DimensionalScore, ...]:
             evidence_refs=tuple(supply.freshness.source_refs),
         ),
     )
+    return legacy + _capability_fit_scores(request)
+
+
+def _capability_fit_scores(request: DispatchRequest) -> tuple[DimensionalScore, ...]:
+    """The conditional execution-axis dimensions. Each is emitted ONLY when the task declares
+    the matching demand (and 'standard'/'not_applicable' context-mode is treated as no demand —
+    every base satisfies it). Omitting the dimension when undemanded is THE non-perturbation
+    lever: _aggregate_score normalizes over present dimensions, so an undemanded task scores
+    byte-identically to pre-change. Fails CLOSED: a present demand with no supply_descriptor
+    (a route that cannot describe its execution axes) omits the dimension rather than crashing."""
+
+    demand = request.demand_vector
+    supply = request.supply_vector
+    if demand is None or supply is None or supply.supply_descriptor is None:
+        return ()
+    descriptor = supply.supply_descriptor
+    task_demand = demand.task_demand
+    fits: list[DimensionalScore] = []
+
+    context_mode_demand = task_demand.context_mode_demand
+    if context_mode_demand is not None and context_mode_demand not in {
+        "standard",
+        "not_applicable",
+    }:
+        satisfied = context_mode_demand in descriptor.reachable_context_modes
+        fits.append(
+            DimensionalScore(
+                dimension="context_mode_fit",
+                demand=context_mode_demand,
+                supply=";".join(descriptor.reachable_context_modes),
+                score=5.0 if satisfied else 1.0,
+                confidence=3.0,
+            )
+        )
+
+    effort_demand = task_demand.effort_demand
+    if effort_demand is not None:
+        fits.append(
+            DimensionalScore(
+                dimension="effort_fit",
+                demand=effort_demand,
+                supply=";".join(descriptor.reachable_efforts),
+                score=_effort_fit_score(effort_demand, descriptor.reachable_efforts),
+                confidence=3.0,
+            )
+        )
+
+    return tuple(fits)
+
+
+def _effort_fit_score(effort_demand: str, reachable_efforts: tuple[str, ...]) -> float:
+    """Meet-or-exceed ladder: the route's STRONGEST reachable effort vs the demand. Meets or
+    exceeds -> 5.0; exactly one rung short -> 3.0; further short or unknown -> 1.0 (fail-closed).
+    Downward cost discrimination (a 'low' demand preferring the cheap leaf) is done by the leaf
+    RESOLVER, not this score, per the design's meet-or-exceed semantics."""
+
+    if effort_demand not in _EFFORT_LADDER:
+        return 1.0
+    demand_index = _EFFORT_LADDER.index(effort_demand)
+    reachable_indexes = [
+        _EFFORT_LADDER.index(effort) for effort in reachable_efforts if effort in _EFFORT_LADDER
+    ]
+    if not reachable_indexes:
+        return 1.0
+    best = max(reachable_indexes)
+    if best >= demand_index:
+        return 5.0
+    if best == demand_index - 1:
+        return 3.0
+    return 1.0
+
+
+def _resolve_descriptor_leaf(request: DispatchRequest) -> str | None:
+    """Resolve the descriptor LEAF a launching route should run for the demanded axes:
+    ``route_id#variant_id`` when a variant is needed, or ``None`` when the base descriptor
+    already satisfies (or nothing is demanded). Reads the SAME supply_descriptor the
+    satisfiability score read, so score and resolution cannot diverge. context_mode takes
+    precedence (exact-match material axis); effort resolves the CHEAPEST reachable leaf that
+    meets-or-exceeds the demand (so 'low' picks an effort_low variant over a frontier base)."""
+
+    demand = request.demand_vector
+    supply = request.supply_vector
+    if demand is None or supply is None or supply.supply_descriptor is None:
+        return None
+    descriptor = supply.supply_descriptor
+    task_demand = demand.task_demand
+
+    context_mode_demand = task_demand.context_mode_demand
+    if (
+        context_mode_demand is not None
+        and context_mode_demand not in {"standard", "not_applicable"}
+        and context_mode_demand in descriptor.context_mode_to_variant
+    ):
+        variant_id = descriptor.context_mode_to_variant[context_mode_demand]
+        if variant_id is not None:
+            return f"{request.route_id}#{variant_id}"
+        return None
+
+    effort_demand = task_demand.effort_demand
+    if effort_demand is not None and effort_demand in _EFFORT_LADDER:
+        variant_id = _resolve_effort_leaf(descriptor, effort_demand)
+        if variant_id is not None:
+            return f"{request.route_id}#{variant_id}"
+    return None
+
+
+def _resolve_effort_leaf(descriptor: SupplyDescriptor, effort_demand: str) -> str | None:
+    """The CHEAPEST reachable leaf (lowest effort) that still meets-or-exceeds the demand;
+    its variant_id, or None when the base descriptor is the cheapest satisfying leaf."""
+
+    demand_index = _EFFORT_LADDER.index(effort_demand)
+    meeting = [
+        effort
+        for effort in descriptor.reachable_efforts
+        if effort in _EFFORT_LADDER and _EFFORT_LADDER.index(effort) >= demand_index
+    ]
+    if not meeting:
+        return None
+    cheapest = min(meeting, key=_EFFORT_LADDER.index)
+    return descriptor.effort_to_variant.get(cheapest)
 
 
 def _dimension_score(
@@ -1920,6 +2056,11 @@ def _decision(
         route_selection_authority=False,
         quality_floor_satisfied=quality_floor_satisfied,
         authority_allowed=authority_allowed,
+        # resolve the descriptor leaf for EVERY launch path (dimensional, single-route,
+        # compatibility-rollback) — centralized here so no launch site can silently drop it.
+        selected_descriptor_leaf=(
+            _resolve_descriptor_leaf(request) if action is DispatchAction.LAUNCH else None
+        ),
         **cloud_burst_receipt,
         reason_codes=tuple(reason for reason in reasons if reason),
         message="; ".join(reason for reason in reasons if reason) or action.value,
