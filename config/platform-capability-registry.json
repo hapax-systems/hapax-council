@@ -14,12 +14,14 @@
     "api.headless.api_frontier",
     "api.headless.provider_gateway",
     "claude.headless.full",
+    "claude.headless.haiku",
     "claude.headless.opus",
     "claude.headless.sonnet",
     "claude.interactive.full",
     "codex.headless.full",
     "codex.headless.spark",
     "glmcp.review.direct",
+    "local_tool.local.worker",
     "vibe.headless.full"
   ],
   "routes": [
@@ -3279,6 +3281,596 @@
       "approval_posture": "default_deny_enable_latch",
       "capability_tier": "read_only_support",
       "worker_tier": "read_only_sidecar"
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "claude.headless.haiku",
+      "platform": "claude",
+      "mode": "headless",
+      "profile": "haiku",
+      "launcher": "HAPAX_CLAUDE_MODEL=haiku ~/.local/bin/hapax-claude-headless <lane> <governed-prompt>",
+      "summary": "Claude Haiku headless stream-json lane",
+      "notes": "Cheap bounded Claude tier (notify.py enrichment class); use only when Haiku is quality-equivalent for the bounded support task. Materializes a route for the verified-unused claude-haiku-4-5 identity; blocked pending a quality-equivalence record and live quota receipt.",
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "quality_equivalence_record_absent",
+        "fresh_capability_evidence_absent",
+        "account_live_quota_receipt_absent"
+      ],
+      "model_or_engine": "claude-haiku",
+      "execution_descriptor": {
+        "model_id": "claude-haiku-4-5",
+        "effort": "low",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
+      "descriptor_variants": [
+        {
+          "variant_id": "haiku@effort_medium",
+          "knobs_override": {
+            "effort": "medium"
+          },
+          "score_delta": {},
+          "scores_inherited_from": "claude.headless.haiku",
+          "blocked_reasons": []
+        }
+      ],
+      "auth_surface": "subscription",
+      "capacity_pool": "subscription_quota",
+      "mutability": {
+        "vault_docs": true,
+        "source": true,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "frontier_review_required",
+      "tool_access": {
+        "filesystem": "read_write",
+        "shell": "full",
+        "browser": true,
+        "mcp": [
+          "context7",
+          "github",
+          "hapax-mcp",
+          "playwright"
+        ]
+      },
+      "privacy_posture": "provider_private",
+      "quality_envelope": {
+        "eligible_quality_floors": [
+          "frontier_review_required",
+          "deterministic_ok"
+        ],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "frontier_required_without_equivalence_record",
+          "governance_authority_case",
+          "privacy_secret_sensitive",
+          "runtime_mutation",
+          "provider_spend"
+        ]
+      },
+      "context_limits": {
+        "max_context_class": "large"
+      },
+      "telemetry": {
+        "quota_source": "manual",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "quality_equivalence_record_absent",
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:hapax-claude-headless:executable-and-enable-latch-present:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://code.claude.com/docs/en/cli-usage",
+              "official:https://docs.anthropic.com/en/docs/claude-code/mcp"
+            ],
+            "blocked_reasons": []
+          }
+        }
+      },
+      "known_unknowns": [
+        "Haiku-tier capability scores are tier-inferred from the Sonnet baseline, not freshly bakeoff-observed.",
+        "Subscription quota remains manually refreshed until a telemetry adapter exists."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.haiku:dimensional-score:grounding"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.haiku:dimensional-score:governance_reasoning"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.haiku:dimensional-score:source_editing"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.haiku:dimensional-score:architecture"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.haiku:dimensional-score:ambiguity_resolution"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.haiku:dimensional-score:long_context"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.haiku:dimensional-score:current_docs_grounding"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.haiku:dimensional-score:multimodal_verification"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.haiku:dimensional-score:runtime_debugging"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.haiku:dimensional-score:test_authoring"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.haiku:dimensional-score:coordination_reliability"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.haiku:dimensional-score:privacy_safety"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.haiku:dimensional-score:public_claim_safety"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.haiku:dimensional-score:local_calibration"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read",
+            "write"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.haiku:tool_access.filesystem"
+        },
+        {
+          "tool_id": "local_shell",
+          "available": true,
+          "authority_use": [
+            "read",
+            "execute",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.haiku:tool_access.local_shell"
+        },
+        {
+          "tool_id": "browser",
+          "available": true,
+          "authority_use": [
+            "read",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.haiku:tool_access.browser"
+        },
+        {
+          "tool_id": "context7",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.haiku:tool_access.context7"
+        },
+        {
+          "tool_id": "github",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.haiku:tool_access.github"
+        },
+        {
+          "tool_id": "hapax-mcp",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.haiku:tool_access.hapax-mcp"
+        },
+        {
+          "tool_id": "playwright",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.haiku:tool_access.playwright"
+        }
+      ],
+      "sanctioned_wrapper": "~/.local/bin/hapax-claude-headless",
+      "approval_posture": "default_deny_enable_latch",
+      "capability_tier": "jr_plus",
+      "worker_tier": "bounded_worker"
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "local_tool.local.worker",
+      "platform": "local_tool",
+      "mode": "local",
+      "profile": "worker",
+      "launcher": "receipt-only local-inference route; LiteLLM :4000 local alias to TabbyAPI :5000 (Command-R 35B EXL3); no spawnable lane",
+      "summary": "Local Command-R 35B EXL3 inference worker (TabbyAPI)",
+      "notes": "Sub-frontier local inference surface served by TabbyAPI on the GPU fleet; called via the LiteLLM local alias, not a launchable mutating lane. Materializes the verified-unused local_tool/local enum members and gives command-r-08-2024 a route. Blocked pending a live local-inference entitlement/quota receipt.",
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "local_inference_worker_receipt_admission_required",
+        "fresh_capability_evidence_absent",
+        "quota_telemetry_unknown"
+      ],
+      "model_or_engine": "command-r-08-2024",
+      "execution_descriptor": {
+        "model_id": "command-r-08-2024",
+        "effort": "none",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "exl3_4_0bpw"
+      },
+      "descriptor_variants": [
+        {
+          "variant_id": "worker@quantization_exl3_5_0bpw",
+          "knobs_override": {
+            "quantization": "exl3_5_0bpw"
+          },
+          "score_delta": {},
+          "scores_inherited_from": "local_tool.local.worker",
+          "blocked_reasons": []
+        }
+      ],
+      "auth_surface": "local",
+      "capacity_pool": "local_compute",
+      "mutability": {
+        "vault_docs": false,
+        "source": false,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "support_only",
+      "tool_access": {
+        "filesystem": "read_only",
+        "shell": "none",
+        "browser": false,
+        "mcp": []
+      },
+      "privacy_posture": "local_private",
+      "quality_envelope": {
+        "eligible_quality_floors": [
+          "deterministic_ok"
+        ],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "frontier_required",
+          "frontier_review_required",
+          "governance_authority_case",
+          "source_mutation",
+          "runtime_mutation",
+          "provider_spend",
+          "privacy_secret_sensitive",
+          "public_release_without_gate"
+        ]
+      },
+      "context_limits": {
+        "max_context_class": "medium"
+      },
+      "telemetry": {
+        "quota_source": "none",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": "2026-06-19T00:00:00Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-06-19T00:00:00Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "quota_telemetry_unknown"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:tabbyapi:127.0.0.1:5000:command-r-35b-exl3-resident:2026-06-19T00:00Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "local:CLAUDE.md:local-command-r-35b-exl3-tabbyapi-5000"
+            ],
+            "blocked_reasons": []
+          }
+        }
+      },
+      "known_unknowns": [
+        "Local-inference capability scores are seed estimates anchored to the Sonnet worker baseline adjusted for a local Command-R 35B.",
+        "No local GPU quota/utilization telemetry source is wired; quota stays unknown until a local_probe-class QuotaSource lands.",
+        "Command-R 35B EXL3 context window at 24GB/32GB is unverified; max_context_class=medium is conservative."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.worker:dimensional-score:grounding:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.worker:dimensional-score:governance_reasoning:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.worker:dimensional-score:source_editing:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.worker:dimensional-score:architecture:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.worker:dimensional-score:ambiguity_resolution:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.worker:dimensional-score:long_context:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.worker:dimensional-score:current_docs_grounding:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 0,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.worker:dimensional-score:multimodal_verification:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.worker:dimensional-score:runtime_debugging:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.worker:dimensional-score:test_authoring:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.worker:dimensional-score:coordination_reliability:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 5,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.worker:dimensional-score:privacy_safety:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.worker:dimensional-score:public_claim_safety:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 4,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:local_tool.local.worker:dimensional-score:local_calibration:seed-estimate-vs-command-r-35b-exl3"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-06-19T00:00:00Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:local_tool.local.worker:tool_access.filesystem"
+        }
+      ],
+      "sanctioned_wrapper": "scripts/hapax-methodology-dispatch",
+      "approval_posture": "default_deny_enable_latch",
+      "capability_tier": "jr_plus",
+      "worker_tier": "bounded_worker"
     }
   ]
 }

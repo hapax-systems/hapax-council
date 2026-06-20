@@ -193,6 +193,24 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         True,
         "Route-authority packet only; policy requires a matching paid-budget ledger and fresh gateway evidence before a downstream live edit may proceed.",
     ),
+    ("claude", "headless", "haiku"): PlatformPath(
+        "claude",
+        "headless",
+        "haiku",
+        "HAPAX_CLAUDE_MODEL=haiku ~/.local/bin/hapax-claude-headless <lane> <governed-prompt>",
+        "Claude Haiku headless stream-json lane",
+        True,
+        "Cheap bounded Claude tier; use only when Haiku is quality-equivalent for the bounded support task.",
+    ),
+    ("local_tool", "local", "worker"): PlatformPath(
+        "local_tool",
+        "local",
+        "worker",
+        "receipt-only local-inference route; LiteLLM :4000 local alias to TabbyAPI :5000 (Command-R 35B EXL3); no spawnable lane",
+        "Local Command-R 35B EXL3 inference worker (TabbyAPI)",
+        False,
+        "Sub-frontier local inference surface; called via the LiteLLM local alias, not a launchable mutating lane.",
+    ),
 }
 
 RECEIPT_ONLY_ROUTE = PlatformPath(

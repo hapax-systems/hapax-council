@@ -21,8 +21,10 @@ from shared.quota_spend_ledger import (
     DependencyState,
     PaidApiBudgetState,
     PaidRouteRequest,
+    Quantization,
     QuotaSpendLedger,
     SpendGateDecisionState,
+    SpendReceipt,
     SpendReconciliationState,
     SubscriptionQuotaState,
     SupportArtifactAuthority,
@@ -708,3 +710,35 @@ def test_live_env_override_resolution_lives_outside_the_inert_module() -> None:
     assert QUOTA_SPEND_LEDGER_LIVE_ENV == "HAPAX_QUOTA_SPEND_LEDGER_LIVE"
     assert DEFAULT_QUOTA_SPEND_LEDGER_LIVE.name == "quota-spend-ledger-live.json"
     assert callable(quota_spend_ledger_live_path_from_env)
+
+
+# --------------------------------------------------------------------------------------
+# Quantization metering (capability-haiku-localtool-routes slice)
+# --------------------------------------------------------------------------------------
+def test_quantization_enum_parity_with_registry() -> None:
+    """The ledger defines its OWN Quantization enum (it must not import the registry — the ledger
+    is the deliberately low-dependency inert module). This drift-pin keeps the two value sets
+    byte-identical so a receipt's quantization matches a route descriptor's quantization exactly."""
+    from shared.platform_capability_registry import Quantization as RegistryQuantization
+
+    assert {q.value for q in Quantization} == {q.value for q in RegistryQuantization}
+
+
+def test_spend_receipt_quantization_defaults_and_separates() -> None:
+    """quantization defaults to NOT_APPLICABLE (hosted/cloud receipts have no bpw notion, and the
+    defaulted field keeps every existing fixture valid), and a local receipt can record a specific
+    EXL3 bpw so exl3_4_0bpw vs 5_0bpw are distinguishable on the receipt."""
+    ledger = QuotaSpendLedger.model_validate(
+        json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
+    )
+    base = ledger.spend_receipts[0]
+    assert base.quantization is Quantization.NOT_APPLICABLE  # absent in the fixture -> default
+
+    payload = base.model_dump(mode="json")
+    payload["quantization"] = "exl3_4_0bpw"
+    four_bpw = SpendReceipt.model_validate(payload)
+    payload["quantization"] = "exl3_5_0bpw"
+    five_bpw = SpendReceipt.model_validate(payload)
+    assert four_bpw.quantization is Quantization.EXL3_4_0BPW
+    assert five_bpw.quantization is Quantization.EXL3_5_0BPW
+    assert four_bpw.quantization is not five_bpw.quantization

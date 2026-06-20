@@ -111,7 +111,6 @@ APPLICABLE: dict[str, frozenset[str]] = {
 # test_waivers_name_real_absences and must be removed — forcing full consideration.
 # ----------------------------------------------------------------------------------
 _EXP = "2026-09-30T00:00:00Z"  # P4 build horizon; bump only with a tracked extension
-_LOCAL_TASK = "capability-haiku-localtool-routes-20260619"
 _WAIVER_TASK = "capability-consideration-waivers-20260619"
 _RECEIPT_TASK = "capability-receipt-drift-detection-20260619"
 
@@ -145,15 +144,8 @@ WAIVERS: tuple[dict[str, str], ...] = (
         "tracking_ref": _WAIVER_TASK,
         "reason": "fast-mode shifts latency/billing; meter once a governed /fast hook exists",
     },
-    # quantization (local EXL3 4.0/5.0bpw) — NOW modeled at registry (ExecutionDescriptor.quantization);
-    # separate exl3 spend metering still lands with the local_tool route.
-    {
-        "axis": "quantization",
-        "site": "quota_ledger",
-        "expires_at": _EXP,
-        "tracking_ref": _LOCAL_TASK,
-        "reason": "separate exl3_4.0bpw vs 5.0bpw spend once local_tool.local.worker exists",
-    },
+    # quantization — NOW modeled at the spend ledger (SpendReceipt.quantization) as well as the
+    # registry (ExecutionDescriptor.quantization). Fully modeled; no waiver.
 )
 
 MAX_WAIVERS = 20  # bound: intentional asymmetry must shrink, not accrete
@@ -230,12 +222,13 @@ def test_capacity_pool_positive_control() -> None:
     assert _is_modeled("capacity_pool", universes["quota_ledger"]), (
         "detector failed on the spend-ledger key"
     )
-    # The detector fires on a now-modeled live axis (effort_fit landed in DIMENSION_WEIGHTS with
-    # this slice) and stays silent on a genuine remaining gap (quantization is absent from the
-    # spend ledger). Recheck:
+    # The detector fires on now-modeled live axes (effort_fit in DIMENSION_WEIGHTS; quantization in
+    # the SpendReceipt) and stays silent on a genuine remaining gap (fast_mode is still absent from
+    # the spend ledger). Recheck:
     #   uv run pytest tests/docs/test_capability_consideration_completeness_contract.py
     assert _is_modeled("effort", universes["dispatcher_scoring"])
-    assert not _is_modeled("quantization", universes["quota_ledger"])
+    assert _is_modeled("quantization", universes["quota_ledger"])
+    assert not _is_modeled("fast_mode", universes["quota_ledger"])
     # detector discrimination pinned against SYNTHETIC universes — immune to a sibling slice
     # mutating the live field sets, so the gap findings above can never be a vacuous pass.
     assert _is_modeled("effort", {"effort_fit", "grounding"})
