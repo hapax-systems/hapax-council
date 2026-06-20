@@ -22,6 +22,82 @@ def _run_helper(runtime: str, env_extra: dict[str, str]) -> int:
     ).returncode
 
 
+def _run_launcher(tmp_path, *, latch: str = "absent", config: str = "clean", env_extra=None):
+    """Run hapax-antigrav end-to-end far enough to hit the wire + latch, with a stub agy / tmp home
+    / tmp config so it never spawns a real IDE or touches the real ~/.gemini. ``latch`` in
+    {absent, enabled, allow, disabled}; ``config`` in {clean, foreign}. Returns the CompletedProcess.
+    """
+    home = tmp_path / "home"
+    wd = tmp_path / "wd"
+    cfg = tmp_path / "gemini"
+    for d in (home, wd, cfg):
+        d.mkdir(parents=True, exist_ok=True)
+    stub = tmp_path / "agy"
+    stub.write_text("#!/bin/sh\nexit 0\n")
+    stub.chmod(0o755)
+    enable, disable = tmp_path / "enable", tmp_path / "disable"
+    if latch in ("enabled",):
+        enable.touch()
+    if latch in ("disabled",):
+        enable.touch()
+        disable.touch()
+    if config == "foreign":
+        (cfg / "hooks.json").write_text('{"PreToolUse": [{"matcher": "foreign", "hooks": []}]}')
+    env = {
+        "HOME": str(home),
+        "PATH": "/usr/bin:/bin",
+        "HAPAX_COUNCIL_DIR": str(REPO),
+        "HAPAX_ANTIGRAV_BIN": str(stub),
+        "HAPAX_ANTIGRAV_CONFIG_DIR": str(cfg),
+        "HAPAX_ANTIGRAV_ENABLE_FILE": str(enable),
+        "HAPAX_ANTIGRAV_DISABLE_FILE": str(disable),
+    }
+    if latch == "allow":
+        env["HAPAX_ANTIGRAV_ALLOW"] = "1"
+    env.update(env_extra or {})
+    return subprocess.run(
+        [str(LAUNCHER), "--workdir", str(wd), "--no-claim", "--terminal", "current"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_launcher_refuses_interactive_launch_when_latch_absent(tmp_path) -> None:
+    # End-to-end: reaches the launch path (wire succeeds on a clean config) then refuses at the latch.
+    result = _run_launcher(tmp_path, latch="absent")
+    assert result.returncode == 7
+    assert "enable-latch" in result.stderr
+
+
+def test_launcher_proceeds_past_latch_with_enable_file(tmp_path) -> None:
+    result = _run_launcher(tmp_path, latch="enabled")
+    assert result.returncode != 7  # passed the latch (proceeds to the stubbed agy spawn)
+
+
+def test_launcher_proceeds_past_latch_with_allow_env(tmp_path) -> None:
+    result = _run_launcher(tmp_path, latch="allow")
+    assert result.returncode != 7
+
+
+def test_launcher_fail_closed_on_foreign_hooks_blocks_before_latch(tmp_path) -> None:
+    # Foreign hooks.json -> wire refused -> exit 6 (fail-closed) on the normal launch path.
+    result = _run_launcher(tmp_path, latch="allow", config="foreign")
+    assert result.returncode == 6
+
+
+def test_launcher_hook_wiring_override_proceeds_past_the_wire(tmp_path) -> None:
+    # With the operator override, a refused wire warns + proceeds (no exit 6); latch allowed -> past.
+    result = _run_launcher(
+        tmp_path,
+        latch="allow",
+        config="foreign",
+        env_extra={"HAPAX_ANTIGRAV_OVERRIDE_HOOK_WIRING": "1"},
+    )
+    assert result.returncode != 6
+    assert "UNGATED" in result.stderr  # the loud override warning fired
+
+
 def test_helper_default_deny_when_no_latch(tmp_path) -> None:
     rc = _run_helper(
         "antigrav",
