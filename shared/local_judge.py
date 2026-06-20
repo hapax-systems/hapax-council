@@ -114,6 +114,10 @@ class JudgeVerdict(BaseModel):
     )
     raw: str = Field(default="", description="Raw model output before parsing")
     route: str = Field(default="local-judge")
+    served_model: str = Field(
+        default="",
+        description="The model that actually answered (response.model) — provenance, not the route alias",
+    )
     shadow: bool = Field(
         default=True,
         description="True = non-authoritative; do not act on it until the agreement gate clears",
@@ -180,10 +184,30 @@ class LocalJudge:
                     timeout=self.timeout,
                 )
             raw = response.choices[0].message.content or ""
+            served = str(getattr(response, "model", "") or "")
+            if served and "compassverifier" not in served.lower():
+                # Provenance mismatch: the local-judge route did NOT serve
+                # CompassVerifier (e.g. it fell back to claude-haiku/gemini). Refuse
+                # to label this a local-judge CV verdict — force label='' so a caller
+                # MUST escalate and can never act on a foreign-model answer-verification
+                # as if it were the trained judge (the silent-degrade the eval audit
+                # flagged for a future shadow=False caller).
+                return JudgeVerdict(
+                    label="",
+                    raw=raw,
+                    route=f"degraded:served={served}",
+                    served_model=served,
+                    shadow=self.shadow,
+                    error=(
+                        f"local-judge provenance mismatch: served '{served}', not "
+                        "CompassVerifier — escalate to the incumbent judge"
+                    ),
+                )
             return JudgeVerdict(
                 label=process_judgment(raw.strip()),  # type: ignore[arg-type]
                 raw=raw,
                 route=self.route,
+                served_model=served,
                 shadow=self.shadow,
             )
         except Exception as exc:  # noqa: BLE001 — surface, never silently pass/fail-correct

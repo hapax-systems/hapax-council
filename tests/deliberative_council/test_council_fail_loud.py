@@ -473,8 +473,42 @@ class TestServedModelFamilyLabeling:
         assert served_model_family("compassverifier-7b") == "cohere"
         assert served_model_family("mistral-large-latest") == "mistral"
         assert served_model_family("sonar-pro") == "perplexity"
+        # Cap-resilient diversity families admitted 2026-06-20 (cloud, no GPU conflict).
+        assert served_model_family("deepseek/deepseek-chat-v3.1") == "deepseek"
+        assert served_model_family("glm-5.2") == "zhipu"
         assert served_model_family("") == "unknown"
         assert served_model_family("some-unknown-model") == "unknown"
+
+    def test_default_roster_seats_diversity_families(self) -> None:
+        """The SCED ruler default roster seats deepseek + glm so it can hit
+        family-quorum without anthropic (cap-resilient diversity)."""
+        from agents.deliberative_council.models import CouncilConfig
+
+        aliases = CouncilConfig().model_aliases
+        assert "deepseek" in aliases
+        assert "glm" in aliases
+        # served families the roster can produce span >= 6 distinct families
+        fams = {
+            served_model_family(m)
+            for m in (
+                "claude-4.6-sonnet",
+                "gemini-3.1-pro",
+                "command-r-08-2024",
+                "mistral-large",
+                "sonar-pro",
+                "deepseek/deepseek-chat",
+                "glm-5.2",
+            )
+        }
+        assert {
+            "anthropic",
+            "google",
+            "cohere",
+            "mistral",
+            "perplexity",
+            "deepseek",
+            "zhipu",
+        } <= fams
 
     def test_anthropic_cap_failover_counted_by_served_family_stays_valid(self) -> None:
         # Anthropic-only cap: both anthropic seats fall over to gemini. Honest count = 4 families

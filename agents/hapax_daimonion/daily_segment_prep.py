@@ -2042,6 +2042,7 @@ def prep_segment(
     if deadline_monotonic is not None:
         _gate_timeout = max(5.0, min(60.0, deadline_monotonic - time.monotonic()))
     _composability = assess_composability(role, topic, list(beats), timeout=_gate_timeout)
+    _gate_errored = bool(getattr(_composability, "errored", False))
     _append_s2_composability_ledger(
         prep_dir,
         programme_id=prog_id,
@@ -2050,11 +2051,21 @@ def prep_segment(
         segment_beats=list(beats),
         accepted=_composability.accept,
         reason=_composability.reason,
+        errored=_gate_errored,
     )
-    if not _composability.accept:
+    # Abstain on a degraded gate as well as a real reject. A fail-open
+    # (errored=True, accept=True) is UNVERIFIED — airing it would write an
+    # invalid "passed" row into the SCED producer DV. Honest behavior is to skip
+    # (the caller previously read only `.accept`, so a truncation-induced
+    # rubber-stamp aired as if it were a clean accept).
+    if _gate_errored or not _composability.accept:
+        _abstain = _gate_errored and _composability.accept
         log.info(
-            "prep_segment: %s un-composable topic+type, skipping: %s",
+            "prep_segment: %s %s, skipping: %s",
             prog_id,
+            "S2 gate degraded (fail-open, unverified — abstaining)"
+            if _abstain
+            else "un-composable topic+type",
             _composability.reason,
         )
         _write_prep_diagnostic_outcome(
@@ -2065,8 +2076,12 @@ def prep_segment(
             topic=topic,
             segment_beats=list(beats),
             terminal_status="no_candidate",
-            terminal_reason="uncomposable_topic_type",
-            not_loadable_reason=f"un-composable topic+type: {_composability.reason}",
+            terminal_reason="s2_gate_errored_abstain" if _abstain else "uncomposable_topic_type",
+            not_loadable_reason=(
+                f"S2 gate degraded/unverified (abstain): {_composability.reason}"
+                if _abstain
+                else f"un-composable topic+type: {_composability.reason}"
+            ),
             no_candidate_metadata={
                 "candidate_source": "segment_composability_gate",
                 "candidate_count": 0,
@@ -3939,6 +3954,7 @@ def _append_s2_composability_ledger(
     segment_beats: list[Any],
     accepted: bool,
     reason: str,
+    errored: bool = False,
 ) -> None:
     """Append the S2 topic/type composability attempt to the producer-DV ledger.
 
@@ -3946,18 +3962,33 @@ def _append_s2_composability_ledger(
     pre-gate scores. They still belong in the producer DV as attempt/reject
     population records; otherwise the producer-vs-filter contrast loses the
     plans the producer could not make composable.
+
+    ``errored`` distinguishes a real verdict from a FAIL-OPEN (the gate could
+    not run and returned ``accept=True`` by default). A fail-open is NOT a clean
+    accept: it is recorded with ``accepted=False`` + ``errored=True`` so it can
+    never masquerade as a verified pass in the producer DV / SCED rows.
     """
+    fail_open = bool(errored and accepted)
+    real_accept = bool(accepted and not errored)
     row = {
         "schema_version": PREP_DIAGNOSTIC_SCHEMA_VERSION,
         "record_type": S2_COMPOSABILITY_LEDGER_RECORD_TYPE,
         "ledgered_at": datetime.now(tz=UTC).isoformat(),
         "programme_id": programme_id,
-        "terminal": not accepted,
-        "terminal_status": "s2_composable" if accepted else "no_candidate",
-        "terminal_reason": None if accepted else "uncomposable_topic_type",
+        "terminal": not real_accept,
+        "terminal_status": (
+            "s2_composable" if real_accept else ("s2_gate_errored" if errored else "no_candidate")
+        ),
+        "terminal_reason": (
+            None
+            if real_accept
+            else ("s2_gate_fail_open_unverified" if errored else "uncomposable_topic_type")
+        ),
         "producer_gate": {
             "gate": S2_COMPOSABILITY_GATE_NAME,
-            "accepted": bool(accepted),
+            "accepted": real_accept,
+            "errored": bool(errored),
+            "fail_open": fail_open,
             "criterion": _COHERENCE_CRITERION,
             "reason": str(reason or ""),
             "role": role,

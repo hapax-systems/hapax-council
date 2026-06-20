@@ -108,6 +108,8 @@ _SERVED_FAMILY_SUBSTRINGS: tuple[tuple[str, str], ...] = (
     ("compassverifier", "cohere"),
     ("mistral", "mistral"),
     ("sonar", "perplexity"),
+    ("deepseek", "deepseek"),
+    ("glm", "zhipu"),
 )
 
 

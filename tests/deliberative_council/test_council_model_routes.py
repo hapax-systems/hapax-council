@@ -60,6 +60,9 @@ VALID_LITELLM_ROUTES = frozenset(
         "coding",
         "reasoning",
         "appendix-fast",
+        # Cap-resilient cloud-diversity seats (2026-06-20).
+        "deepseek",
+        "glm",
     }
 )
 

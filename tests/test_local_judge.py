@@ -74,15 +74,34 @@ def test_verdict_properties():
 async def test_verify_routes_and_parses():
     fake = AsyncMock()
     fake.return_value.choices = [type("C", (), {"message": type("M", (), {"content": "B"})()})()]
+    fake.return_value.model = "compassverifier-7b"
     judge = LocalJudge(shadow=True)
     with patch("litellm.acompletion", fake):
         verdict = await judge.verify("q", "gold", "candidate")
     assert verdict.label == "B"
     assert verdict.shadow is True
     assert verdict.route == "local-judge"
+    assert verdict.served_model == "compassverifier-7b"
     # routed through the gateway with the openai/<route> idiom
     assert fake.call_args.kwargs["model"] == "openai/local-judge"
     assert fake.call_args.kwargs["temperature"] == 0.0
+
+
+async def test_verify_provenance_mismatch_refuses_local_judge_label():
+    """If the local-judge route serves a NON-CompassVerifier model (a fallback),
+    refuse to label it route=local-judge: force label='' (escalate) so a future
+    shadow=False caller can't act on a foreign-model verdict as the trained judge."""
+    fake = AsyncMock()
+    fake.return_value.choices = [type("C", (), {"message": type("M", (), {"content": "A"})()})()]
+    fake.return_value.model = "gemini-3.5-flash"  # local-judge fell back off CompassVerifier
+    judge = LocalJudge(shadow=True)
+    with patch("litellm.acompletion", fake):
+        verdict = await judge.verify("q", "gold", "candidate")
+    assert verdict.label == ""  # never a CORRECT/A verdict from a mislabeled model
+    assert not verdict.is_correct
+    assert verdict.route != "local-judge"
+    assert "gemini-3.5-flash" in verdict.served_model
+    assert verdict.error and "provenance" in verdict.error.lower()
 
 
 async def test_verify_surfaces_errors_not_false_correct():
