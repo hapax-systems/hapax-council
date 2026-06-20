@@ -1,0 +1,18 @@
+[Unit]
+Description=Re-assert the S-4 gain ladder silently at boot + every 2 minutes
+Requires=hapax-s4-rearm.service
+
+[Timer]
+# OnBootSec=60s lets PipeWire/WirePlumber + the S-4 USB-MIDI enumerate before
+# the first silent re-assert. OnUnitActiveSec=120s keeps the ladder asserted
+# across the boot session, so any daimonion/router restart that left the S-4
+# unarmed is re-armed within ~2 min. Silent (--witness-mode none) ⇒ no tone to
+# air; the recurrence also covers the cold-boot enumeration race (a first-fire
+# midi_output_missing self-heals on the next tick).
+OnBootSec=60s
+OnUnitActiveSec=120s
+AccuracySec=10s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

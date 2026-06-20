@@ -364,6 +364,7 @@ def run_s4_arm(
     authority_case: str = DEFAULT_AUTHORITY_CASE,
     parent_spec: str = DEFAULT_PARENT_SPEC,
     pre_segment_check: bool = False,
+    witness_mode: str = "tone",
     update_witness: bool = True,
     probe_script: Path = DEFAULT_PROBE_SCRIPT,
     probe_timeout_s: float = DEFAULT_PROBE_TIMEOUT_S,
@@ -419,7 +420,7 @@ def run_s4_arm(
             if not ladder_result.ok:
                 failure_reasons.extend(ladder_result.failures)
 
-            if ladder_result.ok:
+            if ladder_result.ok and witness_mode == "tone":
                 initial = run_probe("initial_marker_witness")
                 if not probe_green(initial) and monitor_toggle:
                     first_toggle = emit_monitor_toggle(
@@ -467,9 +468,16 @@ def run_s4_arm(
         close_output(output)
 
     final_probe = probes[-1] if probes else {}
-    verdict = "green" if probe_green(final_probe) and ladder_result.ok else "red"
-    if verdict != "green":
-        failure_reasons.extend(probe_reason_tags(final_probe))
+    if witness_mode == "tone":
+        verdict = "green" if probe_green(final_probe) and ladder_result.ok else "red"
+        if verdict != "green":
+            failure_reasons.extend(probe_reason_tags(final_probe))
+    else:
+        # Silent re-assert path (witness_mode == "none"): no tone probe runs,
+        # so the verdict reflects only the gain-ladder assertion. Wet-path
+        # liveness is surfaced separately by the active-voice pre-segment
+        # witness (hapax-audio-routing-check), never by this recurring re-arm.
+        verdict = "green" if ladder_result.ok else "red"
     receipt = {
         "s4_arm_receipt_version": 1,
         "task_id": task_id,
@@ -530,6 +538,16 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--monitor-settle-s", type=float, default=DEFAULT_MONITOR_SETTLE_S)
     parser.add_argument("--cc-delay-ms", type=float, default=DEFAULT_CC_DELAY_MS)
     parser.add_argument("--pre-segment-check", action="store_true")
+    parser.add_argument(
+        "--witness-mode",
+        choices=("tone", "none"),
+        default="tone",
+        help=(
+            "tone = run the wet-return marker probe (boot/manual, broadcast-off only); "
+            "none = silent gain-ladder re-assert only, no tone/toggle "
+            "(recurring + restart-coupled re-arm path)"
+        ),
+    )
     parser.add_argument("--task-id", default=DEFAULT_TASK_ID)
     parser.add_argument("--authority-case", default=DEFAULT_AUTHORITY_CASE)
     parser.add_argument("--parent-spec", default=DEFAULT_PARENT_SPEC)
@@ -553,6 +571,7 @@ def main(
             authority_case=args.authority_case,
             parent_spec=args.parent_spec,
             pre_segment_check=args.pre_segment_check,
+            witness_mode=args.witness_mode,
             update_witness=not args.no_update_witness,
             probe_script=args.probe_script,
             probe_timeout_s=args.probe_timeout_s,
