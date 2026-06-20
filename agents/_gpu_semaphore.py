@@ -77,6 +77,20 @@ def gpu_slot(block: bool = True):
                 fd = -1
 
         # All slots taken
+        if os.environ.get("HAPAX_GPU_SEM_NONBLOCK", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            # CPU-only process (e.g. logos-api: every embed is nomic-embed-cpu):
+            # run the body WITHOUT a slot rather than block or skip — a CPU embed
+            # does not contend for GPU VRAM, so running un-serialized is correct,
+            # never wedges the asyncio event loop, AND never drops the embedding.
+            # Definitive logos-api :8051 hang fix; takes precedence over `block`.
+            log.debug("gpu_slot: HAPAX_GPU_SEM_NONBLOCK set — running without slot (CPU-only)")
+            yield
+            return
         if not block:
             log.debug("gpu_slot: all %d slots busy, non-blocking caller skips", _NUM_SLOTS)
             raise BlockingIOError("all GPU semaphore slots busy (non-blocking gpu_slot)")

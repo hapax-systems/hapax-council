@@ -127,3 +127,42 @@ class TestGpuSlotNonBlocking:
         """Default (block=True) still acquires a free slot — no behavior change for GPU callers."""
         with gpu_slot(block=True):
             assert (tmp_slot_dir / "slot.0").exists()
+
+
+class TestGpuSlotNonBlockEnv:
+    """HAPAX_GPU_SEM_NONBLOCK: a CPU-only process (logos-api) never blocks/skips —
+    it runs the body WITHOUT a slot on contention. Definitive logos-api hang fix."""
+
+    def test_env_runs_without_slot_when_saturated(self, tmp_slot_dir, monkeypatch):
+        monkeypatch.setenv("HAPAX_GPU_SEM_NONBLOCK", "1")
+        with patch("shared.gpu_semaphore._NUM_SLOTS", 1):
+            with gpu_slot():  # materialize slot dir + slot.0
+                pass
+            held = os.open(str(tmp_slot_dir / "slot.0"), os.O_CREAT | os.O_RDWR)
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                ran = False
+                with gpu_slot():  # saturated, but env set -> runs anyway, no block/raise
+                    ran = True
+                assert ran is True
+                # env takes precedence over block=False too (runs, never skips)
+                ran2 = False
+                with gpu_slot(block=False):
+                    ran2 = True
+                assert ran2 is True
+            finally:
+                os.close(held)
+
+    def test_env_unset_behavior_unchanged(self, tmp_slot_dir, monkeypatch):
+        monkeypatch.delenv("HAPAX_GPU_SEM_NONBLOCK", raising=False)
+        with patch("shared.gpu_semaphore._NUM_SLOTS", 1):
+            with gpu_slot():
+                pass
+            held = os.open(str(tmp_slot_dir / "slot.0"), os.O_CREAT | os.O_RDWR)
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                with pytest.raises(BlockingIOError):  # unchanged: block=False still skips
+                    with gpu_slot(block=False):
+                        pass
+            finally:
+                os.close(held)
