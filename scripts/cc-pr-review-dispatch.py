@@ -92,6 +92,28 @@ DEGRADED_MERGES_LEDGER = Path.home() / ".cache" / "hapax" / "review-team" / "deg
 FAMILY_OUTAGE_TTL_S = review_team.FAMILY_OUTAGE_TTL_S
 
 
+def _witness_observed_at(entry: Any) -> str | None:
+    """The observed_at timestamp from a witness-state entry (dict or legacy str), or None."""
+    if isinstance(entry, dict):
+        val = entry.get("observed_at")
+        return str(val) if val is not None else None
+    if isinstance(entry, str):
+        return entry
+    return None
+
+
+def _outage_started_at(existing: Any, now_iso: str) -> str:
+    """The outage_started_at to record for a sustained outage: PRESERVE an existing start
+    (a dict entry's outage_started_at, or a legacy str entry's timestamp) — outage_started_at
+    is the stable anchor set when the outage began and never advances while sustained. Seed
+    ``now_iso`` only for a brand-new outage."""
+    if isinstance(existing, dict):
+        return str(existing.get("outage_started_at") or existing.get("observed_at") or now_iso)
+    if isinstance(existing, str):
+        return existing  # legacy str format: the old observed IS the start
+    return now_iso
+
+
 def load_family_outage_witness(now_iso: str, state_path: Path | None = None) -> dict[str, str]:
     """TTL-live outage witness timestamps by family."""
 
@@ -105,7 +127,9 @@ def load_family_outage_witness(now_iso: str, state_path: Path | None = None) -> 
     now = datetime.fromisoformat(now_iso)
     out: dict[str, str] = {}
     for family, observed in state.items():
-        observed_iso = str(observed)
+        observed_iso = _witness_observed_at(observed)
+        if observed_iso is None:
+            continue
         try:
             observed_at = datetime.fromisoformat(observed_iso)
             comparison_now = now
@@ -165,7 +189,11 @@ def update_family_outage(
             available_verdicts = PARSEABLE_VERDICTS | {"invalid-output"}
             for family, verdicts in by_family.items():
                 if all(v in review_team.FAMILY_OUTAGE_VERDICTS for v in verdicts):
-                    state[family] = now_iso
+                    # Sustained outage: preserve the STABLE outage_started_at (set when this
+                    # outage began) and only advance observed_at. Legacy str entries seed
+                    # started == the old timestamp; a brand-new outage seeds started == now.
+                    started = _outage_started_at(state.get(family), now_iso)
+                    state[family] = {"observed_at": now_iso, "outage_started_at": started}
                 elif any(v in available_verdicts for v in verdicts):
                     state.pop(family, None)
             with tempfile.NamedTemporaryFile(
