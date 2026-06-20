@@ -98,3 +98,32 @@ class TestGpuSlot:
             with gpu_slot():
                 for i in range(4):
                     assert (tmp_slot_dir / f"slot.{i}").exists()
+
+
+class TestGpuSlotNonBlocking:
+    """block=False degrades instead of wedging — Resource Constitution: best-effort first."""
+
+    def test_nonblocking_acquires_when_free(self, tmp_slot_dir):
+        with gpu_slot(block=False):
+            assert (tmp_slot_dir / "slot.0").exists()
+
+    def test_nonblocking_raises_when_saturated(self, tmp_slot_dir):
+        """Regression for the logos-api event-loop hang: a best-effort caller on
+        the asyncio loop must get BlockingIOError (and skip), never block, when
+        the 2-slot GPU semaphore is saturated."""
+        with patch("shared.gpu_semaphore._NUM_SLOTS", 1):
+            with gpu_slot():  # materialize slot dir + slot.0
+                pass
+            held = os.open(str(tmp_slot_dir / "slot.0"), os.O_CREAT | os.O_RDWR)
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                with pytest.raises(BlockingIOError):
+                    with gpu_slot(block=False):
+                        pass
+            finally:
+                os.close(held)
+
+    def test_blocking_default_unchanged(self, tmp_slot_dir):
+        """Default (block=True) still acquires a free slot — no behavior change for GPU callers."""
+        with gpu_slot(block=True):
+            assert (tmp_slot_dir / "slot.0").exists()
