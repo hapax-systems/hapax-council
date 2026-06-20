@@ -4306,3 +4306,13 @@ from shared.route_metadata_schema import TaskDemand as _capdims_task_demand  # n
 
 _capdims_task_demand._effort_demand_in_vocab
 _capdims_task_demand._context_mode_demand_in_vocab
+# HKP->Alliant bridge emit API (REQ-20260619; PR-C). The manual bridge has no
+# in-process production caller by design (operator invokes it to produce a
+# reviewed packet, then delivers it by hand); guard the public entry points.
+from shared.evidence_ledger import (
+    build_hkp_determination_packet as _hkp_build_packet,  # noqa: F401, E402
+)
+from shared.evidence_ledger import collect_hkp_evidence as _hkp_collect_evidence  # noqa: F401, E402
+
+_hkp_build_packet
+_hkp_collect_evidence
