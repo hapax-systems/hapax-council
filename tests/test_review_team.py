@@ -2356,3 +2356,32 @@ class TestClassifyFailureReceipt:
         assert rt.is_reviewer_route_unavailable(text, process_failed=True)
         assert rt.is_provider_outage(text, process_failed=True)
         assert rt.classify_failure(text, process_failed=True).code is FailureCode.ROUTE_UNAVAILABLE
+
+    def test_classify_failure_priority_pinned_to_dispatch(self) -> None:
+        """Cross-check (NOT self-referential): the canonical verdict else-if in
+        cc-pr-review-dispatch.py and classify_failure's elif chain must apply the three classifiers in
+        the SAME order (quota > route > provider > else). Two #4249 reviewers flagged the prose
+        'mirrors dispatch' claim as unpinned; this trips if EITHER side is reordered or a marker is
+        renamed (str.index raises)."""
+        dispatch_src = (REPO_ROOT / "scripts" / "cc-pr-review-dispatch.py").read_text(
+            encoding="utf-8"
+        )
+        dispatch_order = [
+            dispatch_src.index('verdict = "quota-wall"'),
+            dispatch_src.index('verdict = "reviewer-route-unavailable"'),
+            dispatch_src.index('verdict = "provider-outage"'),
+            dispatch_src.index('verdict = "invalid-output"'),
+        ]
+        assert dispatch_order == sorted(dispatch_order), "dispatch verdict else-if order changed"
+
+        rt_src = (REPO_ROOT / "scripts" / "review_team.py").read_text(encoding="utf-8")
+        body = rt_src[rt_src.index("def classify_failure") :]
+        body = body[: body.index("return FailureReceipt")]
+        classifier_order = [
+            body.index("is_quota_wall("),
+            body.index("is_reviewer_route_unavailable("),
+            body.index("is_provider_outage("),
+        ]
+        assert classifier_order == sorted(classifier_order), (
+            "classify_failure classifier order changed"
+        )
