@@ -49,3 +49,12 @@ def test_proximity_window_bounds_detection() -> None:
     far = "the operator " + ("x " * 60) + "anxiety"
     assert not operator_mental_state_present(far, window=40)
     assert operator_mental_state_present("the operator is anxious", window=40)
+
+
+def test_first_person_over_detection_is_intended_fail_closed() -> None:
+    # Conservative egress bias (review finding, pinned): a bare first-person
+    # token near an affect term flags even when the affect describes a third
+    # party. This is INTENDED over-detection — fail-closed → operator review.
+    # A missed operator-affect leak is worse than an over-block, so the detector
+    # errs toward flagging. This test pins the boundary the reviewer flagged.
+    assert operator_mental_state_present("Bob said it worries him; I logged it")
