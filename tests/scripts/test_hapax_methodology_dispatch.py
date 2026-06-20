@@ -289,6 +289,70 @@ def _recipient_row(db_path: Path, message_id: str, recipient: str) -> sqlite3.Ro
     return row
 
 
+def test_claim_sweep_reaps_blocked_unassigned_session_claim(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    claims = tmp_path / "claims"
+    active = tmp_path / "tasks" / "active"
+    claims.mkdir(parents=True)
+    active.mkdir(parents=True)
+    task_id = "p0-incident-blocked-task"
+    claim = claims / "cc-active-task-gamma-9b6ba5ca-513c-41aa-9900-d3026b42aad1"
+    claim.write_text(f"{task_id}\n", encoding="utf-8")
+    (active / f"{task_id}.md").write_text(
+        f"---\ntask_id: {task_id}\nstatus: blocked\nassigned_to: unassigned\n---\n",
+        encoding="utf-8",
+    )
+    old = 1000.0
+    os.utime(claim, (old, old))
+
+    reaped = module.sweep_stale_claims(claims, active, now=old + 301, grace_secs=300)
+
+    assert reaped == [(claim.name, task_id, "blocked-unassigned")]
+    assert not claim.exists()
+
+
+def test_claim_sweep_ignores_body_status_lines(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    claims = tmp_path / "claims"
+    active = tmp_path / "tasks" / "active"
+    claims.mkdir(parents=True)
+    active.mkdir(parents=True)
+    task_id = "p0-incident-body-status"
+    claim = claims / "cc-active-task-gamma-9b6ba5ca-513c-41aa-9900-d3026b42aad1"
+    claim.write_text(f"{task_id}\n", encoding="utf-8")
+    (active / f"{task_id}.md").write_text(
+        f"---\ntask_id: {task_id}\nstatus: claimed\nassigned_to: gamma\n---\n"
+        "\n# Notes\n\nstatus: blocked\nassigned_to: unassigned\n",
+        encoding="utf-8",
+    )
+    old = 1000.0
+    os.utime(claim, (old, old))
+
+    reaped = module.sweep_stale_claims(claims, active, now=old + 301, grace_secs=300)
+
+    assert reaped == []
+    assert claim.exists()
+
+
+def test_lane_active_task_lease_reads_session_keyed_claim(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    claims = tmp_path / "claims"
+    claims.mkdir(parents=True)
+    task_id = "p0-incident-session-keyed-pickup"
+    claim = claims / "cc-active-task-gamma-9b6ba5ca-513c-41aa-9900-d3026b42aad1"
+    claim.write_text(f"{task_id}\n", encoding="utf-8")
+
+    previous = os.environ.get("HAPAX_CC_CLAIMS_DIR")
+    os.environ["HAPAX_CC_CLAIMS_DIR"] = str(claims)
+    try:
+        assert module.lane_active_task_lease("gamma") == task_id
+    finally:
+        if previous is None:
+            os.environ.pop("HAPAX_CC_CLAIMS_DIR", None)
+        else:
+            os.environ["HAPAX_CC_CLAIMS_DIR"] = previous
+
+
 def _run(
     tmp_path: Path,
     *args: str,
@@ -942,7 +1006,7 @@ def test_launches_codex_headless_through_codex_launcher(tmp_path: Path) -> None:
     fake_launcher.parent.mkdir(parents=True, exist_ok=True)
     fake_launcher.write_text(
         f"""#!/usr/bin/env bash
-printf '%s\\n' "$HAPAX_DISPATCH_HOST" > {launcher_env}
+printf 'host=%s\\nfallback=%s\\n' "$HAPAX_DISPATCH_HOST" "${{HAPAX_DISPATCH_HOST_FALLBACK:-}}" > {launcher_env}
 printf '%s\\n' "$@" > {launcher_args}
 """,
         encoding="utf-8",
@@ -967,11 +1031,11 @@ printf '%s\\n' "$@" > {launcher_args}
     )
 
     assert result.returncode == 0, result.stderr
-    # hapax-codex-headless takes `--task <id> --force <lane> <prompt>`; the prompt
-    # is passed inline (multi-line), so assert the flag prefix then the prompt
-    # body in the raw recorded args.
+    # hapax-codex-headless takes `--task <id> <lane> <prompt>` for ordinary
+    # launches. `--force` is reserved for the P0 incident drain-lane path.
     recorded = launcher_args.read_text(encoding="utf-8")
-    assert recorded.startswith("--task\ngoverned-build\n--force\ncx-green\n")
+    assert recorded.startswith("--task\ngoverned-build\ncx-green\n")
+    assert "\n--force\n" not in recorded
     assert "SDLC GOVERNED DISPATCH." in recorded
     assert "Task: governed-build" in recorded
     assert "AuthorityCase: CASE-TEST-001" in recorded
@@ -994,7 +1058,354 @@ printf '%s\\n' "$@" > {launcher_args}
     assert receipt["coord_dispatch_replayed"] is False
     assert receipt["coord_dispatch_cleanup_state"] == "processed"
     assert receipt["dispatch_host"] == "appendix"
-    assert launcher_env.read_text(encoding="utf-8").strip() == "appendix"
+    assert launcher_env.read_text(encoding="utf-8").splitlines() == [
+        "host=appendix",
+        "fallback=",
+    ]
+
+
+def test_codex_p0_incident_drain_lane_allows_local_fallback(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    task_id = "p0-incident-sdlc-task-stalled-test"
+    _task(
+        tmp_path / "tasks",
+        task_id,
+        f"""
+        kind: build
+        priority: p0
+        tags: [cc-task, p0, incident-intake, technical-alert]
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_env = tmp_path / "launcher-env.txt"
+    launcher_args = tmp_path / "launcher-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf 'host=%s\\nfallback=%s\\n' "$HAPAX_DISPATCH_HOST" "${{HAPAX_DISPATCH_HOST_FALLBACK:-}}" > {launcher_env}
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        task_id,
+        "--lane",
+        "cx-p0",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert launcher_env.read_text(encoding="utf-8").splitlines() == [
+        "host=appendix",
+        "fallback=local",
+    ]
+    recorded = launcher_args.read_text(encoding="utf-8")
+    assert recorded.startswith(f"--task\n{task_id}\n--force\ncx-p0\n")
+
+
+def test_codex_p0_incident_drain_lane_force_preserves_live_pid_guard(tmp_path: Path) -> None:
+    worktree = _worktree(tmp_path / "worktree")
+    (worktree / "scripts" / "cc-claim").chmod(0o755)
+    spec = _spec(tmp_path / "isap-test.md")
+    task_id = "p0-incident-sdlc-task-stalled-test"
+    _task(
+        tmp_path / "tasks",
+        task_id,
+        f"""
+        kind: build
+        priority: p0
+        tags: [cc-task, p0, incident-intake, technical-alert]
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    home = tmp_path / "home"
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    pid_dir = tmp_path / "pids"
+    pid_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    codex_args = tmp_path / "codex-args.txt"
+    _write(
+        bin_dir / "codex",
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > {codex_args}\n",
+    )
+    (bin_dir / "codex").chmod(0o755)
+
+    live = subprocess.Popen(["sleep", "60"])
+    try:
+        (pid_dir / "cx-p0.pid").write_text(f"{live.pid}\n", encoding="utf-8")
+        result = _run(
+            tmp_path,
+            "--task",
+            task_id,
+            "--lane",
+            "cx-p0",
+            "--platform",
+            "codex",
+            "--mode",
+            "headless",
+            "--launch",
+            extra_env={
+                "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(
+                    REPO_ROOT / "scripts" / "hapax-codex-headless"
+                ),
+                "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+                "HAPAX_CODEX_HEADLESS_ALLOW": "1",
+                "HAPAX_CODEX_HEADLESS_WORKDIR": str(tmp_path / "worktree"),
+                "HAPAX_CODEX_HEADLESS_PID_DIR": str(pid_dir),
+                "XDG_CACHE_HOME": str(tmp_path / "cache"),
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            },
+        )
+    finally:
+        live.terminate()
+        live.wait(timeout=5)
+
+    assert result.returncode == 11
+    assert "already live" in result.stderr
+    assert not codex_args.exists()
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["launched"] is False
+    assert receipt["launch_returncode"] == 11
+    assert receipt["coord_dispatch_cleanup_state"] == "deferred"
+
+
+def test_codex_headless_dispatch_propagates_retired_relay_block(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+        status="claimed",
+        assigned_to="cx-green",
+    )
+    home = tmp_path / "home"
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    relay = home / ".cache" / "hapax" / "relay"
+    relay.mkdir(parents=True)
+    (relay / "cx-green.yaml").write_text("status: wind_down_idle\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    codex_args = tmp_path / "codex-args.txt"
+    _write(
+        bin_dir / "codex",
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > {codex_args}\n",
+    )
+    (bin_dir / "codex").chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(REPO_ROOT / "scripts" / "hapax-codex-headless"),
+            "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+            "HAPAX_CODEX_HEADLESS_ALLOW": "1",
+            "HAPAX_CODEX_HEADLESS_WORKDIR": str(tmp_path / "worktree"),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        },
+    )
+
+    assert result.returncode == 6
+    assert "retired/wound-down" in result.stderr
+    assert not codex_args.exists()
+
+
+def test_split_lane_list_accepts_commas_and_whitespace() -> None:
+    module = _dispatcher_module()
+
+    assert module.split_lane_list(" cx-p0,cx-crit  cx-hot\ncx-extra ") == {
+        "cx-p0",
+        "cx-crit",
+        "cx-hot",
+        "cx-extra",
+    }
+    assert module.split_lane_list(" \t\n ") == set()
+    assert module.split_lane_list(None) == set()
+
+
+def test_codex_p0_incident_local_fallback_rejects_non_drain_lane(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    monkeypatch.setenv("HAPAX_P0_CODEX_DRAIN_LANES", "cx-p0")
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "priority": "p0",
+                "title": "P0 incident",
+                "kind": "recovery_triage",
+                "tags": ["incident-intake", "technical-alert"],
+            },
+        ),
+    )
+
+    assert not module.allow_codex_p0_local_dispatch_fallback(
+        "p0-incident-sdlc-task-stalled-test", "cx-green", validation
+    )
+
+
+def test_codex_p0_incident_local_fallback_rejects_non_incident_drain_task(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    monkeypatch.setenv("HAPAX_P0_CODEX_DRAIN_LANES", "cx-p0")
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "priority": "p0",
+                "title": "Ordinary source change",
+                "kind": "build",
+                "tags": ["cc-task", "p0"],
+            },
+        ),
+    )
+
+    assert not module.allow_codex_p0_local_dispatch_fallback(
+        "ordinary-p0-build", "cx-p0", validation
+    )
+
+
+def test_codex_p0_incident_local_fallback_rejects_priority_mismatch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    monkeypatch.setenv("HAPAX_P0_CODEX_DRAIN_LANES", "cx-p0")
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "priority": "p1",
+                "title": "P0 incident marker in title",
+                "kind": "recovery_triage",
+                "tags": ["incident-intake", "technical-alert"],
+            },
+        ),
+    )
+
+    assert not module.allow_codex_p0_local_dispatch_fallback(
+        "p0-incident-priority-mismatch", "cx-p0", validation
+    )
+
+
+def test_codex_p0_incident_local_fallback_uses_primary_drain_lane_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    monkeypatch.setenv("HAPAX_SUPERVISOR_P0_CODEX_LANES", "cx-p0")
+    monkeypatch.setenv("HAPAX_P0_CODEX_DRAIN_LANES", "cx-hot")
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "priority": "p0",
+                "title": "P0 incident",
+                "kind": "recovery_triage",
+                "tags": ["incident-intake", "technical-alert"],
+            },
+        ),
+    )
+
+    assert module.allow_codex_p0_local_dispatch_fallback(
+        "p0-incident-custom-drain", "cx-hot", validation
+    )
+    assert not module.allow_codex_p0_local_dispatch_fallback(
+        "p0-incident-custom-drain", "cx-p0", validation
+    )
+
+
+def test_codex_p0_incident_local_fallback_uses_legacy_singular_drain_lane(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    monkeypatch.delenv("HAPAX_P0_CODEX_DRAIN_LANES", raising=False)
+    monkeypatch.delenv("HAPAX_SUPERVISOR_P0_CODEX_LANES", raising=False)
+    monkeypatch.setenv("HAPAX_SUPERVISOR_P0_CODEX_LANE", "cx-hot")
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "priority": "p0",
+                "title": "P0 incident",
+                "kind": "recovery_triage",
+                "tags": ["incident-intake", "technical-alert"],
+            },
+        ),
+    )
+
+    assert module.allow_codex_p0_local_dispatch_fallback(
+        "p0-incident-legacy-drain", "cx-hot", validation
+    )
+    assert not module.allow_codex_p0_local_dispatch_fallback(
+        "p0-incident-legacy-drain", "cx-p0", validation
+    )
+
+
+def test_codex_p0_incident_local_fallback_respects_empty_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    monkeypatch.setenv("HAPAX_SUPERVISOR_P0_CODEX_LANES", "cx-p0")
+    monkeypatch.setenv("HAPAX_P0_CODEX_DRAIN_LANES", "")
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "priority": "p0",
+                "title": "P0 incident",
+                "kind": "recovery_triage",
+                "tags": ["incident-intake", "technical-alert"],
+            },
+        ),
+    )
+
+    assert not module.allow_codex_p0_local_dispatch_fallback(
+        "p0-incident-empty-drain-roster", "cx-p0", validation
+    )
 
 
 def test_launch_idempotency_replays_without_second_launcher_call(tmp_path: Path) -> None:
@@ -1572,31 +1983,7 @@ printf '%s\\n' "$@" > {launcher_args}
     assert "quality_floor_not_satisfied" in result.stderr
 
 
-def test_gemini_read_only_quota_fallback_maps_to_flash(tmp_path: Path) -> None:
-    _worktree(tmp_path / "worktree")
-    _task(
-        tmp_path / "tasks",
-        "research-only",
-        """
-        kind: research
-        task_type: read-only
-        parent_spec: null
-        tags:
-          - research
-          - read-only
-        """,
-    )
-    launcher_args = tmp_path / "gemini-args.txt"
-    fake_launcher = tmp_path / "bin" / "hapax-gemini"
-    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
-    fake_launcher.write_text(
-        f"""#!/usr/bin/env bash
-printf '%s\\n' "$@" > {launcher_args}
-""",
-        encoding="utf-8",
-    )
-    fake_launcher.chmod(0o755)
-
+def test_gemini_platform_is_not_dispatchable(tmp_path: Path) -> None:
     result = _run(
         tmp_path,
         "--task",
@@ -1607,105 +1994,10 @@ printf '%s\\n' "$@" > {launcher_args}
         "gemini",
         "--mode",
         "headless",
-        "--profile",
-        "quota-fallback",
-        "--launch",
-        extra_env={"HAPAX_METHODOLOGY_GEMINI_LAUNCHER": str(fake_launcher)},
     )
 
-    assert result.returncode == 0, result.stderr
-    args = launcher_args.read_text(encoding="utf-8").splitlines()
-    assert "--model" in args
-    assert "gemini-3-flash-preview" in args
-    assert "-p" in args
-    receipt = json.loads(
-        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
-        .read_text(encoding="utf-8")
-        .splitlines()[-1]
-    )
-    assert receipt["platform"] == "gemini"
-    assert receipt["profile"] == "flash"
-    assert receipt["launched"] is True
-
-
-def test_gemini_mutation_task_fails_platform_fit(tmp_path: Path) -> None:
-    _worktree(tmp_path / "worktree")
-    spec = _spec(tmp_path / "isap-test.md")
-    _task(
-        tmp_path / "tasks",
-        "governed-build",
-        f"""
-        kind: build
-        authority_case: CASE-TEST-001
-        parent_spec: {spec}
-        """,
-    )
-
-    result = _run(
-        tmp_path,
-        "--task",
-        "governed-build",
-        "--lane",
-        "iota",
-        "--platform",
-        "gemini",
-        "--mode",
-        "headless",
-        "--launch",
-    )
-
-    assert result.returncode == 10
-    assert "read_only_mutation_route" in result.stderr
-
-
-def test_gemini_worker_profile_sets_auto_edit_mode(tmp_path: Path) -> None:
-    _worktree(tmp_path / "worktree")
-    _task(
-        tmp_path / "tasks",
-        "research-only",
-        """
-        kind: research
-        task_type: read-only
-        parent_spec: null
-        tags:
-          - research
-          - read-only
-        """,
-    )
-    launcher_args = tmp_path / "gemini-worker-args.txt"
-    launcher_env = tmp_path / "gemini-worker-env.txt"
-    fake_launcher = tmp_path / "bin" / "hapax-gemini"
-    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
-    fake_launcher.write_text(
-        f"""#!/usr/bin/env bash
-printf '%s\n' "$HAPAX_GEMINI_APPROVAL_MODE" > {launcher_env}
-printf '%s\n' "$@" > {launcher_args}
-""",
-        encoding="utf-8",
-    )
-    fake_launcher.chmod(0o755)
-
-    result = _run(
-        tmp_path,
-        "--task",
-        "research-only",
-        "--lane",
-        "iota",
-        "--platform",
-        "gemini",
-        "--mode",
-        "headless",
-        "--profile",
-        "worker",
-        "--launch",
-        extra_env={"HAPAX_METHODOLOGY_GEMINI_LAUNCHER": str(fake_launcher)},
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert launcher_env.read_text(encoding="utf-8").strip() == "auto_edit"
-    args = launcher_args.read_text(encoding="utf-8").splitlines()
-    assert "--model" not in args
-    assert "-p" in args
+    assert result.returncode == 2
+    assert "invalid choice: 'gemini'" in result.stderr
 
 
 def test_lists_platform_profile_paths(tmp_path: Path) -> None:
@@ -1717,8 +2009,7 @@ def test_lists_platform_profile_paths(tmp_path: Path) -> None:
     assert "codex/headless/spark" in result.stdout
     assert "claude/interactive/full" in result.stdout
     assert "claude/headless/sonnet" in result.stdout
-    assert "gemini/headless/flash" in result.stdout
-    assert "gemini/headless/worker" in result.stdout
+    assert "gemini/" not in result.stdout
     assert "antigrav/interactive/full" in result.stdout
     assert "api/headless/api_frontier" in result.stdout
     assert "api/headless/provider_gateway" in result.stdout

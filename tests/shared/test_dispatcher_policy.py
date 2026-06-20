@@ -13,11 +13,14 @@ from shared.dispatcher_policy import (
     DispatchRequest,
     QuotaSpendState,
     RouteCapabilityState,
+    build_dispatch_request,
     evaluate_dispatch_policy,
     load_dispatch_policy_sources,
     write_route_decision_receipt,
 )
 from shared.platform_capability_registry import (
+    CapacityPool,
+    PlatformCapabilityRegistry,
     PlatformCapabilityRoute,
     build_supply_vector,
     load_platform_capability_registry,
@@ -25,6 +28,7 @@ from shared.platform_capability_registry import (
 from shared.quota_spend_ledger import (
     QUOTA_SPEND_LEDGER_FIXTURES,
     QUOTA_SPEND_LEDGER_LIVE_ENV,
+    QuotaSpendLedger,
 )
 from shared.route_metadata_schema import DemandVector, build_demand_vector
 
@@ -32,6 +36,15 @@ if TYPE_CHECKING:
     import pytest
 
 NOW = datetime(2026, 5, 9, 22, 30, tzinfo=UTC)
+GLMCP_ADMISSION_EVIDENCE_REF = (
+    "relay-receipt:glmcp-quota-admission.yaml:"
+    "witness:supported-tool-usage-witness:"
+    "supported_tool:hapax-glmcp-reviewer:"
+    "endpoint:https://api.z.ai/api/coding/paas/v4:"
+    "model:glm-5:"
+    "observed_at:2026-05-09T22:00:00Z:"
+    "fresh_until:2026-05-09T23:00:00Z"
+)
 
 
 def _capability(**overrides: object) -> RouteCapabilityState:
@@ -195,6 +208,94 @@ def _route_with_scores(
     for tool in payload["tool_state"]:
         tool["observed_at"] = "2026-05-09T22:00:00Z"
     return PlatformCapabilityRoute.model_validate(payload)
+
+
+def _registry_with_fresh_route(route_id: str) -> PlatformCapabilityRegistry:
+    registry = load_platform_capability_registry()
+    if route_id in registry.route_map():
+        payload = registry.model_dump(mode="json")
+        route_payload = _route_with_scores(route_id, score=5).model_dump(mode="json")
+        payload["routes"] = [
+            route_payload if route["route_id"] == route_id else route for route in payload["routes"]
+        ]
+        return PlatformCapabilityRegistry.model_validate(payload)
+
+    route = _route_with_scores("codex.headless.full", score=5).model_copy(
+        update={
+            "route_id": route_id,
+            "launcher": f"test-only synthetic route for {route_id}",
+            "summary": f"Test-only synthetic route for {route_id}",
+            "notes": "Synthetic test route; production registration is covered by a later slice.",
+        }
+    )
+    return registry.model_copy(update={"routes": [*registry.routes, route]})
+
+
+def _ledger_with_route_subscription_state(
+    route_id: str,
+    state: str,
+    *,
+    fresh_until: str | None = None,
+    ledger_captured_at: str | None = None,
+) -> QuotaSpendLedger:
+    payload = json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
+    if ledger_captured_at is not None:
+        payload["captured_at"] = ledger_captured_at
+    evidence_refs = [f"relay-receipt:{route_id}:quota:{state}"]
+    if route_id == "glmcp.review.direct" and state == "fresh":
+        evidence_refs = [GLMCP_ADMISSION_EVIDENCE_REF]
+        payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    snapshot = {
+        "quota_snapshot_schema": 1,
+        "snapshot_id": f"quota-{route_id.replace('.', '-')}-{state}",
+        "captured_at": "2026-05-09T22:00:00Z",
+        "route_id": route_id,
+        "provider": "test-subscription",
+        "capacity_pool": "subscription_quota",
+        "subscription_quota_state": state,
+        "evidence_refs": evidence_refs,
+        "operator_visible_reason": f"test route quota {state}",
+    }
+    if route_id == "glmcp.review.direct" and state == "fresh":
+        snapshot["provider"] = "z_ai-glm-coding-plan"
+    if fresh_until is not None:
+        snapshot["fresh_until"] = fresh_until
+    payload["quota_snapshots"].append(snapshot)
+    return QuotaSpendLedger.model_validate(payload)
+
+
+def _task_fields() -> dict[str, object]:
+    payload = _demand().model_dump(mode="json")
+    payload.update(
+        {
+            "status": "claimed",
+            "assigned_to": "cx-green",
+            "authority_case": "CASE-TEST-001",
+        }
+    )
+    return payload
+
+
+def _review_task_fields() -> dict[str, object]:
+    # A review-seat task: non-mutating, support-non-authoritative — the work a
+    # read-only ReviewSeatAdapter (glmcp.review.direct) actually does. Used to
+    # exercise the receipt-bounded subscription-quota gate on the review seat; the
+    # authoritative coding-workhorse quota path is a separate, bakeoff-gated route.
+    payload = _task_fields()
+    payload.update(
+        {
+            "quality_floor": "frontier_review_required",
+            "authority_level": "support_non_authoritative",
+            "mutation_surface": "none",
+            "mutation_scope_refs": [],
+            "review_requirement": {
+                "support_artifact_allowed": True,
+                "independent_review_required": True,
+                "authoritative_acceptor_profile": "operator",
+            },
+        }
+    )
+    return payload
 
 
 def _dimensional_request(
@@ -473,6 +574,381 @@ def test_provider_gateway_route_ignores_subscription_quota_when_paid_api_is_elig
     assert "paid_route_without_active_budget" not in decision.reason_codes
 
 
+def test_glmcp_subscription_route_holds_when_route_quota_unknown() -> None:
+    request = _request(
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        route_id="glmcp.review.direct",
+        capability=_capability(route_id="glmcp.review.direct"),
+        quota=_quota(
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="unknown",
+            route_quota_evidence_refs=("relay-receipt:glmcp:quota-admission:absent",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.route_policy_green is False
+    assert decision.quota_freshness_green is False
+    assert "subscription_route_quota_not_fresh" in decision.reason_codes
+    assert "route_subscription_quota_state:unknown" in decision.reason_codes
+
+
+def test_glmcp_subscription_route_missing_quota_is_not_fresh_green() -> None:
+    request = _request(
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        route_id="glmcp.review.direct",
+        capability=_capability(route_id="glmcp.review.direct"),
+        quota=None,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.route_policy_green is False
+    assert decision.quota_freshness_green is False
+    assert "subscription_route_quota_unavailable" in decision.reason_codes
+
+
+def test_glmcp_subscription_route_holds_when_live_quota_ledger_stale() -> None:
+    request = _request(
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        route_id="glmcp.review.direct",
+        capability=_capability(route_id="glmcp.review.direct"),
+        quota=_quota(
+            budget_ledger_stale=True,
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="fresh",
+            route_quota_evidence_refs=("relay-receipt:glmcp-quota-admission.yaml",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.route_policy_green is False
+    assert decision.quota_freshness_green is False
+    assert "subscription_quota_ledger_stale" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_glmcp_subscription_route_holds_when_live_quota_ledger_unknown() -> None:
+    request = _request(
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        route_id="glmcp.review.direct",
+        capability=_capability(route_id="glmcp.review.direct"),
+        quota=_quota(
+            budget_ledger_stale=None,
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="fresh",
+            route_quota_evidence_refs=("relay-receipt:glmcp-quota-admission.yaml",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.route_policy_green is False
+    assert decision.quota_freshness_green is False
+    assert "subscription_quota_ledger_unknown" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_glmcp_subscription_route_launches_with_fresh_route_quota() -> None:
+    quota_ref = "relay-receipt:glmcp-quota-admission.yaml:fresh_until:2026-05-09T23:00:00Z"
+    request = _request(
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        route_id="glmcp.review.direct",
+        capability=_capability(route_id="glmcp.review.direct"),
+        quota=_quota(
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="fresh",
+            route_quota_evidence_refs=(quota_ref,),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.route_policy_green is True
+    assert decision.quota_freshness_green is True
+    assert decision.quota_evidence_refs == (quota_ref,)
+    assert "policy_launch" in decision.reason_codes
+
+
+def test_glmcp_route_specific_quota_holds_on_capacity_pool_mismatch() -> None:
+    quota_ref = "relay-receipt:glmcp-quota-admission.yaml:fresh_until:2026-05-09T23:00:00Z"
+    request = _request(
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        route_id="glmcp.review.direct",
+        capability=_capability(
+            route_id="glmcp.review.direct",
+            capacity_pool="local_compute",
+        ),
+        quota=_quota(
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="fresh",
+            route_quota_evidence_refs=(quota_ref,),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.route_policy_green is False
+    assert decision.quota_freshness_green is False
+    assert "subscription_route_capacity_pool_mismatch" in decision.reason_codes
+    assert "capacity_pool:local_compute" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_build_dispatch_request_enforces_exact_route_subscription_quota() -> None:
+    route_id = "glmcp.review.direct"
+    registry = _registry_with_fresh_route(route_id)
+    freshness_now = datetime(2026, 5, 9, 22, 10, tzinfo=UTC)
+
+    missing_request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        task_fields=_review_task_fields(),
+        registry=registry,
+        quota_ledger=_ledger_with_route_subscription_state("codex.headless.full", "fresh"),
+        now=freshness_now,
+    )
+    assert missing_request.quota is not None
+    assert missing_request.quota.subscription_quota_state == "fresh"
+    assert missing_request.quota.route_subscription_quota_state == "unknown"
+    assert missing_request.quota.route_quota_evidence_refs == (
+        "quota-snapshot:glmcp.review.direct:missing",
+    )
+
+    missing_decision = evaluate_dispatch_policy(missing_request, now=freshness_now)
+
+    assert missing_decision.action is DispatchAction.HOLD
+    assert "subscription_route_quota_not_fresh" in missing_decision.reason_codes
+    assert "route_subscription_quota_state:unknown" in missing_decision.reason_codes
+
+    unbounded_request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        task_fields=_review_task_fields(),
+        registry=registry,
+        quota_ledger=_ledger_with_route_subscription_state(route_id, "fresh"),
+        now=freshness_now,
+    )
+    assert unbounded_request.quota is not None
+    assert unbounded_request.quota.route_subscription_quota_state == "unknown"
+    assert (
+        "quota-snapshot:quota-glmcp-review-direct-fresh:fresh_until_missing"
+        in unbounded_request.quota.route_quota_evidence_refs
+    )
+
+    unbounded_decision = evaluate_dispatch_policy(unbounded_request, now=freshness_now)
+
+    assert unbounded_decision.action is DispatchAction.HOLD
+    assert "subscription_route_quota_not_fresh" in unbounded_decision.reason_codes
+    assert "route_subscription_quota_state:unknown" in unbounded_decision.reason_codes
+
+    fresh_request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        task_fields=_review_task_fields(),
+        registry=registry,
+        quota_ledger=_ledger_with_route_subscription_state(
+            route_id,
+            "fresh",
+            fresh_until="2026-05-09T23:00:00Z",
+        ),
+        now=freshness_now,
+    )
+    assert fresh_request.quota is not None
+    assert fresh_request.quota.route_subscription_quota_state == "fresh"
+
+    fresh_decision = evaluate_dispatch_policy(fresh_request, now=freshness_now)
+
+    assert fresh_decision.action is DispatchAction.LAUNCH
+    assert fresh_decision.quota_freshness_green is True
+    assert "policy_launch" in fresh_decision.reason_codes
+
+
+def test_build_dispatch_request_holds_glmcp_capacity_pool_mismatch() -> None:
+    route_id = "glmcp.review.direct"
+    registry = _registry_with_fresh_route(route_id)
+    route = registry.require(route_id).model_copy(
+        update={"capacity_pool": CapacityPool.LOCAL_COMPUTE}
+    )
+    registry = registry.model_copy(
+        update={
+            "routes": [
+                route if existing.route_id == route_id else existing for existing in registry.routes
+            ]
+        }
+    )
+    freshness_now = datetime(2026, 5, 9, 22, 10, tzinfo=UTC)
+
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        task_fields=_review_task_fields(),
+        registry=registry,
+        quota_ledger=_ledger_with_route_subscription_state(
+            route_id,
+            "fresh",
+            fresh_until="2026-05-09T23:00:00Z",
+        ),
+        now=freshness_now,
+    )
+    assert request.capability is not None
+    assert request.capability.capacity_pool == "local_compute"
+    assert request.quota is not None
+    assert request.quota.route_subscription_quota_state == "fresh"
+
+    decision = evaluate_dispatch_policy(request, now=freshness_now)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.quota_freshness_green is False
+    assert "subscription_route_capacity_pool_mismatch" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_glmcp_expired_admission_snapshot_holds_even_when_ledger_fresh() -> None:
+    route_id = "glmcp.review.direct"
+    registry = _registry_with_fresh_route(route_id)
+    freshness_now = datetime(2026, 5, 9, 22, 10, tzinfo=UTC)
+
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        task_fields=_review_task_fields(),
+        registry=registry,
+        quota_ledger=_ledger_with_route_subscription_state(
+            route_id,
+            "fresh",
+            fresh_until="2026-05-09T22:05:00Z",
+            ledger_captured_at="2026-05-09T22:00:00Z",
+        ),
+        now=freshness_now,
+    )
+
+    assert request.quota is not None
+    assert request.quota.budget_ledger_stale is False
+    assert request.quota.route_subscription_quota_state == "stale"
+    assert any(
+        ref.startswith("quota-snapshot:quota-glmcp-review-direct-fresh:fresh_until_expired")
+        for ref in request.quota.route_quota_evidence_refs
+    )
+
+    decision = evaluate_dispatch_policy(request, now=freshness_now)
+
+    assert decision.action is DispatchAction.HOLD
+    assert "subscription_route_quota_not_fresh" in decision.reason_codes
+    assert "route_subscription_quota_state:stale" in decision.reason_codes
+
+
+def test_glmcp_missing_capability_still_surfaces_route_quota_requirement() -> None:
+    request = _request(
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        route_id="glmcp.review.direct",
+        capability=None,
+        quota=_quota(
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="unknown",
+            route_quota_evidence_refs=("quota-snapshot:glmcp.review.direct:missing",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert "capability_registry_unavailable" in decision.reason_codes
+    assert "subscription_route_quota_not_fresh" in decision.reason_codes
+    assert "route_subscription_quota_state:unknown" in decision.reason_codes
+    assert "subscription_route_capability_missing" in decision.reason_codes
+
+
+def test_glmcp_unsupported_route_never_reports_quota_green() -> None:
+    request = _request(
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        route_id="glmcp.review.direct",
+        capability=RouteCapabilityState(
+            route_id="glmcp.review.direct",
+            supported=False,
+            freshness_errors=("unsupported route: glmcp.review.direct",),
+        ),
+        quota=_quota(
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="unknown",
+            route_quota_evidence_refs=("quota-snapshot:glmcp.review.direct:missing",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert decision.quota_freshness_green is False
+    assert "unsupported_route" in decision.reason_codes
+    assert "subscription_route_quota_not_fresh" in decision.reason_codes
+    assert "route_subscription_quota_state:unknown" in decision.reason_codes
+    assert "subscription_route_capability_missing" in decision.reason_codes
+
+
+def test_glmcp_mismatched_capability_route_fails_closed() -> None:
+    request = _request(
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        route_id="glmcp.review.direct",
+        capability=_capability(route_id="codex.headless.full"),
+        quota=_quota(
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="unknown",
+            route_quota_evidence_refs=("quota-snapshot:glmcp.review.direct:missing",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert decision.quota_freshness_green is False
+    assert "capability_route_mismatch" in decision.reason_codes
+    assert "request_route_id:glmcp.review.direct" in decision.reason_codes
+    assert "capability_route_id:codex.headless.full" in decision.reason_codes
+    assert "subscription_route_quota_not_fresh" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
 def test_spike_workload_refuses_local_fleet_and_points_to_cloud_burst() -> None:
     request = _request(
         cloud_burst={
@@ -670,6 +1146,31 @@ def test_writes_route_decision_jsonl_receipt(tmp_path: Path) -> None:
     assert '"route_policy_green": true' in line
     assert '"clog_state": "policy_green"' in line
     assert decision.decision_id in line
+
+
+def test_glmcp_launch_receipt_persists_quota_evidence(tmp_path: Path) -> None:
+    quota_ref = "relay-receipt:glmcp-quota-admission.yaml:fresh_until:2026-05-09T23:00:00Z"
+    request = _request(
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        route_id="glmcp.review.direct",
+        capability=_capability(route_id="glmcp.review.direct"),
+        quota=_quota(
+            subscription_quota_state="fresh",
+            route_subscription_quota_state="fresh",
+            route_quota_evidence_refs=(quota_ref,),
+        ),
+    )
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.LAUNCH
+
+    path = write_route_decision_receipt(decision, ledger_dir=tmp_path)
+    line = path.read_text(encoding="utf-8").splitlines()[-1]
+
+    assert '"quota_evidence_refs": [' in line
+    assert quota_ref in line
 
 
 def test_dimensional_policy_holds_lower_scoring_requested_route() -> None:

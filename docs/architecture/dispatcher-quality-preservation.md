@@ -7,9 +7,10 @@
 ## 1. Overview
 
 The methodology-aware headless dispatcher routes tasks to platform lanes
-(Claude, Codex, Gemini, Vibe, Antigravity) while preserving quality
-guarantees. It reads fresh quota state, enforces quality floors, prevents
-silent downgrades, and emits observable route decisions.
+(Claude, Codex, Vibe, and Antigravity/agy) while preserving quality
+guarantees. Gemini API routes are provider-gateway surfaces, not standing
+Gemini CLI worker lanes. It reads fresh quota state, enforces quality floors,
+prevents silent downgrades, and emits observable route decisions.
 
 ## 2. Enforcement Points
 

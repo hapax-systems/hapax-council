@@ -44,7 +44,6 @@ BINARY_BY_PLATFORM = {
     "api": "python3",
     "claude": "claude",
     "codex": "codex",
-    "gemini": "gemini",
     "vibe": "vibe",
 }
 VERSION_ARGS_BY_PLATFORM = {
@@ -52,7 +51,6 @@ VERSION_ARGS_BY_PLATFORM = {
     "api": ["--version"],
     "claude": ["--version"],
     "codex": ["--version"],
-    "gemini": ["--version"],
     "vibe": ["--version"],
 }
 CONFIG_REFS_BY_PLATFORM = {
@@ -74,7 +72,6 @@ CONFIG_REFS_BY_PLATFORM = {
     ],
     "claude": ["~/.claude/settings.json", "~/.claude.json", "CLAUDE.md"],
     "codex": ["~/.codex/config.toml", "~/.codex/AGENTS.md", "AGENTS.md"],
-    "gemini": ["~/.gemini/settings.json", "~/.gemini/GEMINI.md", "GEMINI.md"],
     "vibe": [
         "~/.vibe/config.toml",
         "~/.vibe/.env",
@@ -146,8 +143,8 @@ def candidate_binaries(platform: str) -> list[str]:
     override = os.environ.get(f"HAPAX_{platform.upper()}_BIN", "").strip()
     candidates = [BINARY_BY_PLATFORM[platform]]
     if platform == "antigrav":
-        candidates.extend(["antigravity", "/usr/bin/agy", "/usr/bin/antigravity"])
-    if override:
+        candidates.extend(["/usr/bin/agy"])
+    if override and (platform != "antigrav" or Path(override).name == "agy"):
         candidates.insert(0, override)
     return list(dict.fromkeys(candidates))
 

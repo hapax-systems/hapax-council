@@ -2,7 +2,7 @@
 
 All production services run as systemd user units under `user@1000.service` with lingering enabled. No process supervisors (process-compose, supervisord) in the boot chain.
 
-**Topology:** <!-- topology-inventory:services -->283<!-- /topology-inventory:services --> services, <!-- topology-inventory:timers -->137<!-- /topology-inventory:timers --> timers, 4 paths, 3 targets. Verify with `uv run python scripts/hapax_topology_inventory.py --check`.
+**Topology:** <!-- topology-inventory:services -->292<!-- /topology-inventory:services --> services, <!-- topology-inventory:timers -->141<!-- /topology-inventory:timers --> timers, 6 paths, 3 targets. Verify with `uv run python scripts/hapax_topology_inventory.py --check`.
 
 `scripts/hapax_topology_inventory.py` is source-only: it verifies the
 git-tracked `systemd/units/` topology and does not prove what the live user
@@ -46,7 +46,7 @@ n8n, open-webui, minio, ntfy       visual-layer-agg  → perception pipeline
                                     studio-compositor → camera tiling (GPU)
 Managed by:                         studio-fx-output  → ffmpeg /dev/video50
   llm-stack.service (oneshot)       hapax-watch-recv  → Wear OS biometrics
-  llm-stack-analytics.service       114 timers        → sync, health, backups
+  llm-stack-analytics.service       141 timers        → sync, health, backups
 ```
 
 ## Grouping Targets
@@ -296,12 +296,22 @@ rebuild worktree shares that ref namespace with the canonical checkout, so when
 `hapax-post-merge-deploy.service`, which resolves the new HEAD SHA and invokes
 the script.
 
-Loop-safety: the deploy script only writes to `~/.config/systemd/user/`,
-`~/.config/pipewire/`, `~/.local/bin/`, and `~/.cache/hapax/post-merge-traces/`;
-it never touches `.git/refs`. Belt-and-braces: `StartLimitIntervalSec=60` /
-`StartLimitBurst=3` on the `[Unit]` section caps runaway fires. Failures route
-through `OnFailure=notify-failure@%n.service`. Trace inspection is documented
-at `docs/runbooks/post-merge-traces.md`.
+Loop-safety: the deploy script writes directly to deploy destinations:
+`~/.config/systemd/user/`, `~/.config/systemd/user-preset/`,
+`~/.config/pipewire/`, `~/.config/wireplumber/`, `~/.config/hapax/`,
+`~/.local/bin/`, `~/.local/share/wireplumber/scripts/hapax/`,
+`~/.local/lib/hapax-recovery/council/`, the canonical gate destination under
+`~/.local/lib/hapax/hooks/`, `~/.cache/hapax/post-merge-traces/`, and
+`~/.cache/hapax/deploy-symlink-drift/`. When it delegates active coord staging
+before restarting `hapax-coord.service`, `hapax-coord-deploy` also writes
+`~/.cache/hapax/coord-activation/` and fetches refs inside
+`HAPAX_COORD_DEPLOY_REPO` (default `/home/hapax/projects/hapax-coord`). Recheck
+the inventory with
+`rg -n "PW_CONF_DIR|HAPAX_CONF_DIR|WP_CONF_DIR|WP_SCRIPTS_DIR|SYSTEMD_USER_DIR|SYSTEMD_USER_PRESET_DIR|LOCAL_BIN|TRACE_PATH|HAPAX_DRIFT_STATE_DIR|coord-activation|HAPAX_COORD_DEPLOY_REPO|hapax-recovery|hooks-doctor" scripts/hapax-post-merge-deploy scripts/hapax-coord-deploy`.
+The deploy script itself never touches council `.git/refs`. Belt-and-braces:
+`StartLimitIntervalSec=60` / `StartLimitBurst=3` on the `[Unit]` section caps
+runaway fires. Failures route through `OnFailure=notify-failure@%n.service`.
+Trace inspection is documented at `docs/runbooks/post-merge-traces.md`.
 
 Bootstrap: the path unit is canonical at `systemd/units/hapax-post-merge-deploy.path`;
 the operator must `systemctl --user enable --now hapax-post-merge-deploy.path` once

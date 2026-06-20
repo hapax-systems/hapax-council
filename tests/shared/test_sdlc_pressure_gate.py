@@ -215,7 +215,7 @@ def test_slice_wrap_is_noop_without_systemd_run() -> None:
 
 
 def test_slice_wrap_is_noop_when_slice_unavailable() -> None:
-    argv = ["hapax-gemini", "iota"]
+    argv = ["hapax-antigrav", "antigrav"]
     out = sdlc_slice_wrap(argv, already_attached=False, systemd_run="/x", slice_available=False)
     assert out == argv
 

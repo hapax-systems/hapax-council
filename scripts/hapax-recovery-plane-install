@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""Install the D2 recovery-plane bundle into a stable HOME-local path."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from datetime import UTC, datetime
+from pathlib import Path
+
+BUNDLE_FILES: tuple[str, ...] = (
+    "scripts/hapax-p0-incident-intake",
+    "scripts/hapax-coord-deploy",
+    "shared/__init__.py",
+    "shared/jsonl_append.py",
+    "shared/p0_incident_intake.py",
+)
+EXECUTABLE_FILES = {
+    "scripts/hapax-p0-incident-intake",
+    "scripts/hapax-coord-deploy",
+}
+DEFAULT_DEST = Path.home() / ".local" / "lib" / "hapax-recovery" / "council" / "current"
+
+
+def _repo_root_from_script() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _path_arg(value: str) -> Path:
+    return Path(value).expanduser()
+
+
+def _git(source: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(source), *args],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def _resolve_source_ref(source: Path, source_ref: str | None) -> str:
+    if source_ref:
+        return source_ref
+    try:
+        return _git(source, "rev-parse", "HEAD")
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return "working-tree"
+
+
+def _read_from_source(source: Path, relative: str, source_ref: str | None) -> bytes:
+    if source_ref:
+        result = subprocess.run(
+            ["git", "-C", str(source), "show", f"{source_ref}:{relative}"],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"missing {relative} at {source_ref}: {stderr}")
+        return result.stdout
+    return (source / relative).read_bytes()
+
+
+def _safe_release_label(source_ref: str) -> str:
+    label = re.sub(r"[^A-Za-z0-9._-]+", "-", source_ref).strip(".-")
+    return label[:80] or "bundle"
+
+
+def _write_file(dest_root: Path, relative: str, content: bytes) -> dict[str, str | int]:
+    target = dest_root / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=str(target.parent))
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as tmp:
+            tmp.write(content)
+        mode = 0o755 if relative in EXECUTABLE_FILES else 0o644
+        tmp_path.chmod(mode)
+        os.replace(tmp_path, target)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+    return {
+        "path": relative,
+        "mode": oct(mode),
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "bytes": len(content),
+    }
+
+
+def _publish_release(dest: Path, release_root: Path) -> None:
+    tmp_link = dest.with_name(f".{dest.name}.next-{os.getpid()}")
+    if tmp_link.exists() or tmp_link.is_symlink():
+        tmp_link.unlink()
+    tmp_link.symlink_to(release_root, target_is_directory=True)
+    backup: Path | None = None
+    try:
+        if dest.exists() and not dest.is_symlink():
+            if not dest.is_dir():
+                raise RuntimeError(f"destination exists and is not a directory or symlink: {dest}")
+            backup = dest.with_name(f".{dest.name}.pre-symlink-{os.getpid()}")
+            if backup.exists():
+                shutil.rmtree(backup)
+            dest.rename(backup)
+        os.replace(tmp_link, dest)
+    except Exception:
+        if tmp_link.exists() or tmp_link.is_symlink():
+            tmp_link.unlink()
+        if backup is not None and backup.exists() and not dest.exists():
+            backup.rename(dest)
+        raise
+
+
+def install_bundle(source: Path, dest: Path, source_ref: str | None) -> dict[str, object]:
+    source = source.resolve()
+    resolved_ref = _resolve_source_ref(source, source_ref)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    releases_dir = dest.parent / "releases"
+    releases_dir.mkdir(parents=True, exist_ok=True)
+    stage_root = Path(tempfile.mkdtemp(prefix=f".{dest.name}.stage.", dir=str(dest.parent)))
+    release_root = (
+        releases_dir / f"{_safe_release_label(resolved_ref)}-{stage_root.name.rsplit('.', 1)[-1]}"
+    )
+    stage_published = False
+    try:
+        installed = [
+            _write_file(stage_root, relative, _read_from_source(source, relative, source_ref))
+            for relative in BUNDLE_FILES
+        ]
+        manifest: dict[str, object] = {
+            "schema_version": 1,
+            "installed_at": datetime.now(UTC)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "source_root": str(source),
+            "source_ref": resolved_ref,
+            "bundle_root": str(dest),
+            "release_root": str(release_root),
+            "files": installed,
+        }
+        manifest_path = stage_root / "manifest.json"
+        tmp_manifest = manifest_path.with_name(f".{manifest_path.name}.tmp")
+        tmp_manifest.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        os.replace(tmp_manifest, manifest_path)
+        os.replace(stage_root, release_root)
+        stage_published = True
+        _publish_release(dest, release_root)
+        return manifest
+    finally:
+        if not stage_published and stage_root.exists():
+            shutil.rmtree(stage_root, ignore_errors=True)
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", type=_path_arg, default=_repo_root_from_script())
+    parser.add_argument(
+        "--source-ref",
+        help="Git commit/ref to materialize from instead of the source working tree.",
+    )
+    parser.add_argument("--dest", type=_path_arg, default=DEFAULT_DEST)
+    parser.add_argument("--json", action="store_true", help="Print the install manifest as JSON.")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    try:
+        manifest = install_bundle(args.source, args.dest, args.source_ref)
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+        print(f"hapax-recovery-plane-install: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(
+            "next: verify the source tree/ref contains the recovery bundle and "
+            "the destination is writable, then rerun hapax-recovery-plane-install",
+            file=sys.stderr,
+        )
+        return 1
+    if args.json:
+        print(json.dumps(manifest, sort_keys=True))
+    else:
+        print(f"installed recovery bundle to {manifest['bundle_root']} @ {manifest['source_ref']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

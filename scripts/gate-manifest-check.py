@@ -290,7 +290,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--codex-config", type=Path)
     parser.add_argument("--antigravity-launcher", type=Path)
     parser.add_argument("--vibe-launcher", type=Path)
-    parser.add_argument("--gemini-launcher", type=Path)
     parser.add_argument("--ci-workflow", type=Path)
     return parser
 
@@ -326,7 +325,6 @@ def main(argv: list[str] | None = None) -> int:
     for runtime_name, arg_name in (
         ("antigravity", "antigravity_launcher"),
         ("vibe", "vibe_launcher"),
-        ("gemini", "gemini_launcher"),
     ):
         runtime = _as_mapping(runtimes.get(runtime_name), f"manifest runtimes.{runtime_name}")
         default_script = str(runtime.get("script"))

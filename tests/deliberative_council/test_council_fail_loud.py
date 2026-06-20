@@ -25,7 +25,8 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from agents.deliberative_council.aggregation import aggregate_scores
-from agents.deliberative_council.engine import deliberate, run_phase1
+from agents.deliberative_council.engine import _assess_health, deliberate, run_phase1
+from agents.deliberative_council.members import served_model_family
 from agents.deliberative_council.models import (
     ConvergenceStatus,
     CouncilConfig,
@@ -53,9 +54,9 @@ def _counting_mock(calls: dict[str, int], score_scores: dict[str, int]):
     async def _mock(member, prompt, *, output_type=None, usage_limits=None):
         if output_type is not None:
             calls["score"] = calls.get("score", 0) + 1
-            return Phase1Output(scores=score_scores, rationale={}, research_findings=[]), []
+            return Phase1Output(scores=score_scores, rationale={}, research_findings=[]), [], ""
         calls["investigate"] = calls.get("investigate", 0) + 1
-        return "researched the claim", []
+        return "researched the claim", [], ""
 
     return _mock
 
@@ -106,8 +107,8 @@ def _scoring_mock(score_return):
         if output_type is not None:  # the structured scoring call
             if isinstance(score_return, Exception):
                 raise score_return
-            return score_return, []
-        return "researched the claim", []  # the investigate call
+            return score_return, [], ""
+        return "researched the claim", [], ""  # the investigate call
 
     return _mock
 
@@ -452,3 +453,109 @@ class TestCouncilDegradationMetric:
             assert after is None
         else:
             assert after == before + 1.0
+
+
+def _result_served(alias: str, served_model: str) -> PhaseOneResult:
+    return PhaseOneResult(
+        model_alias=alias, scores={"a": 4}, rationale={}, served_model=served_model
+    )
+
+
+class TestServedModelFamilyLabeling:
+    """Family-diversity is counted by the SERVED model, so a gateway fail-over (e.g.
+    balanced->gemini-pro on an Anthropic credit cap) cannot satisfy the quorum's diversity
+    floor with a phantom-anthropic gemini. cc-task 20260619-eval-council-served-model-labeling."""
+
+    def test_served_model_family_mapper(self) -> None:
+        assert served_model_family("claude-sonnet-4-6") == "anthropic"
+        assert served_model_family("gemini-3.1-pro-preview") == "google"
+        assert served_model_family("command-r-08-2024-exl3-4.0bpw") == "cohere"
+        assert served_model_family("compassverifier-7b") == "cohere"
+        assert served_model_family("mistral-large-latest") == "mistral"
+        assert served_model_family("sonar-pro") == "perplexity"
+        # Cap-resilient diversity families admitted 2026-06-20 (cloud, no GPU conflict).
+        assert served_model_family("deepseek/deepseek-chat-v3.1") == "deepseek"
+        assert served_model_family("glm-5.2") == "zhipu"
+        assert served_model_family("") == "unknown"
+        assert served_model_family("some-unknown-model") == "unknown"
+
+    def test_default_roster_seats_diversity_families(self) -> None:
+        """The SCED ruler default roster seats deepseek + glm so it can hit
+        family-quorum without anthropic (cap-resilient diversity)."""
+        from agents.deliberative_council.models import CouncilConfig
+
+        aliases = CouncilConfig().model_aliases
+        assert "deepseek" in aliases
+        assert "glm" in aliases
+        # served families the roster can produce span >= 6 distinct families
+        fams = {
+            served_model_family(m)
+            for m in (
+                "claude-4.6-sonnet",
+                "gemini-3.1-pro",
+                "command-r-08-2024",
+                "mistral-large",
+                "sonar-pro",
+                "deepseek/deepseek-chat",
+                "glm-5.2",
+            )
+        }
+        assert {
+            "anthropic",
+            "google",
+            "cohere",
+            "mistral",
+            "perplexity",
+            "deepseek",
+            "zhipu",
+        } <= fams
+
+    def test_anthropic_cap_failover_counted_by_served_family_stays_valid(self) -> None:
+        # Anthropic-only cap: both anthropic seats fall over to gemini. Honest count = 4 families
+        # (google, cohere, perplexity, mistral) — still meets the floor, so the panel produces a
+        # valid DEGRADED verdict on its surviving redundancy and flags the 2 substitutions.
+        results = [
+            _result_served("opus", "gemini-3.1-pro-preview"),  # anthropic -> google
+            _result_served("balanced", "gemini-3.1-pro-preview"),  # anthropic -> google
+            _result_served("gemini-3-pro", "gemini-3.1-pro-preview"),
+            _result_served("local-fast", "command-r-08-2024-exl3-4.0bpw"),
+            _result_served("web-research", "sonar-pro"),
+            _result_served("mistral-large", "mistral-large-latest"),
+        ]
+        health = _assess_health(results, [], CouncilConfig())
+        assert health.families_valid == 4  # honest (NOT the fooled 5)
+        assert health.served_substitutions == 2
+        assert health.below_quorum is False  # 4 >= 4 floor -> valid degraded verdict
+
+    def test_served_collapse_below_floor_refuses_where_alias_count_is_fooled(self) -> None:
+        # Anthropic AND perplexity seats fall over to gemini -> served families collapse to 3
+        # (google, cohere, mistral) -> below the 4-family floor -> honest refusal. Counting by the
+        # REQUESTED alias would see 5 families and wrongly pass a contaminated panel.
+        results = [
+            _result_served("opus", "gemini-3.1-pro-preview"),  # anthropic -> google
+            _result_served("balanced", "gemini-3.1-pro-preview"),  # anthropic -> google
+            _result_served("gemini-3-pro", "gemini-3.1-pro-preview"),
+            _result_served("web-research", "gemini-3.1-pro-preview"),  # perplexity -> google
+            _result_served("local-fast", "command-r-08-2024-exl3-4.0bpw"),
+            _result_served("mistral-large", "mistral-large-latest"),
+        ]
+        health = _assess_health(results, [], CouncilConfig())
+        assert health.families_valid == 3  # google, cohere, mistral
+        assert health.served_substitutions == 3  # opus, balanced, web-research
+        assert health.below_quorum is True  # honest refusal (alias-count would be a fooled 5)
+
+    def test_served_unknown_falls_back_to_requested_family_no_regression(self) -> None:
+        # All-up path: served_model empty/unrecognized -> count by the requested alias, identical
+        # to pre-change behavior. 5 families, no substitutions, valid.
+        results = [
+            _result_served("opus", ""),
+            _result_served("balanced", ""),
+            _result_served("gemini-3-pro", ""),
+            _result_served("local-fast", ""),
+            _result_served("web-research", ""),
+            _result_served("mistral-large", ""),
+        ]
+        health = _assess_health(results, [], CouncilConfig())
+        assert health.families_valid == 5
+        assert health.served_substitutions == 0
+        assert health.below_quorum is False

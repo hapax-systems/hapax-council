@@ -459,6 +459,239 @@ def test_planning_feed_case_linked_coverage(tmp_path: Path) -> None:
     data = json.loads(feed.read_text())
     assert data["requests"][0]["coverage"] == "case_linked"
     assert data["coverage_summary"]["case_linked"] == 1
+    assert data["attention_required"][0]["request_id"] == "REQ-012"
+    assert data["attention_required"][0]["action"] == "needs task creation under case"
+    assert data["dispatch"]["planning_queue"][0]["request_id"] == "REQ-012"
+    assert data["dispatch"]["planning_queue"][0]["action_needed"] == (
+        "needs task creation under case"
+    )
+
+
+def test_planning_feed_assigned_only_is_immediate_attention(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+
+    _write_request(
+        active / "REQ-ASSIGNED.md",
+        "REQ-ASSIGNED",
+        status="captured",
+        intake_owner="cx-test",
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text(encoding="utf-8"))
+    assert data["requests"][0]["coverage"] == "assigned_only"
+    assert data["attention_required"][0]["request_id"] == "REQ-ASSIGNED"
+    assert data["attention_required"][0]["action"] == "needs authority case creation"
+    assert data["dispatch"]["planning_queue"][0]["request_id"] == "REQ-ASSIGNED"
+    assert data["dispatch"]["planning_queue"][0]["action_needed"] == (
+        "needs authority case creation"
+    )
+
+
+def test_state_distinguishes_read_attention_from_workflow_attention(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    state_path = tmp_path / "state" / "request-intake-state.json"
+    feed = tmp_path / "planning-feed.json"
+    receipts = tmp_path / "receipts"
+
+    _write_request(
+        active / "REQ-WORKFLOW.md",
+        "REQ-WORKFLOW",
+        status="accepted_for_planning",
+        planning_case="CASE-TEST-001",
+        extra_frontmatter=CCTV_ADMITTED_FRONTMATTER,
+    )
+
+    result = _run(
+        tmp_path,
+        "--write-receipt",
+        "--write-state",
+        "--write-planning-feed",
+        receipts_dir=receipts,
+        state_path=state_path,
+        planning_feed_path=feed,
+    )
+    assert result.returncode == 0
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["unread_count"] == 0
+    assert state["total_attention_count"] == 0
+    assert state["read_attention_count"] == 0
+    assert state["workflow_attention_count"] == 1
+    assert state["combined_attention_count"] == 1
+
+
+def test_state_only_marks_workflow_attention_unknown(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    state_path = tmp_path / "state" / "request-intake-state.json"
+
+    _write_request(
+        active / "REQ-WORKFLOW.md",
+        "REQ-WORKFLOW",
+        status="accepted_for_planning",
+        planning_case="CASE-TEST-001",
+        extra_frontmatter=CCTV_ADMITTED_FRONTMATTER,
+    )
+
+    result = _run(tmp_path, "--write-receipt", "--write-state", state_path=state_path)
+    assert result.returncode == 0
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["total_attention_count"] == 0
+    assert state["read_attention_count"] == 0
+    assert state["workflow_attention_count"] is None
+    assert state["combined_attention_count"] is None
+
+
+def test_planning_feed_tracks_decompose_remediation_without_task_coverage(
+    tmp_path: Path,
+) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    tasks_active = tmp_path / "tasks" / "active"
+    tasks_active.mkdir(parents=True)
+
+    _write_request(
+        active / "REQ-REMEDIATE.md",
+        "REQ-REMEDIATE",
+        status="accepted_for_planning",
+        planning_case="CASE-TEST-001",
+    )
+    _write_task(
+        tasks_active / "request-decompose-admission-blocked-req-remediate.md",
+        "request-decompose-admission-blocked-req-remediate",
+        status="offered",
+        parent_request="REQ-REMEDIATE.md",
+        authority_case="CASE-TEST-001",
+        route_metadata={
+            "mutation_surface": "vault_docs",
+            "mutation_scope_refs": ["request-decompose:failing-intake-flow"],
+        },
+    )
+    task_text = (tasks_active / "request-decompose-admission-blocked-req-remediate.md").read_text(
+        encoding="utf-8"
+    )
+    task_text = task_text.replace(
+        "authority_case: CASE-TEST-001\n",
+        "authority_case: CASE-TEST-001\nremediates_request_id: REQ-REMEDIATE\n",
+    )
+    (tasks_active / "request-decompose-admission-blocked-req-remediate.md").write_text(
+        task_text,
+        encoding="utf-8",
+    )
+    _write_task(
+        tasks_active / "request-decompose-old-closed-req-remediate.md",
+        "request-decompose-old-closed-req-remediate",
+        status="done",
+        parent_request="REQ-REMEDIATE.md",
+        authority_case="CASE-TEST-001",
+        route_metadata={
+            "mutation_surface": "vault_docs",
+            "mutation_scope_refs": ["request-decompose:failing-intake-flow"],
+        },
+    )
+    closed_task_text = (tasks_active / "request-decompose-old-closed-req-remediate.md").read_text(
+        encoding="utf-8"
+    )
+    closed_task_text = closed_task_text.replace(
+        "authority_case: CASE-TEST-001\n",
+        "authority_case: CASE-TEST-001\nremediates_request_id: REQ-REMEDIATE\n",
+    )
+    (tasks_active / "request-decompose-old-closed-req-remediate.md").write_text(
+        closed_task_text,
+        encoding="utf-8",
+    )
+    _write_task(
+        tasks_active / "request-decompose-old-withdrawn-req-remediate.md",
+        "request-decompose-old-withdrawn-req-remediate",
+        status="withdrawn",
+        parent_request="REQ-REMEDIATE.md",
+        authority_case="CASE-TEST-001",
+        route_metadata={
+            "mutation_surface": "vault_docs",
+            "mutation_scope_refs": ["request-decompose:failing-intake-flow"],
+        },
+    )
+    withdrawn_task_text = (
+        tasks_active / "request-decompose-old-withdrawn-req-remediate.md"
+    ).read_text(encoding="utf-8")
+    withdrawn_task_text = withdrawn_task_text.replace(
+        "authority_case: CASE-TEST-001\n",
+        "authority_case: CASE-TEST-001\nremediates_request_id: REQ-REMEDIATE\n",
+    )
+    (tasks_active / "request-decompose-old-withdrawn-req-remediate.md").write_text(
+        withdrawn_task_text,
+        encoding="utf-8",
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text(encoding="utf-8"))
+    request = data["requests"][0]
+    assert request["coverage"] == "needs_cctv_hardening"
+    assert request["active_tasks"] == 0
+    assert request["active_remediation_tasks"] == 1
+    attention = data["attention_required"][0]
+    assert attention["active_remediation_tasks"] == 1
+    assert "decompose remediation task active" in attention["action"]
+    assert data["dispatch"]["planning_queue"][0]["active_remediation_tasks"] == 1
+
+
+def test_planning_feed_ignores_terminal_only_decompose_remediation(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    tasks_active = tmp_path / "tasks" / "active"
+    tasks_active.mkdir(parents=True)
+
+    _write_request(
+        active / "REQ-TERMINAL-REMEDIATE.md",
+        "REQ-TERMINAL-REMEDIATE",
+        status="accepted_for_planning",
+        planning_case="CASE-TEST-001",
+    )
+    _write_task(
+        tasks_active / "request-decompose-withdrawn-req-terminal-remediate.md",
+        "request-decompose-withdrawn-req-terminal-remediate",
+        status="withdrawn",
+        parent_request="REQ-TERMINAL-REMEDIATE.md",
+        authority_case="CASE-TEST-001",
+        route_metadata={
+            "mutation_surface": "vault_docs",
+            "mutation_scope_refs": ["request-decompose:failing-intake-flow"],
+        },
+    )
+    task_text = (tasks_active / "request-decompose-withdrawn-req-terminal-remediate.md").read_text(
+        encoding="utf-8"
+    )
+    task_text = task_text.replace(
+        "authority_case: CASE-TEST-001\n",
+        "authority_case: CASE-TEST-001\nremediates_request_id: REQ-TERMINAL-REMEDIATE\n",
+    )
+    (tasks_active / "request-decompose-withdrawn-req-terminal-remediate.md").write_text(
+        task_text,
+        encoding="utf-8",
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text(encoding="utf-8"))
+    request = data["requests"][0]
+    assert request["active_tasks"] == 0
+    assert request["active_remediation_tasks"] == 0
+    attention = data["attention_required"][0]
+    assert attention["active_remediation_tasks"] == 0
+    assert "decompose remediation task active" not in attention["action"]
+    assert data["dispatch"]["planning_queue"][0]["active_remediation_tasks"] == 0
 
 
 def test_planning_feed_cctv_hold_is_separate_from_untracked(tmp_path: Path) -> None:
@@ -784,7 +1017,7 @@ def test_dispatch_feed_includes_valid_offered_task(tmp_path: Path) -> None:
     assert dispatchable[0]["route_metadata"]["quality_floor"] == "deterministic_ok"
 
 
-def test_dispatch_feed_accepts_parent_plan_only_offered_task(tmp_path: Path) -> None:
+def test_dispatch_feed_holds_parent_plan_only_offered_task(tmp_path: Path) -> None:
     active = tmp_path / "requests" / "active"
     active.mkdir(parents=True)
     tasks_active = tmp_path / "tasks" / "active"
@@ -805,13 +1038,39 @@ def test_dispatch_feed_accepts_parent_plan_only_offered_task(tmp_path: Path) -> 
     assert result.returncode == 0
 
     data = json.loads(feed.read_text())
-    dispatchable = data["dispatch"]["dispatchable_tasks"]
+    assert data["dispatch"]["dispatchable_count"] == 0
+    assert data["dispatch"]["dispatchable_tasks"] == []
+    queue_item = data["dispatch"]["planning_queue"][0]
+    assert queue_item["task_id"] == "T-PLAN"
+    assert queue_item["action_needed"] == "needs concrete parent_spec"
 
-    assert data["dispatch"]["dispatchable_count"] == 1
-    assert dispatchable[0]["task_id"] == "T-PLAN"
-    assert dispatchable[0]["parent_plan"] == str(request_path)
-    assert dispatchable[0]["parent_request"] == ""
-    assert dispatchable[0]["parent_spec"] == ""
+
+def test_dispatch_feed_holds_parent_request_only_offered_task(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    tasks_active = tmp_path / "tasks" / "active"
+    tasks_active.mkdir(parents=True)
+
+    request_path = active / "REQ-PARENT.md"
+    _write_request(request_path, "REQ-PARENT", status="accepted_for_planning")
+    _write_task(
+        tasks_active / "T-PARENT.md",
+        "T-PARENT",
+        parent_request=str(request_path),
+        authority_case="CASE-TEST-001",
+        wsjf="6.0",
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    assert data["dispatch"]["dispatchable_count"] == 0
+    assert data["dispatch"]["dispatchable_tasks"] == []
+    queue_item = data["dispatch"]["planning_queue"][0]
+    assert queue_item["task_id"] == "T-PARENT"
+    assert queue_item["action_needed"] == "needs concrete parent_spec"
 
 
 def test_dispatch_feed_holds_missing_quality_floor(tmp_path: Path) -> None:

@@ -46,11 +46,25 @@ VAULT_ROOT="${HAPAX_SUPERVISOR_VAULT_ROOT:-$HOME/Documents/Personal/20-projects/
 # HAPAX_SUPERVISOR_CODEX_LANES / HAPAX_SUPERVISOR_ANTIGRAV_LANES (e.g. a systemd
 # drop-in) to supervise specific lanes — a rostered lane that lacks a worktree now
 # ESCALATES (below) instead of being silently skipped.
+# P0 incident intake is the exception: when an offered P0 incident backlog exists,
+# the supervisor may temporarily add HAPAX_P0_CODEX_DRAIN_LANES or
+# HAPAX_SUPERVISOR_P0_CODEX_LANES (default: cx-p0 cx-crit, with
+# HAPAX_SUPERVISOR_P0_CODEX_LANE as a legacy singular fallback) as Codex drain
+# lanes, still gated by real worktrees and the same restart limits.
 # `${VAR-default}` (not `:-`): an explicitly-set empty roster means "supervise no
 # lanes of this kind", not "fall back to the default". Only an UNSET var defaults.
 CLAUDE_LANES="${HAPAX_SUPERVISOR_CLAUDE_LANES-beta gamma delta epsilon zeta eta theta}"
 CODEX_LANES="${HAPAX_SUPERVISOR_CODEX_LANES-}"
 ANTIGRAV_LANES="${HAPAX_SUPERVISOR_ANTIGRAV_LANES-}"
+if [ "${HAPAX_P0_CODEX_DRAIN_LANES+x}" = x ]; then
+  P0_CODEX_LANES="$HAPAX_P0_CODEX_DRAIN_LANES"
+elif [ "${HAPAX_SUPERVISOR_P0_CODEX_LANES+x}" = x ]; then
+  P0_CODEX_LANES="$HAPAX_SUPERVISOR_P0_CODEX_LANES"
+else
+  P0_CODEX_LANES="${HAPAX_SUPERVISOR_P0_CODEX_LANE-cx-p0 cx-crit}"
+fi
+P0_CODEX_LANES="${P0_CODEX_LANES//,/ }"
+P0_CODEX_DRAIN_ACTIVE=""
 
 RESTART_COOLDOWN_S="${HAPAX_SUPERVISOR_RESTART_COOLDOWN_S:-120}"
 BURST_LIMIT="${HAPAX_SUPERVISOR_BURST_LIMIT:-5}"
@@ -104,6 +118,7 @@ PROGRESS_NTFY_TOPIC="${HAPAX_NTFY_TOPIC:-hapax}"
 # or the launcher exceeds a hard lifetime ceiling (escalate + reap).
 REAP_OFF="${HAPAX_SUPERVISOR_REAP_OFF:-0}"
 LAUNCHER_MAX_LIFETIME_S="${HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S:-21600}"  # 6h
+PROC_SCAN_LAUNCHERS="${HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS:-1}"
 
 # Repo root for `python3 -m shared.…`. Resolve $0 through the deploy symlink
 # (~/.local/bin/…) so REPO_DIR is the release dir that actually ships shared/;
@@ -135,6 +150,178 @@ LOCAL_DEV_MAINTENANCE_MODE="$(local_dev_maintenance_mode)"
 if [ "$LOCAL_DEV_MAINTENANCE_MODE" = "appendix-only" ]; then
   log "appendix-only local-dev maintenance: unclaimed idle-await respawns disabled; active claimed-task resumes preserved"
 fi
+
+p0_intake_backlog_present() {
+  [ "${HAPAX_SUPERVISOR_P0_IDLE_RESPAWN:-1}" = "1" ] || return 1
+  python3 - "$VAULT_ROOT/active" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+active = Path(sys.argv[1])
+if not active.is_dir():
+    sys.exit(1)
+
+
+def field(frontmatter: str, key: str) -> str:
+    match = re.search(rf"(?im)^{re.escape(key)}:\s*(.*)$", frontmatter)
+    return match.group(1).strip().strip("\"'") if match else ""
+
+
+for path in sorted(active.glob("*.md")):
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        continue
+    if not text.startswith("---"):
+        continue
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        continue
+    frontmatter = parts[1]
+    if field(frontmatter, "status").lower() != "offered":
+        continue
+    if field(frontmatter, "priority").lower() != "p0":
+        continue
+    haystack = " ".join(
+        (
+            path.stem,
+            field(frontmatter, "title"),
+            field(frontmatter, "kind"),
+            field(frontmatter, "tags"),
+        )
+    ).lower()
+    if (
+        "p0-incident" in path.stem.lower()
+        or "incident-intake" in haystack
+        or "technical-alert" in haystack
+    ):
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+task_note_is_p0_incident() {
+  local task_id="$1"
+  [ -n "$task_id" ] || return 1
+  python3 - "$VAULT_ROOT/active" "$task_id" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+active, task_id = Path(sys.argv[1]), sys.argv[2]
+if not active.is_dir():
+    sys.exit(1)
+
+note = active / f"{task_id}.md"
+if not note.is_file():
+    note = next(iter(sorted(active.glob(f"{task_id}-*.md"))), None)
+if note is None or not note.is_file():
+    sys.exit(1)
+
+text = note.read_text(encoding="utf-8", errors="replace")
+if not text.startswith("---"):
+    sys.exit(1)
+parts = text.split("---", 2)
+if len(parts) < 3:
+    sys.exit(1)
+frontmatter = parts[1]
+
+def field(key: str) -> str:
+    match = re.search(rf"(?im)^{re.escape(key)}:\s*(.*)$", frontmatter)
+    return match.group(1).strip().strip("\"'") if match else ""
+
+if field("priority").lower() != "p0":
+    sys.exit(1)
+
+haystack = " ".join(
+    (
+        note.stem,
+        field("title"),
+        field("kind"),
+        field("tags"),
+        field("incident_kind"),
+        field("incident_fingerprint"),
+    )
+).lower().replace("_", "-")
+markers = ("p0-incident", "incident-intake", "technical-alert", "sdlc-task-stalled")
+sys.exit(0 if any(marker in haystack for marker in markers) else 1)
+PY
+}
+
+codex_p0_drain_lane_configured() {
+  [ -n "$P0_CODEX_LANES" ] || return 1
+  [ "$P0_CODEX_LANES" != "none" ] || return 1
+  local lane="$1" configured
+  for configured in $P0_CODEX_LANES; do
+    [ "$configured" = "none" ] && continue
+    [ "$configured" = "$lane" ] && return 0
+  done
+  return 1
+}
+
+codex_p0_drain_lane_active() {
+  case " $P0_CODEX_DRAIN_ACTIVE " in
+    *" $1 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+codex_drain_lane_has_claimed_p0_incident() {
+  local lane="$1" task_line task_id
+  task_line="$(resolve_claimed_task "$lane")"
+  IFS=$'\t' read -r task_id _ <<< "$task_line"
+  [ -n "$task_id" ] || return 1
+  task_note_is_p0_incident "$task_id"
+}
+
+codex_should_force_respawn() {
+  local lane="$1" task_id="${2:-}"
+  if [ -n "$task_id" ]; then
+    codex_p0_drain_lane_configured "$lane" && task_note_is_p0_incident "$task_id"
+    return
+  fi
+  codex_p0_drain_lane_active "$lane"
+}
+
+activate_p0_codex_drain_lane() {
+  [ -n "$P0_CODEX_LANES" ] || return 0
+  [ "$P0_CODEX_LANES" != "none" ] || return 0
+  local backlog_present=0 lane activation_reason=""
+  if p0_intake_backlog_present; then
+    backlog_present=1
+  fi
+  for lane in $P0_CODEX_LANES; do
+    [ "$lane" != "none" ] || continue
+    activation_reason=""
+    if [ "$backlog_present" = "1" ]; then
+      activation_reason="backlog"
+    elif codex_drain_lane_has_claimed_p0_incident "$lane"; then
+      activation_reason="claimed"
+    else
+      continue
+    fi
+    if ! lane_has_worktree "$lane"; then
+      log "P0 incident drain lane $lane is needed ($activation_reason) but has no worktree — cannot add drain capacity; recheck: test -d $WORKTREE_ROOT/hapax-council--$lane; provision: git -C $WORKTREE_ROOT/hapax-council worktree add $WORKTREE_ROOT/hapax-council--$lane -b codex/$lane origin/main; or remove/override it via HAPAX_P0_CODEX_DRAIN_LANES, HAPAX_SUPERVISOR_P0_CODEX_LANES, HAPAX_SUPERVISOR_P0_CODEX_LANE, or the built-in default"
+      continue
+    fi
+    case " $P0_CODEX_DRAIN_ACTIVE " in
+      *" $lane "*) ;;
+      *) P0_CODEX_DRAIN_ACTIVE="${P0_CODEX_DRAIN_ACTIVE:+$P0_CODEX_DRAIN_ACTIVE }$lane" ;;
+    esac
+    case " $CODEX_LANES " in
+      *" $lane "*) ;;
+      *)
+        CODEX_LANES="${CODEX_LANES:+$CODEX_LANES }$lane"
+        if [ "$activation_reason" = "claimed" ]; then
+          log "P0 incident task is claimed by codex drain lane $lane — preserving drain supervision"
+        else
+          log "P0 incident backlog exists — adding codex drain lane $lane"
+        fi
+        ;;
+    esac
+  done
+}
 
 # ── liveness ──────────────────────────────────────────────────────────────────
 
@@ -256,8 +443,10 @@ lane_has_worktree() {
   return 1
 }
 
-# Active claim → "task_id<TAB>title", else empty. The claim file names the task;
-# the vault note is the authority for status/assignment.
+# Active owned task → "task_id<TAB>title", else empty. The claim file names the
+# task; the vault note is the authority for status/assignment. Keep the accepted
+# statuses aligned with shared.sdlc_lifecycle.TASK_MUTABLE_STATUSES without
+# importing from systemd-launched embedded Python.
 resolve_claimed_task() {
   local lane="$1"
   python3 - "$VAULT_ROOT" "$lane" "$HOME/.cache/hapax/cc-active-task-$lane" <<'PY' 2>/dev/null || true
@@ -266,28 +455,43 @@ import sys
 from pathlib import Path
 
 vault_root, lane, claim_file = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
-if not claim_file.is_file():
-    sys.exit(0)
-lines = [ln.strip() for ln in claim_file.read_text(errors="replace").splitlines() if ln.strip()]
-if not lines:
-    sys.exit(0)
-task_id = lines[0]
-
 active = vault_root / "active"
-note = active / f"{task_id}.md"
-if not note.is_file():
-    note = next(iter(sorted(active.glob(f"{task_id}-*.md"))), None) if active.is_dir() else None
-if note is None or not note.is_file():
-    sys.exit(0)
-
-text = note.read_text(errors="replace")
+claim_files = [claim_file]
+claim_files.extend(sorted(claim_file.parent.glob(f"{claim_file.name}-*")))
 
 def field(name: str) -> str:
     m = re.search(rf"^{name}:\s*(.+?)\s*$", text, re.MULTILINE)
     return m.group(1).strip().strip('"').strip("'") if m else ""
 
-if field("status") in {"claimed", "in_progress"} and field("assigned_to") == lane:
-    print(f"{task_id}\t{field('title')}")
+for candidate in sorted(
+    [path for path in claim_files if path.is_file()],
+    key=lambda path: path.stat().st_mtime,
+    reverse=True,
+):
+    lines = [ln.strip() for ln in candidate.read_text(errors="replace").splitlines() if ln.strip()]
+    if not lines:
+        continue
+    task_id = lines[0]
+    note = active / f"{task_id}.md"
+    if not note.is_file():
+        note = next(iter(sorted(active.glob(f"{task_id}-*.md"))), None) if active.is_dir() else None
+    if note is None or not note.is_file():
+        continue
+    text = note.read_text(errors="replace")
+    active_owned_statuses = {
+        "claimed",
+        "in_progress",
+        "pr_open",
+        "merge_queue",
+        "ci_green",
+        "ready",
+        "ready_for_review",
+        "review_ready",
+        "ready_for_merge",
+    }
+    if field("status") in active_owned_statuses and field("assigned_to") == lane:
+        print(f"{task_id}\t{field('title')}")
+        sys.exit(0)
 PY
 }
 
@@ -312,9 +516,7 @@ guard() {
   local lane="$1" kind="$2" worktree="$WORKTREE_ROOT/hapax-council--$1"
   local task_line task_id title
   task_line="$(resolve_claimed_task "$lane")"
-  task_id="${task_line%%	*}"
-  title="${task_line#*	}"
-  [ "$title" = "$task_line" ] && title=""
+  IFS=$'\t' read -r task_id title _ <<< "$task_line"
 
   # A rostered lane with no worktree can never be launched. Don't silently skip
   # it forever — count the cycles and escalate once it crosses the threshold, so
@@ -338,7 +540,7 @@ guard() {
   clear_streak "$lane" no-worktree
 
   case "$kind" in
-    claude)   reap_guard "$lane"; if claude_alive "$lane"; then progress_guard "$lane"; return 0; fi ;;
+    claude)   reap_guard "$lane"; if launcher_alive "$lane" || claude_alive "$lane"; then progress_guard "$lane"; return 0; fi ;;
     codex)    tmux_session_alive "hapax-codex-$lane" && return 0 ;;
     antigrav) tmux_session_alive "hapax-antigrav-$lane" && return 0 ;;
   esac
@@ -355,8 +557,12 @@ guard() {
   fi
 
   if [ "$LOCAL_DEV_MAINTENANCE_MODE" = "appendix-only" ] && [ -z "$task_id" ]; then
-    log "$lane ($kind): DEAD with no active task — appendix-only local-dev maintenance suppresses idle-await respawn"
-    return 0
+    if p0_intake_backlog_present; then
+      log "$lane ($kind): DEAD with no active task but P0 incident backlog exists — allowing idle-await respawn"
+    else
+      log "$lane ($kind): DEAD with no active task — appendix-only local-dev maintenance suppresses idle-await respawn"
+      return 0
+    fi
   fi
 
   if [ "$DRY_RUN" = "1" ]; then
@@ -390,7 +596,17 @@ guard() {
       ;;
     codex)
       log "$lane ($kind): DEAD — respawning tmux lane (idle-await; lane reads its own claim)"
-      respawn_sync "$lane" "$CODEX_BIN" --session "$lane" --no-claim --terminal tmux || respawn_rc=$?
+      codex_force=0
+      codex_args=("$CODEX_BIN" --session "$lane" --no-claim --terminal tmux)
+      if codex_should_force_respawn "$lane" "$task_id"; then
+        codex_args+=(--force)
+        codex_force=1
+      fi
+      if [ "$codex_force" = "1" ]; then
+        respawn_sync "$lane" env HAPAX_DISPATCH_HOST_FALLBACK=local "${codex_args[@]}" || respawn_rc=$?
+      else
+        respawn_sync "$lane" "${codex_args[@]}" || respawn_rc=$?
+      fi
       respawn_tracked=1
       ;;
     antigrav)
@@ -431,10 +647,7 @@ guard() {
 #   alive -> nudge the live launcher's stdin fifo (its own injection mechanism;
 #            a re-launch would flock-fail). Both resume the SAME task.
 launcher_alive() {
-  local lpf="$RUNTIME_DIR/$1.launcher.pid" pid=""
-  [ -f "$lpf" ] || return 1
-  pid="$(cat "$lpf" 2>/dev/null || true)"
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+  launcher_pid "$1" >/dev/null
 }
 
 # Seconds since output.jsonl was last written; returns 1 (no echo) if absent
@@ -468,21 +681,9 @@ import sys
 from pathlib import Path
 
 vault_root, lane, claim_file = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
-if not claim_file.is_file():
-    sys.exit(0)
-lines = [ln.strip() for ln in claim_file.read_text(errors="replace").splitlines() if ln.strip()]
-if not lines:
-    sys.exit(0)
-task_id = lines[0]
-
 active = vault_root / "active"
-note = active / f"{task_id}.md"
-if not note.is_file():
-    note = next(iter(sorted(active.glob(f"{task_id}-*.md"))), None) if active.is_dir() else None
-if note is None or not note.is_file():
-    sys.exit(0)
-
-text = note.read_text(errors="replace")
+claim_files = [claim_file]
+claim_files.extend(sorted(claim_file.parent.glob(f"{claim_file.name}-*")))
 
 
 def field(name: str) -> str:
@@ -490,8 +691,24 @@ def field(name: str) -> str:
     return m.group(1).strip().strip('"').strip("'") if m else ""
 
 
-if field("assigned_to") == lane:
-    print(f"{task_id}\t{field('status')}\t{field('title')}")
+for candidate in sorted(
+    [path for path in claim_files if path.is_file()],
+    key=lambda path: path.stat().st_mtime,
+    reverse=True,
+):
+    lines = [ln.strip() for ln in candidate.read_text(errors="replace").splitlines() if ln.strip()]
+    if not lines:
+        continue
+    task_id = lines[0]
+    note = active / f"{task_id}.md"
+    if not note.is_file():
+        note = next(iter(sorted(active.glob(f"{task_id}-*.md"))), None) if active.is_dir() else None
+    if note is None or not note.is_file():
+        continue
+    text = note.read_text(errors="replace")
+    if field("assigned_to") == lane:
+        print(f"{task_id}\t{field('status')}\t{field('title')}")
+        sys.exit(0)
 PY
 }
 
@@ -541,6 +758,7 @@ fifo_nudge() {
   [ -p "$fifo" ] || { log "$1: no stdin fifo at $fifo — cannot nudge live launcher"; return 1; }
   json="$(progress_resume_prompt "$2" | python3 -c 'import sys, json; print(json.dumps({"type":"user","message":{"role":"user","content":[{"type":"text","text":sys.stdin.read()}]}}, separators=(",", ":")))' 2>/dev/null || true)"
   [ -n "$json" ] || return 1
+  # shellcheck disable=SC2016 # $1/$2 are bash -c positional args.
   timeout 5 bash -c 'printf "%s\n" "$1" > "$2"' _ "$json" "$fifo"
 }
 
@@ -564,6 +782,7 @@ if note is not None and note.is_file():
     t = re.sub(r"^assigned_to:.*$", "assigned_to: unassigned", t, count=1, flags=re.MULTILINE)
     note.write_text(t)
 PY
+  rm -f "$HOME/.cache/hapax/cc-active-task-$1"-* 2>/dev/null || true
   : > "$HOME/.cache/hapax/cc-active-task-$1" 2>/dev/null || true
 }
 
@@ -674,16 +893,110 @@ progress_guard() {
 
 # ── zombie-launcher reaper (terminal-task + lifetime ceiling) ─────────────────
 
-# launcher_pid <lane>: echo the lane's LIVE launcher pid, or return 1 if there is
-# no live launcher. (launcher_alive returns only a boolean; the reaper needs the
-# pid value to target the SIGTERM.)
-launcher_pid() {
-  local lpf="$RUNTIME_DIR/$1.launcher.pid" pid=""
+# launcher_pid_from_proc <lane>: echo a live hapax-claude-headless wrapper whose
+# pidfile was lost. Constrain to the current HOME so tests and other users' lanes
+# cannot be mistaken for this supervisor's fleet.
+launcher_pid_from_proc() {
+  [ "$PROC_SCAN_LAUNCHERS" = "1" ] || return 1
+  python3 - "$1" "$HOME" <<'PY' 2>/dev/null
+import os
+import sys
+from pathlib import Path
+
+lane, expected_home = sys.argv[1], sys.argv[2]
+
+
+def read_parts(path: Path) -> list[str]:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return []
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+
+def env_home(pid: str) -> str:
+    for part in read_parts(Path("/proc") / pid / "environ"):
+        if part.startswith("HOME="):
+            return part.split("=", 1)[1]
+    return ""
+
+
+for entry in sorted(Path("/proc").iterdir(), key=lambda path: int(path.name) if path.name.isdigit() else -1):
+    if not entry.name.isdigit():
+        continue
+    pid = entry.name
+    if int(pid) in {os.getpid(), os.getppid()}:
+        continue
+    argv = read_parts(entry / "cmdline")
+    if not argv:
+        continue
+    if not any(Path(arg).name == "hapax-claude-headless" for arg in argv):
+        continue
+    if lane not in argv:
+        continue
+    if env_home(pid) != expected_home:
+        continue
+    try:
+        os.kill(int(pid), 0)
+    except OSError:
+        continue
+    print(pid)
+    sys.exit(0)
+sys.exit(1)
+PY
+}
+
+launcher_pid_from_pidfile() {
+  local lpf="$RUNTIME_DIR/$1.launcher.pid"
   [ -f "$lpf" ] || return 1
-  pid="$(cat "$lpf" 2>/dev/null || true)"
-  case "$pid" in '' | *[!0-9]*) return 1 ;; esac
-  kill -0 "$pid" 2>/dev/null || return 1
-  printf '%s\n' "$pid"
+  python3 - "$1" "$lpf" "$HOME" <<'PY' 2>/dev/null
+import os
+import sys
+from pathlib import Path
+
+lane, pidfile, expected_home = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
+
+
+def read_parts(path: Path) -> list[str]:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return []
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+
+def env_home(pid: int) -> str:
+    for part in read_parts(Path("/proc") / str(pid) / "environ"):
+        if part.startswith("HOME="):
+            return part.split("=", 1)[1]
+    return ""
+
+
+try:
+    pid = int(pidfile.read_text().strip())
+except (OSError, ValueError):
+    sys.exit(1)
+try:
+    os.kill(pid, 0)
+except OSError:
+    sys.exit(1)
+argv = read_parts(Path("/proc") / str(pid) / "cmdline")
+if not any(Path(arg).name == "hapax-claude-headless" for arg in argv):
+    sys.exit(1)
+if lane not in argv:
+    sys.exit(1)
+if env_home(pid) != expected_home:
+    sys.exit(1)
+print(pid)
+PY
+}
+
+# launcher_pid <lane>: echo the lane's LIVE launcher pid, or return 1 if there is
+# no live launcher. The pidfile is authoritative when present; the /proc fallback
+# catches lock-holding wrappers whose pidfile/fifo was lost mid-loop.
+launcher_pid() {
+  launcher_pid_from_pidfile "$1" && return 0
+  launcher_pid_from_proc "$1"
 }
 
 # launcher_etimes <pid>: elapsed seconds since the launcher started, or return 1
@@ -709,12 +1022,23 @@ from pathlib import Path
 vault_root, lane, claim_file = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
 # No claim -> not terminal on task grounds (the lifetime ceiling covers a
 # claimless launcher); mirror the launcher's "no task binding -> live".
-if not claim_file.is_file():
+claim_files = [claim_file]
+claim_files.extend(sorted(claim_file.parent.glob(f"{claim_file.name}-*")))
+claim_files = sorted(
+    [path for path in claim_files if path.is_file()],
+    key=lambda path: path.stat().st_mtime,
+    reverse=True,
+)
+if not claim_files:
     sys.exit(1)
-lines = [ln.strip() for ln in claim_file.read_text(errors="replace").splitlines() if ln.strip()]
-if not lines:
+task_id = ""
+for candidate in claim_files:
+    lines = [ln.strip() for ln in candidate.read_text(errors="replace").splitlines() if ln.strip()]
+    if lines:
+        task_id = lines[0]
+        break
+if not task_id:
     sys.exit(1)
-task_id = lines[0]
 active = vault_root / "active"
 note = active / f"{task_id}.md"
 if not note.is_file():
@@ -798,6 +1122,8 @@ reap_guard() {
 }
 
 # ── sweep ─────────────────────────────────────────────────────────────────────
+
+activate_p0_codex_drain_lane
 
 for lane in $CLAUDE_LANES;   do guard "$lane" claude;   done
 for lane in $CODEX_LANES;    do guard "$lane" codex;     done

@@ -22,8 +22,14 @@ from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, Field, ValidationError
 
+from shared.governance.publication_allowlist import (
+    cross_boundary_pii_blockers,
+    legal_name_guard_operational,
+)
+
 if TYPE_CHECKING:
     from shared.coord_event_log import CoordEventLog
+    from shared.hkp_bundle_schema import HkpConceptFrontmatter
 
 LEDGER_DIR = Path.home() / ".cache" / "hapax" / "evidence-ledger"
 
@@ -52,6 +58,7 @@ LegibilityEvidenceKind = Literal[
     "operator_decision",
     "external_determination",
     "collection_failure",
+    "hkp_projection",
 ]
 LegibilityPrivacyClass = Literal[
     "public",
@@ -657,9 +664,18 @@ def validate_determination_exchange_packet(
     for field_name, blocker in _DETERMINATION_BRIDGE_FLAGS.items():
         if bool(getattr(model, field_name)):
             blockers.append(blocker)
+    packet_text = _packet_text_for_sensitive_scan(model)
     for blocker, pattern in _DETERMINATION_SENSITIVE_PATTERNS:
-        if pattern.search(_packet_text_for_sensitive_scan(model)):
+        if pattern.search(packet_text):
             blockers.append(f"sensitive_text:{blocker}")
+    for code in cross_boundary_pii_blockers(packet_text):
+        blockers.append(f"cross_boundary_pii:{code}")
+    if not legal_name_guard_operational():
+        # Content inspection cannot verify legal-name absence without
+        # HAPAX_OPERATOR_NAME. Surface it here; the cross-boundary EMIT path
+        # (HKP adapter) escalates this to a hard refusal so the bridge never
+        # ships with its legal-name guard inoperative.
+        warnings.append("legal_name_guard_inoperative_env_unset")
 
     if model.synthetic_example and not model.public_safe:
         blockers.append("synthetic_example_not_public_safe")
@@ -977,6 +993,29 @@ def _claim_text_for_scan(claim: ClaimRecord) -> str:
     )
 
 
+def _evidence_text_for_scan(records: Sequence[LegibilityEvidenceRecord]) -> str:
+    """Free-text from linked evidence records — the fields an HKP (or other)
+    adapter populates (value_summary/source_command/source_url/repo/path/
+    raw_artifact_ref/redaction_notes/error). Scanned for cross-boundary PII
+    alongside the claim's own text so a leak hidden in evidence cannot reach an
+    enterprise audience unscanned."""
+    parts: list[str] = []
+    for record in records:
+        parts.extend(
+            [
+                record.value_summary,
+                record.source_command,
+                record.source_url,
+                record.repo,
+                record.path,
+                record.raw_artifact_ref,
+                record.redaction_notes,
+                record.error,
+            ]
+        )
+    return " ".join(part for part in parts if part)
+
+
 def _evidence_status(
     *,
     evidence_ref_count: int,
@@ -1052,10 +1091,14 @@ def validate_claim_for_audiences(
                 blockers.append(f"public_claim_without_public_safe_evidence:{record.evidence_id}")
 
     if _claim_targets_enterprise_context(claim, audiences):
-        scan_text = _claim_text_for_scan(claim)
+        scan_text = " ".join(
+            part for part in (_claim_text_for_scan(claim), _evidence_text_for_scan(records)) if part
+        )
         for inference_name, pattern in _ENTERPRISE_FORBIDDEN_PATTERNS:
             if pattern.search(scan_text):
                 blockers.append(f"enterprise_forbidden_inference:{inference_name}")
+        for code in cross_boundary_pii_blockers(scan_text):
+            blockers.append(f"cross_boundary_pii:{code}")
 
     blockers = list(dict.fromkeys(blockers))
     warnings = list(dict.fromkeys(warnings))
@@ -1374,3 +1417,211 @@ def collect_systemd_inventory_evidence(
         public_safe=False,
         freshness_ttl_s=freshness_ttl_s,
     )
+
+
+# ---------------------------------------------------------------------------
+# HKP → Alliant bridge adapter (REQ-20260619-hkp-alliant-egress-safety-and-adapter,
+# PR-C). Maps the cache-only, support-non-authoritative HKP projection into the
+# bridge's evidence/determination types behind the PR-A/PR-B egress safety gates.
+# Transport stays MANUAL — these only PRODUCE a reviewed packet; the operator
+# copy-pastes it to Alliant. evidence_ledger.py is the boundary-enforcing module.
+
+
+class HkpBridgeRefusal(ValueError):
+    """An HKP concept/projection may not cross the Hapax→Alliant bridge.
+
+    Raised fail-closed when rights are not operator-controlled, HKP claims
+    authority, a required emit precondition is unmet, or cross-boundary
+    validation rejects the assembled packet.
+    """
+
+
+# HKP privacy_class → bridge LegibilityPrivacyClass. Only "public" HKP content
+# may carry title/description across; everything else is operator-private.
+_HKP_PRIVACY_TO_BRIDGE: dict[str, LegibilityPrivacyClass] = {
+    "public": "public",
+    "internal": "operator_private",
+    "private": "operator_private",
+    "secret": "operator_private",
+}
+
+
+def collect_hkp_evidence(
+    concept: HkpConceptFrontmatter,
+    *,
+    bundle_uid: str = "",
+    output_tree_hash: str = "",
+    freshness_ttl_s: float = 3600.0,
+) -> LegibilityEvidenceRecord:
+    """Map one HKP concept projection to a bridge ``LegibilityEvidenceRecord``.
+
+    Fail-closed: refuses (``HkpBridgeRefusal``) any concept whose ``rights_state``
+    is not ``operator_controlled`` (the bridge moves operator-controlled
+    descendants only) or that claims authority. The record carries ONLY
+    allowlisted, support-non-authoritative fields — concept_uid / type /
+    authority(may_authorize=False) / freshness / egress posture / provenance,
+    prefixed with the non-authority banner. Title and description cross ONLY for
+    a ``public`` privacy_class + ``public`` egress_state concept; the downstream
+    claim/determination validators still content-scan the result
+    (legal name / email / GPS / private path / operator mental-state), so a
+    mislabeled public concept is still caught.
+    """
+    from shared.hkp_prompt_context import NON_AUTHORITY_BANNER
+
+    posture = concept.posture
+    if posture.rights_state != "operator_controlled":
+        raise HkpBridgeRefusal(
+            f"HKP concept {concept.concept_uid} rights_state={posture.rights_state!r} "
+            "is not operator_controlled; refusing bridge export"
+        )
+    if concept.authority.may_authorize:
+        raise HkpBridgeRefusal(
+            f"HKP concept {concept.concept_uid} claims may_authorize=True; HKP is "
+            "support-non-authoritative and may not cross as authority"
+        )
+    if getattr(posture, "public_export_allowed", False):
+        # Structural public-export guard, mirroring hkp_bundle_schema.py's
+        # producer-strict raise: an HKP projection is never public-export.
+        raise HkpBridgeRefusal(
+            f"HKP concept {concept.concept_uid} posture.public_export_allowed=True; "
+            "next-action: HKP is never public-export — fix the projection posture before bridging"
+        )
+
+    is_public = posture.privacy_class == "public" and posture.egress_state == "public"
+    parts = [
+        NON_AUTHORITY_BANNER,
+        f"concept_uid={concept.concept_uid}",
+        f"type={concept.type}",
+        f"authority=may_authorize:{concept.authority.may_authorize}",
+        f"freshness={concept.freshness.state}",
+        f"egress_state={posture.egress_state}",
+        f"producer={concept.projection_provenance.producer}",
+    ]
+    if bundle_uid:
+        parts.append(f"bundle_uid={bundle_uid}")
+    if output_tree_hash:
+        parts.append(f"output_tree_hash={output_tree_hash}")
+    if is_public:
+        parts.append(f"title={concept.title}")
+        parts.append(f"description={concept.description}")
+
+    return _record(
+        kind="hkp_projection",
+        value_summary="; ".join(parts),
+        privacy_class=_HKP_PRIVACY_TO_BRIDGE.get(posture.privacy_class, "operator_private"),
+        public_safe=is_public,
+        status="ok" if concept.freshness.state in ("fresh", "stale") else "failed",
+        freshness_ttl_s=freshness_ttl_s,
+        collector="hapax-hkp-bridge",
+    )
+
+
+def build_hkp_determination_packet(
+    concepts: Sequence[HkpConceptFrontmatter],
+    *,
+    reviewer: str,
+    reviewed_at: str,
+    purpose: str,
+    portability_ledger_ref: str,
+    authority_case: str = "CASE-HRL-OUTBOUND-ADOPTION-20260611",
+    bundle_uid: str = "",
+    output_tree_hash: str = "",
+    packet_id: str = "DXP-HKP-OUTBOUND",
+) -> DeterminationExchangePacket:
+    """Build a validated Hapax→Alliant determination packet from HKP concepts.
+
+    Emit-path safety preconditions (fail-closed):
+      * ``portability_ledger_ref`` non-empty — no packet may reference an HKP
+        artifact absent from the portability ledger (the operator confirms the
+        ledger row and passes its id);
+      * the legal-name guard must be operational (``HAPAX_OPERATOR_NAME`` set),
+        else cross-boundary egress cannot verify legal-name absence;
+      * every concept must pass :func:`collect_hkp_evidence`.
+
+    The assembled packet is validated through
+    :func:`validate_determination_exchange_packet` (which content-scans for legal
+    name / email / GPS / private path / operator mental-state) and the final
+    serialized text is re-scanned with ``_assert_clean``; either failing is a
+    hard ``HkpBridgeRefusal``. Transport stays MANUAL — this returns a reviewed
+    packet; the operator delivers it.
+    """
+    from shared.governance.publication_allowlist import legal_name_guard_operational
+    from shared.hkp_prompt_context import _assert_clean
+
+    if not portability_ledger_ref.strip():
+        raise HkpBridgeRefusal(
+            "portability_ledger_ref is required: no HKP packet may reference an artifact "
+            "absent from the portability ledger; next-action: add/confirm the HKP row in "
+            "hrl-portability-ledger and pass its ref"
+        )
+    if not legal_name_guard_operational():
+        raise HkpBridgeRefusal(
+            "legal-name guard inoperative; next-action: set HAPAX_OPERATOR_NAME so the "
+            "cross-boundary egress can verify the operator's legal name is absent"
+        )
+
+    records = [
+        collect_hkp_evidence(c, bundle_uid=bundle_uid, output_tree_hash=output_tree_hash)
+        for c in concepts
+    ]
+    evidence_summaries = [record.value_summary for record in records]
+    all_public = bool(records) and all(record.public_safe for record in records)
+
+    # Enterprise-audience gate: wrap the evidence as a ClaimRecord scoped to the
+    # enterprise_testbed audience and validate it. This applies the audience
+    # forbidden-inference checks AND the claim-path content scan (cross_boundary
+    # PII + operator mental-state over the claim text + linked evidence) before
+    # the packet is even assembled — a second, audience-aware fail-closed layer.
+    claim = ClaimRecord(
+        claim_id=f"CL-{packet_id}",
+        text=(
+            "HKP support-non-authoritative SDLC projection digest offered to the "
+            "enterprise testbed for adoption review."
+        ),
+        claim_kind="capability",
+        audience_scope=["enterprise_testbed"],
+        evidence_refs=[record.evidence_id for record in records],
+        status="approved_internal",
+    )
+    claim_result = validate_claim_for_audiences(claim, records)
+    if not claim_result.allowed:
+        raise HkpBridgeRefusal(
+            "HKP claim failed enterprise-audience validation: " + ", ".join(claim_result.blockers)
+        )
+
+    packet = DeterminationExchangePacket(
+        packet_id=packet_id,
+        packet_type="determination",
+        from_system="hapax",
+        to_system="alliant_sandbox",
+        reviewer=reviewer,
+        reviewed_at=reviewed_at,
+        review_verdict="approved",
+        purpose=purpose,
+        authority_case=authority_case,
+        authority_level="informational",
+        import_as="none",
+        evidence_summaries=evidence_summaries,
+        allowed_actions=["review", "map_to_local_sdlc"],
+        prohibited_actions=[
+            "publish_without_operator_review",
+            "treat_as_employer_approval",
+            "ingest_raw_private_artifacts",
+            "treat_as_implementation_authority",
+        ],
+        public_safe=all_public,
+        summary=(
+            f"HKP projection digest (portability_ledger_ref={portability_ledger_ref}): "
+            f"{len(records)} support-non-authoritative concept(s); titles/descriptions "
+            "included only for public-privacy concepts."
+        ),
+    )
+
+    result = validate_determination_exchange_packet(packet)
+    if not result.allowed:
+        raise HkpBridgeRefusal(
+            "HKP determination packet failed cross-boundary validation: "
+            + ", ".join(result.blockers)
+        )
+    _assert_clean(_packet_text_for_sensitive_scan(packet))
+    return packet

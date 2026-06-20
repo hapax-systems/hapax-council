@@ -11,7 +11,7 @@ This is research infrastructure, not a product or community project. It is not s
 | What | Single-operator operating environment: perception, reasoning, action, and self-governance running as one integrated system |
 | Scale | 180+ agent modules, 330+ systemd unit files, 13 Docker containers, 5 Raspberry Pis, 60 WGSL shader nodes |
 | Governance | 5 constitutional axioms with algebraic verification: consent labels, provenance semiring, deny-wins composition |
-| Coordination | Multi-lane AI work through Claude Code, Codex, and Gemini CLI using relay files, task claims, and PR gates |
+| Coordination | Multi-lane AI work through Claude Code, Codex, Antigravity/agy, and Vibe using relay files, task claims, and PR gates |
 | Perception | Voice daemon, USB-camera compositor, IR fleet, wearable biometrics, phone context, visual expression engine |
 | Research | Grounding attempts, claim authority, refusal/correction behavior, privacy-preserving public egress, and agentic oversight |
 

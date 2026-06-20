@@ -15,6 +15,8 @@ enable hapax-cc-pr-autoqueue.timer
 enable hapax-cc-pr-merge-watcher.timer
 enable hapax-request-intake-consumer.timer
 enable hapax-request-intake-consumer.path
+enable hapax-request-decompose.timer
+enable hapax-cc-task-offer-ready.timer
 enable hapax-security-signal-intake.timer
 enable hapax-source-activate.timer
 enable hapax-darkplaces-live-texture-rebuild.path
@@ -24,8 +26,10 @@ enable hapax-private-monitor-recover.timer
 enable hapax-mail-monitor-fallback.timer
 enable hapax-daimonion-quarantine-watchdog.timer
 enable hapax-audio-topology-verify.timer
+enable hapax-s4-arm.timer
 enable hapax-visual-pool-snapshot-harvester.timer
 enable hapax-segment-prep.timer
+enable hapax-segment-prep-emit-health.timer
 enable hapax-obsidian-publish-sync.timer
 enable hapax-worktree-gc.timer
 enable hapax-backup-watchdog.timer

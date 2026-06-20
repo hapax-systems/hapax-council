@@ -120,13 +120,17 @@ def convert(event: ChangeEvent) -> Impingement:
         interrupt_token=interrupt_token,
     )
 
-    # Compute embedding for affordance retrieval (non-blocking, best-effort)
+    # Compute embedding for affordance retrieval (genuinely non-blocking,
+    # best-effort). This runs inside the logos-api asyncio event loop via the
+    # inotify reactive handler, so block_gpu=False is REQUIRED: a blocking GPU-
+    # semaphore acquire here wedges the whole event loop when the GPU is busy
+    # (the logos-api :8051 hang). Saturated GPU -> skip the optional embedding.
     try:
         from logos._config import embed_safe
         from logos._impingement import render_impingement_text
 
         text = render_impingement_text(imp)
-        vec = embed_safe(text, prefix="search_query")
+        vec = embed_safe(text, prefix="search_query", block_gpu=False)
         if vec is not None:
             imp = imp.model_copy(update={"embedding": vec})
     except Exception:

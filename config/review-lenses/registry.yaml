@@ -75,6 +75,8 @@ t1_surface_globs:
   - "hooks/**"
   - "scripts/review_team.py"
   - "config/review-lenses/**"
+  - "docs/architecture/system-dynamics-map*"
+  - "docs/architecture/vendor/cytoscape-*.js"
 
 # A diff is docs-only (t3_docs candidate) when every changed file matches.
 docs_only_globs: ["docs/**", "*.md"]
@@ -88,15 +90,30 @@ families:
     # longer a single yaml fence and the strict dossier parser (extract_review,
     # deliberately bare-fence-only for channel trust) discards it as
     # invalid-output — a lost accept (the claude seat rode as invalid-output
-    # across rounds 6-8 of PR #4119 despite returning verdict: accept). gemini
-    # gets the same instruction via its -p arg; codex complies natively.
+    # across rounds 6-8 of PR #4119 despite returning verdict: accept).
+    # The agy-backed gemini family gets equivalent instructions in
+    # scripts/hapax-agy-reviewer; codex complies natively.
     reviewer_command: ["claude", "-p", "--append-system-prompt", "You are a blind PR reviewer invoked non-interactively. Output policy is ABSOLUTE and overrides any urge to explain: your ENTIRE reply MUST be exactly one fenced yaml code block (opening ```yaml, your verdict/findings/checklist, closing ```) and NOTHING ELSE — no preamble, no reasoning, no prose, no text whatsoever before or after the fence. The dossier parser requires the whole reply to be a single bare yaml fence; ANY character outside it discards your entire review as invalid-output (a silently lost vote). Do all reasoning silently; emit only the fence."]
     timeout_seconds: 1200
   - family: codex
     reviewer_command: ["codex", "exec", "--sandbox", "read-only", "-"]
     timeout_seconds: 1200
   - family: gemini
-    reviewer_command: ["gemini", "--skip-trust", "--approval-mode", "plan", "-p", "Perform the review request provided on stdin; reply with exactly one fenced yaml code block and no prose."]
+    reviewer_command: ["scripts/hapax-agy-reviewer"]
+    timeout_seconds: 1200
+  - family: glm
+    # Emergency outage procedure: GLM degrades out of a constitution only with
+    # a fresh family-outage witness in
+    # ~/.cache/hapax/review-team/family-outage.json, normally written when the
+    # seat returns quota-wall/provider-outage. For a hard GLM adapter/pass/
+    # provider failure outside those classifiers, open a governed incident
+    # note, seed {"glm": "<current ISO timestamp>"} in that witness file, and
+    # rerun dispatch; admission enforces the same FAMILY_OUTAGE_TTL_S expiry.
+    # Recheck witness: python -c 'import json,pathlib; p=pathlib.Path.home()/".cache/hapax/review-team/family-outage.json"; print(json.loads(p.read_text()).get("glm"))'
+    # Broad emergency stops remain HAPAX_REVIEW_TEAM_DISPATCH_OFF=1
+    # (stop writing dossiers) and HAPAX_REVIEW_TEAM_GATE_OFF=1 (admission
+    # bypass only under operator/governance authority).
+    reviewer_command: ["scripts/hapax-glmcp-reviewer"]
     timeout_seconds: 1200
 
 # Authoring-lane -> model family (writer's family never holds the majority
@@ -111,11 +128,18 @@ lane_families:
     zeta: claude
     eta: claude
     theta: claude
-    iota: gemini
-    kappa: gemini
-    lambda: gemini
-    mu: gemini
+    cx-glmcp: glm
+    codex-glmcp: glm
+    glmcp: glm
+    antigrav: gemini
+    antigravity: gemini
   prefixes:
     cx-: codex
+    codex-: codex
+    glm-: glm
     vbe-: vibe
+    antigrav-: gemini
+    agy-: gemini
+  retired:
+    - iota
   default: claude

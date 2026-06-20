@@ -100,18 +100,20 @@ def test_inject_rgba_creates_source_directory_once(monkeypatch, tmp_path):
     """Hot source-protocol paths should not mkdir-check every frame."""
     from agents.reverie import content_injector
 
-    monkeypatch.setattr(content_injector, "SOURCES_DIR", tmp_path / "sources")
-    (tmp_path / "sources").mkdir()
-    content_injector._CREATED_SOURCE_DIRS.clear()
+    source_parent = tmp_path / "sources"
+    source_parent.mkdir(exist_ok=True)
+
     mkdir_calls: list[Path] = []
-    original_mkdir = Path.mkdir
+    concrete_path = type(Path())
 
-    def _counting_mkdir(self: Path, *args, **kwargs) -> None:
-        if self == tmp_path / "sources" / "hot-source":
-            mkdir_calls.append(self)
-        original_mkdir(self, *args, **kwargs)
+    class CountingPath(concrete_path):
+        def mkdir(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            if self == source_parent / "hot-source":
+                mkdir_calls.append(self)
+            super().mkdir(*args, **kwargs)
 
-    monkeypatch.setattr(Path, "mkdir", _counting_mkdir)
+    monkeypatch.setattr(content_injector, "SOURCES_DIR", CountingPath(source_parent))
+    content_injector._CREATED_SOURCE_DIRS.clear()
 
     assert content_injector.inject_rgba("hot-source", b"\0" * 16, 2, 2)
     assert content_injector.inject_rgba("hot-source", b"\1" * 16, 2, 2)

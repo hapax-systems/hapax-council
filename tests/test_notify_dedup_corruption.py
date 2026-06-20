@@ -1,4 +1,4 @@
-"""Pin agents/_notify.py::_is_duplicate against non-dict JSON corruption.
+"""Pin shared/notify.py::_is_duplicate (the de-vendored home) against non-dict JSON corruption.
 
 Twenty-sixth site in the SHM corruption-class trail. ``_is_duplicate``
 loads the ntfy dedup state from ``$NTFY_DEDUP_FILE`` (default
@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agents import _notify
+from shared import notify as _notify
 
 
 @pytest.mark.parametrize(

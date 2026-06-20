@@ -88,6 +88,7 @@ CAPACITY_INVARIANT = (
     "degradation is permitted. Capacity may be reduced only by task-platform "
     "fit, quota state, resource contention, or explicit operator hold."
 )
+DEFAULT_P0_CODEX_DRAIN_LANES = ("cx-p0", "cx-crit")
 
 
 @dataclass(frozen=True)
@@ -165,51 +166,6 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         True,
         "JR+ bounded worker path; task fit must exclude governance-critical or off-limits work.",
     ),
-    ("gemini", "headless", "full"): PlatformPath(
-        "gemini",
-        "headless",
-        "full",
-        "scripts/hapax-gemini --role <lane> --terminal tmux -- -p <governed-prompt>",
-        "Gemini Pro plan-mode read-only headless sidecar",
-        False,
-        "Read-only/plan-mode only; mutation tasks must route elsewhere.",
-    ),
-    ("gemini", "headless", "worker"): PlatformPath(
-        "gemini",
-        "headless",
-        "worker",
-        "HAPAX_GEMINI_APPROVAL_MODE=auto_edit scripts/hapax-gemini --role <lane> --terminal tmux -- -p <governed-prompt>",
-        "Gemini governed auto-edit worker lane",
-        True,
-        "Full-worker wrapper profile; route only when task fit, policy firewall, and review gates allow it.",
-    ),
-    ("gemini", "headless", "flash"): PlatformPath(
-        "gemini",
-        "headless",
-        "flash",
-        "scripts/hapax-gemini --role <lane> --terminal tmux -- --model gemini-3-flash-preview -p <governed-prompt>",
-        "Gemini Flash read-only quota/fallback headless sidecar",
-        False,
-        "Spark analogue for quality-equivalent read-only research/review/extraction; mutation tasks must route elsewhere.",
-    ),
-    ("gemini", "headless", "lite"): PlatformPath(
-        "gemini",
-        "headless",
-        "lite",
-        "scripts/hapax-gemini --role <lane> --terminal tmux -- --model gemini-3.1-flash-lite-preview -p <governed-prompt>",
-        "Gemini Flash-Lite read-only lowest-cost headless sidecar",
-        False,
-        "Use only for quality-equivalent low-risk extraction/currentness packets; mutation tasks must route elsewhere.",
-    ),
-    ("gemini", "interactive", "full"): PlatformPath(
-        "gemini",
-        "interactive",
-        "full",
-        "scripts/hapax-gemini --role <lane> --terminal tmux",
-        "Gemini plan-mode interactive lane",
-        False,
-        "Read-only/plan-mode only; mutation tasks must route elsewhere.",
-    ),
     ("antigrav", "interactive", "full"): PlatformPath(
         "antigrav",
         "interactive",
@@ -236,6 +192,24 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "Provider gateway maintenance route for governed runtime/provider-spend config changes",
         True,
         "Route-authority packet only; policy requires a matching paid-budget ledger and fresh gateway evidence before a downstream live edit may proceed.",
+    ),
+    ("claude", "headless", "haiku"): PlatformPath(
+        "claude",
+        "headless",
+        "haiku",
+        "HAPAX_CLAUDE_MODEL=haiku ~/.local/bin/hapax-claude-headless <lane> <governed-prompt>",
+        "Claude Haiku headless stream-json lane",
+        True,
+        "Cheap bounded Claude tier; use only when Haiku is quality-equivalent for the bounded support task.",
+    ),
+    ("local_tool", "local", "worker"): PlatformPath(
+        "local_tool",
+        "local",
+        "worker",
+        "receipt-only local-inference route; LiteLLM :4000 local alias to TabbyAPI :5000 (Command-R 35B EXL3); no spawnable lane",
+        "Local Command-R 35B EXL3 inference worker (TabbyAPI)",
+        False,
+        "Sub-frontier local inference surface; called via the LiteLLM local alias, not a launchable mutating lane.",
     ),
 }
 
@@ -305,6 +279,68 @@ def field_tokens(value: str | list[str] | None) -> set[str]:
     return {part.strip() for part in raw.split() if part.strip()}
 
 
+def split_lane_list(value: str | None) -> set[str]:
+    if not value:
+        return set()
+    return {part for part in re.split(r"[\s,]+", value.strip()) if part}
+
+
+def p0_codex_drain_lanes() -> set[str]:
+    for name in (
+        "HAPAX_P0_CODEX_DRAIN_LANES",
+        "HAPAX_SUPERVISOR_P0_CODEX_LANES",
+        "HAPAX_SUPERVISOR_P0_CODEX_LANE",
+    ):
+        if name in os.environ:
+            return split_lane_list(os.environ.get(name))
+    return set(DEFAULT_P0_CODEX_DRAIN_LANES)
+
+
+def _field_value_text(value: Any) -> str:
+    if isinstance(value, list):
+        return " ".join(_field_value_text(item) for item in value)
+    if isinstance(value, dict):
+        return " ".join(_field_value_text(item) for item in value.values())
+    return strip_scalar(str(value)) if value is not None else ""
+
+
+def task_is_p0_incident(task_id: str, validation: Validation) -> bool:
+    if validation.task is None:
+        return False
+    fields = validation.task.fields
+    priority = strip_scalar(str(fields.get("priority", ""))).lower()
+    if priority != "p0":
+        return False
+    raw = " ".join(
+        [
+            task_id,
+            _field_value_text(fields.get("title")),
+            _field_value_text(fields.get("kind")),
+            _field_value_text(fields.get("tags")),
+            _field_value_text(fields.get("incident_kind")),
+            _field_value_text(fields.get("incident_fingerprint")),
+        ]
+    ).lower()
+    normalized = raw.replace("_", "-")
+    return any(
+        marker in normalized
+        for marker in (
+            "p0-incident",
+            "incident-intake",
+            "technical-alert",
+            "sdlc-task-stalled",
+        )
+    )
+
+
+def allow_codex_p0_local_dispatch_fallback(
+    task_id: str,
+    lane: str,
+    validation: Validation,
+) -> bool:
+    return lane in p0_codex_drain_lanes() and task_is_p0_incident(task_id, validation)
+
+
 def parse_frontmatter(text: str) -> dict[str, Any]:
     fields, _body = parse_document_frontmatter(text)
     return dict(fields)
@@ -353,8 +389,6 @@ def lane_worktree(lane: str, platform: str) -> Path:
         return root / "hapax-council" if lane == "alpha" else root / f"hapax-council--{lane}"
     if platform == "vibe":
         return root / f"hapax-council--{lane}"
-    if platform == "gemini":
-        return root / f"hapax-council--{lane}"
     if platform == "antigrav":
         normalized = "antigrav" if lane == "antigravity" else lane
         return root / f"hapax-council--{normalized}"
@@ -378,8 +412,8 @@ DRAINABLE_STATUSES = frozenset({"pr_open", "claimed", "in_progress"})
 #: Lanes whose live-session PID is published at ``<pid-dir>/<lane>.pid`` by
 #: scripts/hapax-claude-headless (grounding: beta/delta/epsilon/eta/theta/zeta
 #: confirmed live on this substrate). The drain only acts where it can PROVE
-#: liveness; any other lane (codex/vibe/gemini use a different substrate, not
-#: verified here) is refused fail-closed (reviewer must-fix #6).
+#: liveness; any other lane (codex/vibe use a different substrate, not verified
+#: here) is refused fail-closed (reviewer must-fix #6).
 KNOWN_CLAUDE_LANES = frozenset(
     {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}
 )
@@ -440,14 +474,29 @@ def lane_process_absent(lane: str) -> tuple[bool, str]:
 
 
 def lane_active_task_lease(lane: str) -> str | None:
-    """The task id lane ``lane`` currently claims (``cc-active-task-<lane>``), or
-    None. The mutation-moment cross-check (not the bare pid) for the TOCTOU guard."""
+    """The task id lane ``lane`` currently claims, or None.
+
+    cc-claim writes both a legacy ``cc-active-task-<lane>`` file and a
+    session-keyed ``cc-active-task-<lane>-<uuid>`` file. Mutation-moment TOCTOU
+    checks must treat either as an active lane claim because crash/reap paths can
+    leave only the session-keyed file behind.
+    """
     claims_dir = Path(os.environ.get("HAPAX_CC_CLAIMS_DIR", str(Path.home() / ".cache" / "hapax")))
-    try:
-        text = (claims_dir / f"cc-active-task-{lane}").read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    return text or None
+    legacy = claims_dir / f"cc-active-task-{lane}"
+    candidates = [legacy]
+    candidates.extend(sorted(claims_dir.glob(f"cc-active-task-{lane}-*")))
+    for claim in sorted(
+        [path for path in candidates if path.is_file()],
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    ):
+        try:
+            text = claim.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if text:
+            return text
+    return None
 
 
 # --- Cross-role stale-claim sweeper (reform-identity-coherence, cluster 11) -----
@@ -462,6 +511,7 @@ _UUID_SUFFIX_RE = re.compile(
     r"-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 _TERMINAL_CLAIM_STATUSES = {"done", "completed", "closed", "withdrawn", "superseded"}
+_UNASSIGNED_VALUES = {"", "null", "none", "~", "unassigned"}
 DEFAULT_CLAIM_LEASE_TTL = 21600  # matches cc-claim's HAPAX_CLAIM_LEASE_TTL_SECS default
 
 
@@ -470,26 +520,28 @@ def _claim_role(filename: str) -> str:
     return _UUID_SUFFIX_RE.sub("", filename[len(_CLAIM_PREFIX) :])
 
 
-def _claim_task_terminal_or_missing(task_id: str, active_dir: Path) -> bool:
-    """True when the claimed task is absent from active/ (closed/withdrawn/moved) or
-    carries a terminal status — i.e. the claim is dead and the slot can be freed."""
+def _claim_task_dead_reason(task_id: str, active_dir: Path) -> str | None:
+    """Reason the claim is dead, if the lane slot can be freed."""
     if not task_id:
-        return True
+        return "terminal-or-missing"
     note = active_dir / f"{task_id}.md"
     if not note.exists():
         variants = sorted(active_dir.glob(f"{task_id}-*.md"))
         if not variants:
-            return True
+            return "terminal-or-missing"
         note = variants[0]
     try:
         text = note.read_text(encoding="utf-8", errors="ignore")
     except OSError:
-        return False  # unreadable → do not reap on this basis
-    for line in text.splitlines():
-        if line.startswith("status:"):
-            status = line.split(":", 1)[1].strip().strip("\"'").lower()
-            return status in _TERMINAL_CLAIM_STATUSES
-    return False
+        return None  # unreadable -> do not reap on this basis
+    fields, _body = parse_document_frontmatter(text)
+    status = str(fields.get("status", "")).strip().strip("\"'").lower()
+    assigned_to = str(fields.get("assigned_to", "")).strip().strip("\"'").lower()
+    if status in _TERMINAL_CLAIM_STATUSES:
+        return "terminal-or-missing"
+    if status == "blocked" and assigned_to in _UNASSIGNED_VALUES:
+        return "blocked-unassigned"
+    return None
 
 
 def sweep_stale_claims(
@@ -526,8 +578,9 @@ def sweep_stale_claims(
     for f, role, mtime, task_id in metas:
         age = now - mtime
         role_is_live = (now - freshest_by_role.get(role, 0.0)) <= lease_ttl
-        if _claim_task_terminal_or_missing(task_id, active_dir) and age > grace_secs:
-            reason = "terminal-or-missing"
+        dead_reason = _claim_task_dead_reason(task_id, active_dir)
+        if dead_reason and age > grace_secs:
+            reason = dead_reason
         elif age > lease_ttl and not role_is_live:
             reason = "lease-expired"
         else:
@@ -943,7 +996,7 @@ def build_prompt(
         "If claim ownership is absent, rejected for another reason, or assigned to another lane, "
         "stop and write a relay receipt."
     )
-    return "\n".join(
+    base = "\n".join(
         [
             "SDLC GOVERNED DISPATCH.",
             f"Lane: {lane}",
@@ -971,6 +1024,20 @@ def build_prompt(
             "8. Do not downgrade profile or platform unless quota, resource pressure, or explicit operator hold requires it and the resulting route remains quality-equivalent for this task.",
         ]
     )
+    # Optional, fail-open HKP support context (projection, not authority). Never
+    # blocks dispatch: any failure yields no section.
+    try:
+        from shared.hkp_prompt_context import context_for_task
+
+        hkp = context_for_task(task_id)
+    except Exception:  # noqa: BLE001 — HKP is optional support; never break dispatch
+        hkp = ""
+    if hkp:
+        base += (
+            "\n\nHKP support context (projection, NOT authority — advisory; verify "
+            "against the cited source before acting):\n" + hkp
+        )
+    return base
 
 
 def write_receipt(
@@ -1194,8 +1261,6 @@ def normalize_profile(platform: str, profile: str) -> str:
             return "sonnet"
         if platform == "codex":
             return "spark"
-        if platform == "gemini":
-            return "flash"
     return profile
 
 
@@ -1317,7 +1382,9 @@ def launch_codex_headless(
     status = ""
     if validation.task is not None:
         status = strip_scalar(str(validation.task.fields.get("status", "")))
-    args = [str(launcher), "--task", task_id, "--force"]
+    args = [str(launcher), "--task", task_id]
+    if allow_codex_p0_local_dispatch_fallback(task_id, lane, validation):
+        args.append("--force")
     if status in {"claimed", "in_progress"}:
         args.append("--no-claim")
     args.extend([lane, prompt])
@@ -1334,6 +1401,10 @@ def launch_codex_headless(
     env = os.environ.copy()
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("codex", "headless")
+    if allow_codex_p0_local_dispatch_fallback(task_id, lane, validation):
+        # Preserve a caller/operator-provided fallback value; the P0 drain rule
+        # only supplies the default local fallback when the env is otherwise unset.
+        env.setdefault("HAPAX_DISPATCH_HOST_FALLBACK", "local")
     return _sliced_call(args, env)
 
 
@@ -1368,29 +1439,6 @@ def launch_vibe_headless(task_id: str, lane: str, prompt: str, validation: Valid
     if status in {"claimed", "in_progress"}:
         args.append("--no-claim")
     return _sliced_call(args)
-
-
-def launch_gemini_headless(lane: str, prompt: str, route: PlatformPath) -> int:
-    launcher = Path(
-        os.environ.get(
-            "HAPAX_METHODOLOGY_GEMINI_LAUNCHER",
-            str(Path(__file__).resolve().parent / "hapax-gemini"),
-        )
-    )
-    if not launcher.is_file():
-        print(f"Gemini launcher not found: {launcher}", file=sys.stderr)
-        return 8
-
-    args = [str(launcher), "--role", lane, "--terminal", "tmux", "--force", "--"]
-    if route.profile == "flash":
-        args.extend(["--model", "gemini-3-flash-preview"])
-    elif route.profile == "lite":
-        args.extend(["--model", "gemini-3.1-flash-lite-preview"])
-    args.extend(["-p", prompt])
-    env = os.environ.copy()
-    if route.profile == "worker":
-        env["HAPAX_GEMINI_APPROVAL_MODE"] = "auto_edit"
-    return _sliced_call(args, env)
 
 
 def write_antigrav_inflection(task_id: str, lane: str, prompt: str) -> Path:
@@ -1586,7 +1634,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--platform",
         default="claude",
-        choices=["api", "claude", "codex", "gemini", "vibe", "antigrav"],
+        choices=["api", "claude", "codex", "vibe", "antigrav"],
     )
     parser.add_argument(
         "--mode", default="headless", choices=["headless", "interactive", "receipt-only"]
@@ -1597,8 +1645,7 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Capability profile. Use full by default; quota-fallback maps to "
             "the platform's constrained analogue when one exists. Codex also "
-            "supports spark; Gemini supports flash/lite for read-only work and "
-            "worker for governed auto-edit work."
+            "supports spark."
         ),
     )
     parser.add_argument("--launch", action="store_true", help="Launch after validation")
@@ -1952,7 +1999,6 @@ def main(argv: list[str] | None = None) -> int:
             ("vibe", "headless"): lambda: launch_vibe_headless(
                 args.task, args.lane, prompt or "", validation
             ),
-            ("gemini", "headless"): lambda: launch_gemini_headless(args.lane, prompt or "", route),
             ("antigrav", "interactive"): lambda: launch_antigrav_interactive(
                 args.task, args.lane, validation, prompt or ""
             ),

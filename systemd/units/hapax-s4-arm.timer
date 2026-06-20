@@ -1,0 +1,14 @@
+# Hapax-Timer-Enable-Only: true
+# Enable for the next user-manager startup; never start this timer during deploy.
+[Unit]
+Description=Run Torso S-4 witness-verified arm after user-manager boot
+
+[Timer]
+OnStartupSec=2min
+AccuracySec=15s
+RandomizedDelaySec=30s
+Unit=hapax-s4-arm.service
+Persistent=false
+
+[Install]
+WantedBy=timers.target

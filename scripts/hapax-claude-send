@@ -69,7 +69,7 @@ RTE_BYPASS=0
 MESSAGE_PARTS=()
 TMP_FILES=()
 
-ROLE_ALLOWLIST="${HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST:-alpha beta gamma delta epsilon zeta eta theta}"
+ROLE_ALLOWLIST="${HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST:-alpha beta gamma delta epsilon zeta eta theta antigrav}"
 
 # Default busy regex covers Claude Code's animated activity verbs and
 # the "Messages to be submitted after next tool call" queue indicator.
@@ -180,16 +180,23 @@ if [ -z "$SESSION" ]; then
   exit 2
 fi
 
-# Validate ROLE against allowlist (space-separated, env-tunable).
+# Validate ROLE: the space-separated allowlist (fixed greek slots + antigrav,
+# env-tunable) PLUS the cc-<name> pattern — relay-coordinated Claude lanes are
+# first-class governed lanes (hooks/scripts/agent-role.sh assert-identity).
 ROLE_OK=0
-for r in $ROLE_ALLOWLIST; do
-  if [ "$r" = "$SESSION" ]; then
-    ROLE_OK=1
-    break
-  fi
-done
+case "$SESSION" in
+  cc-[a-z]*) ROLE_OK=1 ;;
+esac
 if [ "$ROLE_OK" -ne 1 ]; then
-  echo "hapax-claude-send: invalid role '$SESSION' (allowed: $ROLE_ALLOWLIST)" >&2
+  for r in $ROLE_ALLOWLIST; do
+    if [ "$r" = "$SESSION" ]; then
+      ROLE_OK=1
+      break
+    fi
+  done
+fi
+if [ "$ROLE_OK" -ne 1 ]; then
+  echo "hapax-claude-send: invalid role '$SESSION' (allowed: $ROLE_ALLOWLIST, or cc-<name>)" >&2
   echo "  override via HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST=\"alpha beta gamma ...\"" >&2
   exit 2
 fi

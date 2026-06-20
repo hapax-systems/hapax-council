@@ -19,7 +19,7 @@ if str(SCRIPTS) not in sys.path:
 
 import executor_contract as ec  # noqa: E402
 
-ALL_PLATFORMS = {"api", "claude", "codex", "gemini", "vibe", "antigrav"}
+ALL_PLATFORMS = {"api", "glmcp", "claude", "codex", "vibe", "antigrav", "local_tool"}
 
 
 def test_registry_covers_all_runtimes() -> None:
@@ -41,12 +41,12 @@ def test_read_only_implies_no_mutation() -> None:
 def test_supports_route_for_known_routes() -> None:
     assert ec.supports_route("codex", "headless")
     assert ec.supports_route("claude", "headless")
-    assert ec.supports_route("gemini", "headless")
     assert ec.supports_route("vibe", "headless")
     assert ec.supports_route("antigrav", "interactive")
 
 
 def test_supports_route_rejects_unlaunchable_routes() -> None:
+    assert not ec.supports_route("gemini", "headless")
     assert not ec.supports_route("gemini", "interactive")
     assert not ec.supports_route("antigrav", "headless")
     assert not ec.supports_route("vibe", "interactive")
@@ -103,7 +103,7 @@ def test_standalone_capabilities_cli_emits_json() -> None:
     assert payload["codex"]["modes"] == ["headless"]
 
 
-def test_standalone_capabilities_cli_single_platform() -> None:
+def test_standalone_capabilities_cli_rejects_retired_gemini_platform() -> None:
     result = subprocess.run(
         [sys.executable, str(SCRIPTS / "hapax-executor-capabilities"), "gemini"],
         capture_output=True,
@@ -111,7 +111,27 @@ def test_standalone_capabilities_cli_single_platform() -> None:
         check=False,
         timeout=30,
     )
-    assert result.returncode == 0, result.stderr
-    caps = json.loads(result.stdout)
-    assert caps["platform"] == "gemini"
-    assert caps["read_only"] is True
+    assert result.returncode == 1
+    assert "unknown executor" in result.stderr
+
+
+def test_executor_profiles_cover_every_required_route() -> None:
+    # gap-8 regression: every route in REQUIRED_ROUTE_IDS must have its profile
+    # declared in its platform's executor profiles, or the declared capability
+    # surface diverges from the required-route contract. The originating defect:
+    # `api.headless.provider_gateway` is REQUIRED but api profiles only listed
+    # ("api_frontier",), so the executor contract under-declared a required route.
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from shared.platform_capability_registry import REQUIRED_ROUTE_IDS
+
+    uncovered: list[tuple[str, str, tuple[str, ...]]] = []
+    for route_id in sorted(REQUIRED_ROUTE_IDS):
+        platform, _mode, profile = route_id.split(".", 2)
+        caps = ec.capabilities(platform)
+        assert caps is not None, f"no executor capabilities for platform {platform!r} ({route_id})"
+        if profile not in caps.profiles:
+            uncovered.append((route_id, profile, caps.profiles))
+    assert not uncovered, (
+        f"required routes whose profile is missing from executor profiles: {uncovered}"
+    )

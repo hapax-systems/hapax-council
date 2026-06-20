@@ -12,10 +12,20 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from shared.affordance import ActivationState, CapabilityRecord, SelectionCandidate
 from shared.affordance_metrics import AffordanceMetrics
+from shared.affordance_posterior_store import (
+    OUTCOME_CONTEXT_ASSOCIATION_FAILURE_DELTA,
+    OUTCOME_CONTEXT_ASSOCIATION_SUCCESS_DELTA,
+    PosteriorLockError,
+    append_posterior_update,
+    apply_posterior_updates,
+    load_posterior_state,
+    write_posterior_state,
+    write_posterior_state_draining_updates,
+)
 from shared.affordance_recruitment_metrics import (
     record_recruitment as _record_recruitment,
 )
@@ -26,6 +36,9 @@ from shared.impingement import Impingement, render_impingement_text
 from shared.visual_mode_bias import get_visual_mode_bias
 
 log = logging.getLogger("affordance_pipeline")
+
+PosteriorMode = Literal["local", "owner", "reader"]
+POSTERIOR_REFRESH_MIN_INTERVAL_S = 1.0
 
 if TYPE_CHECKING:
     from shared.affordance_outcome_adapter import AffordanceOutcomeDecision
@@ -163,6 +176,13 @@ def _emit_consent_refusal(*, axiom: str, surface: str, reason: str) -> None:
         pass
 
 
+def _posterior_mtime_ns(path: Path) -> int | None:
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
 class EmbeddingCache:
     def __init__(self, max_size: int = 256) -> None:
         self._cache: OrderedDict[str, list[float]] = OrderedDict()
@@ -229,7 +249,23 @@ def embed_batch_safe(texts: list[str], prefix: str = "search_document") -> list[
 
 
 class AffordancePipeline:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        posterior_mode: PosteriorMode = "local",
+        posterior_client_id: str | None = None,
+        posterior_path: str | Path | None = None,
+    ) -> None:
+        if posterior_mode not in {"local", "owner", "reader"}:
+            raise ValueError(f"unknown posterior_mode: {posterior_mode}")
+        self._posterior_mode: PosteriorMode = posterior_mode
+        self._posterior_client_id = posterior_client_id or f"affordance_pipeline:{posterior_mode}"
+        self._posterior_path = (
+            Path(posterior_path) if posterior_path is not None else ACTIVATION_STATE_PATH
+        )
+        self._posterior_loaded_mtime_ns: int | None = None
+        self._posterior_last_refresh_check: float = 0.0
+        self._posterior_update_failures: int = 0
         self._activation: dict[str, ActivationState] = {}
         # Preset-variety Phase 3: rolling window of recently-applied
         # (capability_name, embedding) pairs. Updated when a winner is
@@ -283,6 +319,8 @@ class AffordancePipeline:
         self._active_programme: Any = None
         self._programme_loaded_at: float = 0.0
         self._last_camera_salience_query_by_capability: dict[str, str] = {}
+        if self._posterior_mode in {"owner", "reader"}:
+            self.load_activation_state()
 
     def _ensure_collection(self, client: object, vector_size: int) -> None:
         """Create the affordances collection if it doesn't exist."""
@@ -349,7 +387,7 @@ class AffordancePipeline:
             self._index_breaker.record_failure()
             log.warning("Failed to index '%s' in Qdrant", record.name, exc_info=True)
             return False
-        if record.name not in self._activation:
+        if self._posterior_mode != "reader" and record.name not in self._activation:
             self._activation[record.name] = ActivationState()
         log.info("Indexed capability: %s", record.name)
         return True
@@ -441,7 +479,7 @@ class AffordancePipeline:
             return 0
 
         for record in records:
-            if record.name not in self._activation:
+            if self._posterior_mode != "reader" and record.name not in self._activation:
                 self._activation[record.name] = ActivationState()
 
         log.info(
@@ -849,6 +887,7 @@ class AffordancePipeline:
         if not candidates:
             self._emit_dispatch_trace(trace)
             return []
+        self._prepare_posterior_for_scoring()
         now = time.time()
         # Preset-variety Phase 3: read recency weight per-call so operator
         # flips take effect on the next recruitment.
@@ -1003,11 +1042,20 @@ class AffordancePipeline:
             gamma_unused = THOMPSON_DECAY_DEFAULT
         if gamma_unused < 1.0:
             winner_name = winner.capability_name if winner is not None else None
-            for c in candidates:
-                if c.capability_name == winner_name:
-                    continue
-                state = self._activation.setdefault(c.capability_name, ActivationState())
-                state.decay_unused(gamma_unused)
+            decay_names = [
+                c.capability_name for c in candidates if c.capability_name != winner_name
+            ]
+            if self._posterior_mode == "reader":
+                if decay_names:
+                    self._queue_posterior_update(
+                        "decay_unused",
+                        capability_names=decay_names,
+                        gamma=gamma_unused,
+                    )
+            else:
+                for capability_name in decay_names:
+                    state = self._activation.setdefault(capability_name, ActivationState())
+                    state.decay_unused(gamma_unused)
         self._metrics.record_selection(
             impingement_source=impingement.source,
             impingement_metric=impingement.content.get("metric", ""),
@@ -1040,10 +1088,26 @@ class AffordancePipeline:
         return survivors
 
     def record_success(self, capability_name: str) -> None:
+        if self._posterior_mode == "reader":
+            self._queue_posterior_update(
+                "record_outcome",
+                capability_name=capability_name,
+                success=True,
+                context=None,
+            )
+            return
         state = self._activation.setdefault(capability_name, ActivationState())
         state.record_success()
 
     def record_failure(self, capability_name: str) -> None:
+        if self._posterior_mode == "reader":
+            self._queue_posterior_update(
+                "record_outcome",
+                capability_name=capability_name,
+                success=False,
+                context=None,
+            )
+            return
         state = self._activation.setdefault(capability_name, ActivationState())
         state.record_failure()
 
@@ -1056,6 +1120,21 @@ class AffordancePipeline:
         gates CapabilityOutcomeEnvelope through witness and learning policy
         before collapsing to this boolean primitive.
         """
+        if self._posterior_mode == "reader":
+            self._queue_posterior_update(
+                "record_outcome",
+                capability_name=capability_name,
+                success=success,
+                context=context,
+            )
+            self._metrics.record_outcome(
+                capability_name,
+                success,
+                {k: str(v) for k, v in context.items()} if context else None,
+            )
+            self._record_camera_salience_outcome(capability_name, success, context)
+            return
+
         if success:
             self.record_success(capability_name)
         else:
@@ -1069,7 +1148,11 @@ class AffordancePipeline:
 
         # Hebbian: strengthen/weaken context associations
         if context:
-            delta = 0.1 if success else -0.05
+            delta = (
+                OUTCOME_CONTEXT_ASSOCIATION_SUCCESS_DELTA
+                if success
+                else OUTCOME_CONTEXT_ASSOCIATION_FAILURE_DELTA
+            )
             for _key, value in context.items():
                 self.update_context_association(str(value), capability_name, delta=delta)
         self._record_camera_salience_outcome(capability_name, success, context)
@@ -1136,6 +1219,9 @@ class AffordancePipeline:
 
     def decay_associations(self, factor: float = 0.995) -> None:
         """Decay all context associations toward zero (passive forgetting)."""
+        if self._posterior_mode == "reader":
+            self._queue_posterior_update("decay_associations", factor=factor)
+            return
         to_remove = []
         for key, strength in self._context_associations.items():
             new_val = strength * factor
@@ -1169,31 +1255,35 @@ class AffordancePipeline:
 
     def save_activation_state(self) -> None:
         """Persist activation states and context associations to disk."""
-        data = {
-            "activations": {name: state.model_dump() for name, state in self._activation.items()},
-            "associations": {f"{k[0]}|{k[1]}": v for k, v in self._context_associations.items()},
-        }
-        path = ACTIVATION_STATE_PATH
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2))
-        tmp.rename(path)
+        if self._posterior_mode == "reader":
+            raise PosteriorLockError(
+                f"{self._posterior_client_id} is read-only for {self._posterior_path}"
+            )
+        if self._posterior_mode == "owner":
+            write_posterior_state_draining_updates(
+                self._posterior_path,
+                self._activation,
+                self._context_associations,
+                self._apply_pending_posterior_updates,
+                blocking=False,
+            )
+            return
+        write_posterior_state(
+            self._posterior_path,
+            self._activation,
+            self._context_associations,
+            blocking=False,
+        )
 
     def load_activation_state(self) -> None:
         """Load persisted activation states and context associations."""
-        path = ACTIVATION_STATE_PATH
-        if not path.exists():
+        state = load_posterior_state(self._posterior_path)
+        if state is None:
             return
-        try:
-            data = json.loads(path.read_text())
-            for name, state_dict in data.get("activations", {}).items():
-                self._activation[name] = ActivationState(**state_dict)
-            for key_str, strength in data.get("associations", {}).items():
-                parts = key_str.split("|", 1)
-                if len(parts) == 2:
-                    self._context_associations[(parts[0], parts[1])] = strength
-        except Exception:
-            log.warning("Failed to load activation state", exc_info=True)
+        activations, associations = state
+        self._activation = dict(activations)
+        self._context_associations = dict(associations)
+        self._posterior_loaded_mtime_ns = _posterior_mtime_ns(self._posterior_path)
 
     @property
     def metrics(self) -> AffordanceMetrics:
@@ -1261,7 +1351,12 @@ class AffordancePipeline:
             return cached
         from shared.config import embed_safe
 
-        embedding = embed_safe(text, prefix="search_query")
+        # block_gpu=False: this runs synchronously inside the logos-api asyncio
+        # event loop (reactive _handle_change -> select -> _get_embedding). A
+        # BLOCKING GPU-semaphore acquire here wedges the whole :8051 API when the
+        # GPU is saturated (the logos-api hang). On contention the embed returns
+        # None and _select_candidates falls back to keyword matching.
+        embedding = embed_safe(text, prefix="search_query", block_gpu=False)
         if embedding is not None:
             self._embed_cache.put_by_text(text, embedding)
         return embedding
@@ -1433,9 +1528,61 @@ class AffordancePipeline:
     def update_context_association(
         self, cue_value: str, capability_name: str, delta: float = 0.1
     ) -> None:
+        if self._posterior_mode == "reader":
+            self._queue_posterior_update(
+                "context_association_delta",
+                cue_value=cue_value,
+                capability_name=capability_name,
+                delta=delta,
+            )
+            return
         key = (cue_value, capability_name)
         current = self._context_associations.get(key, 0.0)
         self._context_associations[key] = max(-1.0, min(4.0, current + delta))
+
+    def _prepare_posterior_for_scoring(self) -> None:
+        self.refresh_activation_state_if_changed()
+
+    def refresh_activation_state_if_changed(self, *, force: bool = False) -> bool:
+        """Refresh a read-only posterior view when the shared state file changed."""
+
+        if self._posterior_mode != "reader":
+            return False
+        now = time.monotonic()
+        if (
+            not force
+            and now - self._posterior_last_refresh_check < POSTERIOR_REFRESH_MIN_INTERVAL_S
+        ):
+            return False
+        self._posterior_last_refresh_check = now
+        current_mtime = _posterior_mtime_ns(self._posterior_path)
+        if current_mtime is not None and current_mtime != self._posterior_loaded_mtime_ns:
+            self.load_activation_state()
+            return True
+        return False
+
+    def _queue_posterior_update(self, kind: str, **payload: Any) -> None:
+        try:
+            append_posterior_update(
+                self._posterior_path,
+                {
+                    "kind": kind,
+                    "source": self._posterior_client_id,
+                    **payload,
+                },
+            )
+        except PosteriorLockError as exc:
+            self._posterior_update_failures += 1
+            log.warning(
+                "Dropped affordance posterior update from %s: %s",
+                self._posterior_client_id,
+                exc,
+            )
+
+    def _apply_pending_posterior_updates(self, events: list[dict[str, Any]]) -> int:
+        if not events:
+            return 0
+        return apply_posterior_updates(self._activation, self._context_associations, events)
 
     def _maybe_emit_perceptual_distance_impingement(self) -> None:
         """Phase 6: emit ``content.too-similar-recently`` when the recency
@@ -1585,3 +1732,6 @@ class AffordancePipeline:
 
     def get_activation_state(self, capability_name: str) -> ActivationState:
         return self._activation.get(capability_name, ActivationState())
+
+    def get_context_association(self, cue_value: str, capability_name: str) -> float:
+        return self._context_associations.get((cue_value, capability_name), 0.0)

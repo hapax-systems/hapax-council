@@ -132,6 +132,63 @@ def _recruited_sources_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(angle_resolver, "recruit_source_set", _recruit)
 
 
+@pytest.fixture(autouse=True)
+def _composability_gate_accepts_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default the S2 topic+type composability gate to ACCEPT for prep tests.
+
+    prep_segment now runs a pre-compose STRUCTURAL composability gate (a capable-
+    model gateway call) before the expensive compose. These tests exercise the
+    downstream deterministic / coherence gauntlet, not the gate, so an ACCEPT
+    default lets them reach their actual concern (and keeps them hermetic — no
+    live gateway call). The gate's own behavior is pinned in
+    test_segment_composability_gate.py. Tests that patch assess_composability
+    themselves override this (later monkeypatch wins).
+    """
+    import agents.hapax_daimonion.segment_composability_gate as gate
+
+    monkeypatch.setattr(
+        gate,
+        "assess_composability",
+        lambda *_a, **_k: gate.CompositionGateResult(True, "test-default-accept"),
+    )
+
+
+def test_coherence_check_quarantines_degraded_ruler(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#6 (review-plane degradation pattern -> the SCED ruler): a verdict from a
+    DEGRADED roster (served_substitutions>0 — a seat served by a substitute family
+    under a cap, e.g. anthropic->gemini) is QUARANTINED: refused, no release, even
+    when CONVERGED with high scores. The frozen ruler's validity is its genuine
+    family-diverse panel; a substitute-family ruling is invalid SCED data."""
+    from agents.deliberative_council import engine as council_engine
+    from agents.deliberative_council.models import ConvergenceStatus, CouncilVerdict
+
+    async def _degraded(council_input: Any, mode: Any, rubric: Any, config: Any = None) -> Any:
+        return CouncilVerdict(
+            scores={"coherence": 5, "specificity": 5},
+            confidence_bands={},
+            convergence_status=ConvergenceStatus.CONVERGED,
+            disagreement_log=[],
+            research_findings=[],
+            evidence_matrix=None,
+            receipt={
+                "council_health": {
+                    "members_valid": 6,
+                    "families_valid": 5,
+                    "served_substitutions": 2,
+                },
+                "served_models": ["gemini-3.1-pro-preview", "gemini-3.1-pro-preview"],
+            },
+        )
+
+    monkeypatch.setattr(council_engine, "deliberate", _degraded)
+    outcome = prep._council_coherence_check("a fine and coherent script", "prog-quarantine-1")
+    assert outcome.passed is False
+    assert outcome.refused is True
+    assert outcome.council_decisions["ruler_substituted"] is True
+    assert outcome.council_decisions["served_substitutions"] == 2
+    assert outcome.council_decisions.get("quarantined") == "ruler_substituted"
+
+
 def test_prep_model_is_command_r_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HAPAX_SEGMENT_PREP_MODEL", raising=False)
     assert prep._prep_model() == prep.RESIDENT_PREP_MODEL
@@ -1230,6 +1287,122 @@ def test_prep_segment_records_substance_feedback_on_no_candidate(
     ]
 
 
+def test_prep_segment_uncomposable_gate_reject_writes_diagnostic_and_feedback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """S2 gate reject path (end-to-end through prep_segment): when assess_composability returns
+    accept=False, prep_segment must honestly refuse (return None), write the terminal diagnostic with
+    terminal_reason='uncomposable_topic_type', and record planner substance feedback so the next batch
+    re-authors. Overrides the autouse accept-default fixture (later monkeypatch wins)."""
+    import agents.hapax_daimonion.segment_composability_gate as gate
+
+    programme = SimpleNamespace(
+        programme_id="prog-uncomposable",
+        role=SimpleNamespace(value="tier_list"),
+        content=_ready_content(
+            narrative_beat="Ranking governance enforcement failures",
+            segment_beats=["least severe", "more severe", "most severe"],
+            role="tier_list",
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+    }
+
+    reason = "un-composable parallel_list (resolves_specific_hook=False, reorder_breaks_it=False)"
+    monkeypatch.setattr(
+        gate,
+        "assess_composability",
+        lambda *_a, **_k: gate.CompositionGateResult(False, reason),
+    )
+
+    saved = prep.prep_segment(programme, tmp_path, prep_session=session)
+
+    assert saved is None
+    assert session["planner_substance_feedback"] == [f"[prog-uncomposable] {reason}"]
+    ledger_row = json.loads(
+        (tmp_path / prep.PREP_DIAGNOSTIC_LEDGER_FILENAME).read_text(encoding="utf-8")
+    )
+    assert ledger_row["terminal_status"] == "no_candidate"
+    assert ledger_row["terminal_reason"] == "uncomposable_topic_type"
+    assert ledger_row["loadable"] is False
+    dossier = json.loads(Path(ledger_row["dossier_ref"]).read_text(encoding="utf-8"))
+    assert dossier["no_candidate_metadata"]["candidate_source"] == "segment_composability_gate"
+    assert dossier["no_candidate_metadata"]["candidate_count"] == 0
+    s2_row = json.loads((tmp_path / prep.COUNCIL_DECISIONS_LEDGER_FILENAME).read_text())
+    assert s2_row["record_type"] == prep.S2_COMPOSABILITY_LEDGER_RECORD_TYPE
+    assert s2_row["programme_id"] == "prog-uncomposable"
+    assert s2_row["terminal"] is True
+    assert s2_row["terminal_status"] == "no_candidate"
+    assert s2_row["terminal_reason"] == "uncomposable_topic_type"
+    assert s2_row["producer_gate"] == {
+        "accepted": False,
+        "criterion": prep._COHERENCE_CRITERION,
+        "gate": prep.S2_COMPOSABILITY_GATE_NAME,
+        "reason": reason,
+        "role": "tier_list",
+        "segment_beats": ["least severe", "more severe", "most severe"],
+        "topic": "Ranking governance enforcement failures",
+    }
+
+
+def test_prep_segment_s2_accept_writes_nonterminal_attempt_before_later_reject(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """G12 captures S2 successes too, so the producer-vs-filter readout can see
+    the S2 denominator even when a later gate rejects the programme."""
+    import agents.hapax_daimonion.segment_composability_gate as gate
+
+    programme = SimpleNamespace(
+        programme_id="prog-composable",
+        role=SimpleNamespace(value="mini_case"),
+        content=_ready_content(
+            narrative_beat="A source-visible claim breaks when the receipt is checked",
+            segment_beats=["claim seems plausible", "receipt conflicts", "claim is repaired"],
+            role="mini_case",
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+    }
+    reason = "composable arc: hook -> conflict -> repaired payoff"
+    monkeypatch.setattr(
+        gate,
+        "assess_composability",
+        lambda *_a, **_k: gate.CompositionGateResult(True, reason),
+    )
+    monkeypatch.setattr(
+        prep,
+        "programme_source_readiness",
+        lambda _programme: {"ok": False, "violations": [{"reason": "forced later reject"}]},
+    )
+
+    saved = prep.prep_segment(programme, tmp_path, prep_session=session)
+
+    assert saved is None
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / prep.COUNCIL_DECISIONS_LEDGER_FILENAME)
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+    assert len(rows) == 1
+    assert rows[0]["record_type"] == prep.S2_COMPOSABILITY_LEDGER_RECORD_TYPE
+    assert rows[0]["terminal"] is False
+    assert rows[0]["terminal_status"] == "s2_composable"
+    assert rows[0]["terminal_reason"] is None
+    assert rows[0]["producer_gate"]["accepted"] is True
+    assert rows[0]["producer_gate"]["criterion"] == prep._COHERENCE_CRITERION
+    assert rows[0]["producer_gate"]["reason"] == reason
+
+
 def test_prep_segment_no_beats_writes_non_loadable_diagnostic_dossier(
     tmp_path: Path,
 ) -> None:
@@ -2030,6 +2203,149 @@ def test_council_coherence_check_passes_when_all_axes_clear_floor(
     assert outcome.passed is True
     assert outcome.refused is False
     assert outcome.council_decisions["axis_min"] == 2  # mediocre, but not catastrophic
+
+
+def test_council_coherence_check_criterion_is_config_sourced_ratchets_the_bar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """G1 (changing-criterion SCED): the host-gate quality bar is the
+    config-sourced C_k criterion (``HAPAX_COHERENCE_CRITERION``), not a hardcoded
+    3.0. Ratcheting C_k UP must tighten the gate with no code change: a healthy
+    council whose mean (3.0) clears the default criterion is REFINED
+    (passed=False, refused=False — a recoverable quality miss, NOT a fail-loud
+    refusal) once the criterion is raised above its mean. This is the movable
+    threshold the experiment ratchets across phases; the FAIL-LOUD refused path
+    and the absolute critical-axis floor are deliberately left unaffected."""
+    from agents.deliberative_council import engine as council_engine
+    from agents.deliberative_council.models import ConvergenceStatus, CouncilVerdict
+
+    async def fake_deliberate(
+        council_input: Any, mode: Any, rubric: Any, config: Any = None
+    ) -> Any:
+        # mean 3.0, every axis clears the absolute floor — so only the criterion
+        # can decide this case (isolating C_k's effect from the axis floor).
+        return CouncilVerdict(
+            scores={"opening_pressure": 3, "payoff_resolution": 2, "thematic_progression": 4},
+            confidence_bands={},
+            convergence_status=ConvergenceStatus.CONVERGED,
+            disagreement_log=[],
+            research_findings=[],
+            evidence_matrix=None,
+            receipt={"council_health": {"members_valid": 6, "families_valid": 5}},
+        )
+
+    monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
+
+    # Default criterion (3.0): the mean-3.0 council passes (no regression).
+    monkeypatch.setattr(prep, "_COHERENCE_CRITERION", 3.0)
+    baseline = prep._council_coherence_check("an adequate script", "prog-1")
+    assert baseline.passed is True
+    assert baseline.refused is False
+
+    # Ratchet C_k up to 3.5: the SAME council now misses the bar and refines —
+    # without touching the code or the absolute axis floor.
+    monkeypatch.setattr(prep, "_COHERENCE_CRITERION", 3.5)
+    tightened = prep._council_coherence_check("an adequate script", "prog-1")
+    assert tightened.passed is False
+    assert tightened.refused is False  # a recoverable quality miss, not a refusal
+    assert tightened.council_decisions["mean_score"] == 3.0
+
+
+def test_council_coherence_check_stamps_criterion_for_sced_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """G4 (producer-DV capture): every coherence decision records the in-force
+    criterion C_k beside the pre-gate mean_score, so each council-decisions
+    ledger row is a complete changing-criterion SCED observation. The stamp must
+    ride the PASS branch, the below-criterion REFINE branch, and the degraded
+    REFUSED branch alike — the producer's pre-gate score distribution against the
+    ratcheting bar is only reconstructable if C_k travels with the score for
+    every outcome (C_k is irrecoverable post-hoc)."""
+    from agents.deliberative_council import engine as council_engine
+    from agents.deliberative_council.models import ConvergenceStatus, CouncilVerdict
+
+    def _fake(scores: dict[str, int], status: Any = ConvergenceStatus.CONVERGED) -> Any:
+        async def fake_deliberate(
+            council_input: Any, mode: Any, rubric: Any, config: Any = None
+        ) -> Any:
+            return CouncilVerdict(
+                scores=scores,
+                confidence_bands={},
+                convergence_status=status,
+                disagreement_log=[],
+                research_findings=[],
+                evidence_matrix=None,
+                receipt={"council_health": {"members_valid": 6, "families_valid": 5}},
+            )
+
+        return fake_deliberate
+
+    # PASS branch: mean 4.0 clears the default criterion — C_k is stamped.
+    monkeypatch.setattr(prep, "_COHERENCE_CRITERION", 3.0)
+    monkeypatch.setattr(council_engine, "deliberate", _fake({"a": 4, "b": 4}))
+    passed = prep._council_coherence_check("a strong script", "prog-1")
+    assert passed.passed is True
+    assert passed.council_decisions["criterion"] == 3.0
+
+    # REFINE branch: the SAME mean-4.0 producer output now misses a raised C_k;
+    # both the pre-gate mean AND the bar it missed are captured for the DV.
+    monkeypatch.setattr(prep, "_COHERENCE_CRITERION", 4.5)
+    refined = prep._council_coherence_check("an adequate script", "prog-1")
+    assert refined.passed is False
+    assert refined.refused is False
+    assert refined.council_decisions["criterion"] == 4.5
+    assert refined.council_decisions["mean_score"] == 4.0
+
+    # REFUSED branch (degraded council, no valid scores) still stamps the in-force
+    # criterion — a refused observation is still a phase-tagged data point.
+    monkeypatch.setattr(prep, "_COHERENCE_CRITERION", 3.0)
+    monkeypatch.setattr(council_engine, "deliberate", _fake({}))
+    refused = prep._council_coherence_check("a script", "prog-1")
+    assert refused.refused is True
+    assert refused.council_decisions["criterion"] == 3.0
+
+    # UNAVAILABLE branch (deliberate raises) returns BEFORE the main decision dict
+    # is built — it is a refused observation that can still reach the ledger, so it
+    # must carry C_k too (the "every coherence decision" predicate holds uniformly).
+    monkeypatch.setattr(prep, "_COHERENCE_CRITERION", 4.0)
+
+    async def _boom(council_input: Any, mode: Any, rubric: Any, config: Any = None) -> Any:
+        raise RuntimeError("litellm down")
+
+    monkeypatch.setattr(council_engine, "deliberate", _boom)
+    unavailable = prep._council_coherence_check("a script", "prog-1")
+    assert unavailable.refused is True
+    assert unavailable.council_decisions["convergence_status"] == "unavailable"
+    assert unavailable.council_decisions["criterion"] == 4.0
+
+
+def test_resolve_coherence_criterion_reads_env_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """G1 hardening: the criterion is sourced from ``HAPAX_COHERENCE_CRITERION``
+    through the real parse path. A bare ``mean_score < C_k`` over an unvalidated
+    ``float(os.environ[...])`` fails the release gate OPEN — ``nan`` is always
+    False, and on the [1, 5] rubric any ``C_k <= 1.0`` can never trip the mean.
+    Because this is a release gate in a ratcheted experiment, a *set-but-invalid*
+    value is REFUSED (raises) rather than silently reverted to a permissive
+    default — fail-closed, like ``_council_coherence_check`` on a degraded
+    council. An *unset* var is not a misconfiguration and uses the default 3.0."""
+    # Unset → validated default (no regression).
+    monkeypatch.delenv("HAPAX_COHERENCE_CRITERION", raising=False)
+    assert prep._resolve_coherence_criterion() == 3.0
+
+    # Valid in-range values are honored (the SCED ratchet surface), incl. bounds.
+    for good, expected in (("3.5", 3.5), ("5", 5.0), ("1.01", 1.01), ("4.5", 4.5)):
+        monkeypatch.setenv("HAPAX_COHERENCE_CRITERION", good)
+        assert prep._resolve_coherence_criterion() == expected
+
+    # Every fail-open vector is refused at resolve time — never silently defaulted,
+    # never able to disable the gate. Includes the rubric lower bound (<= 1.0 can
+    # never trip mean_score < C_k) and the non-finite / out-of-range / garbage set.
+    for bad in ("nan", "inf", "-inf", "0", "1", "1.0", "-1", "5.1", "100", "", "high", "3.0x"):
+        monkeypatch.setenv("HAPAX_COHERENCE_CRITERION", bad)
+        with pytest.raises(ValueError, match="HAPAX_COHERENCE_CRITERION"):
+            prep._resolve_coherence_criterion()
 
 
 def test_prep_segment_blocks_release_when_coherence_fails_after_noop_refine(

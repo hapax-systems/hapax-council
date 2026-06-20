@@ -43,6 +43,10 @@
 #   systemd/watchdogs/*            → install executable into ~/.local/bin
 #   systemd/logrotate.d/*          → logrotate configs; require sudo install
 #   systemd/system/**              → system-scoped configs; require sudo install
+#   scripts/hapax-recovery-plane-install, scripts/hapax-p0-incident-intake,
+#   scripts/hapax-coord-deploy, shared/{__init__,jsonl_append,p0_incident_intake}.py
+#                                  → refresh the stable D2 recovery bundle under
+#                                    ~/.local/lib/hapax-recovery/council
 #   scripts/hapax-*                → ensure ~/.local/bin/ symlink
 #   hooks/scripts/{cc-task-gate.impl.sh,agent-role.sh,escape-grant.sh,
 #                  hooks-doctor.sh,cc-task-gate.sh}
@@ -147,6 +151,19 @@ TRACE_MAX_RECORDS="${HAPAX_POST_MERGE_TRACE_MAX_RECORDS:-200}"
 # trace file by default so a test override of HAPAX_POST_MERGE_TRACE_PATH
 # isolates it automatically.
 LAST_DEPLOYED_SHA_PATH="${HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH:-$(dirname "$TRACE_PATH")/last-deployed-sha}"
+RECOVERY_INSTALLER_PATH="scripts/hapax-recovery-plane-install"
+RECOVERY_BUNDLE_DEST="${HAPAX_RECOVERY_BUNDLE_DEST:-$HOME/.local/lib/hapax-recovery/council/current}"
+RECOVERY_BUNDLE_SOURCE_FILES=(
+    scripts/hapax-p0-incident-intake
+    scripts/hapax-coord-deploy
+    shared/__init__.py
+    shared/jsonl_append.py
+    shared/p0_incident_intake.py
+)
+RECOVERY_BUNDLE_REQUIRED_FILES=(
+    "${RECOVERY_BUNDLE_SOURCE_FILES[@]}"
+    manifest.json
+)
 
 # --- auto-enable marker (reform-improve-deploy-activation-20260601) ---
 # A systemd unit may declare it wants to be enabled+started on deploy by
@@ -160,6 +177,14 @@ unit_content_auto_enable() {
     local content="$1"
     [ -n "$content" ] || return 1
     grep -Eiq '^[#;][[:space:]]*Hapax-Auto-Enable:[[:space:]]*(true|yes|1)[[:space:]]*$' <<< "$content" || return 1
+    grep -Eq '^\[Install\]' <<< "$content" || return 1
+    return 0
+}
+
+unit_content_timer_enable_only() {
+    local content="$1"
+    [ -n "$content" ] || return 1
+    grep -Eiq '^[#;][[:space:]]*Hapax-Timer-Enable-Only:[[:space:]]*(true|yes|1)[[:space:]]*$' <<< "$content" || return 1
     grep -Eq '^\[Install\]' <<< "$content" || return 1
     return 0
 }
@@ -336,6 +361,11 @@ _trace_join() {
 record_post_merge_trace() {
     local status="$1"
     local exit_code="${2:-0}"
+    local -a recovery_bundle_trace
+    recovery_bundle_trace=("${RECOVERY_BUNDLE[@]}")
+    if [ "${RECOVERY_BUNDLE_SELF_HEAL:-0}" = "1" ]; then
+        recovery_bundle_trace+=("self-heal:$RECOVERY_BUNDLE_DEST")
+    fi
 
     HAPAX_TRACE_FILES="$FILES" \
     HAPAX_TRACE_PW="$(_trace_join "${PW[@]}")" \
@@ -347,6 +377,7 @@ record_post_merge_trace() {
     HAPAX_TRACE_SYSTEMD_DROPINS="$(_trace_join "${SYSTEMD_DROPINS[@]}")" \
     HAPAX_TRACE_USER_PRESETS="$(_trace_join "${USER_PRESETS[@]}")" \
     HAPAX_TRACE_WATCHDOGS="$(_trace_join "${WATCHDOGS[@]}")" \
+    HAPAX_TRACE_RECOVERY_BUNDLE="$(_trace_join "${recovery_bundle_trace[@]}")" \
     HAPAX_TRACE_SCRIPTS="$(_trace_join "${SCRIPTS[@]}")" \
     HAPAX_TRACE_SCRIPT_PY="$(_trace_join "${SCRIPT_PY[@]}")" \
     HAPAX_TRACE_QUAKE_ASSETS="$(_trace_join "${QUAKE_ASSETS[@]}")" \
@@ -389,6 +420,7 @@ deploy_groups = {
     "systemd_dropins": lines("HAPAX_TRACE_SYSTEMD_DROPINS"),
     "systemd_user_presets": lines("HAPAX_TRACE_USER_PRESETS"),
     "systemd_watchdogs": lines("HAPAX_TRACE_WATCHDOGS"),
+    "recovery_bundle": lines("HAPAX_TRACE_RECOVERY_BUNDLE"),
     "hapax_scripts": lines("HAPAX_TRACE_SCRIPTS"),
     "unit_backing_scripts": lines("HAPAX_TRACE_SCRIPT_PY"),
     "quake_assets": lines("HAPAX_TRACE_QUAKE_ASSETS"),
@@ -404,6 +436,7 @@ runtime_media_groups = [
         "systemd_system_units",
         "systemd_dropins",
         "systemd_watchdogs",
+        "recovery_bundle",
         "hapax_scripts",
         "unit_backing_scripts",
         "quake_assets",
@@ -501,11 +534,17 @@ else
     FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" | sort -u)"
 fi
 
-PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=()
+PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); RECOVERY_BUNDLE=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=()
 GATE_CLOSURE=()
 SYSTEMD_UNCLASSIFIED=()
 AUDIO_SAFE_RESTARTS=()
+RECOVERY_BUNDLE_SELF_HEAL=0
 DID_ANYTHING=0
+GOVERNED_INTAKE_PRESET_UNIT_SETS=(
+    "hapax-request-decompose.timer hapax-request-decompose.service"
+    "hapax-cc-task-offer-ready.timer hapax-cc-task-offer-ready.service"
+)
+GOVERNED_INTAKE_PRESET_ENABLE=()
 
 unit_install_scope() {
     local f="$1"
@@ -629,8 +668,8 @@ cleanup_known_stale_user_dropins_for_unit() {
             done
             rmdir "$dropin_dir" 2>/dev/null || true
             ;;
-        hapax-imagination.service|hapax-reverie.service|hapax-darkplaces-v4l2.service|\
-        hapax-segment-prep.service|logos-api.service)
+        hapax-cc-task-offer-ready.service|hapax-imagination.service|hapax-reverie.service|\
+        hapax-darkplaces-v4l2.service|hapax-segment-prep.service|logos-api.service)
             remove_unversioned_user_dropins_for_unit "$unit"
             ;;
     esac
@@ -696,6 +735,16 @@ restart_user_unit() {
     systemctl --user restart "$unit"
 }
 
+stage_coord_activation_before_restart() {
+    local deploy_bin="$RECOVERY_BUNDLE_DEST/scripts/hapax-coord-deploy"
+    if [ ! -x "$deploy_bin" ]; then
+        echo "hapax-post-merge-deploy: refusing to restart hapax-coord.service before its activation worktree is staged; missing executable $deploy_bin; next: install the D2 recovery bundle, verify $deploy_bin exists, then rerun hapax-post-merge-deploy for this merge" >&2
+        return 5
+    fi
+    echo "staging hapax-coord activation before activating hapax-coord.service"
+    HAPAX_COORD_DEPLOY_RESTART_IF_UP_TO_DATE=1 "$deploy_bin"
+}
+
 # Per-file deploy uses `git cat-file -e $SHA:$path` + `git show $SHA:$path`
 # to read commit-time content, decoupling the deploy decision from local
 # working-tree state. Prior revision used [ -f $REPO/$f ] which raced the
@@ -732,6 +781,14 @@ while IFS= read -r f; do
         config/hapax/*.conf)              HAPAX_CONF+=("$f") ;;
         config/wireplumber/scripts/hapax/*.lua) WP_LUA+=("$f") ;;
         config/wireplumber/*.conf)        WP+=("$f") ;;
+        systemd/units/notify-failure@.service|systemd/units/hapax-coord.service|systemd/units/hapax-coord-rebuild.service|systemd/units/hapax-coord-rebuild.timer)
+            RECOVERY_BUNDLE+=("$f")
+            if [ "$(unit_install_scope "$f")" = "system" ]; then
+                SYSTEMD_SYSTEM+=("$f")
+            else
+                SYSTEMD+=("$f")
+            fi
+            ;;
         systemd/units/*.service|systemd/units/*.timer|systemd/units/*.path|systemd/units/*.target|systemd/units/*.slice)
             if [ "$(unit_install_scope "$f")" = "system" ]; then
                 SYSTEMD_SYSTEM+=("$f")
@@ -747,6 +804,13 @@ while IFS= read -r f; do
         systemd/udev/*.rules)             ;; # udev rules; require sudo install + udevadm reload (operator action)
         systemd/logrotate.d/*)            ;; # logrotate configs; require sudo install
         systemd/system/*)                 ;; # system-scoped configs; require sudo install
+        scripts/hapax-recovery-plane-install|scripts/hapax-p0-incident-intake|scripts/hapax-coord-deploy)
+            RECOVERY_BUNDLE+=("$f")
+            SCRIPTS+=("$f")
+            ;;
+        shared/__init__.py|shared/jsonl_append.py|shared/p0_incident_intake.py)
+            RECOVERY_BUNDLE+=("$f")
+            ;;
         hooks/scripts/cc-task-gate.impl.sh|hooks/scripts/agent-role.sh|hooks/scripts/escape-grant.sh|hooks/scripts/cc-task-gate-bootstrap.py|hooks/scripts/hooks-doctor.sh|hooks/scripts/cc-task-gate.sh)
             GATE_CLOSURE+=("$f") ;;
         assets/quake/maps/*|assets/quake/qc/*|assets/quake/csqc/*|assets/quake/models/*|assets/quake/sound/*|assets/quake/glsl/*|assets/quake/scripts/*|assets/quake/config/*|assets/quake/darkplaces/*)
@@ -905,6 +969,123 @@ if [ "${#WATCHDOGS[@]}" -gt 0 ]; then
     DID_ANYTHING=1
 fi
 
+# --- D2 recovery-plane stable bundle ---
+recovery_installer_exists_at_sha() {
+    git cat-file -e "$SHA:$RECOVERY_INSTALLER_PATH" 2>/dev/null
+}
+
+recovery_bundle_runtime_missing() {
+    local f target
+    for f in "${RECOVERY_BUNDLE_REQUIRED_FILES[@]}"; do
+        target="$RECOVERY_BUNDLE_DEST/$f"
+        case "$f" in
+            scripts/*)
+                [ -x "$target" ] || return 0
+                ;;
+            *)
+                [ -f "$target" ] || return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
+recovery_bundle_runtime_stale() {
+    python3 - "$RECOVERY_BUNDLE_DEST/manifest.json" "$REPO" "$SHA" "${RECOVERY_BUNDLE_SOURCE_FILES[@]}" <<'PY'
+import hashlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+repo = sys.argv[2]
+sha = sys.argv[3]
+source_files = sys.argv[4:]
+
+try:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(0)
+
+installed_files = manifest.get("files")
+if not isinstance(installed_files, list):
+    raise SystemExit(0)
+
+installed_sha256 = {}
+for entry in installed_files:
+    if not isinstance(entry, dict):
+        continue
+    path = entry.get("path")
+    sha256 = entry.get("sha256")
+    if isinstance(path, str) and isinstance(sha256, str):
+        installed_sha256[path] = sha256
+
+for relative in source_files:
+    expected_sha256 = installed_sha256.get(relative)
+    if expected_sha256 is None:
+        raise SystemExit(0)
+    try:
+        runtime_bytes = (manifest_path.parent / relative).read_bytes()
+    except OSError:
+        raise SystemExit(0)
+    result = subprocess.run(
+        ["git", "-C", repo, "show", f"{sha}:{relative}"],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise SystemExit(0)
+    runtime_sha256 = hashlib.sha256(runtime_bytes).hexdigest()
+    source_sha256 = hashlib.sha256(result.stdout).hexdigest()
+    if runtime_sha256 != expected_sha256 or source_sha256 != expected_sha256:
+        raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+}
+
+RECOVERY_BUNDLE_SELF_HEAL=0
+RECOVERY_BUNDLE_SELF_HEAL_REASON=""
+if [ "${#RECOVERY_BUNDLE[@]}" -eq 0 ] \
+    && recovery_installer_exists_at_sha \
+    && recovery_bundle_runtime_missing; then
+    RECOVERY_BUNDLE_SELF_HEAL=1
+    RECOVERY_BUNDLE_SELF_HEAL_REASON="missing/incomplete"
+elif [ "${#RECOVERY_BUNDLE[@]}" -eq 0 ] \
+    && recovery_installer_exists_at_sha \
+    && recovery_bundle_runtime_stale; then
+    RECOVERY_BUNDLE_SELF_HEAL=1
+    RECOVERY_BUNDLE_SELF_HEAL_REASON="stale"
+fi
+
+if [ "${#RECOVERY_BUNDLE[@]}" -gt 0 ] || [ "$RECOVERY_BUNDLE_SELF_HEAL" = "1" ]; then
+    if [ "${#RECOVERY_BUNDLE[@]}" -gt 0 ]; then
+        echo "recovery bundle files changed (${#RECOVERY_BUNDLE[@]}):"
+        for f in "${RECOVERY_BUNDLE[@]}"; do
+            echo "  $f"
+        done
+    else
+        echo "recovery bundle runtime $RECOVERY_BUNDLE_SELF_HEAL_REASON at $RECOVERY_BUNDLE_DEST; self-healing stable closure"
+    fi
+    if ! git cat-file -e "$SHA:$RECOVERY_INSTALLER_PATH" 2>/dev/null; then
+        echo "hapax-post-merge-deploy: missing recovery bundle installer at $SHA:$RECOVERY_INSTALLER_PATH; next: ensure scripts/hapax-recovery-plane-install exists at the deployed source-activation SHA, then rerun hapax-post-merge-deploy for this merge" >&2
+        exit 2
+    fi
+    RECOVERY_INSTALLER="$(mktemp)"
+    git show "$SHA:$RECOVERY_INSTALLER_PATH" > "$RECOVERY_INSTALLER"
+    chmod +x "$RECOVERY_INSTALLER"
+    set +e
+    "$RECOVERY_INSTALLER" --source "$REPO" --source-ref "$SHA" --dest "$RECOVERY_BUNDLE_DEST"
+    recovery_installer_rc=$?
+    set -e
+    rm -f "$RECOVERY_INSTALLER"
+    if [ "$recovery_installer_rc" -ne 0 ]; then
+        exit "$recovery_installer_rc"
+    fi
+    DID_ANYTHING=1
+fi
+
 # --- systemd unit drop-ins ---
 if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
     echo "systemd drop-ins changed (${#SYSTEMD_DROPINS[@]}):"
@@ -978,16 +1159,36 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
     systemctl --user daemon-reload
     for f in "${SYSTEMD_INSTALLED[@]}"; do
         base="$(basename "$f")"
+        unit_content="$(git show "$SHA:$f" 2>/dev/null || true)"
         if systemctl --user is-active --quiet "$base"; then
+            if [[ "$base" == *.timer ]] && unit_content_timer_enable_only "$unit_content"; then
+                echo "leaving active $base running (Hapax-Timer-Enable-Only marker; not restarting during deploy)"
+                systemctl --user enable "$base"
+                continue
+            fi
             # Already running — restart to pick up the new unit definition.
+            if [ "$base" = "hapax-coord.service" ]; then
+                stage_coord_activation_before_restart
+                echo "hapax-coord.service restarted by hapax-coord-deploy"
+                continue
+            fi
             echo "restarting $base"
             restart_user_unit "$base"
-        elif unit_content_auto_enable "$(git show "$SHA:$f" 2>/dev/null || true)"; then
+        elif [[ "$base" == *.timer ]] && unit_content_timer_enable_only "$unit_content"; then
+            echo "enabling $base (Hapax-Timer-Enable-Only marker; not starting during deploy)"
+            systemctl --user enable "$base"
+        elif unit_content_auto_enable "$unit_content"; then
             # Marked `# Hapax-Auto-Enable: true` (+ [Install]): enable+start so a
             # freshly-merged service OR timer goes live instead of sleeping.
             # try-restart is a no-op for a never-enabled unit (the FM-11 gap).
-            echo "auto-enabling $base (Hapax-Auto-Enable marker)"
-            systemctl --user enable --now "$base"
+            if [ "$base" = "hapax-coord.service" ]; then
+                stage_coord_activation_before_restart
+                echo "auto-enabling $base (Hapax-Auto-Enable marker; activation staged by hapax-coord-deploy)"
+                systemctl --user enable "$base"
+            else
+                echo "auto-enabling $base (Hapax-Auto-Enable marker)"
+                systemctl --user enable --now "$base"
+            fi
         elif [[ "$base" == *.timer ]]; then
             # Back-compat: an unmarked NEW timer still auto-enables — timers are
             # inert until started, and this has been the behaviour since #3475.
@@ -998,10 +1199,66 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
     DID_ANYTHING=1
 fi
 
+preset_enables_unit_at_sha() {
+    local unit="$1" preset
+    for preset in "${USER_PRESETS[@]}"; do
+        git cat-file -e "$SHA:$preset" 2>/dev/null || continue
+        if git show "$SHA:$preset" | grep -Eq "^[[:space:]]*enable[[:space:]]+$unit([[:space:]]|$)"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+install_governed_intake_unit_at_sha() {
+    local unit="$1" reason="$2"
+    local rel dest
+    rel="systemd/units/$unit"
+    dest="$SYSTEMD_USER_DIR/$unit"
+    if [ -L "$dest" ]; then
+        rm -f "$dest"
+    fi
+    git show "$SHA:$rel" > "$dest"
+    echo "  '$rel' -> '$dest' ($reason)"
+    cleanup_known_stale_user_dropins_for_unit "$unit"
+    return 0
+}
+
+governed_intake_unit_exists_at_sha() {
+    local unit="$1"
+    local rel="systemd/units/$unit"
+    if git cat-file -e "$SHA:$rel" 2>/dev/null; then
+        return 0
+    fi
+    echo "  warning: preset requires $unit but $rel is absent at $SHA; cannot activate governed intake. Next action: add $rel at the deployed SHA or remove the preset enable for its timer." >&2
+    return 1
+}
+
+install_governed_intake_preset_units() {
+    local set timer unit install_ok
+    GOVERNED_INTAKE_PRESET_ENABLE=()
+    for set in "${GOVERNED_INTAKE_PRESET_UNIT_SETS[@]}"; do
+        timer="${set%% *}"
+        preset_enables_unit_at_sha "$timer" || continue
+        install_ok=1
+        for unit in $set; do
+            if ! governed_intake_unit_exists_at_sha "$unit"; then
+                install_ok=0
+            fi
+        done
+        [ "$install_ok" -eq 1 ] || continue
+        for unit in $set; do
+            install_governed_intake_unit_at_sha "$unit" "preset-activated governed intake unit"
+        done
+        GOVERNED_INTAKE_PRESET_ENABLE+=("$timer")
+    done
+}
+
 # --- systemd user presets ---
 if [ "${#USER_PRESETS[@]}" -gt 0 ]; then
     echo "systemd user presets changed (${#USER_PRESETS[@]}):"
     mkdir -p "$SYSTEMD_USER_PRESET_DIR"
+    mkdir -p "$SYSTEMD_USER_DIR"
     for f in "${USER_PRESETS[@]}"; do
         base="$(basename "$f")"
         dest="$SYSTEMD_USER_PRESET_DIR/$base"
@@ -1012,7 +1269,12 @@ if [ "${#USER_PRESETS[@]}" -gt 0 ]; then
             rm -fv "$dest" || true
         fi
     done
+    install_governed_intake_preset_units
     systemctl --user daemon-reload
+    for unit in "${GOVERNED_INTAKE_PRESET_ENABLE[@]}"; do
+        echo "enable+starting $unit (governed intake preset)"
+        systemctl --user enable --now "$unit"
+    done
     DID_ANYTHING=1
 fi
 

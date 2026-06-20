@@ -39,6 +39,7 @@ def _render_task_note(task: TaskSpec, blocks: list[str]) -> str:
         "quality_floor": task.quality_floor,
         "mutation_surface": task.mutation_surface,
         "mutation_scope_refs": scope_refs,
+        "target_paths": task.target_paths,
         "authority_level": task.authority_level,
         "route_metadata_schema": 1,
         "kind": task.kind,

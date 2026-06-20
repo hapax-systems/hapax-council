@@ -1,4 +1,4 @@
-"""13-point perception registry — capture-side dual of the Port abstraction.
+"""16-point perception registry (13 audio/av + 3 Pi-fleet IR edge cams) — capture-side dual of the Port abstraction.
 
 CASE-VOICE-FOUNDATION-20260610 §5d (points-not-roles, operator-directed):
 every audio input is a first-class perception sensor with a geometry class;
@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shared.audio_graph.model import ExposureDomain
 from shared.percepts import GeometryClass
@@ -65,6 +65,57 @@ class ArchiveSpec(BaseModel):
     description: str = ""
 
 
+class HwSource(BaseModel):
+    """The point's hardware capture binding — the SINGLE typed source for the
+    generated pipewire loopback conf's ``node.target`` + ``audio.position``.
+
+    Exists to eliminate the hand-typed channel that drifted: cortado's conf
+    targeted the retired Zoom L-12 so ``contact_mic`` fell through to mk5
+    capture_AUX0 (the Rode) = an eavesdrop class. With this typed, the
+    generator emits the conf from here and there is nothing left to hand-type
+    (REQ-20260616-perception-audio-ssot-program, Phase 1)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    node_target: str
+    """ALSA capture device the loopback binds to (e.g. the mk5 pro-input)."""
+    position: str
+    """``audio.position`` channel on that device (e.g. ``AUX1`` = mk5 line-in 2).
+    AUX positions are normalized to UPPERCASE (see the validator)."""
+
+    @field_validator("position")
+    @classmethod
+    def _normalize_aux_position(cls, v: str) -> str:
+        """Force AUX channel positions UPPERCASE so the lowercase-aux eavesdrop is
+        impossible to express. pipewire matches ``audio.position`` against the
+        device's channel position ("AUX1"); lowercase "aux1" does NOT match and
+        silently falls back to the first port (capture_AUX0 = the Rode). Making
+        this impossible-by-construction is the formal closure (REQ-20260616)."""
+        if v.lower().startswith("aux") and v[3:].isdigit():
+            return "AUX" + v[3:]
+        return v
+
+
+class EdgeSource(BaseModel):
+    """A network edge sensor's capture binding — for points that run inference
+    on-device and POST percepts to the council rather than streaming audio
+    locally (the Pi-fleet IR cams: YOLOv8n ONNX on-device, results POSTed to
+    ``/api/pi/{role}/ir`` and mirrored to ``~/hapax-state/pi-noir/{role}.json``).
+
+    Unlike ``hw_source``/``pipewire_node`` there is NO local audio capture, so
+    ``ir_edge`` points bind here and set ``pipewire_node=None``
+    (REQ-20260616-perception-audio-ssot-program)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    role: str
+    """Pi role/zone the edge cam serves (e.g. ``desk``, ``room``, ``overhead``)."""
+    http_endpoint: str
+    """Council ingest endpoint the Pi POSTs its percepts to (e.g. ``/api/pi/desk/ir``)."""
+    state_path: str
+    """Mirrored percept-JSON path the council reads (e.g. ``~/hapax-state/pi-noir/desk.json``)."""
+
+
 class PerceptionPoint(BaseModel):
     """One capture point — a physical sensor with a geometry class."""
 
@@ -75,8 +126,15 @@ class PerceptionPoint(BaseModel):
     description: str = ""
     pipewire_node: str | None = None
     """Substring ``pw-cat --record --target`` accepts (None for future points)."""
+    hw_source: HwSource | None = None
+    """Typed hardware capture binding the generator emits the loopback conf
+    from (device + audio.position). When set, the conf is generated, not
+    hand-typed — drift-impossible-by-construction."""
     av_pair: str | None = None
     """camera-loopback role this mic is lens-co-located with (av_paired only)."""
+    edge_source: EdgeSource | None = None
+    """Network edge-capture binding (``ir_edge`` points only; mutually exclusive
+    with pipewire_node/hw_source — the sensor POSTs percepts, no local audio)."""
     channels: dict[str, PerceptChannel] = Field(default_factory=dict)
     perception_recruitable: bool = True
     voice_source_tag: str | None = None
@@ -99,6 +157,21 @@ class PerceptionPoint(BaseModel):
                 raise ValueError("av_paired points must declare av_pair")
         if self.geometry == GeometryClass.SPATIAL_ARRAY and "doa" not in self.channels:
             raise ValueError("spatial_array points must declare a 'doa' channel")
+        if self.geometry != GeometryClass.IR_EDGE and self.edge_source is not None:
+            raise ValueError("edge_source is only valid for ir_edge points")
+        if self.geometry == GeometryClass.IR_EDGE:
+            if self.exposure != ExposureDomain.QUARANTINE:
+                raise ValueError(
+                    "ir_edge points compile to exposure=quarantine "
+                    f"(face-landmark + rPPG biometrics, never broadcast); got {self.exposure!r}"
+                )
+            if self.edge_source is None:
+                raise ValueError("ir_edge points must declare edge_source")
+            if self.pipewire_node is not None or self.hw_source is not None:
+                raise ValueError(
+                    "ir_edge points have no local audio capture; "
+                    "bind edge_source, not pipewire_node/hw_source"
+                )
         return self
 
 
@@ -117,7 +190,7 @@ class SubscriptionSpec(BaseModel):
 
 
 class PerceptionRegistry(BaseModel):
-    """Versioned 13-point capture registry."""
+    """Versioned 16-point capture registry (13 audio/av + 3 IR edge)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -242,6 +315,7 @@ def load_default_registry(path: Path = DEFAULT_REGISTRY_PATH) -> PerceptionRegis
 __all__ = [
     "ArchiveSpec",
     "DEFAULT_REGISTRY_PATH",
+    "EdgeSource",
     "PerceptChannel",
     "PerceptionPoint",
     "PerceptionRegistry",

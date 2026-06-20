@@ -8,7 +8,9 @@ Spec: ~/Documents/Personal/30-areas/hapax/pr-review-team-design-2026-06-11.md
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -66,6 +68,68 @@ class TestLensRegistry:
         ]
         assert missing == []
 
+    def test_voice_doctrine_consent_egress_criterion_passes_eval_plane_without_coverage_hole(
+        self,
+    ) -> None:
+        # Class-closure canary (2026-06-15): the voice-doctrine consent-egress item carries the correct
+        # CRITERION for data/LLM egress — a shared-gateway eval-plane call matching the deliberative
+        # council's established pattern (e.g. composability classification on the 'balanced' route) PASSES,
+        # and a finding is raised only for a NEW external sink / ungated sensitive egress. The old phrasing
+        # had no such criterion, so all 4 families mis-fired it as a CRITICAL on PR #4143's eval-plane call.
+        #
+        # Crucially this does NOT scope consent-egress out of voice-doctrine: a daimonion eval-plane change
+        # must STILL receive an egress-reviewing lens (security/consent-provenance are NOT path-selected for
+        # bare agents/hapax_daimonion/ paths — only voice-doctrine is), so removing it would leave a coverage
+        # hole. This test exercises lenses_for_files to prove the coverage is retained.
+        #
+        # Predicate is re-ratified in the linked parent_spec (pr-review-team-design-2026-06-11.md, Amendment
+        # 2026-06-15: the operator chose the class-fix; the inline-criterion design is the accepted one, the
+        # scope-out attempt is rejected for the coverage hole). Lens charters are LLM-consumed prose with no
+        # deterministic judging code path, so the only unit-testable surfaces are SELECTION (lenses_for_files,
+        # the real reviewer-prompt path) and the rendered charter content; the criterion's effect on verdicts
+        # is validated by the re-review dossier, as for every other lens in the registry.
+        rt = _load_review_team_module()
+        reg = _registry()
+        eval_plane_diff = ["agents/hapax_daimonion/segment_composability_gate.py"]
+        lenses = rt.lenses_for_files(eval_plane_diff, reg)
+        assert "voice-doctrine" in lenses, (
+            "a daimonion eval-plane change must still get an egress-reviewing lens (no coverage hole)"
+        )
+        # consent-egress survives the real checklist parser the reviewer prompt is built from
+        assert "consent-egress" in rt.charter_checklist_items("voice-doctrine"), (
+            "consent-egress must remain a parsed checklist item the reviewers receive"
+        )
+
+        charter = (LENS_DIR / "voice-doctrine.md").read_text(encoding="utf-8")
+        consent_line = next(
+            (ln for ln in charter.splitlines() if ln.startswith("- [ ] consent-egress:")), ""
+        )
+        assert consent_line, "voice-doctrine must keep a consent-egress checklist item"
+        low = consent_line.lower()
+        # the AUDIO/broadcast half is retained — this lens's core duty (codex-1: pin both behaviors, not
+        # just the eval-plane criterion, so deleting the TTS/broadcast gate language fails this test).
+        assert "broadcast consent gates" in low, consent_line
+        assert "tts" in low, consent_line
+        # the eval-plane PASS criterion is present...
+        assert "eval-plane" in low and "passes" in low, consent_line
+        assert "balanced" in low, consent_line
+        # ...and a finding is still raised for genuinely-unsafe egress (not a blanket exemption)
+        assert "finding" in low and ("new" in low and "sink" in low), consent_line
+        # do NOT reference trust-boundary as a lens (it is a SURFACE; its lenses are security +
+        # silent-failure-hunting) and do NOT claim other lenses cover daimonion egress (they are not selected
+        # for these paths).
+        referenced = set(re.findall(r"[a-z-]+(?= lens)", low))
+        assert "trust-boundary" not in referenced, consent_line
+
+    def test_gemini_prompt_names_rdf_prefix_directives_as_valid_syntax(self) -> None:
+        reg = _registry()
+        gemini = next(row for row in reg["families"] if row["family"] == "gemini")
+        assert gemini["reviewer_command"] == ["scripts/hapax-agy-reviewer"]
+        prompt = (REPO_ROOT / "scripts" / "hapax-agy-reviewer").read_text(encoding="utf-8")
+        assert "RDF/Turtle/TriG @prefix directives are" in prompt
+        assert "valid source syntax" in prompt
+        assert "path-like corruption" in prompt
+
     def test_sizing_matches_ratified_spec(self) -> None:
         sizing = _registry()["sizing"]
         assert sizing["t3_docs"]["team_size"] == 2
@@ -80,18 +144,20 @@ class TestLensRegistry:
         assert t1["require_all_families"] is True
         assert t1["criticals_must_resolve"] is True
 
-    def test_families_roster_covers_three_model_families(self) -> None:
+    def test_families_roster_covers_four_model_families(self) -> None:
         roster = _registry()["families"]
         families = {entry["family"] for entry in roster}
-        assert {"claude", "codex", "gemini"} <= families
+        assert {"claude", "codex", "gemini", "glm"} <= families
         for entry in roster:
             assert isinstance(entry["reviewer_command"], list) and entry["reviewer_command"]
             assert entry["timeout_seconds"] > 0
         gemini = next(entry for entry in roster if entry["family"] == "gemini")
-        assert "--skip-trust" in gemini["reviewer_command"]
-        gemini_command = " ".join(str(part) for part in gemini["reviewer_command"])
-        assert "fenced yaml code block" in gemini_command
-        assert "ONLY the dossier YAML" not in gemini_command
+        assert gemini["reviewer_command"] == ["scripts/hapax-agy-reviewer"]
+        gemini_wrapper = (REPO_ROOT / "scripts" / "hapax-agy-reviewer").read_text(encoding="utf-8")
+        assert "fenced yaml code block" in gemini_wrapper
+        assert "ONLY the dossier YAML" not in gemini_wrapper
+        glm = next(entry for entry in roster if entry["family"] == "glm")
+        assert glm["reviewer_command"] == ["scripts/hapax-glmcp-reviewer"]
 
     def test_claude_family_forces_bare_fence_output(self) -> None:
         """Claude (a reasoning model) must be given a bare-fence output directive,
@@ -122,8 +188,14 @@ class TestLensRegistry:
     def test_lane_families_map_lanes_to_families(self) -> None:
         lane_families = _registry()["lane_families"]
         assert lane_families["exact"]["zeta"] == "claude"
-        assert lane_families["exact"]["iota"] == "gemini"
+        assert "iota" not in lane_families["exact"]
+        assert lane_families["exact"]["cx-glmcp"] == "glm"
+        assert lane_families["exact"]["codex-glmcp"] == "glm"
+        assert lane_families["exact"]["glmcp"] == "glm"
         assert lane_families["prefixes"]["cx-"] == "codex"
+        assert lane_families["prefixes"]["codex-"] == "codex"
+        assert lane_families["prefixes"]["glm-"] == "glm"
+        assert "iota" in lane_families["retired"]
         assert lane_families["default"] == "claude"
 
 
@@ -232,6 +304,19 @@ class TestTeamClassification:
         cls = rt.team_class_for({"risk_tier": "T2"}, ["axioms/registry.yaml", "docs/x.md"], reg)
         assert cls == "t1_critical"
 
+    def test_system_dynamics_map_surface_beats_docs_only(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        cls = rt.team_class_for(
+            {"risk_tier": "T2"},
+            [
+                "docs/architecture/system-dynamics-map-viewer.html",
+                "docs/architecture/vendor/cytoscape-3.34.0.min.js",
+            ],
+            reg,
+        )
+        assert cls == "t1_critical"
+
     def test_default_is_t2(self) -> None:
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()
@@ -248,12 +333,19 @@ class TestConstitution:
         assert len(set(families)) >= 2
         assert families.count("claude") <= 1  # writer family never the majority alone
 
-    def test_t1_team_has_all_three_families(self) -> None:
+    def test_t1_team_has_all_registry_families(self) -> None:
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()
         team = rt.constitute_team("t1_critical", "claude", reg, pr_number=7)
         assert 4 <= len(team.seats) <= 5
-        assert {"claude", "codex", "gemini"} <= {seat.family for seat in team.seats}
+        roster = {entry["family"] for entry in reg["families"]}
+        assert roster <= {seat.family for seat in team.seats}
+
+    def test_t2_team_can_seat_glm_as_independent_family(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        team = rt.constitute_team("t2_standard", "claude", reg, pr_number=101)
+        assert "glm" in {seat.family for seat in team.seats}
 
     def test_t3_team_is_two_seats_two_families(self) -> None:
         rt = _load_review_team_module()
@@ -291,9 +383,23 @@ class TestConstitution:
         reg = rt.load_lens_registry()
         assert rt.writer_family_for_lane("zeta", reg) == "claude"
         assert rt.writer_family_for_lane("cx-gold", reg) == "codex"
-        assert rt.writer_family_for_lane("iota", reg) == "gemini"
+        assert rt.writer_family_for_lane("codex-agy-cli", reg) == "codex"
+        assert rt.writer_family_for_lane("antigrav", reg) == "gemini"
+        assert rt.writer_family_for_lane("antigrav-2", reg) == "gemini"
+        assert rt.writer_family_for_lane("agy-review", reg) == "gemini"
+        assert rt.writer_family_for_lane("cx-glmcp", reg) == "glm"
+        assert rt.writer_family_for_lane("codex-glmcp", reg) == "glm"
+        assert rt.writer_family_for_lane("glm-alpha", reg) == "glm"
         assert rt.writer_family_for_lane(None, reg) == "claude"
         assert rt.writer_family_for_lane("mystery-lane", reg) == "claude"
+
+    def test_retired_iota_writer_family_fails_closed(self) -> None:
+        import pytest
+
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        with pytest.raises(ValueError, match="retired authoring lane"):
+            rt.writer_family_for_lane("iota", reg)
 
 
 def _review(
@@ -490,7 +596,7 @@ class TestSynthesizeDossier:
                 _review("codex-1", "codex", "accept"),
                 _review("gemini-1", "gemini", "accept"),
                 _review("claude-1", "claude", "accept"),
-                _review("codex-2", "codex", "accept-with-findings"),
+                _review("glm-1", "glm", "accept"),
             ],
             team_class="t1_critical",
         )
@@ -880,13 +986,280 @@ class TestFamilyOutageDegradation:
             "You've hit your session limit · resets 10pm (America/Chicago)",
             process_failed=True,
         )
+        assert rt.is_quota_wall(
+            "You've hit your weekly limit · resets Jun 19, 5pm (America/Chicago)",
+            process_failed=True,
+        )
+        assert rt.is_quota_wall(
+            "You've hit your weekly limit · resets Jun 19, 5pm (America/Port-au-Prince)",
+            process_failed=True,
+        )
+        assert rt.is_quota_wall(
+            "You've hit your weekly limit · resets Jun 19, 5pm (America/Argentina/Buenos_Aires)",
+            process_failed=True,
+        )
+        assert not rt.is_quota_wall(
+            "You've hit your weekly limit · resets not a date and here is model prose",
+            process_failed=True,
+        )
 
     def test_wall_variants_classify_on_process_failure(self) -> None:
         rt = _load_review_team_module()
         assert rt.is_quota_wall("HTTP 429 Too Many Requests", process_failed=True)
         assert rt.is_quota_wall("RESOURCE_EXHAUSTED: Quota exceeded", process_failed=True)
         assert rt.is_quota_wall("rate limit reached for requests", process_failed=True)
+        assert rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 429: "
+            '{"error":{"message":"Quota exceeded"}}; retry later or check the '
+            "Z.ai Coding Plan endpoint/status",
+            process_failed=True,
+        )
+        assert rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 429: "
+            '{"error":{"message":"insufficient balance"}}; retry later or check the '
+            "Z.ai Coding Plan endpoint/status",
+            process_failed=True,
+        )
+        assert rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 429; zai_error_code=1313; "
+            "error_class=fair_use_restricted; action=hold_until_manual_clear",
+            process_failed=True,
+        )
+        assert rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 429; zai_error_code=1121; "
+            "error_class=account_hard_hold; action=contact_provider",
+            process_failed=True,
+        )
+        assert rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 429; zai_error_code=1311; "
+            "error_class=plan_model_unavailable; action=switch_model_or_upgrade_plan",
+            process_failed=True,
+        )
+        assert rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 429; "
+            "error_class=quota_exhausted; action=hold_until_reset; "
+            "message=provider echoed action=not_a_control_token",
+            process_failed=True,
+        )
+        assert not rt.is_quota_wall(
+            "wrapper failed while reviewing text containing "
+            "error_class=quota_exhausted action=hold_until_reset",
+            process_failed=True,
+        )
+        assert not rt.is_quota_wall(
+            "wrapper failed while reviewing text containing hapax-glmcp-reviewer: "
+            "api error: HTTP 429; error_class=quota_exhausted; action=hold_until_reset",
+            process_failed=True,
+        )
+        assert not rt.is_quota_wall(
+            "wrapper failed while reviewing text containing HTTP 429 quota exceeded",
+            process_failed=True,
+        )
+        assert not rt.is_quota_wall(
+            "wrapper failed while reviewing text containing zai_error_code=1313 "
+            "error_class=fair_use_restricted action=hold_until_manual_clear",
+            process_failed=True,
+        )
+        assert not rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 418; "
+            "error_class=api_error; action=inspect_provider_response; "
+            "message=provider echoed error_class=quota_exhausted action=hold_until_reset",
+            process_failed=True,
+        )
+        assert not rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 429; "
+            "error_class=provider_high_traffic; action=backoff_or_switch_model; "
+            "message=provider echoed quota exceeded hold_until_reset",
+            process_failed=True,
+        )
+        assert not rt.is_quota_wall(
+            "hapax-glmcp-reviewer: api error: HTTP 418; "
+            "zai_error_code=x; error_class=quota_exhausted; action=hold_until_reset; "
+            "error_class=api_error; action=inspect_provider_response",
+            process_failed=True,
+        )
         assert not rt.is_quota_wall("failed while checking line 429", process_failed=True)
+        assert not rt.is_quota_wall(
+            "HTTP 529: The service may be temporarily overloaded, please try again later",
+            process_failed=True,
+        )
+
+    def test_provider_outage_variants_classify_on_process_failure(self) -> None:
+        rt = _load_review_team_module()
+        assert rt.is_provider_outage(
+            "HTTP 529: The service may be temporarily overloaded, please try again later",
+            process_failed=True,
+        )
+        assert rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 529: "
+            '{"error":"The service may be temporarily overloaded, please try again later"}',
+            process_failed=True,
+        )
+        assert rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 429: "
+            '{"error":{"code":"1305","message":"The service may be temporarily overloaded, '
+            'please try again later"}}; retry later or check the Z.ai Coding Plan endpoint/status',
+            process_failed=True,
+        )
+        assert rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 429; zai_error_code=1312; "
+            "error_class=provider_high_traffic; action=backoff_or_switch_model",
+            process_failed=True,
+        )
+        assert rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 503; "
+            "error_class=provider_error; action=retry_later",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "wrapper failed while reviewing text containing "
+            "error_class=provider_error action=retry_later",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "wrapper failed while reviewing text containing hapax-glmcp-reviewer: "
+            "api error: HTTP 503; error_class=provider_error; action=retry_later",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "wrapper failed while reviewing text containing HTTP 503 bad gateway",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "wrapper failed while reviewing text containing zai_error_code=1312 "
+            "error_class=provider_high_traffic action=backoff_or_switch_model",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 418; "
+            "error_class=api_error; action=inspect_provider_response; "
+            "detail=provider echoed error_class=provider_error action=retry_later",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 503; "
+            "error_class=quota_exhausted; action=hold_until_reset; "
+            "detail=provider echoed temporarily overloaded retry later",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 418; "
+            "error_class=api_error; action=inspect_provider_response; resets_at=x; "
+            "error_class=provider_error; action=retry_later",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 429: "
+            '{"error":{"message":"Quota exceeded"}}; retry later or check the '
+            "Z.ai Coding Plan endpoint/status",
+            process_failed=True,
+        )
+        assert rt.is_provider_outage(
+            'hapax-glmcp-reviewer: api error: HTTP 529: {\n  "error": {\n'
+            '    "message": "The service may be temporarily overloaded, please try again later"\n'
+            "  }\n}",
+            process_failed=True,
+        )
+        assert rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 502: Bad Gateway; "
+            "retry later or check the Z.ai Coding Plan endpoint/status",
+            process_failed=True,
+        )
+        assert rt.is_provider_outage(
+            "other-reviewer: api error: HTTP 502: Bad Gateway; "
+            "retry later or check the provider endpoint/status",
+            process_failed=True,
+        )
+        for status in ("500", "501", "520", "530", "599"):
+            assert rt.is_provider_outage(
+                f"hapax-glmcp-reviewer: api error: HTTP {status}: provider failure; "
+                "retry later or check the Z.ai Coding Plan endpoint/status",
+                process_failed=True,
+            )
+        assert rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: network error: connection reset; "
+            "retry later or check the Z.ai Coding Plan endpoint",
+            process_failed=True,
+        )
+        assert rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: request timed out after 900s; "
+            "retry later or reduce the review prompt size",
+            process_failed=True,
+        )
+        assert not rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 529: "
+            '{"error":"The service may be temporarily overloaded, please try again later"}',
+            process_failed=False,
+        )
+        assert not rt.is_provider_outage(
+            "Error authenticating: IneligibleTierError: This client is no longer "
+            "supported for Gemini Code Assist for individuals.",
+            process_failed=True,
+            model_stdout="```yaml\nverdict: accept\n```",
+        )
+        assert not rt.is_provider_outage(
+            "hapax-glmcp-reviewer: api error: HTTP 529: "
+            '{"error":"The service may be temporarily overloaded, please try again later"}',
+            process_failed=True,
+            model_stdout="```yaml\nverdict: block\n```",
+        )
+
+    def test_reviewer_route_unavailable_classifies_on_process_failure(self) -> None:
+        rt = _load_review_team_module()
+        unsupported_client = (
+            "Error authenticating: IneligibleTierError: This client is no longer "
+            "supported for Gemini Code Assist for individuals. To continue using "
+            "Gemini, please migrate to the Antigravity suite of products.\n"
+            "reasonCode: 'UNSUPPORTED_CLIENT'"
+        )
+        assert rt.is_reviewer_route_unavailable(unsupported_client, process_failed=True)
+        assert not rt.is_reviewer_route_unavailable(unsupported_client, process_failed=False)
+        assert not rt.is_reviewer_route_unavailable(
+            unsupported_client,
+            process_failed=True,
+            model_stdout="```yaml\nverdict: accept\n```",
+        )
+        embedded_marker = "wrapper prelude\n" + unsupported_client
+        assert rt.is_reviewer_route_unavailable(embedded_marker, process_failed=True)
+        oversized_marker = (
+            "x" * (rt._REVIEWER_ROUTE_UNAVAILABLE_MAX_CHARS + 1) + "UNSUPPORTED_CLIENT"
+        )
+        assert not rt.is_reviewer_route_unavailable(oversized_marker, process_failed=True)
+        advisory_only = "Please migrate to the Antigravity suite of products."
+        assert not rt.is_reviewer_route_unavailable(advisory_only, process_failed=True)
+        missing_agy = (
+            "hapax-agy-reviewer: failed to launch /usr/bin/agy: [Errno 2] "
+            "No such file or directory; install agy or pass --agy-bin /absolute/path/to/agy"
+        )
+        assert rt.is_reviewer_route_unavailable(missing_agy, process_failed=True)
+        assert not rt.is_reviewer_route_unavailable(
+            missing_agy,
+            process_failed=True,
+            model_stdout="```yaml\nverdict: accept\n```",
+        )
+
+    def test_agy_missing_binary_stderr_classifies_as_route_unavailable(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        wrapper = REPO_ROOT / "scripts" / "hapax-agy-reviewer"
+        env = {**os.environ, "HAPAX_AGY_BIN": str(tmp_path / "agy")}
+
+        result = subprocess.run(
+            [str(wrapper)],
+            input="review\n",
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=5,
+        )
+
+        assert result.returncode == 2
+        assert rt.is_reviewer_route_unavailable(
+            result.stderr,
+            process_failed=True,
+            model_stdout=result.stdout,
+        )
 
     def test_clean_exit_text_never_counts_as_wall_evidence(self) -> None:
         # round-6 channel trust: model-influenced stdout cannot forge a wall,
@@ -1301,10 +1674,202 @@ class TestGoGate:
         f = self._lit("syntax error: invalid syntax", file="bad.py", line=1)
         assert rt.verify_literal_defect_critical(f, tmp_path) is True
 
+    def test_clean_turtle_parse_claim_in_detail_is_phantom(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path,
+            "docs/ok.ttl",
+            "@prefix ex: <https://example.test/> .\nex:s ex:p ex:o .\n",
+        )
+        f = self._lit(
+            "corrupted namespace directive",
+            file="docs/ok.ttl",
+            line=1,
+        )
+        f["detail"] = "The file is unparseable Turtle because @prefix was corrupted."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
+    def test_clean_turtle_namespace_contract_claim_is_phantom(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path,
+            "docs/ok.ttl",
+            "@prefix ex: <https://example.test/> .\nex:s ex:p ex:o .\n",
+        )
+        f = self._lit(
+            "Corrupted RDF namespace directive",
+            file="docs/ok.ttl",
+            line=1,
+        )
+        f["detail"] = "The namespace directive was replaced by `@bad/path.py`."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
+    def test_path_like_at_literal_accepts_leading_space_before_at_path(self) -> None:
+        rt = _load_review_team_module()
+        assert rt._is_path_like_at_literal(" @bad/path.py") is True
+        assert rt._is_path_like_at_literal("@bad/path.py") is True
+        assert rt._is_path_like_at_literal("@prefix") is False
+
+    def test_malformed_turtle_namespace_claim_with_absent_literal_is_kept(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "docs/bad.ttl", "@prefix ex: <https://example.test/> .\nex:s ex:p\n")
+        f = self._lit(
+            "Corrupted RDF namespace directive",
+            file="docs/bad.ttl",
+            line=1,
+        )
+        f["detail"] = "The namespace directive was replaced by `@bad/path.py`."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_parseable_rdf_namespace_contract_semantic_claim_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path,
+            "docs/semantic.ttl",
+            "@prefix wrong: <https://example.test/wrong/> .\nwrong:s wrong:p wrong:o .\n",
+        )
+        f = self._lit(
+            "Invalid RDF namespace contract",
+            file="docs/semantic.ttl",
+            line=1,
+        )
+        f["detail"] = "The namespace IRI violates the documented semantic contract."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_real_turtle_parse_error_is_verified(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "docs/bad.ttl", "@prefix ex: <https://example.test/> .\nex:s ex:p\n")
+        f = self._lit("Turtle will not parse", file="docs/bad.ttl", line=2)
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_real_turtle_parse_error_with_absent_bad_literal_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "docs/bad.ttl", "@prefix ex: <https://example.test/> .\nex:s ex:p\n")
+        f = self._lit("Turtle will not parse", file="docs/bad.ttl", line=2)
+        f["detail"] = "The file contains `@bad/path.py` and will fail to parse."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_clean_trig_parse_claim_is_phantom(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path,
+            "docs/ok.trig",
+            "@prefix ex: <https://example.test/> .\nex:g { ex:s ex:p ex:o . }\n",
+        )
+        f = self._lit("TriG cannot be parsed", file="docs/ok.trig", line=1)
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
+    def test_absent_quoted_namespace_literal_on_cited_line_is_phantom(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "tests/test_fixture.py", 'value = "ordinary fixture"\n')
+        f = self._lit(
+            "Corrupted namespace directive in test data",
+            file="tests/test_fixture.py",
+            line=1,
+        )
+        f["detail"] = "The line uses `@bad/path.py` instead of `@prefix`."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
+    def test_absent_quoted_namespace_literal_split_across_title_detail_is_phantom(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "tests/test_fixture.py", 'value = "@prefix ex:"\n')
+        f = self._lit(
+            "Corrupted string literal",
+            file="tests/test_fixture.py",
+            line=1,
+        )
+        f["detail"] = "The line uses `@bad/path.py` instead of `@prefix`."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+
+    def test_present_quoted_namespace_literal_on_cited_line_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "tests/test_fixture.py", 'value = "@bad/path.py"\n')
+        f = self._lit(
+            "Corrupted namespace directive in test data",
+            file="tests/test_fixture.py",
+            line=1,
+        )
+        f["detail"] = "The line uses `@bad/path.py` instead of `@prefix`."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_absent_expected_namespace_iri_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path,
+            "docs/semantic.ttl",
+            "@prefix wrong: <https://example.test/wrong/> .\nwrong:s wrong:p wrong:o .\n",
+        )
+        f = self._lit(
+            "Invalid RDF namespace contract",
+            file="docs/semantic.ttl",
+            line=1,
+        )
+        f["detail"] = "The expected namespace IRI `https://example.test/required/` is absent."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_absent_expected_prefix_directive_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path,
+            "docs/semantic.ttl",
+            "@prefix wrong: <https://example.test/wrong/> .\nwrong:s wrong:p wrong:o .\n",
+        )
+        f = self._lit(
+            "Missing required RDF namespace prefix",
+            file="docs/semantic.ttl",
+            line=1,
+        )
+        f["detail"] = "The expected directive `@prefix sd:` is absent."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_absent_expected_full_prefix_directive_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path,
+            "docs/semantic.ttl",
+            "@prefix wrong: <https://example.test/wrong/> .\nwrong:s wrong:p wrong:o .\n",
+        )
+        f = self._lit(
+            "Missing required RDF namespace prefix",
+            file="docs/semantic.ttl",
+            line=1,
+        )
+        f["detail"] = (
+            "The expected directive "
+            "`@prefix sd: <https://hapax.local/ns/system-dynamics-map#> .` is absent."
+        )
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
     def test_non_literal_critical_passes_through(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         self._py(tmp_path, "shared/foo.py", "x = 1\n")
         f = self._lit("no regression test covers the new reviewer path")
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_semantic_critical_with_negated_syntax_phrase_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "scripts/review_team.py", "x = 1\n")
+        f = self._lit(
+            "Semantic criticals can be invalidated by incidental syntax words",
+            file="scripts/review_team.py",
+            line=1,
+        )
+        f["detail"] = "A real semantic critical says this is not a syntax error."
+        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+
+    def test_semantic_critical_with_negated_syntax_title_is_kept(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "scripts/review_team.py", "x = 1\n")
+        f = self._lit(
+            "Not a syntax error: trust-boundary bypass",
+            file="scripts/review_team.py",
+            line=1,
+        )
+        f["detail"] = "A real semantic critical should not be invalidated on a clean file."
         assert rt.verify_literal_defect_critical(f, tmp_path) is True
 
     def test_syntax_claim_beyond_file_is_phantom(self, tmp_path: Path) -> None:
@@ -1404,6 +1969,148 @@ class TestGoGate:
         d = _synth(rt, reviews, repo_root=tmp_path)
         assert d["review_team_verdict"] != "blocked"
         assert any(e["kind"] == "invalidated-phantom-critical" for e in d["escalations"])
+        finding = d["reviewers"][0]["findings"][0]
+        assert finding["resolved"] is True
+        assert finding["resolution_source"] == "review-go-gate"
+
+    def test_phantom_only_block_counts_for_quorum(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
+        reviews = [
+            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("codex-1", "codex", "accept"),
+            _review("claude-1", "claude", "invalid-output"),
+        ]
+        dossier = _synth(rt, reviews, repo_root=tmp_path)
+
+        assert dossier["review_team_verdict"] == rt.QUORUM_ACCEPT
+        assert dossier["accept_count"] == 2
+        assert dossier["reviewers"][0]["verdict"] == "block"
+        assert dossier["reviewers"][0]["findings"][0]["resolution_source"] == "review-go-gate"
+
+    def test_admission_counts_phantom_only_block_for_quorum(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._py(tmp_path, "shared/foo.py", "x = 1\n")
+        (tmp_path / ".git").mkdir()
+        phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
+        reviews = [
+            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("codex-1", "codex", "accept"),
+            _review("claude-1", "claude", "invalid-output"),
+        ]
+        dossier = _synth(rt, reviews, repo_root=tmp_path)
+
+        monkeypatch.chdir(tmp_path)
+        blockers = rt._dossier_validity_blockers(
+            dossier,
+            pr_head_sha="a" * 40,
+            registry=reg,
+        )
+
+        assert "review_dossier_quorum_not_met:1/2" not in blockers
+        assert "review_dossier_family_diversity:accept_families=1/2" not in blockers
+        assert not any(b.startswith("review_team_verdict_not_quorum_accept:") for b in blockers)
+
+    def test_admission_blocks_recorded_go_gate_resolution_from_wrong_checkout(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        reviewed = tmp_path / "reviewed"
+        wrong_checkout = tmp_path / "wrong-checkout"
+        reviewed.mkdir()
+        wrong_checkout.mkdir()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._py(reviewed, "shared/foo.py", "x = 1\n")
+        phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
+        reviews = [
+            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("codex-1", "codex", "accept"),
+            _review("claude-1", "claude", "invalid-output"),
+        ]
+        dossier = _synth(rt, reviews, repo_root=reviewed)
+        assert dossier["reviewers"][0]["findings"][0]["resolution_source"] == "review-go-gate"
+
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: False)
+        monkeypatch.chdir(wrong_checkout)
+        blockers = rt._dossier_validity_blockers(
+            dossier,
+            pr_head_sha="a" * 40,
+            registry=reg,
+        )
+
+        assert "review_dossier_unresolved_critical:1" in blockers
+
+    def test_admission_uses_frontmatter_worktree_for_go_gate_from_wrong_checkout(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        reviewed = tmp_path / "reviewed"
+        wrong_checkout = tmp_path / "wrong-checkout"
+        reviewed.mkdir()
+        wrong_checkout.mkdir()
+        (reviewed / ".git").mkdir()
+        self._py(reviewed, "shared/foo.py", "x = 1\n")
+        monkeypatch.setattr(
+            rt, "_repo_head_matches", lambda root, *a, **k: Path(root).resolve() == reviewed
+        )
+        phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
+        reviews = [
+            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("codex-1", "codex", "accept"),
+            _review("claude-1", "claude", "invalid-output"),
+        ]
+        dossier = _synth(rt, reviews, repo_root=reviewed)
+
+        monkeypatch.chdir(wrong_checkout)
+        blockers = rt._dossier_validity_blockers(
+            dossier,
+            pr_head_sha="a" * 40,
+            registry=reg,
+            frontmatter={"mutation_scope_refs": [str(reviewed / "shared" / "foo.py")]},
+        )
+
+        assert "review_dossier_unresolved_critical:1" not in blockers
+        assert "review_dossier_quorum_not_met:1/2" not in blockers
+        assert "review_dossier_family_diversity:accept_families=1/2" not in blockers
+
+    def test_admission_rejects_recorded_go_gate_resolution_for_semantic_critical(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        wrong_checkout = tmp_path / "wrong-checkout"
+        wrong_checkout.mkdir()
+        semantic = _critical("logic error: trusted dossier can suppress semantic critical")
+        semantic["resolved"] = True
+        semantic["resolution_source"] = "review-go-gate"
+        semantic["resolution_detail"] = "literal-defect critical refuted by the file at head"
+        dossier = _synth(
+            rt,
+            [
+                _review("gemini-1", "gemini", "block", findings=[semantic]),
+                _review("codex-1", "codex", "accept"),
+                _review("claude-1", "claude", "accept"),
+            ],
+            repo_root=tmp_path,
+        )
+        dossier["review_team_verdict"] = rt.QUORUM_ACCEPT
+
+        monkeypatch.chdir(wrong_checkout)
+        blockers = rt._dossier_validity_blockers(
+            dossier,
+            pr_head_sha="a" * 40,
+            registry=reg,
+        )
+
+        assert "review_dossier_unresolved_critical:1" in blockers
 
     def test_real_literal_critical_still_blocks(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
@@ -1542,3 +2249,52 @@ class TestGoGate:
         )
         stale = [b for b in blockers_mismatch if "stale_head" in b]
         assert len(stale) == 1, f"mismatched head_sha MUST trigger stale_head: {blockers_mismatch}"
+
+
+def test_gemini_reviewer_prompt_has_diff_awareness():
+    """Regression guard: the gemini reviewer hallucinated phantom IndentationError /
+    SyntaxError / invalid-decorator criticals by misreading unified-diff +/- prefixes
+    and context paths as source code, blocking valid PRs (#4135, #4161, #4163) that
+    claude + codex accepted. Its reviewer_command prompt must declare that diff
+    prefixes are syntax, not code, so it confirms a defect against real line content."""
+    reg = _registry()
+    gemini = next(f for f in reg["families"] if (f.get("family") or f.get("name")) == "gemini")
+    assert gemini["reviewer_command"] == ["scripts/hapax-agy-reviewer"]
+    prompt = (REPO_ROOT / "scripts" / "hapax-agy-reviewer").read_text(encoding="utf-8")
+    assert "UNIFIED DIFF" in prompt, "gemini reviewer prompt lost its diff-awareness guard"
+    assert "DIFF SYNTAX" in prompt
+
+
+def test_gemini_reviewer_denies_repo_roaming_and_blocks_phantom_syntax():
+    """Durable fix for the gemini plan-mode hallucination (deadlocked PR #4167): in
+    plan-mode gemini ROAMED the repo (grep/read) and manufactured phantom syntax
+    criticals (notify-failure@%n.service read as invalid template syntax) AND a false
+    'volatile cache' critical on the canonical source-activation deploy path -- blocking a
+    PR that claude + codex accepted. The reviewer_command must (a) enforce a
+    deny-roaming equivalent by invoking agy in sandboxed print mode and telling the
+    reviewer it has no repository access, and (b) tell gemini the diff already passed CI
+    so it does not block on phantom syntax findings."""
+    reg = _registry()
+    gemini = next(f for f in reg["families"] if (f.get("family") or f.get("name")) == "gemini")
+    cmd = [str(part) for part in gemini["reviewer_command"]]
+    assert cmd == ["scripts/hapax-agy-reviewer"]
+    wrapper = (REPO_ROOT / "scripts" / "hapax-agy-reviewer").read_text(encoding="utf-8")
+    assert "--sandbox" in wrapper, "agy reviewer must use sandboxed print mode"
+    assert "no repository access" in wrapper
+    prompt = wrapper
+    assert "fenced yaml code block" in prompt
+    assert "no prose" in prompt
+    assert "ALREADY PASSED" in prompt and "CI" in prompt, "gemini prompt must cite the CI gates"
+    assert "source-activation" in prompt, "gemini prompt must whitelist the canonical deploy path"
+
+
+def test_gemini_review_family_uses_agy_wrapper_not_legacy_cli():
+    """Gemini-family review seats must not execute the retired gemini binary."""
+
+    reg = _registry()
+    gemini = next(f for f in reg["families"] if (f.get("family") or f.get("name")) == "gemini")
+    assert gemini["reviewer_command"] == ["scripts/hapax-agy-reviewer"]
+    wrapper = (REPO_ROOT / "scripts" / "hapax-agy-reviewer").read_text(encoding="utf-8")
+    assert "--print" in wrapper
+    assert "--model" in wrapper
+    assert "agy" in wrapper

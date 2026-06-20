@@ -32,10 +32,10 @@ _QUORUM_OFF = {"min_valid_members": 1, "min_valid_families": 1}
 def _phase1_mock(score: Phase1Output | Exception):
     async def _mock(member, prompt, *, output_type=None, usage_limits=None):
         if output_type is None:  # investigate (research) call
-            return "researched the claim", []
+            return "researched the claim", [], ""
         if isinstance(score, Exception):
             raise score
-        return score, []
+        return score, [], ""
 
     return _mock
 
@@ -62,11 +62,11 @@ class TestRunPhase1:
         async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
             nonlocal score_calls
             if output_type is None:
-                return "researched", []
+                return "researched", [], ""
             score_calls += 1
             if score_calls == 1:
                 raise TimeoutError("model timeout")
-            return Phase1Output(scores={"a": 3}, rationale={}, research_findings=[]), []
+            return Phase1Output(scores={"a": 3}, rationale={}, research_findings=[]), [], ""
 
         with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
             config = CouncilConfig(model_aliases=("opus", "balanced"))
@@ -82,8 +82,8 @@ class TestRunPhase1:
         async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
             call_log.append(prompt)
             if output_type is None:
-                return "researched", []
-            return Phase1Output(scores={"a": 3}, rationale={}, research_findings=[]), []
+                return "researched", [], ""
+            return Phase1Output(scores={"a": 3}, rationale={}, research_findings=[]), [], ""
 
         with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
             config = CouncilConfig(model_aliases=("opus", "balanced", "local-fast"))
@@ -110,8 +110,8 @@ class TestRunPhase1:
         async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
             prompts.append(prompt)
             if output_type is None:
-                return "researched", []
-            return Phase1Output(scores={"a": 3}, rationale={}, research_findings=[]), []
+                return "researched", [], ""
+            return Phase1Output(scores={"a": 3}, rationale={}, research_findings=[]), [], ""
 
         with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
             config = CouncilConfig(model_aliases=("opus", "local-fast"))
@@ -224,11 +224,11 @@ class TestRunPhase1:
         async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
             nonlocal score_calls
             if output_type is None:
-                return "researched", []
+                return "researched", [], ""
             score_calls += 1
             if score_calls == 1:
                 raise RuntimeError("network failure")
-            return Phase1Output(scores={"a": 3}, rationale={}, research_findings=[]), []
+            return Phase1Output(scores={"a": 3}, rationale={}, research_findings=[]), [], ""
 
         with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
             config = CouncilConfig(model_aliases=("opus", "balanced"))

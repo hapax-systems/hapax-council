@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Packetized Gemini CLI junior team runner.
+"""Packetized agy-backed Gemini-family junior team runner.
 
-Gemini is useful here as a junior reviewer/scout, not as a production agent.
-This runner keeps it packet-only: Gemini can produce review/research artifacts,
-but cannot claim tasks, edit files, create PRs, merge, deploy, restart services,
-or mutate Obsidian work state.
+Gemini-family models are useful here as junior reviewers/scouts, not as
+production agents. This runner keeps them packet-only through agy: they can
+produce review/research artifacts, but cannot claim tasks, edit files, create
+PRs, merge, deploy, restart services, or mutate Obsidian work state.
 
 Beyond `dispatch`/`plan`/`status` (the original surface), the CLI now exposes a
 status state-machine for senior intake:
@@ -39,7 +39,7 @@ from pathlib import Path
 
 LATEST_ADVANCED_GEMINI_MODEL = "gemini-3.1-pro-preview"
 MODEL_POLICY = (
-    "Strict latest-highest-capability Gemini CLI selector. If this model is "
+    "Strict latest-highest-capability agy Gemini-family selector. If this model is "
     "unavailable, the junior lane fails closed instead of falling back."
 )
 
@@ -89,7 +89,7 @@ PROHIBITED_WORK = (
     "merge, rebase, deploy, restart, systemctl, pass, sudo, secret handling, or governance-final calls."
 )
 
-GEMINI_CLI_NOISE_PREFIXES = (
+AGY_NOISE_PREFIXES = (
     "Created execution plan for SessionEnd:",
     "Expanding hook command:",
     "Hook execution for SessionEnd:",
@@ -239,7 +239,7 @@ def _clean_sidecar_output(text: str) -> str:
     lines = [
         line
         for line in text.splitlines()
-        if not any(line.startswith(prefix) for prefix in GEMINI_CLI_NOISE_PREFIXES)
+        if not any(line.startswith(prefix) for prefix in AGY_NOISE_PREFIXES)
     ]
     return "\n".join(lines).strip()
 
@@ -603,7 +603,7 @@ def _write_relay(latest: dict[str, object]) -> None:
             [
                 "session: gemini-jr",
                 f"updated: {_iso()}",
-                "role: packetized Gemini CLI junior dev team",
+                "role: packetized agy-backed Gemini-family junior dev team",
                 "status: packet_only_waiting_for_senior_intake",
                 f"model: {LATEST_ADVANCED_GEMINI_MODEL}",
                 "strict_latest_model: true",
@@ -651,7 +651,7 @@ def _write_dashboard() -> None:
                 "",
                 "# Gemini JR Team",
                 "",
-                "Gemini CLI is a packet-only junior support team. It does not own work-state.",
+                "Agy-backed Gemini-family support is packet-only. It does not own work-state.",
                 "",
                 f"- Model: `{LATEST_ADVANCED_GEMINI_MODEL}`",
                 "- Strict latest model: `true`",
@@ -881,7 +881,9 @@ def _status(_: argparse.Namespace) -> int:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run Gemini CLI as a safe junior dev packet team.")
+    parser = argparse.ArgumentParser(
+        description="Run agy-backed Gemini-family models as a safe junior dev packet team."
+    )
     parser.add_argument(
         "--sidecar-bin",
         default=str(_repo_root() / "scripts/hapax-gemini-sidecar"),

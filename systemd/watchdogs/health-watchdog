@@ -4,9 +4,46 @@
 # Sends to ntfy (mobile push) + notify-send (desktop) via shared.notify.
 set -euo pipefail
 
-cd /home/hapax/projects/hapax-council
+SOURCE_ACTIVATION_STATE_DIR="${HAPAX_SOURCE_ACTIVATION_STATE_DIR:-/home/hapax/.cache/hapax/source-activation}"
+SOURCE_ACTIVATION_RELEASES_DIR="${HAPAX_SOURCE_ACTIVATION_RELEASES_DIR:-$SOURCE_ACTIVATION_STATE_DIR/releases}"
+SOURCE_ACTIVATION_REPO="${HAPAX_SOURCE_ACTIVATION_WORKTREE:-$SOURCE_ACTIVATION_STATE_DIR/worktree}"
+HEALTH_MONITOR_REPO=""
 
-UV="/home/hapax/.local/bin/uv"
+is_source_activation_release() {
+    local candidate="$1"
+    [[ -n "$candidate" && -e "$candidate/.git" ]] || return 1
+    [[ -d "$SOURCE_ACTIVATION_RELEASES_DIR" ]] || return 1
+
+    local candidate_real releases_real
+    candidate_real="$(realpath "$candidate" 2>/dev/null || true)"
+    releases_real="$(realpath "$SOURCE_ACTIVATION_RELEASES_DIR" 2>/dev/null || true)"
+    [[ -n "$candidate_real" && -n "$releases_real" ]] || return 1
+    case "$candidate_real" in
+        "$releases_real"/*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+if [[ -e "$SOURCE_ACTIVATION_REPO/.git" ]]; then
+    HEALTH_MONITOR_REPO="$SOURCE_ACTIVATION_REPO"
+elif is_source_activation_release "${HAPAX_HEALTH_MONITOR_REPO:-}"; then
+    echo "WARN: source activation checkout missing at $SOURCE_ACTIVATION_REPO; using explicit HAPAX_HEALTH_MONITOR_REPO override" >&2
+    HEALTH_MONITOR_REPO="$HAPAX_HEALTH_MONITOR_REPO"
+elif [[ -n "${HAPAX_HEALTH_MONITOR_REPO:-}" ]]; then
+    echo "WARN: ignoring HAPAX_HEALTH_MONITOR_REPO=${HAPAX_HEALTH_MONITOR_REPO}; override must be a source-activation release under $SOURCE_ACTIVATION_RELEASES_DIR" >&2
+fi
+
+if [[ -z "$HEALTH_MONITOR_REPO" ]]; then
+    echo "ERROR: no health-monitor activation checkout available at $SOURCE_ACTIVATION_REPO" >&2
+    echo "NEXT ACTION: run source activation or set HAPAX_SOURCE_ACTIVATION_WORKTREE/HAPAX_HEALTH_MONITOR_REPO to a valid source-activation checkout" >&2
+    notify-send --urgency=critical --app-name="Health Monitor" --icon=dialog-error \
+        "Health Monitor Failed" "No activation checkout available; run source activation or set HAPAX_SOURCE_ACTIVATION_WORKTREE" 2>/dev/null || true
+    exit 1
+fi
+cd "$HEALTH_MONITOR_REPO"
+export HAPAX_HEALTH_MONITOR_ACTIVE_REPO="$HEALTH_MONITOR_REPO"
+
+UV="${HAPAX_UV:-/home/hapax/.local/bin/uv}"
 
 # Validate uv exists
 if [[ ! -x "$UV" ]]; then
@@ -91,7 +128,28 @@ summary = r['summary']
 failed = r['failed_count']
 
 if status == 'failed':
-    send_notification('Stack Failed', f'{summary}\nRun: uv run python -m agents.health_monitor --verbose', priority='high', tags=['rotating_light'], click_url=nudges_uri())
+    # Route through the selected checkout's P0 intake so the alert coalesces
+    # into one governed incident. Any CLI failure falls back to raw notify
+    # instead of silently suppressing the failed-stack alert.
+    import subprocess
+    active_repo = os.environ.get('HAPAX_HEALTH_MONITOR_ACTIVE_REPO', '')
+    default_cli = os.path.join(active_repo, 'scripts', 'hapax-p0-incident-intake')
+    cli = os.path.expanduser(os.environ.get('HAPAX_P0_INTAKE_CLI') or default_cli)
+    intake_timeout_raw = os.environ.setdefault('HAPAX_P0_INTAKE_TIMEOUT_SECONDS', '20')
+    try:
+        intake_timeout_s = float(intake_timeout_raw)
+    except ValueError:
+        intake_timeout_s = 20.0
+    try:
+        rc = subprocess.run([
+            cli, 'notification', '--title', 'Stack Failed',
+            '--message', f'{summary}\nRun: uv run python -m agents.health_monitor --verbose',
+            '--technical', '--priority', 'high', '--tag', 'rotating_light',
+        ], check=False, timeout=intake_timeout_s).returncode
+    except (OSError, subprocess.TimeoutExpired):
+        rc = 1
+    if rc != 0:
+        send_notification('Stack Failed', f'{summary}\nRun: uv run python -m agents.health_monitor --verbose', priority='high', tags=['rotating_light'], click_url=nudges_uri())
 else:
     send_notification('Stack Degraded', summary, priority='default', tags=['warning'], click_url=nudges_uri())
 
@@ -103,7 +161,11 @@ if webhook:
 esac
 
 # Append to health history (atomic via temp file + rename)
-HISTORY_FILE="/home/hapax/projects/hapax-council/profiles/health-history.jsonl"
+HISTORY_FILE="${HAPAX_HEALTH_HISTORY_FILE:-$HEALTH_MONITOR_REPO/profiles/health-history.jsonl}"
+HISTORY_DIR="$(dirname "$HISTORY_FILE")"
+if ! mkdir -p "$HISTORY_DIR"; then
+    echo "WARN: Could not create history directory: $HISTORY_DIR" >&2
+fi
 ENTRY=$(echo "$FINAL_REPORT" | python3 -c "
 import sys, json
 r = json.load(sys.stdin)

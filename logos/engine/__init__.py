@@ -219,14 +219,14 @@ class ReactiveEngine:
 
         # Impingement cascade integration
         from logos._affordance import CapabilityRecord
-        from logos._affordance_pipeline import AffordancePipeline
+        from logos.engine.affordance_pipeline import build_logos_affordance_pipeline
         from logos.engine.converter import convert as _convert
         from logos.engine.rule_capability import RuleCapability, generate_rule_description
 
         self._convert_event = _convert
         self._rule_capability_class = RuleCapability
         self._generate_rule_description = generate_rule_description
-        self._affordance_pipeline = AffordancePipeline()
+        self._affordance_pipeline = build_logos_affordance_pipeline()
         self._cascade_initialized = False
         self._rule_capability_record_class = CapabilityRecord
 

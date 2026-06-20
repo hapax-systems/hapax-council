@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""Agy-backed blind PR reviewer for the review-team registry."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+DEFAULT_MODEL = "gemini-3.1-pro-preview"
+DEFAULT_PRINT_TIMEOUT = "20m0s"
+DEFAULT_AGY_BIN = "/usr/bin/agy"
+
+REVIEW_PROMPT = """You are a blind PR reviewer invoked non-interactively through agy --print.
+Review ONLY the dossier supplied below on stdin. You have no repository access and must not
+assume facts not visible in the supplied dossier, unified diff, or gate summary.
+Do not inspect files, list directories, run commands, describe tool use, or narrate your process.
+Do all reasoning silently.
+
+Output policy is ABSOLUTE. Your entire stdout must be exactly one fenced yaml code block and
+nothing else. The first characters of stdout must be ```yaml and the final line must be ```.
+Any prose, action narration, markdown outside the fence, or alternate schema discards the
+review as invalid-output.
+
+The yaml top-level keys must be exactly:
+verdict: <accept|accept-with-findings|block>
+findings: []
+checklist: {}
+
+The checklist value must be nested by lens id. Never put checklist item slugs
+directly under checklist. Bad: checklist: {diff-behavior-coverage: pass}. Good:
+checklist: {tests-cover-the-diff: {diff-behavior-coverage: pass}}. Every lens
+named in the reviewer dossier needs its own nested checklist mapping.
+
+Use verdict accept-with-findings when you report minor or major findings. Never emit legacy
+verdict words such as minor_finding, major_finding, pass, fail, accepted, rejected, or
+needs_changes. Finding objects must use severity, lens, file, line, title, and detail keys.
+
+The leading plus/minus/space line prefixes, @@ hunk headers, and diff --git / +++ / ---
+lines are UNIFIED DIFF syntax, not source code; treat them as DIFF SYNTAX.
+RDF/Turtle/TriG @prefix directives are
+valid source syntax; do not rewrite or flag them as path-like corruption just because
+they appear in added .trig or .ttl lines. Never claim an RDF/Turtle/TriG namespace
+directive was replaced by a test-script path unless that replacement is visible on the
+exact current diff line you cite.
+
+These changes ALREADY PASSED the repository required CI gates described in the dossier,
+so do not raise IndentationError, SyntaxError, invalid-decorator, invalid-shell-expansion,
+or invalid-systemd-unit-syntax findings above minor severity unless the current diff
+itself proves the issue. Systemd template references like notify-failure@%n.service are
+valid, and a doubled .service in an instantiated template name can be correct. The
+%h/.cache/hapax/source-activation/worktree path is the canonical governed deploy tree
+pinned by source-activation, not a volatile cache.
+
+Spend the review on logic correctness, security, error handling, and interface or
+contract issues visible in the dossier/diff. Reply with exactly one fenced yaml code block
+and no prose.
+"""
+
+
+def _default_agy_bin() -> str:
+    return os.environ.get("HAPAX_AGY_BIN") or os.environ.get("AGY_BIN") or DEFAULT_AGY_BIN
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--agy-bin", default=_default_agy_bin())
+    parser.add_argument("--model", default=os.environ.get("HAPAX_AGY_REVIEW_MODEL", DEFAULT_MODEL))
+    parser.add_argument(
+        "--print-timeout",
+        default=os.environ.get("HAPAX_AGY_REVIEW_PRINT_TIMEOUT", DEFAULT_PRINT_TIMEOUT),
+    )
+    return parser
+
+
+def _review_env(workdir: Path) -> dict[str, str]:
+    preserved = (
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "NODE_EXTRA_CA_CERTS",
+    )
+    env = {key: value for key in preserved if (value := os.environ.get(key))}
+    env.update(
+        {
+            "CI": "1",
+            "HOME": str(workdir / "home"),
+            "NO_UPDATE_NOTIFIER": "1",
+            "NPM_CONFIG_AUDIT": "false",
+            "NPM_CONFIG_FUND": "false",
+            "NPM_CONFIG_UPDATE_NOTIFIER": "false",
+            "XDG_CACHE_HOME": str(workdir / "cache"),
+            "XDG_CONFIG_HOME": str(workdir / "config"),
+            "XDG_STATE_HOME": str(workdir / "state"),
+        }
+    )
+    return env
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    agy_bin = Path(args.agy_bin)
+    if agy_bin.name != "agy" or not agy_bin.is_absolute():
+        print("hapax-agy-reviewer: --agy-bin must be an absolute path named agy", file=sys.stderr)
+        return 64
+
+    dossier = sys.stdin.read()
+    prompt = "\n\n".join([REVIEW_PROMPT.strip(), "# Reviewer dossier", dossier.strip()])
+    with tempfile.TemporaryDirectory(prefix="hapax-agy-review-") as tmp:
+        workdir = Path(tmp)
+        cmd = [
+            str(agy_bin),
+            "--print-timeout",
+            args.print_timeout,
+            "--log-file",
+            str(workdir / "agy.log"),
+            "--sandbox",
+        ]
+        if args.model:
+            cmd.extend(["--model", args.model])
+        cmd.extend(["--print", prompt])
+
+        try:
+            result = subprocess.run(
+                cmd,
+                text=True,
+                check=False,
+                cwd=workdir,
+                env=_review_env(workdir),
+            )
+        except OSError as exc:
+            print(
+                "hapax-agy-reviewer: failed to launch "
+                f"{agy_bin}: {exc}; install agy or pass --agy-bin /absolute/path/to/agy",
+                file=sys.stderr,
+            )
+            return 2
+    return result.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

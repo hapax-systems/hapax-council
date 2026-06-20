@@ -1,12 +1,12 @@
 """Executor adapter contract — the one capability surface every runtime conforms
 to (reform §6 P1).
 
-Each launcher (Claude, Codex, Gemini, Vibe, Antigrav) speaks a common adapter
-CLI; their genuine differences (Gemini read-only, Antigrav's IDE-surface hook
-gap, which runtimes have a real headless path) are reported as machine-legible
-*capability flags* by :func:`capabilities`, NOT branched in the dispatcher. The
-dispatcher consumes :func:`supports_route` to decide launchability instead of a
-hard ``(platform, mode)`` if-ladder, and ``hapax-executor-capabilities`` /
+Each launcher (Claude, Codex, Vibe, Antigrav) speaks a common adapter CLI; their
+genuine differences (Antigrav's IDE-surface hook gap, which runtimes have a real
+headless path) are reported as machine-legible *capability flags* by
+:func:`capabilities`, NOT branched in the dispatcher. The dispatcher consumes
+:func:`supports_route` to decide launchability instead of a hard
+``(platform, mode)`` if-ladder, and ``hapax-executor-capabilities`` /
 ``hapax-methodology-dispatch --capabilities`` emit the registry as JSON so the
 CLOG cockpit and other clients read the same contract.
 
@@ -55,26 +55,58 @@ EXECUTOR_REGISTRY: dict[str, ExecutorCapabilities] = {
     "api": ExecutorCapabilities(
         platform="api",
         modes=(),
-        profiles=("api_frontier",),
+        profiles=("api_frontier", "provider_gateway"),
         mutates=False,
         claims=False,
         hooks_wired=False,
         headless=False,
         read_only=True,
         notes=(
-            "cloud-burst route metadata only; no direct provider launcher is wired, "
-            "so dispatch can emit receipts without spending provider budget"
+            "receipt-only route metadata for both REQUIRED api routes "
+            "(api_frontier cloud-burst + provider_gateway maintenance); no direct "
+            "provider launcher is wired (modes=()), so dispatch emits receipts "
+            "without spending provider budget"
+        ),
+    ),
+    "glmcp": ExecutorCapabilities(
+        platform="glmcp",
+        modes=(),
+        profiles=("direct",),
+        mutates=False,
+        claims=False,
+        hooks_wired=False,
+        headless=False,
+        read_only=True,
+        notes=(
+            "receipt-only review-seat route (glmcp.review.direct); a read-only PR "
+            "reviewer via hapax-glmcp-reviewer, not a launchable worker (modes=()). "
+            "The coding workhorse is a separate, bakeoff-gated route, not this one."
         ),
     ),
     "claude": ExecutorCapabilities(
         platform="claude",
         modes=("headless", "interactive"),
-        profiles=("full", "opus", "sonnet"),
+        profiles=("full", "opus", "sonnet", "haiku"),
         mutates=True,
         claims=True,
         hooks_wired=True,
         headless=True,
         notes="stream-json headless lane (hapax-claude-headless) + tmux interactive",
+    ),
+    "local_tool": ExecutorCapabilities(
+        platform="local_tool",
+        modes=(),
+        profiles=("worker",),
+        mutates=False,
+        claims=False,
+        hooks_wired=False,
+        headless=False,
+        read_only=True,
+        notes=(
+            "receipt-only local-inference route (local_tool.local.worker); Command-R "
+            "35B EXL3 served by TabbyAPI :5000 and reached via the LiteLLM local alias, "
+            "not a launchable mutating lane (modes=())"
+        ),
     ),
     "codex": ExecutorCapabilities(
         platform="codex",
@@ -88,17 +120,6 @@ EXECUTOR_REGISTRY: dict[str, ExecutorCapabilities] = {
             "codex exec headless (hapax-codex-headless). The tmux pane (hapax-codex) "
             "exists for direct interactive use but is not a governed dispatch route."
         ),
-    ),
-    "gemini": ExecutorCapabilities(
-        platform="gemini",
-        modes=("headless",),
-        profiles=("full", "worker", "flash", "lite"),
-        mutates=False,
-        claims=False,
-        hooks_wired=True,
-        headless=True,
-        read_only=True,
-        notes="read-only/plan-mode by policy; the worker profile is a governed auto-edit exception",
     ),
     "vibe": ExecutorCapabilities(
         platform="vibe",

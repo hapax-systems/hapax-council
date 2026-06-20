@@ -53,9 +53,11 @@ def test_antigrav_launcher_resolves_installed_agy_binary_name() -> None:
 
     assert "resolve_antigrav_bin()" in text
     assert "HAPAX_ANTIGRAV_BIN" in text
-    assert "for candidate in agy antigravity" in text
-    assert "for candidate in /usr/bin/agy /usr/bin/antigravity" in text
-    assert "expected agy, antigravity, or HAPAX_ANTIGRAV_BIN" in text
+    assert "command -v agy" in text
+    assert "for candidate in /usr/bin/agy" in text
+    assert "expected agy or HAPAX_ANTIGRAV_BIN=/path/to/agy" in text
+    assert "command -v antigravity" not in text
+    assert "/usr/bin/antigravity" not in text
 
 
 def test_claude_headless_honors_explicit_dispatch_workdir() -> None:

@@ -6,8 +6,9 @@ OnFailure=notify-failure@%n.service
 
 # Runaway-fire guard. The .path unit's PathChanged trigger only fires on
 # refs/heads/main mtime changes, which the deploy script itself cannot
-# cause (script writes to ~/.config/systemd/user/, ~/.config/pipewire/,
-# ~/.local/bin/, and ~/.cache/hapax/post-merge-traces/ — none in .git).
+# cause. The deploy script writes user systemd/PipeWire/WirePlumber config,
+# local bins/hooks/recovery bundle, Hapax presets/config, coord activation
+# state, and post-merge traces; none of those writes land in .git.
 # Belt-and-braces: cap to 3 invocations per 60s window so a runaway loop
 # (caused by a future change) gets contained quickly and surfaced via
 # OnFailure=notify-failure@%n.service. NOTE: StartLimitIntervalSec /

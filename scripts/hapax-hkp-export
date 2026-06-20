@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""Export selected source files into a cache-only HKP shadow bundle."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.hkp_bundle_export import build_shadow_catalog, export_shadow_bundle  # noqa: E402
+from shared.hkp_bundle_schema import validate_bundle  # noqa: E402
+
+CATALOG_FAILURE_NEXT_ACTION = "inspect catalog findings and regenerate invalid bundles"
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("sources", nargs="*", type=Path, help="source files to project")
+    parser.add_argument("--bundle-id", help="cache bundle id")
+    parser.add_argument(
+        "--source-root",
+        type=Path,
+        default=REPO_ROOT,
+        help="root used to derive logical source URIs",
+    )
+    parser.add_argument(
+        "--source-root-id",
+        default="repo:hapax-council",
+        help="logical source root id written into source refs",
+    )
+    parser.add_argument("--source-commit", default=None, help="optional source commit SHA")
+    parser.add_argument("--output-root", type=Path, default=None, help="defaults to HKP cache root")
+    parser.add_argument("--index-root", type=Path, default=None, help="defaults to HKP index cache")
+    parser.add_argument(
+        "--generated-at", default=None, help="fixed ISO timestamp for reproducibility"
+    )
+    parser.add_argument(
+        "--catalog",
+        action="store_true",
+        help="write an aggregate catalog for HKP shadow bundles",
+    )
+    parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    args = parser.parse_args(argv)
+
+    if args.catalog:
+        if args.sources:
+            parser.error("--catalog does not accept source files")
+        if args.bundle_id:
+            parser.error("--catalog does not accept --bundle-id")
+        try:
+            result = build_shadow_catalog(
+                shadow_root=args.output_root,
+                index_root=args.index_root,
+                generated_at=args.generated_at,
+            )
+        except ValueError as exc:
+            parser.exit(2, f"hapax-hkp-export: {_format_value_error(exc)}\n")
+        payload = result.as_dict()
+        if not result.ok:
+            payload["next_action"] = CATALOG_FAILURE_NEXT_ACTION
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            status = "OK" if result.ok else "FAIL"
+            print(f"{status} {result.catalog_path}")
+            print(f"bundles\t{result.bundle_count}")
+            print(f"findings\t{result.finding_count}")
+            if not result.ok:
+                print(f"next-action\t{CATALOG_FAILURE_NEXT_ACTION}")
+        return 0 if result.ok else 1
+
+    if not args.bundle_id:
+        parser.error("--bundle-id is required unless --catalog is set")
+    if not args.sources:
+        parser.error("at least one source file is required unless --catalog is set")
+
+    try:
+        result = export_shadow_bundle(
+            args.sources,
+            bundle_id=args.bundle_id,
+            source_root=args.source_root,
+            source_root_id=args.source_root_id,
+            source_commit=args.source_commit,
+            output_root=args.output_root,
+            index_root=args.index_root,
+            generated_at=args.generated_at,
+        )
+    except ValueError as exc:
+        parser.exit(2, f"hapax-hkp-export: {_format_value_error(exc)}\n")
+
+    validation = validate_bundle(result.bundle_path)
+    payload = result.as_dict()
+    payload["validation"] = validation.as_dict()
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        status = "OK" if validation.ok else "FAIL"
+        print(f"{status} {result.bundle_path}")
+        print(f"index\t{result.index_path}")
+        print(f"output_tree_hash\t{result.output_tree_hash}")
+        if not validation.ok:
+            print("next-action\tfix generated bundle findings or rerun with --json")
+        for finding in validation.findings:
+            print(f"{finding.severity.value}\t{finding.code}\t{finding.path}\t{finding.message}")
+    return 0 if validation.ok else 1
+
+
+def _format_value_error(exc: ValueError) -> str:
+    message = str(exc)
+    if "next-action" in message:
+        return message
+    return (
+        f"{message}; next-action: inspect source paths, bundle id, and cache roots, "
+        "then rerun with --json for structured diagnostics"
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

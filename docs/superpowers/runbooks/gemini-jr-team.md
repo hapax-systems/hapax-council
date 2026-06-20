@@ -1,23 +1,24 @@
 # Gemini JR Team
 
-Gemini CLI is a packet-only junior support team. It is useful for breadth,
-currentness scouting, alternate review, extraction, and test-gap analysis, but
-it must not become a production train engine.
+Agy-backed Gemini-family support is a packet-only junior support team. It is
+useful for breadth, currentness scouting, alternate review, extraction, and
+test-gap analysis, but it must not become a production train engine.
 
 ## Model Policy
 
-Use the latest highest-capability Gemini CLI selector:
+Use the latest highest-capability agy Gemini-family selector through the sidecar:
 
 ```bash
-gemini-3.1-pro-preview
+scripts/hapax-gemini-sidecar --agy-bin agy --model gemini-3.1-pro-preview --strict-model --dry-run --prompt "selector recheck"
 ```
 
 This is intentionally strict. The junior team fails closed if the selector is
 unavailable rather than silently falling back to Flash or a lower-capability
-model. As of 2026-05-01, Google Gemini CLI docs say Gemini 3.1 Pro Preview is
-rolling out and can be launched directly with `-m gemini-3.1-pro-preview` when
-available; Google API docs identify Gemini 3 Pro as the most intelligent public
-model family.
+model. The local CLI executable is `agy`; legacy `gemini` and `antigravity`
+executables are not supported Hapax launch paths.
+The dry-run succeeds when it emits JSON whose `command` starts with
+`["agy", "--sandbox", "--print-timeout", "120s", "--model",
+"gemini-3.1-pro-preview", "--print", ...]`.
 
 ## Authority
 
@@ -64,3 +65,10 @@ It refreshes:
 
 Codex or Claude must verify and graduate any useful packet into normal
 cc-task/branch/PR flow.
+
+## Recheck
+
+```bash
+agy --help
+scripts/hapax-gemini-jr-team dispatch --dry-run --role jr-reviewer --task-id recheck --title "Agy JR recheck" --prompt "Confirm packet route only."
+```

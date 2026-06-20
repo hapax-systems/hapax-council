@@ -19,6 +19,9 @@ ones. This test pins:
 
 from __future__ import annotations
 
+import os
+import subprocess
+import textwrap
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -119,6 +122,50 @@ class TestTimerEnablementSweep:
         assert "new_timers" in body
         assert "enable --now" in body, (
             "first-install path still needs enable --now so freshly linked timers start immediately"
+        )
+
+    def test_enable_only_timer_behaviorally_enables_without_starting_on_first_install(
+        self, tmp_path: Path
+    ) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        calls = tmp_path / "systemctl-calls.txt"
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                printf '%s\n' "$*" >> "{calls}"
+                exit 0
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        uv = bin_dir / "uv"
+        uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        uv.chmod(0o755)
+
+        env = os.environ.copy()
+        env["ALLOW_NONSTANDARD_REPO"] = "1"
+        env["HOME"] = str(tmp_path / "home")
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env.pop("SKIP_TIMER_ENABLE", None)
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 0, result.stderr
+        text = calls.read_text(encoding="utf-8")
+        assert "--user enable hapax-s4-arm.timer" in text
+        assert "--user enable --now hapax-s4-arm.timer" not in text
+        assert "enabled: hapax-s4-arm.timer (Hapax-Timer-Enable-Only; not started)" in (
+            result.stdout
         )
 
 

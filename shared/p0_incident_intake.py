@@ -11,6 +11,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -33,6 +34,10 @@ DEFAULT_PARENT_SPEC = (
 )
 DEFAULT_AUTHORITY_CASE = "CASE-SYSTEM-INTEGRITY-20260611"
 DEFAULT_VAULT_NAME = "Personal"
+LATEST_ALERT_BLOCK_RE = re.compile(r"(?s)## Latest Alert\n\n.*?\n## Evidence\n")
+
+log = logging.getLogger(__name__)
+
 
 TECHNICAL_TITLE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("Service Failed:", "systemd_service_failed"),
@@ -43,12 +48,16 @@ TECHNICAL_TITLE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("Disk CRITICAL", "disk_critical"),
     ("VRAM Emergency", "vram_emergency"),
     ("SDLC invariant violation", "sdlc_invariant_violation"),
+    ("SDLC: dispatch refusal circuit breaker", "sdlc_dispatch_refusal"),
+    ("SDLC: dispatch starvation detected", "sdlc_dispatch_starvation"),
+    ("SDLC: task stuck, blocked", "sdlc_task_stalled"),
     ("[VIOLATION]", "cc_hygiene_violation"),
     ("Infra Registry Drift", "infra_registry_drift"),
     ("Hapax lane-supervisor:", "lane_supervisor_alert"),
     ("LUFS panic-cap", "audio_lufs_breach"),
     ("Audio: LUFS Breach", "audio_lufs_breach"),
     ("Audio: Crest spike", "audio_crest_spike"),
+    ("Audio: Topology Drift", "audio_topology_drift"),
     ("Voice witness watchdog:", "voice_witness_watchdog"),
     ("Drift Detector Failed", "drift_detector_failed"),
     ("Disk Space", "disk_space_critical"),
@@ -76,6 +85,15 @@ class IntakeResult:
     replace_id: int | None = None
     click_url: str | None = None
     reason: str = ""
+    recurrence: bool = False
+    recurrence_of_task_id: str | None = None
+    recurrence_of_task_path: Path | None = None
+
+
+@dataclass(frozen=True)
+class _TaskMatch:
+    path: Path
+    closed: bool
 
 
 def classify_notification(
@@ -97,6 +115,15 @@ def classify_notification(
         return IncidentClassification("nontechnical", "", False, "technical_false")
 
     kind = _technical_kind(title_s)
+    if kind == "sdlc_task_stalled":
+        # Self-amplification break: a stalled/blocked AUTO-MINTED incident task
+        # (p0-incident-*) must NOT mint another P0 — it would re-enter forever as a
+        # fresh sdlc_task_stalled incident. These tasks are not lane-workable.
+        _stalled_id = re.search(r"\b(?:Task\s+)?([a-z0-9][a-z0-9_.-]{8,})\b", message_s)
+        if _stalled_id and _stalled_id.group(1).startswith("p0-incident-"):
+            return IncidentClassification(
+                "nontechnical", "", False, "stalled_incident_task_no_remint"
+            )
     if technical is True and not kind:
         kind = "technical_alert"
 
@@ -163,17 +190,22 @@ def _record_notification_locked(
     state = _load_state(state_path)
     incidents = state.setdefault("incidents", {})
     existing = incidents.get(classification.fingerprint, {})
-    task_id = existing.get("task_id") or _task_id_for(classification.fingerprint)
-    task_path = _find_task(task_root, task_id)
+    base_task_id = str(existing.get("base_task_id") or _task_id_for(classification.fingerprint))
+    task_id = str(existing.get("task_id") or base_task_id)
+    task_match = _find_task(task_root, task_id)
+    task_path = task_match.path if task_match is not None else None
     first_seen = str(existing.get("first_seen") or _iso(now))
     count = int(existing.get("count", 0)) + 1
+    recurrence_count = int(existing.get("recurrence_count", 0) or 0)
     task_record = {
         "fingerprint": classification.fingerprint,
         "kind": classification.kind,
+        "base_task_id": base_task_id,
         "task_id": task_id,
         "first_seen": first_seen,
         "last_seen": _iso(now),
         "count": count,
+        "recurrence_count": recurrence_count,
         "priority": "p0",
         "last_title": title.strip(),
         "last_message": _clip(message.strip(), 1200),
@@ -182,7 +214,35 @@ def _record_notification_locked(
 
     created = False
     updated = False
-    if task_path is None:
+    recurrence = False
+    recurrence_of_task_id = None
+    recurrence_of_task_path = None
+    if task_match is not None and task_match.closed:
+        recurrence = True
+        recurrence_count += 1
+        recurrence_of_task_id = task_id
+        recurrence_of_task_path = task_match.path
+        task_id = _available_recurrence_task_id(task_root, base_task_id, recurrence_count)
+        task_path = task_root / "active" / f"{task_id}-{_slugify(title, 48)}.md"
+        task_record.update(
+            {
+                "task_id": task_id,
+                "recurrence_count": recurrence_count,
+                "recurrence_of_task_id": recurrence_of_task_id,
+                "recurrence_of_task_path": str(recurrence_of_task_path),
+            }
+        )
+        _write_new_task(
+            task_path,
+            task_record,
+            title=title,
+            message=message,
+            now=now,
+            ledger_path=ledger_path,
+            state_path=state_path,
+        )
+        created = True
+    elif task_path is None:
         task_path = task_root / "active" / f"{task_id}-{_slugify(title, 48)}.md"
         _write_new_task(
             task_path,
@@ -195,10 +255,16 @@ def _record_notification_locked(
         )
         created = True
     else:
-        _update_existing_task(task_path, task_record, title=title, now=now)
+        _update_existing_task(task_path, task_record, title=title, message=message, now=now)
         updated = True
 
     task_record["task_path"] = str(task_path)
+    # Persist coalescing state FIRST: a ledger IO failure must NOT abort the state
+    # write, else the next identical alert re-mints -> re-flood. Fail-open on the ledger.
+    incidents[classification.fingerprint] = task_record
+    state["updated_at"] = _iso(now)
+    _store_state(state_path, state)
+    _rotate_ledger(ledger_path)
     appended = append_jsonl(
         ledger_path,
         {
@@ -213,16 +279,21 @@ def _record_notification_locked(
             "message": _clip(message.strip(), 1200),
             "tags": list(tags or []),
             "priority": priority,
+            "recurrence": recurrence,
+            "recurrence_count": recurrence_count,
+            "recurrence_of_task_id": recurrence_of_task_id,
+            "recurrence_of_task_path": str(recurrence_of_task_path)
+            if recurrence_of_task_path is not None
+            else None,
         },
         sort_keys=True,
-        raising=True,
+        raising=False,
     )
     if not appended:
-        raise RuntimeError(f"p0 incident ledger append failed: {ledger_path}")
-
-    incidents[classification.fingerprint] = task_record
-    state["updated_at"] = _iso(now)
-    _store_state(state_path, state)
+        log.warning(
+            "p0 incident ledger append failed (coalescing state persisted; continuing): %s",
+            ledger_path,
+        )
 
     return IntakeResult(
         technical=True,
@@ -234,6 +305,9 @@ def _record_notification_locked(
         replace_id=replace_id_for_fingerprint(classification.fingerprint),
         click_url=obsidian_task_uri(task_path),
         reason=classification.reason,
+        recurrence=recurrence,
+        recurrence_of_task_id=recurrence_of_task_id,
+        recurrence_of_task_path=recurrence_of_task_path,
     )
 
 
@@ -269,6 +343,9 @@ def _fingerprint_for(kind: str, title: str, message: str) -> str:
     if kind == "sdlc_invariant_violation":
         inv = re.search(r"\bINV-\d+\b", message)
         return f"{kind}:{inv.group(0) if inv else 'unknown'}"
+    if kind in {"sdlc_dispatch_refusal", "sdlc_dispatch_starvation", "sdlc_task_stalled"}:
+        task = re.search(r"\b(?:Task\s+)?([a-z0-9][a-z0-9_.-]{8,})\b", message)
+        return f"{kind}:{task.group(1) if task else _slugify(message, 80)}"
     if kind == "infra_registry_drift":
         return kind
     if kind == "lane_supervisor_alert":
@@ -333,6 +410,16 @@ def _load_state(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {"version": 1, "incidents": {}}
 
 
+def _rotate_ledger(path: Path, *, max_bytes: int = 8_000_000) -> None:
+    """Rotate the P0 incident ledger past max_bytes (keep one prior generation as .1).
+    Best-effort; a rotation failure must never block intake."""
+    try:
+        if path.exists() and path.stat().st_size >= max_bytes:
+            path.replace(path.with_name(path.name + ".1"))
+    except OSError:
+        log.warning("p0 incident ledger rotation failed (continuing): %s", path)
+
+
 def _store_state(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp_path_for(path)
@@ -340,12 +427,21 @@ def _store_state(path: Path, state: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def _find_task(task_root: Path, task_id: str) -> Path | None:
+def _find_task(task_root: Path, task_id: str) -> _TaskMatch | None:
     for subdir in ("active", "closed"):
         root = task_root / subdir
         for path in sorted(root.glob(f"{task_id}*.md")):
-            return path
+            return _TaskMatch(path=path, closed=subdir == "closed")
     return None
+
+
+def _available_recurrence_task_id(task_root: Path, base_task_id: str, recurrence_count: int) -> str:
+    candidate_count = recurrence_count
+    while True:
+        candidate = f"{base_task_id}-r{candidate_count}"
+        if _find_task(task_root, candidate) is None:
+            return candidate
+        candidate_count += 1
 
 
 def _write_new_task(
@@ -372,12 +468,16 @@ def _write_new_task(
     tmp.replace(path)
 
 
-def _update_existing_task(path: Path, record: dict[str, Any], *, title: str, now: datetime) -> None:
+def _update_existing_task(
+    path: Path, record: dict[str, Any], *, title: str, message: str, now: datetime
+) -> None:
     text = path.read_text(encoding="utf-8")
     text = _set_frontmatter_scalar(text, "updated_at", _iso(now))
     text = _set_frontmatter_scalar(text, "last_incident_at", _iso(now))
     text = _set_frontmatter_scalar(text, "incident_count", str(record["count"]))
     text = _set_frontmatter_scalar(text, "last_incident_fingerprint", record["fingerprint"])
+    latest_block = _render_latest_alert(record, title=title, message=message)
+    text = _replace_latest_alert(text, latest_block)
     log_line = (
         f"- {_iso(now)} p0-incident-intake updated from `{_clip(title, 96)}` "
         f"(count={record['count']})."
@@ -423,7 +523,10 @@ def _render_task(
     now_s = _iso(now)
     task_id = record["task_id"]
     task_title = f"P0 incident: {_clip(title, 90)}"
-    latest = _clip(message, 1800)
+    latest_alert = _render_latest_alert(record, title=title, message=message)
+    prior_context = _render_prior_incident_context(record)
+    recurrence_of_task_id = record.get("recurrence_of_task_id")
+    recurrence_of_task_path = record.get("recurrence_of_task_path")
     return f"""---
 type: cc-task
 task_id: {task_id}
@@ -490,6 +593,10 @@ mutation_scope_refs:
 incident_fingerprint: {record["fingerprint"]}
 incident_kind: {record["kind"]}
 incident_count: {record["count"]}
+incident_recurrence_count: {record.get("recurrence_count", 0)}
+base_incident_task_id: {record.get("base_task_id") or task_id}
+recurrence_of_task_id: {recurrence_of_task_id or "null"}
+recurrence_of_task_path: {_quote_yaml(str(recurrence_of_task_path)) if recurrence_of_task_path else "null"}
 first_incident_at: {record["first_seen"]}
 last_incident_at: {record["last_seen"]}
 last_incident_fingerprint: {record["fingerprint"]}
@@ -497,19 +604,8 @@ last_incident_fingerprint: {record["fingerprint"]}
 
 # {task_title}
 
-## Latest Alert
-
-- Title: `{title}`
-- Priority: `p0`
-- Kind: `{record["kind"]}`
-- Fingerprint: `{record["fingerprint"]}`
-- Count: {record["count"]}
-- First seen: `{record["first_seen"]}`
-- Last seen: `{record["last_seen"]}`
-
-```text
-{latest}
-```
+{latest_alert}
+{prior_context}
 
 ## Evidence
 
@@ -525,7 +621,151 @@ last_incident_fingerprint: {record["fingerprint"]}
 - [ ] Re-run the specific predicate that emitted the alert.
 - [ ] Verify no duplicate notification storm remains.
 
+## Acceptance criteria
+
+- [ ] Root cause, remediation or explicit refusal, and recurrence-prevention notes are written in `## Post-mortem`.
+- [ ] The specific alert predicate has been rechecked and its output is cited in `## Post-mortem`.
+- [ ] The P0 incident ledger/state were reviewed after remediation, including prior recurrence context when present.
+- [ ] Any follow-up work that remains is linked as a cc-task or explicitly refused with reason.
+
+## Post-mortem
+
+- Root cause:
+- Remediation or refusal:
+- Verification evidence:
+- Recurrence prevention:
+- Follow-up tasks:
+
 ## Session Log
 
 - {now_s} p0-incident-intake minted this task from technical notification `{_clip(title, 96)}`.
 """
+
+
+def _render_latest_alert(record: dict[str, Any], *, title: str, message: str) -> str:
+    latest = _clip(message, 1800)
+    return f"""## Latest Alert
+
+- Title: `{title}`
+- Priority: `p0`
+- Kind: `{record["kind"]}`
+- Fingerprint: `{record["fingerprint"]}`
+- Count: {record["count"]}
+- First seen: `{record["first_seen"]}`
+- Last seen: `{record["last_seen"]}`
+
+```text
+{latest}
+```
+"""
+
+
+def _replace_latest_alert(text: str, latest_block: str) -> str:
+    replacement = f"{latest_block.rstrip()}\n\n## Evidence\n"
+    updated, count = LATEST_ALERT_BLOCK_RE.subn(lambda _: replacement, text, count=1)
+    if count:
+        return updated
+    if "## Evidence\n" in text:
+        return text.replace("## Evidence\n", replacement, 1)
+    return f"{text.rstrip()}\n\n{latest_block.rstrip()}\n"
+
+
+def _render_prior_incident_context(record: dict[str, Any]) -> str:
+    prior_path_s = str(record.get("recurrence_of_task_path") or "").strip()
+    prior_task_id = str(record.get("recurrence_of_task_id") or "").strip()
+    if not prior_path_s:
+        return ""
+    prior_path = Path(prior_path_s)
+    try:
+        prior_text = prior_path.read_text(encoding="utf-8")
+    except OSError:
+        prior_text = ""
+    status = _frontmatter_value(prior_text, "status") or "unknown"
+    completed_at = _frontmatter_value(prior_text, "completed_at") or "unknown"
+    prior_count = _frontmatter_value(prior_text, "incident_count") or "unknown"
+    pr = _frontmatter_value(prior_text, "pr") or "unknown"
+    excerpt = _prior_resolution_excerpt(prior_text)
+    recurrence_count = record.get("recurrence_count", 1)
+    lines = [
+        "## Prior Incident Context",
+        "",
+        f"This alert recurred after prior task `{prior_task_id}` reached `{status}`.",
+        "",
+        f"- Recurrence number: {recurrence_count}",
+        f"- Prior task: `{prior_task_id}`",
+        f"- Prior note: `{prior_path}`",
+        f"- Prior completed_at: `{completed_at}`",
+        f"- Prior PR: `{pr}`",
+        f"- Prior incident count: `{prior_count}`",
+    ]
+    if excerpt:
+        lines.extend(
+            [
+                "",
+                "Prior resolution/post-mortem excerpt:",
+                "",
+                "```text",
+                excerpt,
+                "```",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "Prior resolution/post-mortem excerpt: missing. Treat that as part of this recurrence.",
+            ]
+        )
+    return "\n".join(lines) + "\n\n"
+
+
+def _frontmatter_value(text: str, key: str) -> str | None:
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 4)
+    if end < 0:
+        return None
+    front = text[4:end]
+    match = re.search(rf"(?m)^\s*{re.escape(key)}\s*:\s*(.*?)\s*$", front)
+    if not match:
+        return None
+    value = match.group(1).strip().strip('"').strip("'")
+    return value if value and value.lower() not in {"null", "none", "~"} else None
+
+
+def _prior_resolution_excerpt(text: str) -> str:
+    for heading in ("Resolution", "Post-mortem"):
+        section = _markdown_section(text, heading)
+        if section and not _section_is_placeholder(section):
+            return _clip(_strip_code_fence_confusion(section), 1200)
+    section = _markdown_section(text, "Session Log")
+    return _clip(_strip_code_fence_confusion(section), 700) if section else ""
+
+
+def _markdown_section(text: str, heading: str) -> str:
+    match = re.search(rf"(?im)^##[ \t]+{re.escape(heading)}(?:[ \t]+.*)?$", text)
+    if match is None:
+        return ""
+    start = match.end()
+    next_heading = re.search(r"(?m)^##\s+", text[start:])
+    end = start + next_heading.start() if next_heading else len(text)
+    return text[start:end].strip()
+
+
+def _strip_code_fence_confusion(text: str) -> str:
+    return text.replace("```", "'''").strip()
+
+
+def _section_is_placeholder(text: str) -> bool:
+    substantive = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line in {"```", "'''"}:
+            continue
+        if re.fullmatch(
+            r"-\s+(Root cause|Remediation or refusal|Verification evidence|Recurrence prevention|Follow-up tasks):",
+            line,
+        ):
+            continue
+        substantive.append(line)
+    return not substantive

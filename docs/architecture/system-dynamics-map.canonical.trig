@@ -1,0 +1,2728 @@
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sd: <https://hapax.local/ns/system-dynamics-map#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<https://hapax.local/system-dynamics-map/v1/graph/asserted> {
+<https://hapax.local/system-dynamics-map/v1/map>
+  a sd:SystemDynamicsMap ;
+  sd:mapId "system-dynamics-map-v1" ;
+  sd:version "1.0.0" ;
+  sd:defaultFocus <https://hapax.local/system-dynamics-map/v1/node/rdf-owl-kg> ;
+  sd:nodeCount "35"^^xsd:integer ;
+  sd:edgeCount "42"^^xsd:integer ;
+  dcterms:description "Faithful rendering of system dynamics requires a source-neutral semantic graph backbone with provenance, temporal state overlays, validation contracts, and reproducible view manifests. Modeling notations, runtime telemetry, event logs, and rendered views are inputs or projections, not the center." ;
+  prov:generatedAtTime "2026-06-18T00:00:00Z"^^xsd:dateTime .
+
+<https://hapax.local/system-dynamics-map/v1/layer/source-models>
+  a sd:Layer ;
+  sd:stableId "source-models" ;
+  rdfs:label "Source Models" ;
+  dcterms:description "Modeling languages and architecture views that can be lifted into the semantic backbone." .
+
+<https://hapax.local/system-dynamics-map/v1/layer/decision-modeling>
+  a sd:Layer ;
+  sd:stableId "decision-modeling" ;
+  rdfs:label "Decision Modeling Source" ;
+  dcterms:description "Decision modeling concepts are one source-model family, not the global map center." .
+
+<https://hapax.local/system-dynamics-map/v1/layer/execution-surfaces>
+  a sd:Layer ;
+  sd:stableId "execution-surfaces" ;
+  rdfs:label "Execution And Artifacts" ;
+  dcterms:description "Interchange formats, model artifacts, rule/runtime targets, and callable service boundaries." .
+
+<https://hapax.local/system-dynamics-map/v1/layer/semantic-backbone>
+  a sd:Layer ;
+  sd:stableId "semantic-backbone" ;
+  rdfs:label "Semantic Backbone" ;
+  dcterms:description "Canonical graph identity, validation, provenance, and exchange contracts." .
+
+<https://hapax.local/system-dynamics-map/v1/layer/observation-state>
+  a sd:Layer ;
+  sd:stableId "observation-state" ;
+  rdfs:label "Observation And State" ;
+  dcterms:description "State machines, event logs, telemetry, traces, temporal evidence, and event envelopes." .
+
+<https://hapax.local/system-dynamics-map/v1/layer/projection>
+  a sd:Layer ;
+  sd:stableId "projection" ;
+  rdfs:label "Projection" ;
+  dcterms:description "View manifests and visualization engines that project validated graph snapshots." .
+
+<https://hapax.local/system-dynamics-map/v1/scale/overview>
+  a sd:ViewScale ;
+  sd:stableId "overview" ;
+  sd:resolution "1"^^xsd:integer ;
+  rdfs:label "Overview" ;
+  dcterms:description "System-level purpose, backbone, and major modeling families." .
+
+<https://hapax.local/system-dynamics-map/v1/scale/domain>
+  a sd:ViewScale ;
+  sd:stableId "domain" ;
+  sd:resolution "2"^^xsd:integer ;
+  rdfs:label "Domain" ;
+  dcterms:description "Source-model families, runtime surfaces, and semantic contracts." .
+
+<https://hapax.local/system-dynamics-map/v1/scale/artifact>
+  a sd:ViewScale ;
+  sd:stableId "artifact" ;
+  sd:resolution "3"^^xsd:integer ;
+  rdfs:label "Artifact" ;
+  dcterms:description "Concrete model artifacts, interchange formats, and contracts." .
+
+<https://hapax.local/system-dynamics-map/v1/scale/runtime>
+  a sd:ViewScale ;
+  sd:stableId "runtime" ;
+  sd:resolution "4"^^xsd:integer ;
+  rdfs:label "Runtime" ;
+  dcterms:description "Execution surfaces, event streams, telemetry, and service boundaries." .
+
+<https://hapax.local/system-dynamics-map/v1/scale/evidence>
+  a sd:ViewScale ;
+  sd:stableId "evidence" ;
+  sd:resolution "5"^^xsd:integer ;
+  rdfs:label "Evidence" ;
+  dcterms:description "Observations, provenance, validation results, and rendered view records." .
+
+<https://hapax.local/system-dynamics-map/v1/partition/asserted>
+  a sd:ClaimPartition ;
+  sd:status "asserted" ;
+  sd:namedGraph <https://hapax.local/system-dynamics-map/v1/graph/asserted> .
+
+<https://hapax.local/system-dynamics-map/v1/node/rdf-owl-kg>
+  a sd:Node ;
+  sd:stableId "rdf-owl-kg" ;
+  rdfs:label "RDF / OWL Knowledge Graph" ;
+  sd:kind "backbone" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/semantic-backbone> ;
+  sd:resolution "1"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "Canonical semantic backbone for system identity, topology, claims, and cross-source relationships." ;
+  sd:context "RDF/OWL-style identity gives the map a source-neutral backbone. Source models, observations, simulations, and rendered views attach to shared identities without making any notation the center." ;
+  sd:documentationLink <https://www.w3.org/TR/rdf12-concepts/>, <https://www.w3.org/TR/owl2-overview/> ;
+  sd:hardeningNote "Use named graphs for asserted, inferred, observed, simulated, and rendered claims." ;
+  sd:hardeningNote "Map source-model identifiers to stable IRIs." ;
+  sd:alias "semantic backbone" ;
+  sd:alias "knowledge graph" ;
+  sd:tag "semantic-core" ;
+  sd:tag "identity" .
+
+<https://hapax.local/system-dynamics-map/v1/node/shacl-contracts>
+  a sd:Node ;
+  sd:stableId "shacl-contracts" ;
+  rdfs:label "SHACL Contracts" ;
+  sd:kind "validation" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/semantic-backbone> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "Graph validation shapes and quality gates." ;
+  sd:context "SHACL constrains the graph before data or projections are treated as trustworthy." ;
+  sd:documentationLink <https://www.w3.org/TR/shacl/>, <https://www.w3.org/TR/shacl12-core/> ;
+  sd:hardeningNote "Validate relation vocabulary, required provenance, status values, temporal bounds, and render-manifest completeness." ;
+  sd:alias "shape constraints" ;
+  sd:tag "validation" ;
+  sd:tag "contracts" .
+
+<https://hapax.local/system-dynamics-map/v1/node/prov-o>
+  a sd:Node ;
+  sd:stableId "prov-o" ;
+  rdfs:label "PROV-O" ;
+  sd:kind "provenance" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/semantic-backbone> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "Provenance ontology for agents, activities, and entities." ;
+  sd:context "PROV-O records where a claim came from, who or what generated it, and which source or transformation it depends on." ;
+  sd:documentationLink <https://www.w3.org/TR/prov-o/> ;
+  sd:hardeningNote "Require provenance for imports, inferred edges, simulated states, and rendered views." ;
+  sd:alias "provenance ontology" ;
+  sd:tag "provenance" ;
+  sd:tag "evidence" .
+
+<https://hapax.local/system-dynamics-map/v1/node/jsonld-trig>
+  a sd:Node ;
+  sd:stableId "jsonld-trig" ;
+  rdfs:label "JSON-LD / TriG" ;
+  sd:kind "exchange" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/semantic-backbone> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "Portable graph and named graph exchange formats." ;
+  sd:context "JSON-LD is useful for web-facing exchange. TriG is useful when named graph partitions need to be serialized directly." ;
+  sd:documentationLink <https://www.w3.org/TR/json-ld11/>, <https://www.w3.org/TR/rdf12-concepts/> ;
+  sd:hardeningNote "Version contexts and keep view data derivable from canonical graph snapshots." ;
+  sd:alias "graph exchange" ;
+  sd:tag "exchange" ;
+  sd:tag "serialization" .
+
+<https://hapax.local/system-dynamics-map/v1/node/temporal-state-events>
+  a sd:Node ;
+  sd:stableId "temporal-state-events" ;
+  rdfs:label "Temporal State / Events" ;
+  sd:kind "modeling-pattern" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/observation-state> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "Pattern for representing state as time-bounded evidence." ;
+  sd:context "Topology and state should not be conflated. Current state is derived from observations and events with timestamps, source, confidence, and expiry." ;
+  sd:documentationLink <https://www.w3.org/TR/owl-time/> ;
+  sd:hardeningNote "Represent state transitions and observed state separately from static model structure." ;
+  sd:alias "state overlay" ;
+  sd:alias "event overlay" ;
+  sd:tag "state" ;
+  sd:tag "time" .
+
+<https://hapax.local/system-dynamics-map/v1/node/opentelemetry>
+  a sd:Node ;
+  sd:stableId "opentelemetry" ;
+  rdfs:label "OpenTelemetry" ;
+  sd:kind "telemetry" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/observation-state> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "Telemetry conventions for traces, metrics, logs, profiles, and resources." ;
+  sd:context "OpenTelemetry gives runtime observation vocabulary. It should feed observed graph overlays, not overwrite the design graph." ;
+  sd:documentationLink <https://opentelemetry.io/docs/concepts/semantic-conventions/> ;
+  sd:hardeningNote "Attach telemetry to runtime identities with time bounds, resource identity, sampling metadata, and confidence." ;
+  sd:alias "OTel" ;
+  sd:tag "telemetry" ;
+  sd:tag "observability" .
+
+<https://hapax.local/system-dynamics-map/v1/node/trace-context>
+  a sd:Node ;
+  sd:stableId "trace-context" ;
+  rdfs:label "Trace Context" ;
+  sd:kind "standard" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/observation-state> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "Distributed trace propagation format." ;
+  sd:context "Trace Context helps correlate observed runtime behavior across service boundaries." ;
+  sd:documentationLink <https://www.w3.org/TR/trace-context/> ;
+  sd:hardeningNote "Use trace IDs as evidence correlation keys, not canonical architectural identity." ;
+  sd:alias "traceparent" ;
+  sd:alias "tracestate" ;
+  sd:tag "trace" ;
+  sd:tag "observability" .
+
+<https://hapax.local/system-dynamics-map/v1/node/cloudevents>
+  a sd:Node ;
+  sd:stableId "cloudevents" ;
+  rdfs:label "CloudEvents" ;
+  sd:kind "standard" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/observation-state> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "Common event metadata envelope." ;
+  sd:context "CloudEvents-style envelopes can normalize event metadata flowing into the observation graph." ;
+  sd:documentationLink <https://cloudevents.io/> ;
+  sd:hardeningNote "Preserve original event payload, envelope attributes, source, subject, and schema references." ;
+  sd:alias "event envelope" ;
+  sd:tag "event" ;
+  sd:tag "interoperability" .
+
+<https://hapax.local/system-dynamics-map/v1/node/decision-service>
+  a sd:Node ;
+  sd:stableId "decision-service" ;
+  rdfs:label "Decision Service" ;
+  sd:kind "boundary" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/decision-modeling> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "A callable packaging boundary for decisions." ;
+  sd:context "Decision services expose decisions for invocation by process, case, application, or runtime architecture components." ;
+  sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN> ;
+  sd:hardeningNote "Separate design-time decision service boundaries from deployed API endpoints." ;
+  sd:alias "DMN decision service" ;
+  sd:tag "decision" ;
+  sd:tag "service" .
+
+<https://hapax.local/system-dynamics-map/v1/node/decision-table>
+  a sd:Node ;
+  sd:stableId "decision-table" ;
+  rdfs:label "Decision Table" ;
+  sd:kind "artifact" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/decision-modeling> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "Tabular decision logic used by DMN." ;
+  sd:context "Decision tables are common DMN logic artifacts and often become executable rule assets." ;
+  sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN> ;
+  sd:hardeningNote "Track hit policy, type constraints, FEEL expressions, and test coverage." ;
+  sd:alias "DMN table" ;
+  sd:tag "decision" ;
+  sd:tag "rules" .
+
+<https://hapax.local/system-dynamics-map/v1/node/dmn>
+  a sd:Node ;
+  sd:stableId "dmn" ;
+  rdfs:label "DMN" ;
+  sd:kind "standard" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/decision-modeling> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "Decision Model and Notation as one decision-modeling source family." ;
+  sd:context "DMN models decision requirements and executable decision logic. It is valuable as a source model for decision dependencies, but it is not the default focus, layout root, or universal representation for topology, state, telemetry, and provenance." ;
+  sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN>, <https://www.omg.org/spec/DMN/1.6/Beta1/About-DMN> ;
+  sd:hardeningNote "Treat DMN decisions as one claim type in the graph, not as the global model." ;
+  sd:hardeningNote "Preserve DMN version, namespace, source document, and import provenance." ;
+  sd:alias "Decision Model and Notation" ;
+  sd:tag "decision" .
+
+<https://hapax.local/system-dynamics-map/v1/node/drd>
+  a sd:Node ;
+  sd:stableId "drd" ;
+  rdfs:label "DRD / DRG" ;
+  sd:kind "notation" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/decision-modeling> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "DMN decision requirement diagrams and decision requirement graphs." ;
+  sd:context "DRDs show dependency between decisions, input data, business knowledge, and knowledge sources. They are not runtime event graphs." ;
+  sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN> ;
+  sd:hardeningNote "Do not infer process sequence or runtime causality from a DRD edge without evidence." ;
+  sd:alias "Decision Requirements Diagram" ;
+  sd:alias "Decision Requirements Graph" ;
+  sd:tag "decision" ;
+  sd:tag "dependency" .
+
+<https://hapax.local/system-dynamics-map/v1/node/feel>
+  a sd:Node ;
+  sd:stableId "feel" ;
+  rdfs:label "FEEL" ;
+  sd:kind "language" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/decision-modeling> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "Friendly Enough Expression Language used by DMN." ;
+  sd:context "FEEL is the expression language side of DMN. Runtime portability depends on precise FEEL support and version handling." ;
+  sd:documentationLink <https://www.omg.org/spec/DMN/1.6/Beta1/About-DMN> ;
+  sd:hardeningNote "Record FEEL dialect/version support for each runtime before marking a decision executable." ;
+  sd:alias "Friendly Enough Expression Language" ;
+  sd:tag "language" ;
+  sd:tag "expression" .
+
+<https://hapax.local/system-dynamics-map/v1/node/dmn-xml-di>
+  a sd:Node ;
+  sd:stableId "dmn-xml-di" ;
+  rdfs:label "DMN XML / DI" ;
+  sd:kind "interchange" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/execution-surfaces> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "DMN interchange and diagram information for a decision-modeling source." ;
+  sd:context "DMN XML and diagram interchange preserve model content and layout metadata across tools." ;
+  sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN> ;
+  sd:hardeningNote "Preserve namespace, schema version, diagram coordinates, and original bytes hash." ;
+  sd:alias "DMN interchange" ;
+  sd:tag "interchange" ;
+  sd:tag "execution-surface" .
+
+<https://hapax.local/system-dynamics-map/v1/node/archimate>
+  a sd:Node ;
+  sd:stableId "archimate" ;
+  rdfs:label "ArchiMate" ;
+  sd:kind "standard" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/source-models> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "Enterprise architecture modeling language." ;
+  sd:context "ArchiMate contributes business, application, technology, motivation, strategy, and implementation context to the semantic backbone." ;
+  sd:documentationLink <https://www.opengroup.org/archimate-forum/archimate-overview>, <https://www.opengroup.org/archimate-licensed-downloads> ;
+  sd:hardeningNote "Use ArchiMate for enterprise context, not for low-level runtime state." ;
+  sd:alias "ArchiMate enterprise architecture" ;
+  sd:tag "enterprise" ;
+  sd:tag "source-model" .
+
+<https://hapax.local/system-dynamics-map/v1/node/bpmn>
+  a sd:Node ;
+  sd:stableId "bpmn" ;
+  rdfs:label "BPMN" ;
+  sd:kind "standard" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/source-models> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "Business Process Model and Notation for process flow." ;
+  sd:context "BPMN process models can invoke or route through decision services, produce event evidence, and supply process context for the semantic backbone." ;
+  sd:documentationLink <https://www.omg.org/spec/BPMN/2.0.2/> ;
+  sd:hardeningNote "Do not treat BPMN sequence flow as proof of actual runtime ordering without event evidence." ;
+  sd:alias "Business Process Model and Notation" ;
+  sd:tag "process" ;
+  sd:tag "source-model" .
+
+<https://hapax.local/system-dynamics-map/v1/node/cmmn>
+  a sd:Node ;
+  sd:stableId "cmmn" ;
+  rdfs:label "CMMN" ;
+  sd:kind "standard" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/source-models> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "Case Management Model and Notation for case plans." ;
+  sd:context "CMMN covers less prescriptive, case-oriented work that can use decisions without fitting a strict process flow or becoming the global map center." ;
+  sd:documentationLink <https://www.omg.org/spec/CMMN/1.1/About-CMMN> ;
+  sd:hardeningNote "Represent discretionary case behavior separately from deterministic process paths." ;
+  sd:alias "Case Management Model and Notation" ;
+  sd:tag "case" ;
+  sd:tag "source-model" .
+
+<https://hapax.local/system-dynamics-map/v1/node/sysml-v2>
+  a sd:Node ;
+  sd:stableId "sysml-v2" ;
+  rdfs:label "SysML v2" ;
+  sd:kind "standard" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/source-models> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "Systems modeling language for MBSE." ;
+  sd:context "SysML v2 contributes requirements, structure, behavior, analysis, and verification context to system dynamics views." ;
+  sd:documentationLink <https://www.omg.org/spec/SysML/2.0/About-SysML> ;
+  sd:hardeningNote "Keep engineering requirement/verification evidence distinct from business decision dependencies." ;
+  sd:alias "OMG System Modeling Language" ;
+  sd:tag "systems" ;
+  sd:tag "source-model" .
+
+<https://hapax.local/system-dynamics-map/v1/node/sdlc-intake>
+  a sd:Node ;
+  sd:stableId "sdlc-intake" ;
+  rdfs:label "SDLC Intake" ;
+  sd:kind "operating-slice" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/observation-state> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "Concrete Hapax operating slice for work intake, claim, review, PR, CI, and release state." ;
+  sd:context "The v1 map needs at least one real operating slice, not just a standards taxonomy. SDLC intake is a useful slice because it has tasks, claim files, review dossiers, PR state, CI checks, merge evidence, and stale/drift concepts." ;
+  sd:documentationLink <https://github.com/hapax-systems/hapax-council/blob/main/CLAUDE.md#cc-task-tracking> ;
+  sd:hardeningNote "Treat SDLC state as observed evidence over task and PR sources, not as an authority writer." ;
+  sd:alias "task intake" ;
+  sd:alias "operating slice" ;
+  sd:tag "sdlc" ;
+  sd:tag "operating-slice" .
+
+<https://hapax.local/system-dynamics-map/v1/node/cc-task-claim>
+  a sd:Node ;
+  sd:stableId "cc-task-claim" ;
+  rdfs:label "cc-task Claim" ;
+  sd:kind "state-transition" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/observation-state> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "Claim transition that binds a governed task to a lane/session before mutation." ;
+  sd:context "A claim record turns operator intent into authorized implementation work. The graph should show claim state, claimant, timestamp, route evidence, and whether the claim is stale." ;
+  sd:documentationLink <https://github.com/hapax-systems/hapax-council/blob/main/CLAUDE.md#cc-task-tracking> ;
+  sd:hardeningNote "Observe claim state from task notes and claim files; do not infer authority from prose alone." ;
+  sd:alias "claim gate" ;
+  sd:alias "task claim" ;
+  sd:tag "sdlc" ;
+  sd:tag "claim" .
+
+<https://hapax.local/system-dynamics-map/v1/node/review-dossier>
+  a sd:Node ;
+  sd:stableId "review-dossier" ;
+  rdfs:label "Review Dossier" ;
+  sd:kind "evidence-artifact" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/semantic-backbone> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "Structured review artifact that records reviewer findings, acceptance, escalation, and evidence." ;
+  sd:context "Review dossiers are evidence-bearing artifacts. The map should expose which claim or PR they review, what accepted it, and whether any acceptance is degraded or stale." ;
+  sd:documentationLink <https://github.com/hapax-systems/hapax-council/blob/main/scripts/review_team.py> ;
+  sd:hardeningNote "Keep review verdict, acceptance receipt, and merge evidence as distinct claims." ;
+  sd:alias "review receipt" ;
+  sd:alias "acceptance dossier" ;
+  sd:tag "review" ;
+  sd:tag "evidence" .
+
+<https://hapax.local/system-dynamics-map/v1/node/pr-ci-checks>
+  a sd:Node ;
+  sd:stableId "pr-ci-checks" ;
+  rdfs:label "PR / CI Checks" ;
+  sd:kind "release-signal" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/execution-surfaces> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "Pull request and CI check state used by release gates." ;
+  sd:context "PR state and check runs provide observed release readiness signals. They must stay separate from the underlying task and review claims because they can lag or fail independently." ;
+  sd:documentationLink <https://docs.github.com/en/pull-requests>, <https://docs.github.com/en/actions> ;
+  sd:hardeningNote "Record check conclusion, head SHA, merge queue state, and observed time before treating release state as current." ;
+  sd:alias "CI" ;
+  sd:alias "pull request checks" ;
+  sd:tag "sdlc" ;
+  sd:tag "release" .
+
+<https://hapax.local/system-dynamics-map/v1/node/merge-release>
+  a sd:Node ;
+  sd:stableId "merge-release" ;
+  rdfs:label "Merge / Release Evidence" ;
+  sd:kind "state-transition" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/execution-surfaces> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "asserted" ;
+  dcterms:description "Merged PR, release stage, and closure evidence that terminates a governed work slice." ;
+  sd:context "A task is not durably complete until release evidence, merge state, acceptance receipt, and cc-close state converge." ;
+  sd:documentationLink <https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges> ;
+  sd:hardeningNote "Link merge commit, task close, acceptance receipt, and generated artifacts in one auditable path." ;
+  sd:alias "release closure" ;
+  sd:alias "merge evidence" ;
+  sd:tag "sdlc" ;
+  sd:tag "release" .
+
+<https://hapax.local/system-dynamics-map/v1/edge/dmn-to-drd>
+  a sd:Edge ;
+  sd:stableId "dmn-to-drd" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/dmn> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/drd> ;
+  sd:relation "defines" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/decision-modeling> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  dcterms:description "DMN includes decision requirement diagrams/graphs." ;
+  sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/dmn-to-feel>
+  a sd:Edge ;
+  sd:stableId "dmn-to-feel" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/dmn> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/feel> ;
+  sd:relation "uses_expression_language" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/decision-modeling> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  dcterms:description "DMN uses FEEL for expressions." ;
+  sd:documentationLink <https://www.omg.org/spec/DMN/1.6/Beta1/About-DMN> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/dmn-to-decision-service>
+  a sd:Edge ;
+  sd:stableId "dmn-to-decision-service" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/dmn> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/decision-service> ;
+  sd:relation "packages" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/decision-modeling> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "0.95"^^xsd:decimal ;
+  dcterms:description "DMN can package decision behavior as decision services." ;
+  sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/dmn-to-decision-table>
+  a sd:Edge ;
+  sd:stableId "dmn-to-decision-table" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/dmn> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/decision-table> ;
+  sd:relation "contains_logic_artifact" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/decision-modeling> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  dcterms:description "Decision tables are common DMN logic artifacts." ;
+  sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/bpmn-to-decision-service>
+  a sd:Edge ;
+  sd:stableId "bpmn-to-decision-service" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/bpmn> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/decision-service> ;
+  sd:relation "invokes_or_contextualizes" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/source-models> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "0.95"^^xsd:decimal ;
+  dcterms:description "Business processes can invoke or depend on decision service boundaries." ;
+  sd:documentationLink <https://www.omg.org/spec/BPMN/2.0.2/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/cmmn-to-decision-service>
+  a sd:Edge ;
+  sd:stableId "cmmn-to-decision-service" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/cmmn> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/decision-service> ;
+  sd:relation "invokes_or_contextualizes" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/source-models> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "0.9"^^xsd:decimal ;
+  dcterms:description "Case management contexts can invoke decisions without strict process sequencing." ;
+  sd:documentationLink <https://www.omg.org/spec/CMMN/1.1/About-CMMN> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/archimate-to-runtime-topology>
+  a sd:Edge ;
+  sd:stableId "archimate-to-runtime-topology" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/archimate> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/c4-runtime> ;
+  sd:relation "enterprise_context_for" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/source-models> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "0.86"^^xsd:decimal ;
+  dcterms:description "Enterprise architecture contextualizes capabilities, applications, and runtime topology." ;
+  sd:documentationLink <https://www.opengroup.org/archimate-forum/archimate-overview> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/dmn-to-xml-di>
+  a sd:Edge ;
+  sd:stableId "dmn-to-xml-di" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/dmn> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/dmn-xml-di> ;
+  sd:relation "serialized_as" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/execution-surfaces> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "0.96"^^xsd:decimal ;
+  dcterms:description "DMN models are interchanged as XML with diagram information." ;
+  sd:documentationLink <https://www.omg.org/spec/DMN/1.5/About-DMN> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/dmn-to-kg>
+  a sd:Edge ;
+  sd:stableId "dmn-to-kg" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/dmn> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/rdf-owl-kg> ;
+  sd:relation "mapped_into" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/semantic-backbone> ;
+  sd:resolution "1"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "0.93"^^xsd:decimal ;
+  dcterms:description "DMN source-model identities and relationships should be lifted into the canonical semantic graph." ;
+  sd:documentationLink <https://www.w3.org/TR/rdf12-concepts/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/kg-to-shacl>
+  a sd:Edge ;
+  sd:stableId "kg-to-shacl" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/rdf-owl-kg> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/shacl-contracts> ;
+  sd:relation "validated_by" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/semantic-backbone> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  dcterms:description "Graph snapshots should pass shape validation before trusted rendering." ;
+  sd:documentationLink <https://www.w3.org/TR/shacl/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/kg-to-prov>
+  a sd:Edge ;
+  sd:stableId "kg-to-prov" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/rdf-owl-kg> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/prov-o> ;
+  sd:relation "qualified_by" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/semantic-backbone> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  dcterms:description "Graph claims need provenance for imports, mappings, observations, and render outputs." ;
+  sd:documentationLink <https://www.w3.org/TR/prov-o/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/kg-to-jsonld>
+  a sd:Edge ;
+  sd:stableId "kg-to-jsonld" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/rdf-owl-kg> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/jsonld-trig> ;
+  sd:relation "serialized_as" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/semantic-backbone> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "0.96"^^xsd:decimal ;
+  dcterms:description "Graph snapshots should have portable exchange forms." ;
+  sd:documentationLink <https://www.w3.org/TR/json-ld11/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/state-to-kg>
+  a sd:Edge ;
+  sd:stableId "state-to-kg" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/temporal-state-events> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/rdf-owl-kg> ;
+  sd:relation "overlays" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/observation-state> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "0.94"^^xsd:decimal ;
+  dcterms:description "Temporal state/event evidence overlays the canonical identity graph." ;
+  sd:documentationLink <https://www.w3.org/TR/owl-time/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/api-to-otel>
+  a sd:Edge ;
+  sd:stableId "api-to-otel" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/runtime-decision-api> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/opentelemetry> ;
+  sd:relation "emits_telemetry" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/observation-state> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "0.82"^^xsd:decimal ;
+  dcterms:description "Runtime services should emit telemetry that can be correlated to system topology and claims." ;
+  sd:documentationLink <https://opentelemetry.io/docs/concepts/semantic-conventions/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/api-to-trace-context>
+  a sd:Edge ;
+  sd:stableId "api-to-trace-context" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/runtime-decision-api> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/trace-context> ;
+  sd:relation "propagates_trace_identity" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/observation-state> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "0.82"^^xsd:decimal ;
+  dcterms:description "Trace Context correlates runtime evaluation behavior across service calls." ;
+  sd:documentationLink <https://www.w3.org/TR/trace-context/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/otel-to-kg>
+  a sd:Edge ;
+  sd:stableId "otel-to-kg" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/opentelemetry> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/rdf-owl-kg> ;
+  sd:relation "observes" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/observation-state> ;
+  sd:resolution "5"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "0.8"^^xsd:decimal ;
+  dcterms:description "Telemetry evidence should attach to canonical runtime identities." ;
+  sd:documentationLink <https://opentelemetry.io/docs/concepts/semantic-conventions/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/shacl-to-view-manifest>
+  a sd:Edge ;
+  sd:stableId "shacl-to-view-manifest" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/shacl-contracts> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/view-manifest> ;
+  sd:relation "guards" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/projection> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "0.92"^^xsd:decimal ;
+  dcterms:description "View manifests should be generated only from validated graph snapshots." ;
+  sd:documentationLink <https://www.w3.org/TR/shacl/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/sdlc-intake-to-claim>
+  a sd:Edge ;
+  sd:stableId "sdlc-intake-to-claim" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/sdlc-intake> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/cc-task-claim> ;
+  sd:relation "advances_to" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/observation-state> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "0.95"^^xsd:decimal ;
+  dcterms:description "Governed intake advances to a claimed task before source mutation." ;
+  sd:documentationLink <https://github.com/hapax-systems/hapax-council/blob/main/CLAUDE.md#cc-task-tracking> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/claim-to-review-dossier>
+  a sd:Edge ;
+  sd:stableId "claim-to-review-dossier" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/cc-task-claim> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/review-dossier> ;
+  sd:relation "produces_evidence" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/semantic-backbone> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "0.9"^^xsd:decimal ;
+  dcterms:description "Claimed implementation produces review evidence before release." ;
+  sd:documentationLink <https://github.com/hapax-systems/hapax-council/blob/main/scripts/review_team.py> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/review-dossier-to-pr-ci>
+  a sd:Edge ;
+  sd:stableId "review-dossier-to-pr-ci" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/review-dossier> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/pr-ci-checks> ;
+  sd:relation "guards_release" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/execution-surfaces> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "0.9"^^xsd:decimal ;
+  dcterms:description "Review acceptance and CI results jointly guard release readiness." ;
+  sd:documentationLink <https://docs.github.com/en/actions> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/pr-ci-to-merge-release>
+  a sd:Edge ;
+  sd:stableId "pr-ci-to-merge-release" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/pr-ci-checks> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/merge-release> ;
+  sd:relation "admits_release" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/execution-surfaces> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "0.88"^^xsd:decimal ;
+  dcterms:description "Passing PR and CI evidence admits a merge/release transition." ;
+  sd:documentationLink <https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/temporal-state-to-sdlc>
+  a sd:Edge ;
+  sd:stableId "temporal-state-to-sdlc" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/temporal-state-events> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/sdlc-intake> ;
+  sd:relation "models_observed_state" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/observation-state> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "0.88"^^xsd:decimal ;
+  dcterms:description "Temporal state records make SDLC status inspectable as evidence instead of static labels." ;
+  sd:documentationLink <https://www.w3.org/TR/owl-time/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/prov-to-review-dossier>
+  a sd:Edge ;
+  sd:stableId "prov-to-review-dossier" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/prov-o> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/review-dossier> ;
+  sd:relation "records_generation_of" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/semantic-backbone> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "asserted" ;
+  sd:confidence "0.9"^^xsd:decimal ;
+  dcterms:description "Review dossiers should record the activity and evidence that generated an acceptance claim." ;
+  sd:documentationLink <https://www.w3.org/TR/prov-o/> .
+}
+
+<https://hapax.local/system-dynamics-map/v1/graph/inferred> {
+<https://hapax.local/system-dynamics-map/v1/partition/inferred>
+  a sd:ClaimPartition ;
+  sd:status "inferred" ;
+  sd:namedGraph <https://hapax.local/system-dynamics-map/v1/graph/inferred> .
+}
+
+<https://hapax.local/system-dynamics-map/v1/graph/observed> {
+<https://hapax.local/system-dynamics-map/v1/partition/observed>
+  a sd:ClaimPartition ;
+  sd:status "observed" ;
+  sd:namedGraph <https://hapax.local/system-dynamics-map/v1/graph/observed> .
+
+<https://hapax.local/system-dynamics-map/v1/observation/obs-sdlc-intake-offered>
+  a sd:Observation ;
+  sd:stableId "obs-sdlc-intake-offered" ;
+  sd:observationSubject <https://hapax.local/system-dynamics-map/v1/node/sdlc-intake> ;
+  sd:state "offered" ;
+  sd:observedAt "2026-06-18T14:56:02Z"^^xsd:dateTime ;
+  sd:validFrom "2026-06-18T14:56:02Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T14:56:02Z"^^xsd:dateTime ;
+  sd:freshness "fresh" ;
+  prov:wasDerivedFrom "docs/architecture/system-dynamics-map-v1.md" ;
+  sd:expiresAt "2030-01-01T00:00:00Z"^^xsd:dateTime .
+
+<https://hapax.local/system-dynamics-map/v1/observation/obs-cc-task-claimed>
+  a sd:Observation ;
+  sd:stableId "obs-cc-task-claimed" ;
+  sd:observationSubject <https://hapax.local/system-dynamics-map/v1/node/cc-task-claim> ;
+  sd:state "claimed" ;
+  sd:observedAt "2026-06-18T14:56:02Z"^^xsd:dateTime ;
+  sd:validFrom "2026-06-18T14:56:02Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T14:56:02Z"^^xsd:dateTime ;
+  sd:freshness "fresh" ;
+  prov:wasDerivedFrom "scripts/cc-claim" ;
+  sd:expiresAt "2030-01-01T00:00:00Z"^^xsd:dateTime .
+
+<https://hapax.local/system-dynamics-map/v1/observation/obs-review-pending>
+  a sd:Observation ;
+  sd:stableId "obs-review-pending" ;
+  sd:observationSubject <https://hapax.local/system-dynamics-map/v1/node/review-dossier> ;
+  sd:state "pending" ;
+  sd:observedAt "2026-06-18T14:56:02Z"^^xsd:dateTime ;
+  sd:validFrom "2026-06-18T14:56:02Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T14:56:02Z"^^xsd:dateTime ;
+  sd:freshness "fresh" ;
+  prov:wasDerivedFrom "scripts/review_team.py" ;
+  sd:expiresAt "2030-01-01T00:00:00Z"^^xsd:dateTime .
+
+<https://hapax.local/system-dynamics-map/v1/observation/obs-pr-ci-not-open>
+  a sd:Observation ;
+  sd:stableId "obs-pr-ci-not-open" ;
+  sd:observationSubject <https://hapax.local/system-dynamics-map/v1/node/pr-ci-checks> ;
+  sd:state "not_open" ;
+  sd:observedAt "2026-06-18T14:56:02Z"^^xsd:dateTime ;
+  sd:validFrom "2026-06-18T14:56:02Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T14:56:02Z"^^xsd:dateTime ;
+  sd:freshness "fresh" ;
+  prov:wasDerivedFrom "https://github.com/hapax-systems/hapax-council/pull/4179" ;
+  sd:expiresAt "2030-01-01T00:00:00Z"^^xsd:dateTime .
+
+<https://hapax.local/system-dynamics-map/v1/observation/obs-release-not-ready>
+  a sd:Observation ;
+  sd:stableId "obs-release-not-ready" ;
+  sd:observationSubject <https://hapax.local/system-dynamics-map/v1/node/merge-release> ;
+  sd:state "not_released" ;
+  sd:observedAt "2026-06-18T14:56:02Z"^^xsd:dateTime ;
+  sd:validFrom "2026-06-18T14:56:02Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T14:56:02Z"^^xsd:dateTime ;
+  sd:freshness "fresh" ;
+  prov:wasDerivedFrom "https://github.com/hapax-systems/hapax-council/commit/1522faae8212ddbc63da64140a12f86117f30c2d" ;
+  sd:expiresAt "2030-01-01T00:00:00Z"^^xsd:dateTime .
+
+<https://hapax.local/system-dynamics-map/v1/observation/obs-view-manifest-stale-fixture>
+  a sd:Observation ;
+  sd:stableId "obs-view-manifest-stale-fixture" ;
+  sd:observationSubject <https://hapax.local/system-dynamics-map/v1/node/view-manifest> ;
+  sd:state "stale_fixture" ;
+  sd:observedAt "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T14:56:02Z"^^xsd:dateTime ;
+  sd:freshness "stale" ;
+  prov:wasDerivedFrom "docs/architecture/system-dynamics-map.seed.json" ;
+  sd:validTo "2026-06-18T01:00:00Z"^^xsd:dateTime ;
+  sd:expiresAt "2026-06-18T01:00:00Z"^^xsd:dateTime .
+}
+
+<https://hapax.local/system-dynamics-map/v1/graph/simulated> {
+<https://hapax.local/system-dynamics-map/v1/partition/simulated>
+  a sd:ClaimPartition ;
+  sd:status "simulated" ;
+  sd:namedGraph <https://hapax.local/system-dynamics-map/v1/graph/simulated> .
+}
+
+<https://hapax.local/system-dynamics-map/v1/graph/rendered> {
+<https://hapax.local/system-dynamics-map/v1/partition/rendered>
+  a sd:ClaimPartition ;
+  sd:status "rendered" ;
+  sd:namedGraph <https://hapax.local/system-dynamics-map/v1/graph/rendered> .
+
+<https://hapax.local/system-dynamics-map/v1/node/view-manifest>
+  a sd:Node ;
+  sd:stableId "view-manifest" ;
+  rdfs:label "View Manifest" ;
+  sd:kind "projection-contract" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/projection> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "rendered" ;
+  dcterms:description "Reproducible contract for a rendered projection." ;
+  sd:context "Every rendered visualization should declare graph snapshot, filters, aggregation rules, scale, layout engine, hidden layers, and generation provenance." ;
+  sd:documentationLink <https://www.w3.org/TR/prov-o/> ;
+  sd:hardeningNote "Treat rendered views as derived artifacts with their own provenance and validation status." ;
+  sd:alias "projection manifest" ;
+  sd:alias "view definition" ;
+  sd:tag "rendering" ;
+  sd:tag "contract" .
+
+<https://hapax.local/system-dynamics-map/v1/node/cytoscape>
+  a sd:Node ;
+  sd:stableId "cytoscape" ;
+  rdfs:label "Cytoscape.js" ;
+  sd:kind "renderer" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/projection> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "rendered" ;
+  dcterms:description "Interactive graph visualization engine for the v1 map." ;
+  sd:context "Cytoscape.js provides graph elements, styles, layouts, and event handlers suitable for an exploratory topology viewer." ;
+  sd:documentationLink <https://js.cytoscape.org/> ;
+  sd:hardeningNote "Keep Cytoscape element data generated from the graph contract and view manifest." ;
+  sd:alias "cy.js" ;
+  sd:tag "viewer" ;
+  sd:tag "graph" .
+
+<https://hapax.local/system-dynamics-map/v1/node/operating-lens>
+  a sd:Node ;
+  sd:stableId "operating-lens" ;
+  rdfs:label "Operating Lens" ;
+  sd:kind "projection-contract" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/projection> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "rendered" ;
+  dcterms:description "Saved projection that answers a concrete operator question over topology, state, and evidence." ;
+  sd:context "A frequent-use map needs saved lenses for questions such as what is stuck, what changed, what is stale, and which source supports a state." ;
+  sd:documentationLink <https://js.cytoscape.org/#layouts> ;
+  sd:hardeningNote "Persist lens filters, layout, visible IDs, hidden IDs, source hashes, and lossiness instead of relying on browser state." ;
+  sd:alias "saved lens" ;
+  sd:alias "operator view" ;
+  sd:tag "projection" ;
+  sd:tag "operating-slice" .
+
+<https://hapax.local/system-dynamics-map/v1/edge/kg-to-view-manifest>
+  a sd:Edge ;
+  sd:stableId "kg-to-view-manifest" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/rdf-owl-kg> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/view-manifest> ;
+  sd:relation "projected_by" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/projection> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "rendered" ;
+  sd:confidence "0.95"^^xsd:decimal ;
+  dcterms:description "Rendered views should be generated from graph snapshots through explicit view manifests." ;
+  sd:documentationLink <https://www.w3.org/TR/prov-o/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/prov-to-view-manifest>
+  a sd:Edge ;
+  sd:stableId "prov-to-view-manifest" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/prov-o> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/view-manifest> ;
+  sd:relation "records_generation_of" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/projection> ;
+  sd:resolution "5"^^xsd:integer ;
+  sd:status "rendered" ;
+  sd:confidence "0.9"^^xsd:decimal ;
+  dcterms:description "View generation should itself be a provenance-bearing activity." ;
+  sd:documentationLink <https://www.w3.org/TR/prov-o/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/view-to-cytoscape>
+  a sd:Edge ;
+  sd:stableId "view-to-cytoscape" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/view-manifest> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/cytoscape> ;
+  sd:relation "renders_with" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/projection> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "rendered" ;
+  sd:confidence "0.96"^^xsd:decimal ;
+  dcterms:description "The v1 dynamic map is rendered with Cytoscape.js." ;
+  sd:documentationLink <https://js.cytoscape.org/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/operating-lens-to-sdlc>
+  a sd:Edge ;
+  sd:stableId "operating-lens-to-sdlc" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/operating-lens> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/sdlc-intake> ;
+  sd:relation "projects_operating_slice" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/projection> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "rendered" ;
+  sd:confidence "0.86"^^xsd:decimal ;
+  dcterms:description "The saved operating lens projects the SDLC slice for frequent inspection." ;
+  sd:documentationLink <https://js.cytoscape.org/#layouts> .
+
+<https://hapax.local/system-dynamics-map/v1/view/system-dynamics-map-viewer>
+  a sd:RenderedView ;
+  sd:sourceMap <https://hapax.local/system-dynamics-map/v1/map> ;
+  sd:viewer "system-dynamics-map-viewer.html" ;
+  sd:viewManifest "system-dynamics-map.view-manifest.json" ;
+  sd:layoutEngine "Cytoscape.js 3.34.0" .
+}
+
+<https://hapax.local/system-dynamics-map/v1/graph/candidate> {
+<https://hapax.local/system-dynamics-map/v1/partition/candidate>
+  a sd:ClaimPartition ;
+  sd:status "candidate" ;
+  sd:namedGraph <https://hapax.local/system-dynamics-map/v1/graph/candidate> .
+
+<https://hapax.local/system-dynamics-map/v1/node/xes-event-log>
+  a sd:Node ;
+  sd:stableId "xes-event-log" ;
+  rdfs:label "XES Event Log" ;
+  sd:kind "standard" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/observation-state> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  dcterms:description "Event log format for process mining." ;
+  sd:context "XES-style logs can provide process/event evidence for observed behavior and conformance checks." ;
+  sd:documentationLink <https://www.xes-standard.org/> ;
+  sd:hardeningNote "Keep event log evidence separate from designed process or decision models." ;
+  sd:alias "eXtensible Event Stream" ;
+  sd:tag "event-log" ;
+  sd:tag "process-mining" .
+
+<https://hapax.local/system-dynamics-map/v1/node/scxml-statecharts>
+  a sd:Node ;
+  sd:stableId "scxml-statecharts" ;
+  rdfs:label "SCXML Statecharts" ;
+  sd:kind "standard" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/observation-state> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "candidate" ;
+  dcterms:description "State machine notation for control abstraction." ;
+  sd:context "SCXML is relevant for executable or exchangeable state machine behavior, but it is not the full graph backbone." ;
+  sd:documentationLink <https://www.w3.org/TR/scxml/> ;
+  sd:hardeningNote "Use for explicit state-machine behavior; do not generalize it into all topology." ;
+  sd:alias "State Chart XML" ;
+  sd:tag "state-machine" .
+
+<https://hapax.local/system-dynamics-map/v1/node/react-flow>
+  a sd:Node ;
+  sd:stableId "react-flow" ;
+  rdfs:label "React Flow" ;
+  sd:kind "renderer" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/projection> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "candidate" ;
+  dcterms:description "Node-edge editor candidate for future authoring workflows." ;
+  sd:context "React Flow is better suited to graph editing and node configuration workflows than to very large exploratory topology maps." ;
+  sd:documentationLink <https://reactflow.dev/> ;
+  sd:hardeningNote "Use for controlled authoring surfaces; validate edits before committing to the semantic graph." ;
+  sd:alias "XYFlow" ;
+  sd:tag "editor" ;
+  sd:tag "viewer" .
+
+<https://hapax.local/system-dynamics-map/v1/node/sigma>
+  a sd:Node ;
+  sd:stableId "sigma" ;
+  rdfs:label "Sigma.js" ;
+  sd:kind "renderer" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/projection> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "candidate" ;
+  dcterms:description "Large graph rendering candidate for simpler graph exploration." ;
+  sd:context "Sigma is relevant when the graph grows large and needs fast rendering of simpler node-link structures." ;
+  sd:documentationLink <https://www.sigmajs.org/> ;
+  sd:hardeningNote "Use only after defining aggregation and sampling contracts for large views." ;
+  sd:alias "sigma" ;
+  sd:tag "viewer" ;
+  sd:tag "large-graph" .
+
+<https://hapax.local/system-dynamics-map/v1/node/sbvr>
+  a sd:Node ;
+  sd:stableId "sbvr" ;
+  rdfs:label "SBVR" ;
+  sd:kind "standard" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/decision-modeling> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "candidate" ;
+  dcterms:description "Business vocabulary and rule semantics adjacent to DMN." ;
+  sd:context "SBVR is relevant when vocabulary precision and rule semantics need to be connected to decision logic." ;
+  sd:documentationLink <https://www.omg.org/spec/SBVR/> ;
+  sd:hardeningNote "Use only where controlled vocabulary improves precision; avoid importing a parallel semantics stack by habit." ;
+  sd:alias "Semantics of Business Vocabulary and Rules" ;
+  sd:tag "vocabulary" ;
+  sd:tag "rules" .
+
+<https://hapax.local/system-dynamics-map/v1/node/model-artifacts>
+  a sd:Node ;
+  sd:stableId "model-artifacts" ;
+  rdfs:label "Predictive Model Artifacts" ;
+  sd:kind "artifact" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/execution-surfaces> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  dcterms:description "PMML, ONNX, PFA-class analytical artifacts adjacent to decisions." ;
+  sd:context "Predictive models often feed decisions or sit beside them. They need separate lineage, validation, and runtime semantics." ;
+  sd:documentationLink <https://onnx.ai/>, <https://dmg.org/pmml/v4-4-1/GeneralStructure.html> ;
+  sd:hardeningNote "Do not collapse model score provenance into decision-rule provenance." ;
+  sd:alias "PMML" ;
+  sd:alias "ONNX" ;
+  sd:alias "PFA" ;
+  sd:tag "model" ;
+  sd:tag "analytics" .
+
+<https://hapax.local/system-dynamics-map/v1/node/rule-engine>
+  a sd:Node ;
+  sd:stableId "rule-engine" ;
+  rdfs:label "Rule Engine" ;
+  sd:kind "runtime" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/execution-surfaces> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  dcterms:description "Executable target for decision rules." ;
+  sd:context "Decision tables and FEEL expressions may be interpreted, compiled, or translated into a rule/runtime engine." ;
+  sd:documentationLink <https://docs.drools.org/> ;
+  sd:hardeningNote "Declare runtime conformance, unsupported FEEL features, and test result provenance." ;
+  sd:alias "rules runtime" ;
+  sd:alias "decision engine" ;
+  sd:tag "runtime" ;
+  sd:tag "execution-surface" .
+
+<https://hapax.local/system-dynamics-map/v1/node/runtime-decision-api>
+  a sd:Node ;
+  sd:stableId "runtime-decision-api" ;
+  rdfs:label "Decision Runtime API" ;
+  sd:kind "runtime" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/execution-surfaces> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  dcterms:description "Callable runtime boundary for decision evaluation." ;
+  sd:context "A deployed decision API is one runtime boundary where processes, applications, telemetry, traces, and event envelopes may meet decision logic." ;
+  sd:documentationLink <https://dmn-tck.github.io/tck/> ;
+  sd:hardeningNote "Expose versioned decision IDs, input schema, output schema, model hash, and evaluation trace IDs." ;
+  sd:alias "decision endpoint" ;
+  sd:tag "runtime" ;
+  sd:tag "api" .
+
+<https://hapax.local/system-dynamics-map/v1/node/c4-runtime>
+  a sd:Node ;
+  sd:stableId "c4-runtime" ;
+  rdfs:label "C4 / Runtime Topology" ;
+  sd:kind "practice" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/source-models> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "candidate" ;
+  dcterms:description "Software architecture topology around deployed components and services." ;
+  sd:context "Runtime topology explains which services, stores, queues, users, and external systems interact. It is observed or configured infrastructure evidence, not a notation extension." ;
+  sd:documentationLink <https://c4model.com/> ;
+  sd:hardeningNote "Treat runtime topology as observed or configured infrastructure evidence, not as a DMN extension." ;
+  sd:alias "software architecture topology" ;
+  sd:tag "topology" ;
+  sd:tag "runtime" .
+
+<https://hapax.local/system-dynamics-map/v1/edge/dmn-to-sbvr>
+  a sd:Edge ;
+  sd:stableId "dmn-to-sbvr" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/dmn> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/sbvr> ;
+  sd:relation "adjacent_vocabulary" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/decision-modeling> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.74"^^xsd:decimal ;
+  dcterms:description "SBVR can provide controlled business vocabulary and rule semantics adjacent to DMN." ;
+  sd:documentationLink <https://www.omg.org/spec/SBVR/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/sysml-to-model-artifacts>
+  a sd:Edge ;
+  sd:stableId "sysml-to-model-artifacts" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/sysml-v2> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/model-artifacts> ;
+  sd:relation "systems_context_for" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/source-models> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.78"^^xsd:decimal ;
+  dcterms:description "Systems models contextualize requirements, behavior, verification, and adjacent model artifacts." ;
+  sd:documentationLink <https://www.omg.org/spec/SysML/2.0/About-SysML> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/c4-to-decision-api>
+  a sd:Edge ;
+  sd:stableId "c4-to-decision-api" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/c4-runtime> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/runtime-decision-api> ;
+  sd:relation "deploys_or_contains" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/source-models> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.82"^^xsd:decimal ;
+  dcterms:description "Runtime architecture contains deployed decision API components." ;
+  sd:documentationLink <https://c4model.com/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/decision-table-to-rule-engine>
+  a sd:Edge ;
+  sd:stableId "decision-table-to-rule-engine" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/decision-table> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/rule-engine> ;
+  sd:relation "compiled_or_interpreted_by" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/execution-surfaces> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.8"^^xsd:decimal ;
+  dcterms:description "Decision tables may be executed by rule engines." ;
+  sd:documentationLink <https://docs.drools.org/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/feel-to-rule-engine>
+  a sd:Edge ;
+  sd:stableId "feel-to-rule-engine" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/feel> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/rule-engine> ;
+  sd:relation "requires_runtime_support" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/execution-surfaces> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.78"^^xsd:decimal ;
+  dcterms:description "Executable decision logic depends on runtime FEEL support." ;
+  sd:documentationLink <https://www.omg.org/spec/DMN/1.6/Beta1/About-DMN> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/decision-service-to-api>
+  a sd:Edge ;
+  sd:stableId "decision-service-to-api" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/decision-service> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/runtime-decision-api> ;
+  sd:relation "implemented_by" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/execution-surfaces> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.86"^^xsd:decimal ;
+  dcterms:description "A design-time decision service can be implemented as a deployed API." ;
+  sd:documentationLink <https://dmn-tck.github.io/tck/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/model-artifacts-to-decision-service>
+  a sd:Edge ;
+  sd:stableId "model-artifacts-to-decision-service" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/model-artifacts> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/decision-service> ;
+  sd:relation "feeds_or_complements" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/execution-surfaces> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.7"^^xsd:decimal ;
+  dcterms:description "Predictive artifacts can feed or complement callable decision behavior." ;
+  sd:documentationLink <https://onnx.ai/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/bpmn-to-kg>
+  a sd:Edge ;
+  sd:stableId "bpmn-to-kg" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/bpmn> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/rdf-owl-kg> ;
+  sd:relation "mapped_into" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/semantic-backbone> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.84"^^xsd:decimal ;
+  dcterms:description "Process models should map into the same identity graph rather than stay isolated." ;
+  sd:documentationLink <https://www.w3.org/TR/rdf12-concepts/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/archimate-to-kg>
+  a sd:Edge ;
+  sd:stableId "archimate-to-kg" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/archimate> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/rdf-owl-kg> ;
+  sd:relation "mapped_into" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/semantic-backbone> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.82"^^xsd:decimal ;
+  dcterms:description "Enterprise architecture context should share identity with decision and runtime nodes." ;
+  sd:documentationLink <https://www.opengroup.org/archimate-forum/archimate-overview> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/sysml-to-kg>
+  a sd:Edge ;
+  sd:stableId "sysml-to-kg" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/sysml-v2> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/rdf-owl-kg> ;
+  sd:relation "mapped_into" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/semantic-backbone> ;
+  sd:resolution "2"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.8"^^xsd:decimal ;
+  dcterms:description "Systems models should map into the same backbone for cross-resolution analysis." ;
+  sd:documentationLink <https://www.omg.org/spec/SysML/2.0/About-SysML> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/state-to-scxml>
+  a sd:Edge ;
+  sd:stableId "state-to-scxml" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/temporal-state-events> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/scxml-statecharts> ;
+  sd:relation "can_use_state_machine_notation" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/observation-state> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.75"^^xsd:decimal ;
+  dcterms:description "Explicit state-machine behavior can be represented with SCXML-like statecharts." ;
+  sd:documentationLink <https://www.w3.org/TR/scxml/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/state-to-xes>
+  a sd:Edge ;
+  sd:stableId "state-to-xes" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/temporal-state-events> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/xes-event-log> ;
+  sd:relation "exports_or_imports_event_logs" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/observation-state> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.76"^^xsd:decimal ;
+  dcterms:description "Event logs provide observed behavior evidence for process and decision analysis." ;
+  sd:documentationLink <https://www.xes-standard.org/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/api-to-cloudevents>
+  a sd:Edge ;
+  sd:stableId "api-to-cloudevents" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/runtime-decision-api> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/cloudevents> ;
+  sd:relation "can_emit_event_envelopes" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/observation-state> ;
+  sd:resolution "4"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.72"^^xsd:decimal ;
+  dcterms:description "Runtime services may emit or consume event envelopes for integration." ;
+  sd:documentationLink <https://cloudevents.io/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/view-to-react-flow>
+  a sd:Edge ;
+  sd:stableId "view-to-react-flow" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/view-manifest> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/react-flow> ;
+  sd:relation "future_authoring_projection" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/projection> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.68"^^xsd:decimal ;
+  dcterms:description "Future graph authoring or workflow editing could use React Flow." ;
+  sd:documentationLink <https://reactflow.dev/> .
+
+<https://hapax.local/system-dynamics-map/v1/edge/view-to-sigma>
+  a sd:Edge ;
+  sd:stableId "view-to-sigma" ;
+  sd:source <https://hapax.local/system-dynamics-map/v1/node/view-manifest> ;
+  sd:target <https://hapax.local/system-dynamics-map/v1/node/sigma> ;
+  sd:relation "future_large_graph_projection" ;
+  sd:layer <https://hapax.local/system-dynamics-map/v1/layer/projection> ;
+  sd:resolution "3"^^xsd:integer ;
+  sd:status "candidate" ;
+  sd:confidence "0.66"^^xsd:decimal ;
+  dcterms:description "Very large simple graph projections may use Sigma." ;
+  sd:documentationLink <https://www.sigmajs.org/> .
+}
+
+<https://hapax.local/system-dynamics-map/v1/graph/claims> {
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-rdf-owl-kg>
+  a sd:Claim ;
+  sd:stableId "claim-node-rdf-owl-kg" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "rdf-owl-kg" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "backbone" ;
+  sd:elementId "rdf-owl-kg" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/0" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-shacl-contracts>
+  a sd:Claim ;
+  sd:stableId "claim-node-shacl-contracts" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "shacl-contracts" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "validation" ;
+  sd:elementId "shacl-contracts" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/1" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-prov-o>
+  a sd:Claim ;
+  sd:stableId "claim-node-prov-o" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "prov-o" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "provenance" ;
+  sd:elementId "prov-o" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/2" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-jsonld-trig>
+  a sd:Claim ;
+  sd:stableId "claim-node-jsonld-trig" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "jsonld-trig" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "exchange" ;
+  sd:elementId "jsonld-trig" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/3" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-temporal-state-events>
+  a sd:Claim ;
+  sd:stableId "claim-node-temporal-state-events" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "temporal-state-events" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "modeling-pattern" ;
+  sd:elementId "temporal-state-events" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/4" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-opentelemetry>
+  a sd:Claim ;
+  sd:stableId "claim-node-opentelemetry" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "opentelemetry" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "telemetry" ;
+  sd:elementId "opentelemetry" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/5" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-trace-context>
+  a sd:Claim ;
+  sd:stableId "claim-node-trace-context" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "trace-context" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "standard" ;
+  sd:elementId "trace-context" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/6" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-cloudevents>
+  a sd:Claim ;
+  sd:stableId "claim-node-cloudevents" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "cloudevents" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "standard" ;
+  sd:elementId "cloudevents" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/7" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-xes-event-log>
+  a sd:Claim ;
+  sd:stableId "claim-node-xes-event-log" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "xes-event-log" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "standard" ;
+  sd:elementId "xes-event-log" ;
+  sd:elementKind "node" ;
+  sd:confidence "0.75"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/8" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-scxml-statecharts>
+  a sd:Claim ;
+  sd:stableId "claim-node-scxml-statecharts" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "scxml-statecharts" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "standard" ;
+  sd:elementId "scxml-statecharts" ;
+  sd:elementKind "node" ;
+  sd:confidence "0.75"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/9" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-view-manifest>
+  a sd:Claim ;
+  sd:stableId "claim-node-view-manifest" ;
+  sd:claimType "rendered" ;
+  sd:claimSubject "view-manifest" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "projection-contract" ;
+  sd:elementId "view-manifest" ;
+  sd:elementKind "node" ;
+  sd:confidence "0.75"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/10" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-cytoscape>
+  a sd:Claim ;
+  sd:stableId "claim-node-cytoscape" ;
+  sd:claimType "rendered" ;
+  sd:claimSubject "cytoscape" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "renderer" ;
+  sd:elementId "cytoscape" ;
+  sd:elementKind "node" ;
+  sd:confidence "0.75"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/11" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-react-flow>
+  a sd:Claim ;
+  sd:stableId "claim-node-react-flow" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "react-flow" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "renderer" ;
+  sd:elementId "react-flow" ;
+  sd:elementKind "node" ;
+  sd:confidence "0.75"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/12" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-sigma>
+  a sd:Claim ;
+  sd:stableId "claim-node-sigma" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "sigma" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "renderer" ;
+  sd:elementId "sigma" ;
+  sd:elementKind "node" ;
+  sd:confidence "0.75"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/13" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-decision-service>
+  a sd:Claim ;
+  sd:stableId "claim-node-decision-service" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "decision-service" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "boundary" ;
+  sd:elementId "decision-service" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/14" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-decision-table>
+  a sd:Claim ;
+  sd:stableId "claim-node-decision-table" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "decision-table" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "artifact" ;
+  sd:elementId "decision-table" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/15" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-dmn>
+  a sd:Claim ;
+  sd:stableId "claim-node-dmn" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "dmn" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "standard" ;
+  sd:elementId "dmn" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/16" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-drd>
+  a sd:Claim ;
+  sd:stableId "claim-node-drd" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "drd" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "notation" ;
+  sd:elementId "drd" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/17" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-feel>
+  a sd:Claim ;
+  sd:stableId "claim-node-feel" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "feel" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "language" ;
+  sd:elementId "feel" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/18" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-sbvr>
+  a sd:Claim ;
+  sd:stableId "claim-node-sbvr" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "sbvr" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "standard" ;
+  sd:elementId "sbvr" ;
+  sd:elementKind "node" ;
+  sd:confidence "0.75"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/19" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-dmn-xml-di>
+  a sd:Claim ;
+  sd:stableId "claim-node-dmn-xml-di" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "dmn-xml-di" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "interchange" ;
+  sd:elementId "dmn-xml-di" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/20" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-model-artifacts>
+  a sd:Claim ;
+  sd:stableId "claim-node-model-artifacts" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "model-artifacts" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "artifact" ;
+  sd:elementId "model-artifacts" ;
+  sd:elementKind "node" ;
+  sd:confidence "0.75"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/21" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-rule-engine>
+  a sd:Claim ;
+  sd:stableId "claim-node-rule-engine" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "rule-engine" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "runtime" ;
+  sd:elementId "rule-engine" ;
+  sd:elementKind "node" ;
+  sd:confidence "0.75"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/22" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-runtime-decision-api>
+  a sd:Claim ;
+  sd:stableId "claim-node-runtime-decision-api" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "runtime-decision-api" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "runtime" ;
+  sd:elementId "runtime-decision-api" ;
+  sd:elementKind "node" ;
+  sd:confidence "0.75"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/23" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-archimate>
+  a sd:Claim ;
+  sd:stableId "claim-node-archimate" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "archimate" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "standard" ;
+  sd:elementId "archimate" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/24" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-bpmn>
+  a sd:Claim ;
+  sd:stableId "claim-node-bpmn" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "bpmn" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "standard" ;
+  sd:elementId "bpmn" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/25" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-c4-runtime>
+  a sd:Claim ;
+  sd:stableId "claim-node-c4-runtime" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "c4-runtime" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "practice" ;
+  sd:elementId "c4-runtime" ;
+  sd:elementKind "node" ;
+  sd:confidence "0.75"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/26" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-cmmn>
+  a sd:Claim ;
+  sd:stableId "claim-node-cmmn" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "cmmn" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "standard" ;
+  sd:elementId "cmmn" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/27" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-sysml-v2>
+  a sd:Claim ;
+  sd:stableId "claim-node-sysml-v2" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "sysml-v2" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "standard" ;
+  sd:elementId "sysml-v2" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/28" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-sdlc-intake>
+  a sd:Claim ;
+  sd:stableId "claim-node-sdlc-intake" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "sdlc-intake" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "operating-slice" ;
+  sd:elementId "sdlc-intake" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/29" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-cc-task-claim>
+  a sd:Claim ;
+  sd:stableId "claim-node-cc-task-claim" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "cc-task-claim" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "state-transition" ;
+  sd:elementId "cc-task-claim" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/30" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-review-dossier>
+  a sd:Claim ;
+  sd:stableId "claim-node-review-dossier" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "review-dossier" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "evidence-artifact" ;
+  sd:elementId "review-dossier" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/31" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-pr-ci-checks>
+  a sd:Claim ;
+  sd:stableId "claim-node-pr-ci-checks" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "pr-ci-checks" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "release-signal" ;
+  sd:elementId "pr-ci-checks" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/32" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-merge-release>
+  a sd:Claim ;
+  sd:stableId "claim-node-merge-release" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "merge-release" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "state-transition" ;
+  sd:elementId "merge-release" ;
+  sd:elementKind "node" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/33" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-node-operating-lens>
+  a sd:Claim ;
+  sd:stableId "claim-node-operating-lens" ;
+  sd:claimType "rendered" ;
+  sd:claimSubject "operating-lens" ;
+  sd:claimPredicate "declares_node" ;
+  sd:claimObject "projection-contract" ;
+  sd:elementId "operating-lens" ;
+  sd:elementKind "node" ;
+  sd:confidence "0.75"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/nodes/34" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-dmn-to-drd>
+  a sd:Claim ;
+  sd:stableId "claim-edge-dmn-to-drd" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "dmn" ;
+  sd:claimPredicate "defines" ;
+  sd:claimObject "drd" ;
+  sd:elementId "dmn-to-drd" ;
+  sd:elementKind "edge" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/0" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-dmn-to-feel>
+  a sd:Claim ;
+  sd:stableId "claim-edge-dmn-to-feel" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "dmn" ;
+  sd:claimPredicate "uses_expression_language" ;
+  sd:claimObject "feel" ;
+  sd:elementId "dmn-to-feel" ;
+  sd:elementKind "edge" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/1" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-dmn-to-decision-service>
+  a sd:Claim ;
+  sd:stableId "claim-edge-dmn-to-decision-service" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "dmn" ;
+  sd:claimPredicate "packages" ;
+  sd:claimObject "decision-service" ;
+  sd:elementId "dmn-to-decision-service" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.95"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/2" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-dmn-to-decision-table>
+  a sd:Claim ;
+  sd:stableId "claim-edge-dmn-to-decision-table" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "dmn" ;
+  sd:claimPredicate "contains_logic_artifact" ;
+  sd:claimObject "decision-table" ;
+  sd:elementId "dmn-to-decision-table" ;
+  sd:elementKind "edge" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/3" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-dmn-to-sbvr>
+  a sd:Claim ;
+  sd:stableId "claim-edge-dmn-to-sbvr" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "dmn" ;
+  sd:claimPredicate "adjacent_vocabulary" ;
+  sd:claimObject "sbvr" ;
+  sd:elementId "dmn-to-sbvr" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.74"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/4" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-bpmn-to-decision-service>
+  a sd:Claim ;
+  sd:stableId "claim-edge-bpmn-to-decision-service" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "bpmn" ;
+  sd:claimPredicate "invokes_or_contextualizes" ;
+  sd:claimObject "decision-service" ;
+  sd:elementId "bpmn-to-decision-service" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.95"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/5" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-cmmn-to-decision-service>
+  a sd:Claim ;
+  sd:stableId "claim-edge-cmmn-to-decision-service" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "cmmn" ;
+  sd:claimPredicate "invokes_or_contextualizes" ;
+  sd:claimObject "decision-service" ;
+  sd:elementId "cmmn-to-decision-service" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.9"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/6" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-archimate-to-runtime-topology>
+  a sd:Claim ;
+  sd:stableId "claim-edge-archimate-to-runtime-topology" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "archimate" ;
+  sd:claimPredicate "enterprise_context_for" ;
+  sd:claimObject "c4-runtime" ;
+  sd:elementId "archimate-to-runtime-topology" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.86"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/7" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-sysml-to-model-artifacts>
+  a sd:Claim ;
+  sd:stableId "claim-edge-sysml-to-model-artifacts" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "sysml-v2" ;
+  sd:claimPredicate "systems_context_for" ;
+  sd:claimObject "model-artifacts" ;
+  sd:elementId "sysml-to-model-artifacts" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.78"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/8" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-c4-to-decision-api>
+  a sd:Claim ;
+  sd:stableId "claim-edge-c4-to-decision-api" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "c4-runtime" ;
+  sd:claimPredicate "deploys_or_contains" ;
+  sd:claimObject "runtime-decision-api" ;
+  sd:elementId "c4-to-decision-api" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.82"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/9" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-dmn-to-xml-di>
+  a sd:Claim ;
+  sd:stableId "claim-edge-dmn-to-xml-di" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "dmn" ;
+  sd:claimPredicate "serialized_as" ;
+  sd:claimObject "dmn-xml-di" ;
+  sd:elementId "dmn-to-xml-di" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.96"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/10" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-decision-table-to-rule-engine>
+  a sd:Claim ;
+  sd:stableId "claim-edge-decision-table-to-rule-engine" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "decision-table" ;
+  sd:claimPredicate "compiled_or_interpreted_by" ;
+  sd:claimObject "rule-engine" ;
+  sd:elementId "decision-table-to-rule-engine" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.8"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/11" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-feel-to-rule-engine>
+  a sd:Claim ;
+  sd:stableId "claim-edge-feel-to-rule-engine" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "feel" ;
+  sd:claimPredicate "requires_runtime_support" ;
+  sd:claimObject "rule-engine" ;
+  sd:elementId "feel-to-rule-engine" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.78"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/12" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-decision-service-to-api>
+  a sd:Claim ;
+  sd:stableId "claim-edge-decision-service-to-api" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "decision-service" ;
+  sd:claimPredicate "implemented_by" ;
+  sd:claimObject "runtime-decision-api" ;
+  sd:elementId "decision-service-to-api" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.86"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/13" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-model-artifacts-to-decision-service>
+  a sd:Claim ;
+  sd:stableId "claim-edge-model-artifacts-to-decision-service" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "model-artifacts" ;
+  sd:claimPredicate "feeds_or_complements" ;
+  sd:claimObject "decision-service" ;
+  sd:elementId "model-artifacts-to-decision-service" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.7"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/14" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-dmn-to-kg>
+  a sd:Claim ;
+  sd:stableId "claim-edge-dmn-to-kg" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "dmn" ;
+  sd:claimPredicate "mapped_into" ;
+  sd:claimObject "rdf-owl-kg" ;
+  sd:elementId "dmn-to-kg" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.93"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/15" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-bpmn-to-kg>
+  a sd:Claim ;
+  sd:stableId "claim-edge-bpmn-to-kg" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "bpmn" ;
+  sd:claimPredicate "mapped_into" ;
+  sd:claimObject "rdf-owl-kg" ;
+  sd:elementId "bpmn-to-kg" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.84"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/16" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-archimate-to-kg>
+  a sd:Claim ;
+  sd:stableId "claim-edge-archimate-to-kg" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "archimate" ;
+  sd:claimPredicate "mapped_into" ;
+  sd:claimObject "rdf-owl-kg" ;
+  sd:elementId "archimate-to-kg" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.82"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/17" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-sysml-to-kg>
+  a sd:Claim ;
+  sd:stableId "claim-edge-sysml-to-kg" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "sysml-v2" ;
+  sd:claimPredicate "mapped_into" ;
+  sd:claimObject "rdf-owl-kg" ;
+  sd:elementId "sysml-to-kg" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.8"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/18" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-kg-to-shacl>
+  a sd:Claim ;
+  sd:stableId "claim-edge-kg-to-shacl" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "rdf-owl-kg" ;
+  sd:claimPredicate "validated_by" ;
+  sd:claimObject "shacl-contracts" ;
+  sd:elementId "kg-to-shacl" ;
+  sd:elementKind "edge" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/19" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-kg-to-prov>
+  a sd:Claim ;
+  sd:stableId "claim-edge-kg-to-prov" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "rdf-owl-kg" ;
+  sd:claimPredicate "qualified_by" ;
+  sd:claimObject "prov-o" ;
+  sd:elementId "kg-to-prov" ;
+  sd:elementKind "edge" ;
+  sd:confidence "1.0"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/20" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-kg-to-jsonld>
+  a sd:Claim ;
+  sd:stableId "claim-edge-kg-to-jsonld" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "rdf-owl-kg" ;
+  sd:claimPredicate "serialized_as" ;
+  sd:claimObject "jsonld-trig" ;
+  sd:elementId "kg-to-jsonld" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.96"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/21" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-state-to-kg>
+  a sd:Claim ;
+  sd:stableId "claim-edge-state-to-kg" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "temporal-state-events" ;
+  sd:claimPredicate "overlays" ;
+  sd:claimObject "rdf-owl-kg" ;
+  sd:elementId "state-to-kg" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.94"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/22" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-state-to-scxml>
+  a sd:Claim ;
+  sd:stableId "claim-edge-state-to-scxml" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "temporal-state-events" ;
+  sd:claimPredicate "can_use_state_machine_notation" ;
+  sd:claimObject "scxml-statecharts" ;
+  sd:elementId "state-to-scxml" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.75"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/23" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-state-to-xes>
+  a sd:Claim ;
+  sd:stableId "claim-edge-state-to-xes" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "temporal-state-events" ;
+  sd:claimPredicate "exports_or_imports_event_logs" ;
+  sd:claimObject "xes-event-log" ;
+  sd:elementId "state-to-xes" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.76"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/24" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-api-to-otel>
+  a sd:Claim ;
+  sd:stableId "claim-edge-api-to-otel" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "runtime-decision-api" ;
+  sd:claimPredicate "emits_telemetry" ;
+  sd:claimObject "opentelemetry" ;
+  sd:elementId "api-to-otel" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.82"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/25" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-api-to-trace-context>
+  a sd:Claim ;
+  sd:stableId "claim-edge-api-to-trace-context" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "runtime-decision-api" ;
+  sd:claimPredicate "propagates_trace_identity" ;
+  sd:claimObject "trace-context" ;
+  sd:elementId "api-to-trace-context" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.82"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/26" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-api-to-cloudevents>
+  a sd:Claim ;
+  sd:stableId "claim-edge-api-to-cloudevents" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "runtime-decision-api" ;
+  sd:claimPredicate "can_emit_event_envelopes" ;
+  sd:claimObject "cloudevents" ;
+  sd:elementId "api-to-cloudevents" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.72"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/27" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-otel-to-kg>
+  a sd:Claim ;
+  sd:stableId "claim-edge-otel-to-kg" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "opentelemetry" ;
+  sd:claimPredicate "observes" ;
+  sd:claimObject "rdf-owl-kg" ;
+  sd:elementId "otel-to-kg" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.8"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/28" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-kg-to-view-manifest>
+  a sd:Claim ;
+  sd:stableId "claim-edge-kg-to-view-manifest" ;
+  sd:claimType "rendered" ;
+  sd:claimSubject "rdf-owl-kg" ;
+  sd:claimPredicate "projected_by" ;
+  sd:claimObject "view-manifest" ;
+  sd:elementId "kg-to-view-manifest" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.95"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/29" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-shacl-to-view-manifest>
+  a sd:Claim ;
+  sd:stableId "claim-edge-shacl-to-view-manifest" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "shacl-contracts" ;
+  sd:claimPredicate "guards" ;
+  sd:claimObject "view-manifest" ;
+  sd:elementId "shacl-to-view-manifest" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.92"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/30" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-prov-to-view-manifest>
+  a sd:Claim ;
+  sd:stableId "claim-edge-prov-to-view-manifest" ;
+  sd:claimType "rendered" ;
+  sd:claimSubject "prov-o" ;
+  sd:claimPredicate "records_generation_of" ;
+  sd:claimObject "view-manifest" ;
+  sd:elementId "prov-to-view-manifest" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.9"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/31" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-view-to-cytoscape>
+  a sd:Claim ;
+  sd:stableId "claim-edge-view-to-cytoscape" ;
+  sd:claimType "rendered" ;
+  sd:claimSubject "view-manifest" ;
+  sd:claimPredicate "renders_with" ;
+  sd:claimObject "cytoscape" ;
+  sd:elementId "view-to-cytoscape" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.96"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/32" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-view-to-react-flow>
+  a sd:Claim ;
+  sd:stableId "claim-edge-view-to-react-flow" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "view-manifest" ;
+  sd:claimPredicate "future_authoring_projection" ;
+  sd:claimObject "react-flow" ;
+  sd:elementId "view-to-react-flow" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.68"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/33" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-view-to-sigma>
+  a sd:Claim ;
+  sd:stableId "claim-edge-view-to-sigma" ;
+  sd:claimType "candidate" ;
+  sd:claimSubject "view-manifest" ;
+  sd:claimPredicate "future_large_graph_projection" ;
+  sd:claimObject "sigma" ;
+  sd:elementId "view-to-sigma" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.66"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/34" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-sdlc-intake-to-claim>
+  a sd:Claim ;
+  sd:stableId "claim-edge-sdlc-intake-to-claim" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "sdlc-intake" ;
+  sd:claimPredicate "advances_to" ;
+  sd:claimObject "cc-task-claim" ;
+  sd:elementId "sdlc-intake-to-claim" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.95"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/35" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-claim-to-review-dossier>
+  a sd:Claim ;
+  sd:stableId "claim-edge-claim-to-review-dossier" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "cc-task-claim" ;
+  sd:claimPredicate "produces_evidence" ;
+  sd:claimObject "review-dossier" ;
+  sd:elementId "claim-to-review-dossier" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.9"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/36" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-review-dossier-to-pr-ci>
+  a sd:Claim ;
+  sd:stableId "claim-edge-review-dossier-to-pr-ci" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "review-dossier" ;
+  sd:claimPredicate "guards_release" ;
+  sd:claimObject "pr-ci-checks" ;
+  sd:elementId "review-dossier-to-pr-ci" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.9"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/37" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-pr-ci-to-merge-release>
+  a sd:Claim ;
+  sd:stableId "claim-edge-pr-ci-to-merge-release" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "pr-ci-checks" ;
+  sd:claimPredicate "admits_release" ;
+  sd:claimObject "merge-release" ;
+  sd:elementId "pr-ci-to-merge-release" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.88"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/38" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-operating-lens-to-sdlc>
+  a sd:Claim ;
+  sd:stableId "claim-edge-operating-lens-to-sdlc" ;
+  sd:claimType "rendered" ;
+  sd:claimSubject "operating-lens" ;
+  sd:claimPredicate "projects_operating_slice" ;
+  sd:claimObject "sdlc-intake" ;
+  sd:elementId "operating-lens-to-sdlc" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.86"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/39" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-temporal-state-to-sdlc>
+  a sd:Claim ;
+  sd:stableId "claim-edge-temporal-state-to-sdlc" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "temporal-state-events" ;
+  sd:claimPredicate "models_observed_state" ;
+  sd:claimObject "sdlc-intake" ;
+  sd:elementId "temporal-state-to-sdlc" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.88"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/40" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+
+<https://hapax.local/system-dynamics-map/v1/claim/claim-edge-prov-to-review-dossier>
+  a sd:Claim ;
+  sd:stableId "claim-edge-prov-to-review-dossier" ;
+  sd:claimType "asserted" ;
+  sd:claimSubject "prov-o" ;
+  sd:claimPredicate "records_generation_of" ;
+  sd:claimObject "review-dossier" ;
+  sd:elementId "prov-to-review-dossier" ;
+  sd:elementKind "edge" ;
+  sd:confidence "0.9"^^xsd:decimal ;
+  sd:confidenceBasis "curated_seed_edge" ;
+  sd:validFrom "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:transactionTime "2026-06-18T00:00:00Z"^^xsd:dateTime ;
+  sd:freshness "timeless" ;
+  sd:contradictionState "none" ;
+  prov:wasDerivedFrom "system-dynamics-map.seed.json#/edges/41" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" .
+}
+
+<https://hapax.local/system-dynamics-map/v1/graph/provenance> {
+<https://hapax.local/system-dynamics-map/v1/activity/materialize-v1>
+  a prov:Activity ;
+  prov:used "system-dynamics-map.seed.json" ;
+  prov:generated "system-dynamics-map.canonical.trig" ;
+  prov:generated "system-dynamics-map.shacl.ttl" ;
+  prov:generated "system-dynamics-map.view-manifest.json" ;
+  prov:wasAssociatedWith "scripts/system_dynamics_map_materialize.py" ;
+  prov:generatedAtTime "2026-06-18T00:00:00Z"^^xsd:dateTime .
+}

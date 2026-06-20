@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Write a local support-only report over HKP shadow bundles."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.hkp_research_viewer import build_research_viewer_report  # noqa: E402
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "bundles", nargs="*", help="bundle ids or bundle paths under HKP shadow root"
+    )
+    parser.add_argument(
+        "--shadow-root", type=Path, default=None, help="defaults to HKP shadow root"
+    )
+    parser.add_argument("--index-root", type=Path, default=None, help="defaults to HKP index root")
+    parser.add_argument(
+        "--report-root", type=Path, default=None, help="defaults to HKP report cache"
+    )
+    parser.add_argument("--report-id", default=None, help="safe report id directory name")
+    parser.add_argument(
+        "--generated-at", default=None, help="fixed ISO timestamp for reproducibility"
+    )
+    parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    args = parser.parse_args(argv)
+
+    try:
+        result = build_research_viewer_report(
+            args.bundles,
+            shadow_root=args.shadow_root,
+            index_root=args.index_root,
+            report_root=args.report_root,
+            report_id=args.report_id,
+            generated_at=args.generated_at,
+        )
+    except ValueError as exc:
+        parser.exit(2, f"hapax-hkp-view: {_format_value_error(exc)}\n")
+
+    payload = result.as_dict()
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        status = "OK" if result.ok else "WARN"
+        print(f"{status} {result.markdown_path}")
+        print(f"json\t{result.json_path}")
+        print(f"bundles\t{payload['bundle_count']}")
+        print(f"rows\t{payload['row_count']}")
+        print("support_label\tsupport_non_authoritative_projection_state")
+        if not result.ok:
+            print("next-action\tinspect report findings before using this support surface")
+    return 0 if result.ok else 1
+
+
+def _format_value_error(exc: ValueError) -> str:
+    message = str(exc)
+    if "next-action" in message:
+        return message
+    return f"{message}; next-action: inspect bundle ids and cache roots, then rerun with --json"
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

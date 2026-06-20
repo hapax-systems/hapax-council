@@ -1,4 +1,5 @@
-# 13-point perception registry — capture-side dual of config/audio-graph.yaml.
+# Perception registry (16 points: 13 audio/av + 3 Pi-fleet IR edge cams) —
+# capture-side dual of config/audio-graph.yaml.
 # CASE-VOICE-FOUNDATION-20260610 §5d (points-not-roles, operator-directed).
 # Validated by shared/perception_registry.py; regression-pinned by
 # tests/shared/test_perception_registry.py. Exposure typing mirrors
@@ -116,10 +117,22 @@ points:
     geometry: contact
     exposure: quarantine
     description: >-
-      Zeppelin Design Labs Cortado MkIII contact mic (desk vibration).
-      Former L-12 CH2; no live node since the L-12 retirement — tag kept
-      for the voice-source contract.
+      Zeppelin Design Labs Cortado MKIII contact mic (desk vibration).
+      LIVE on MOTU mk5 line-in 2 = pro-input capture_AUX1 (operator-confirmed
+      2026-06-15). Perceptual/quarantine — NEVER broadcast-reachable. The
+      contact_mic virtual node is generated correct-by-construction from this
+      point's hw_source by the Phase-1 SSOT generator
+      (scripts/generate-pipewire-audio-confs.py -> config/pipewire/hapax-contact-mic.conf,
+      byte-diff-gated). The prior L-12-era hand-edit that drifted to capture_AUX0
+      (the Rode = an eavesdrop class) is retired
+      (REQ-20260616-perception-audio-ssot-program Phase 1).
     pipewire_node: contact_mic
+    hw_source:
+      node_target: alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0
+      # UPPERCASE: lowercase 'aux1' does NOT match the mk5's AUX1 channel
+      # position and falls back to capture_AUX0 (the Rode) — the eavesdrop.
+      # 'AUX1' matches capture_AUX1 = mk5 physical input 2 = the Cortado.
+      position: AUX1
     voice_source_tag: contact-mic
     status: available
     equipment_ref: config/equipment/zeppelin-design-labs-cortado-mkiii-versatile-rugged-steel-co.yaml
@@ -185,6 +198,72 @@ points:
     status: future
     channels: {}
     tags: [future]
+
+  # Pi-fleet IR edge cameras (6 units, 3 NoIR cams) — on-device YOLOv8n ONNX @3s,
+  # percepts POSTed to /api/pi/{role}/ir (no local audio). HIGHEST-sensitivity
+  # perceptual class (face landmarks + rPPG biometrics) → quarantine, never broadcast.
+  ir-desk:
+    geometry: ir_edge
+    exposure: quarantine
+    description: >-
+      Pi-1 (.78) NoIR edge cam, role=desk — canonical gaze view (fusion
+      desk-prefer). Lens-co-located with c920-desk. Perceptual/quarantine —
+      face landmarks + rPPG biometrics NEVER broadcast-reachable.
+    pipewire_node: null
+    perception_recruitable: true
+    status: active
+    edge_source:
+      role: desk
+      http_endpoint: /api/pi/desk/ir
+      state_path: "~/hapax-state/pi-noir/desk.json"
+    channels:
+      person: {kind: person}
+      gaze: {kind: gaze}
+      hands: {kind: hands}
+      biometrics: {kind: biometrics}
+    tags: [ir-edge, pi-fleet, gaze-canonical]
+
+  ir-room:
+    geometry: ir_edge
+    exposure: quarantine
+    description: >-
+      Pi-2 (.52) NoIR edge cam, role=room — wide-area presence (fusion person
+      any()). Lens-co-located with c920-room. Perceptual/quarantine — never
+      broadcast-reachable.
+    pipewire_node: null
+    perception_recruitable: true
+    status: active
+    edge_source:
+      role: room
+      http_endpoint: /api/pi/room/ir
+      state_path: "~/hapax-state/pi-noir/room.json"
+    channels:
+      person: {kind: person}
+      gaze: {kind: gaze}
+      hands: {kind: hands}
+      biometrics: {kind: biometrics}
+    tags: [ir-edge, pi-fleet, presence-wide]
+
+  ir-overhead:
+    geometry: ir_edge
+    exposure: quarantine
+    description: >-
+      Pi-6 (.74) NoIR edge cam, role=overhead + fleet sync host — canonical
+      hands view (fusion overhead-prefer). Perceptual/quarantine — never
+      broadcast-reachable.
+    pipewire_node: null
+    perception_recruitable: true
+    status: active
+    edge_source:
+      role: overhead
+      http_endpoint: /api/pi/overhead/ir
+      state_path: "~/hapax-state/pi-noir/overhead.json"
+    channels:
+      person: {kind: person}
+      gaze: {kind: gaze}
+      hands: {kind: hands}
+      biometrics: {kind: biometrics}
+    tags: [ir-edge, pi-fleet, hands-canonical, fleet-sync]
 
 subscriptions:
   stt.ear:

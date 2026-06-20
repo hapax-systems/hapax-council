@@ -25,7 +25,27 @@ Each tick does two writes:
    - subscription ``quota_snapshots``: per-platform state from the quota-wall
      relay receipts (``~/.cache/hapax/relay/receipts/<role>-quota-wall.yaml``,
      written by ``shared.quota_wall`` on observed 429/quota-exhaustion). An
-     unexpired wall marks the platform ``exhausted``; otherwise ``fresh``.
+     unexpired wall marks the platform ``exhausted``; otherwise the established
+     Claude/Codex/Gemini subscription routes are ``fresh``. GLMCP is stricter:
+     it is ``unknown`` unless a fresh, short-lived Coding Plan admission receipt
+     exists. Recheck admission evidence with
+     ``find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*glmcp-quota-admission*.yaml' -print``
+     and ``scripts/hapax-quota-telemetry-writer --json``.
+     If a receipt exists but GLMCP remains ``unknown``, read this writer's
+     stderr warnings; malformed, stale, mismatched, or unbounded receipts are
+     ignored loudly.
+     Admission receipts with ``stale_after_seconds`` above 3600 seconds are
+     intentionally ignored; write a fresh short-lived witness instead.
+     The emergency false-negative recovery path is to create a fresh
+     short-lived admission receipt with status, provider, capacity_pool,
+     route_id, supported_tool, endpoint, model, one of observed_at/captured_at/
+     detected_at, stale_after_seconds, and evidence_ref fields, then rerun this
+     writer so the live ledger is refreshed.
+     That receipt-plane refresh is the canonical emergency procedure for a
+     false negative.
+     There is intentionally no environment-variable bypass for stale/unknown
+     subscription quota. ``evidence_ref`` values are limited to 3-240 safe
+     witness-reference characters.
    - ``local_resource_state`` + local-compute snapshot: nvidia-smi VRAM
      pressure and load average, fail-closed to ``unknown`` when unprobeable.
 
@@ -38,11 +58,14 @@ the existing receipts script (which records config paths/existence only).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -72,8 +95,79 @@ RELAY_RECEIPT_DIR = Path(
 SUBSCRIPTION_ROUTES = {
     "claude": "claude.headless.full",
     "codex": "codex.headless.full",
-    "gemini": "gemini.headless.full",
+    "glmcp": "glmcp.review.direct",
 }
+
+SUBSCRIPTION_PROVIDERS = {
+    "glmcp": "z_ai-glm-coding-plan",
+}
+
+GLMCP_ADMISSION_PROVIDER = SUBSCRIPTION_PROVIDERS["glmcp"]
+GLMCP_ADMISSION_CAPACITY_POOL = "subscription_quota"
+# ``claude_code`` is accepted as a receipt ``supported_tool`` value only when
+# paired with the official Z.ai Coding Plan Claude Code endpoint/model evidence
+# below; route-specific quota still gates dispatch.
+GLMCP_ADMISSION_TOOL_ENDPOINTS = {
+    "hapax-glmcp-reviewer": frozenset({"https://api.z.ai/api/coding/paas/v4"}),
+    "claude_code": frozenset({"https://api.z.ai/api/anthropic"}),
+}
+GLMCP_ADMISSION_SUPPORTED_TOOLS = frozenset(GLMCP_ADMISSION_TOOL_ENDPOINTS)
+GLMCP_ADMISSION_ENDPOINTS = frozenset(
+    endpoint for endpoints in GLMCP_ADMISSION_TOOL_ENDPOINTS.values() for endpoint in endpoints
+)
+# Keep this fail-closed. Recheck before edits against Z.ai Coding Plan docs
+# (`/websites/z_ai_devpack`) and the official GLM-5 repo (`/zai-org/glm-5`).
+# The latest open-weights release is GLM-5.2, but the Coding Plan custom-tool
+# docs currently use ``glm-5`` as the API model id for Max/Pro GLM-5 access.
+GLMCP_ADMISSION_MODELS = frozenset({"glm-5"})
+GLMCP_ADMISSION_FIELDS = frozenset(
+    {
+        "capacity_pool",
+        "captured_at",
+        "detected_at",
+        "endpoint",
+        "evidence_ref",
+        "model",
+        "observed_at",
+        "provider",
+        "route_id",
+        "stale_after_seconds",
+        "status",
+        "supported_tool",
+    }
+)
+GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS = 3600
+GLMCP_ADMISSION_RECEIPT_GLOB = "*glmcp-quota-admission*.yaml"
+GLMCP_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
+GLMCP_ADMISSION_SAFE_RECEIPT_NAME_RE = re.compile(
+    r"\A[a-z0-9_.+-]*glmcp-quota-admission[a-z0-9_.+-]*\.yaml\Z"
+)
+GLMCP_ADMISSION_SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
+GLMCP_ADMISSION_RECHECK_COMMAND = (
+    f"find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '{GLMCP_ADMISSION_RECEIPT_GLOB}' -print"
+)
+GLMCP_ADMISSION_RECOVERY_HINT = (
+    "false-negative recovery: repair receipt permissions/encoding or create a fresh "
+    "short-lived admission receipt with status, provider, capacity_pool, route_id, "
+    "supported_tool, endpoint, model, one of observed_at/captured_at/detected_at, "
+    "stale_after_seconds, and 3-240 character evidence_ref, then rerun writer"
+)
+
+
+@dataclass(frozen=True)
+class GlmcpAdmission:
+    evidence_ref: str
+    fresh_until: datetime
+
+
+@dataclass(frozen=True)
+class GlmcpAdmissionScan:
+    admissions: list[GlmcpAdmission]
+    ignored_evidence_refs: list[str]
+
 
 LOCAL_COMPUTE_ROUTE = "litellm.local.command-r-35b"
 LOCAL_COMPUTE_PROVIDER = "tabbyapi"
@@ -92,13 +186,22 @@ LOAD_YELLOW_PER_CPU = 4.0
 def role_platform(role: str) -> str:
     """Map a lane role (relay receipt filename stem) to its platform."""
 
-    if role.startswith("cx-") or role.startswith("codex"):
+    normalized = role.lower().replace("_", "-")
+    if (
+        normalized in {"cx-glmcp", "codex-glmcp", "glmcp"}
+        or normalized.startswith("cx-glmcp")
+        or normalized.startswith("codex-glmcp")
+        or normalized.startswith("glm-")
+        or normalized.startswith("glmcp-")
+    ):
+        return "glmcp"
+    if normalized.startswith("cx-") or normalized.startswith("codex"):
         return "codex"
-    if role.startswith("gemini") or role.startswith("gm-"):
-        return "gemini"
-    if role.startswith("antigrav") or role.startswith("agy"):
+    if normalized.startswith("gemini") or normalized.startswith("gm-"):
+        return "retired-gemini"
+    if normalized.startswith("antigrav") or normalized.startswith("agy"):
         return "antigrav"
-    if role.startswith("vbe-") or role.startswith("vibe"):
+    if normalized.startswith("vbe-") or normalized.startswith("vibe"):
         return "vibe"
     return "claude"
 
@@ -116,6 +219,30 @@ def _parse_flat_yaml(text: str) -> dict[str, str]:
     return fields
 
 
+def _parse_flat_yaml_strict(text: str) -> tuple[dict[str, str], str | None]:
+    """Parse flat admission receipts and reject ambiguous YAML-shaped input."""
+
+    fields: dict[str, str] = {}
+    for line_no, raw_line in enumerate(text.splitlines(), start=1):
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if raw_line[:1].isspace() or stripped.startswith("-"):
+            return {}, f"non-flat line {line_no}"
+        if ":" not in raw_line:
+            return {}, f"non key-value line {line_no}"
+        key, _, value = raw_line.partition(":")
+        normalized_key = key.strip()
+        if not normalized_key:
+            return {}, f"empty key on line {line_no}"
+        if normalized_key not in GLMCP_ADMISSION_FIELDS:
+            return {}, f"unsupported key on line {line_no}"
+        if normalized_key in fields:
+            return {}, f"duplicate key on line {line_no}"
+        fields[normalized_key] = value.strip().strip("'\"")
+    return fields, None
+
+
 def _parse_utc(value: str) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -124,6 +251,33 @@ def _parse_utc(value: str) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _reason_code(reason: str) -> str:
+    code = re.sub(r"[^a-z0-9]+", "-", reason.lower()).strip("-")
+    return code[:80] or "ignored"
+
+
+def _warn_ignored_glmcp_admission(path: Path, reason: str) -> str:
+    receipt_label = _receipt_label(path)
+    print(
+        f"hapax-quota-telemetry-writer: ignoring GLMCP admission receipt {receipt_label}: "
+        f"{reason}; recheck: {GLMCP_ADMISSION_RECHECK_COMMAND}; "
+        f"{GLMCP_ADMISSION_RECOVERY_HINT}",
+        file=sys.stderr,
+    )
+    return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}"
+
+
+def _receipt_label(path: Path) -> str:
+    name = path.name
+    if (
+        GLMCP_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(name)
+        and GLMCP_ADMISSION_SECRETISH_RE.search(name) is None
+    ):
+        return name
+    digest = hashlib.sha256(name.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return f"unsafe-receipt-name-sha256:{digest}"
 
 
 def active_quota_walls(
@@ -150,10 +304,211 @@ def active_quota_walls(
             if detected_at is None or now - detected_at > WALL_WITHOUT_RESET_TTL:
                 continue
         platform = role_platform(role)
+        if platform == "retired-gemini":
+            print(
+                "hapax-quota-telemetry-writer: WARNING ignoring retired Gemini "
+                f"quota-wall receipt {path.name}; legacy Gemini CLI lanes are retired",
+                file=sys.stderr,
+            )
+            continue
         walls.setdefault(platform, []).append(
             f"relay-receipt:{path.name}:resets_at:{fields.get('resets_at') or 'unknown'}"
         )
     return walls
+
+
+def active_glmcp_admission_receipts(
+    receipt_dir: Path,
+    *,
+    now: datetime,
+) -> GlmcpAdmissionScan:
+    """Return fresh positive GLMCP quota/admission receipt evidence refs.
+
+    GLM Coding Plan Max is finite quota. Unlike the older Claude/Codex/Gemini
+    subscription snapshots, absence of a wall is not enough to call GLMCP fresh:
+    a bakeoff or dispatcher must leave an explicit, time-bounded admission
+    witness first. This keeps GLMCP fail-closed until a supported-tool witness
+    exists, without making provider calls from this writer.
+    """
+
+    if not receipt_dir.is_dir():
+        return GlmcpAdmissionScan(admissions=[], ignored_evidence_refs=[])
+    refs: list[GlmcpAdmission] = []
+    ignored_refs: list[str] = []
+
+    def reject(path: Path, reason: str) -> None:
+        ignored_refs.append(_warn_ignored_glmcp_admission(path, reason))
+
+    for path in sorted(receipt_dir.glob(GLMCP_ADMISSION_RECEIPT_GLOB)):
+        try:
+            raw_receipt = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            reject(
+                path,
+                f"unreadable receipt {type(exc).__name__}",
+            )
+            continue
+        fields, parse_error = _parse_flat_yaml_strict(raw_receipt)
+        if parse_error is not None:
+            reject(path, parse_error)
+            continue
+        status = fields.get("status", "")
+        if status not in {"quota_available", "admitted"}:
+            reject(
+                path,
+                "status missing or unsupported; expected quota_available or admitted",
+            )
+            continue
+        provider = fields.get("provider", "")
+        if provider != GLMCP_ADMISSION_PROVIDER:
+            if provider in {"z_ai", "z.ai", "zai"}:
+                reject(
+                    path,
+                    f"provider ambiguous alias; expected {GLMCP_ADMISSION_PROVIDER}",
+                )
+            else:
+                reject(
+                    path,
+                    f"provider missing or unsupported; expected {GLMCP_ADMISSION_PROVIDER}",
+                )
+            continue
+        capacity_pool = fields.get("capacity_pool", "")
+        if capacity_pool != GLMCP_ADMISSION_CAPACITY_POOL:
+            reject(
+                path,
+                f"capacity_pool missing or unsupported; expected {GLMCP_ADMISSION_CAPACITY_POOL}",
+            )
+            continue
+        route_id = fields.get("route_id", "")
+        if route_id != SUBSCRIPTION_ROUTES["glmcp"]:
+            reject(
+                path,
+                f"route_id missing or unsupported; expected {SUBSCRIPTION_ROUTES['glmcp']}",
+            )
+            continue
+        supported_tool = fields.get("supported_tool", "")
+        if supported_tool not in GLMCP_ADMISSION_SUPPORTED_TOOLS:
+            reject(
+                path,
+                "supported_tool missing or unsupported; expected supported Coding Plan tool",
+            )
+            continue
+        endpoint = fields.get("endpoint", "").rstrip("/")
+        if endpoint not in GLMCP_ADMISSION_ENDPOINTS:
+            reject(
+                path,
+                "endpoint missing or unsupported; expected official Z.ai Coding Plan endpoint",
+            )
+            continue
+        if endpoint not in GLMCP_ADMISSION_TOOL_ENDPOINTS[supported_tool]:
+            reject(
+                path,
+                "supported_tool/endpoint mismatch; expected official endpoint for supported tool",
+            )
+            continue
+        model = fields.get("model", "")
+        if model not in GLMCP_ADMISSION_MODELS:
+            reject(
+                path,
+                "model missing or unsupported; expected documented Coding Plan model id glm-5",
+            )
+            continue
+        receipt_evidence_ref = fields.get("evidence_ref", "").strip()
+        if not receipt_evidence_ref:
+            reject(path, "evidence_ref missing")
+            continue
+        receipt_evidence_ref = " ".join(receipt_evidence_ref.split())
+        if len(receipt_evidence_ref) > 240:
+            reject(
+                path,
+                "evidence_ref unsafe; expected a sanitized witness reference, not raw secret material",
+            )
+            continue
+        if (
+            GLMCP_ADMISSION_EVIDENCE_REF_RE.fullmatch(receipt_evidence_ref) is None
+            or GLMCP_ADMISSION_SECRETISH_RE.search(receipt_evidence_ref) is not None
+        ):
+            reject(
+                path,
+                "evidence_ref unsafe; expected a sanitized witness reference, not raw secret material",
+            )
+            continue
+        timestamp_fields = [
+            key
+            for key in ("observed_at", "captured_at", "detected_at")
+            if fields.get(key, "").strip()
+        ]
+        if not timestamp_fields:
+            reject(
+                path,
+                "missing timestamp field; expected exactly one of observed_at/captured_at/detected_at",
+            )
+            continue
+        if len(timestamp_fields) > 1:
+            reject(
+                path,
+                "ambiguous timestamp fields; expected exactly one of observed_at/captured_at/detected_at",
+            )
+            continue
+        timestamp_key = timestamp_fields[0]
+        observed_raw = fields[timestamp_key]
+        observed_at = _parse_utc(observed_raw)
+        if observed_at is None:
+            reject(
+                path,
+                f"missing or malformed {timestamp_key}",
+            )
+            continue
+        if observed_at > now:
+            reject(
+                path,
+                f"{timestamp_key} is in the future",
+            )
+            continue
+        stale_after_raw = fields.get("stale_after_seconds", "").strip()
+        if not stale_after_raw:
+            reject(path, "stale_after_seconds missing")
+            continue
+        try:
+            stale_after_seconds = int(stale_after_raw)
+        except ValueError:
+            reject(
+                path,
+                "malformed stale_after_seconds",
+            )
+            continue
+        if stale_after_seconds <= 0:
+            reject(
+                path,
+                "non-positive stale_after_seconds",
+            )
+            continue
+        if stale_after_seconds > GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS:
+            reject(
+                path,
+                f"stale_after_seconds exceeds maximum {GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS}",
+            )
+            continue
+        fresh_until = observed_at + timedelta(seconds=stale_after_seconds)
+        if now >= fresh_until:
+            reject(
+                path,
+                "receipt expired",
+            )
+            continue
+        refs.append(
+            GlmcpAdmission(
+                evidence_ref=(
+                    "relay-receipt:"
+                    f"{_receipt_label(path)}:witness:{receipt_evidence_ref}:"
+                    f"supported_tool:{supported_tool}:endpoint:{endpoint}:model:{model}:"
+                    f"observed_at:{observed_at.isoformat().replace('+00:00', 'Z')}:"
+                    f"fresh_until:{fresh_until.isoformat().replace('+00:00', 'Z')}"
+                ),
+                fresh_until=fresh_until,
+            )
+        )
+    return GlmcpAdmissionScan(admissions=refs, ignored_evidence_refs=ignored_refs)
 
 
 def probe_local_resource_state(*, nvidia_smi: str = "nvidia-smi") -> tuple[str, list[str]]:
@@ -214,6 +569,8 @@ def build_live_ledger(
     *,
     now: datetime,
     walls: dict[str, list[str]],
+    glmcp_admissions: list[GlmcpAdmission],
+    glmcp_ignored_receipts: list[str],
     local_resource_state: str,
     local_resource_evidence: list[str],
 ) -> QuotaSpendLedger:
@@ -230,30 +587,58 @@ def build_live_ledger(
         if platform_walls:
             state = "exhausted"
             evidence = [*platform_walls, writer_ref]
+            fresh_until = None
             reason = (
                 f"{platform} subscription lane hit an unexpired quota wall; "
                 "state from quota-wall relay receipt(s)"
             )
+        elif platform == "glmcp":
+            if glmcp_admissions:
+                state = "fresh"
+                evidence = [*(admission.evidence_ref for admission in glmcp_admissions), writer_ref]
+                fresh_until = max(admission.fresh_until for admission in glmcp_admissions)
+                reason = (
+                    "fresh GLMCP supported-tool quota admission receipt present; "
+                    "GLM Coding Plan Max remains finite and receipt-bounded"
+                )
+            else:
+                state = "unknown"
+                if glmcp_ignored_receipts:
+                    evidence = [*glmcp_ignored_receipts, writer_ref]
+                    reason = (
+                        "GLMCP quota admission receipt(s) were present but rejected; "
+                        "GLM Coding Plan Max is finite and rejected evidence must "
+                        "hold/backoff rather than dispatch blind"
+                    )
+                else:
+                    evidence = ["relay-receipt:glmcp:quota-admission:absent", writer_ref]
+                    reason = (
+                        "no fresh GLMCP quota admission receipt; GLM Coding Plan Max is finite "
+                        "and unknown quota must hold/backoff rather than dispatch blind"
+                    )
+                fresh_until = None
         else:
             state = "fresh"
             evidence = [f"relay-receipt:{platform}:quota-wall:absent", writer_ref]
+            fresh_until = None
             reason = (
                 f"no unexpired quota-wall relay receipt for {platform}; "
                 "subscription lanes observed dispatchable"
             )
-        snapshots.append(
-            {
-                "quota_snapshot_schema": 1,
-                "snapshot_id": f"quota-{platform}-subscription-live-{snapshot_stamp}",
-                "captured_at": now.isoformat().replace("+00:00", "Z"),
-                "route_id": route_id,
-                "provider": f"{platform}-subscription",
-                "capacity_pool": "subscription_quota",
-                "subscription_quota_state": state,
-                "evidence_refs": evidence,
-                "operator_visible_reason": reason,
-            }
-        )
+        snapshot = {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": f"quota-{platform}-subscription-live-{snapshot_stamp}",
+            "captured_at": now.isoformat().replace("+00:00", "Z"),
+            "route_id": route_id,
+            "provider": SUBSCRIPTION_PROVIDERS.get(platform, f"{platform}-subscription"),
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": state,
+            "evidence_refs": evidence,
+            "operator_visible_reason": reason,
+        }
+        if fresh_until is not None:
+            snapshot["fresh_until"] = fresh_until.isoformat().replace("+00:00", "Z")
+        snapshots.append(snapshot)
 
     snapshots.append(
         {
@@ -381,12 +766,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     walls = active_quota_walls(args.relay_receipt_dir, now=now)
+    glmcp_scan = active_glmcp_admission_receipts(args.relay_receipt_dir, now=now)
     resource_state, resource_evidence = probe_local_resource_state(nvidia_smi=args.nvidia_smi)
     try:
         ledger = build_live_ledger(
             base,
             now=now,
             walls=walls,
+            glmcp_admissions=glmcp_scan.admissions,
+            glmcp_ignored_receipts=glmcp_scan.ignored_evidence_refs,
             local_resource_state=resource_state,
             local_resource_evidence=resource_evidence,
         )
@@ -407,6 +795,8 @@ def main(argv: list[str] | None = None) -> int:
         "out": str(out_path),
         "receipts_refreshed": receipts_ok,
         "local_resource_state": resource_state,
+        "glmcp_admissions": len(glmcp_scan.admissions),
+        "glmcp_ignored_admissions": len(glmcp_scan.ignored_evidence_refs),
         "quota_walls": {platform: len(refs) for platform, refs in sorted(walls.items())},
         "snapshot_count": len(ledger.quota_snapshots),
     }

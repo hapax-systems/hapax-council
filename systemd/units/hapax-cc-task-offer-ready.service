@@ -4,6 +4,7 @@ After=hapax-secrets.service
 
 [Service]
 Type=oneshot
-ExecStart=%h/projects/hapax-council/scripts/cc-task-offer-ready --reconcile
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/cc-task-offer-ready --reconcile
 Environment=HOME=%h
 TimeoutStartSec=60

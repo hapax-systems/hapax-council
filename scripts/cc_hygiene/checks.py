@@ -412,16 +412,28 @@ def check_duplicate_claim(
 
 
 def check_orphan_pr(
-    notes: Iterable[TaskNote], repo_root: Path, *, now: datetime | None = None
+    notes: Iterable[TaskNote],
+    repo_root: Path,
+    *,
+    closed_notes: Iterable[TaskNote] = (),
+    now: datetime | None = None,
 ) -> list[HygieneEvent]:
     """§2.4 — open PR > 1h old with no vault cc-task linking it.
 
     Severity: warning. Auto-link is refused (false-positive risk).
+
+    A PR counts as linked when ANY task note — active OR closed — carries its
+    number in ``pr``. Tasks are routinely closed (moved to ``closed/``) the
+    moment their PR opens, well before the PR merges; consulting only active
+    notes mislabels every such PR as an orphan and fires a recurring 5-min
+    notification storm for the PR's whole open lifetime (P0 incident
+    ``orphan_pr:4111``, count 215). ``closed_notes`` defaults to empty so
+    callers that only have active notes keep the prior behavior.
     """
     now = now or _now()
     events: list[HygieneEvent] = []
     linked: set[int] = set()
-    for note in notes:
+    for note in (*notes, *closed_notes):
         if note.pr:
             linked.add(note.pr)
         linked.update(note.linked_prs)

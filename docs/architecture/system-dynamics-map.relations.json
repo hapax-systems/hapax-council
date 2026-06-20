@@ -1,0 +1,849 @@
+{
+  "generated_at": "2026-06-18T00:00:00Z",
+  "map_id": "system-dynamics-map-v1",
+  "relations": [
+    {
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "category": "structural",
+      "directionality": "directed",
+      "edge_ids": [
+        "dmn-to-sbvr"
+      ],
+      "id": "adjacent_vocabulary",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/adjacent_vocabulary",
+      "label": "Adjacent Vocabulary",
+      "layers": [
+        "decision-modeling"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "standard"
+      ],
+      "target_kinds": [
+        "standard"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "category": "governance",
+      "directionality": "directed",
+      "edge_ids": [
+        "pr-ci-to-merge-release"
+      ],
+      "id": "admits_release",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/admits_release",
+      "label": "Admits Release",
+      "layers": [
+        "execution-surfaces"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "release-signal"
+      ],
+      "target_kinds": [
+        "state-transition"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "category": "governance",
+      "directionality": "directed",
+      "edge_ids": [
+        "sdlc-intake-to-claim"
+      ],
+      "id": "advances_to",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/advances_to",
+      "label": "Advances To",
+      "layers": [
+        "observation-state"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "operating-slice"
+      ],
+      "target_kinds": [
+        "state-transition"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "category": "observational",
+      "directionality": "directed",
+      "edge_ids": [
+        "api-to-cloudevents"
+      ],
+      "id": "can_emit_event_envelopes",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/can_emit_event_envelopes",
+      "label": "Can Emit Event Envelopes",
+      "layers": [
+        "observation-state"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "runtime"
+      ],
+      "target_kinds": [
+        "standard"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "category": "structural",
+      "directionality": "directed",
+      "edge_ids": [
+        "state-to-scxml"
+      ],
+      "id": "can_use_state_machine_notation",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/can_use_state_machine_notation",
+      "label": "Can Use State Machine Notation",
+      "layers": [
+        "observation-state"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "modeling-pattern"
+      ],
+      "target_kinds": [
+        "standard"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "category": "execution",
+      "directionality": "directed",
+      "edge_ids": [
+        "decision-table-to-rule-engine"
+      ],
+      "id": "compiled_or_interpreted_by",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/compiled_or_interpreted_by",
+      "label": "Compiled Or Interpreted By",
+      "layers": [
+        "execution-surfaces"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "artifact"
+      ],
+      "target_kinds": [
+        "runtime"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "category": "structural",
+      "directionality": "directed",
+      "edge_ids": [
+        "dmn-to-decision-table"
+      ],
+      "id": "contains_logic_artifact",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/contains_logic_artifact",
+      "label": "Contains Logic Artifact",
+      "layers": [
+        "decision-modeling"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "standard"
+      ],
+      "target_kinds": [
+        "artifact"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "category": "structural",
+      "directionality": "directed",
+      "edge_ids": [
+        "dmn-to-drd"
+      ],
+      "id": "defines",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/defines",
+      "label": "Defines",
+      "layers": [
+        "decision-modeling"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "standard"
+      ],
+      "target_kinds": [
+        "notation"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "category": "execution",
+      "directionality": "directed",
+      "edge_ids": [
+        "c4-to-decision-api"
+      ],
+      "id": "deploys_or_contains",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/deploys_or_contains",
+      "label": "Deploys Or Contains",
+      "layers": [
+        "source-models"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "practice"
+      ],
+      "target_kinds": [
+        "runtime"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "category": "observational",
+      "directionality": "directed",
+      "edge_ids": [
+        "api-to-otel"
+      ],
+      "id": "emits_telemetry",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/emits_telemetry",
+      "label": "Emits Telemetry",
+      "layers": [
+        "observation-state"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "runtime"
+      ],
+      "target_kinds": [
+        "telemetry"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "category": "structural",
+      "directionality": "directed",
+      "edge_ids": [
+        "archimate-to-runtime-topology"
+      ],
+      "id": "enterprise_context_for",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/enterprise_context_for",
+      "label": "Enterprise Context For",
+      "layers": [
+        "source-models"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "standard"
+      ],
+      "target_kinds": [
+        "practice"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "category": "observational",
+      "directionality": "directed",
+      "edge_ids": [
+        "state-to-xes"
+      ],
+      "id": "exports_or_imports_event_logs",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/exports_or_imports_event_logs",
+      "label": "Exports Or Imports Event Logs",
+      "layers": [
+        "observation-state"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "modeling-pattern"
+      ],
+      "target_kinds": [
+        "standard"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "category": "structural",
+      "directionality": "directed",
+      "edge_ids": [
+        "model-artifacts-to-decision-service"
+      ],
+      "id": "feeds_or_complements",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/feeds_or_complements",
+      "label": "Feeds Or Complements",
+      "layers": [
+        "execution-surfaces"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "artifact"
+      ],
+      "target_kinds": [
+        "boundary"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "category": "projection",
+      "directionality": "directed",
+      "edge_ids": [
+        "view-to-react-flow"
+      ],
+      "id": "future_authoring_projection",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/future_authoring_projection",
+      "label": "Future Authoring Projection",
+      "layers": [
+        "projection"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "projection-contract"
+      ],
+      "target_kinds": [
+        "renderer"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "category": "projection",
+      "directionality": "directed",
+      "edge_ids": [
+        "view-to-sigma"
+      ],
+      "id": "future_large_graph_projection",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/future_large_graph_projection",
+      "label": "Future Large Graph Projection",
+      "layers": [
+        "projection"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "projection-contract"
+      ],
+      "target_kinds": [
+        "renderer"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "category": "governance",
+      "directionality": "directed",
+      "edge_ids": [
+        "shacl-to-view-manifest"
+      ],
+      "id": "guards",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/guards",
+      "label": "Guards",
+      "layers": [
+        "projection"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "validation"
+      ],
+      "target_kinds": [
+        "projection-contract"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "category": "governance",
+      "directionality": "directed",
+      "edge_ids": [
+        "review-dossier-to-pr-ci"
+      ],
+      "id": "guards_release",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/guards_release",
+      "label": "Guards Release",
+      "layers": [
+        "execution-surfaces"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "evidence-artifact"
+      ],
+      "target_kinds": [
+        "release-signal"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "category": "structural",
+      "directionality": "directed",
+      "edge_ids": [
+        "decision-service-to-api"
+      ],
+      "id": "implemented_by",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/implemented_by",
+      "label": "Implemented By",
+      "layers": [
+        "execution-surfaces"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "boundary"
+      ],
+      "target_kinds": [
+        "runtime"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "category": "structural",
+      "directionality": "directed",
+      "edge_ids": [
+        "bpmn-to-decision-service",
+        "cmmn-to-decision-service"
+      ],
+      "id": "invokes_or_contextualizes",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/invokes_or_contextualizes",
+      "label": "Invokes Or Contextualizes",
+      "layers": [
+        "source-models"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "standard"
+      ],
+      "target_kinds": [
+        "boundary"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted",
+        "candidate"
+      ],
+      "category": "structural",
+      "directionality": "directed",
+      "edge_ids": [
+        "archimate-to-kg",
+        "bpmn-to-kg",
+        "dmn-to-kg",
+        "sysml-to-kg"
+      ],
+      "id": "mapped_into",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/mapped_into",
+      "label": "Mapped Into",
+      "layers": [
+        "semantic-backbone"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "standard"
+      ],
+      "target_kinds": [
+        "backbone"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "category": "observational",
+      "directionality": "directed",
+      "edge_ids": [
+        "temporal-state-to-sdlc"
+      ],
+      "id": "models_observed_state",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/models_observed_state",
+      "label": "Models Observed State",
+      "layers": [
+        "observation-state"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "modeling-pattern"
+      ],
+      "target_kinds": [
+        "operating-slice"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "category": "observational",
+      "directionality": "directed",
+      "edge_ids": [
+        "otel-to-kg"
+      ],
+      "id": "observes",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/observes",
+      "label": "Observes",
+      "layers": [
+        "observation-state"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "telemetry"
+      ],
+      "target_kinds": [
+        "backbone"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "category": "structural",
+      "directionality": "directed",
+      "edge_ids": [
+        "state-to-kg"
+      ],
+      "id": "overlays",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/overlays",
+      "label": "Overlays",
+      "layers": [
+        "observation-state"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "modeling-pattern"
+      ],
+      "target_kinds": [
+        "backbone"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "category": "structural",
+      "directionality": "directed",
+      "edge_ids": [
+        "dmn-to-decision-service"
+      ],
+      "id": "packages",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/packages",
+      "label": "Packages",
+      "layers": [
+        "decision-modeling"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "standard"
+      ],
+      "target_kinds": [
+        "boundary"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "category": "governance",
+      "directionality": "directed",
+      "edge_ids": [
+        "claim-to-review-dossier"
+      ],
+      "id": "produces_evidence",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/produces_evidence",
+      "label": "Produces Evidence",
+      "layers": [
+        "semantic-backbone"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "state-transition"
+      ],
+      "target_kinds": [
+        "evidence-artifact"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "rendered"
+      ],
+      "category": "projection",
+      "directionality": "directed",
+      "edge_ids": [
+        "kg-to-view-manifest"
+      ],
+      "id": "projected_by",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/projected_by",
+      "label": "Projected By",
+      "layers": [
+        "projection"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "backbone"
+      ],
+      "target_kinds": [
+        "projection-contract"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "rendered"
+      ],
+      "category": "projection",
+      "directionality": "directed",
+      "edge_ids": [
+        "operating-lens-to-sdlc"
+      ],
+      "id": "projects_operating_slice",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/projects_operating_slice",
+      "label": "Projects Operating Slice",
+      "layers": [
+        "projection"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "projection-contract"
+      ],
+      "target_kinds": [
+        "operating-slice"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "category": "observational",
+      "directionality": "directed",
+      "edge_ids": [
+        "api-to-trace-context"
+      ],
+      "id": "propagates_trace_identity",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/propagates_trace_identity",
+      "label": "Propagates Trace Identity",
+      "layers": [
+        "observation-state"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "runtime"
+      ],
+      "target_kinds": [
+        "standard"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "category": "structural",
+      "directionality": "directed",
+      "edge_ids": [
+        "kg-to-prov"
+      ],
+      "id": "qualified_by",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/qualified_by",
+      "label": "Qualified By",
+      "layers": [
+        "semantic-backbone"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "backbone"
+      ],
+      "target_kinds": [
+        "provenance"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted",
+        "rendered"
+      ],
+      "category": "structural",
+      "directionality": "directed",
+      "edge_ids": [
+        "prov-to-review-dossier",
+        "prov-to-view-manifest"
+      ],
+      "id": "records_generation_of",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/records_generation_of",
+      "label": "Records Generation Of",
+      "layers": [
+        "projection",
+        "semantic-backbone"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "provenance"
+      ],
+      "target_kinds": [
+        "evidence-artifact",
+        "projection-contract"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "rendered"
+      ],
+      "category": "projection",
+      "directionality": "directed",
+      "edge_ids": [
+        "view-to-cytoscape"
+      ],
+      "id": "renders_with",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/renders_with",
+      "label": "Renders With",
+      "layers": [
+        "projection"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "projection-contract"
+      ],
+      "target_kinds": [
+        "renderer"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "category": "execution",
+      "directionality": "directed",
+      "edge_ids": [
+        "feel-to-rule-engine"
+      ],
+      "id": "requires_runtime_support",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/requires_runtime_support",
+      "label": "Requires Runtime Support",
+      "layers": [
+        "execution-surfaces"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "language"
+      ],
+      "target_kinds": [
+        "runtime"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "category": "structural",
+      "directionality": "directed",
+      "edge_ids": [
+        "dmn-to-xml-di",
+        "kg-to-jsonld"
+      ],
+      "id": "serialized_as",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/serialized_as",
+      "label": "Serialized As",
+      "layers": [
+        "execution-surfaces",
+        "semantic-backbone"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "backbone",
+        "standard"
+      ],
+      "target_kinds": [
+        "exchange",
+        "interchange"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "candidate"
+      ],
+      "category": "structural",
+      "directionality": "directed",
+      "edge_ids": [
+        "sysml-to-model-artifacts"
+      ],
+      "id": "systems_context_for",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/systems_context_for",
+      "label": "Systems Context For",
+      "layers": [
+        "source-models"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "standard"
+      ],
+      "target_kinds": [
+        "artifact"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "category": "structural",
+      "directionality": "directed",
+      "edge_ids": [
+        "dmn-to-feel"
+      ],
+      "id": "uses_expression_language",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/uses_expression_language",
+      "label": "Uses Expression Language",
+      "layers": [
+        "decision-modeling"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "standard"
+      ],
+      "target_kinds": [
+        "language"
+      ]
+    },
+    {
+      "allowed_claim_types": [
+        "asserted"
+      ],
+      "category": "structural",
+      "directionality": "directed",
+      "edge_ids": [
+        "kg-to-shacl"
+      ],
+      "id": "validated_by",
+      "iri": "https://hapax.local/ns/system-dynamics-map#relation/validated_by",
+      "label": "Validated By",
+      "layers": [
+        "semantic-backbone"
+      ],
+      "semantics": "Declared relation vocabulary entry generated from curated seed edges. Review before using it as an adapter emission contract.",
+      "source_kinds": [
+        "backbone"
+      ],
+      "target_kinds": [
+        "validation"
+      ]
+    }
+  ],
+  "schema": "system-dynamics-map-relation-vocabulary-v1",
+  "version": "1.0.0"
+}

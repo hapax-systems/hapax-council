@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -132,3 +134,143 @@ def test_channel_stats_reports_top_marker_channels() -> None:
 
     assert stats["channels"]["2"]["marker_detected"] is True
     assert stats["top_marker_channels"][0]["channel"] == 2
+
+
+def test_main_fails_closed_when_wet_return_verdict_is_red(
+    monkeypatch,
+    capsys,
+) -> None:
+    mod = load_module()
+    monkeypatch.setattr(
+        mod,
+        "run_probe",
+        lambda _args: {
+            "ok": True,
+            "s4_wet_return_signal": False,
+            "reasons": ["wet_marker_missing"],
+        },
+    )
+
+    rc = mod.main([])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 1
+    assert payload["s4_wet_return_signal"] is False
+    assert "wet_marker_missing" in payload["reasons"]
+
+
+def test_main_fails_closed_on_red_verdict_from_real_run_probe_with_mocked_io(
+    monkeypatch,
+    capsys,
+) -> None:
+    mod = load_module()
+    monkeypatch.setattr(mod.shutil, "which", lambda command: f"/usr/bin/{command}")
+    monkeypatch.setattr(mod, "is_s4_analog_insert_route_present", lambda: True)
+    monkeypatch.setattr(mod.time, "sleep", lambda _duration_s: None)
+
+    class FakePlayback:
+        returncode = 0
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def communicate(self, _payload, *, timeout):
+            return b"", b""
+
+    def fake_start_capture(spec):
+        return SimpleNamespace(spec=spec)
+
+    def fake_stop_capture(cap):
+        return cap.spec.name.encode("utf-8"), "", 0
+
+    def fake_channel_stats(raw, **_kwargs):
+        name = raw.decode("utf-8")
+        if name == "dry_loudnorm_playback":
+            return _capture(marker=True, rms=-38.0, peak=-29.0)
+        return _capture(marker=False, rms=-90.0, peak=-78.0)
+
+    monkeypatch.setattr(mod.subprocess, "Popen", FakePlayback)
+    monkeypatch.setattr(mod, "start_capture", fake_start_capture)
+    monkeypatch.setattr(mod, "stop_capture", fake_stop_capture)
+    monkeypatch.setattr(mod, "channel_stats", fake_channel_stats)
+
+    rc = mod.main([])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 1
+    assert payload["ok"] is True
+    assert payload["s4_wet_return_signal"] is False
+    assert "wet_marker_missing" in payload["reasons"]
+
+
+def test_main_returns_zero_when_wet_return_verdict_is_green(
+    monkeypatch,
+    capsys,
+) -> None:
+    mod = load_module()
+    monkeypatch.setattr(
+        mod,
+        "run_probe",
+        lambda _args: {
+            "ok": True,
+            "s4_wet_return_signal": True,
+            "reasons": [],
+        },
+    )
+
+    rc = mod.main([])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert payload["s4_wet_return_signal"] is True
+
+
+def test_parse_args_exposes_allow_red_witness_flag() -> None:
+    mod = load_module()
+
+    assert mod.parse_args([]).allow_red_witness is False
+    assert mod.parse_args(["--allow-red-witness"]).allow_red_witness is True
+
+
+def test_main_returns_nonzero_when_probe_did_not_complete_ok(
+    monkeypatch,
+    capsys,
+) -> None:
+    mod = load_module()
+    monkeypatch.setattr(
+        mod,
+        "run_probe",
+        lambda _args: {
+            "ok": False,
+            "error": "missing command(s): ['pw-cat']",
+            "s4_wet_return_signal": False,
+        },
+    )
+
+    rc = mod.main(["--allow-red-witness"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 1
+    assert payload["ok"] is False
+
+
+def test_main_allows_red_witness_only_in_explicit_diagnostic_mode(
+    monkeypatch,
+    capsys,
+) -> None:
+    mod = load_module()
+    monkeypatch.setattr(
+        mod,
+        "run_probe",
+        lambda _args: {
+            "ok": True,
+            "s4_wet_return_signal": False,
+            "reasons": ["wet_marker_missing"],
+        },
+    )
+
+    rc = mod.main(["--allow-red-witness"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert payload["s4_wet_return_signal"] is False

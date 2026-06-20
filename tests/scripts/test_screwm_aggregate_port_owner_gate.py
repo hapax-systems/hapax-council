@@ -16,6 +16,19 @@ REQUIRED_PORT_IDS = {
     "drift_modulation_currency",
 }
 
+# §4 carve/carrier ownership split (handoff §4): the 4 visual ports are carve-owned
+# (DarkPlaces/Screwm visual substrate), the 2 audio/egress ports stay carrier-owned.
+CARVE_PORTS = {
+    "layout_programme_control",
+    "temporal_glfeedback_effects",
+    "camera_resilience_live_texture",
+    "drift_modulation_currency",
+}
+CARRIER_PORTS = {
+    "audio_governance",
+    "recording_hls_egress",
+}
+
 MINIMUM_RETAINED_CAPABILITIES = {
     "ducking",
     "vad",
@@ -90,6 +103,22 @@ def test_contract_does_not_recruit_retired_frontend_paths() -> None:
         for ref in _iter_refs(port):
             lowered = ref["path"].lower()
             assert not any(token in lowered for token in retired_tokens), ref["path"]
+
+
+def test_every_port_declares_carve_or_carrier_owner() -> None:
+    # §4 carve/carrier split: each required port names exactly one owner. The 4
+    # visual ports are carve-owned (DarkPlaces/Screwm substrate, cc-cns lane);
+    # the 2 audio/egress ports stay carrier-owned. Source-only governance: the
+    # field routes edits, it does not assert runtime behaviour.
+    ports = {port["id"]: port for port in _load_contract()["required_ports"]}
+
+    for pid, port in ports.items():
+        assert port.get("owner") in {"carve", "carrier"}, f"{pid} owner must be carve|carrier"
+
+    carve = {pid for pid, port in ports.items() if port["owner"] == "carve"}
+    carrier = {pid for pid, port in ports.items() if port["owner"] == "carrier"}
+    assert carve == CARVE_PORTS, carve
+    assert carrier == CARRIER_PORTS, carrier
 
 
 def test_runtime_witness_boundary_is_explicit_for_source_only_gate() -> None:

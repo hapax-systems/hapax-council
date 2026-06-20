@@ -31,6 +31,7 @@ from agents.programme_manager.planner import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_MODEL,
     ProgrammePlanner,
+    _render_arc_roles_directive,
 )
 from shared.programme import ProgrammePlan, ProgrammeRole, is_segmented_content_role
 from shared.segment_prep_contract import programme_source_readiness
@@ -222,6 +223,45 @@ class TestHappyPath:
         assert plan is not None
         assert "emit exactly 1 segmented-content programme" in prompts[0]
         assert "soft-prior programme proposals" in prompts[0]
+
+    def test_arc_roles_only_restricts_roles_in_prompt(self) -> None:
+        # RED-1 producer fix: arc_roles_only=True prepends a HARD role restriction (the validated
+        # lever) — ONLY arc-shaped roles offered, ranking/listy/dyad roles FORBIDDEN this run.
+        prompts: list[str] = []
+
+        def capture(prompt: str) -> str:
+            prompts.append(prompt)
+            return json.dumps(_well_formed_plan_payload(role=ProgrammeRole.TIER_LIST))
+
+        planner = ProgrammePlanner(llm_fn=capture)
+        plan = planner.plan(show_id="show-test-001", target_programmes=1, arc_roles_only=True)
+
+        assert plan is not None
+        p = prompts[0]
+        assert "composable arc" in p.lower()
+        assert "`rant`" in p and "`iceberg`" in p and "`react`" in p  # arc roles offered
+        # ranking / listy / dyad roles forbidden this run
+        assert "`tier_list`" in p and "`top_10`" in p and "`lecture`" in p and "`interview`" in p
+        assert "FORBIDDEN" in p
+
+    def test_arc_roles_only_off_omits_directive(self) -> None:
+        prompts: list[str] = []
+
+        def capture(prompt: str) -> str:
+            prompts.append(prompt)
+            return json.dumps(_well_formed_plan_payload(role=ProgrammeRole.TIER_LIST))
+
+        planner = ProgrammePlanner(llm_fn=capture)
+        plan = planner.plan(show_id="show-test-001", target_programmes=1)  # default off
+
+        assert plan is not None
+        assert "ROLE RESTRICTION (this run)" not in prompts[0]
+
+    def test_render_arc_roles_directive_pure(self) -> None:
+        assert _render_arc_roles_directive(False) == ""
+        directive = _render_arc_roles_directive(True)
+        assert "composable arc" in directive.lower()
+        assert "`rant`" in directive and "FORBIDDEN" in directive
 
     def test_default_model_is_resident_command_r(self) -> None:
         """Pin the only production planner model.
@@ -602,6 +642,46 @@ class TestSubstanceFeedback:
         assert rationale in captured[0]
         assert "substance" in captured[0].lower()
 
+    def test_uncomposable_feedback_adds_topic_type_arc_guidance(self) -> None:
+        captured: list[str] = []
+
+        def capture(prompt: str) -> str:
+            captured.append(prompt)
+            return json.dumps(_well_formed_plan_payload())
+
+        planner = ProgrammePlanner(llm_fn=capture)
+        rationale = (
+            "[prog-x] un-composable parallel_list "
+            "(resolves_specific_hook=False, reorder_breaks_it=False, score=1.0): "
+            "why merged code alone is inspectable"
+        )
+        plan = planner.plan(show_id="show-test-001", prior_substance_feedback=rationale)
+
+        assert plan is not None
+        assert rationale in captured[0]
+        assert "Topic-type composability correction" in captured[0]
+        assert "not only a source-density failure" in captured[0]
+        assert "opening beat must pose the specific hook" in captured[0]
+        assert "If they can be reordered" in captured[0]
+        assert "closing beat must resolve the same opening hook" in captured[0]
+        assert "why X matters" in captured[0]
+        assert "why X is inspectable" in captured[0]
+
+    def test_thin_source_feedback_does_not_add_composability_guidance(self) -> None:
+        captured: list[str] = []
+
+        def capture(prompt: str) -> str:
+            captured.append(prompt)
+            return json.dumps(_well_formed_plan_payload())
+
+        planner = ProgrammePlanner(llm_fn=capture)
+        rationale = "topic 'abstract musings' was thin: claims unsupported by any source"
+        plan = planner.plan(show_id="show-test-001", prior_substance_feedback=rationale)
+
+        assert plan is not None
+        assert rationale in captured[0]
+        assert "Topic-type composability correction" not in captured[0]
+
     def test_substance_feedback_survives_validation_retry(self) -> None:
         bad = json.dumps({"not": "a plan"})
         good = json.dumps(_well_formed_plan_payload())
@@ -620,6 +700,27 @@ class TestSubstanceFeedback:
         # the planner must not forget WHY the last round was thin.
         assert rationale in captured[1]
         assert "Validation error on previous attempt" in captured[1]
+
+    def test_composability_feedback_survives_validation_retry(self) -> None:
+        bad = json.dumps({"not": "a plan"})
+        good = json.dumps(_well_formed_plan_payload())
+        captured: list[str] = []
+
+        def capture(prompt: str) -> str:
+            captured.append(prompt)
+            return bad if len(captured) == 1 else good
+
+        planner = ProgrammePlanner(llm_fn=capture)
+        rationale = (
+            "[prog-x] uncomposable_topic_type: un-composable parallel_list "
+            "(resolves_specific_hook=False, reorder_breaks_it=False)"
+        )
+        planner.plan(show_id="show-test-001", prior_substance_feedback=rationale)
+
+        assert len(captured) == 2
+        assert rationale in captured[1]
+        assert "Validation error on previous attempt" in captured[1]
+        assert "Topic-type composability correction" in captured[1]
 
     def test_no_substance_feedback_leaves_prompt_unchanged(self) -> None:
         captured: list[str] = []
@@ -847,6 +948,25 @@ class TestContextRendering:
             '"worked_example"',
         ):
             assert key in prompt
+
+    def test_default_prompt_names_s2_composability_contract(self) -> None:
+        captured: list[str] = []
+
+        def capture(prompt: str) -> str:
+            captured.append(prompt)
+            return json.dumps(_well_formed_plan_payload(role=ProgrammeRole.TIER_LIST))
+
+        planner = ProgrammePlanner(llm_fn=capture)
+        planner.plan(show_id="show-test-001", target_programmes=1)
+        prompt = captured[0]
+
+        assert "Composability contract" in prompt
+        assert "parallel_list" in prompt
+        assert "opening beat must pose a" in prompt
+        assert "closing beat must resolve that same hook" in prompt
+        assert "reordering the middle beats should break the segment" in prompt
+        assert "why X matters" in prompt
+        assert "why X is inspectable" in prompt
 
 
 # ── Soft-prior architectural pin ──────────────────────────────────────

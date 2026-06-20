@@ -3,7 +3,7 @@
 99-LOC PreToolUse hook that blocks Bash commands referencing a
 session name outside the governance-approved set
 (``alpha beta gamma delta epsilon``). Greek-letter names beyond that
-set (zeta, eta, theta, iota, kappa, lambda, mu, nu, xi, omicron,
+set (zeta, eta, theta, kappa, lambda, mu, nu, xi, omicron,
 sigma, tau, upsilon, phi, chi, psi, omega) are explicitly denied
 when they appear:
 
@@ -83,23 +83,45 @@ class TestApprovedNames:
 
 
 class TestUnapprovedFlagForms:
-    def test_double_dash_session_zeta_blocked(self) -> None:
-        result = _run(_bash("hapax-claude-send --session zeta -- 'msg'"))
+    def test_double_dash_session_kappa_blocked(self) -> None:
+        result = _run(_bash("hapax-claude-send --session kappa -- 'msg'"))
         assert result.returncode == 2
         assert "BLOCKED" in result.stderr
-        assert "zeta" in result.stderr.lower()
+        assert "kappa" in result.stderr.lower()
 
-    def test_session_equals_eta_blocked(self) -> None:
-        result = _run(_bash("foo session=eta"))
+    def test_session_equals_lambda_blocked(self) -> None:
+        result = _run(_bash("foo session=lambda"))
         assert result.returncode == 2
 
-    def test_dash_s_theta_blocked(self) -> None:
-        result = _run(_bash("hapax-tool -s theta"))
+    def test_dash_s_mu_blocked(self) -> None:
+        result = _run(_bash("hapax-tool -s mu"))
         assert result.returncode == 2
 
-    def test_session_iota_via_session_context_blocked(self) -> None:
-        result = _run(_bash("session-context.sh iota"))
+    def test_session_nu_via_session_context_blocked(self) -> None:
+        result = _run(_bash("session-context.sh nu"))
         assert result.returncode == 2
+
+
+# ── Canonical greek slots zeta..theta are APPROVED (deny-list narrowing) ──
+# Red-before-green for removing zeta|eta|theta from UNAPPROVED: they are
+# first-class greek lanes per hooks/scripts/agent-role.sh, so referencing them
+# as a session identifier must NOT be blocked. (cc-task-role-resolution-disambiguation)
+
+
+class TestApprovedGreekSlotsAllowed:
+    def test_session_zeta_allowed(self) -> None:
+        assert _run(_bash("hapax-claude-send --session zeta -- 'msg'")).returncode == 0
+
+    def test_session_equals_eta_allowed(self) -> None:
+        assert _run(_bash("foo session=eta")).returncode == 0
+
+    def test_dash_s_theta_allowed(self) -> None:
+        assert _run(_bash("hapax-tool -s theta")).returncode == 0
+
+    def test_worktree_slot_iota_blocked(self) -> None:
+        result = _run(_bash("ls hapax-council--iota/"))
+        assert result.returncode == 2
+        assert "iota" in result.stderr.lower()
 
 
 # ── Unapproved names in path/filename form ─────────────────────────

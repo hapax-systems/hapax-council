@@ -169,3 +169,44 @@ def test_external_system_cannot_grant_implementation_authority() -> None:
 
     assert not result.allowed
     assert "external_system_cannot_grant_implementation_authority" in result.blockers
+
+
+@pytest.mark.parametrize(
+    ("leak", "code"),
+    [
+        ("reach me at devops@example.org about it", "email_address"),
+        ("located at 41.8781, -87.6298 per record", "gps_coordinate"),
+        ("see vault:/30-areas/private-x/notes.md for detail", "private_path"),
+        ("artifact at /store/llm-data/private/x.py here", "private_path"),
+    ],
+)
+def test_cross_boundary_pii_in_packet_text_rejects(leak: str, code: str) -> None:
+    packet = synthetic_outbound_determination_packet().model_copy(update={"summary": leak})
+
+    result = validate_determination_exchange_packet(packet)
+
+    assert not result.allowed
+    assert f"cross_boundary_pii:{code}" in result.blockers
+
+
+def test_operator_legal_name_detected_when_env_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Jane Q. Operator")
+    packet = synthetic_outbound_determination_packet().model_copy(
+        update={"summary": "prepared by Jane Q. Operator for pilot review"}
+    )
+
+    result = validate_determination_exchange_packet(packet)
+
+    assert not result.allowed
+    assert "cross_boundary_pii:operator_legal_name" in result.blockers
+
+
+def test_cross_boundary_operator_mental_state_rejects_packet() -> None:
+    packet = synthetic_outbound_determination_packet().model_copy(
+        update={"summary": "the operator has been overwhelmed and anxious about this"}
+    )
+
+    result = validate_determination_exchange_packet(packet)
+
+    assert not result.allowed
+    assert "cross_boundary_pii:operator_mental_state" in result.blockers

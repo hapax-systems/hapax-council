@@ -13,6 +13,7 @@ from __future__ import annotations
 from shared.sdlc_lifecycle import (
     apply_release_auto_arm,
     assess_release_auto_arm,
+    release_auto_arm_waivers,
 )
 
 
@@ -107,6 +108,107 @@ def test_ineligible_when_public_claim_sensitive() -> None:
     assessment = assess_release_auto_arm(fm)
     assert assessment.eligible is False
     assert any("public_claim" in blocker for blocker in assessment.blockers)
+
+
+def test_pass_backed_runtime_secret_subscription_task_is_auto_armable() -> None:
+    fm = _eligible_frontmatter(
+        title="Activate GLMCP GLM-5 lane with pass-backed secret",
+        pass_backed_secret_only=True,
+        no_secret_value_storage=True,
+        secret_entry="glmcp/api-key",
+        subscription_quota_only=True,
+        supported_tools_only=True,
+    )
+    assessment = assess_release_auto_arm(fm)
+    assert assessment.needs_arming is True
+    assert assessment.eligible is True
+    assert assessment.blockers == ()
+    assert release_auto_arm_waivers(fm) == ("pass_backed_runtime_secret_waiver",)
+
+
+def test_pass_backed_runtime_secret_requires_no_secret_value_storage() -> None:
+    fm = _eligible_frontmatter(
+        title="Activate GLMCP GLM-5 lane with pass-backed secret",
+        pass_backed_secret_only=True,
+        secret_entry="glmcp/api-key",
+        subscription_quota_only=True,
+        supported_tools_only=True,
+    )
+    assessment = assess_release_auto_arm(fm)
+    assert assessment.eligible is False
+    assert "risk_flag:privacy_or_secret_sensitive" in assessment.blockers
+
+
+def test_pass_backed_runtime_secret_rejects_traversing_pass_entry() -> None:
+    fm = _eligible_frontmatter(
+        title="Activate GLMCP GLM-5 lane with pass-backed secret",
+        pass_backed_secret_only=True,
+        no_secret_value_storage=True,
+        secret_entry="glmcp/../other/api-key",
+        subscription_quota_only=True,
+        supported_tools_only=True,
+    )
+    assessment = assess_release_auto_arm(fm)
+    assert assessment.eligible is False
+    assert "risk_flag:privacy_or_secret_sensitive" in assessment.blockers
+
+
+def test_pass_backed_runtime_secret_rejects_non_glmcp_pass_entry() -> None:
+    fm = _eligible_frontmatter(
+        title="Activate GLMCP GLM-5 lane with pass-backed secret",
+        pass_backed_secret_only=True,
+        no_secret_value_storage=True,
+        secret_entry="other/api-key",
+        subscription_quota_only=True,
+        supported_tools_only=True,
+    )
+    assessment = assess_release_auto_arm(fm)
+    assert assessment.eligible is False
+    assert "risk_flag:privacy_or_secret_sensitive" in assessment.blockers
+
+
+def test_pass_backed_runtime_secret_does_not_waive_explicit_privacy_flag() -> None:
+    fm = _eligible_frontmatter(
+        title="Activate GLMCP GLM-5 lane with pass-backed secret",
+        pass_backed_secret_only=True,
+        no_secret_value_storage=True,
+        secret_entry="glmcp/api-key",
+        subscription_quota_only=True,
+        supported_tools_only=True,
+        risk_flags={"privacy_or_secret_sensitive": True},
+    )
+    assessment = assess_release_auto_arm(fm)
+    assert assessment.eligible is False
+    assert "risk_flag:privacy_or_secret_sensitive" in assessment.blockers
+
+
+def test_pass_backed_runtime_secret_does_not_waive_governance() -> None:
+    fm = _eligible_frontmatter(
+        title="Governance GLMCP pass-backed secret lane",
+        pass_backed_secret_only=True,
+        no_secret_value_storage=True,
+        secret_entry="glmcp/api-key",
+        subscription_quota_only=True,
+        supported_tools_only=True,
+    )
+    assessment = assess_release_auto_arm(fm)
+    assert assessment.eligible is False
+    assert "risk_flag:governance_sensitive" in assessment.blockers
+
+
+def test_pass_backed_runtime_secret_does_not_waive_provider_billing() -> None:
+    fm = _eligible_frontmatter(
+        title="Provider billing GLMCP pass-backed secret lane",
+        pass_backed_secret_only=True,
+        no_secret_value_storage=True,
+        secret_entry="glmcp/api-key",
+        subscription_quota_only=True,
+        supported_tools_only=True,
+    )
+    assessment = assess_release_auto_arm(fm)
+    assert assessment.eligible is False
+    assert "risk_flag:provider_billing_sensitive" in assessment.blockers
+    assert "risk_flag:privacy_or_secret_sensitive" not in assessment.blockers
 
 
 def test_ineligible_when_mutation_surface_is_public() -> None:

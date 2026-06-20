@@ -44,16 +44,14 @@ REQUIRED_ROUTE_IDS = frozenset(
         "api.headless.api_frontier",
         "api.headless.provider_gateway",
         "claude.headless.full",
+        "claude.headless.haiku",
         "claude.headless.opus",
         "claude.headless.sonnet",
         "claude.interactive.full",
         "codex.headless.full",
         "codex.headless.spark",
-        "gemini.headless.flash",
-        "gemini.headless.full",
-        "gemini.headless.lite",
-        "gemini.headless.worker",
-        "gemini.interactive.full",
+        "glmcp.review.direct",
+        "local_tool.local.worker",
         "vibe.headless.full",
     }
 )
@@ -77,6 +75,7 @@ class Platform(StrEnum):
     CLAUDE = "claude"
     CODEX = "codex"
     GEMINI = "gemini"
+    GLMCP = "glmcp"
     LOCAL_TOOL = "local_tool"
     VIBE = "vibe"
 
@@ -86,13 +85,16 @@ class Mode(StrEnum):
     INTERACTIVE = "interactive"
     LOCAL = "local"
     RECEIPT_ONLY = "receipt_only"
+    REVIEW = "review"
 
 
 class Profile(StrEnum):
     API_FRONTIER = "api_frontier"
     DETERMINISTIC = "deterministic"
+    DIRECT = "direct"
     FLASH = "flash"
     FULL = "full"
+    HAIKU = "haiku"
     JR = "jr"
     LITE = "lite"
     OPUS = "opus"
@@ -100,6 +102,61 @@ class Profile(StrEnum):
     SONNET = "sonnet"
     SPARK = "spark"
     WORKER = "worker"
+
+
+class Effort(StrEnum):
+    """Reasoning-effort axis (operator-steered; today smuggled into launchers/model strings)."""
+
+    NONE = "none"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    XHIGH = "xhigh"
+    MAX = "max"
+
+
+class ContextMode(StrEnum):
+    """Context-window mode: standard vs an extended (e.g. 1M) variant of the same model."""
+
+    STANDARD = "standard"
+    EXTENDED_1M = "extended_1m"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class FastMode(StrEnum):
+    """Opus faster-output mode (a client-side harness flag today)."""
+
+    OFF = "off"
+    FAST = "fast"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class Quantization(StrEnum):
+    """Local-inference quantization (EXL3 bits-per-weight); not_applicable for hosted models."""
+
+    NONE = "none"
+    EXL3_4_0BPW = "exl3_4_0bpw"
+    EXL3_5_0BPW = "exl3_5_0bpw"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class ModelId(StrEnum):
+    """Closed catalog of dated, concrete model identities — the structured replacement for the
+    coarse free-text ``model_or_engine``. A provider model swap is one enum edit here.
+    ``UNKNOWN`` covers routes whose backing model is not a single dated identity (e.g. a
+    receipt-only maintenance route)."""
+
+    CLAUDE_OPUS_4_8 = "claude-opus-4-8"
+    CLAUDE_SONNET_4_6 = "claude-sonnet-4-6"
+    CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
+    CLAUDE_FABLE_5 = "claude-fable-5"
+    GPT_5_5 = "gpt-5.5"
+    GPT_5_3_CODEX_SPARK = "gpt-5.3-codex-spark"
+    COMMAND_R_08_2024 = "command-r-08-2024"
+    MISTRAL_MEDIUM_3_5 = "mistral-medium-3.5"
+    GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
+    Z_AI_GLM_5 = "z_ai-glm-5"
+    UNKNOWN = "unknown"
 
 
 class RouteState(StrEnum):
@@ -233,6 +290,34 @@ class ToolAccess(StrictModel):
     shell: ShellAccess
     browser: bool
     mcp: list[str] = Field(default_factory=list)
+
+
+class ExecutionDescriptor(StrictModel):
+    """The operator-steered execution axes a capability is selected on, beyond
+    ``platform.mode.profile``. These were previously absent from the governed plane
+    (effort/fast-mode/quantization) or coarse (a single ``max_context_class`` enum, a
+    free-text ``model_or_engine``). Modeled here so a capability is the FULL descriptor;
+    the 3-segment ``route_id`` stays the human key (no combinatorial blow-up)."""
+
+    model_id: ModelId
+    effort: Effort
+    context_mode: ContextMode = ContextMode.STANDARD
+    fast_mode: FastMode = FastMode.OFF
+    quantization: Quantization = Quantization.NONE
+
+
+class DescriptorVariant(StrictModel):
+    """A materially-different (model, effort, context, …) leaf of a route, carried sparsely:
+    a variant exists only where a knob change crosses an authority/quality/quota boundary or
+    shifts a capability score. ``score_delta`` overrides specific scores; otherwise the leaf
+    inherits the route scores with explicit ``scores_inherited_from`` provenance (never a
+    fabricated per-knob number)."""
+
+    variant_id: str
+    knobs_override: dict[str, str] = Field(default_factory=dict)
+    score_delta: dict[str, int] = Field(default_factory=dict)
+    scores_inherited_from: str | None = None
+    blocked_reasons: list[str] = Field(default_factory=list)
 
 
 class QualityEnvelope(StrictModel):
@@ -435,6 +520,21 @@ class SupplyFreshness(StrictModel):
         return self
 
 
+class SupplyDescriptor(StrictModel):
+    """The execution-axis SUPPLY a route offers the dispatcher: its base descriptor plus the
+    set of context-modes / efforts REACHABLE via the route's (non-blocked) descriptor variants.
+    The ``*_to_variant`` maps point each reachable axis value at the variant_id that provides it
+    (``None`` = the base descriptor already provides it), so the dispatcher can both SCORE
+    satisfiability and RESOLVE the selected leaf without re-reading the route."""
+
+    base_context_mode: str
+    base_effort: str
+    reachable_context_modes: tuple[str, ...]
+    reachable_efforts: tuple[str, ...]
+    context_mode_to_variant: dict[str, str | None]
+    effort_to_variant: dict[str, str | None]
+
+
 class SupplyVector(StrictModel):
     supply_vector_schema: Literal[1] = 1
     routing_model_version: Literal["capacity-dimensional-v1"] = "capacity-dimensional-v1"
@@ -448,6 +548,9 @@ class SupplyVector(StrictModel):
     historical_performance: HistoricalPerformance = Field(default_factory=HistoricalPerformance)
     operator_constraints: OperatorConstraints = Field(default_factory=OperatorConstraints)
     freshness: SupplyFreshness
+    # the operator-steered execution axes (optional: only build_supply_vector populates it;
+    # direct constructors leave it None and the dispatcher fails closed on a None descriptor)
+    supply_descriptor: SupplyDescriptor | None = None
 
 
 class PlatformCapabilityRoute(StrictModel):
@@ -463,6 +566,8 @@ class PlatformCapabilityRoute(StrictModel):
     route_state: RouteState
     blocked_reasons: list[str] = Field(default_factory=list)
     model_or_engine: str | None
+    execution_descriptor: ExecutionDescriptor
+    descriptor_variants: list[DescriptorVariant] = Field(default_factory=list)
     paid_provider: str | None = None
     paid_profile: str | None = None
     approval_posture: ApprovalPosture
@@ -544,6 +649,35 @@ class PlatformCapabilityRoute(StrictModel):
         ):
             raise ValueError("authoritative routes must declare frontier_required eligibility")
 
+        if self.descriptor_variants:
+            axes = set(ExecutionDescriptor.model_fields)
+            scores = set(CapabilityScores.model_fields)
+            seen: set[str] = set()
+            for variant in self.descriptor_variants:
+                if variant.variant_id in seen:
+                    raise ValueError(
+                        f"duplicate descriptor variant_id {variant.variant_id!r} on {self.route_id}; "
+                        "give each variant a unique variant_id or remove the duplicate"
+                    )
+                seen.add(variant.variant_id)
+                bad_knobs = set(variant.knobs_override) - axes
+                if bad_knobs:
+                    raise ValueError(
+                        f"variant {variant.variant_id!r} overrides non-descriptor knobs {sorted(bad_knobs)}; "
+                        f"knobs_override keys must be ExecutionDescriptor axes ({sorted(axes)})"
+                    )
+                bad_scores = set(variant.score_delta) - scores
+                if bad_scores:
+                    raise ValueError(
+                        f"variant {variant.variant_id!r} score_delta targets unknown scores {sorted(bad_scores)}; "
+                        "use CapabilityScores field names"
+                    )
+                if not variant.knobs_override and not variant.blocked_reasons:
+                    raise ValueError(
+                        f"variant {variant.variant_id!r} is inert; give it a knobs_override that changes an "
+                        "axis or a blocked_reasons entry, or remove the variant"
+                    )
+
         return self
 
 
@@ -579,6 +713,19 @@ class PlatformCapabilityRegistry(StrictModel):
 
         if self.capacity_invariant != CAPACITY_INVARIANT:
             raise ValueError("capacity invariant drifted from governed dispatch invariant")
+
+        # descriptor variant provenance is a cross-route reference; only the registry can
+        # verify it resolves (the per-route validator cannot see sibling routes).
+        known_ids = set(route_ids)
+        for route in self.routes:
+            for variant in route.descriptor_variants:
+                ref = variant.scores_inherited_from
+                if ref is not None and ref not in known_ids:
+                    raise ValueError(
+                        f"variant {variant.variant_id!r} on {route.route_id} inherits scores from "
+                        f"unknown route_id {ref!r}; scores_inherited_from must name a registry route "
+                        "(or be null to inherit the variant's own route)"
+                    )
 
         return self
 
@@ -868,6 +1015,31 @@ def _resource_pressure_state(source: str) -> str:
     return "unknown" if source in UNKNOWN_TELEMETRY_SOURCES else "green"
 
 
+def _build_supply_descriptor(route: PlatformCapabilityRoute) -> SupplyDescriptor:
+    """The route's reachable execution-axis surface: base descriptor + every non-blocked
+    variant. First-writer-wins keeps the BASE as the provider when a value is reachable both
+    ways (a ``None`` variant means "base already provides it"). Blocked variants are excluded
+    (fail-closed) so a blocked variant can neither satisfy a demand nor be resolved as a leaf."""
+
+    base = route.execution_descriptor
+    context_mode_to_variant: dict[str, str | None] = {base.context_mode.value: None}
+    effort_to_variant: dict[str, str | None] = {base.effort.value: None}
+    for variant in route.descriptor_variants:
+        if variant.blocked_reasons:
+            continue
+        leaf = materialize_variant_leaf(route, variant)
+        context_mode_to_variant.setdefault(leaf.context_mode.value, variant.variant_id)
+        effort_to_variant.setdefault(leaf.effort.value, variant.variant_id)
+    return SupplyDescriptor(
+        base_context_mode=base.context_mode.value,
+        base_effort=base.effort.value,
+        reachable_context_modes=tuple(context_mode_to_variant),
+        reachable_efforts=tuple(effort_to_variant),
+        context_mode_to_variant=context_mode_to_variant,
+        effort_to_variant=effort_to_variant,
+    )
+
+
 def build_supply_vector(
     route: PlatformCapabilityRoute,
     *,
@@ -924,6 +1096,7 @@ def build_supply_vector(
                 *route.quality_envelope.explicit_equivalence_records,
             ],
         ),
+        supply_descriptor=_build_supply_descriptor(route),
     )
 
 
@@ -1164,6 +1337,97 @@ def _apply_surface(
     freshness[f"{surface}_stale_after"] = stale_after
 
 
+#: Effort tokens historically smuggled into ``model_or_engine`` (e.g. codex.headless.full's
+#: ``gpt-5.5-xhigh``). ``derive_execution_descriptor`` splits them back into structured axes.
+_SMUGGLED_EFFORT_SUFFIXES: dict[str, Effort] = {
+    "-max": Effort.MAX,
+    "-xhigh": Effort.XHIGH,
+    "-high": Effort.HIGH,
+    "-medium": Effort.MEDIUM,
+    "-low": Effort.LOW,
+}
+
+#: Best-effort projection of legacy free-text ``model_or_engine`` strings onto the dated
+#: :class:`ModelId` catalog (used by ``derive_execution_descriptor`` to GENERATE the
+#: per-route backfill and to surface the smuggle). Unmapped strings project to ``UNKNOWN``.
+_MODEL_OR_ENGINE_TO_MODEL_ID: dict[str, ModelId] = {
+    "claude-code-default": ModelId.CLAUDE_OPUS_4_8,
+    "claude-opus": ModelId.CLAUDE_OPUS_4_8,
+    "claude-sonnet": ModelId.CLAUDE_SONNET_4_6,
+    "claude-haiku": ModelId.CLAUDE_HAIKU_4_5,
+    "gpt-5.5": ModelId.GPT_5_5,
+    "gpt-5.3-codex-spark": ModelId.GPT_5_3_CODEX_SPARK,
+    "mistral-vibe": ModelId.MISTRAL_MEDIUM_3_5,
+    "google-antigravity-cli-agy": ModelId.GEMINI_3_1_PRO_PREVIEW,
+    "z_ai-glm-coding-plan:glm-5": ModelId.Z_AI_GLM_5,
+    "litellm.anthropic.claude-opus-4-cloud-burst": ModelId.CLAUDE_OPUS_4_8,
+    "litellm.provider-gateway-maintenance": ModelId.GEMINI_3_1_PRO_PREVIEW,
+}
+
+
+def derive_execution_descriptor(route: PlatformCapabilityRoute) -> ExecutionDescriptor:
+    """Project a route's implicit execution descriptor from its legacy ``model_or_engine``.
+
+    Best-effort: it surfaces effort smuggled into the model string (``gpt-5.5-xhigh`` ->
+    model_id ``gpt-5.5`` + effort ``XHIGH``) and maps the model onto the dated
+    :class:`ModelId` catalog (unmapped -> ``ModelId.UNKNOWN``). effort that the data never
+    carried is ``Effort.NONE``; context_mode/quantization stay at conservative defaults.
+    Used to GENERATE the stored ``execution_descriptor`` backfill and demonstrate the
+    smuggle-split; the stored field — not this projection — is the source of truth once set.
+    """
+
+    raw = (route.model_or_engine or "").strip()
+    effort = Effort.NONE
+    model_str = raw
+    for suffix, eff in _SMUGGLED_EFFORT_SUFFIXES.items():
+        if raw.endswith(suffix):
+            effort = eff
+            model_str = raw[: -len(suffix)]
+            break
+    model_id = _MODEL_OR_ENGINE_TO_MODEL_ID.get(model_str, ModelId.UNKNOWN)
+    return ExecutionDescriptor(model_id=model_id, effort=effort)
+
+
+def materialize_descriptors(
+    registry: PlatformCapabilityRegistry,
+) -> dict[str, ExecutionDescriptor]:
+    """The stored execution descriptor for every route — the dispatch plane's capability
+    *leaf set* made explicit. Reads the structured ``execution_descriptor`` field (the source
+    of truth) rather than re-deriving from the legacy ``model_or_engine`` string."""
+
+    return {route.route_id: route.execution_descriptor for route in registry.routes}
+
+
+def materialize_variant_leaf(
+    route: PlatformCapabilityRoute, variant: DescriptorVariant
+) -> ExecutionDescriptor:
+    """Resolve one sparse variant into its full ExecutionDescriptor by applying the
+    variant's ``knobs_override`` onto the route's base descriptor. Fails closed: an
+    override naming a non-descriptor knob raises (validated at load, re-checked here)."""
+
+    knobs = route.execution_descriptor.model_dump()
+    knobs.update(variant.knobs_override)
+    return ExecutionDescriptor(**knobs)
+
+
+def materialize_descriptor_leaves(
+    registry: PlatformCapabilityRegistry,
+) -> dict[str, ExecutionDescriptor]:
+    """The FULL capability leaf set: every route's base descriptor plus each sparse
+    variant as its own leaf keyed ``route_id#variant_id``. This is where a knob like
+    ``context_mode=extended_1m`` becomes a distinct, materially-present capability —
+    impossible to distinguish under the old bare ``max_context_class`` enum."""
+
+    leaves: dict[str, ExecutionDescriptor] = {}
+    for route in registry.routes:
+        leaves[route.route_id] = route.execution_descriptor
+        for variant in route.descriptor_variants:
+            leaves[f"{route.route_id}#{variant.variant_id}"] = materialize_variant_leaf(
+                route, variant
+            )
+    return leaves
+
+
 _DYNAMIC_ENTRYPOINTS = (
     ScoreConfidence._score_evidence_is_freshness_typed,
     ToolState._tool_freshness_duration_is_valid,
@@ -1175,4 +1439,8 @@ _DYNAMIC_ENTRYPOINTS = (
     build_supply_vector,
     check_registry_freshness,
     load_platform_capability_registry,
+    derive_execution_descriptor,
+    materialize_descriptors,
+    materialize_variant_leaf,
+    materialize_descriptor_leaves,
 )

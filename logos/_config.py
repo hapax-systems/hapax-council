@@ -117,8 +117,18 @@ def _get_ollama_client():
     return ollama.Client(timeout=120)
 
 
-def embed(text: str, model: str | None = None, prefix: str = "search_query") -> list[float]:
-    """Generate embedding via Ollama."""
+def embed(
+    text: str,
+    model: str | None = None,
+    prefix: str = "search_query",
+    block_gpu: bool = True,
+) -> list[float]:
+    """Generate embedding via Ollama.
+
+    ``block_gpu=False`` makes the GPU-semaphore acquisition non-blocking so a
+    best-effort caller on the asyncio event loop (the reactive embed) raises
+    instead of wedging the loop when the GPU is saturated.
+    """
     model_name = model or EMBEDDING_MODEL
     _parent = trace.get_current_span()
     _caller_agent = ""
@@ -135,8 +145,15 @@ def embed(text: str, model: str | None = None, prefix: str = "search_query") -> 
             from agents._gpu_semaphore import gpu_slot
 
             client = _get_ollama_client()
-            with gpu_slot():
+            with gpu_slot(block=block_gpu):
                 result = client.embed(model=model_name, input=prefixed)
+        except BlockingIOError as exc:
+            # best-effort caller, GPU semaphore saturated -> skip enrichment
+            # rather than block the asyncio event loop (Resource Constitution:
+            # best-effort degrades first). Surfaced as RuntimeError so embed_safe
+            # returns None and the optional embedding is simply omitted.
+            span.set_attribute("rag.embed.skipped_gpu_busy", True)
+            raise RuntimeError("embed skipped: GPU semaphore saturated (best-effort)") from exc
         except Exception as exc:
             span.set_attribute("rag.error", str(exc)[:500])
             raise RuntimeError(f"Embedding failed (model={model_name}): {exc}") from exc
@@ -150,11 +167,20 @@ def embed(text: str, model: str | None = None, prefix: str = "search_query") -> 
 
 
 def embed_safe(
-    text: str, model: str | None = None, prefix: str = "search_query"
+    text: str,
+    model: str | None = None,
+    prefix: str = "search_query",
+    block_gpu: bool = True,
 ) -> list[float] | None:
-    """Generate embedding via Ollama with graceful degradation."""
+    """Generate embedding via Ollama with graceful degradation.
+
+    Pass ``block_gpu=False`` on latency-critical best-effort paths (the reactive
+    embed) so a saturated GPU skips the optional embedding instead of blocking.
+    """
     try:
-        return embed(text, model=model, prefix=prefix)
+        return embed(text, model=model, prefix=prefix, block_gpu=block_gpu)
     except RuntimeError:
-        _log.warning("embed_safe: Ollama unavailable, returning None")
+        _log.warning(
+            "embed_safe: embedding unavailable (Ollama down or GPU saturated), returning None"
+        )
         return None

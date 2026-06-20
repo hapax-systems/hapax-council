@@ -61,7 +61,10 @@ def build_reverie_pipeline():
     """Build the affordance pipeline with all system affordances registered in Qdrant."""
     from agents._affordance_pipeline import AffordancePipeline
 
-    p = AffordancePipeline()
+    p = AffordancePipeline(
+        posterior_mode="owner",
+        posterior_client_id="reverie",
+    )
     records = build_reverie_pipeline_affordances()
     registered = p.index_capabilities_batch(records)
     log.info("Registered %d/%d affordances in Reverie pipeline", registered, len(records))

@@ -44,31 +44,49 @@ rather than the dirty canonical checkout. See
 | `sprint-tracker.sh` | session | ADVISORY: sprint progress |
 | `branch-switch-guard.sh` | Bash | BLOCK cross-session branch switches |
 | `canonical-worktree-protect.sh` | Bash | BLOCK `git checkout/switch/reset --hard` to non-main refs in canonical worktree (`~/projects/hapax-council`); allows main-targeting commands, file restores, fetches, pulls, worktree-add. Operator escape: `HAPAX_CANONICAL_PROTECT_BYPASS=1` |
-| `gemini-session-adapter.sh` / `gemini-tool-adapter.sh` | session | Adapter bridges for Gemini subagents |
+| `gemini-session-adapter.sh` / `gemini-tool-adapter.sh` | session | Legacy adapter bridges retained for historical fixtures; not active launch paths |
 | `conductor-*.sh` | session | Session-conductor protocol |
 | `cargo-check-rust.sh` | Edit / Write | PostToolUse: run cargo check on .rs edits |
 
 ## Session-naming invariant
 
-Approved session names are `alpha`, `beta`, `gamma`, `delta`, and
-`epsilon`. Codex thread names use `cx-<color-word>` (for example
-`cx-red`) and map onto these worktree slots separately. These are
-operational identities — not rhetorical choices — and the tooling
-assumes them:
+The canonical lane vocabulary (SSOT: `hooks/scripts/agent-role.sh`
+`assert-identity`) is: greek slots `alpha` `beta` `gamma` `delta`
+`epsilon` `zeta` `eta` `theta`, plus `antigrav`; Codex
+`cx-<color>` (e.g. `cx-red`); Claude relay lanes `cc-<name>` (e.g.
+`cc-zai`); and Vibe `vbe-<n>`. These are operational identities — not
+rhetorical choices — and the tooling assumes them:
 
-- `hapax-whoami` (identity resolver) grep-matches this set.
-- `scripts/hapax-whoami-audit.sh` fails non-zero on any other name.
+- `hapax-whoami` (identity resolver) resolves the role env var FIRST
+  (`HAPAX_AGENT_NAME`, then the `CODEX_THREAD_NAME`/`CODEX_SESSION_NAME`/
+  `CODEX_SESSION`/`CODEX_ROLE` vars, then `HAPAX_AGENT_ROLE`, then
+  `CLAUDE_ROLE`), then the session-role marker, then the compositor walk —
+  WM-independent, so identity survives a missing hyprctl (KWin/niri). Exact
+  same precedence as `hapax_agent_identity` in `agent-role.sh`.
+- `scripts/hapax-whoami-audit.sh` fails non-zero on any name outside
+  the vocabulary above.
 - `session-name-enforcement.sh` PreToolUse hook BLOCKS Bash commands
-  that reference a greek-letter-shaped name outside this set when
-  used as a session identifier (`session=<name>`,
-  `hapax-council--<name>/` worktree slot, `session-context.sh
-  <name>` argument, etc.).
-- The worktree cap (`no-stale-branches.sh`) is currently sized for the
-  Claude+Codex transition: legacy Claude lanes plus Codex `cx-*`
-  lanes, with `cx-*` worktrees named directly.
+  that reference a greek-letter-shaped token OUTSIDE the approved greek
+  slots (i.e. `kappa` and beyond) when used as a session identifier.
+- The worktree cap (`no-stale-branches.sh`) is sized for the full
+  multi-interface team (greek + `cx-*` + `cc-*` + `vbe-*` + antigrav).
+- Legacy `iota` was the retired Gemini CLI lane and is intentionally no longer
+  accepted as a session identity.
 
-Adding a new session name requires amending both this file and the
-approved list in `scripts/hapax-whoami-audit.sh`, then re-running
+Recheck commands (verify these claims after any change):
+- `agent-role.sh whoami` — the resolved role for this session (the SSOT path).
+- `scripts/hapax-whoami-audit.sh` — exits non-zero on a name outside the vocabulary.
+- `rg -n 'gemini-(session|tool)-adapter' hooks tests config scripts` — confirms
+  the Gemini hook adapters are retained only as dormant adapter fixtures, not
+  launch or dispatch paths.
+- `uv run pytest tests/scripts/test_role_identity_resolution.py tests/hooks/test_session_name_enforcement.py`
+  — exercises env-first resolution, the audit approved-set, the assert-identity vocab,
+  and the enforcement deny-list against the canonical vocabulary above.
+
+Adding a new session name requires amending this file AND the canonical
+vocabulary in `hooks/scripts/agent-role.sh` (assert-identity), the
+approved list in `scripts/hapax-whoami-audit.sh`, and the greek
+deny-list in `session-name-enforcement.sh`, then re-running
 `scripts/worktree-cap-audit.sh` to confirm the new slot fits the
 cap.
 

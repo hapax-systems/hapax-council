@@ -9,6 +9,8 @@ ISAP: SLICE-003A-TEAM-METADATA (CASE-SDLC-REFORM-001)
 
 from __future__ import annotations
 
+import json
+import logging
 import time
 from pathlib import Path
 from typing import Literal
@@ -16,9 +18,24 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 REGISTRY_DIR = Path.home() / ".cache" / "hapax" / "team-registry"
+LOG = logging.getLogger(__name__)
 
-Platform = Literal["claude-code", "codex", "gemini-cli", "vibe", "antigrav"]
+Platform = Literal["claude-code", "codex", "vibe", "antigrav"]
 FreshnessResult = Literal["fresh", "stale", "unknown", "blocked"]
+
+
+def _normalize_legacy_payload(raw: str) -> tuple[str, bool]:
+    """Map retired persisted registry values into current platform vocabulary."""
+
+    payload = json.loads(raw)
+    normalized = False
+    if payload.get("platform") == "gemini-cli":
+        payload["platform"] = "antigrav"
+        note = str(payload.get("notes") or "").strip()
+        legacy_note = "legacy platform gemini-cli normalized to antigrav"
+        payload["notes"] = f"{note}; {legacy_note}" if note else legacy_note
+        normalized = True
+    return json.dumps(payload), normalized
 
 
 class LaneMetadata(BaseModel):
@@ -95,7 +112,10 @@ class TeamRegistry:
         if not path.exists():
             return None
         try:
-            return LaneMetadata.model_validate_json(path.read_text())
+            payload, normalized = _normalize_legacy_payload(path.read_text())
+            if normalized:
+                LOG.warning("normalized legacy team-registry platform in %s", path)
+            return LaneMetadata.model_validate_json(payload)
         except Exception:
             return None
 
@@ -103,7 +123,10 @@ class TeamRegistry:
         lanes = []
         for p in sorted(self._dir.glob("*.json")):
             try:
-                lanes.append(LaneMetadata.model_validate_json(p.read_text()))
+                payload, normalized = _normalize_legacy_payload(p.read_text())
+                if normalized:
+                    LOG.warning("normalized legacy team-registry platform in %s", p)
+                lanes.append(LaneMetadata.model_validate_json(payload))
             except Exception:
                 continue
         return lanes

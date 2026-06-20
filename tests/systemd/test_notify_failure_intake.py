@@ -8,6 +8,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UNIT = REPO_ROOT / "systemd" / "units" / "notify-failure@.service"
+INTAKE = "%h/.local/lib/hapax-recovery/council/current/scripts/hapax-p0-incident-intake"
+FORBIDDEN_EXECSTART_ROOTS = (
+    "source-activation/worktree",
+    "scratch/vocab-export",
+    "/data/cache",
+)
 
 
 def _write_fake_bin(path: Path, body: str) -> None:
@@ -18,18 +24,28 @@ def _write_fake_bin(path: Path, body: str) -> None:
 def test_notify_failure_routes_through_p0_intake():
     text = UNIT.read_text(encoding="utf-8")
 
-    assert (
-        "ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/"
-        "hapax-p0-incident-intake service-failed %i"
-    ) in text
+    assert f"ConditionPathExists={INTAKE}" in text
+    assert f"ExecStart={INTAKE} service-failed %i" in text
     assert "/usr/bin/notify-send" not in text
+
+
+def test_notify_failure_execstart_avoids_reapable_d2_roots() -> None:
+    exec_lines = [
+        line
+        for line in UNIT.read_text(encoding="utf-8").splitlines()
+        if line.startswith("ExecStart=")
+    ]
+
+    assert exec_lines
+    for root in FORBIDDEN_EXECSTART_ROOTS:
+        assert all(root not in line for line in exec_lines)
 
 
 def test_notify_failure_execstart_runs_intake_cli(tmp_path):
     home = tmp_path / "home"
-    source_activation = home / ".cache" / "hapax" / "source-activation"
-    source_activation.mkdir(parents=True)
-    (source_activation / "worktree").symlink_to(REPO_ROOT, target_is_directory=True)
+    recovery_bundle = home / ".local" / "lib" / "hapax-recovery" / "council"
+    recovery_bundle.mkdir(parents=True)
+    (recovery_bundle / "current").symlink_to(REPO_ROOT, target_is_directory=True)
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -68,5 +84,4 @@ def test_notify_failure_execstart_runs_intake_cli(tmp_path):
     assert result.returncode == 0, result.stderr
     task_glob = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
     assert list(task_glob.glob("p0-incident-systemd-service-failed-demo-service-*.md"))
-    notify_text = notify_log.read_text(encoding="utf-8")
-    assert "SDLC intake: p0-incident-systemd-service-failed-demo-service" in notify_text
+    assert not notify_log.exists(), "P0 intake should consume failures without desktop echo"

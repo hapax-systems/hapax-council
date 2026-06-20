@@ -29,6 +29,9 @@ from shared.resource_model import (
 BYTES_PER_KIB = 1024
 BYTES_PER_GIB = 1024**3
 DEFAULT_EXPECTED_SWAPPINESS = 5
+# A zram swap device makes a HIGH vm.swappiness correct (CachyOS sets 150 via udev);
+# any value at/above this floor is healthy on a zram box, not drift.
+ZRAM_EXPECTED_SWAPPINESS_FLOOR = 100
 
 
 class MemoryPressureClass(StrEnum):
@@ -333,17 +336,37 @@ def classify_swappiness_drift(
     live_value: int,
     *,
     expected_value: int = DEFAULT_EXPECTED_SWAPPINESS,
+    zram_active: bool = False,
 ) -> MemoryPressureSignal:
-    drift = live_value - expected_value
-    state = ResourceState.GREEN if drift == 0 else ResourceState.RED
+    if zram_active:
+        # On a zram swap box the kernel SHOULD aggressively compress anonymous pages
+        # into RAM, so a HIGH vm.swappiness is correct (CachyOS sets 150 via udev) --
+        # not drift. Treat any value in the zram band (>= floor) as healthy; only flag
+        # if it has been pushed BELOW the floor, which fights the zram tuning.
+        state = (
+            ResourceState.GREEN
+            if live_value >= ZRAM_EXPECTED_SWAPPINESS_FLOOR
+            else ResourceState.RED
+        )
+        drift = 0 if state is ResourceState.GREEN else live_value - ZRAM_EXPECTED_SWAPPINESS_FLOOR
+        expected_repr = f">={ZRAM_EXPECTED_SWAPPINESS_FLOOR} (zram)"
+    else:
+        drift = live_value - expected_value
+        state = ResourceState.GREEN if drift == 0 else ResourceState.RED
+        expected_repr = str(expected_value)
     return MemoryPressureSignal(
         pressure_class=MemoryPressureClass.SYSCTL_DRIFT,
         state=state,
         current_value=float(live_value),
         unit="value",
         threshold_signal="vm.swappiness",
-        message=f"vm.swappiness live {live_value}, expected {expected_value}",
-        raw={"live_value": live_value, "expected_value": expected_value, "drift": drift},
+        message=f"vm.swappiness live {live_value}, expected {expected_repr}",
+        raw={
+            "live_value": live_value,
+            "expected_value": expected_value,
+            "zram_active": zram_active,
+            "drift": drift,
+        },
     )
 
 

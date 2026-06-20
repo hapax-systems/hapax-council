@@ -59,6 +59,18 @@ def test_audio_and_visual_percepts_share_envelope() -> None:
     assert abs(person.timestamp - doa.timestamp) < 0.5  # shared time base
 
 
+def test_ir_edge_percepts_share_envelope() -> None:
+    p = Percept(
+        timestamp=1749600000.2,
+        source_point="ir-desk",
+        geometry_class=GeometryClass.IR_EDGE,
+        confidence=0.74,
+        payload={"kind": "person", "rppg_quality": 0.32},
+    )
+    assert p.geometry_class == GeometryClass.IR_EDGE
+    assert p.payload["kind"] == "person"
+
+
 def test_roundtrip() -> None:
     p = Percept(
         timestamp=1.5,
@@ -78,4 +90,5 @@ def test_geometry_classes_complete() -> None:
         "contact",
         "ambient",
         "instrument",
+        "ir_edge",
     }

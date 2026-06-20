@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from shared.audio_expression_surface import (
     AudioExpressionIntent,
@@ -17,8 +18,10 @@ from shared.audio_expression_surface import (
     FxRiskClamps,
     FxSelectedRoute,
     FxTimingPolicy,
+    load_fx_device_witness,
     resolve_fx_plan,
 )
+from shared.s4_audio_witness import update_fx_device_witness
 from shared.s4_scenes import EMPIRICAL_S4_GAIN_LADDER
 
 NOW = datetime(2026, 4, 30, 1, 55, tzinfo=UTC)
@@ -249,6 +252,24 @@ def test_public_plan_holds_when_s4_route_exists_without_wet_return_signal() -> N
     assert plan.selected_route is FxSelectedRoute.HELD
     assert plan.playback_target is None
     assert "wet_fx_device_witness_missing" in plan.operator_visible_reason
+
+
+def test_fx_device_witness_loader_accepts_timestamped_s4_wet_return_signal(
+    tmp_path: Path,
+) -> None:
+    witness_path = tmp_path / "fx-device-witness.json"
+    with patch("shared.s4_audio_witness.FX_DEVICE_WITNESS_PATH", witness_path):
+        update_fx_device_witness(
+            s4_midi=True,
+            s4_analog_insert_route=True,
+            s4_wet_return_signal=True,
+        )
+
+    witness = load_fx_device_witness(witness_path)
+
+    assert witness.s4_ready is True
+    assert witness.s4_wet_return_signal_observed_at is not None
+    assert witness.s4_wet_return_signal_observed_at == witness.observed_at
 
 
 def test_outcome_witness_blocks_posterior_without_grounded_audio_probe() -> None:

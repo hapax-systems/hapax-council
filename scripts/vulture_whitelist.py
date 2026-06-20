@@ -4149,3 +4149,170 @@ mint_session_id
 claim_paths
 session_role_marker_path
 identity_stamp
+
+# Pydantic v2 @field_validator on the perception-registry HwSource — invoked by
+# model validation (the AUX-position uppercase normalization that makes the
+# lowercase-aux eavesdrop impossible), not a static call. REQ-20260616 Phase 1.
+from shared.perception_registry import (
+    HwSource as _HwSource,
+)
+
+_HwSource._normalize_aux_position
+
+# Capability-routing gate-event log (Phase 0.2) — the measurement substrate is
+# additive + standalone by design; its append/read/persistence helpers are wired
+# by Phase 2+ consumers (the dev-story A/B harness + the SdlcRouter), not a static
+# caller yet. REQ-20260616-capability-aware-routing / S5-CAPABILITY-ROUTING-TIER1.
+from shared.gate_log import (
+    append_gate_event,  # noqa: E402
+    is_persistent,  # noqa: E402
+    read_gate_events,  # noqa: E402
+)
+
+append_gate_event
+read_gate_events
+is_persistent
+
+# Capability-routing D8 governance floor (Phase 0.3) — Pydantic invokes this
+# model_validator dynamically during TaskSpec validation; vulture cannot follow
+# that dynamic path. REQ-20260616-capability-aware-routing / S5-CAPABILITY-ROUTING-TIER1.
+from agents.request_decomposer.models import TaskSpec as _TaskSpecD8  # noqa: E402
+
+_TaskSpecD8._enforce_d8_governance_floor
+
+# InterviewConductor is the new turn-state-motor MVP (cc-task
+# voice-interview-conductor-turn-motor-20260615, REQ-20260616 Track A). Its live caller
+# (daemon answer-buffer capture + runner-handle injection) is a follow-on task; the class
+# is exercised by tests/hapax_daimonion/test_interview_conductor.py.
+from agents.hapax_daimonion.interview_conductor import (
+    InterviewConductor as _InterviewConductor,
+)
+
+_InterviewConductor
+
+# HKP validator-first slice — Pydantic invokes field/model validators
+# dynamically during bundle validation, and the extensionless
+# scripts/hapax-hkp-validate CLI imports validate_bundle outside vulture's
+# scanned Python-module call graph. S5-HKP-VALIDATOR-20260618.
+from shared.hkp_bundle_schema import (  # noqa: E402
+    HkpAuthority as _HkpAuthority,
+)
+from shared.hkp_bundle_schema import (
+    HkpChecksumEntry as _HkpChecksumEntry,
+)
+from shared.hkp_bundle_schema import (
+    HkpChecksumIndex as _HkpChecksumIndex,
+)
+from shared.hkp_bundle_schema import (
+    HkpConceptFrontmatter as _HkpConceptFrontmatter,
+)
+from shared.hkp_bundle_schema import (
+    HkpConsumerPolicy as _HkpConsumerPolicy,
+)
+from shared.hkp_bundle_schema import (
+    HkpConsumerPolicyRow as _HkpConsumerPolicyRow,
+)
+from shared.hkp_bundle_schema import (
+    HkpEdge as _HkpEdge,
+)
+from shared.hkp_bundle_schema import (
+    HkpManifest as _HkpManifest,
+)
+from shared.hkp_bundle_schema import (
+    HkpPosture as _HkpPosture,
+)
+from shared.hkp_bundle_schema import (
+    HkpProjectionEvent as _HkpProjectionEvent,
+)
+from shared.hkp_bundle_schema import (
+    HkpSnapshot as _HkpSnapshot,
+)
+from shared.hkp_bundle_schema import (
+    HkpSourceRef as _HkpSourceRef,
+)
+from shared.hkp_bundle_schema import (
+    HkpTombstone as _HkpTombstone,
+)
+from shared.hkp_bundle_schema import (
+    validate_bundle as _hkp_validate_bundle,
+)
+
+_HkpAuthority._never_authorizes
+_HkpChecksumIndex._artifact_keys_are_bundle_local
+_HkpConceptFrontmatter._concept_uid_shape
+_HkpConceptFrontmatter._concept_path_is_bundle_local
+_HkpConceptFrontmatter._tombstone_shape
+_HkpConsumerPolicy._required_consumers_present
+_HkpConsumerPolicyRow._known_consumer
+_HkpEdge._edge_shape
+_HkpEdge._target_path_is_bundle_local
+_HkpManifest._manifest_is_shadow_only
+_HkpPosture._fail_closed_on_ambiguity
+_HkpProjectionEvent._previous_hash_shape
+_HkpProjectionEvent._subject_uid_shape
+_HkpSourceRef._authority_refs_are_hashed
+_HkpSourceRef._hash_is_sha256
+_HkpSourceRef._uri_is_not_local_path_leak
+_HkpSnapshot._bundle_uid_shape
+_HkpTombstone._commitment_is_not_bare_hash
+_HkpChecksumEntry._hash_shape
+_hkp_validate_bundle
+
+# HKP cache-only shadow exporter — extensionless scripts/hapax-hkp-export imports
+# these source entry points outside vulture's scanned Python-module call graph.
+# S5-HKP-EXPORTER-20260618.
+from shared.hkp_bundle_export import (  # noqa: E402
+    build_derived_index as _hkp_build_derived_index,
+)
+from shared.hkp_bundle_export import (
+    build_shadow_catalog as _hkp_build_shadow_catalog,
+)
+from shared.hkp_bundle_export import (
+    export_shadow_bundle as _hkp_export_shadow_bundle,
+)
+
+_hkp_build_derived_index
+_hkp_build_shadow_catalog
+_hkp_export_shadow_bundle
+
+# scripts/hapax-hkp-context + hapax-methodology-dispatch.build_prompt consume
+# context_for_task outside vulture's scanned Python-module call graph
+# (an extensionless CLI + a fail-open function-local import). S5-HKP-PROMOTION-20260619.
+from shared.hkp_prompt_context import context_for_task as _hkp_context_for_task  # noqa: E402
+
+_hkp_context_for_task
+
+# ExecutionDescriptor foundation (REQ-20260619 P4): the DescriptorVariant sparse-leaf model is
+# public API consumed by tests/shared/test_execution_descriptor.py and the forthcoming
+# stored-field + backfill slice, outside vulture's scanned module call graph.
+# S5-CAPADAPTER-P4-COMPLETENESS-20260619.
+from shared.platform_capability_registry import (  # noqa: E402
+    DescriptorVariant as _capadapter_descriptor_variant,
+)
+
+_capadapter_descriptor_variant
+
+# hooks/scripts/no-dev-on-podium-guard.sh invokes decide_block via an inline
+# `python3 -c` dynamic entrypoint outside vulture's scanned call graph
+# (the PreToolUse no-dev-on-podium enforcement). D-migration-20260619.
+from shared.host_confinement import decide_block as _no_dev_decide_block  # noqa: E402
+
+_no_dev_decide_block
+
+# dispatcher-dims slice (capability-dispatcher-dims-20260619): Pydantic field_validator hooks on
+# TaskDemand (effort_demand / context_mode_demand fail-closed vocabulary), invoked dynamically at
+# model_validate time — vulture cannot trace through the @field_validator decorator.
+from shared.route_metadata_schema import TaskDemand as _capdims_task_demand  # noqa: E402
+
+_capdims_task_demand._effort_demand_in_vocab
+_capdims_task_demand._context_mode_demand_in_vocab
+# HKP->Alliant bridge emit API (REQ-20260619; PR-C). The manual bridge has no
+# in-process production caller by design (operator invokes it to produce a
+# reviewed packet, then delivers it by hand); guard the public entry points.
+from shared.evidence_ledger import (
+    build_hkp_determination_packet as _hkp_build_packet,  # noqa: F401, E402
+)
+from shared.evidence_ledger import collect_hkp_evidence as _hkp_collect_evidence  # noqa: F401, E402
+
+_hkp_build_packet
+_hkp_collect_evidence

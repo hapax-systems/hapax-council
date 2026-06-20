@@ -22,6 +22,7 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import re as _re
@@ -39,6 +40,7 @@ from shared.hermeneutic_spiral import (
     persist_source_consequences,
     retrieve_fore_understanding,
 )
+from shared.jsonl_append import append_jsonl
 from shared.resident_command_r import (
     RESIDENT_COMMAND_R_MODEL,
     call_resident_command_r,
@@ -149,6 +151,58 @@ _CLEAN_MEASURE = os.environ.get("HAPAX_SEGMENT_PREP_CLEAN_MEASURE", "").strip().
 # a catastrophic single-dimension failure that the mean averages away — see
 # _council_coherence_check. Tunable; 1 blocks only total collapse on an axis.
 _COHERENCE_CRITICAL_AXIS_FLOOR = int(os.environ.get("HAPAX_COHERENCE_CRITICAL_AXIS_FLOOR", "1"))
+
+# The host-gate coherence criterion C_k (G1 of the changing-criterion SCED — see
+# ~/UNIFIED-EXPERIMENTAL-PLAN-2026-06-15.md). The experiment FIXES the ruler (the council rubric) and
+# RATCHETS this threshold across phases; making it config-sourced is the first data-spine item — the
+# criterion cannot move while it is hardcoded. DEFAULT 3.0 == the current live behavior (no regression):
+# until the SCED phase-controller sets it, the gate behaves exactly as the prior `mean_score < 3.0` wall.
+# The ABSOLUTE FLOOR (safety gates + the critical-axis floor above + the NDCVB dissociated@r honesty floor)
+# rides BELOW C_k — nothing hosts below the floor regardless of the criterion.
+_COHERENCE_CRITERION_DEFAULT = 3.0
+
+
+def _resolve_coherence_criterion() -> float:
+    """Resolve C_k from ``HAPAX_COHERENCE_CRITERION`` — FAIL-CLOSED on misconfig.
+
+    The gate fires on ``mean_score < C_k``, so an invalid criterion does not fail
+    safe — it fails OPEN: ``NaN`` makes the comparison always False (every segment
+    waves through), and because scores are on the [1, 5] rubric, any ``C_k <= 1.0``
+    can never trip the mean gate (the minimum achievable mean is 1.0) — the bar is
+    silently disabled. Falling back to a permissive default is ALSO wrong here: in
+    a ratcheted phase enforcing a stricter C_k, quietly reverting a fat-fingered
+    value to 3.0 weakens the live release gate and corrupts the experimental
+    record. So a *set-but-invalid* value is REFUSED at resolve time (the process
+    will not start and silently release under the wrong threshold) — consistent
+    with ``_council_coherence_check`` itself, which refuses rather than fail-opens
+    on a degraded council. The operative range is ``(1.0, 5.0]``. An *unset* var
+    is not a misconfiguration: it uses the validated default 3.0 (no regression).
+    """
+    raw = os.environ.get("HAPAX_COHERENCE_CRITERION")
+    if raw is None:
+        return _COHERENCE_CRITERION_DEFAULT
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"HAPAX_COHERENCE_CRITERION={raw!r} is not a number. The coherence "
+            "release gate fails OPEN on an invalid criterion, so this is refused at "
+            "startup rather than silently releasing under the default "
+            f"{_COHERENCE_CRITERION_DEFAULT:.1f}. Unset it to use the default, or set "
+            "a value in (1.0, 5.0]."
+        ) from exc
+    if not math.isfinite(value) or not (1.0 < value <= 5.0):
+        raise ValueError(
+            f"HAPAX_COHERENCE_CRITERION={raw!r} is outside the operative (1.0, 5.0] "
+            "range for the [1, 5] coherence rubric (a value <= 1.0 can never trip "
+            "mean_score < C_k, disabling the gate; > 5.0 or non-finite is "
+            "meaningless). Refused at startup rather than silently releasing under "
+            f"the default {_COHERENCE_CRITERION_DEFAULT:.1f}. Unset it to use the default."
+        )
+    return value
+
+
+_COHERENCE_CRITERION = _resolve_coherence_criterion()
 
 # Plan-time informed-authorship budgets. Recruitment + thesis authoring run
 # BEFORE planning, so they are bounded and measured — a slate-wide recruit or a
@@ -391,10 +445,11 @@ def _write_prep_diagnostic_outcome(
         "terminal_reason": terminal_reason,
         "not_loadable_reason": not_loadable_reason,
     }
+    # flock-guarded cross-process append (see _append_council_decisions_ledger).
+    # sort_keys=True reproduces the prior bytes exactly; raising=True preserves
+    # this writer's prior FAIL-LOUD semantics (it had no surrounding try/except).
     ledger_path = prep_dir / PREP_DIAGNOSTIC_LEDGER_FILENAME
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    with ledger_path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(ledger_row, sort_keys=True) + "\n")
+    append_jsonl(ledger_path, ledger_row, sort_keys=True, raising=True)
     return dossier_path
 
 
@@ -1723,10 +1778,11 @@ def _append_candidate_ledger(prep_dir: Path, payload: dict[str, Any], artifact_p
         "runtime_pool_eligible": False,
         "selected_release_required": True,
     }
+    # flock-guarded cross-process append (see _append_council_decisions_ledger).
+    # sort_keys=True reproduces the prior bytes exactly; raising=True preserves
+    # this writer's prior FAIL-LOUD semantics (it had no surrounding try/except).
     ledger_path = prep_dir / CANDIDATE_LEDGER
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    with ledger_path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(row, sort_keys=True) + "\n")
+    append_jsonl(ledger_path, row, sort_keys=True, raising=True)
 
 
 def _format_recruited_source_menu(resolved_source_set: ResolvedSourceSet) -> str:
@@ -1970,6 +2026,69 @@ def prep_segment(
                 "role": role,
             },
         )
+        return None
+
+    # S2 topic+type composability gate (alpha 2026-06-15): reject un-composable PARALLEL-LIST plans
+    # (tier-list/catalogue/abstract-of-abstracts) BEFORE the expensive compose. The S1 2x2 isolated
+    # topic+type composability as the DOMINANT binding constraint (un-composable ~= -2 pts and a clean
+    # prompt cannot rescue it). Mirrors the no_segment_beats skip + feeds the planner-substance-feedback
+    # loop so the next batch re-authors a composable angle. FAIL-OPEN: a gate error returns accept=True
+    # and never blocks a legitimate compose.
+    from agents.hapax_daimonion.segment_composability_gate import assess_composability
+
+    # Bound the gate's gateway call by the remaining prep budget so it cannot block ~60s near deadline
+    # exhaustion (mirrors the deadline discipline the council passes guard with _prep_deadline_exceeded).
+    _gate_timeout = 60.0
+    if deadline_monotonic is not None:
+        _gate_timeout = max(5.0, min(60.0, deadline_monotonic - time.monotonic()))
+    _composability = assess_composability(role, topic, list(beats), timeout=_gate_timeout)
+    _gate_errored = bool(getattr(_composability, "errored", False))
+    _append_s2_composability_ledger(
+        prep_dir,
+        programme_id=prog_id,
+        role=role,
+        topic=topic,
+        segment_beats=list(beats),
+        accepted=_composability.accept,
+        reason=_composability.reason,
+        errored=_gate_errored,
+    )
+    # Abstain on a degraded gate as well as a real reject. A fail-open
+    # (errored=True, accept=True) is UNVERIFIED — airing it would write an
+    # invalid "passed" row into the SCED producer DV. Honest behavior is to skip
+    # (the caller previously read only `.accept`, so a truncation-induced
+    # rubber-stamp aired as if it were a clean accept).
+    if _gate_errored or not _composability.accept:
+        _abstain = _gate_errored and _composability.accept
+        log.info(
+            "prep_segment: %s %s, skipping: %s",
+            prog_id,
+            "S2 gate degraded (fail-open, unverified — abstaining)"
+            if _abstain
+            else "un-composable topic+type",
+            _composability.reason,
+        )
+        _write_prep_diagnostic_outcome(
+            prep_dir,
+            prep_session=prep_session,
+            programme_id=prog_id,
+            role=role,
+            topic=topic,
+            segment_beats=list(beats),
+            terminal_status="no_candidate",
+            terminal_reason="s2_gate_errored_abstain" if _abstain else "uncomposable_topic_type",
+            not_loadable_reason=(
+                f"S2 gate degraded/unverified (abstain): {_composability.reason}"
+                if _abstain
+                else f"un-composable topic+type: {_composability.reason}"
+            ),
+            no_candidate_metadata={
+                "candidate_source": "segment_composability_gate",
+                "candidate_count": 0,
+                "role": role,
+            },
+        )
+        _record_substance_feedback(prep_session, prog_id, _composability.reason)
         return None
 
     source_readiness = programme_source_readiness(programme)
@@ -3478,11 +3597,19 @@ def run_prep(
             segmented_count=len(segmented),
         )
         try:
+            # RED-1 producer fix: constrain composability-gated runs to arc-shaped roles so the
+            # resident 35B composes an arc (rant/iceberg/react) instead of reaching for a ranking
+            # role and emitting a parallel list S2 rejects. Default ON, reversible via the env flag.
+            # cc-task 20260619-segprep-producer-arc-role-constraint.
+            arc_roles_only_enabled = os.environ.get(
+                "HAPAX_SEGMENT_PREP_ARC_ROLES", "1"
+            ).strip().lower() not in {"0", "false", "no", "off"}
             plan = planner.plan(
                 show_id=show_id,
                 target_programmes=planner_target_programmes,
                 fore_understanding=plan_recruit_fore or None,
                 prior_substance_feedback=prior_substance_feedback,
+                arc_roles_only=arc_roles_only_enabled,
                 **planner_kwargs,
             )
         except Exception as exc:
@@ -3741,6 +3868,8 @@ def _extract_topic_string(programme: Any) -> str | None:
 
 
 COUNCIL_DECISIONS_LEDGER_FILENAME = "council-decisions.ndjson"
+S2_COMPOSABILITY_LEDGER_RECORD_TYPE = "producer_s2_composability_ledger_entry"
+S2_COMPOSABILITY_GATE_NAME = "s2_composability"
 
 
 def _emit_council_degradation_signal(
@@ -3802,13 +3931,76 @@ def _append_council_decisions_ledger(
         "terminal_status": terminal_status,
         "council_decisions": decisions,
     }
+    # flock-guarded cross-process append (shared.jsonl_append): a manual batch /
+    # smoke run hitting the same shared date dir concurrently with the 04:00
+    # oneshot would otherwise tear NDJSON lines (rows exceed PIPE_BUF, so raw
+    # O_APPEND is not atomic). sort_keys=True + the default spaced separators
+    # reproduce the prior bytes exactly. raising=True + try/except preserves BOTH
+    # the prior FAIL-OPEN semantics AND the prior exc_info stack-trace telemetry
+    # (a bare False return would discard the exception context).
+    ledger_path = prep_dir / COUNCIL_DECISIONS_LEDGER_FILENAME
     try:
-        ledger_path = prep_dir / COUNCIL_DECISIONS_LEDGER_FILENAME
-        ledger_path.parent.mkdir(parents=True, exist_ok=True)
-        with ledger_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(row, sort_keys=True) + "\n")
+        append_jsonl(ledger_path, row, sort_keys=True, raising=True)
     except Exception:
         log.debug("council decisions ledger append failed", exc_info=True)
+
+
+def _append_s2_composability_ledger(
+    prep_dir: Path,
+    *,
+    programme_id: str,
+    role: str,
+    topic: str,
+    segment_beats: list[Any],
+    accepted: bool,
+    reason: str,
+    errored: bool = False,
+) -> None:
+    """Append the S2 topic/type composability attempt to the producer-DV ledger.
+
+    S2 rejects happen before coherence, so they must not masquerade as numeric
+    pre-gate scores. They still belong in the producer DV as attempt/reject
+    population records; otherwise the producer-vs-filter contrast loses the
+    plans the producer could not make composable.
+
+    ``errored`` distinguishes a real verdict from a FAIL-OPEN (the gate could
+    not run and returned ``accept=True`` by default). A fail-open is NOT a clean
+    accept: it is recorded with ``accepted=False`` + ``errored=True`` so it can
+    never masquerade as a verified pass in the producer DV / SCED rows.
+    """
+    fail_open = bool(errored and accepted)
+    real_accept = bool(accepted and not errored)
+    row = {
+        "schema_version": PREP_DIAGNOSTIC_SCHEMA_VERSION,
+        "record_type": S2_COMPOSABILITY_LEDGER_RECORD_TYPE,
+        "ledgered_at": datetime.now(tz=UTC).isoformat(),
+        "programme_id": programme_id,
+        "terminal": not real_accept,
+        "terminal_status": (
+            "s2_composable" if real_accept else ("s2_gate_errored" if errored else "no_candidate")
+        ),
+        "terminal_reason": (
+            None
+            if real_accept
+            else ("s2_gate_fail_open_unverified" if errored else "uncomposable_topic_type")
+        ),
+        "producer_gate": {
+            "gate": S2_COMPOSABILITY_GATE_NAME,
+            "accepted": real_accept,
+            "errored": bool(errored),
+            "fail_open": fail_open,
+            "criterion": _COHERENCE_CRITERION,
+            "reason": str(reason or ""),
+            "role": role,
+            "topic": topic,
+            "segment_beats": list(segment_beats or []),
+        },
+    }
+    ledger_path = prep_dir / COUNCIL_DECISIONS_LEDGER_FILENAME
+    try:
+        append_jsonl(ledger_path, row, sort_keys=True, raising=True)
+    except Exception:
+        log.debug("S2 composability ledger append failed", exc_info=True)
 
 
 def _prep_deadline_exceeded(
@@ -3862,8 +4054,9 @@ class _CoherenceOutcome:
     council cannot certify coherence, so the segment must NOT be released (the
     caller writes a terminal ``council_degraded_refused_no_release`` diagnostic
     and produces no candidate). ``passed`` is the quality verdict for a HEALTHY
-    council (mean >= 3.0); ``passed=False`` with feedback is a recoverable quality
-    miss that feeds refinement. ``council_decisions`` is the receipt fragment
+    council (mean >= the C_k criterion); ``passed=False`` with feedback is a recoverable quality
+    miss that feeds refinement. The quality threshold is the config-sourced C_k criterion
+    (``HAPAX_COHERENCE_CRITERION``, default 3.0). ``council_decisions`` is the receipt fragment
     recorded into the prep manifest + the council-decisions ledger.
     """
 
@@ -3880,8 +4073,8 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
     must treat that as a terminal no-release, NOT a soft feedback injection. The
     prior implementation returned ``(True, "")`` on a down council (fail-OPEN),
     letting an unavailable council wave a segment through — that is the bug this
-    fixes. A healthy council with mean < 3.0 yields ``passed=False`` with
-    axis-level feedback (a genuine, recoverable quality gate).
+    fixes. A healthy council with mean below the C_k criterion yields ``passed=False``
+    with axis-level feedback (a genuine, recoverable quality gate).
     """
     import asyncio
 
@@ -3914,7 +4107,15 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
             passed=False,
             feedback="",
             refused=True,
-            council_decisions={"check": "coherence", "convergence_status": "unavailable"},
+            # G4: a council-unavailable refusal is still a phase-tagged observation
+            # that can reach the ledger — stamp C_k here too so EVERY coherence
+            # decision (this early-return predates the main decision dict) carries
+            # the in-force criterion, not just the post-deliberate branches.
+            council_decisions={
+                "check": "coherence",
+                "convergence_status": "unavailable",
+                "criterion": _COHERENCE_CRITERION,
+            },
         )
 
     health = verdict.receipt.get("council_health", {})
@@ -3927,7 +4128,24 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
         "members_valid": health.get("members_valid"),
         "families_valid": health.get("families_valid"),
         "failed_members": verdict.receipt.get("failed_members", []),
+        # #6 (review-plane degradation pattern -> the ruler): WITNESS the served
+        # ruler roster on every SCED row so a degraded ruling is auditable and the
+        # analysis can exclude it. served_substitutions>0 means an anthropic (or
+        # other) seat was served by a substitute family on the wire (e.g. gemini
+        # under an Anthropic cap) — the verdict is quarantined below.
+        "served_substitutions": health.get("served_substitutions"),
+        "ruler_substituted": (health.get("served_substitutions") or 0) > 0,
+        "served_models": verdict.receipt.get("served_models", []),
         "mean_score": round(mean_score, 2) if mean_score is not None else None,
+        # G4 (producer-DV capture): stamp the in-force criterion C_k alongside the
+        # PRE-gate producer mean so each council-decisions ledger row is a complete
+        # changing-criterion SCED observation — (mean_score, criterion, released?).
+        # The pre-gate mean is recorded for EVERY outcome (refused/refined/passed),
+        # so the per-phase producer score distribution is reconstructable against
+        # the ratcheting bar; that distinguishes curriculum (the producer learns to
+        # track a rising C_k) from sieve (flat producer, the gate just rejects more).
+        # C_k is irrecoverable post-hoc, so it must be stamped at decision time.
+        "criterion": _COHERENCE_CRITERION,
         # Per-axis scores — the generative trace reads council_decisions["scores"]
         # to populate the stance assessment (motivated_angle/directedness/etc.);
         # without it those fields are silently unassessed (codex-1, PR #4133).
@@ -3942,6 +4160,28 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
             len(valid_scores),
             programme_id,
         )
+        return _CoherenceOutcome(
+            passed=False, feedback="", refused=True, council_decisions=decision
+        )
+
+    # #6 review-plane pattern -> the SCED ruler: QUARANTINE a verdict from a
+    # DEGRADED roster. If a family was substituted on the wire (served_substitutions
+    # > 0 — e.g. the anthropic seat answered by gemini under an Anthropic cap), the
+    # frozen ruler did NOT actually convene its genuine family-diverse panel, so the
+    # ruling is invalid data: it can never become a released SCED row. This is the
+    # council analog of the review plane's externally-witnessed degraded-family
+    # outage (loud + recorded on the decision + non-promotable). Refuse, like a
+    # below-quorum REFUSAL — the segment re-rules once the roster is healthy, rather
+    # than stamping a criterion-passing row scored by a substitute family.
+    if (health.get("served_substitutions") or 0) > 0:
+        log.warning(
+            "_council_coherence_check: ruler DEGRADED (served_substitutions=%s, served=%s) "
+            "— QUARANTINED, no release for %s",
+            health.get("served_substitutions"),
+            verdict.receipt.get("served_models"),
+            programme_id,
+        )
+        decision["quarantined"] = "ruler_substituted"
         return _CoherenceOutcome(
             passed=False, feedback="", refused=True, council_decisions=decision
         )
@@ -3965,9 +4205,12 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
         feedback_lines.append(f"  Council note: {note[:200]}")
     feedback = "\n".join(feedback_lines)
 
-    if mean_score < 3.0:
+    if mean_score < _COHERENCE_CRITERION:
         log.warning(
-            "_council_coherence_check: low coherence (mean=%.1f) for %s", mean_score, programme_id
+            "_council_coherence_check: coherence %.1f below criterion %.1f for %s",
+            mean_score,
+            _COHERENCE_CRITERION,
+            programme_id,
         )
         return _CoherenceOutcome(
             passed=False, feedback=feedback, refused=False, council_decisions=decision

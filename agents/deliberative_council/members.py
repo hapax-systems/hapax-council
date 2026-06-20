@@ -97,6 +97,31 @@ def model_family(model_alias: str) -> str:
     return MODEL_FAMILIES.get(normalize_model_alias(model_alias), "unknown")
 
 
+# Substrings of SERVED model names (LiteLLM ModelResponse.model_name) -> family. Counting
+# family-diversity by the model that ACTUALLY answered (not the requested alias) is what stops a
+# gateway fail-over (e.g. balanced->gemini-pro on an Anthropic credit cap) from satisfying the
+# quorum's diversity floor with a phantom-anthropic gemini.
+_SERVED_FAMILY_SUBSTRINGS: tuple[tuple[str, str], ...] = (
+    ("claude", "anthropic"),
+    ("gemini", "google"),
+    ("command-r", "cohere"),
+    ("compassverifier", "cohere"),
+    ("mistral", "mistral"),
+    ("sonar", "perplexity"),
+    ("deepseek", "deepseek"),
+    ("glm", "zhipu"),
+)
+
+
+def served_model_family(served_model: str) -> str:
+    """Family of the model that actually answered, by name substring; 'unknown' if unrecognized."""
+    name = (served_model or "").lower()
+    for needle, family in _SERVED_FAMILY_SUBSTRINGS:
+        if needle in name:
+            return family
+    return "unknown"
+
+
 def prompt_cache_enabled() -> bool:
     raw = os.environ.get("HAPAX_CCTV_PROMPT_CACHE", "1").strip().lower()
     return raw not in _CACHE_OFF_VALUES

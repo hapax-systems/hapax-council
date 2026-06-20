@@ -156,8 +156,8 @@ class TestScoringIntegration:
 
         async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
             if output_type is None:  # investigate (research) call
-                return "researched the claim", ["read_source(path) → File not found"]
-            return low_scores, ["read_source(path) → File not found"]
+                return "researched the claim", ["read_source(path) → File not found"], ""
+            return low_scores, ["read_source(path) → File not found"], ""
 
         with patch("agents.deliberative_council.engine._call_member", _mock_call):
             from agents.deliberative_council.engine import run_phase1

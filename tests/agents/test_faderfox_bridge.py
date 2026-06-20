@@ -2,10 +2,38 @@
 
 from __future__ import annotations
 
+import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from agents import faderfox_bridge
+
+
+@dataclass(frozen=True)
+class _ControlChange:
+    channel: int
+    control: int
+    value: int
+    type: str = "control_change"
+
+
+class _FakeInput:
+    name = "Faderfox MX12 test"
+
+    def __init__(self, messages: list[_ControlChange]) -> None:
+        self._messages = messages
+        self.closed = False
+
+    def iter_pending(self) -> list[_ControlChange]:
+        messages = self._messages
+        self._messages = []
+        return messages
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def test_live_mx12_fader_profile_uses_cc95_by_channel() -> None:
@@ -62,3 +90,173 @@ def test_set_mute_uses_wpctl_boolean_value() -> None:
         faderfox_bridge.set_mute("hapax-music-loudnorm", True)
 
     wpctl_mock.assert_called_once_with(["set-mute", "1"], "hapax-music-loudnorm")
+
+
+def test_get_volume_parses_wpctl_output() -> None:
+    proc = subprocess.CompletedProcess(
+        args=["wpctl", "get-volume", "99"], returncode=0, stdout="Volume: 0.420\n"
+    )
+
+    with patch("agents.faderfox_bridge._wpctl", return_value=proc):
+        assert faderfox_bridge.get_volume("hapax-music-loudnorm") == 0.42
+
+
+def test_resync_faders_seeds_pickup_target_without_volume_write() -> None:
+    faders = {
+        (0, 95): {
+            "label": "music",
+            "target": "hapax-music-loudnorm",
+            "scale": 1.0,
+        }
+    }
+
+    with (
+        patch("agents.faderfox_bridge.get_volume", return_value=0.50),
+        patch("agents.faderfox_bridge.set_volume") as set_volume_mock,
+    ):
+        faderfox_bridge.resync_faders(faders)
+
+    assert faders[(0, 95)]["_pickup_target"] == 64
+    assert faders[(0, 95)]["_pickup_last_value"] is None
+    set_volume_mock.assert_not_called()
+
+
+def test_resync_faders_seeds_multiple_targets_without_volume_write() -> None:
+    faders = {
+        (0, 95): {
+            "label": "music",
+            "target": "hapax-music-loudnorm",
+            "scale": 1.0,
+        },
+        (1, 95): {
+            "label": "voice",
+            "target": "hapax-voice-loudnorm",
+            "scale": 1.0,
+        },
+    }
+
+    with (
+        patch("agents.faderfox_bridge.get_volume", side_effect=[0.50, 0.25]),
+        patch("agents.faderfox_bridge.set_volume") as set_volume_mock,
+    ):
+        faderfox_bridge.resync_faders(faders)
+
+    assert faders[(0, 95)]["_pickup_target"] == 64
+    assert faders[(1, 95)]["_pickup_target"] == 32
+    set_volume_mock.assert_not_called()
+
+
+def test_resync_faders_honors_scaled_targets() -> None:
+    faders = {
+        (0, 95): {
+            "label": "voice",
+            "target": "hapax-voice-loudnorm",
+            "scale": 2.0,
+        }
+    }
+
+    with patch("agents.faderfox_bridge.get_volume", return_value=0.50):
+        faderfox_bridge.resync_faders(faders)
+
+    assert faders[(0, 95)]["_pickup_target"] == 32
+
+
+def test_resynced_fader_ignores_stale_move_until_pickup_crossing() -> None:
+    fader = {
+        "label": "music",
+        "target": "hapax-music-loudnorm",
+        "scale": 1.0,
+        "_pickup_target": 64,
+        "_pickup_last_value": None,
+    }
+
+    with patch("agents.faderfox_bridge.set_volume") as set_volume_mock:
+        assert not faderfox_bridge._handle_fader(fader, 10)
+        set_volume_mock.assert_not_called()
+        assert fader["_pickup_last_value"] == 10
+
+        assert faderfox_bridge._handle_fader(fader, 80)
+
+    set_volume_mock.assert_called_once_with("hapax-music-loudnorm", 80 / 127.0)
+    assert "_pickup_target" not in fader
+    assert "_pickup_last_value" not in fader
+
+
+def test_resynced_fader_batch_detects_crossing_before_coalescing_latest_value() -> None:
+    fader = {
+        "label": "music",
+        "target": "hapax-music-loudnorm",
+        "scale": 1.0,
+        "_pickup_target": 64,
+        "_pickup_last_value": None,
+    }
+
+    with patch("agents.faderfox_bridge.set_volume") as set_volume_mock:
+        assert faderfox_bridge._handle_fader_batch(fader, [10, 80])
+
+    set_volume_mock.assert_called_once_with("hapax-music-loudnorm", 80 / 127.0)
+    assert "_pickup_target" not in fader
+    assert "_pickup_last_value" not in fader
+
+
+def test_resynced_fader_applies_when_near_pickup_target() -> None:
+    fader = {
+        "label": "music",
+        "target": "hapax-music-loudnorm",
+        "scale": 1.0,
+        "_pickup_target": 64,
+        "_pickup_last_value": None,
+    }
+
+    with patch("agents.faderfox_bridge.set_volume") as set_volume_mock:
+        assert faderfox_bridge._handle_fader(fader, 63)
+
+    set_volume_mock.assert_called_once_with("hapax-music-loudnorm", 63 / 127.0)
+
+
+def test_resync_faders_fails_soft_when_target_volume_unavailable() -> None:
+    faders = {
+        (0, 95): {
+            "label": "music",
+            "target": "hapax-music-loudnorm",
+            "scale": 1.0,
+        }
+    }
+
+    with patch("agents.faderfox_bridge.get_volume", return_value=None):
+        faderfox_bridge.resync_faders(faders)
+
+    assert "_pickup_target" not in faders[(0, 95)]
+    with patch("agents.faderfox_bridge.set_volume") as set_volume_mock:
+        assert faderfox_bridge._handle_fader(faders[(0, 95)], 20)
+
+    set_volume_mock.assert_called_once_with("hapax-music-loudnorm", 20 / 127.0)
+
+
+def test_run_resyncs_on_connect_and_detects_fast_first_sweep_crossing(tmp_path: Path) -> None:
+    config = tmp_path / "mx12.yaml"
+    config.write_text(
+        """
+faders:
+  - { label: music, channel: 1, cc: 95, target: "hapax-music-loudnorm" }
+""",
+        encoding="utf-8",
+    )
+    inport = _FakeInput(
+        [
+            _ControlChange(channel=0, control=95, value=10),
+            _ControlChange(channel=0, control=95, value=80),
+        ]
+    )
+
+    with (
+        patch("agents.faderfox_bridge.find_input", return_value=inport),
+        patch("agents.faderfox_bridge.get_volume", return_value=0.50),
+        patch("agents.faderfox_bridge.set_volume") as set_volume_mock,
+        patch("agents.faderfox_bridge.time.sleep", side_effect=KeyboardInterrupt),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        faderfox_bridge.run(config)
+
+    assert inport.closed
+    set_volume_mock.assert_called_once_with("hapax-music-loudnorm", 80 / 127.0)

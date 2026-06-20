@@ -26,9 +26,11 @@ from shared.platform_capability_receipts import (
 )
 from shared.platform_capability_registry import (
     PLATFORM_CAPABILITY_REGISTRY,
+    Effort,
     PlatformCapabilityRegistry,
     PlatformCapabilityRegistryError,
     PlatformCapabilityRoute,
+    SupplyDescriptor,
     SupplyVector,
     build_supply_vector,
     check_registry_freshness,
@@ -44,6 +46,7 @@ from shared.quota_spend_ledger import (
     evaluate_paid_route_eligibility,
     load_quota_spend_ledger,
     load_quota_spend_ledger_resolved,
+    subscription_quota_state_for_route,
 )
 from shared.route_metadata_schema import (
     DemandVector,
@@ -71,8 +74,12 @@ SUPPORT_CEILINGS = frozenset(
 )
 NON_MUTATING_SURFACES = frozenset({"none"})
 CLOUD_BURST_ROUTE_IDS = frozenset({"api.headless.api_frontier"})
-LOCAL_DEV_PLATFORMS = frozenset({"antigrav", "claude", "codex", "gemini", "vibe"})
+LOCAL_DEV_PLATFORMS = frozenset({"antigrav", "claude", "codex", "vibe"})
 LOCAL_DEV_TARGET = "appendix"
+# GLMCP false-negative recovery is receipt-plane: create a fresh short-lived
+# supported-tool admission receipt and rerun quota telemetry. There is no
+# environment kill switch for stale/unknown subscription quota.
+ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED = frozenset({"glmcp.review.direct"})
 
 
 class DispatchAction(StrEnum):
@@ -138,12 +145,15 @@ class QuotaSpendState(_PolicyModel):
     available: bool
     load_error: str | None = None
     budget_ledger_stale: bool | None = None
+    subscription_quota_state: str | None = None
+    route_subscription_quota_state: str | None = None
     paid_api_budget_state: str | None = None
     local_resource_state: str | None = None
     paid_api_route_eligible: bool | None = None
     paid_api_blocking_reasons: tuple[str, ...] = Field(default=())
     paid_route_eligibility_state: str | None = None
     paid_route_eligibility_reasons: tuple[str, ...] = Field(default=())
+    route_quota_evidence_refs: tuple[str, ...] = Field(default=())
     evidence_refs: tuple[str, ...] = Field(default=())
 
 
@@ -328,6 +338,10 @@ class RouteDecision(_PolicyModel):
     route_selection_authority: Literal[False] = False
     quality_floor_satisfied: bool
     authority_allowed: bool
+    # advisory result metadata: the descriptor LEAF (route_id#variant_id) the launcher should run
+    # for the demanded execution axes, or None when the base descriptor satisfies. The base
+    # route_id stays the dispatch key; the launcher reads this to set the effort/context knob.
+    selected_descriptor_leaf: str | None = None
     cloud_burst_eligible: bool = False
     cloud_burst_guard_state: str = "not_applicable"
     cloud_burst_spike_reasons: tuple[str, ...] = Field(default=())
@@ -335,6 +349,7 @@ class RouteDecision(_PolicyModel):
     local_execution_target: str | None = None
     reason_codes: tuple[str, ...] = Field(default=())
     message: str
+    quota_evidence_refs: tuple[str, ...] = Field(default=())
     resource_state_refs: tuple[str, ...] = Field(default=())
     _dimensional_receipt: DimensionalRouteReceipt | None = PrivateAttr(default=None)
 
@@ -588,19 +603,44 @@ def evaluate_dispatch_policy(
 
     capability = request.capability
     if capability is None:
+        reasons = ["capability_registry_unavailable"]
+        if _requires_route_specific_subscription_quota(request.route_id):
+            reasons.extend(
+                [
+                    "subscription_route_quota_not_fresh",
+                    "route_subscription_quota_state:unknown",
+                    "subscription_route_capability_missing",
+                ]
+            )
         return _decision(
             request,
             DispatchAction.HOLD,
-            ("capability_registry_unavailable",),
+            tuple(reasons),
+            checked_at,
+            quality_floor_satisfied=False,
+            authority_allowed=False,
+        )
+    if normalize_route_id(capability.route_id) != normalize_route_id(request.route_id):
+        return _decision(
+            request,
+            DispatchAction.REFUSE,
+            (
+                "capability_route_mismatch",
+                f"request_route_id:{normalize_route_id(request.route_id)}",
+                f"capability_route_id:{normalize_route_id(capability.route_id)}",
+                *_subscription_quota_hold_reasons(request, capability),
+            ),
             checked_at,
             quality_floor_satisfied=False,
             authority_allowed=False,
         )
     if not capability.supported:
+        unsupported_reasons = ["unsupported_route"]
+        unsupported_reasons.extend(_unsupported_route_subscription_quota_reasons(request))
         return _decision(
             request,
             DispatchAction.REFUSE,
-            ("unsupported_route",),
+            tuple(unsupported_reasons),
             checked_at,
             quality_floor_satisfied=False,
             authority_allowed=False,
@@ -658,6 +698,17 @@ def evaluate_dispatch_policy(
             request,
             DispatchAction.REFUSE,
             paid_reasons,
+            checked_at,
+            quality_floor_satisfied=False,
+            authority_allowed=False,
+        )
+
+    subscription_quota_reasons = _subscription_quota_hold_reasons(request, capability)
+    if subscription_quota_reasons:
+        return _decision(
+            request,
+            DispatchAction.HOLD,
+            subscription_quota_reasons,
             checked_at,
             quality_floor_satisfied=False,
             authority_allowed=False,
@@ -750,6 +801,7 @@ def route_decision_receipt_payload(decision: RouteDecision) -> dict[str, Any]:
         "route_policy_degraded_state": decision.degraded_state,
         "route_policy_registry_freshness_green": decision.registry_freshness_green,
         "route_policy_quota_freshness_green": decision.quota_freshness_green,
+        "route_policy_quota_evidence_refs": list(decision.quota_evidence_refs),
         "route_policy_resource_freshness_green": decision.resource_freshness_green,
         "route_policy_route_selection_authority": decision.route_selection_authority,
         "route_policy_quality_floor_satisfied": decision.quality_floor_satisfied,
@@ -1037,7 +1089,17 @@ DIMENSION_WEIGHTS: Mapping[str, int] = {
     "coordination_worktree_fit": 10,
     "historical_local_calibration": 8,
     "quota_latency_scarcity": 6,
+    # conditional execution-axis dimensions: present in a candidate's scores ONLY when the
+    # task declares the matching demand, so _aggregate_score (which normalizes over PRESENT
+    # dimensions) leaves undemanded-task scoring byte-identical. The raw sum is no longer 100;
+    # _aggregate_score never assumes a constant divisor, so this is harmless.
+    "effort_fit": 12,
+    "context_mode_fit": 12,
 }
+
+#: The reasoning-effort ordinal ladder (none < low < ... < max), derived from the supply-side
+#: Effort enum so a future reorder cannot silently mis-score; pinned by the demand drift test.
+_EFFORT_LADDER: tuple[str, ...] = tuple(e.value for e in Effort)
 
 
 def _evaluate_dimensional_candidate_set(
@@ -1403,7 +1465,7 @@ def _score_candidate(request: DispatchRequest) -> tuple[DimensionalScore, ...]:
     if demand is None or supply is None:
         return ()
     scores = supply.capability_scores
-    return (
+    legacy: tuple[DimensionalScore, ...] = (
         _dimension_score(
             "grounding_governance_fit",
             demand.task_demand.grounding_criticality,
@@ -1451,6 +1513,126 @@ def _score_candidate(request: DispatchRequest) -> tuple[DimensionalScore, ...]:
             evidence_refs=tuple(supply.freshness.source_refs),
         ),
     )
+    return legacy + _capability_fit_scores(request)
+
+
+def _capability_fit_scores(request: DispatchRequest) -> tuple[DimensionalScore, ...]:
+    """The conditional execution-axis dimensions. Each is emitted ONLY when the task declares
+    the matching demand (and 'standard'/'not_applicable' context-mode is treated as no demand —
+    every base satisfies it). Omitting the dimension when undemanded is THE non-perturbation
+    lever: _aggregate_score normalizes over present dimensions, so an undemanded task scores
+    byte-identically to pre-change. Fails CLOSED: a present demand with no supply_descriptor
+    (a route that cannot describe its execution axes) omits the dimension rather than crashing."""
+
+    demand = request.demand_vector
+    supply = request.supply_vector
+    if demand is None or supply is None or supply.supply_descriptor is None:
+        return ()
+    descriptor = supply.supply_descriptor
+    task_demand = demand.task_demand
+    fits: list[DimensionalScore] = []
+
+    context_mode_demand = task_demand.context_mode_demand
+    if context_mode_demand is not None and context_mode_demand not in {
+        "standard",
+        "not_applicable",
+    }:
+        satisfied = context_mode_demand in descriptor.reachable_context_modes
+        fits.append(
+            DimensionalScore(
+                dimension="context_mode_fit",
+                demand=context_mode_demand,
+                supply=";".join(descriptor.reachable_context_modes),
+                score=5.0 if satisfied else 1.0,
+                confidence=3.0,
+            )
+        )
+
+    effort_demand = task_demand.effort_demand
+    if effort_demand is not None:
+        fits.append(
+            DimensionalScore(
+                dimension="effort_fit",
+                demand=effort_demand,
+                supply=";".join(descriptor.reachable_efforts),
+                score=_effort_fit_score(effort_demand, descriptor.reachable_efforts),
+                confidence=3.0,
+            )
+        )
+
+    return tuple(fits)
+
+
+def _effort_fit_score(effort_demand: str, reachable_efforts: tuple[str, ...]) -> float:
+    """Meet-or-exceed ladder: the route's STRONGEST reachable effort vs the demand. Meets or
+    exceeds -> 5.0; exactly one rung short -> 3.0; further short or unknown -> 1.0 (fail-closed).
+    Downward cost discrimination (a 'low' demand preferring the cheap leaf) is done by the leaf
+    RESOLVER, not this score, per the design's meet-or-exceed semantics."""
+
+    if effort_demand not in _EFFORT_LADDER:
+        return 1.0
+    demand_index = _EFFORT_LADDER.index(effort_demand)
+    reachable_indexes = [
+        _EFFORT_LADDER.index(effort) for effort in reachable_efforts if effort in _EFFORT_LADDER
+    ]
+    if not reachable_indexes:
+        return 1.0
+    best = max(reachable_indexes)
+    if best >= demand_index:
+        return 5.0
+    if best == demand_index - 1:
+        return 3.0
+    return 1.0
+
+
+def _resolve_descriptor_leaf(request: DispatchRequest) -> str | None:
+    """Resolve the descriptor LEAF a launching route should run for the demanded axes:
+    ``route_id#variant_id`` when a variant is needed, or ``None`` when the base descriptor
+    already satisfies (or nothing is demanded). Reads the SAME supply_descriptor the
+    satisfiability score read, so score and resolution cannot diverge. context_mode takes
+    precedence (exact-match material axis); effort resolves the CHEAPEST reachable leaf that
+    meets-or-exceeds the demand (so 'low' picks an effort_low variant over a frontier base)."""
+
+    demand = request.demand_vector
+    supply = request.supply_vector
+    if demand is None or supply is None or supply.supply_descriptor is None:
+        return None
+    descriptor = supply.supply_descriptor
+    task_demand = demand.task_demand
+
+    context_mode_demand = task_demand.context_mode_demand
+    if (
+        context_mode_demand is not None
+        and context_mode_demand not in {"standard", "not_applicable"}
+        and context_mode_demand in descriptor.context_mode_to_variant
+    ):
+        variant_id = descriptor.context_mode_to_variant[context_mode_demand]
+        if variant_id is not None:
+            return f"{request.route_id}#{variant_id}"
+        return None
+
+    effort_demand = task_demand.effort_demand
+    if effort_demand is not None and effort_demand in _EFFORT_LADDER:
+        variant_id = _resolve_effort_leaf(descriptor, effort_demand)
+        if variant_id is not None:
+            return f"{request.route_id}#{variant_id}"
+    return None
+
+
+def _resolve_effort_leaf(descriptor: SupplyDescriptor, effort_demand: str) -> str | None:
+    """The CHEAPEST reachable leaf (lowest effort) that still meets-or-exceeds the demand;
+    its variant_id, or None when the base descriptor is the cheapest satisfying leaf."""
+
+    demand_index = _EFFORT_LADDER.index(effort_demand)
+    meeting = [
+        effort
+        for effort in descriptor.reachable_efforts
+        if effort in _EFFORT_LADDER and _EFFORT_LADDER.index(effort) >= demand_index
+    ]
+    if not meeting:
+        return None
+    cheapest = min(meeting, key=_EFFORT_LADDER.index)
+    return descriptor.effort_to_variant.get(cheapest)
 
 
 def _dimension_score(
@@ -1779,6 +1961,23 @@ def _quota_state(
     eligibility_state: str | None = None
     eligibility_reasons: tuple[str, ...] = ()
     evidence_refs: tuple[str, ...] = ()
+    route_subscription_state: str | None = None
+    route_quota_evidence_refs: tuple[str, ...] = ()
+    if capability is not None and (
+        capability.capacity_pool == "subscription_quota"
+        or _requires_route_specific_subscription_quota(capability.route_id)
+    ):
+        state, refs = subscription_quota_state_for_route(
+            quota_ledger,
+            capability.route_id,
+            now=checked_at,
+        )
+        missing_ref = f"quota-snapshot:{normalize_route_id(capability.route_id)}:missing"
+        if refs != (missing_ref,) or _requires_route_specific_subscription_quota(
+            capability.route_id
+        ):
+            route_subscription_state = state.value
+            route_quota_evidence_refs = refs
     if capability is not None and capability.capacity_pool in PAID_CAPACITY_POOLS:
         request = PaidRouteRequest(
             route_id=capability.route_id,
@@ -1799,12 +1998,15 @@ def _quota_state(
     return QuotaSpendState(
         available=True,
         budget_ledger_stale=dashboard.budget_ledger_stale,
+        subscription_quota_state=dashboard.subscription_quota_state.value,
+        route_subscription_quota_state=route_subscription_state,
         paid_api_budget_state=dashboard.paid_api_budget_state.value,
         local_resource_state=dashboard.local_resource_state.value,
         paid_api_route_eligible=dashboard.paid_api_route_eligible,
         paid_api_blocking_reasons=tuple(dashboard.paid_api_blocking_reasons),
         paid_route_eligibility_state=eligibility_state,
         paid_route_eligibility_reasons=eligibility_reasons,
+        route_quota_evidence_refs=route_quota_evidence_refs,
         evidence_refs=evidence_refs,
     )
 
@@ -1854,9 +2056,15 @@ def _decision(
         route_selection_authority=False,
         quality_floor_satisfied=quality_floor_satisfied,
         authority_allowed=authority_allowed,
+        # resolve the descriptor leaf for EVERY launch path (dimensional, single-route,
+        # compatibility-rollback) — centralized here so no launch site can silently drop it.
+        selected_descriptor_leaf=(
+            _resolve_descriptor_leaf(request) if action is DispatchAction.LAUNCH else None
+        ),
         **cloud_burst_receipt,
         reason_codes=tuple(reason for reason in reasons if reason),
         message="; ".join(reason for reason in reasons if reason) or action.value,
+        quota_evidence_refs=_quota_evidence_refs(request.quota),
         resource_state_refs=request.resource_state_refs,
     )
     decision._dimensional_receipt = _build_dimensional_route_receipt(
@@ -1889,6 +2097,20 @@ def _registry_freshness_green(request: DispatchRequest) -> bool:
 
 def _quota_freshness_green(request: DispatchRequest) -> bool:
     capability = request.capability
+    if _requires_route_specific_subscription_quota(request.route_id):
+        if (
+            capability is None
+            or not capability.supported
+            or capability.capacity_pool != "subscription_quota"
+            or not capability.freshness_ok
+        ):
+            return False
+        quota = request.quota
+        if quota is None or not quota.available:
+            return False
+        if quota.budget_ledger_stale is not False:
+            return False
+        return quota.route_subscription_quota_state == "fresh"
     if (
         capability is not None
         and capability.capacity_pool == "subscription_quota"
@@ -2248,6 +2470,70 @@ def _paid_route_refusal_reasons(
     return ()
 
 
+def _subscription_quota_hold_reasons(
+    request: DispatchRequest,
+    capability: RouteCapabilityState,
+) -> tuple[str, ...]:
+    requires_route_specific_quota = _requires_route_specific_subscription_quota(request.route_id)
+    if not requires_route_specific_quota:
+        return ()
+    if capability.capacity_pool != "subscription_quota":
+        return (
+            "subscription_route_capacity_pool_mismatch",
+            f"capacity_pool:{capability.capacity_pool or 'missing'}",
+            f"route_id:{normalize_route_id(request.route_id)}",
+        )
+    quota = request.quota
+    if quota is None or not quota.available:
+        return ("subscription_route_quota_unavailable",)
+    if quota.budget_ledger_stale is True:
+        return ("subscription_quota_ledger_stale",)
+    if quota.budget_ledger_stale is not False:
+        return ("subscription_quota_ledger_unknown",)
+    route_state = quota.route_subscription_quota_state
+    if route_state is None:
+        if requires_route_specific_quota:
+            route_state = "unknown"
+        else:
+            return ()
+    if route_state == "fresh":
+        return ()
+    evidence = quota.route_quota_evidence_refs or (
+        f"quota-snapshot:{normalize_route_id(request.route_id)}:missing",
+    )
+    return (
+        "subscription_route_quota_not_fresh",
+        f"route_subscription_quota_state:{route_state}",
+        *evidence,
+    )
+
+
+def _requires_route_specific_subscription_quota(route_id: str) -> bool:
+    return normalize_route_id(route_id) in ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED
+
+
+def _unsupported_route_subscription_quota_reasons(
+    request: DispatchRequest,
+) -> tuple[str, ...]:
+    if not _requires_route_specific_subscription_quota(request.route_id):
+        return ()
+    quota = request.quota
+    if quota is None or not quota.available:
+        return ("subscription_route_quota_unavailable", "subscription_route_capability_missing")
+    route_state = quota.route_subscription_quota_state or "unknown"
+    if route_state == "fresh":
+        return ("subscription_route_capability_missing",)
+    evidence = quota.route_quota_evidence_refs or (
+        f"quota-snapshot:{normalize_route_id(request.route_id)}:missing",
+    )
+    return (
+        "subscription_route_quota_not_fresh",
+        f"route_subscription_quota_state:{route_state}",
+        *evidence,
+        "subscription_route_capability_missing",
+    )
+
+
 def _freshness_hold_reasons(capability: RouteCapabilityState) -> tuple[str, ...]:
     if capability.freshness_ok:
         return ()
@@ -2295,6 +2581,12 @@ def _resource_state_refs(
     if quota is not None and quota.local_resource_state:
         refs.append(f"quota.local_resource_state:{quota.local_resource_state}")
     return tuple(refs)
+
+
+def _quota_evidence_refs(quota: QuotaSpendState | None) -> tuple[str, ...]:
+    if quota is None:
+        return ()
+    return tuple(dict.fromkeys([*quota.route_quota_evidence_refs, *quota.evidence_refs]))
 
 
 def _task_class_for(metadata: RouteMetadataAssessment) -> str:

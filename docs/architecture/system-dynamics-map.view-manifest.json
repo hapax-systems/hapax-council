@@ -1,0 +1,502 @@
+{
+  "authority_case": "CASE-SYSTEM-DYNAMICS-MAP-V1-ENHANCEMENT-20260618",
+  "claim_contract": {
+    "claim_count": 77,
+    "claims": "system-dynamics-map.claims.json",
+    "observation_count": 6,
+    "relation_count": 36
+  },
+  "claim_partitions": [
+    "asserted",
+    "inferred",
+    "observed",
+    "simulated",
+    "rendered",
+    "candidate"
+  ],
+  "default_projection": {
+    "aggregation": {
+      "lossy": false,
+      "mode": "none",
+      "reversible": true
+    },
+    "default_focus": "rdf-owl-kg",
+    "hidden_edge_ids": [],
+    "hidden_node_ids": [],
+    "layout": "cose",
+    "lens": "topology",
+    "resolution": 5,
+    "runtime_asset": "vendor/cytoscape-3.34.0.min.js",
+    "runtime_asset_sri": "sha384-K+k+ywfDuvV9dwg+bwsVE0WGkrTnqFamaER+ydBgMFQTtlI0jdI9no9AjkQHwh/T",
+    "viewer": "system-dynamics-map-viewer.html",
+    "visible_edge_ids": [
+      "api-to-cloudevents",
+      "api-to-otel",
+      "api-to-trace-context",
+      "archimate-to-kg",
+      "archimate-to-runtime-topology",
+      "bpmn-to-decision-service",
+      "bpmn-to-kg",
+      "c4-to-decision-api",
+      "claim-to-review-dossier",
+      "cmmn-to-decision-service",
+      "decision-service-to-api",
+      "decision-table-to-rule-engine",
+      "dmn-to-decision-service",
+      "dmn-to-decision-table",
+      "dmn-to-drd",
+      "dmn-to-feel",
+      "dmn-to-kg",
+      "dmn-to-sbvr",
+      "dmn-to-xml-di",
+      "feel-to-rule-engine",
+      "kg-to-jsonld",
+      "kg-to-prov",
+      "kg-to-shacl",
+      "kg-to-view-manifest",
+      "model-artifacts-to-decision-service",
+      "operating-lens-to-sdlc",
+      "otel-to-kg",
+      "pr-ci-to-merge-release",
+      "prov-to-review-dossier",
+      "prov-to-view-manifest",
+      "review-dossier-to-pr-ci",
+      "sdlc-intake-to-claim",
+      "shacl-to-view-manifest",
+      "state-to-kg",
+      "state-to-scxml",
+      "state-to-xes",
+      "sysml-to-kg",
+      "sysml-to-model-artifacts",
+      "temporal-state-to-sdlc",
+      "view-to-cytoscape",
+      "view-to-react-flow",
+      "view-to-sigma"
+    ],
+    "visible_layers": [
+      "source-models",
+      "decision-modeling",
+      "execution-surfaces",
+      "semantic-backbone",
+      "observation-state",
+      "projection"
+    ],
+    "visible_node_ids": [
+      "archimate",
+      "bpmn",
+      "c4-runtime",
+      "cc-task-claim",
+      "cloudevents",
+      "cmmn",
+      "cytoscape",
+      "decision-service",
+      "decision-table",
+      "dmn",
+      "dmn-xml-di",
+      "drd",
+      "feel",
+      "jsonld-trig",
+      "merge-release",
+      "model-artifacts",
+      "opentelemetry",
+      "operating-lens",
+      "pr-ci-checks",
+      "prov-o",
+      "rdf-owl-kg",
+      "react-flow",
+      "review-dossier",
+      "rule-engine",
+      "runtime-decision-api",
+      "sbvr",
+      "scxml-statecharts",
+      "sdlc-intake",
+      "shacl-contracts",
+      "sigma",
+      "sysml-v2",
+      "temporal-state-events",
+      "trace-context",
+      "view-manifest",
+      "xes-event-log"
+    ],
+    "visible_statuses": [
+      "asserted",
+      "inferred",
+      "simulated",
+      "rendered",
+      "candidate"
+    ]
+  },
+  "generated_at": "2026-06-18T00:00:00Z",
+  "lenses": [
+    {
+      "aggregation": {
+        "lossy": false,
+        "mode": "none",
+        "reversible": true
+      },
+      "id": "topology",
+      "label": "Topology",
+      "layout": "cose",
+      "state_mode": "topology",
+      "visible_edge_count": 42,
+      "visible_node_count": 35
+    },
+    {
+      "aggregation": {
+        "lossy": false,
+        "mode": "path",
+        "reversible": true
+      },
+      "id": "operating-slice",
+      "label": "Operating Slice",
+      "layout": "breadthfirst",
+      "state_mode": "observed",
+      "visible_edge_count": 7,
+      "visible_node_count": 8
+    },
+    {
+      "aggregation": {
+        "lossy": false,
+        "mode": "evidence",
+        "reversible": true
+      },
+      "id": "evidence-risk",
+      "label": "Evidence Risk",
+      "layout": "cose",
+      "state_mode": "evidence",
+      "visible_edge_count": 7,
+      "visible_node_count": 7
+    }
+  ],
+  "map_id": "system-dynamics-map-v1",
+  "provenance": {
+    "activity": "https://hapax.local/system-dynamics-map/v1/activity/materialize-v1",
+    "agent": "scripts/system_dynamics_map_materialize.py",
+    "generated": [
+      "system-dynamics-map.canonical.trig",
+      "system-dynamics-map.shacl.ttl",
+      "system-dynamics-map.view-manifest.json",
+      "system-dynamics-map.claims.json",
+      "system-dynamics-map.package.json",
+      "system-dynamics-map.lock.json"
+    ],
+    "used": [
+      "system-dynamics-map.seed.json",
+      "system-dynamics-map.relations.json",
+      "system-dynamics-map.observations.jsonl",
+      "system-dynamics-map.lenses.json"
+    ]
+  },
+  "schema": "system-dynamics-map-view-manifest-v1",
+  "source_snapshot": {
+    "canonical_graph": "system-dynamics-map.canonical.trig",
+    "claims": "system-dynamics-map.claims.json",
+    "edge_count": 42,
+    "lenses": "system-dynamics-map.lenses.json",
+    "node_count": 35,
+    "observations": "system-dynamics-map.observations.jsonl",
+    "relations": "system-dynamics-map.relations.json",
+    "seed": "system-dynamics-map.seed.json",
+    "seed_sha256": "ba762e55f12567b2445703a6c06a072f2d7895f9be7f301ff327904e57bc152e",
+    "shacl_shapes": "system-dynamics-map.shacl.ttl"
+  },
+  "validation": {
+    "browser": "uv run --extra ci pytest tests/test_system_dynamics_map_viewer_playwright.py",
+    "package_gate": "scripts/system-dynamics-map-gate",
+    "pytest": "uv run --extra ci pytest tests/test_system_dynamics_map_artifacts.py"
+  },
+  "version": "1.0.0",
+  "workbench_contract": {
+    "audience_modes": [
+      {
+        "emphasis": "diagnostic next action, trust calibration, and resumable investigation",
+        "id": "operator",
+        "label": "Operator"
+      },
+      {
+        "emphasis": "plain-language meaning, glossary density, and why the view exists",
+        "id": "newcomer",
+        "label": "Newcomer"
+      },
+      {
+        "emphasis": "interfaces, dependencies, evidence, and implementation handoff",
+        "id": "collaborator",
+        "label": "Collaborator"
+      },
+      {
+        "emphasis": "scope, provenance, confidence, validation, and what cannot be concluded",
+        "id": "reviewer",
+        "label": "Reviewer / Auditor"
+      },
+      {
+        "emphasis": "state, risk, decision points, and caveats without graph mechanics",
+        "id": "executive",
+        "label": "Executive"
+      }
+    ],
+    "defaults": {
+      "audience_mode": "operator",
+      "explanation_path": "release-readiness",
+      "inquiry_mode": "release-gates"
+    },
+    "explanation_paths": [
+      {
+        "id": "release-readiness",
+        "label": "Release readiness path",
+        "must_include": [
+          "source-neutral identity",
+          "temporal state separation",
+          "gate path",
+          "trust basis",
+          "what this does not prove"
+        ],
+        "scene_count": 5,
+        "scenes": [
+          {
+            "caveat": "This proves the model shape, not live operational truth.",
+            "lens": "topology",
+            "selection": {
+              "group": "nodes",
+              "id": "rdf-owl-kg"
+            },
+            "takeaway": "The backbone names identities and relations; source models and telemetry are inputs, not the center.",
+            "title": "Start from source-neutral identity"
+          },
+          {
+            "caveat": "The fixture has only a small observation corpus and should not be read as a full history.",
+            "lens": "operating-slice",
+            "selection": {
+              "group": "nodes",
+              "id": "temporal-state-events"
+            },
+            "takeaway": "State is carried by observations with time, source, freshness, and expiry instead of overwriting topology.",
+            "title": "Separate topology from temporal state"
+          },
+          {
+            "caveat": "Edge direction shows declared relation flow, not automatically causal proof.",
+            "lens": "operating-slice",
+            "selection": {
+              "group": "edges",
+              "id": "review-dossier-to-pr-ci"
+            },
+            "takeaway": "The path exposes how review state gates PR/CI readiness and downstream release closure.",
+            "title": "Follow the gate path"
+          },
+          {
+            "caveat": "Generated confidence is an evidence cue, not independent acceptance.",
+            "lens": "evidence-risk",
+            "selection": {
+              "group": "nodes",
+              "id": "prov-o"
+            },
+            "takeaway": "Claims and observations need provenance, confidence, authority ceiling, and validation before being trusted.",
+            "title": "Read the trust basis"
+          },
+          {
+            "caveat": "A clear projection can still be misleading if hidden evidence or stale sources would change the conclusion.",
+            "lens": "evidence-risk",
+            "selection": {
+              "group": "nodes",
+              "id": "view-manifest"
+            },
+            "takeaway": "Every focused view hides scope; shareable explanations must carry hidden counts and lossiness caveats.",
+            "title": "State what this does not prove"
+          }
+        ],
+        "summary": "Teach how topology, state observations, review gates, PR/CI, and release closure relate without treating the graph as live authority."
+      },
+      {
+        "id": "evidence-trust",
+        "label": "Evidence and trust path",
+        "must_include": [
+          "explicit claim records",
+          "validation before trust",
+          "stale evidence visibility"
+        ],
+        "scene_count": 3,
+        "scenes": [
+          {
+            "caveat": "A rendered node is not enough; inspect its claim and observation records.",
+            "lens": "evidence-risk",
+            "selection": {
+              "group": "nodes",
+              "id": "rdf-owl-kg"
+            },
+            "takeaway": "Rendered elements are backed by claim fragments with provenance and confidence basis.",
+            "title": "Claims are explicit records"
+          },
+          {
+            "caveat": "A passing render is weaker than a passing validation contract.",
+            "lens": "evidence-risk",
+            "selection": {
+              "group": "nodes",
+              "id": "shacl-contracts"
+            },
+            "takeaway": "Schema and SHACL-style gates constrain whether the package is safe to interpret.",
+            "title": "Validation precedes trust"
+          },
+          {
+            "caveat": "This slice surfaces stale evidence; full snapshot diff is the next governed tranche.",
+            "lens": "evidence-risk",
+            "selection": {
+              "group": "nodes",
+              "id": "view-manifest"
+            },
+            "takeaway": "The stale canary keeps expiry and hidden stale evidence legible.",
+            "title": "Stale evidence remains visible"
+          }
+        ],
+        "summary": "Explain how evidence, validation, provenance, stale observations, and claim confidence make the map auditable."
+      }
+    ],
+    "follow_on_tranches": [
+      "bitemporal snapshot registry and diff lens",
+      "causality, guard, evidence, correlation, containment, and projection relation semantics",
+      "uncertainty classes, contradiction groups, competing evidence, and confidence basis categories",
+      "source adapter provenance chains and verification receipts",
+      "visible invariant registry and aggregation/lossiness ledger"
+    ],
+    "inquiry_modes": [
+      {
+        "answer_shape": [
+          "ordered gate path",
+          "first non-ready state",
+          "evidence basis",
+          "scope caveat"
+        ],
+        "focus_edge_ids": [
+          "sdlc-intake-to-claim",
+          "claim-to-review-dossier",
+          "review-dossier-to-pr-ci",
+          "pr-ci-to-merge-release"
+        ],
+        "focus_node_ids": [
+          "sdlc-intake",
+          "cc-task-claim",
+          "review-dossier",
+          "pr-ci-checks",
+          "merge-release"
+        ],
+        "id": "release-gates",
+        "label": "What gates release?",
+        "lens": "operating-slice",
+        "prompt": "Follow the current intake-to-release path and identify the first non-ready gate."
+      },
+      {
+        "answer_shape": [
+          "first waiting or blocking state",
+          "upstream context",
+          "downstream consequence",
+          "supporting observation"
+        ],
+        "focus_edge_ids": [
+          "sdlc-intake-to-claim",
+          "claim-to-review-dossier",
+          "review-dossier-to-pr-ci",
+          "pr-ci-to-merge-release"
+        ],
+        "focus_node_ids": [
+          "sdlc-intake",
+          "cc-task-claim",
+          "review-dossier",
+          "pr-ci-checks",
+          "merge-release"
+        ],
+        "id": "stuck-work",
+        "label": "What is stuck?",
+        "lens": "operating-slice",
+        "prompt": "Find the first blocking or waiting state and its upstream/downstream context."
+      },
+      {
+        "answer_shape": [
+          "snapshot identity",
+          "prior snapshot requirement",
+          "current export basis",
+          "diff-tranche caveat"
+        ],
+        "focus_edge_ids": [
+          "temporal-state-to-sdlc",
+          "kg-to-view-manifest"
+        ],
+        "focus_node_ids": [
+          "view-manifest",
+          "temporal-state-events",
+          "operating-lens"
+        ],
+        "id": "changed",
+        "label": "What changed?",
+        "lens": "topology",
+        "prompt": "Show what this static package can and cannot say about change over time."
+      },
+      {
+        "answer_shape": [
+          "visible stale evidence",
+          "hidden stale evidence",
+          "expiry basis",
+          "state/topology separation"
+        ],
+        "focus_edge_ids": [
+          "kg-to-view-manifest",
+          "shacl-to-view-manifest",
+          "prov-to-view-manifest"
+        ],
+        "focus_node_ids": [
+          "view-manifest",
+          "temporal-state-events",
+          "shacl-contracts",
+          "prov-o"
+        ],
+        "id": "stale-evidence",
+        "label": "What is stale?",
+        "lens": "evidence-risk",
+        "prompt": "Expose stale temporal evidence in scope and stale evidence hidden by the current projection."
+      },
+      {
+        "answer_shape": [
+          "confidence basis",
+          "authority ceiling",
+          "candidate elements",
+          "contradiction readiness"
+        ],
+        "focus_edge_ids": [
+          "kg-to-prov",
+          "kg-to-shacl",
+          "prov-to-review-dossier"
+        ],
+        "focus_node_ids": [
+          "rdf-owl-kg",
+          "prov-o",
+          "shacl-contracts",
+          "review-dossier"
+        ],
+        "id": "trust",
+        "label": "What do I trust?",
+        "lens": "evidence-risk",
+        "prompt": "Summarize confidence, authority ceilings, candidate claims, and contradiction readiness."
+      },
+      {
+        "answer_shape": [
+          "hidden nodes",
+          "hidden edges",
+          "aggregation/lossiness",
+          "invalid conclusions"
+        ],
+        "focus_edge_ids": [
+          "kg-to-view-manifest",
+          "view-to-cytoscape"
+        ],
+        "focus_node_ids": [
+          "operating-lens",
+          "view-manifest",
+          "rdf-owl-kg"
+        ],
+        "id": "missing-context",
+        "label": "What am I missing?",
+        "lens": "topology",
+        "prompt": "State what the active view hides and which conclusions the projection cannot support."
+      }
+    ],
+    "purpose": "Question-first sensemaking and explanation contract for rendering topology, state, evidence, projection scope, and trust caveats without centering any single source notation.",
+    "schema": "system-dynamics-map-workbench-contract-v1"
+  }
+}

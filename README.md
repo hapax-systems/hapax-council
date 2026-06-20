@@ -71,7 +71,7 @@ Agents read and write Markdown + YAML on disk. An inotify-driven reactive engine
 
 ### Multi-lane coordination
 
-Up to 10 concurrent AI sessions (Claude Code, Codex, Gemini CLI) coordinate through a relay protocol at `~/.cache/hapax/relay/`. Each session operates in its own git worktree. A triage officer daemon annotates incoming tasks with priority, effort class, and platform suitability. Dispatch policies enforce permission tiers, quota partitioning, and capability matching.
+Concurrent AI sessions (Claude Code, Codex, Antigravity/agy, and Vibe) coordinate through a relay protocol at `~/.cache/hapax/relay/`. Each session operates in its own git worktree. A triage officer daemon annotates incoming tasks with priority, effort class, and platform suitability. Dispatch policies enforce permission tiers, quota partitioning, and capability matching.
 
 ### Multimodal perception
 

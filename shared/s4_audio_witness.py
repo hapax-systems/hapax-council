@@ -14,7 +14,9 @@ when the dry voice send reaches mk5 OUT AUX2/3, mk5 IN AUX2/3 feeds
 
 This witness does not claim the S-4 wet return is audible. Public S-4
 readiness additionally requires a fresh signal witness that sets
-``s4_wet_return_signal=true``.
+``s4_wet_return_signal=true``. Whenever that signal field is explicitly
+written, ``s4_wet_return_signal_observed_at`` timestamps the verdict so
+callers can reject stale wet-return evidence.
 """
 
 from __future__ import annotations
@@ -134,6 +136,7 @@ def update_fx_device_witness(
         existing["s4_analog_insert_route"] = s4_analog_insert_route
     if s4_wet_return_signal is not None:
         existing["s4_wet_return_signal"] = s4_wet_return_signal
+        existing["s4_wet_return_signal_observed_at"] = now
 
     existing.setdefault("s4_audio", False)
     existing.setdefault("s4_midi", False)

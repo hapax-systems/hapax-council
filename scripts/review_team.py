@@ -51,22 +51,38 @@ ACCEPT_VERDICTS = frozenset({"accept", "accept-with-findings"})
 
 #: Reviewer verdicts the dispatcher may record. ``invalid-output`` is what an
 #: unparseable reviewer reply becomes — it never counts as an accept.
-#: ``quota-wall`` is a provider usage wall, a FAMILY-AVAILABILITY signal:
+#: ``quota-wall``, ``provider-outage``, and ``reviewer-route-unavailable`` are
+#: FAMILY-AVAILABILITY signals:
 #: on 2026-06-12 the claude weekly wall surfaced as invalid-output for 13
 #: hours and t1's require_all_families sealed the merge gate fleet-wide
-#: (postmortem failure class #1). Walls must be named so the constitution
-#: can degrade instead of seal.
+#: (postmortem failure class #1). Availability failures must be named so the
+#: constitution can degrade instead of seal, while preserving the true cause.
 REVIEWER_VERDICTS = frozenset(
-    {"accept", "accept-with-findings", "block", "invalid-output", "quota-wall"}
+    {
+        "accept",
+        "accept-with-findings",
+        "block",
+        "invalid-output",
+        "quota-wall",
+        "provider-outage",
+        "reviewer-route-unavailable",
+    }
 )
+FAMILY_OUTAGE_VERDICTS = frozenset({"quota-wall", "provider-outage", "reviewer-route-unavailable"})
 TEAM_CLASS_RANK = {"t3_docs": 0, "t2_standard": 1, "t1_critical": 2}
 
 #: Provider usage-wall shapes (the 2026-06-12 claude weekly-wall text is the
-#: canonical fixture; the rest cover the codex/gemini families' phrasings).
+#: canonical fixture; the rest cover the codex/gemini/glm families' phrasings).
+_RESET_TIME_SHAPE = (
+    r"(?:(?:[A-Z][a-z]{2}\s+\d{1,2},\s+)?"
+    r"\d{1,2}(?::\d{2})?\s*(?:am|pm)"
+    r"(?:\s+(?:\([A-Z][A-Za-z0-9._+-]*(?:/[A-Z][A-Za-z0-9._+-]*)+\)"
+    r"|[A-Z][A-Za-z0-9._+-]*(?:/[A-Z][A-Za-z0-9._+-]*)+|[A-Z]{2,5}))?)"
+)
 _QUOTA_WALL_SHAPE_RE = re.compile(
     r"\A("
     r"You('ve| have) hit your (weekly|usage|session|5-hour) limit"
-    r"(?:\s+·\s+resets\s+\d{1,2}\s?[ap]m(?:\s+(?:\([A-Za-z/_-]+\)|[A-Za-z/_-]+))?)?"
+    rf"(?:\s+·\s+resets\s+{_RESET_TIME_SHAPE})?"
     r"|HTTP 429 Too Many Requests"
     r"|Too Many Requests"
     r"|RESOURCE_EXHAUSTED(?::\s+Quota (?:exceeded|exhausted))?"
@@ -90,12 +106,81 @@ _QUOTA_WALL_MAX_CHARS = 600
 #: Applied ONLY when model_stdout is empty (the anti-forge anchor: a real
 #: wall produces NO review output).
 _QUOTA_WALL_LINE_RE = re.compile(
-    r"(?:ERROR:\s*)?"
+    r"\A(?:ERROR:\s*)?"
     r"You(?:'ve| have) hit your (?:weekly|usage|session|5-hour) (?:limit|cap)"
-    r"(?:\.\s+Visit\s+\S+)?"
-    r"(?:.*?(?:purchase more credits|upgrade your plan|try again))?"
-    r".*",
+    rf"(?:(?:\s+·\s+resets\s+{_RESET_TIME_SHAPE})"
+    r"|(?:\.\s+Visit\s+\S+.*(?:purchase more credits|upgrade your plan|try again).*))?"
+    r"\Z",
     re.IGNORECASE,
+)
+_QUOTA_WALL_HTTP_RE = re.compile(
+    r"\A(?:[-\w.]+:\s+api error:\s+)?HTTP\s+429\b.*"
+    r"(?:quota|usage limit|rate.?limit|too many requests|insufficient balance|"
+    r"RESOURCE_EXHAUSTED)",
+    re.IGNORECASE | re.DOTALL,
+)
+_STRUCTURED_ZAI_ENVELOPE_RE = re.compile(
+    r"\A\s*hapax-glmcp-reviewer:\s+api error:\s+HTTP\s+\d{3}\b",
+    re.IGNORECASE,
+)
+_STRUCTURED_FIELD_VALUE_RE = re.compile(r"\A[A-Za-z0-9_:-]+\Z")
+_STRUCTURED_QUOTA_ERROR_CLASSES = frozenset(
+    {
+        "account_balance_or_arrears",
+        "account_hard_hold",
+        "daily_limit_exhausted",
+        "fair_use_restricted",
+        "plan_model_unavailable",
+        "quota_exhausted",
+        "rate_limited",
+        "rate_limited_concurrency",
+        "rate_limited_frequency",
+        "subscription_expired",
+    }
+)
+_STRUCTURED_QUOTA_ACTIONS = frozenset(
+    {
+        "backoff",
+        "backoff_reduce_concurrency",
+        "backoff_reduce_frequency",
+        "contact_provider",
+        "hold_no_payg_fallback",
+        "hold_until_limit_reset",
+        "hold_until_manual_clear",
+        "hold_until_reset",
+        "hold_until_subscription_restored",
+        "switch_model_or_upgrade_plan",
+    }
+)
+
+_PROVIDER_OUTAGE_SHAPE_RE = re.compile(
+    r"\bHTTP\s+(?:429|5\d\d)\b",
+    re.IGNORECASE,
+)
+
+_PROVIDER_OUTAGE_LINE_RE = re.compile(
+    r"(?:temporarily overloaded|server-side issue|try again later|retry later|"
+    r"check the Z\.ai Coding Plan endpoint|bad gateway|service unavailable|"
+    r"gateway timeout|network error|timed out)",
+    re.IGNORECASE,
+)
+_PROVIDER_OUTAGE_MAX_CHARS = 4_000
+_REVIEWER_ROUTE_UNAVAILABLE_MAX_CHARS = 4_000
+_UNSUPPORTED_REVIEWER_CLIENT_RE = re.compile(
+    r"(?:IneligibleTierError|UNSUPPORTED_CLIENT|failed to launch .*?\bagy\b.*?install agy)",
+    re.IGNORECASE,
+)
+_STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES = frozenset(
+    {
+        "provider_error",
+        "provider_high_traffic",
+    }
+)
+_STRUCTURED_PROVIDER_OUTAGE_ACTIONS = frozenset(
+    {
+        "backoff_or_switch_model",
+        "retry_later",
+    }
 )
 
 #: The dispatcher's family-outage witness state (canonical path; the
@@ -103,6 +188,41 @@ _QUOTA_WALL_LINE_RE = re.compile(
 #: cannot self-certify a degradation (round-4 review finding).
 FAMILY_OUTAGE_STATE = Path.home() / ".cache" / "hapax" / "review-team" / "family-outage.json"
 FAMILY_OUTAGE_TTL_S = 2 * 3600
+
+
+def _structured_zai_error_match_state(
+    text: str,
+    *,
+    error_classes: frozenset[str],
+    actions: frozenset[str],
+) -> bool | None:
+    """Return None when no structured controls exist, else trusted match state."""
+
+    envelope = _STRUCTURED_ZAI_ENVELOPE_RE.search(text)
+    if envelope is None:
+        return None
+    control_text = re.split(
+        r";\s*(?:message|detail)=",
+        text[envelope.start() :],
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    tokens: dict[str, str] = {}
+    saw_control = False
+    for raw_field in control_text.split(";")[1:]:
+        field = raw_field.strip()
+        if "=" not in field:
+            continue
+        key, value = [part.strip() for part in field.split("=", 1)]
+        if key not in {"error_class", "action"}:
+            continue
+        saw_control = True
+        if key in tokens or _STRUCTURED_FIELD_VALUE_RE.fullmatch(value) is None:
+            return False
+        tokens[key] = value
+    if not saw_control:
+        return None
+    return tokens.get("error_class") in error_classes or tokens.get("action") in actions
 
 
 def is_quota_wall(
@@ -124,16 +244,33 @@ def is_quota_wall(
     model was active enough to write something.
     """
 
-    if not process_failed or not text:
-        return False
-    # Anti-forge anchor (postmortem 2026-06-15): if the reviewer process
-    # emitted review content on stdout, it was running — the stderr text
-    # is supplementary, not sole wall evidence.
-    if model_stdout and model_stdout.strip():
+    if not process_failed or not (text or model_stdout):
         return False
     stripped = text.strip()
+    stdout_stripped = model_stdout.strip()
+    # Anti-forge anchor (postmortem 2026-06-15): if the reviewer process
+    # emitted review content on stdout, it was running — stderr text is
+    # supplementary, not sole wall evidence. Narrow exception: Claude Code
+    # can emit its own non-model quota wall on stdout with empty stderr and a
+    # nonzero exit. Accept only a short exact provider wall phrase.
+    if stdout_stripped:
+        return bool(
+            not stripped
+            and len(stdout_stripped) <= _QUOTA_WALL_MAX_CHARS
+            and _QUOTA_WALL_SHAPE_RE.fullmatch(stdout_stripped)
+        )
     # Fast path: short, bare wall phrase (the 2026-06-12 claude shape)
     if len(stripped) <= _QUOTA_WALL_MAX_CHARS and _QUOTA_WALL_SHAPE_RE.fullmatch(stripped):
+        return True
+    if len(stripped) <= _PROVIDER_OUTAGE_MAX_CHARS:
+        structured_match = _structured_zai_error_match_state(
+            stripped,
+            error_classes=_STRUCTURED_QUOTA_ERROR_CLASSES,
+            actions=_STRUCTURED_QUOTA_ACTIONS,
+        )
+        if structured_match is not None:
+            return structured_match
+    if len(stripped) <= _PROVIDER_OUTAGE_MAX_CHARS and _QUOTA_WALL_HTTP_RE.search(stripped):
         return True
     # Slow path: CLI chrome wraps the wall phrase (codex v0.139.0 emits
     # ~704 chars including "ERROR: You've hit your usage limit. Visit …
@@ -145,6 +282,70 @@ def is_quota_wall(
         if line and _QUOTA_WALL_LINE_RE.fullmatch(line):
             return True
     return False
+
+
+def is_provider_outage(
+    text: str,
+    *,
+    process_failed: bool = False,
+    model_stdout: str = "",
+) -> bool:
+    """True when process-failure diagnostics show provider unavailability.
+
+    This deliberately uses the same channel-trust constraints as quota-wall
+    classification: no model stdout may be present, and the diagnostic must be
+    terse and match known provider outage phrasing.
+    """
+
+    if not process_failed or not text:
+        return False
+    stripped = text.strip()
+    if model_stdout.strip():
+        return False
+    if len(stripped) > _PROVIDER_OUTAGE_MAX_CHARS:
+        return False
+    normalized = re.sub(r"\A[-\w.]+:\s+api error:\s*", "", stripped, flags=re.I)
+    structured_match = _structured_zai_error_match_state(
+        stripped,
+        error_classes=_STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES,
+        actions=_STRUCTURED_PROVIDER_OUTAGE_ACTIONS,
+    )
+    if structured_match is not None:
+        return structured_match
+    http_429 = bool(re.match(r"\AHTTP\s+429\b", normalized, flags=re.IGNORECASE))
+    http_5xx = bool(re.match(r"\AHTTP\s+5\d\d\b", normalized, flags=re.IGNORECASE))
+    outage_terms = bool(_PROVIDER_OUTAGE_LINE_RE.search(stripped))
+    provider_detail = re.split(r";\s*retry later\b", normalized, maxsplit=1, flags=re.IGNORECASE)[0]
+    provider_detail_outage_terms = bool(_PROVIDER_OUTAGE_LINE_RE.search(provider_detail))
+    direct_outage = normalized.lower().startswith(("network error:", "request timed out after"))
+    return (
+        (http_5xx and outage_terms)
+        or (http_429 and provider_detail_outage_terms)
+        or (direct_outage and outage_terms)
+    )
+
+
+def is_reviewer_route_unavailable(
+    text: str,
+    *,
+    process_failed: bool = False,
+    model_stdout: str = "",
+) -> bool:
+    """True when the configured reviewer route itself is unavailable.
+
+    This covers process-level auth/client/tier failures such as an unsupported
+    reviewer client. It is a family-availability signal like a quota wall, but
+    it is not mislabeled as a transient provider outage.
+    """
+
+    if not process_failed or not text:
+        return False
+    stripped = text.strip()
+    if model_stdout.strip():
+        return False
+    if len(stripped) > _REVIEWER_ROUTE_UNAVAILABLE_MAX_CHARS:
+        return False
+    return bool(_UNSUPPORTED_REVIEWER_CLIENT_RE.search(stripped))
 
 
 def _parse_iso_datetime(value: Any) -> datetime:
@@ -253,6 +454,8 @@ def writer_family_for_lane(lane: str | None, registry: Mapping[str, Any]) -> str
     lane_norm = (lane or "").strip().lower()
     if not lane_norm:
         return lane_families["default"]
+    if lane_norm in set(lane_families.get("retired") or []):
+        raise ValueError(f"retired authoring lane is not admissible: {lane_norm}")
     exact = lane_families.get("exact") or {}
     if lane_norm in exact:
         return exact[lane_norm]
@@ -480,11 +683,23 @@ def _unresolved_criticals(reviews: Sequence[Mapping[str, Any]]) -> list[tuple[st
 # — the go-gate must not suppress a real finding (claude-1, #4136 review v2).
 _SYNTAX_COMPILE_RE = re.compile(
     r"syntax\s*error|syntaxerror|invalid\s+syntax|fails?\s+to\s+(?:compile|parse)|"
-    r"won'?t\s+(?:compile|parse)|does\s*n'?t\s+(?:compile|parse)|cannot\s+be\s+parsed|"
+    r"won'?t\s+(?:compile|parse)|will\s+not\s+(?:compile|parse)|"
+    r"does\s*n'?t\s+(?:compile|parse)|cannot\s+be\s+parsed|"
     r"un(?:parse|parseable|parsable)|compile\s+(?:error|failure)|unterminated|"
     r"indentation\s+error|missing\s+(?:colon|paren|parenthes|brace|bracket)",
     re.IGNORECASE,
 )
+_NEGATED_SYNTAX_COMPILE_RE = re.compile(
+    r"\b(?:not|isn'?t|is\s+not)\s+(?:a\s+)?"
+    r"(?:syntax\s*error|parse\s+(?:failure|error)|compile\s+(?:failure|error))",
+    re.IGNORECASE,
+)
+_NAMESPACE_CORRUPTION_RE = re.compile(
+    r"(?:namespace|prefix|@prefix).*(?:corrupt|replac|invalid|violat)|"
+    r"(?:corrupt|replac|invalid|violat).*(?:namespace|prefix|@prefix)",
+    re.IGNORECASE,
+)
+_BACKTICK_LITERAL_RE = re.compile(r"`([^`\n]{3,200})`")
 
 #: Killswitch — set to "1" to disable the go-gate (every critical blocks; the pre-go-gate behaviour).
 _GO_GATE_OFF_ENV = "HAPAX_REVIEW_GO_GATE_OFF"
@@ -493,7 +708,59 @@ _GO_GATE_OFF_ENV = "HAPAX_REVIEW_GO_GATE_OFF"
 def _is_syntax_compile_claim(finding: Mapping[str, Any]) -> bool:
     """True iff the critical asserts a SYNTAX/COMPILE defect — the ONLY class the verifier may
     refute. Semantic claims ('corrupt state', off-by-one) are never matched, so never invalidated."""
-    return bool(_SYNTAX_COMPILE_RE.search(str(finding.get("title", ""))))
+    text = f"{finding.get('title', '')}\n{finding.get('detail', '')}"
+    if _NEGATED_SYNTAX_COMPILE_RE.search(text):
+        return False
+    return bool(_SYNTAX_COMPILE_RE.search(text))
+
+
+def _is_namespace_corruption_claim(finding: Mapping[str, Any]) -> bool:
+    text = f"{finding.get('title', '')} {finding.get('detail', '')}"
+    return bool(_NAMESPACE_CORRUPTION_RE.search(text))
+
+
+def _is_path_like_at_literal(literal: str) -> bool:
+    token = (literal.strip().split() or [""])[0]
+    return token.startswith("@") and "/" in token and token != "@prefix"
+
+
+def _line_literal_claim_refuted(finding: Mapping[str, Any], source: str) -> bool:
+    try:
+        line = int(finding.get("line") or 0)
+    except (TypeError, ValueError):
+        return False
+    lines = source.splitlines()
+    if line <= 0 or line > len(lines):
+        return False
+    current_line = lines[line - 1]
+    text = f"{finding.get('title', '')}\n{finding.get('detail', '')}"
+    suspect_literals = [
+        literal.strip()
+        for literal in _BACKTICK_LITERAL_RE.findall(text)
+        if _is_path_like_at_literal(literal)
+    ]
+    return bool(suspect_literals) and all(
+        literal not in current_line for literal in suspect_literals
+    )
+
+
+def _rdf_parse_format(path: Path) -> str | None:
+    if path.suffix == ".trig":
+        return "trig"
+    if path.suffix == ".ttl":
+        return "turtle"
+    return None
+
+
+def _rdf_parses_clean(path: Path, parse_format: str) -> bool:
+    try:
+        from rdflib import Dataset, Graph
+
+        graph = Dataset() if parse_format == "trig" else Graph()
+        graph.parse(path, format=parse_format)
+    except Exception:  # noqa: BLE001 - rdflib raises parser-specific exception types.
+        return False
+    return True
 
 
 def _discover_repo_root() -> Path | None:
@@ -501,6 +768,34 @@ def _discover_repo_root() -> Path | None:
     for d in (cur, *cur.parents):
         if (d / ".git").exists():
             return d
+    return None
+
+
+def _repo_root_for_path(path: Path) -> Path | None:
+    cur = path if path.is_dir() else path.parent
+    for d in (cur, *cur.parents):
+        if (d / ".git").exists():
+            return d
+    return None
+
+
+def _frontmatter_repo_root(frontmatter: Mapping[str, Any] | None, head_sha: str) -> Path | None:
+    if frontmatter is None:
+        return None
+    raw_refs = frontmatter.get("mutation_scope_refs") or frontmatter.get("paths") or ()
+    if not isinstance(raw_refs, Sequence) or isinstance(raw_refs, str):
+        raw_refs = (raw_refs,)
+    seen: set[Path] = set()
+    for raw in raw_refs:
+        text = str(raw or "").strip()
+        if not text or not (text.startswith("/") or text.startswith("~")):
+            continue
+        root = _repo_root_for_path(Path(text).expanduser())
+        if root is None or root in seen:
+            continue
+        seen.add(root)
+        if _repo_head_matches(root, head_sha):
+            return root
     return None
 
 
@@ -530,7 +825,9 @@ def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) 
     file ``ast.parse``-s clean. Every other case — not a syntax/compile claim (ALL semantic
     criticals), a missing/unreadable/non-Python file — KEEPS the critical. Uncertainty never
     suppresses."""
-    if not _is_syntax_compile_claim(finding):
+    syntax_claim = _is_syntax_compile_claim(finding)
+    namespace_claim = _is_namespace_corruption_claim(finding)
+    if not syntax_claim and not namespace_claim:
         return (
             True  # not a syntax/compile claim — never invalidate (every semantic critical is safe)
         )
@@ -544,8 +841,20 @@ def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) 
         source = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return True  # unreadable — cannot verify, keep
+    rdf_format = _rdf_parse_format(path)
+    if rdf_format is not None:
+        parses_clean = _rdf_parses_clean(path, rdf_format)
+        if syntax_claim:
+            return not parses_clean
+        return not (
+            namespace_claim and parses_clean and _line_literal_claim_refuted(finding, source)
+        )
+    if namespace_claim and _line_literal_claim_refuted(finding, source):
+        return False
     if path.suffix != ".py":
-        return True  # cannot verify a non-Python syntax claim — keep (conservative)
+        return True  # cannot verify this syntax claim class — keep (conservative)
+    if not syntax_claim:
+        return True
     try:
         ast.parse(source)
     except SyntaxError:
@@ -576,6 +885,78 @@ def _blocking_criticals(
         target = blocking if verify_literal_defect_critical(finding, root) else phantom
         target.append((reviewer_id, finding))
     return blocking, phantom
+
+
+def _finding_key(reviewer_id: str, finding: Mapping[str, Any]) -> tuple[str, str, str, str, str]:
+    return (
+        reviewer_id,
+        str(finding.get("file") or ""),
+        str(finding.get("line") or ""),
+        str(finding.get("title") or ""),
+        str(finding.get("lens") or ""),
+    )
+
+
+def _reviews_with_phantom_resolutions(
+    reviews: Sequence[Mapping[str, Any]], phantom_criticals: Sequence[tuple[str, dict]]
+) -> list[dict[str, Any]]:
+    phantom_keys = {
+        _finding_key(reviewer_id, finding) for reviewer_id, finding in phantom_criticals
+    }
+    out: list[dict[str, Any]] = []
+    for review in reviews:
+        reviewer_id = str(review.get("id"))
+        record = dict(review)
+        findings: list[Any] = []
+        for finding in review.get("findings") or []:
+            if not isinstance(finding, Mapping):
+                findings.append(finding)
+                continue
+            finding_record = dict(finding)
+            if _finding_key(reviewer_id, finding_record) in phantom_keys:
+                finding_record["resolved"] = True
+                finding_record["resolution_source"] = "review-go-gate"
+                finding_record["resolution_detail"] = (
+                    "literal-defect critical refuted by the file at head"
+                )
+            findings.append(finding_record)
+        record["findings"] = findings
+        out.append(record)
+    return out
+
+
+def _reviews_for_quorum(
+    reviews: Sequence[Mapping[str, Any]],
+    blocking_criticals: Sequence[tuple[str, dict]],
+    phantom_criticals: Sequence[tuple[str, dict]],
+) -> list[dict[str, Any]]:
+    blocking_keys = {
+        _finding_key(reviewer_id, finding) for reviewer_id, finding in blocking_criticals
+    }
+    phantom_keys = {
+        _finding_key(reviewer_id, finding) for reviewer_id, finding in phantom_criticals
+    }
+    out: list[dict[str, Any]] = []
+    for review in reviews:
+        record = dict(review)
+        if str(review.get("verdict", "")).lower() == "block":
+            reviewer_id = str(review.get("id"))
+            critical_keys = {
+                _finding_key(reviewer_id, finding)
+                for finding in review.get("findings") or []
+                if isinstance(finding, Mapping)
+                and str(finding.get("severity", "")).lower() == "critical"
+            }
+            if (
+                critical_keys
+                and not (critical_keys & blocking_keys)
+                and critical_keys <= phantom_keys
+            ):
+                record["verdict"] = "accept-with-findings"
+                record["raw_verdict"] = "block"
+                record["verdict_effective_reason"] = "all named criticals invalidated by go-gate"
+        out.append(record)
+    return out
 
 
 def _accepting(reviews: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
@@ -690,10 +1071,11 @@ def synthesize_dossier(
         roster = [f for f in roster if f not in degraded_outage]
         if any(str(n) == "degraded_to:t2_standard" for n in constitution_notes):
             sizing = registry["sizing"]["t2_standard"]
-    accepts = _checklist_complete_accepts(reviews, lenses)
-    accept_families = {str(r.get("family")) for r in accepts}
     block_reviews = [r for r in reviews if str(r.get("verdict", "")).lower() == "block"]
     criticals, phantom_criticals = _blocking_criticals(reviews, repo_root, head_sha=head_sha)
+    quorum_reviews = _reviews_for_quorum(reviews, criticals, phantom_criticals)
+    accepts = _checklist_complete_accepts(quorum_reviews, lenses)
+    accept_families = {str(r.get("family")) for r in accepts}
     scoped_files = None if changed_files is None else [str(f) for f in changed_files]
     if changed_files is not None and changed_file_count is None:
         changed_file_count = len(scoped_files)
@@ -789,7 +1171,7 @@ def synthesize_dossier(
         "degraded_family_outage": degraded_outage,
         "post_recovery_rereview_required": bool(degraded_outage),
         "lenses": list(lenses),
-        "reviewers": [dict(r) for r in reviews],
+        "reviewers": _reviews_with_phantom_resolutions(reviews, phantom_criticals),
         "escalations": escalations,
         "accept_count": len(accepts),
         "review_team_verdict": verdict,
@@ -985,10 +1367,12 @@ def _dossier_validity_blockers(
     if len(reviews) < required_size:
         blockers.append(f"review_dossier_team_undersized:{len(reviews)}/{required_size}")
 
-    # go-gate: drop literal-defect phantoms (repo discovered from cwd = the PR checkout in CI)
-    criticals, phantoms = _blocking_criticals(
-        reviews, None, head_sha=str(dossier.get("head_sha") or "")
-    )
+    # go-gate: drop literal-defect phantoms only against a checkout proven to be
+    # the reviewed head. Local autoqueue often runs outside the PR checkout, so
+    # prefer a declared task worktree when one is available and head-bound.
+    dossier_head_sha = str(dossier.get("head_sha") or "")
+    verification_root = _frontmatter_repo_root(frontmatter, dossier_head_sha)
+    criticals, phantoms = _blocking_criticals(reviews, verification_root, head_sha=dossier_head_sha)
     if phantoms:  # receipt: phantom invalidations are auditable in the CI log, never silent
         print(
             f"go-gate: invalidated {len(phantoms)} phantom literal-defect critical(s): "
@@ -1015,7 +1399,8 @@ def _dossier_validity_blockers(
     for review in reviews:
         blockers.extend(_review_checklist_blockers(review, lenses))
 
-    accepts = _checklist_complete_accepts(reviews, lenses)
+    quorum_reviews = _reviews_for_quorum(reviews, criticals, phantoms)
+    accepts = _checklist_complete_accepts(quorum_reviews, lenses)
     unknown_accept_families = {str(r.get("family")) for r in accepts} - roster
     if unknown_accept_families:
         blockers.append(

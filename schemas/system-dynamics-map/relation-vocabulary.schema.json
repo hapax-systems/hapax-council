@@ -1,0 +1,93 @@
+{
+  "$id": "https://hapax.local/schema/system-dynamics-map/relation-vocabulary.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "relations": {
+      "items": {
+        "additionalProperties": true,
+        "properties": {
+          "allowed_claim_types": {
+            "items": {
+              "enum": [
+                "asserted",
+                "inferred",
+                "observed",
+                "simulated",
+                "rendered",
+                "candidate"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "category": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "directionality": {
+            "enum": [
+              "directed"
+            ],
+            "type": "string"
+          },
+          "edge_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "iri": {
+            "format": "uri",
+            "type": "string"
+          },
+          "layers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "source_kinds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "target_kinds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "iri",
+          "category",
+          "directionality",
+          "source_kinds",
+          "target_kinds",
+          "allowed_claim_types",
+          "layers",
+          "edge_ids"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema": {
+      "const": "system-dynamics-map-relation-vocabulary-v1",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "relations"
+  ],
+  "title": "System dynamics relation vocabulary",
+  "type": "object"
+}

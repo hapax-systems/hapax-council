@@ -106,7 +106,8 @@ Historical correction for AVSDLC must not bulk-close based on merged PRs. It mus
 This change makes the following mechanical corrections:
 
 - `request-intake-consumer` recognizes legacy `type: request` notes and derives missing request ids from filenames, while preserving strict malformed handling for canonical `hapax-request` records missing `request_id`.
-- `request-decompose` parses full task/request frontmatter, skips requests with `downstream_tasks`, tolerates duplicate task files without aborting the backlog, emits non-null parent lineage from the request path when needed, and normalizes mutation surfaces.
+- `request-decompose` parses full task/request frontmatter, skips requests with `downstream_tasks` only when at least one referenced task exists, tolerates duplicate task files without aborting the backlog, emits non-null parent lineage from the request path when needed, and normalizes mutation surfaces.
+- `request-decompose --scan` now treats `--limit` and `HAPAX_REQUEST_DECOMPOSE_LIMIT` as a cap on admitted decomposition attempts, so encountered admission-blocked requests create remediation records without starving later admitted requests. The scan stops when the next admitted request would exceed the cap; blocked entries encountered before that stop still receive remediation records. Remediation lineage defaults can be overridden with `HAPAX_REQUEST_DECOMPOSE_REMEDIATION_AUTHORITY_CASE`, `HAPAX_REQUEST_DECOMPOSE_REMEDIATION_PARENT_REQUEST`, and `HAPAX_REQUEST_DECOMPOSE_REMEDIATION_PARENT_SPEC`; recheck the operator-visible names with `uv run python scripts/request-decompose --help`.
 - `agents/request_decomposer/writer.py` writes task files and then links the parent request with `downstream_tasks`, `decomposed_at`, `decomposition_model`, and `decomposition_task_count`.
 - `cc-pr-merge-watcher.py` closes all active tasks linked to a merged PR and makes cursor advancement prefix-safe after any failed close.
 - `hapax-cross-runtime-dispatch` invokes the standard methodology dispatcher through `uv run python` and exports the repo plus `packages/agentgov/src` path when using the in-repo dispatcher.
@@ -117,10 +118,10 @@ Correction should be systematic and evidence-preserving:
 
 1. Activate this source change into the live source-activation worktree.
 2. Enable or repair missing automation timers: PR autoqueue and source activation are currently not enforcing the intended loop.
-3. Run `request-decompose --scan --dry-run` and inspect the 47 accepted undecomposed requests.
+3. Run `request-decompose --scan --dry-run` and inspect the accepted undecomposed requests.
 4. Run `request-decompose --scan` only after confirming CCTV hardening inputs and LLM availability; duplicates must continue, not stop the batch.
-5. Run `request-fulfillment-reconciler --dry-run --json`; focus first on the 17 `implicit_linkage_requires_explicit_fulfillment` requests because they likely need historical `downstream_tasks` repair, not new implementation.
-6. Audit the 53 `no_linked_tasks` requests and split them into needs decomposition, needs hardening, rejected/withdrawn, or fulfilled outside automation.
+5. Run `request-fulfillment-reconciler --dry-run --json`; focus first on `implicit_linkage_requires_explicit_fulfillment` requests because they likely need historical `downstream_tasks` repair, not new implementation.
+6. Audit `no_linked_tasks` requests and split them into needs decomposition, needs hardening, rejected/withdrawn, or fulfilled outside automation.
 7. Run merge watcher against a cursor before recent skipped closure failures and audit active `pr_open`/`merge_queue` tasks whose PRs are already merged.
 8. For active tasks in invalid states such as `open`, create governed normalization or withdrawal tasks rather than direct edits.
 9. For all visual/audio/audiovisual/aesthetic/theoretical/public/runtime requests, attach or verify AVSDLC dossiers and production witness before request fulfillment.
@@ -131,9 +132,9 @@ Correction should be systematic and evidence-preserving:
 High-confidence backlog items identified by this audit:
 
 - Normalize 41 legacy request notes or keep compatibility until normalization is complete.
-- Decompose or harden 47 accepted requests with no downstream tasks.
-- Repair explicit downstream fulfillment links for 17 requests blocked by implicit-only evidence.
-- Triage 53 requests with no linked tasks.
+- Decompose or harden accepted requests with no downstream tasks.
+- Repair explicit downstream fulfillment links for requests blocked by implicit-only evidence.
+- Triage requests with no linked tasks.
 - Reconcile 125 active cc-task files, especially 11 `pr_open`, 7 `merge_queue`, 1 `open`, and any merged-PR tasks stranded by prior watcher cursor movement.
 - Enable and validate `hapax-cc-pr-autoqueue.timer`.
 - Install or restore `hapax-source-activate.timer`, or document the intended non-timer activation route.

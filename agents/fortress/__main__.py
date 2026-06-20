@@ -82,7 +82,7 @@ class FortressDaemon:
         self._last_game_day = -1
 
         # Impingement cascade integration
-        from agents.fortress.capability import FORTRESS_DESCRIPTION, FortressGovernanceCapability
+        from agents.fortress.capability import FortressGovernanceCapability
 
         self._fortress_capability = FortressGovernanceCapability()
 
@@ -93,21 +93,10 @@ class FortressDaemon:
             cursor_path=impingement_cursor_path,
         )
 
-        # Affordance pipeline: index fortress capability and register interrupt tokens
-        from agents._affordance import CapabilityRecord
-        from agents._affordance_pipeline import AffordancePipeline
+        # Affordance pipeline: index fortress capability and register interrupt tokens.
+        from agents.fortress.affordance_pipeline import build_fortress_affordance_pipeline
 
-        self._affordance_pipeline = AffordancePipeline()
-        self._affordance_pipeline.index_capability(
-            CapabilityRecord(
-                name="fortress_governance",
-                description=FORTRESS_DESCRIPTION,
-                daemon="fortress",
-            )
-        )
-        self._affordance_pipeline.register_interrupt(
-            "population_critical", "fortress_governance", "fortress"
-        )
+        self._affordance_pipeline = build_fortress_affordance_pipeline()
 
     async def run(self) -> None:
         """Run governance + maintenance loops concurrently."""

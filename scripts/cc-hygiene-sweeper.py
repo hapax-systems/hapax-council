@@ -368,7 +368,7 @@ def run_sweep(
     events.extend(check_stale_in_progress(notes, repo_root, now=now))
     events.extend(check_ghost_claimed(notes, now=now))
     events.extend(check_duplicate_claim(relay_payloads, now=now))
-    events.extend(check_orphan_pr(notes, repo_root, now=now))
+    events.extend(check_orphan_pr(notes, repo_root, closed_notes=closed_notes, now=now))
     events.extend(check_relay_yaml_staleness(relay_payloads, now=now))
     events.extend(check_wip_limit(notes, now=now))
     events.extend(check_offered_staleness(notes, now=now))
@@ -479,6 +479,7 @@ def main(argv: list[str] | None = None) -> int:
         # Reverting it to `offered` (reversible, idempotent, re-validated on disk)
         # makes the violation stop recurring at source — independent of which
         # producer created it. Scoped to ghost_claimed only; H2/H7 stay unwired.
+        healed_ghost_ids: set[str] = set()
         if not args.no_actions:
             ghost_events = [e for e in state.events if e.check_id == "ghost_claimed"]
             if ghost_events:
@@ -492,11 +493,30 @@ def main(argv: list[str] | None = None) -> int:
                     now=state.sweep_timestamp,
                 ):
                     LOG.info("ghost-claim self-heal %s: %s", result.task_id, result.message)
-        # PR5 surface A — high-severity ntfy alerts (gated + throttled)
+                    if result.success and result.action_id == "ghost_claimed_revert":
+                        healed_ghost_ids.add(result.task_id)
+        # PR5 surface A — high-severity ntfy alerts (gated + throttled).
+        #
+        # A ghost_claimed event self-healed in THIS sweep is already remediated,
+        # so it must not page the operator — and, downstream, must not mint a
+        # fresh P0 incident task. That was the recurrence #4140 left open: the
+        # heal stopped the *re-fire* (storm), but the *first* detection still
+        # dispatched a `violation` ntfy every time, so each transient ghost minted
+        # one duplicate P0 task (one per task_id; 2026-06-15/16 ledger storm).
+        # Suppress ONLY events whose heal succeeded this sweep; an un-healed ghost
+        # (race/skip/write-fail, or --no-actions observational mode) still pages —
+        # that is the genuinely actionable case. append_events() already recorded
+        # the full detection above and the dashboard receives the unfiltered
+        # state, so this routes by severity, it does not avoid detection.
         if not args.no_ntfy:
+            alert_events = [
+                e
+                for e in state.events
+                if not (e.check_id == "ghost_claimed" and e.task_id in healed_ghost_ids)
+            ]
             try:
                 dispatch_alerts(
-                    state.events,
+                    alert_events,
                     now=state.sweep_timestamp,
                     throttle_path=args.throttle_path,
                 )

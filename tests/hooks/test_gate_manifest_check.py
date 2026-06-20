@@ -165,22 +165,16 @@ def test_vibe_capability_marker_drift_fails(tmp_path: Path) -> None:
     assert "--trust" in result.stderr
 
 
-def test_gemini_capability_marker_drift_fails(tmp_path: Path) -> None:
-    launcher = tmp_path / "hapax-gemini"
-    source = (REPO_ROOT / "scripts" / "hapax-gemini").read_text(encoding="utf-8")
-    launcher.write_text(source.replace("--approval-mode", "--review-mode"), encoding="utf-8")
+def test_gemini_runtime_is_not_in_gate_manifest() -> None:
+    manifest = _manifest()
 
-    result = _run("--skip-claude-settings", "--gemini-launcher", launcher)
-
-    assert result.returncode == 1
-    assert "gemini capability marker drift" in result.stderr
-    assert "--approval-mode" in result.stderr
+    assert "gemini" not in manifest["runtimes"]
 
 
 def test_gate_manifest_check_is_wired_in_ci_and_precommit() -> None:
     ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     precommit_text = (REPO_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
-    # The checker runs in CI (codex/antigrav/vibe/gemini/ci wiring) and in
+    # The checker runs in CI (codex/antigrav/vibe/ci wiring) and in
     # pre-commit (the live ~/.claude/settings.json, the most drift-prone wiring).
     assert "scripts/gate-manifest-check.py" in ci_text
     assert "scripts/gate-manifest-check.py" in precommit_text

@@ -60,6 +60,9 @@ VALID_LITELLM_ROUTES = frozenset(
         "coding",
         "reasoning",
         "appendix-fast",
+        # Cap-resilient cloud-diversity seats (2026-06-20).
+        "deepseek",
+        "glm",
     }
 )
 
@@ -123,11 +126,15 @@ class TestPhase1FailureTransparency:
         async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
             nonlocal score_calls
             if output_type is None:  # the investigate (research) call
-                return "researched the claim", []
+                return "researched the claim", [], ""
             score_calls += 1
             if score_calls == 1:
                 raise TimeoutError("simulated member timeout")
-            return Phase1Output(scores={"a": 3}, rationale={"a": "ok"}, research_findings=[]), []
+            return (
+                Phase1Output(scores={"a": 3}, rationale={"a": "ok"}, research_findings=[]),
+                [],
+                "",
+            )
 
         failures: list[MemberFailure] = []
         with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
@@ -163,7 +170,11 @@ class TestPhase1FailureTransparency:
         async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
             if output_type is None:  # research call — exhausts the budget
                 raise UsageLimitExceeded("simulated research budget exhausted")
-            return Phase1Output(scores={"a": 3}, rationale={"a": "ok"}, research_findings=[]), []
+            return (
+                Phase1Output(scores={"a": 3}, rationale={"a": "ok"}, research_findings=[]),
+                [],
+                "",
+            )
 
         failures: list[MemberFailure] = []
         with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
@@ -179,7 +190,11 @@ class TestPhase1FailureTransparency:
         async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
             if output_type is None:
                 raise TimeoutError("simulated research timeout")
-            return Phase1Output(scores={"a": 3}, rationale={"a": "ok"}, research_findings=[]), []
+            return (
+                Phase1Output(scores={"a": 3}, rationale={"a": "ok"}, research_findings=[]),
+                [],
+                "",
+            )
 
         failures: list[MemberFailure] = []
         with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
@@ -195,7 +210,7 @@ class TestPhase1FailureTransparency:
         # member (no fail-open) — the survivors-only invariant is preserved.
         async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
             if output_type is None:
-                return "researched", []
+                return "researched", [], ""
             raise TimeoutError("scoring failed")
 
         failures: list[MemberFailure] = []

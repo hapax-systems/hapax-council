@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""HKP advisory CI — compose a NON-blocking PR comment of warning-severity HKP
+findings on the PR's changed governed markdown.
+
+Per the accepted design (hkp-ci-advisory-pilot-design-2026-06-19): the comment
+carries ONLY findings whose code is on the eligibility allowlist AND whose
+resolved severity is ``warning`` — never an error-severity / hard-fail finding,
+whose text could leak. Output is redaction-scanned and unmistakably advisory.
+This is structurally non-blocking: the script only prints a comment body; the
+workflow posts it on a ``pull_request`` trigger (never ``merge_group``), and it
+is never a required check / merge-queue input.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.hkp_bundle_export import export_shadow_bundle  # noqa: E402
+from shared.hkp_research_viewer import (  # noqa: E402  reuse the single redaction source
+    ABSOLUTE_PATH_RE,
+    AWS_ACCESS_KEY_RE,
+    BEARER_TOKEN_RE,
+    JWT_TOKEN_RE,
+    PRIVATE_KEY_HEADER_RE,
+    SECRET_ASSIGNMENT_RE,
+)
+
+BANNER = (
+    "**HKP advisory — projection, not authority.** Informational only; this does "
+    "NOT block the PR and is NOT a merge gate."
+)
+
+# (code, severity==warning) allowlist — never an error-severity / hard-fail code.
+ELIGIBLE_CODES = frozenset(
+    {
+        "route_metadata_gap",
+        "source_frontmatter_unparseable",
+        "broken_markdown_link",
+        "unknown_concept_type",
+        "source_stale",
+        "source_missing",
+        "source_contradictory",
+        "source_unparseable",
+    }
+)
+_REDACTIONS = (
+    (ABSOLUTE_PATH_RE, "[private-path-redacted]"),
+    (SECRET_ASSIGNMENT_RE, "[secret-redacted]"),
+    (BEARER_TOKEN_RE, "[secret-redacted]"),
+    (AWS_ACCESS_KEY_RE, "[secret-redacted]"),
+    (JWT_TOKEN_RE, "[secret-redacted]"),
+    (PRIVATE_KEY_HEADER_RE, "[secret-redacted]"),
+)
+MAX_FINDINGS = 50
+
+
+def _redact(value: object) -> str:
+    text = str(value)
+    for pattern, replacement in _REDACTIONS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def run_advisory(
+    changed_files: list[Path],
+    *,
+    repo_root: Path = REPO_ROOT,
+    generated_at: str | None = None,
+) -> str:
+    """Return the advisory comment markdown, or "" when there is nothing to say."""
+    md = [p for p in changed_files if p.suffix == ".md" and p.is_file()]
+    if not md:
+        return ""
+    result = export_shadow_bundle(
+        md,
+        bundle_id="ci-advisory",
+        source_root=repo_root,
+        source_root_id="repo:hapax-council",
+        generated_at=generated_at,
+    )
+    findings = [
+        f
+        for f in result.findings
+        if getattr(f, "severity", "") == "warning" and getattr(f, "code", "") in ELIGIBLE_CODES
+    ]
+    if not findings:
+        return ""
+    lines = [
+        BANNER,
+        "",
+        f"{len(findings)} advisory finding(s) on changed governed markdown "
+        "(warning-severity only; HKP is support-non-authoritative):",
+        "",
+    ]
+    for f in findings[:MAX_FINDINGS]:
+        lines.append(
+            f"- `{f.code}` ({_redact(getattr(f, 'subject', ''))}): {_redact(getattr(f, 'message', ''))}"
+        )
+    if len(findings) > MAX_FINDINGS:
+        lines.append(f"- … and {len(findings) - MAX_FINDINGS} more (truncated).")
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Compose a non-blocking HKP advisory PR comment.")
+    parser.add_argument("--changed", nargs="*", default=[], help="changed file paths")
+    parser.add_argument(
+        "--repo-root", type=Path, default=REPO_ROOT, help="source root the changed files live under"
+    )
+    args = parser.parse_args(argv)
+    body = run_advisory([Path(p) for p in args.changed], repo_root=args.repo_root)
+    if body:
+        print(body)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

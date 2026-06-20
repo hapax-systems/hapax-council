@@ -96,9 +96,9 @@ def test_seed_registry_loads_sanctioned_platform_routes() -> None:
         "antigrav",
         "claude",
         "codex",
-        "gemini",
         "vibe",
     }
+    assert all(not route_id.startswith("gemini.") for route_id in registry.route_map())
 
 
 def test_registry_route_ids_match_dispatcher_platform_paths() -> None:
@@ -109,7 +109,36 @@ def test_registry_route_ids_match_dispatcher_platform_paths() -> None:
         for route in dispatcher.PLATFORM_PATHS.values()
     }
 
-    assert set(registry.route_map()) == dispatcher_routes
+    # Review-seat routes (mode=review, e.g. glmcp.review.direct) are non-launchable
+    # capability rows — admitted/observed but never spawned through a PLATFORM_PATHS
+    # launcher — so they are registry-only, not dispatcher launchers.
+    launchable_routes = {
+        route_id for route_id, route in registry.route_map().items() if route.mode != "review"
+    }
+    assert launchable_routes == dispatcher_routes
+
+
+def test_glmcp_review_seat_registered_as_fail_closed_read_only_route() -> None:
+    # The GLM Coding-Plan review seat (live in cc-pr-review-dispatch) is now visible
+    # in DESCRIBE as a non-launchable, read-only ReviewSeatAdapter route. The coding
+    # workhorse is a separate, bakeoff-gated route — NOT this one.
+    from shared.dispatcher_policy import ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED
+    from shared.quota_spend_ledger import RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
+
+    assert "glmcp.review.direct" in REQUIRED_ROUTE_IDS
+    route = load_platform_capability_registry().require("glmcp.review.direct")
+    assert (route.platform.value, route.mode.value, route.profile.value) == (
+        "glmcp",
+        "review",
+        "direct",
+    )
+    assert route.authority_ceiling == AuthorityCeiling.READ_ONLY
+    assert route.worker_tier.value == "read_only_sidecar"
+    assert route.route_state == RouteState.BLOCKED  # receipt-bounded admission, fail-closed
+    assert not route.mutability.any_mutation()
+    # the receipt-bounded subscription-quota machinery already keys this route id
+    assert "glmcp.review.direct" in ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED
+    assert "glmcp.review.direct" in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
 
 
 def test_seed_registry_uses_explicit_surface_blockers_and_fails_closed() -> None:
@@ -189,36 +218,40 @@ def test_unsupported_routes_fail_closed() -> None:
 
 def test_read_only_routes_cannot_declare_mutation_access() -> None:
     registry = load_platform_capability_registry()
-    gemini = registry.require("gemini/headless/full")
-
-    assert gemini.authority_ceiling is AuthorityCeiling.READ_ONLY
-    assert gemini.approval_posture.value == "plan_mode_read_only"
-    assert gemini.worker_tier.value == "read_only_sidecar"
-    assert gemini.mutability.source is False
-    assert gemini.tool_access.filesystem.value == "read_only"
-
-    payload = gemini.model_dump(mode="json")
+    route = registry.require("codex.headless.full")
+    payload = route.model_dump(mode="json")
+    payload["route_id"] = "local_tool.local.deterministic"
+    payload["platform"] = "local_tool"
+    payload["mode"] = "local"
+    payload["profile"] = "deterministic"
+    payload["authority_ceiling"] = AuthorityCeiling.READ_ONLY.value
+    payload["approval_posture"] = "plan_mode_read_only"
+    payload["worker_tier"] = "read_only_sidecar"
+    payload["mutability"] = {
+        "vault_docs": False,
+        "source": False,
+        "runtime": False,
+        "public": False,
+        "provider_spend": False,
+    }
+    payload["tool_access"] = {
+        "filesystem": "read_only",
+        "shell": "read_only",
+        "browser": False,
+        "mcp": [],
+    }
+    PlatformCapabilityRoute.model_validate(payload)
     payload["mutability"]["source"] = True
     with pytest.raises(ValidationError, match="read-only routes cannot declare mutation"):
         PlatformCapabilityRoute.model_validate(payload)
 
 
-def test_gemini_plan_and_worker_profiles_are_split() -> None:
+def test_gemini_routes_are_not_seeded_as_dispatchable_platform_paths() -> None:
     registry = load_platform_capability_registry()
-    plan = registry.require("gemini.headless.full")
-    worker = registry.require("gemini.headless.worker")
 
-    assert plan.approval_posture.value == "plan_mode_read_only"
-    assert plan.worker_tier.value == "read_only_sidecar"
-    assert plan.mutability.source is False
-    assert plan.tool_access.filesystem.value == "read_only"
-    assert "read_only_support_route" in plan.freshness.evidence.capability.blocked_reasons
-
-    assert worker.approval_posture.value == "auto_edit_policy_firewalled"
-    assert worker.worker_tier.value == "full_worker"
-    assert worker.mutability.source is True
-    assert worker.tool_access.filesystem.value == "read_write"
-    assert "quality_equivalence_record_absent" in worker.blocked_reasons
+    assert all(not route_id.startswith("gemini.") for route_id in registry.route_map())
+    with pytest.raises(KeyError):
+        registry.require("gemini.headless.full")
 
 
 def test_cloud_burst_api_route_is_blocked_dry_run_paid_surface() -> None:
@@ -510,3 +543,69 @@ def test_api_receipt_does_not_open_cloud_burst_release_gate() -> None:
         "cloud_runner_resource_receipt_absent"
         in route["freshness"]["evidence"]["resource"]["blocked_reasons"]
     )
+
+
+# --------------------------------------------------------------------------------------
+# SupplyDescriptor — the execution-axis supply the dispatcher scores satisfiability against
+# --------------------------------------------------------------------------------------
+def test_supply_vector_carries_supply_descriptor_with_reachable_variants() -> None:
+    """build_supply_vector exposes the route's reachable execution axes: base + every non-blocked
+    variant, with maps pointing each reachable value at the providing variant (None = base)."""
+    registry = load_platform_capability_registry()
+    descriptor = build_supply_vector(registry.require("claude.headless.opus")).supply_descriptor
+    assert descriptor is not None
+    assert descriptor.base_context_mode == "standard"
+    assert "extended_1m" in descriptor.reachable_context_modes
+    assert descriptor.context_mode_to_variant["extended_1m"] == "opus@extended_1m"
+    assert descriptor.context_mode_to_variant["standard"] is None  # base provides standard
+
+
+def test_supply_descriptor_excludes_blocked_variants_fail_closed() -> None:
+    """A descriptor variant carrying blocked_reasons cannot make its route reachable for the
+    blocked axis nor be resolved as a leaf — fail-closed."""
+    registry = load_platform_capability_registry()
+    payload = registry.require("claude.headless.opus").model_dump(mode="json")
+    for variant in payload["descriptor_variants"]:
+        if variant["variant_id"] == "opus@extended_1m":
+            variant["blocked_reasons"] = ["entitlement_absent"]
+    route = PlatformCapabilityRoute.model_validate(payload)
+    descriptor = build_supply_vector(route).supply_descriptor
+    assert descriptor is not None
+    assert "extended_1m" not in descriptor.reachable_context_modes
+    assert "extended_1m" not in descriptor.context_mode_to_variant
+
+
+# --------------------------------------------------------------------------------------
+# haiku + local_tool routes (capability-haiku-localtool-routes slice) — closing the
+# enum-without-route holes: claude-haiku-4-5 routable, Platform.LOCAL_TOOL/Mode.LOCAL materialized.
+# --------------------------------------------------------------------------------------
+def test_haiku_and_local_tool_routes_are_required_and_routable() -> None:
+    from shared.platform_capability_registry import (
+        Mode,
+        ModelId,
+        Platform,
+        materialize_descriptor_leaves,
+    )
+
+    registry = load_platform_capability_registry()
+    assert {"claude.headless.haiku", "local_tool.local.worker"} <= REQUIRED_ROUTE_IDS
+    assert {"claude.headless.haiku", "local_tool.local.worker"} <= set(registry.route_map())
+
+    haiku = registry.require("claude.headless.haiku")
+    assert (
+        haiku.execution_descriptor.model_id is ModelId.CLAUDE_HAIKU_4_5
+    )  # claude-haiku now routable
+    assert haiku.route_state is RouteState.BLOCKED  # materialized but honestly not yet live
+
+    local = registry.require("local_tool.local.worker")
+    assert (
+        local.platform is Platform.LOCAL_TOOL
+    )  # the verified-unused enum members now have a route
+    assert local.mode is Mode.LOCAL
+    assert local.execution_descriptor.model_id is ModelId.COMMAND_R_08_2024
+    assert local.execution_descriptor.quantization.value == "exl3_4_0bpw"
+
+    # the podium 5.0bpw tier is a materialized descriptor leaf
+    leaves = materialize_descriptor_leaves(registry)
+    variant_leaf = leaves["local_tool.local.worker#worker@quantization_exl3_5_0bpw"]
+    assert variant_leaf.quantization.value == "exl3_5_0bpw"

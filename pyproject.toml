@@ -164,6 +164,7 @@ ci = [
     "moviepy>=2.0.0",
     "pillow>=11.0.0",
     "playwright>=1.49.0",
+    "rdflib>=7.6.0",
     "watchdog>=6.0.0",
     "pytest-xdist>=3.6.0",
     # PR2 of CI/CD speedup cascade (docs/research/2026-04-26-cicd-speedup.md
@@ -210,6 +211,7 @@ dev = [
     "pytest-benchmark>=5.2.3",
     "schemathesis>=4.7",
     "prometheus-client>=0.24.1",
+    "rdflib>=7.6.0",
 ]
 
 [tool.pytest.ini_options]

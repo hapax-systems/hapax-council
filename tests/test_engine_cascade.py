@@ -15,6 +15,30 @@ from shared.impingement import ImpingementType
 # ── Converter Tests ──────────────────────────────────────────────────────────
 
 
+def test_convert_uses_nonblocking_embed():
+    """The reactive embed MUST be non-blocking (block_gpu=False): convert() runs
+    on the logos-api asyncio event loop, and a blocking GPU-semaphore acquire
+    there wedges the whole :8051 API when the GPU is saturated (the hang)."""
+    from unittest.mock import patch
+
+    captured: dict[str, object] = {}
+
+    def fake_embed_safe(text, prefix="search_query", block_gpu=True):
+        captured["block_gpu"] = block_gpu
+        return None
+
+    event = ChangeEvent(
+        path=Path("/data/profiles/operator-profile.md"),
+        event_type="modified",
+        doc_type="profile",
+        frontmatter=None,
+        timestamp=datetime.now(),
+    )
+    with patch("logos._config.embed_safe", fake_embed_safe):
+        convert(event)
+    assert captured.get("block_gpu") is False
+
+
 def test_convert_basic_event():
     event = ChangeEvent(
         path=Path("/data/profiles/operator-profile.md"),
