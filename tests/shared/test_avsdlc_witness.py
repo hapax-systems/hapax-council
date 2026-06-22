@@ -170,3 +170,72 @@ class TestBuildAndEmit:
             loaded, key=KEY, now=NOW + 60, content_hash=gamedir_content_hash(gamedir)
         )
         assert receipt.active_source_head == "9757f7bde"
+
+
+class TestIntentFieldsFromFrame:
+    """PR 4b: the witness binds (intent_hash, intent_pass) from a declared record +
+    a captured frame. The hash is derived from the DECLARED record (frame-independent,
+    so the gate can re-derive it from frontmatter); the verdict depends on the frame."""
+
+    def _record(self) -> str:
+        return json.dumps(
+            {
+                "predicates": [
+                    {
+                        "pov_label": "cam0",
+                        "region": "entity_core",
+                        "metric": "luma",
+                        "op": "<=",
+                        "target": 10.0,
+                        "direction": "decrease",
+                        "critical": True,
+                    }
+                ],
+                "aggregation_floor": 0.75,
+            }
+        )
+
+    def test_satisfying_frame_confirms(self) -> None:
+        import numpy as np
+
+        from shared.avsdlc_visual_intent import intent_hash_from_record, parse_intent_record
+        from shared.avsdlc_witness import intent_fields_from_record_and_frame
+
+        dark = np.zeros((100, 100, 3), dtype=np.uint8)  # entity_core luma ~0 <= 10
+        declared = self._record()
+        h, passed = intent_fields_from_record_and_frame(declared, dark, "cam0")
+        assert h == intent_hash_from_record(parse_intent_record(declared))
+        assert passed is True
+
+    def test_contradicting_frame_rejects(self) -> None:
+        import numpy as np
+
+        from shared.avsdlc_witness import intent_fields_from_record_and_frame
+
+        bright = np.full((100, 100, 3), 200, dtype=np.uint8)  # entity_core luma 200 > 10
+        h, passed = intent_fields_from_record_and_frame(self._record(), bright, "cam0")
+        assert h  # hash derived from the declared record, independent of the frame
+        assert passed is False
+
+    def test_unparseable_record_binds_no_intent(self) -> None:
+        import numpy as np
+
+        from shared.avsdlc_witness import intent_fields_from_record_and_frame
+
+        frame = np.zeros((10, 10, 3), dtype=np.uint8)
+        h, passed = intent_fields_from_record_and_frame("{not json", frame, "cam0")
+        assert h == "" and passed is False
+
+    def test_malformed_frame_does_not_crash(self) -> None:
+        import numpy as np
+
+        from shared.avsdlc_witness import intent_fields_from_record_and_frame
+
+        # None / wrong-shape frames must degrade to (declared_hash, False), never
+        # raise — the witness producer must never crash the observe path.
+        for bad in (None, np.zeros((10,), dtype=np.uint8)):
+            h, passed = intent_fields_from_record_and_frame(  # type: ignore[arg-type]
+                self._record(), bad, "cam0"
+            )
+            assert passed is False
+            assert h  # the declared record still hashes (frame-independent)

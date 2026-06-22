@@ -4446,3 +4446,15 @@ from shared.avsdlc_realized_vector import (  # noqa: E402
 )
 
 _avi_realized_vector_from_frame
+
+# avsdlc_witness (CASE-AVSDLC-VISUAL-INTENT-20260622, PR 4b): the witness producer
+# helper that binds (intent_hash, intent_pass) from a declared record + a captured
+# frame ships AHEAD of the live screwm-cns-witness --intent-record wiring (a tight
+# follow-up slice). The release-gate conjunct that CONSUMES the bound verdict lands
+# in this same PR 4b; this producer helper is exercised only by tests until the
+# witness CLI flag is wired.
+from shared.avsdlc_witness import (  # noqa: E402
+    intent_fields_from_record_and_frame as _avi_intent_fields_from_record_and_frame,
+)
+
+_avi_intent_fields_from_record_and_frame
