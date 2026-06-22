@@ -231,3 +231,68 @@ class TestIntentConjunct:
         result = evaluate_avsdlc_release_gate(fm, now=NOW + 60, key=KEY, require_intent=True)
         assert not result.passed
         assert "avsdlc_intent_receipt_unbound" in result.blockers
+
+
+# ── flag source resolution (cutover gap #2: cross-caller env consistency) ───
+
+
+class TestFlagSourceResolution:
+    """The intent flag must resolve from the canonical hapax-secrets.env so the
+    autoqueue systemd unit AND the in-session keystroke hook (pr-release-gate.sh,
+    which never sources secrets.env) agree on enforcement. os.environ wins when
+    set; the secrets file is the shared default."""
+
+    def test_flag_in_secrets_enforces_when_env_unset(self, tmp_path: Path, monkeypatch) -> None:
+        # A caller with NO env (the keystroke hook) still enforces because the
+        # gate reads the flag from the canonical secrets file.
+        secrets = tmp_path / "hapax-secrets.env"
+        secrets.write_text(
+            "# operator secrets\nLITELLM_API_KEY=sk-x\nHAPAX_AVSDLC_REQUIRE_INTENT_PREDICATE=1\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HAPAX_SECRETS_ENV", str(secrets))
+        monkeypatch.delenv("HAPAX_AVSDLC_REQUIRE_INTENT_PREDICATE", raising=False)
+        path = _receipt(path=tmp_path / "r.json")
+        fm = _fm(path)  # visual axis, no intent record
+        result = evaluate_avsdlc_release_gate(fm, now=NOW + 60, key=KEY)  # NO require_intent kwarg
+        assert not result.passed
+        assert "avsdlc_intent_record_missing" in result.blockers
+
+    def test_env_flag_wins_over_secrets(self, tmp_path: Path, monkeypatch) -> None:
+        # When the process env explicitly carries the flag, it wins over the
+        # secrets file — so an ad-hoc override (tests, a one-off OFF) is respected.
+        secrets = tmp_path / "hapax-secrets.env"
+        secrets.write_text("HAPAX_AVSDLC_REQUIRE_INTENT_PREDICATE=1\n", encoding="utf-8")
+        monkeypatch.setenv("HAPAX_SECRETS_ENV", str(secrets))
+        monkeypatch.setenv("HAPAX_AVSDLC_REQUIRE_INTENT_PREDICATE", "0")  # env wins → inert
+        path = _receipt(path=tmp_path / "r.json")
+        fm = _fm(path)
+        result = evaluate_avsdlc_release_gate(fm, now=NOW + 60, key=KEY)
+        assert not any(b.startswith("avsdlc_intent_") for b in result.blockers)
+
+    def test_no_flag_anywhere_is_inert(self, tmp_path: Path, monkeypatch) -> None:
+        secrets = tmp_path / "hapax-secrets.env"
+        secrets.write_text("LITELLM_API_KEY=sk-x\n", encoding="utf-8")  # no intent flag
+        monkeypatch.setenv("HAPAX_SECRETS_ENV", str(secrets))
+        monkeypatch.delenv("HAPAX_AVSDLC_REQUIRE_INTENT_PREDICATE", raising=False)
+        path = _receipt(intent_hash=_intent_hash(), intent_pass=True, path=tmp_path / "r.json")
+        fm = _fm(path, intent_record=_intent_json())
+        result = evaluate_avsdlc_release_gate(fm, now=NOW + 60, key=KEY)
+        assert result.passed
+        assert not any(b.startswith("avsdlc_intent_") for b in result.blockers)
+
+    def test_helper_reads_quoted_value_and_skips_comments(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from shared.release_gate import _env_or_secrets_flag
+
+        secrets = tmp_path / "hapax-secrets.env"
+        secrets.write_text(
+            '# comment\nHAPAX_AVSDLC_REQUIRE_INTENT_PREDICATE="yes"\nBARE=plain\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HAPAX_SECRETS_ENV", str(secrets))
+        monkeypatch.delenv("HAPAX_AVSDLC_REQUIRE_INTENT_PREDICATE", raising=False)
+        assert _env_or_secrets_flag("HAPAX_AVSDLC_REQUIRE_INTENT_PREDICATE") == "yes"
+        assert _env_or_secrets_flag("BARE") == "plain"
+        assert _env_or_secrets_flag("ABSENT_FLAG") == ""
