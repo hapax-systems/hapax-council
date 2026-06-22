@@ -68,9 +68,12 @@ esac
 
 # Detect the current session. Explicit role env vars win (used by
 # Codex/Claude launchers + tests); otherwise infer from worktree basename.
-SELF="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
-if [ -z "$SELF" ] && declare -F hapax_agent_role >/dev/null 2>&1; then
-  SELF="$(hapax_agent_role 2>/dev/null || true)"
+# Resolve via the single resolver (same as cc-task-gate + auth-packet-validator);
+# FM-1: no env-cascade phantom-role inference.
+if declare -F hapax_effective_role >/dev/null 2>&1; then
+  SELF="$(hapax_effective_role 2>/dev/null || true)"
+else
+  SELF="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
 fi
 if [ -z "$SELF" ]; then
   THIS_WT_BASENAME="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || echo)")"
