@@ -452,14 +452,28 @@ def test_audio_topology_drift_alert_gets_technical_intake():
 def test_sdlc_dispatch_refusal_alert_gets_technical_intake():
     classification = classify_notification(
         "SDLC: dispatch refusal circuit breaker",
-        "Task p0-incident-demo refused 3x on lane delta. Reason: dispatch_exit_16",
+        "Task segprep-axis-b-scorer-20260618 refused 3x on lane delta. Reason: dispatch_exit_16",
         priority="high",
         tags=["sdlc", "no-spin"],
     )
 
     assert classification.technical is True
     assert classification.kind == "sdlc_dispatch_refusal"
-    assert classification.fingerprint == "sdlc_dispatch_refusal:p0-incident-demo"
+    # Dispatch refusals now coalesce by 6-hour time-window, not per-task.
+    assert classification.fingerprint.startswith("sdlc_dispatch_refusal:batch-")
+
+
+def test_sdlc_dispatch_refusal_about_p0_incident_is_nontechnical():
+    """A dispatch refusal about a p0-incident task must not re-mint."""
+    classification = classify_notification(
+        "SDLC: dispatch refusal circuit breaker",
+        "Task p0-incident-demo refused 3x on lane delta. Reason: dispatch_exit_16",
+        priority="high",
+        tags=["sdlc", "no-spin"],
+    )
+
+    assert classification.technical is False
+    assert classification.reason == "dispatch_refusal_incident_task_no_remint"
 
 
 def test_sdlc_task_stuck_on_normal_task_gets_technical_intake():
@@ -764,13 +778,14 @@ def test_cli_drain_desktop_dismisses_consumed_intake_notifications(tmp_path, mon
     )
 
     assert rc == 0
+    # Notification 23 (dispatch refusal about p0-incident-demo) is now correctly
+    # classified as nontechnical by the anti-recursion guard, so drain skips it.
     assert [call[0] for call in calls[1:]] == [
         ["makoctl", "dismiss", "--no-history", "-n", "21"],
         ["makoctl", "dismiss", "--no-history", "-n", "22"],
-        ["makoctl", "dismiss", "--no-history", "-n", "23"],
         ["makoctl", "dismiss", "--no-history", "-n", "26"],
     ]
-    assert "dismissed 4 consumed P0 intake" in capsys.readouterr().out
+    assert "dismissed 3 consumed P0 intake" in capsys.readouterr().out
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert "health_stack_failed:stack-failed" in state["incidents"]
     assert list((task_root / "active").glob("p0-incident-health-stack-failed-*.md"))

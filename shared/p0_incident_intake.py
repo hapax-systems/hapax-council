@@ -124,6 +124,16 @@ def classify_notification(
             return IncidentClassification(
                 "nontechnical", "", False, "stalled_incident_task_no_remint"
             )
+    if kind == "sdlc_dispatch_refusal":
+        # Self-amplification break: a dispatch refusal for a P0 incident task must NOT
+        # mint another P0 — the refused incident is itself an auto-minted task, and
+        # generating a refusal-P0 about it creates a secondary flood. The refusal
+        # ledger's per-triple escalation already covers the underlying issue.
+        _refused_id = re.search(r"\b(?:Task\s+)?([a-z0-9][a-z0-9_.-]{8,})\b", message_s)
+        if _refused_id and _refused_id.group(1).startswith("p0-incident-"):
+            return IncidentClassification(
+                "nontechnical", "", False, "dispatch_refusal_incident_task_no_remint"
+            )
     if technical is True and not kind:
         kind = "technical_alert"
 
@@ -343,7 +353,18 @@ def _fingerprint_for(kind: str, title: str, message: str) -> str:
     if kind == "sdlc_invariant_violation":
         inv = re.search(r"\bINV-\d+\b", message)
         return f"{kind}:{inv.group(0) if inv else 'unknown'}"
-    if kind in {"sdlc_dispatch_refusal", "sdlc_dispatch_starvation", "sdlc_task_stalled"}:
+    if kind == "sdlc_dispatch_refusal":
+        # Coalesce all dispatch refusals into a single incident per 6-hour window.
+        # Per-task fingerprinting created O(N) incidents for N refused tasks; this
+        # batches them into one per quarter-day. Individual task details are preserved
+        # in the task body via _update_existing_task().
+        from datetime import UTC
+        from datetime import datetime as _dt
+
+        _now = _dt.now(UTC)
+        _bucket = _now.strftime("%Y%m%d") + f"-q{_now.hour // 6}"
+        return f"{kind}:batch-{_bucket}"
+    if kind in {"sdlc_dispatch_starvation", "sdlc_task_stalled"}:
         task = re.search(r"\b(?:Task\s+)?([a-z0-9][a-z0-9_.-]{8,})\b", message)
         return f"{kind}:{task.group(1) if task else _slugify(message, 80)}"
     if kind == "infra_registry_drift":
