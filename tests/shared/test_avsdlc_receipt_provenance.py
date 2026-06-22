@@ -159,3 +159,67 @@ class TestBuildReceiptBindsProvenance:
         assert r.via == "obs-websocket"
         assert r.perceptual_digest == perceptual_digest_from_manifest(_MANIFEST)
         assert verify_av_witness_receipt(r, key=KEY, now=NOW + 60)
+
+
+class TestReceiptBindsIntentHash:
+    # PR 3/N adds intent_hash as a SIGNED field — TAMPER-EVIDENCE only (the HMAC
+    # covers it). Intent<->bytes CORRESPONDENCE (the authored record's hash ==
+    # receipt.intent_hash, evaluated against the realized vector) is PR 4/N gate
+    # logic — NOT established here.
+    def _intent_receipt(self, intent_hash: str = "i" * 64):
+        return mint_av_witness_receipt(
+            content_hash=HASH,
+            active_source_head=HEAD,
+            status="pass",
+            obs_moving=True,
+            ttl_s=1800.0,
+            key=KEY,
+            now=NOW,
+            intent_hash=intent_hash,
+        )
+
+    def test_intent_hash_in_signing_payload(self) -> None:
+        assert self._intent_receipt()._signing_payload()["intent_hash"] == "i" * 64
+
+    def test_round_trip_with_intent_hash(self) -> None:
+        loaded = parse_av_receipt(serialize_av_receipt(self._intent_receipt()))
+        assert loaded is not None
+        assert loaded.intent_hash == "i" * 64
+        assert verify_av_witness_receipt(loaded, key=KEY, now=NOW + 60)
+
+    def test_tamper_intent_hash_fails_verify(self) -> None:
+        r = self._intent_receipt("a" * 64)
+        assert not verify_av_witness_receipt(
+            replace(r, intent_hash="b" * 64), key=KEY, now=NOW + 60
+        )
+
+    def test_missing_intent_field_defaults_empty(self) -> None:
+        r = mint_av_witness_receipt(
+            content_hash=HASH,
+            active_source_head=HEAD,
+            status="pass",
+            obs_moving=True,
+            ttl_s=1800.0,
+            key=KEY,
+            now=NOW,
+        )
+        data = dict(r._signing_payload())
+        data["signature"] = r.signature
+        data.pop("intent_hash", None)
+        loaded = parse_av_receipt(data)
+        assert loaded is not None and loaded.intent_hash == ""
+
+    def test_empty_intent_receipt_verifies_unchanged(self) -> None:
+        # A non-visual AV release (no intent) mints with intent_hash="" and
+        # verifies exactly as a pre-intent receipt — backward-compatible.
+        r = mint_av_witness_receipt(
+            content_hash=HASH,
+            active_source_head=HEAD,
+            status="pass",
+            obs_moving=True,
+            ttl_s=1800.0,
+            key=KEY,
+            now=NOW,
+        )
+        assert r.intent_hash == ""
+        assert verify_av_witness_receipt(r, key=KEY, now=NOW + 60)

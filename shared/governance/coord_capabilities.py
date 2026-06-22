@@ -324,6 +324,7 @@ class AVWitnessReceipt:
     signature: str
     via: str = ""  # the capture instrument that produced the verdict (e.g. obs-websocket)
     perceptual_digest: str = ""  # sha256 over the witness per-region perceptual stats
+    intent_hash: str = ""  # sha256 of the pre-authored VisualIntentRecord (tamper-evident)
 
     def _signing_payload(self) -> dict[str, object]:
         return {
@@ -337,6 +338,7 @@ class AVWitnessReceipt:
             "expires_at": self.expires_at,
             "via": self.via,
             "perceptual_digest": self.perceptual_digest,
+            "intent_hash": self.intent_hash,
         }
 
     def is_expired(self, now: float) -> bool:
@@ -363,11 +365,13 @@ def mint_av_witness_receipt(
     now: float,
     via: str = "",
     perceptual_digest: str = "",
+    intent_hash: str = "",
 ) -> AVWitnessReceipt:
     """Mint a signed runtime-witness receipt. The witness daemon is the only
     legitimate minter — the release gate must never mint its own. ``via`` (the
-    capture instrument) and ``perceptual_digest`` (over the per-region stats) are
-    folded into the signature so neither can be altered after minting."""
+    capture instrument), ``perceptual_digest`` (over the per-region stats), and
+    ``intent_hash`` (the pre-authored intent) are folded into the signature so
+    none can be altered after minting."""
     fields = {
         "receipt_id": secrets.token_hex(16),
         "content_hash": content_hash,
@@ -378,6 +382,7 @@ def mint_av_witness_receipt(
         "expires_at": now + ttl_s,
         "via": via,
         "perceptual_digest": perceptual_digest,
+        "intent_hash": intent_hash,
     }
     payload = {"kind": "av_witness", **fields}
     return AVWitnessReceipt(signature=_sign(payload, key), **fields)
@@ -443,6 +448,7 @@ def parse_av_receipt(data: str | Mapping[str, object]) -> AVWitnessReceipt | Non
             signature=str(obj["signature"]),
             via=str(obj.get("via", "")),
             perceptual_digest=str(obj.get("perceptual_digest", "")),
+            intent_hash=str(obj.get("intent_hash", "")),
         )
     except Exception:  # noqa: BLE001 — malformed/missing input must never raise.
         return None
