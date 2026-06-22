@@ -33,8 +33,8 @@ from .models import (
     EvidenceMatrix,
     EvidenceMatrixAxis,
     MemberFailure,
-    Phase1Output,
     PhaseOneResult,
+    build_phase1_model,
 )
 from .prompts import (
     RESEARCH_SYSTEM_PROMPT,
@@ -221,7 +221,7 @@ async def run_phase1(
             phase1_output, score_tools, served_model = await _call_member(
                 score_member,
                 score_prompt,
-                output_type=NativeOutput(Phase1Output),
+                output_type=NativeOutput(build_phase1_model(rubric)),
                 usage_limits=_SCORE_LIMITS,
             )
         except Exception as e:
@@ -236,19 +236,32 @@ async def run_phase1(
                 failures_out.append(MemberFailure(model_alias=alias, reason=type(e).__name__))
             return None
 
-        if not phase1_output.scores:
-            # Structure validated but produced NO usable scores. This is a LOUD
-            # member failure, never a phantom abstainer that survives into the
-            # panel with empty scores — which would shrink the denominator and
-            # let a lone real survivor masquerade as consensus.
+        # The output type produces a scores sub-model (per-rubric required axis fields);
+        # legacy/mocked callers may pass a plain dict — accept both at the boundary.
+        _raw_scores = phase1_output.scores
+        score_dict = (
+            _raw_scores.model_dump() if hasattr(_raw_scores, "model_dump") else dict(_raw_scores)
+        )
+        # Enforce the 1-5 rubric range in Python: the output type uses PLAIN ints
+        # (Anthropic's json_schema rejects integer min/max, which silently forces an
+        # off-family substitution), so the range cannot live in the schema. An empty or
+        # out-of-range result is a LOUD member failure — never a phantom abstainer that
+        # shrinks the denominator and lets a lone real survivor masquerade as consensus.
+        lo, hi = rubric.axes[0].min_score, rubric.axes[0].max_score
+        if not score_dict:
             _log.error("Phase 1 failure for %s: structured output carried no scores", alias)
             if failures_out is not None:
                 failures_out.append(MemberFailure(model_alias=alias, reason="EmptyScores"))
             return None
+        if any(not (lo <= int(v) <= hi) for v in score_dict.values()):
+            _log.error("Phase 1 failure for %s: score out of rubric range %s", alias, score_dict)
+            if failures_out is not None:
+                failures_out.append(MemberFailure(model_alias=alias, reason="ScoreOutOfRange"))
+            return None
 
         return PhaseOneResult(
             model_alias=alias,
-            scores=dict(phase1_output.scores),
+            scores={k: int(v) for k, v in score_dict.items()},
             rationale=phase1_output.rationale,
             research_findings=phase1_output.research_findings,
             tool_calls_log=tool_calls + score_tools,

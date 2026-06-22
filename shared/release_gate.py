@@ -8,12 +8,22 @@ ISAP: SLICE-006-RELEASE-OPS (CASE-SDLC-REFORM-001)
 
 from __future__ import annotations
 
+import json
+import os
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+from shared.avsdlc_visual_intent import intent_hash_from_record, parse_intent_record
+from shared.governance.coord_capabilities import (
+    AVWitnessReceipt,
+    read_av_receipt_file,
+    verify_av_witness_receipt,
+)
 
 RiskTier = Literal["T0", "T1", "T2", "T3"]
 ReleaseMethod = Literal["merge_pr", "service_restart", "hot_reload", "rebuild", "uv_publish"]
@@ -124,6 +134,29 @@ _RUNTIME_MEDIA_MARKERS = (
     "wireplumber",
     "tts",
 )
+# Unambiguous AV *source* path markers, matched on path SEGMENTS / file
+# EXTENSIONS (not arbitrary substrings) so a mutation touching the live surface
+# cannot escape the gate via ``avsdlc_axes: none`` — while docs/tooling whose
+# NAME merely contains an AV word are not over-blocked.
+_AV_SOURCE_SEGMENTS = {
+    "studio_compositor",
+    "compositor",
+    "darkplaces",
+    "screwm",
+    "pipewire",
+    "wireplumber",
+    "quake",
+    "reverie",
+    "shaders",
+}
+_AV_SOURCE_EXTENSIONS = {".glsl", ".qc", ".frag", ".vert", ".wgsl", ".bsp", ".lit", ".vmt"}
+_AV_SOURCE_SUBSTRINGS = ("/dev/video", "voice-fx")
+DEFAULT_COORD_KEY_FILE = Path.home() / ".cache" / "hapax" / "coord" / "grant-key"
+_AVSDLC_CONTENT_HASH_FIELDS = (
+    "avsdlc_content_hash",
+    "deployed_content_hash",
+    "runtime_media_content_hash",
+)
 
 
 class ReleaseCandidateRecord(BaseModel):
@@ -207,6 +240,9 @@ class AvsdlcReleaseGateResult(BaseModel):
     missing_fields: list[str] = Field(default_factory=list)
     stale_fields: list[str] = Field(default_factory=list)
     blockers: list[str] = Field(default_factory=list)
+    # True when the runtime-media witness passed ONLY via the staged legacy
+    # (unsigned, unverified) acceptance path — verification is not being enforced.
+    witness_unverified_legacy: bool = False
     timestamp_utc: float = Field(default_factory=time.time)
 
 
@@ -388,10 +424,170 @@ def _runtime_media_required(frontmatter: Mapping[str, Any], axes: list[str]) -> 
     return any(marker in text for marker in _RUNTIME_MEDIA_MARKERS)
 
 
+def _is_test_path(parts: tuple[str, ...]) -> bool:
+    return any(
+        seg == "tests" or seg.startswith("test_") or seg.endswith("_test.py") for seg in parts
+    )
+
+
+def _av_source_path_mutated(frontmatter: Mapping[str, Any]) -> bool:
+    """True iff a real AV *source* path is in the mutation scope. Matches on path
+    SEGMENTS / file EXTENSIONS (never arbitrary substrings) and excludes test
+    files and docs, so the ``avsdlc_axes: none`` opt-out is denied only for
+    changes that actually touch the live surface."""
+    paths: list[str] = []
+    for field_name in ("mutation_surface", "mutation_surfaces", "mutation_scope_refs", "paths"):
+        paths.extend(_values(frontmatter.get(field_name)))
+    for raw in paths:
+        token = raw.strip().lower()
+        if not token:
+            continue
+        parts = PurePosixPath(token).parts
+        if _is_test_path(parts) or "docs" in parts or token.endswith(".md"):
+            continue
+        if any(seg in _AV_SOURCE_SEGMENTS for seg in parts):
+            return True
+        if PurePosixPath(token).suffix in _AV_SOURCE_EXTENSIONS:
+            return True
+        if any(sub in token for sub in _AV_SOURCE_SUBSTRINGS):
+            return True
+    return False
+
+
+def _load_coord_key() -> bytes:
+    """Read the operator coord signing key. NEVER create it — an absent key must
+    not let a forger mint. Returns b"" when unavailable, so receipt verification
+    fails and the witness degrades to the legacy presence check."""
+    path = os.environ.get("HAPAX_COORD_KEY_FILE") or str(DEFAULT_COORD_KEY_FILE)
+    try:
+        return Path(path).read_bytes()
+    except OSError:
+        return b""
+
+
+def _coerce_av_receipt(value: Any) -> AVWitnessReceipt | None:
+    """A receipt must be referenced as a FILE the witness daemon owns — provenance
+    is the path; there is deliberately no inline-JSON channel."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    candidate = Path(text)
+    if candidate.is_file():
+        return read_av_receipt_file(candidate)
+    return None
+
+
+def _expected_content_hash(frontmatter: Mapping[str, Any]) -> str | None:
+    for name in _AVSDLC_CONTENT_HASH_FIELDS:
+        value = frontmatter.get(name)
+        if _is_nonempty(value):
+            return str(value).strip()
+    return None
+
+
+def _runtime_media_witness_status(
+    frontmatter: Mapping[str, Any], *, key: bytes, now: float, require_signed: bool
+) -> str:
+    """Classify the runtime-media witness as ``verified`` | ``legacy`` | ``missing``.
+
+    A signed receipt is verified (forged / stale / RED / OBS-frozen / empty-key /
+    wrong-bytes → ``missing``); it binds the deployed bytes when the task declares
+    an expected content hash. A legacy non-receipt string is ``legacy`` only when
+    ``require_signed`` is off (staged rollout); otherwise ``missing``."""
+    field = _first_present_field(
+        frontmatter, ("runtime_media_witness", "production_witness", "runtime_media_receipt")
+    )
+    if field is None:
+        return "missing"
+    _name, value = field
+    receipt = _coerce_av_receipt(value)
+    if receipt is not None:
+        expected = _expected_content_hash(frontmatter)
+        # In strict mode the receipt MUST bind declared deployed bytes, else a
+        # fresh PASS receipt for any bytes would replay across releases.
+        if require_signed and expected is None:
+            return "missing"
+        verified = verify_av_witness_receipt(receipt, key=key, now=now, content_hash=expected)
+        return "verified" if verified else "missing"
+    return "legacy" if not require_signed else "missing"
+
+
+# Frontmatter fields that carry a pre-authored VisualIntentRecord (serialized
+# JSON). The intent-predicate conjunct (PR 4b) reads it to enforce that an
+# independent witness confirmed the prediction over the deployed bytes.
+_AVSDLC_INTENT_RECORD_FIELDS = ("avsdlc_intent_record", "avsdlc_visual_intent")
+_INTENT_AXES = {"visual", "aesthetic", "audiovisual"}
+
+
+def _verified_runtime_receipt(
+    frontmatter: Mapping[str, Any], *, key: bytes, now: float
+) -> AVWitnessReceipt | None:
+    """The runtime-media witness receipt iff it cryptographically verifies against
+    the declared deployed bytes. Single source of truth for any conjunct that needs
+    to read signed receipt fields (signature + freshness + verdict + byte-binding).
+    Returns None when absent, unparseable, or unverifiable."""
+    field = _first_present_field(
+        frontmatter, ("runtime_media_witness", "production_witness", "runtime_media_receipt")
+    )
+    if field is None:
+        return None
+    receipt = _coerce_av_receipt(field[1])
+    if receipt is None:
+        return None
+    expected = _expected_content_hash(frontmatter)
+    return (
+        receipt
+        if verify_av_witness_receipt(receipt, key=key, now=now, content_hash=expected)
+        else None
+    )
+
+
+def _intent_conjunct_blockers(
+    frontmatter: Mapping[str, Any], *, key: bytes, now: float, axes: list[str]
+) -> list[str]:
+    """The intent-predicate conjunct (PR 4b). Fires only under the staged
+    ``require_intent`` switch. A visual/aesthetic/audiovisual change (or any task
+    that declares ``avsdlc_intent_record``) must have its pre-authored prediction
+    CONFIRMED by the independent witness's signed receipt:
+
+    * the receipt's ``intent_hash`` must equal ``intent_hash_from_record(declared)``
+      — the witness committed to THIS record, so a verdict minted against a
+      different prediction cannot replay in (swap-resistant), AND
+    * the receipt's ``intent_pass`` is True — the realized per-region vector, which
+      only the witness can produce from a live frame, satisfied the predicates.
+
+    The authoring session cannot self-mint either fact (witness independence)."""
+    record_field = _first_present_field(frontmatter, _AVSDLC_INTENT_RECORD_FIELDS)
+    if record_field is None:
+        return ["avsdlc_intent_record_missing"] if _INTENT_AXES & set(axes) else []
+    raw = record_field[1]
+    record = parse_intent_record(raw if isinstance(raw, str) else json.dumps(raw))
+    if record is None:
+        return ["avsdlc_intent_record_unparseable"]
+    # The intent confirmation must bind the EXACT deployed bytes — a receipt that
+    # is not byte-bound is portable across tasks within its TTL, so a verdict minted
+    # for one change must not confirm another. Require a declared content hash.
+    if _expected_content_hash(frontmatter) is None:
+        return ["avsdlc_intent_receipt_unbound"]
+    receipt = _verified_runtime_receipt(frontmatter, key=key, now=now)
+    if receipt is None:
+        return ["avsdlc_intent_receipt_missing"]
+    if receipt.intent_hash != intent_hash_from_record(record):
+        return ["avsdlc_intent_hash_mismatch"]
+    if not receipt.intent_pass:
+        return ["avsdlc_intent_not_confirmed"]
+    return []
+
+
 def evaluate_avsdlc_release_gate(
     frontmatter: Mapping[str, Any],
     *,
     now: float | datetime | None = None,
+    key: bytes | None = None,
+    require_signed_witness: bool | None = None,
+    require_intent: bool | None = None,
 ) -> AvsdlcReleaseGateResult:
     """Evaluate the mechanical AVSDLC evidence gate for one request/task note.
 
@@ -402,8 +598,23 @@ def evaluate_avsdlc_release_gate(
     """
 
     timestamp = _now_epoch(now)
+    signing_key = key if key is not None else _load_coord_key()
+    require_signed = (
+        require_signed_witness
+        if require_signed_witness is not None
+        else os.environ.get("HAPAX_AVSDLC_REQUIRE_SIGNED_WITNESS", "").strip().lower()
+        in {"1", "true", "yes"}
+    )
+    require_intent_flag = (
+        require_intent
+        if require_intent is not None
+        else os.environ.get("HAPAX_AVSDLC_REQUIRE_INTENT_PREDICATE", "").strip().lower()
+        in {"1", "true", "yes"}
+    )
     explicit_axes = _explicit_axes(frontmatter)
     declared_no_axes = _declares_no_axes(frontmatter)
+    if declared_no_axes and _av_source_path_mutated(frontmatter):
+        declared_no_axes = False
     inferred_axes = _infer_axes(frontmatter)
     if inferred_axes and not explicit_axes and not declared_no_axes:
         return AvsdlcReleaseGateResult(
@@ -440,10 +651,16 @@ def evaluate_avsdlc_release_gate(
             if not _has_any_field(frontmatter, evidence_fields):
                 missing_fields.append(label)
 
+    witness_unverified_legacy = False
     if _runtime_media_required(frontmatter, explicit_axes):
         required_fields.add("runtime_media_witness")
-        if not _has_any_field(frontmatter, ("runtime_media_witness", "production_witness")):
+        witness_status = _runtime_media_witness_status(
+            frontmatter, key=signing_key, now=timestamp, require_signed=require_signed
+        )
+        if witness_status == "missing":
             missing_fields.append("runtime_media_witness")
+        elif witness_status == "legacy":
+            witness_unverified_legacy = True
 
     timestamp_field = _first_present_field(frontmatter, AVSDLC_TIMESTAMP_FIELDS)
     if timestamp_field is None:
@@ -456,6 +673,12 @@ def evaluate_avsdlc_release_gate(
 
     blockers = [f"missing:{field}" for field in sorted(set(missing_fields))]
     blockers.extend(f"stale:{field}" for field in sorted(set(stale_fields)))
+    if require_intent_flag:
+        blockers.extend(
+            _intent_conjunct_blockers(
+                frontmatter, key=signing_key, now=timestamp, axes=explicit_axes
+            )
+        )
     return AvsdlcReleaseGateResult(
         required=True,
         passed=not blockers,
@@ -465,6 +688,7 @@ def evaluate_avsdlc_release_gate(
         missing_fields=sorted(set(missing_fields)),
         stale_fields=sorted(set(stale_fields)),
         blockers=blockers,
+        witness_unverified_legacy=witness_unverified_legacy,
         timestamp_utc=timestamp,
     )
 

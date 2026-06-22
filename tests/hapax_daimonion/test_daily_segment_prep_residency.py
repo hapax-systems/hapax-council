@@ -10,6 +10,9 @@ import pytest
 
 from agents.hapax_daimonion import daily_segment_prep as prep
 from agents.hapax_daimonion import programme_loop
+from agents.hapax_daimonion.segment_composability_gate import (
+    assess_composability as _REAL_ASSESS_COMPOSABILITY,
+)
 from shared.programme_store import ProgrammePlanStore
 from shared.segment_candidate_selection import SEGMENT_CANDIDATE_SELECTION_VERSION
 from shared.segment_ndcvb_axis_b import evaluate_ndcvb_axis_b
@@ -177,16 +180,24 @@ def _composability_gate_accepts_default(monkeypatch: pytest.MonkeyPatch) -> None
     )
 
 
-def test_coherence_check_quarantines_degraded_ruler(monkeypatch: pytest.MonkeyPatch) -> None:
-    """#6 (review-plane degradation pattern -> the SCED ruler): a verdict from a
-    DEGRADED roster (served_substitutions>0 — a seat served by a substitute family
-    under a cap, e.g. anthropic->gemini) is QUARANTINED: refused, no release, even
-    when CONVERGED with high scores. The frozen ruler's validity is its genuine
-    family-diverse panel; a substitute-family ruling is invalid SCED data."""
-    from agents.deliberative_council import engine as council_engine
+@pytest.fixture(autouse=True)
+def _s2_reframe_off_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default the S2 compose-on-reject reframe OFF for residency tests.
+
+    These tests pin the PURE reject->abstain contract (and predate the reframe),
+    so the reframe must not fire — it would otherwise make a live capable-model
+    gateway call and append a second producer-DV ledger entry. The reframe's own
+    behavior is pinned in test_s2_compose_on_reject.py. A test wanting reframe-on
+    sets HAPAX_SEGMENT_PREP_S2_REFRAME explicitly (later monkeypatch wins).
+    """
+    monkeypatch.setenv("HAPAX_SEGMENT_PREP_S2_REFRAME", "off")
+
+
+def _substituted_verdict_fn():
+    """A CONVERGED, family-diverse, high-scoring verdict whose served roster substituted 2 seats."""
     from agents.deliberative_council.models import ConvergenceStatus, CouncilVerdict
 
-    async def _degraded(council_input: Any, mode: Any, rubric: Any, config: Any = None) -> Any:
+    async def _substituted(council_input: Any, mode: Any, rubric: Any, config: Any = None) -> Any:
         return CouncilVerdict(
             scores={"coherence": 5, "specificity": 5},
             confidence_bands={},
@@ -204,13 +215,46 @@ def test_coherence_check_quarantines_degraded_ruler(monkeypatch: pytest.MonkeyPa
             },
         )
 
-    monkeypatch.setattr(council_engine, "deliberate", _degraded)
-    outcome = prep._council_coherence_check("a fine and coherent script", "prog-quarantine-1")
+    return _substituted
+
+
+def test_coherence_check_substitution_pilot_labels_not_quarantines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """STAGE-AWARE SCED ruler integrity, R1_PROTOCOL / operational (NOT frozen — the live
+    go-live path). A served substitution (served_substitutions>0) is a transparency LABEL,
+    NOT a refusal: the abundant live pool keeps the family-diversity floor met, so the
+    council is resilient to single-provider drop-out instead of falsely quarantining a
+    genuinely family-diverse, criterion-passing panel. (The segment-01 false quarantine was
+    a PHANTOM count from a model_family/served-family namespace gap — fixed in members.py.)"""
+    from agents.deliberative_council import engine as council_engine
+
+    monkeypatch.setattr(council_engine, "deliberate", _substituted_verdict_fn())
+    monkeypatch.delenv("HAPAX_SEGMENT_PREP_RULER_HASH", raising=False)  # NOT frozen = pilot
+    outcome = prep._council_coherence_check("a fine and coherent script", "prog-pilot-sub-1")
+    assert outcome.passed is True  # family-diverse + above criterion -> RELEASES
+    assert outcome.refused is False
+    assert outcome.council_decisions["ruler_substituted"] is True  # transparency label kept
+    assert outcome.council_decisions["served_substitutions"] == 2
+    assert outcome.council_decisions.get("quarantined") is None  # NOT quarantined in pilot
+
+
+def test_coherence_check_frozen_ruler_deviation_quarantines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In a FROZEN confirmatory run (R2_PREREGISTER->R3_COLLECTION, ruler_hash set), the
+    committed roster matters: a served substitution refuses (frozen_ruler_deviation), even
+    when CONVERGED with high scores. Preserves the #4224/#4233 confirmatory honesty — a
+    substitute-family ruling is invalid SCED data for a study committed to a specific roster."""
+    from agents.deliberative_council import engine as council_engine
+
+    monkeypatch.setattr(council_engine, "deliberate", _substituted_verdict_fn())
+    monkeypatch.setenv("HAPAX_SEGMENT_PREP_RULER_HASH", "frozen-test-hash")  # FROZEN
+    outcome = prep._council_coherence_check("a fine and coherent script", "prog-frozen-sub-1")
     assert outcome.passed is False
     assert outcome.refused is True
     assert outcome.council_decisions["ruler_substituted"] is True
-    assert outcome.council_decisions["served_substitutions"] == 2
-    assert outcome.council_decisions.get("quarantined") == "ruler_substituted"
+    assert outcome.council_decisions.get("quarantined") == "frozen_ruler_deviation"
 
 
 def _patch_axis_b_prep_happy_path(
@@ -1922,6 +1966,8 @@ def test_prep_segment_uncomposable_gate_reject_writes_diagnostic_and_feedback(
     assert s2_row["terminal_reason"] == "uncomposable_topic_type"
     assert s2_row["producer_gate"] == {
         "accepted": False,
+        "errored": False,
+        "fail_open": False,
         "criterion": prep._COHERENCE_CRITERION,
         "gate": prep.S2_COMPOSABILITY_GATE_NAME,
         "reason": reason,
@@ -1929,6 +1975,97 @@ def test_prep_segment_uncomposable_gate_reject_writes_diagnostic_and_feedback(
         "segment_beats": ["least severe", "more severe", "most severe"],
         "topic": "Ranking governance enforcement failures",
     }
+
+
+def test_prep_segment_reframes_uncomposable_into_released_row(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """E2E seam (reproducible): an expository, S2-REJECTED plan is RESCUED by compose-on-reject
+    into a RELEASED row. The gate REJECTS the expository plan, reframe_to_arc proposes an arc, the
+    gate ACCEPTS the reframe, and prep_segment PROPAGATES it (declared_topic / narrative_beat /
+    segment_beats) and SAVES a segment. Pins the reject -> reframe -> propagate -> compose seam +
+    the n>0 exit predicate the unit tests do not cover (the durable form of the live witness)."""
+    import agents.hapax_daimonion.segment_composability_gate as gate
+
+    _patch_axis_b_prep_happy_path(monkeypatch)
+    monkeypatch.setenv(
+        "HAPAX_SEGMENT_PREP_S2_REFRAME", "1"
+    )  # override the residency reframe-off default
+
+    arc_topic = "operator-now is sufficient was the lie src:0 exposes"
+    arc_narrative = "Build from the optional-operator assumption to the receipt that overturns it."
+    arc_beats = [
+        "open on the disputed claim that operator-now is sufficient (src:0)",
+        "trace the specific failure that the absence produced",
+        "resolve: src:0 flips the claim to operator-must-be-present",
+    ]
+
+    # Exercise the REAL gate + REAL reframe code (only the HTTP is mocked) so this pins the actual
+    # decision/parse/propagation seam, not stubbed high-level functions. Restore the real
+    # assess_composability past the module's autouse accept-stub; reframe_to_arc is already real.
+    monkeypatch.setattr(gate, "assess_composability", _REAL_ASSESS_COMPOSABILITY)
+
+    def _route_gateway(req: Any, *_args: Any, **_kwargs: Any) -> _FakeResponse:
+        prompt = json.loads(req.data.decode())["messages"][0]["content"]
+        if "Rewrite it into a TRUE ARC" in prompt:  # the reframe prompt
+            payload = {
+                "topic": arc_topic,
+                "narrative_beat": arc_narrative,
+                "beats": list(arc_beats),
+            }
+        else:  # the gate prompt — REJECT the expository framing, ACCEPT the reframed arc.
+            # Route on the arc topic (carried only by the re-verify call); the gate PROMPT
+            # template itself contains "importance", so keying on that would reject everything.
+            is_arc = arc_topic in prompt
+            payload = {
+                "opening_hook": "hook",
+                "test1_resolves_specific_hook": is_arc,
+                "test2_reorder_breaks_it": is_arc,
+                "arc_or_list": "arc" if is_arc else "parallel_list",
+                "score": 4 if is_arc else 2,
+            }
+        return _FakeResponse(
+            {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(payload)}}]}
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", _route_gateway)
+
+    content = _ready_content(
+        narrative_beat="A rant on the importance of operator presence and authority",
+        segment_beats=[
+            "Highlight the importance of operator presence",
+            "Emphasize the risks of absence",
+            "Make the case for constant involvement",
+        ],
+        role="rant",
+    )
+    content.declared_topic = "A rant on the importance of operator presence and authority"
+    programme = SimpleNamespace(
+        programme_id="prog-reframe-rescue", role=SimpleNamespace(value="rant"), content=content
+    )
+    session = {"prep_session_id": "seg", "model_id": prep.RESIDENT_PREP_MODEL, "llm_calls": []}
+
+    saved = prep.prep_segment(programme, tmp_path, prep_session=session)
+
+    assert saved is not None  # RELEASED row (n=1) from the rescued plan
+    # propagation: each field gets its semantically-correct reframed value
+    assert content.declared_topic == arc_topic
+    assert content.narrative_beat == arc_narrative  # distinct prose intent, NOT the topic restated
+    assert content.segment_beats == arc_beats
+    assert session.get("s2_reframed_programmes") == ["prog-reframe-rescue"]
+    # the producer-DV journal records BOTH the raw reject AND the reframe-accept
+    s2_rows = [
+        json.loads(line)
+        for line in (tmp_path / prep.COUNCIL_DECISIONS_LEDGER_FILENAME).read_text().splitlines()
+        if line.strip()
+    ]
+    reframe_rows = [
+        r
+        for r in s2_rows
+        if str(r.get("producer_gate", {}).get("reason", "")).startswith("[reframed]")
+    ]
+    assert reframe_rows and reframe_rows[-1]["producer_gate"]["accepted"] is True
 
 
 def test_prep_segment_s2_accept_writes_nonterminal_attempt_before_later_reject(
@@ -2477,17 +2614,14 @@ def test_select_angle_routes_through_gateway(monkeypatch: pytest.MonkeyPatch) ->
     assert angle.thesis_position == "a contested thesis"
 
 
-def test_web_supplement_is_excised_loud_noop(caplog: pytest.LogCaptureFixture) -> None:
-    """A1.3: the sparse-source web supplement is EXCISED to a loud no-op. The
-    prior code called the async ``web_verify`` WITHOUT ``await`` — a coroutine is
-    never a ``str``, so it silently did nothing. The fix does NOT add ``await``
-    (that routes to the ``web-research`` alias the research found mis-routes to a
-    non-grounded model, laundering ungrounded output as 'verification'). The
-    supplement stays disabled with a loud ledger entry until a real grounded web
-    provider exists; sparse local sources stay sparse and a no-candidate is the
-    honest outcome."""
-    import logging
-
+def test_web_supplement_routes_through_grounded_tavily(monkeypatch) -> None:
+    """A1.3 (unified seam): the sparse-source web supplement routes through the LIVE
+    GROUNDED Tavily path (``_tavily_packets`` — the same primitive ``recruit_source_set``
+    uses), NOT the excised no-op and NOT the dead LiteLLM ``web-*`` alias. A sparse local
+    set gains real web sources so ``resolve_angle`` sees the same matter the citation set
+    already bound (previously it logged a misleading 'no sources found' for a topic that
+    HAD recruited via Tavily). A Tavily outage fails soft to the existing local packets —
+    never an exception, never fabrication."""
     from agents.hapax_daimonion import angle_resolver
     from shared.source_packet import SourcePacket
 
@@ -2497,15 +2631,27 @@ def test_web_supplement_is_excised_loud_noop(caplog: pytest.LogCaptureFixture) -
         )
     ]
 
-    with caplog.at_level(logging.WARNING, logger="agents.hapax_daimonion.angle_resolver"):
-        out = angle_resolver._web_supplement("a topic", existing)
+    def _tavily(topic: str, *, max_results: int = 3) -> list[SourcePacket]:
+        return [
+            SourcePacket(
+                source_ref="web:tavily:https://example.com/x",
+                content_hash="webhash",
+                snippet=f"web hit for {topic}",
+                freshness="fresh",
+                rights_status="web",
+            )
+        ]
 
-    # Disabled: nothing appended, the original list is returned unchanged.
-    assert out == existing
-    assert len(out) == 1
-    # Loud ledger entry — not a silent no-op.
-    assert any("web supplement" in record.message.lower() for record in caplog.records)
-    # Negative-existence: the broken async web_verify route is gone from the module.
+    monkeypatch.setattr(angle_resolver, "_tavily_packets", _tavily)
+    out = angle_resolver._web_supplement("a topic", existing)
+    assert len(out) == 2  # local + grounded web source
+    assert any(p.source_ref.startswith("web:tavily:") for p in out)
+
+    # Fails soft on a Tavily outage: the existing local packets are returned unchanged.
+    monkeypatch.setattr(angle_resolver, "_tavily_packets", lambda *a, **k: [])
+    assert angle_resolver._web_supplement("a topic", existing) == existing
+
+    # Negative-existence: the broken async web_verify route stays gone from the module.
     source = Path(angle_resolver.__file__).read_text(encoding="utf-8")
     assert "web_verify" not in source
 

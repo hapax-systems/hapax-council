@@ -7,12 +7,19 @@ import pytest
 import yaml
 
 from shared.hkp_bundle_export import (
+    _consumer_policy,
     _tree_hash,
     build_derived_index,
     build_shadow_catalog,
     export_shadow_bundle,
 )
-from shared.hkp_bundle_schema import STALE_SOURCE_STATES, validate_bundle
+from shared.hkp_bundle_schema import (
+    ALLOWED_CONSUMERS,
+    FORBIDDEN_CONSUMERS,
+    STALE_SOURCE_STATES,
+    VALIDATOR_FIRST_ALLOWED_CONSUMERS,
+    validate_bundle,
+)
 
 GENERATED_AT = "2026-06-18T20:03:41Z"
 INDEX_REPORTED_SOURCE_STATES = tuple(sorted(STALE_SOURCE_STATES))
@@ -50,7 +57,11 @@ def test_exporter_emits_validator_clean_cache_bundle(tmp_path: Path, monkeypatch
     assert manifest["source_root"] == "repo:test"
     assert manifest["cache_only"] is True
     assert manifest["output_tree_hash"] == _tree_hash(result.bundle_path)
-    assert manifest["allowed_consumers"] == ["research_viewer", "local_prompt_context"]
+    assert manifest["allowed_consumers"] == [
+        "research_viewer",
+        "local_prompt_context",
+        "continuity_context",
+    ]
     assert {"qdrant_rag", "public_export", "dispatcher", "close_gate"} <= set(
         manifest["forbidden_consumers"]
     )
@@ -1049,3 +1060,35 @@ def test_exporter_resolves_in_bundle_depends_on_edges(tmp_path: Path, monkeypatc
 
     # An out-of-bundle dependency does not invalidate the bundle.
     assert validate_bundle(result.bundle_path).ok is True
+
+
+def test_continuity_context_consumer_is_registered_and_served() -> None:
+    """CS P0b-remainder regression guard.
+
+    The Continuity Substrate distillation (P1/F2) emits bundles consumed by the
+    ``continuity_context`` consumer (local session-resume / dispatch-seed). Until
+    that consumer is registered it resolves to ``UNKNOWN_DENY_CONSUMER`` and is
+    silently starved — no crash, no CI failure. This test pins the registration:
+    known + validator-first + non-authorizing + served with the read-only field
+    ceiling, with the three privacy-forbidden fields always denied.
+    """
+    # Known consumer (resolves to itself, not the "unknown" deny-default).
+    assert "continuity_context" in ALLOWED_CONSUMERS
+    # Non-authorizing: never in the fail-closed forbidden set.
+    assert "continuity_context" not in FORBIDDEN_CONSUMERS
+    # Validator-first: local/read-only/non-authorizing, mirroring research_viewer
+    # and local_prompt_context. The manifest allowed_consumers list mirrors
+    # VALIDATOR_FIRST_ALLOWED_CONSUMERS, and the schema's ``blocked_allowed``
+    # validator rejects any allowed consumer that is NOT validator-first — so
+    # validator-first membership is REQUIRED for the manifest to name it.
+    assert "continuity_context" in VALIDATOR_FIRST_ALLOWED_CONSUMERS
+
+    policy = _consumer_policy()
+    row = next(r for r in policy["consumers"] if r["consumer"] == "continuity_context")
+    # Served (not denied) with the read-only field ceiling — fields present.
+    assert row["default"] == "allow_with_ceiling"
+    assert row["allowed_fields"], "continuity_context must receive fields (not starved)"
+    # Privacy ceiling: the three forbidden fields are always denied.
+    assert {"body", "private_source_path", "secret"} <= set(row["forbidden_fields"])
+    # No secret-class field leaks into the allowed set.
+    assert not (set(row["allowed_fields"]) & {"body", "private_source_path", "secret"})

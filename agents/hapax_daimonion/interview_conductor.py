@@ -21,9 +21,17 @@ follow-on tasks (see the cc-task).
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+import os
+import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+DEFAULT_INTERVIEW_STATE_PATH = Path("/dev/shm/hapax-compositor/interview-state.json")
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -40,6 +48,73 @@ class InterviewFact:
     abstained: bool = False
 
 
+@dataclass(frozen=True)
+class InterviewQuestion:
+    """Question plus ward-facing metadata for the N1 interview card."""
+
+    text: str
+    topic: str = ""
+    depth: str = ""
+    rationale: str = ""
+    source_refs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class InterviewStateSnapshot:
+    """JSON envelope consumed by ``InterviewQuestionWard``."""
+
+    active: bool
+    current_question: str = ""
+    topic: str = ""
+    depth: str = ""
+    rationale: str = ""
+    source_refs: tuple[str, ...] = ()
+    topics_explored: int = 0
+    topics_total: int = 0
+    facts_recorded: int = 0
+
+    def to_json_dict(self) -> dict[str, object]:
+        return {
+            "active": self.active,
+            "current_question": self.current_question,
+            "topic": self.topic,
+            "depth": self.depth,
+            "rationale": self.rationale,
+            "source_refs": list(self.source_refs),
+            "topics_explored": self.topics_explored,
+            "topics_total": self.topics_total,
+            "facts_recorded": self.facts_recorded,
+        }
+
+
+class InterviewStateWriter:
+    """Atomic file writer for the compositor interview question ward."""
+
+    def __init__(self, path: Path = DEFAULT_INTERVIEW_STATE_PATH) -> None:
+        self.path = path
+
+    def __call__(self, snapshot: InterviewStateSnapshot) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(f".{self.path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+        try:
+            tmp.write_text(
+                json.dumps(snapshot.to_json_dict(), sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(tmp, self.path)
+        finally:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def _normalize_question(question: str | InterviewQuestion) -> InterviewQuestion:
+    if isinstance(question, InterviewQuestion):
+        return question
+    return InterviewQuestion(text=question)
+
+
 class InterviewConductor:
     """Drives the operator interview as a sequence of ask → arm-silence → listen → STT → record turns.
 
@@ -53,6 +128,8 @@ class InterviewConductor:
         questions: the question queue (a stub list for the MVP; the compass-plan feed is a follow-on).
         capture_answer: ``async () -> bytes`` yielding the operator's answer audio after the silence
             window (mocked in tests; the live answer-buffer wiring is a follow-on).
+        state_writer: Optional N1 compositor ward feed. Omitted in unit tests and until the live-wiring
+            task instantiates the conductor; pass ``InterviewStateWriter()`` to write the SHM contract.
     """
 
     def __init__(
@@ -60,13 +137,15 @@ class InterviewConductor:
         *,
         pipeline: Any,
         runner: Any,
-        questions: Sequence[str],
+        questions: Sequence[str | InterviewQuestion],
         capture_answer: Callable[[], Awaitable[bytes]],
+        state_writer: Callable[[InterviewStateSnapshot], None] | None = None,
     ) -> None:
         self._pipeline = pipeline
         self._runner = runner
-        self._questions = list(questions)
+        self._questions = [_normalize_question(question) for question in questions]
         self._capture_answer = capture_answer
+        self._state_writer = state_writer
 
     async def run(self) -> list[InterviewFact]:
         """Run the full interview, returning one InterviewFact per question.
@@ -76,20 +155,85 @@ class InterviewConductor:
         to a question the operator never heard, and it never fabricates a fact from silence.
         """
         facts: list[InterviewFact] = []
+        total = len(self._questions)
+        wrote_inactive = False
         for question in self._questions:
-            if not await self._ask(question):
+            if not await self._ask(question.text):
                 # The question never reached air — nothing to answer. The drop was already
                 # witnessed in _ask; record an abstention and skip the listen leg entirely.
-                facts.append(InterviewFact(question=question, answer="", abstained=True))
+                facts.append(InterviewFact(question=question.text, answer="", abstained=True))
+                await self._write_state(None, active=False, facts=facts, topics_total=total)
+                wrote_inactive = True
                 continue
-            self._runner.begin_interview_silence()
-            answer = await self._listen()
+            await self._write_state(question, active=True, facts=facts, topics_total=total)
+            wrote_inactive = False
+            try:
+                self._runner.begin_interview_silence()
+                answer = await self._listen()
+            except Exception:
+                await self._write_state(None, active=False, facts=facts, topics_total=total)
+                raise
             if answer.strip():
-                facts.append(InterviewFact(question=question, answer=answer))
+                facts.append(InterviewFact(question=question.text, answer=answer))
             else:
                 # Silence / blank transcription is an abstention, not a fabricated fact.
-                facts.append(InterviewFact(question=question, answer="", abstained=True))
+                facts.append(InterviewFact(question=question.text, answer="", abstained=True))
+        if not wrote_inactive:
+            await self._write_state(None, active=False, facts=facts, topics_total=total)
         return facts
+
+    async def _write_state(
+        self,
+        question: InterviewQuestion | None,
+        *,
+        active: bool,
+        facts: Sequence[InterviewFact],
+        topics_total: int,
+    ) -> None:
+        writer = self._state_writer
+        if writer is None:
+            return
+        writer_path = getattr(writer, "path", "unknown")
+        try:
+            await asyncio.to_thread(
+                self._write_state_sync,
+                writer,
+                question,
+                active=active,
+                facts=facts,
+                topics_total=topics_total,
+            )
+        except Exception:
+            LOGGER.warning(
+                "interview_state_write_failed; next_action=check configured state writer path "
+                "%s parent directory, "
+                "permissions, and studio compositor ward poller",
+                writer_path,
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _write_state_sync(
+        writer: Callable[[InterviewStateSnapshot], None],
+        question: InterviewQuestion | None,
+        *,
+        active: bool,
+        facts: Sequence[InterviewFact],
+        topics_total: int,
+    ) -> None:
+        writer(
+            InterviewStateSnapshot(
+                active=active,
+                current_question=question.text if question is not None else "",
+                topic=question.topic if question is not None else "",
+                depth=question.depth if question is not None else "",
+                rationale=question.rationale if question is not None else "",
+                source_refs=question.source_refs if question is not None else (),
+                topics_explored=len(facts),
+                topics_total=topics_total,
+                facts_recorded=sum(1 for fact in facts if not fact.abstained),
+            )
+        )
 
     async def _ask(self, text: str) -> bool:
         """Synthesize + play one question. Returns True iff it actually reached air.

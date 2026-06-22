@@ -19,7 +19,21 @@ import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+# This is a no-.py executable run as a subprocess with cwd=scripts/; insert the repo root so the
+# shared failure-classification module resolves (without it, `from shared...` ImportErrors and turns
+# every GLM review into a process failure).
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.failure_classification import (  # noqa: E402
+    ZAI_ERROR_CLASS_BY_CODE,
+    FailureCode,
+    failure_code_for_zai,
+)
 
 DEFAULT_SECRET_ENTRY = "glmcp/api-key"
 DEFAULT_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
@@ -71,6 +85,9 @@ class ZaiErrorInfo:
     action: str
     resets_at: str | None
     message: str | None
+    # the shared structured taxonomy code, derived from error_class (telemetry; format_zai_error
+    # does not read it, so the formatted ApiError string is unchanged).
+    failure_code: FailureCode = FailureCode.UNKNOWN
 
 
 class NoRedirectHTTPHandler(urllib.request.HTTPRedirectHandler):
@@ -259,31 +276,6 @@ def safe_structured_value(value: str, *, max_chars: int) -> str:
     return _STRUCTURED_VALUE_SEPARATOR_RE.sub(" ", value).strip()[:max_chars]
 
 
-_ZAI_ERROR_CLASS_BY_CODE = {
-    "1000": ("auth_failed", "check_api_key"),
-    "1001": ("auth_failed", "check_api_key"),
-    "1002": ("auth_failed", "check_api_key"),
-    "1003": ("auth_failed", "refresh_api_key"),
-    "1004": ("auth_failed", "check_api_key"),
-    "1110": ("account_hard_hold", "contact_provider"),
-    "1112": ("account_hard_hold", "contact_provider"),
-    "1113": ("account_balance_or_arrears", "hold_no_payg_fallback"),
-    "1121": ("account_hard_hold", "contact_provider"),
-    "1211": ("model_not_found", "check_model_configuration"),
-    "1261": ("prompt_too_long", "reduce_prompt_size"),
-    "1302": ("rate_limited_concurrency", "backoff_reduce_concurrency"),
-    "1303": ("rate_limited_frequency", "backoff_reduce_frequency"),
-    "1304": ("daily_limit_exhausted", "hold_until_limit_reset"),
-    "1305": ("rate_limited", "backoff"),
-    "1308": ("quota_exhausted", "hold_until_reset"),
-    "1309": ("subscription_expired", "hold_until_subscription_restored"),
-    "1310": ("quota_exhausted", "hold_until_reset"),
-    "1311": ("plan_model_unavailable", "switch_model_or_upgrade_plan"),
-    "1312": ("provider_high_traffic", "backoff_or_switch_model"),
-    "1313": ("fair_use_restricted", "hold_until_manual_clear"),
-}
-
-
 def _coerce_error_payload(detail: str) -> dict[str, Any] | None:
     try:
         payload = json.loads(detail)
@@ -341,8 +333,8 @@ def classify_zai_error(status: int, detail: str) -> ZaiErrorInfo:
     )
     resets_at = _extract_reset_hint(error_obj, message)
 
-    if code in _ZAI_ERROR_CLASS_BY_CODE:
-        error_class, action = _ZAI_ERROR_CLASS_BY_CODE[code]
+    if code in ZAI_ERROR_CLASS_BY_CODE:
+        error_class, action = ZAI_ERROR_CLASS_BY_CODE[code]
     elif status == 401:
         error_class, action = "auth_failed", "check_api_key"
     elif status == 429:
@@ -368,6 +360,7 @@ def classify_zai_error(status: int, detail: str) -> ZaiErrorInfo:
         action=action,
         resets_at=resets_at,
         message=message,
+        failure_code=failure_code_for_zai(error_class),
     )
 
 

@@ -78,7 +78,7 @@ def ensure_collection() -> None:
     cycle; without this guard the run path hits a Qdrant 404 (collection not
     found) and cross-cycle fore-understanding silently never accumulates (R-A3).
     """
-    from qdrant_client.models import Distance, VectorParams
+    from qdrant_client.models import Distance, PayloadSchemaType, VectorParams
 
     from shared.config import EXPECTED_EMBED_DIMENSIONS, get_qdrant
 
@@ -89,6 +89,18 @@ def ensure_collection() -> None:
             collection_name=COLLECTION_NAME,
             vectors_config=VectorParams(size=EXPECTED_EMBED_DIMENSIONS, distance=Distance.COSINE),
         )
+    # The broad fore-understanding scroll orders by ``persisted_at`` (newest-first),
+    # which Qdrant 400s ("No range index for order_by key") unless the field has a
+    # RANGE index — so the planner silently saw zero prior cycles. Assert a datetime
+    # index (idempotent) so accumulated fore-understanding actually reaches planning.
+    try:
+        client.create_payload_index(
+            collection_name=COLLECTION_NAME,
+            field_name="persisted_at",
+            field_schema=PayloadSchemaType.DATETIME,
+        )
+    except Exception:
+        _log.debug("ensure_collection: persisted_at index assert skipped", exc_info=True)
 
 
 def persist_source_consequences(

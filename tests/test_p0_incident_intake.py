@@ -774,3 +774,417 @@ def test_cli_drain_desktop_dismisses_consumed_intake_notifications(tmp_path, mon
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert "health_stack_failed:stack-failed" in state["incidents"]
     assert list((task_root / "active").glob("p0-incident-health-stack-failed-*.md"))
+
+
+def test_reap_resolved_incidents_drains_closed_and_recovered(tmp_path):
+    # The 'drain' half: a closed remediation task OR a recovered systemd unit reaps
+    # its incident from state.json; an active task / still-failing unit is kept.
+    task_root = tmp_path / "tasks"
+    (task_root / "active").mkdir(parents=True)
+    (task_root / "closed").mkdir(parents=True)
+    state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+
+    (task_root / "closed" / "p0-incident-aaa.md").write_text("closed", encoding="utf-8")
+    (task_root / "active" / "p0-incident-bbb.md").write_text("active", encoding="utf-8")
+
+    state = {
+        "version": 1,
+        "incidents": {
+            "operational:aaa": {"kind": "lane_supervisor", "task_id": "p0-incident-aaa"},
+            "operational:bbb": {"kind": "lane_supervisor", "task_id": "p0-incident-bbb"},
+            "systemd_service_failed:demo.service": {
+                "kind": "systemd_service_failed",
+                "task_id": "p0-incident-ccc",
+            },
+            "systemd_service_failed:broken.service": {
+                "kind": "systemd_service_failed",
+                "task_id": "p0-incident-ddd",
+            },
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    reaped = p0_intake.reap_resolved_incidents(
+        state_path=state_path,
+        ledger_path=ledger_path,
+        task_root=task_root,
+        unit_recovered=lambda u: u == "demo.service",  # demo recovered; broken still down
+    )
+
+    assert dict(reaped) == {
+        "operational:aaa": "task_closed",
+        "systemd_service_failed:demo.service": "unit_recovered",
+    }
+    remaining = json.loads(state_path.read_text())["incidents"]
+    assert set(remaining) == {"operational:bbb", "systemd_service_failed:broken.service"}
+
+    rows = [json.loads(line) for line in ledger_path.read_text().splitlines() if line.strip()]
+    assert {r["fingerprint"] for r in rows} == {
+        "operational:aaa",
+        "systemd_service_failed:demo.service",
+    }
+    assert all(r["kind"] == "p0_incident_resolved" for r in rows)
+
+
+def test_reap_keeps_incident_when_unit_check_raises(tmp_path):
+    # A health-probe exception must NOT reap (fail-safe: keep the incident).
+    task_root = tmp_path / "tasks"
+    (task_root / "active").mkdir(parents=True)
+    (task_root / "closed").mkdir(parents=True)
+    state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+    state = {
+        "version": 1,
+        "incidents": {
+            "systemd_service_failed:flaky.service": {
+                "kind": "systemd_service_failed",
+                "task_id": "p0-incident-flaky",
+            }
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    def boom(_unit):
+        raise RuntimeError("systemctl unavailable")
+
+    reaped = p0_intake.reap_resolved_incidents(
+        state_path=state_path,
+        ledger_path=ledger_path,
+        task_root=task_root,
+        unit_recovered=boom,
+    )
+    assert reaped == []
+    assert set(json.loads(state_path.read_text())["incidents"]) == {
+        "systemd_service_failed:flaky.service"
+    }
+    assert not ledger_path.exists()  # fail-safe keep writes no p0_incident_resolved row
+
+
+def test_reap_subcommand_drains_closed_task(tmp_path):
+    # Exercises the `reap` CLI subcommand end-to-end against a closed-task incident.
+    task_root = tmp_path / "tasks"
+    (task_root / "active").mkdir(parents=True)
+    (task_root / "closed").mkdir(parents=True)
+    (task_root / "closed" / "p0-incident-zzz.md").write_text("closed", encoding="utf-8")
+    state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+    state = {
+        "version": 1,
+        "incidents": {
+            "operational:zzz": {"kind": "lane_supervisor", "task_id": "p0-incident-zzz"},
+            # Drives the real `systemctl --user show` callback end-to-end so a
+            # NameError / missing import in the CLI cannot hide. The unit is unknown
+            # (LoadState=not-found) -> positive-confirmation cannot confirm recovery
+            # -> this incident is deterministically KEPT.
+            "systemd_service_failed:hapax-no-such-unit-xyz.service": {
+                "kind": "systemd_service_failed",
+                "task_id": "p0-incident-nosuch",
+            },
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(INTAKE_SCRIPT),
+            "reap",
+            "--task-root",
+            str(task_root),
+            "--state-path",
+            str(state_path),
+            "--ledger-path",
+            str(ledger_path),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+    )
+    assert result.returncode == 0, result.stderr
+    remaining = json.loads(state_path.read_text())["incidents"]
+    assert "operational:zzz" not in remaining  # closed-task incident drained
+    # the real `systemctl show` probe ran (no NameError) and could not confirm
+    # recovery of an unknown unit, so it KEPT the incident (positive-confirmation)
+    assert "systemd_service_failed:hapax-no-such-unit-xyz.service" in remaining
+
+
+def test_reap_keeps_systemd_incident_when_unit_none_or_colonless(tmp_path):
+    # systemd incidents are kept when no probe is supplied (unit_recovered=None) and
+    # when the fingerprint has no ":" to derive a unit name from.
+    task_root = tmp_path / "tasks"
+    (task_root / "active").mkdir(parents=True)
+    (task_root / "closed").mkdir(parents=True)
+    state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+    state = {
+        "version": 1,
+        "incidents": {
+            "systemd_service_failed:demo.service": {
+                "kind": "systemd_service_failed",
+                "task_id": "p0-incident-demo",
+            },
+            "malformedfingerprint": {
+                "kind": "systemd_service_failed",
+                "task_id": "p0-incident-mal",
+            },
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    # unit_recovered=None: no probe -> nothing reaped even if the unit is actually up
+    assert (
+        p0_intake.reap_resolved_incidents(
+            state_path=state_path,
+            ledger_path=ledger_path,
+            task_root=task_root,
+            unit_recovered=None,
+        )
+        == []
+    )
+    # colon-less fingerprint yields unit "" -> never reaped even with a True probe
+    reaped = p0_intake.reap_resolved_incidents(
+        state_path=state_path,
+        ledger_path=ledger_path,
+        task_root=task_root,
+        unit_recovered=lambda _u: True,
+    )
+    assert ("malformedfingerprint", "unit_recovered") not in reaped
+    assert "malformedfingerprint" in json.loads(state_path.read_text())["incidents"]
+
+
+def test_reap_mutates_state_inside_the_lock(tmp_path, monkeypatch):
+    # Regression guard for the concurrency fix: the load->decide->delete->store
+    # cycle MUST happen INSIDE _state_file_lock, not merely enter it. An unlocked
+    # store racing a live intake drops a freshly recorded incident. We assert the
+    # actual _store_state call observes the lock held.
+    import contextlib
+
+    task_root = tmp_path / "tasks"
+    (task_root / "active").mkdir(parents=True)
+    (task_root / "closed").mkdir(parents=True)
+    (task_root / "closed" / "p0-incident-l.md").write_text("closed", encoding="utf-8")
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "incidents": {
+                    "operational:l": {"kind": "lane_supervisor", "task_id": "p0-incident-l"}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    held = {"now": False}
+    store_observed_lock: list = []
+
+    @contextlib.contextmanager
+    def tracking_lock(_path):
+        held["now"] = True
+        try:
+            yield
+        finally:
+            held["now"] = False
+
+    real_store = p0_intake._store_state
+
+    def tracking_store(path, state):
+        store_observed_lock.append(held["now"])
+        return real_store(path, state)
+
+    monkeypatch.setattr(p0_intake, "_state_file_lock", tracking_lock)
+    monkeypatch.setattr(p0_intake, "_store_state", tracking_store)
+    reaped = p0_intake.reap_resolved_incidents(
+        state_path=state_path,
+        ledger_path=tmp_path / "events.jsonl",
+        task_root=task_root,
+    )
+    assert reaped == [("operational:l", "task_closed")]
+    # _store_state ran exactly once, and the lock was held when it ran
+    assert store_observed_lock == [True]
+
+
+def test_systemd_unit_recovered_probe_branches():
+    # Deterministic coverage of the positive-confirmation probe state machine,
+    # exercised through the loaded CLI module with a mocked systemctl runner.
+    import types
+
+    probe = _load_cli_module()._systemd_unit_recovered
+
+    def show(stdout, returncode=0):
+        return lambda _argv: types.SimpleNamespace(returncode=returncode, stdout=stdout)
+
+    # loaded + active -> recovered (reap)
+    assert probe("u", run=show("LoadState=loaded\nActiveState=active\nResult=success\n")) is True
+    # loaded + inactive + success (oneshot recovered cleanly) -> reap
+    assert probe("u", run=show("LoadState=loaded\nActiveState=inactive\nResult=success\n")) is True
+    # loaded + failed -> keep
+    assert probe("u", run=show("LoadState=loaded\nActiveState=failed\nResult=exit-code\n")) is False
+    # loaded + inactive + non-success -> keep
+    assert (
+        probe("u", run=show("LoadState=loaded\nActiveState=inactive\nResult=exit-code\n")) is False
+    )
+    # unknown / not-loaded -> keep (cannot confirm recovery)
+    assert (
+        probe("u", run=show("LoadState=not-found\nActiveState=inactive\nResult=success\n")) is False
+    )
+    # nonzero systemctl return -> keep
+    assert probe("u", run=show("", returncode=1)) is False
+
+
+def test_systemd_unit_recovered_keeps_on_probe_exception():
+    # A probe that cannot run (systemctl missing) or times out must KEEP, never reap.
+    import subprocess
+
+    probe = _load_cli_module()._systemd_unit_recovered
+
+    def raise_oserror(_argv):
+        raise OSError("systemctl not found")
+
+    def raise_timeout(_argv):
+        raise subprocess.TimeoutExpired(cmd="systemctl", timeout=5)
+
+    assert probe("u", run=raise_oserror) is False
+    assert probe("u", run=raise_timeout) is False
+
+
+def test_reap_systemd_task_closed_unit_still_failing_kept(tmp_path):
+    """Fix 3: a systemd incident whose cc-task was closed administratively while the
+    unit STILL fails must NOT be drained — the unit is the ground truth."""
+    task_root = tmp_path / "tasks"
+    (task_root / "active").mkdir(parents=True)
+    (task_root / "closed").mkdir(parents=True)
+    state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+
+    # Task is closed, but the unit is still failing
+    (task_root / "closed" / "p0-incident-systemd-svc.md").write_text("closed", encoding="utf-8")
+    state = {
+        "version": 1,
+        "incidents": {
+            "systemd_service_failed:still-broken.service": {
+                "kind": "systemd_service_failed",
+                "task_id": "p0-incident-systemd-svc",
+            }
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    reaped = p0_intake.reap_resolved_incidents(
+        state_path=state_path,
+        ledger_path=ledger_path,
+        task_root=task_root,
+        unit_recovered=lambda u: False,  # unit still failing
+    )
+    assert reaped == []
+    assert (
+        "systemd_service_failed:still-broken.service"
+        in json.loads(state_path.read_text())["incidents"]
+    )
+
+
+def test_reap_preserves_recurrence_context_in_ledger(tmp_path):
+    """Fix 2: recurrence fields are preserved in the resolved ledger row so a
+    recurrent incident that re-fires after reaping retains its lineage."""
+    task_root = tmp_path / "tasks"
+    (task_root / "active").mkdir(parents=True)
+    (task_root / "closed").mkdir(parents=True)
+    state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+
+    (task_root / "closed" / "p0-incident-base-r1.md").write_text("closed", encoding="utf-8")
+    state = {
+        "version": 1,
+        "incidents": {
+            "operational:recurrent": {
+                "kind": "lane_supervisor",
+                "task_id": "p0-incident-base-r1",
+                "recurrence_count": 1,
+                "recurrence_of_task_id": "p0-incident-base",
+                "base_task_id": "p0-incident-base",
+            }
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    reaped = p0_intake.reap_resolved_incidents(
+        state_path=state_path,
+        ledger_path=ledger_path,
+        task_root=task_root,
+    )
+    assert dict(reaped) == {"operational:recurrent": "task_closed"}
+
+    rows = [json.loads(line) for line in ledger_path.read_text().splitlines() if line.strip()]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["recurrence_count"] == 1
+    assert row["recurrence_of_task_id"] == "p0-incident-base"
+    assert row["base_task_id"] == "p0-incident-base"
+
+
+def test_reap_state_stored_before_ledger(tmp_path, monkeypatch):
+    """Fix 1: _store_state() must run BEFORE append_jsonl() so that a ledger
+    append failure does not leave the incident in state.json (state is SSOT)."""
+    task_root = tmp_path / "tasks"
+    (task_root / "active").mkdir(parents=True)
+    (task_root / "closed").mkdir(parents=True)
+    state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+
+    (task_root / "closed" / "p0-incident-ordering.md").write_text("closed", encoding="utf-8")
+    state = {
+        "version": 1,
+        "incidents": {
+            "operational:ordering": {
+                "kind": "lane_supervisor",
+                "task_id": "p0-incident-ordering",
+            }
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    call_order = []
+    original_store = p0_intake._store_state
+    original_append = p0_intake.append_jsonl
+
+    def tracking_store(path, data):
+        call_order.append("store_state")
+        return original_store(path, data)
+
+    def tracking_append(*args, **kwargs):
+        call_order.append("append_jsonl")
+        return original_append(*args, **kwargs)
+
+    monkeypatch.setattr(p0_intake, "_store_state", tracking_store)
+    monkeypatch.setattr(p0_intake, "append_jsonl", tracking_append)
+
+    reaped = p0_intake.reap_resolved_incidents(
+        state_path=state_path,
+        ledger_path=ledger_path,
+        task_root=task_root,
+    )
+    assert dict(reaped) == {"operational:ordering": "task_closed"}
+    assert call_order.index("store_state") < call_order.index("append_jsonl"), (
+        f"_store_state must run before append_jsonl; got order: {call_order}"
+    )
+
+
+def test_reaper_service_has_no_onfailure():
+    # Pin the REMOVAL of OnFailure: notify-failure@ is permanently neutered
+    # (zz-recovery-disable.conf routes to /bin/true; re-arm dropped from scope).
+    # An OnFailure line pointing at a neutered unit silences reaper failures —
+    # the safe state is no OnFailure (systemd default: logged, visible in
+    # `systemctl --user --failed`). See review round 8+ finding #4 (claude-1).
+    svc = (REPO_ROOT / "systemd" / "units" / "hapax-p0-incident-reaper.service").read_text()
+    assert "OnFailure" not in svc
+
+
+def test_reaper_timer_is_wired_into_durable_inventories():
+    # Self-evidence that the timer is enabled by the governed deploy path (preset
+    # sweep) and tracked by the activation-drift audit -- not left to chance.
+    preset = (REPO_ROOT / "systemd" / "user-preset.d" / "hapax.preset").read_text()
+    assert "enable hapax-p0-incident-reaper.timer" in preset
+    audit = (REPO_ROOT / "scripts" / "audit-runtime-activation-drift.py").read_text()
+    assert '"hapax-p0-incident-reaper.timer"' in audit

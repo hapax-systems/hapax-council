@@ -769,7 +769,7 @@ def test_manifest_rejects_unknown_allowed_consumers(tmp_path: Path) -> None:
 
 
 def test_validator_first_consumer_partition_is_pinned() -> None:
-    expected_allowed = {"research_viewer", "local_prompt_context"}
+    expected_allowed = {"research_viewer", "local_prompt_context", "continuity_context"}
     expected_denied = {
         "dashboard",
         "qdrant_rag",
@@ -1500,6 +1500,7 @@ def valid_consumer_policy() -> dict[str, Any]:
     defaults = {
         "research_viewer": "allow_read_only",
         "local_prompt_context": "allow_with_ceiling",
+        "continuity_context": "allow_with_ceiling",
         "dashboard": "deny",
         "qdrant_rag": "deny",
         "public_export": "deny",

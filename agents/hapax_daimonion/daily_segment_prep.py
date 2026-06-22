@@ -40,6 +40,12 @@ from shared.hermeneutic_spiral import (
     persist_source_consequences,
     retrieve_fore_understanding,
 )
+from shared.inquiry_blackboard import (
+    BlackboardState,
+    Commitment,
+    attested_quiescence,
+    inverted_quiescence_enabled,
+)
 from shared.jsonl_append import append_jsonl
 from shared.resident_command_r import (
     RESIDENT_COMMAND_R_MODEL,
@@ -252,16 +258,6 @@ AXIS_B_DISSOCIATED_VETO_NOT_LOADABLE = "axis-B NDCVB dissociated@r honesty veto"
 AXIS_B_DISSOCIATED_VETO_NEXT_ACTION = (
     "Inspect the preserved Axis-B NDCVB report, withhold this segment from release, "
     "revise the candidate or source basis, and re-run the Axis-B scorer before prep release."
-)
-AXIS_B_NDCVB_REPORT_KEYS = (
-    "axis_b_ndcvb_report",
-    "ndcvb_axis_b_report",
-    "axis_b_report",
-)
-AXIS_B_NDCVB_REPORT_MAP_KEYS = (
-    "axis_b_ndcvb_reports",
-    "ndcvb_axis_b_reports",
-    "axis_b_reports",
 )
 PREP_STATUS_VERSION = 1
 PREP_STATUS_FILENAME = "prep-status.json"
@@ -849,35 +845,98 @@ def _recent_vault_topics(*, limit: int) -> list[str]:
     return topics
 
 
-def _candidate_seed_topics(
-    fore_understanding: list[dict[str, Any]] | None, *, limit: int
-) -> list[str]:
-    """Derive candidate seed topics for plan-time recruitment.
+_IMPINGE_SALIENCE_WEIGHT = 1.0
 
-    Prefers prior source-consequence topics (fore-understanding) and supplements
-    from the live vault when that channel is thin — routing around the near-dead
-    source-consequences channel rather than wiring its emptiness.
+
+def _seed_recruit_density(seed: str) -> int:
+    """Cheap recruitability probe: count local hits for a seed WITHOUT a full gather or web.
+
+    A count-only query of the primary grounding collection — enough to rank a groundable
+    seed above an abstract one before paying ``recruit_source_sets``' full per-candidate cost
+    (and it pre-filters dry seeds out of that costly recruit). Fails soft to 0 — an un-probable
+    seed ranks as if dry, never raises.
     """
-    seeds: list[str] = []
+    seed = (seed or "").strip()
+    if not seed:
+        return 0
+    try:
+        from agents.programme_authors.asset_resolver import _qdrant_search
+
+        return len(_qdrant_search("documents", seed, limit=3))
+    except Exception:
+        return 0
+
+
+def _impingement_salience(seed: str, impingements: list[dict[str, Any]] | None) -> float:
+    """How much a seed resonates with what is currently IMPINGING.
+
+    Closes the impingement→selection break: impingements previously reached only the compose
+    seed, never topic selection. A cheap LEXICAL overlap between the seed and recent impingement
+    narratives, weighted by impingement strength — biasing selection toward matter that is live.
+    NOT semantic (an embedding version is a follow-up); a measured resonance, not a topic rule.
+    Only ever BOOSTS an already-groundable seed (see ``_candidate_seed_topics``), so it can never
+    manufacture grounding for an un-recruitable topic.
+    """
+    if not impingements:
+        return 0.0
+    seed_words = set(re.findall(r"[a-z]{4,}", (seed or "").lower()))
+    if not seed_words:
+        return 0.0
+    best = 0.0
+    for imp in impingements:
+        if not isinstance(imp, dict):
+            continue
+        narrative_words = set(re.findall(r"[a-z]{4,}", str(imp.get("content") or "").lower()))
+        overlap = len(seed_words & narrative_words)
+        if not overlap:
+            continue
+        strength = imp.get("strength", 0.0)
+        strength = float(strength) if isinstance(strength, int | float) else 0.0
+        best = max(best, overlap * max(strength, 0.0))
+    return best
+
+
+def _candidate_seed_topics(
+    fore_understanding: list[dict[str, Any]] | None,
+    *,
+    limit: int,
+    impingements: list[dict[str, Any]] | None = None,
+) -> list[str]:
+    """Derive candidate seed topics for plan-time recruitment, RANKED by groundability + salience.
+
+    Collects a POOL from prior source-consequence topics (fore-understanding) + the live vault,
+    then ranks by MEASURED local recruit-density (a cheap probe) plus IMPINGEMENT salience, so
+    seeds that are both groundable AND live rank first. Abstract / un-recruitable seeds are NOT
+    banned — they rank below, and the recruiter's re-angle can still traverse them. Dynamics, not
+    rules: ranking by perceived density + impingement resonance, never a topic allowlist or mode
+    flag. Closes the two breaks the dead-end map found (topics admitted by label; impingements
+    never reaching selection).
+    """
+    pool: list[str] = []
     seen: set[str] = set()
     for entry in fore_understanding or []:
         if not isinstance(entry, dict):
             continue
         topic = str(entry.get("topic") or "").strip()
-        key = topic.lower()
-        if topic and key not in seen:
-            seen.add(key)
-            seeds.append(topic)
-        if len(seeds) >= limit:
-            return seeds
-    for topic in _recent_vault_topics(limit=limit):
-        key = topic.lower()
-        if key not in seen:
-            seen.add(key)
-            seeds.append(topic)
-        if len(seeds) >= limit:
-            break
-    return seeds
+        if topic and topic.lower() not in seen:
+            seen.add(topic.lower())
+            pool.append(topic)
+    for topic in _recent_vault_topics(limit=limit * 2):
+        if topic.lower() not in seen:
+            seen.add(topic.lower())
+            pool.append(topic)
+    if not pool:
+        return []
+
+    def _score(seed: str) -> float:
+        density = _seed_recruit_density(seed)
+        if density <= 0:
+            # Ungroundable: never promoted by impingement, but kept in the pool (banned nothing).
+            return 0.0
+        return density + _IMPINGE_SALIENCE_WEIGHT * _impingement_salience(seed, impingements)
+
+    scored = {seed: _score(seed) for seed in pool}
+    return sorted(pool, key=lambda seed: scored[seed], reverse=True)[:limit]
 
 
 def _gather_planner_channels() -> dict[str, Any]:
@@ -945,7 +1004,11 @@ def _plan_time_context(
     from agents.hapax_daimonion.angle_resolver import recruit_source_sets
     from agents.programme_manager.planner import author_thesis
 
-    seeds = _candidate_seed_topics(fore_understanding, limit=max_candidates)
+    # Re-impinge selection: the live impingement stream biases which seeds rank first, closing
+    # the break where impingements reached only the compose seed and never topic selection.
+    seeds = _candidate_seed_topics(
+        fore_understanding, limit=max_candidates, impingements=_read_recent_impingements()
+    )
     resolved_sources = recruit_source_sets(
         seeds,
         max_candidates=max_candidates,
@@ -1637,7 +1700,7 @@ def _build_refine_seed(seed: str, script: list[str], feedback: str) -> str:
     parts = [seed] if seed else []
     parts.append(
         "## REVISION TASK\n"
-        "The PRIOR DRAFT below was composed and then judged by the coherence council. "
+        "The PRIOR DRAFT below was composed and then judged by the council. "
         "Recompose the segment so it DIRECTLY addresses the council feedback — do NOT "
         "restate the prior draft verbatim; fix the named weaknesses (e.g. a flat opening "
         "becomes a real tension; an unresolved close gets a payoff). Keep what already "
@@ -1829,6 +1892,144 @@ def _append_candidate_ledger(prep_dir: Path, payload: dict[str, Any], artifact_p
     append_jsonl(ledger_path, row, sort_keys=True, raising=True)
 
 
+DEONTIC_LEDGER_SCHEMA_VERSION = 1
+
+
+def _coerce_grounds(raw: Any) -> list[str]:
+    """Normalize a claim's grounds to a clean list of refs.
+
+    A bare string is ONE ground, not a character sequence — guards against a model
+    emitting ``"src:0"`` instead of ``["src:0"]`` (iterating the string would fabricate
+    per-character grounds). Non-list/non-str ⇒ no grounds.
+    """
+
+    if isinstance(raw, (list, tuple)):
+        return [str(g).strip() for g in raw if str(g).strip()]
+    if isinstance(raw, str) and raw.strip():
+        return [raw.strip()]
+    return []
+
+
+def _project_commitments_from_contract(
+    segment_prep_contract: Mapping[str, Any],
+) -> list[Commitment]:
+    """Project one ``Commitment`` per composed claim, read off the claim's CONTENT.
+
+    Phase 1 of the deontic ledger: each entry of ``segment_prep_contract['claim_map']``
+    becomes a ``Commitment`` whose purport is read deterministically off the claim text,
+    its grounds, and its source-consequence — never a claim-type flag. Discharge is left
+    ``undischarged`` (discharge/attestation is later-phase work). No LLM call; conservative
+    by construction — it never invents an incompatibility the contract did not record.
+
+    Projection is per claim_map ENTRY, not per claim_id: two entries sharing a claim_id
+    yield two distinct Commitments (no dedupe). The inverted-quiescence path keys identity
+    on claim_id (a set), so a later phase that ships the flag should enforce unique
+    claim_ids upstream or merge by claim_id before resting on this board.
+    """
+
+    claim_map = segment_prep_contract.get("claim_map")
+    if not isinstance(claim_map, list):
+        # A present-but-non-list claim_map (str/dict) would otherwise iterate into
+        # characters/keys and silently yield nothing — treat any non-list as "no claims".
+        return []
+    commitments: list[Commitment] = []
+    for entry in claim_map:
+        if not isinstance(entry, Mapping):
+            continue
+        claim_id = str(entry.get("claim_id") or "").strip()
+        if not claim_id:
+            continue
+        claim_text = str(entry.get("claim_text") or "").strip()
+        grounds = _coerce_grounds(entry.get("grounds"))
+        source_consequence = str(entry.get("source_consequence") or "").strip()
+
+        purport: list[str] = []
+        if claim_text:
+            purport.append(f"asserts: {claim_text}")
+        if grounds:
+            # NOTE: in the live pipeline `grounds` is segment-wide-backfilled with a
+            # fallback recruited ref whenever ANY source was recruited
+            # (segment_prep_contract.py:996-997), so this element tracks
+            # RECRUITMENT-OCCURRED, NOT intrinsic empirical purport — it is
+            # anti-correlated with the R3 anti-fabrication target (the UNGROUNDED
+            # fabricated-empirical claim). It records a DEFERRAL fact ("this claim cites
+            # these grounds"), never the content-projected evidence-existence commitment,
+            # which is R3's purport-reader job. Do NOT calibrate a canary off this element.
+            purport.append("carries recruited grounds: " + ", ".join(grounds))
+        if source_consequence:
+            purport.append(f"licenses consequence: {source_consequence}")
+        if not purport:
+            # A claim that asserts nothing inspectable is itself a thin-reading
+            # fingerprint (the R1b detect-unbitten signal) — record it visibly rather
+            # than as a silent empty tuple.
+            purport.append(f"under-projected: claim {claim_id} carries no inspectable content")
+
+        commitments.append(
+            Commitment(
+                claim_id=claim_id,
+                purport=tuple(purport),
+                incompatibilities=(),
+                rebuttal_condition=str(entry.get("warrant") or ""),
+                qualifier=str(entry.get("qualifier_or_limit") or ""),
+                discharge_route="undischarged",
+            )
+        )
+    return commitments
+
+
+def _build_deontic_ledger(
+    segment_prep_contract: Any,
+    *,
+    segment_prep_contract_sha256: str,
+) -> dict[str, Any]:
+    """Build the OBSERVE-ONLY deontic-ledger record for a released segment artifact.
+
+    Records the projected commitments and ``would_quiesce_inverted`` — the commitment-aware
+    inverted-quiescence verdict, computed observe-only REGARDLESS of the flag (the exact
+    signal R3 will later gate on). In Phase 1 it is False for any board carrying claims
+    because no independent attestations exist yet (silence is not rest); it becomes
+    informative when R2 posts attestations. ``HAPAX_INVERTED_QUIESCENCE`` stays OFF and
+    NOTHING gates on any of this — it is recorded purely for observability and to seed the
+    later phases.
+
+    NEVER raises (the observe-only invariant lives here): any projection failure degrades to
+    a stub so a ledger fault can never block a release the coherence gate already authorized.
+    Every recorded value MUST be JSON-native and round-trip-identical — this dict is covered
+    by ``artifact_sha256`` and re-verified after a json reload.
+    """
+
+    try:
+        inverted_active = inverted_quiescence_enabled()
+        commitments = _project_commitments_from_contract(segment_prep_contract)
+        board = BlackboardState(commitments=commitments)
+        would_quiesce_inverted = attested_quiescence(board)
+        undischarged = sum(1 for c in commitments if c.discharge_route == "undischarged")
+        return {
+            "schema_version": DEONTIC_LEDGER_SCHEMA_VERSION,
+            "commitments": [c.model_dump(mode="json") for c in commitments],
+            "commitment_count": len(commitments),
+            "undischarged_count": undischarged,
+            "would_quiesce_inverted": would_quiesce_inverted,
+            "inverted_quiescence_active": inverted_active,
+            "segment_prep_contract_sha256": segment_prep_contract_sha256,
+        }
+    except Exception as exc:
+        log.warning(
+            "prep_segment: deontic-ledger projection failed (%s) — degraded observe-only stub",
+            exc,
+        )
+        return {
+            "schema_version": DEONTIC_LEDGER_SCHEMA_VERSION,
+            "commitments": [],
+            "commitment_count": 0,
+            "undischarged_count": 0,
+            "would_quiesce_inverted": None,
+            "inverted_quiescence_active": None,
+            "segment_prep_contract_sha256": segment_prep_contract_sha256,
+            "projection_error": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def _format_recruited_source_menu(resolved_source_set: ResolvedSourceSet) -> str:
     """Format the recruited set as a citable menu for the composer's seed.
 
@@ -2000,6 +2201,91 @@ def _capture_episode_impingements(trace: Any, *, since: float) -> None:
         )
 
 
+def _s2_reframe_enabled() -> bool:
+    """Compose-on-reject reframe is on by default; reversible via the env killswitch."""
+    return os.environ.get("HAPAX_SEGMENT_PREP_S2_REFRAME", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _record_s2_reframe_provenance(prep_session: dict[str, Any] | None, programme_id: str) -> None:
+    """Mark (best-effort) that this segment's plan was reframed by the capable model, so downstream
+    artifact/ledger consumers can label the aired segment honestly."""
+    if prep_session is None:
+        return
+    try:
+        reframed = prep_session.setdefault("s2_reframed_programmes", [])
+        if programme_id not in reframed:
+            reframed.append(programme_id)
+    except Exception:  # noqa: BLE001 — provenance bookkeeping must never break prep
+        log.debug("prep_segment: could not record S2 reframe provenance for %s", programme_id)
+
+
+def _attempt_s2_reframe(
+    prep_dir: Path,
+    *,
+    prep_session: dict[str, Any] | None,
+    programme_id: str,
+    role: str,
+    topic: str,
+    beats: list[str],
+    reason: str,
+    timeout: float,
+    deadline_monotonic: float | None = None,
+) -> tuple[str, str, list[str]] | None:
+    """Reframe an S2-rejected expository plan into an arc via the capable model, RE-VERIFIED by the
+    same gate. Returns ``(new_topic, new_narrative_beat, new_beats)`` iff the reframe PASSES the gate;
+    else ``None``.
+
+    Appends a second, labeled producer-DV ledger entry for the reframe outcome — the raw 35B reject
+    was already logged by the caller, so the SCED signal records BOTH "did the resident model
+    compose?" (no) and "did the system produce a composable segment?" (the reframe verdict).
+
+    The reframe adds TWO synchronous gateway calls (reframe + re-verify); each is bounded to the LIVE
+    remaining prep deadline, and the attempt is skipped entirely when too little budget remains, so the
+    rescue path can never overrun PREP_BUDGET_S near deadline exhaustion.
+    """
+    from agents.hapax_daimonion.segment_composability_gate import (
+        assess_composability,
+        reframe_to_arc,
+    )
+
+    def _remaining() -> float:
+        if deadline_monotonic is None:
+            return timeout
+        return max(0.0, deadline_monotonic - time.monotonic())
+
+    # Need budget for BOTH calls; skip the rescue rather than blow the deadline.
+    if deadline_monotonic is not None and _remaining() < 10.0:
+        return None
+    reframed = reframe_to_arc(
+        role, topic, beats, reason=reason, timeout=max(5.0, min(timeout, _remaining()))
+    )
+    if reframed is None:
+        return None
+    new_topic, new_narrative, new_beats = reframed
+    recheck = assess_composability(
+        role, new_topic, list(new_beats), timeout=max(5.0, min(timeout, _remaining()))
+    )
+    recheck_errored = bool(getattr(recheck, "errored", False))
+    _append_s2_composability_ledger(
+        prep_dir,
+        programme_id=programme_id,
+        role=role,
+        topic=new_topic,
+        segment_beats=list(new_beats),
+        accepted=recheck.accept,
+        reason=f"[reframed] {recheck.reason}",
+        errored=recheck_errored,
+    )
+    if recheck_errored or not recheck.accept:
+        return None
+    return new_topic, new_narrative, list(new_beats)
+
+
 def prep_segment(
     programme: Any,
     prep_dir: Path,
@@ -2104,36 +2390,78 @@ def prep_segment(
     # rubber-stamp aired as if it were a clean accept).
     if _gate_errored or not _composability.accept:
         _abstain = _gate_errored and _composability.accept
-        log.info(
-            "prep_segment: %s %s, skipping: %s",
-            prog_id,
-            "S2 gate degraded (fail-open, unverified — abstaining)"
-            if _abstain
-            else "un-composable topic+type",
-            _composability.reason,
-        )
-        _write_prep_diagnostic_outcome(
-            prep_dir,
-            prep_session=prep_session,
-            programme_id=prog_id,
-            role=role,
-            topic=topic,
-            segment_beats=list(beats),
-            terminal_status="no_candidate",
-            terminal_reason="s2_gate_errored_abstain" if _abstain else "uncomposable_topic_type",
-            not_loadable_reason=(
-                f"S2 gate degraded/unverified (abstain): {_composability.reason}"
+        # Compose-on-reject (RED-1): on a REAL reject (not a degraded/errored gate), rewrite the
+        # expository plan into an arc with the capable eval model, re-verified by the same gate. The
+        # raw 35B verdict is already in the ledger above, so the SCED producer-DV signal is preserved;
+        # only a GATE-PASSING reframe is propagated into content (declared_topic/narrative_beat/
+        # segment_beats) and we fall through to compose. A bad reframe just fails the gate again ->
+        # abstain below, so this NEVER airs an un-composable segment.
+        _reframe_accepted = False
+        if not _abstain and not _gate_errored and content is not None and _s2_reframe_enabled():
+            _reframed = _attempt_s2_reframe(
+                prep_dir,
+                prep_session=prep_session,
+                programme_id=prog_id,
+                role=role,
+                topic=topic,
+                beats=list(beats),
+                reason=_composability.reason,
+                timeout=_gate_timeout,
+                deadline_monotonic=deadline_monotonic,
+            )
+            if _reframed is not None:
+                new_topic, new_narrative, new_beats = _reframed
+                try:
+                    content.declared_topic = new_topic
+                    content.narrative_beat = new_narrative
+                    content.segment_beats = list(new_beats)
+                except Exception:  # noqa: BLE001 — immutable content: do not air a stale plan
+                    log.warning(
+                        "prep_segment: %s S2 reframe passed but content is immutable — abstaining",
+                        prog_id,
+                    )
+                else:
+                    topic = new_topic
+                    beats = new_beats
+                    _reframe_accepted = True
+                    _record_s2_reframe_provenance(prep_session, prog_id)
+                    log.info(
+                        "prep_segment: %s S2-reframed an expository plan into a gate-verified arc",
+                        prog_id,
+                    )
+        if not _reframe_accepted:
+            log.info(
+                "prep_segment: %s %s, skipping: %s",
+                prog_id,
+                "S2 gate degraded (fail-open, unverified — abstaining)"
                 if _abstain
-                else f"un-composable topic+type: {_composability.reason}"
-            ),
-            no_candidate_metadata={
-                "candidate_source": "segment_composability_gate",
-                "candidate_count": 0,
-                "role": role,
-            },
-        )
-        _record_substance_feedback(prep_session, prog_id, _composability.reason)
-        return None
+                else "un-composable topic+type",
+                _composability.reason,
+            )
+            _write_prep_diagnostic_outcome(
+                prep_dir,
+                prep_session=prep_session,
+                programme_id=prog_id,
+                role=role,
+                topic=topic,
+                segment_beats=list(beats),
+                terminal_status="no_candidate",
+                terminal_reason="s2_gate_errored_abstain"
+                if _abstain
+                else "uncomposable_topic_type",
+                not_loadable_reason=(
+                    f"S2 gate degraded/unverified (abstain): {_composability.reason}"
+                    if _abstain
+                    else f"un-composable topic+type: {_composability.reason}"
+                ),
+                no_candidate_metadata={
+                    "candidate_source": "segment_composability_gate",
+                    "candidate_count": 0,
+                    "role": role,
+                },
+            )
+            _record_substance_feedback(prep_session, prog_id, _composability.reason)
+            return None
 
     source_readiness = programme_source_readiness(programme)
     if source_readiness.get("ok") is not True:
@@ -2739,7 +3067,10 @@ def prep_segment(
                         len(refuted),
                         prog_id,
                     )
-                    repair_seed = f"{seed}\n\n{gap_report}" if seed else gap_report
+                    # Iterative recompose (NOT a cold start): carry the prior draft so the
+                    # disconfirmation repair revises it to discharge the gaps instead of
+                    # composing fresh and regressing the coherence already achieved.
+                    repair_seed = _build_refine_seed(seed, script, gap_report)
                     repair_prompt = _build_full_segment_prompt(programme, repair_seed)
                     repair_raw = _call_llm(
                         repair_prompt,
@@ -2838,7 +3169,8 @@ def prep_segment(
                 prog_id,
             )
             feedback = format_narrative_verdict_for_composer(narrative_verdict)
-            repair_seed = f"{seed}\n\n{feedback}" if seed else feedback
+            # Iterative recompose: carry the prior draft, not a cold start from seed.
+            repair_seed = _build_refine_seed(seed, script, feedback)
             repair_prompt = _build_full_segment_prompt(programme, repair_seed)
             repair_raw = _call_llm(
                 repair_prompt,
@@ -2879,7 +3211,9 @@ def prep_segment(
             prog_id,
             _summarize_actionability_failures(actionability),
         )
-        repair_seed = f"{seed}\n\n{feedback}" if seed else feedback
+        # Iterative recompose: carry the prior draft so fixing actionability does not
+        # cold-start a fresh segment and regress the coherence already achieved.
+        repair_seed = _build_refine_seed(seed, script, feedback)
         repair_prompt = _build_full_segment_prompt(programme, repair_seed)
         repair_raw = _call_llm(
             repair_prompt,
@@ -3423,6 +3757,18 @@ def prep_segment(
     # decisions (coherence / disconfirmation / narrative health, with
     # members_valid/families_valid) into the manifest artifact + append-only ledger.
     payload["council_decisions"] = council_decisions
+    # Phase-1 deontic ledger: project a Commitment per composed claim and record the
+    # (observe-only) blackboard state in the released artifact, BEFORE the artifact hash so
+    # the ledger is covered by artifact_sha256. The flag stays OFF — nothing gates on this.
+    # Wrapped defensively: a ledger failure can at worst omit the key, never block the
+    # release the coherence gate has already authorized.
+    try:
+        payload["deontic_ledger"] = _build_deontic_ledger(
+            segment_prep_contract,
+            segment_prep_contract_sha256=segment_prep_contract_sha256,
+        )
+    except Exception as exc:  # observe-only — never block an authorized release
+        log.warning("prep_segment: deontic-ledger build failed (%s) — omitted", exc)
     payload["artifact_sha256"] = _artifact_hash(payload)
     tmp = out_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -3873,12 +4219,19 @@ def run_prep(
         try:
             # AC 3a: pass the absolute prep deadline so prep_segment can fail
             # LOUD mid-segment instead of overrunning the budget unbounded.
-            path = prep_segment(
-                prog,
-                today,
-                prep_session=prep_session,
-                deadline_monotonic=start + PREP_BUDGET_S,
-            )
+            # Per-segment research scope: ONE memoization cache spans all of this
+            # segment's council passes (coherence, recheck, disconfirmation, narrative,
+            # actionability) so identical web_verify/grep/read research is not re-paid
+            # every recompose — the reentrant scope is reused by each inner deliberate().
+            from agents.deliberative_council.tools import tool_memoization_scope
+
+            with tool_memoization_scope():
+                path = prep_segment(
+                    prog,
+                    today,
+                    prep_session=prep_session,
+                    deadline_monotonic=start + PREP_BUDGET_S,
+                )
         except Exception as exc:
             _update_prep_status(
                 prep_session,
@@ -4422,7 +4775,11 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
             source_ref=f"coherence_check:{programme_id}",
             metadata={"check_type": "coherence", "programme_id": programme_id},
         )
-        config = CouncilConfig()
+        # ruler_hash = None => R1_PROTOCOL pilot/operational (resilient: substitution is a
+        # label, not a refusal). When a confirmatory study FREEZES its ruler (R2_PREREGISTER),
+        # it sets HAPAX_SEGMENT_PREP_RULER_HASH (later: read from the active ResearchCase via
+        # the RDLC consume-seam) so a served substitution then refuses (frozen_ruler_deviation).
+        config = CouncilConfig(ruler_hash=os.environ.get("HAPAX_SEGMENT_PREP_RULER_HASH") or None)
         verdict = asyncio.run(
             deliberate(council_input, CouncilMode.DISCONFIRMATION, CoherenceRubric(), config)
         )
@@ -4493,26 +4850,41 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
             passed=False, feedback="", refused=True, council_decisions=decision
         )
 
-    # #6 review-plane pattern -> the SCED ruler: QUARANTINE a verdict from a
-    # DEGRADED roster. If a family was substituted on the wire (served_substitutions
-    # > 0 — e.g. the anthropic seat answered by gemini under an Anthropic cap), the
-    # frozen ruler did NOT actually convene its genuine family-diverse panel, so the
-    # ruling is invalid data: it can never become a released SCED row. This is the
-    # council analog of the review plane's externally-witnessed degraded-family
-    # outage (loud + recorded on the decision + non-promotable). Refuse, like a
-    # below-quorum REFUSAL — the segment re-rules once the roster is healthy, rather
-    # than stamping a criterion-passing row scored by a substitute family.
-    if (health.get("served_substitutions") or 0) > 0:
+    # SCED ruler integrity, STAGE-AWARE (resilience vs confirmatory honesty). The #4224
+    # served-family floor (below_quorum, REFUSED above) already rejects a panel that lost
+    # family diversity. What remains is the FREEZE response to a served substitution
+    # (served_substitutions > 0 = the served roster deviated from the requested one):
+    #   - R1_PROTOCOL / operational (NOT frozen): the roster is not committed and the live
+    #     pool is abundant (6 families vs a floor of 4), so a within-floor substitution is a
+    #     transparency LABEL, not a refusal — the council stays resilient to single-provider
+    #     drop-out instead of falsely quarantining a genuinely family-diverse panel.
+    #   - R2_PREREGISTER -> R3_COLLECTION (frozen via config.ruler_hash): the confirmatory
+    #     study committed to a specific roster, so any deviation refuses (frozen_ruler_deviation).
+    # NOTE: the actual cause of segment-01's false quarantine was PHANTOM substitutions from a
+    # model_family/served-family namespace gap (deepseek/glm missing from MODEL_FAMILIES) — a
+    # fully healthy panel counted served_substitutions=2 with zero provider drop. Fixed in
+    # agents/deliberative_council/members.py. The diversity floor below_quorum is unchanged.
+    served_subs = health.get("served_substitutions") or 0
+    decision["ruler_substituted"] = served_subs > 0  # transparency label, both stages
+    is_frozen = getattr(config, "ruler_hash", None) is not None
+    if is_frozen and served_subs > 0:
         log.warning(
-            "_council_coherence_check: ruler DEGRADED (served_substitutions=%s, served=%s) "
+            "_council_coherence_check: FROZEN ruler deviated (served_substitutions=%s, served=%s) "
             "— QUARANTINED, no release for %s",
-            health.get("served_substitutions"),
+            served_subs,
             verdict.receipt.get("served_models"),
             programme_id,
         )
-        decision["quarantined"] = "ruler_substituted"
+        decision["quarantined"] = "frozen_ruler_deviation"
         return _CoherenceOutcome(
             passed=False, feedback="", refused=True, council_decisions=decision
+        )
+    if served_subs > 0:
+        log.info(
+            "_council_coherence_check: ruler substituted (served_substitutions=%s) — LABELED, "
+            "not refused (pilot/operational, family-diversity floor met) for %s",
+            served_subs,
+            programme_id,
         )
 
     # Critical-axis floor: the mean can MASK a catastrophic single-axis failure

@@ -15,7 +15,7 @@ import logging
 import os
 import re
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -433,6 +433,115 @@ def _find_task(task_root: Path, task_id: str) -> _TaskMatch | None:
         for path in sorted(root.glob(f"{task_id}*.md")):
             return _TaskMatch(path=path, closed=subdir == "closed")
     return None
+
+
+def reap_resolved_incidents(
+    *,
+    state_path: Path = DEFAULT_STATE_PATH,
+    ledger_path: Path = DEFAULT_LEDGER_PATH,
+    task_root: Path = DEFAULT_TASK_ROOT,
+    unit_recovered: Callable[[str], bool] | None = None,
+    now: datetime | None = None,
+) -> list[tuple[str, str]]:
+    """Drain RESOLVED P0 incidents from the coalescing state -- the missing 'drain' half.
+
+    An incident whose remediation cc-task is CLOSED, or whose systemd unit has RECOVERED
+    (``unit_recovered`` returns True -- the unit is no longer in a *failed* state, which
+    covers Type=oneshot/timer services that recover by succeeding to inactive, not only
+    long-running services that go active), is removed from state.json and a
+    p0_incident_resolved row is appended to the ledger. Without this, state.json grows
+    immortally and re-arming notify-failure@ refills it. Returns (fingerprint, reason) for
+    each reaped incident; best-effort -- a single incident's health-check failure never
+    blocks the rest. A unit that flaps back to failed after a reap is simply re-minted by
+    the next notify-failure@ firing, so a transient recovery never loses the incident.
+    """
+    now = now or datetime.now(UTC)
+    reaped: list[tuple[str, str]] = []
+    # Reap under the SAME lock record_notification() uses. The reap is a
+    # read -> decide -> delete -> store cycle on state.json; an unlocked reap
+    # racing a live intake would load a snapshot, then overwrite a concurrently
+    # recorded/updated incident -- silently dropping live P0 state. Holding the
+    # lock across the (fast) task-glob + systemctl probes serializes reap vs intake.
+    with _state_file_lock(state_path):
+        state = _load_state(state_path)
+        incidents = state.get("incidents", {})
+        resolved_rows: list[dict[str, Any]] = []
+        for fingerprint, record in list(incidents.items()):
+            if not isinstance(record, dict):
+                continue
+            task_id = record.get("task_id")
+            kind = record.get("kind", "")
+            reason: str | None = None
+            task_closed = False
+            if task_id:
+                match = _find_task(task_root, str(task_id))
+                if match is not None and match.closed:
+                    task_closed = True
+            # Fix 3: for systemd_service_failed incidents, require unit recovery
+            # even when the cc-task was closed — an administratively closed task
+            # while the unit STILL fails must not drain the incident.
+            if kind == "systemd_service_failed" and unit_recovered is not None:
+                unit = fingerprint.split(":", 1)[1] if ":" in fingerprint else ""
+                try:
+                    if unit and unit_recovered(unit):
+                        reason = "unit_recovered"
+                except Exception:  # noqa: BLE001 -- a health-check failure must not block the reap
+                    reason = None
+                # Only accept task_closed for systemd incidents if the unit also recovered
+                if reason is None and not task_closed:
+                    continue
+                if reason is None and task_closed:
+                    # task closed but unit still failing — do NOT reap
+                    continue
+            elif task_closed:
+                # Non-systemd incident with closed task — safe to reap
+                reason = "task_closed"
+            else:
+                continue
+            # Fix 2: preserve recurrence context in the resolved row so a
+            # recurrent incident that re-fires after reaping retains its lineage
+            resolved_row: dict[str, Any] = {
+                "ts": _iso(now),
+                "kind": "p0_incident_resolved",
+                "fingerprint": fingerprint,
+                "task_id": task_id,
+                "reason": reason,
+            }
+            recurrence_count = record.get("recurrence_count")
+            if recurrence_count is not None:
+                resolved_row["recurrence_count"] = recurrence_count
+            recurrence_of = record.get("recurrence_of_task_id")
+            if recurrence_of is not None:
+                resolved_row["recurrence_of_task_id"] = recurrence_of
+            base_task = record.get("base_task_id")
+            if base_task is not None:
+                resolved_row["base_task_id"] = base_task
+
+            reaped.append((fingerprint, reason))
+            del incidents[fingerprint]
+            resolved_rows.append(resolved_row)
+        # Fix 1: store state FIRST, then append ledger rows. If the state
+        # write fails, we keep the incidents (fail-safe). If ledger append
+        # fails after state write, the incident is drained but the resolved
+        # row is lost — acceptable (state is the SSOT, ledger is audit trail).
+        # This mirrors the #4165 intake ordering.
+        if reaped:
+            state["updated_at"] = _iso(now)
+            _store_state(state_path, state)
+            for row in resolved_rows:
+                appended = append_jsonl(
+                    ledger_path,
+                    row,
+                    sort_keys=True,
+                    raising=False,
+                )
+                if not appended:
+                    log.warning(
+                        "p0 incident resolved-row append failed (incident %s drained anyway): %s",
+                        row.get("fingerprint", "?"),
+                        ledger_path,
+                    )
+    return reaped
 
 
 def _available_recurrence_task_id(task_root: Path, base_task_id: str, recurrence_count: int) -> str:

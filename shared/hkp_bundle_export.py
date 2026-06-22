@@ -275,7 +275,11 @@ def export_shadow_bundle(
             "input_ref_hash": input_ref_hash,
             "output_tree_hash": output_tree_hash,
             "cache_only": True,
-            "allowed_consumers": ["research_viewer", "local_prompt_context"],
+            "allowed_consumers": [
+                "research_viewer",
+                "local_prompt_context",
+                "continuity_context",
+            ],
             "forbidden_consumers": sorted(
                 FORBIDDEN_CONSUMERS | {"qdrant_rag", "public_export", UNKNOWN_DENY_CONSUMER}
             ),
@@ -507,7 +511,11 @@ def _concept_for_source(
             "egress_state": "private",
             "public_export_allowed": False,
             "redaction_policy": "local_path_root_redaction",
-            "allowed_consumers": ["research_viewer", "local_prompt_context"],
+            "allowed_consumers": [
+                "research_viewer",
+                "local_prompt_context",
+                "continuity_context",
+            ],
             "forbidden_consumers": sorted(FORBIDDEN_CONSUMERS),
         },
         "authority": {
@@ -652,6 +660,7 @@ def _consumer_policy() -> dict[str, Any]:
     defaults = {
         "research_viewer": "allow_read_only",
         "local_prompt_context": "allow_with_ceiling",
+        "continuity_context": "allow_with_ceiling",
         "dashboard": "deny",
         "qdrant_rag": "deny",
         "public_export": "deny",

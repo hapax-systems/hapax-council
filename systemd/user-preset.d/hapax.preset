@@ -18,6 +18,7 @@ enable hapax-request-intake-consumer.path
 enable hapax-request-decompose.timer
 enable hapax-cc-task-offer-ready.timer
 enable hapax-security-signal-intake.timer
+enable hapax-p0-incident-reaper.timer
 enable hapax-source-activate.timer
 enable hapax-darkplaces-live-texture-rebuild.path
 enable hapax-screwm-gpu-drift-rebuild.path

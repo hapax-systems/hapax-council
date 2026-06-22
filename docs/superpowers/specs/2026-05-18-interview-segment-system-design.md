@@ -16,7 +16,7 @@
 Programme-interview-profile.json declares wards: question_card, transcript_card, unknowns_card. These don't exist in the compositor. Each extends HomageTransitionalSource, reads from SHM state files, polls at 1Hz.
 - Files: agents/studio_compositor/interview_question_ward.py, interview_transcript_ward.py, interview_unknowns_ward.py
 - Pattern: SegmentContentWard (agents/studio_compositor/segment_content_ward.py)
-- SHM: /dev/shm/hapax-compositor/interview-state.json (written by interview agent)
+- SHM: /dev/shm/hapax-compositor/interview-state.json (written by interview conductor)
 
 ### N2: Compositor Interview Layout
 config/compositor-layouts/segment-interview.json doesn't exist. Positions the 3 interview wards + camera feeds.

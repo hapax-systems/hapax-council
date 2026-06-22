@@ -41,6 +41,7 @@ CRITICAL_UNITS = frozenset(
         "hapax-relay-to-cc-tasks.timer",
         "hapax-request-decompose.timer",
         "hapax-request-intake-consumer.timer",
+        "hapax-p0-incident-reaper.timer",
         "hapax-security-signal-intake.timer",
         "hapax-source-activate.timer",
         "hapax-triage-officer.service",

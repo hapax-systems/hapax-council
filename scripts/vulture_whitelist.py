@@ -240,6 +240,12 @@ from shared.operator_vad_gate import (
     OperatorVADDecision,
     OperatorVADGate,
 )
+from shared.p0_incident_intake import reap_resolved_incidents
+
+# P0 incident reaper: invoked by the `hapax-p0-incident-intake reap` subcommand
+# (an extensionless script vulture does not scan) and the reaper systemd timer.
+reap_resolved_incidents
+
 from shared.policy_decide import evaluate_shadow_clean, replay_decision_log
 
 # Reform 3b shadow producer: replay_decision_log + evaluate_shadow_clean are the
@@ -4183,12 +4189,18 @@ _TaskSpecD8._enforce_d8_governance_floor
 # InterviewConductor is the new turn-state-motor MVP (cc-task
 # voice-interview-conductor-turn-motor-20260615, REQ-20260616 Track A). Its live caller
 # (daemon answer-buffer capture + runner-handle injection) is a follow-on task; the class
-# is exercised by tests/hapax_daimonion/test_interview_conductor.py.
+# is exercised by tests/hapax_daimonion/test_interview_conductor.py. InterviewStateWriter
+# is the source-only N1 ward feed seam for voice-interview-state-shm-writer-20260619; live
+# instantiation is deliberately deferred to conductor live-wiring.
 from agents.hapax_daimonion.interview_conductor import (
     InterviewConductor as _InterviewConductor,
 )
+from agents.hapax_daimonion.interview_conductor import (
+    InterviewStateWriter as _InterviewStateWriter,
+)
 
 _InterviewConductor
+_InterviewStateWriter
 
 # HKP validator-first slice — Pydantic invokes field/model validators
 # dynamically during bundle validation, and the extensionless
@@ -4316,3 +4328,133 @@ from shared.evidence_ledger import collect_hkp_evidence as _hkp_collect_evidence
 
 _hkp_build_packet
 _hkp_collect_evidence
+
+# classify_failure is the review-plane measurement-spine API (CapabilityAdapter thread): it maps the
+# channel-trust classifiers to a shared FailureReceipt. Consumed by the forthcoming worker-path +
+# dispatch-telemetry slices, not yet by a static caller. capability-adapter-failure-classification.
+try:
+    from scripts.review_team import (
+        classify_failure as _adapter_classify_failure,  # noqa: F401, E402
+    )
+
+    _adapter_classify_failure
+except ImportError:
+    pass
+
+# failure_code_for_zai derives a FailureCode from a Z.ai error_class. Its only non-test consumer is
+# the extensionless executable scripts/hapax-glmcp-reviewer (live: failure_code=failure_code_for_zai(
+# error_class) in classify_zai_error). Vulture scans .py modules but NOT no-extension script
+# entrypoints, so it cannot see that call site. capability-adapter-failure-classification.
+from shared.failure_classification import (
+    failure_code_for_zai as _glmcp_failure_code_for_zai,  # noqa: F401, E402
+)
+
+_glmcp_failure_code_for_zai
+
+# CapabilityAdapter protocol surface (capability-adapter-protocol-module). The whole adapter
+# layer is the thin uniform facade the dispatch/worker path WILL consume; this slice lands the
+# protocol + type hierarchy ahead of its consumers (worker-path / antigrav-glue / vibe-glue /
+# glmcp-reviewseat-coordination wire the live call sites). Until then only the test suite
+# exercises the methods, which the production vulture pass does not count. Reference the
+# consumer-pending surface so the unused-callable gate sees the use.
+from shared.capability_adapter_protocol import (  # noqa: E402
+    AntigravAdapter as _AntigravAdapter,
+)
+from shared.capability_adapter_protocol import (  # noqa: E402
+    BudgetAuthorityAdapter as _BudgetAuthorityAdapter,
+)
+from shared.capability_adapter_protocol import (  # noqa: E402
+    CapabilityAdapter as _CapabilityAdapter,
+)
+from shared.capability_adapter_protocol import (  # noqa: E402
+    ClaudeAdapter as _ClaudeAdapter,
+)
+from shared.capability_adapter_protocol import (  # noqa: E402
+    CodexAdapter as _CodexAdapter,
+)
+from shared.capability_adapter_protocol import (  # noqa: E402
+    ReviewSeatAdapter as _ReviewSeatAdapter,
+)
+from shared.capability_adapter_protocol import (  # noqa: E402
+    SendCapableAdapter as _SendCapableAdapter,
+)
+from shared.capability_adapter_protocol import (  # noqa: E402
+    WorkerAdapter as _WorkerAdapter,
+)
+
+_CapabilityAdapter.describe
+_CapabilityAdapter.admit
+_CapabilityAdapter.observe
+_CapabilityAdapter.collect_receipts
+_CapabilityAdapter.preflight
+_CapabilityAdapter.classify_failure
+_WorkerAdapter.launch
+_SendCapableAdapter.send
+_BudgetAuthorityAdapter
+_ReviewSeatAdapter
+_AntigravAdapter
+_ClaudeAdapter
+_CodexAdapter
+
+# worker_failure_witness (capability-adapter-worker-path): the receipt-append + guarded
+# family-availability witness are invoked by the extensionless launcher
+# scripts/hapax-methodology-dispatch (classify_and_witness_launch), which vulture does not scan as a
+# static importer. Reference them so the unused-callable gate sees the use.
+from shared.worker_failure_witness import (  # noqa: E402
+    append_failure_receipt_record as _append_failure_receipt_record,
+)
+from shared.worker_failure_witness import (  # noqa: E402
+    update_worker_family_availability as _update_worker_family_availability,
+)
+
+_append_failure_receipt_record
+_update_worker_family_availability
+
+# avsdlc_visual_intent (CASE-AVSDLC-VISUAL-INTENT-20260622, PR 3/N): the
+# intent-as-predicate MECHANISM ships AHEAD of its production caller — the witness
+# realized-vector computation and the release-gate conjunct (overall PASS = floors
+# AND intent_pass) land in PR 4/N. Until then these public helpers are exercised
+# only by tests; reference them so the unused-callable gate sees the use.
+from shared.avsdlc_visual_intent import (  # noqa: E402
+    anti_vacuity_check as _avi_anti_vacuity_check,
+)
+from shared.avsdlc_visual_intent import (  # noqa: E402
+    intent_hash_from_record as _avi_intent_hash_from_record,
+)
+from shared.avsdlc_visual_intent import (  # noqa: E402
+    intent_pass as _avi_intent_pass,
+)
+from shared.avsdlc_visual_intent import (  # noqa: E402
+    parse_intent_record as _avi_parse_intent_record,
+)
+from shared.avsdlc_visual_intent import (  # noqa: E402
+    serialize_intent_record as _avi_serialize_intent_record,
+)
+
+_avi_anti_vacuity_check
+_avi_intent_hash_from_record
+_avi_intent_pass
+_avi_parse_intent_record
+_avi_serialize_intent_record
+
+# avsdlc_realized_vector (CASE-AVSDLC-REALIZED-VECTOR-20260622, PR 4a): the realized
+# per-region vector computation ships AHEAD of its caller — the witness producer
+# (compute from live /dev/video52 frames + emit into the manifest/receipt) and the
+# gate conjunct land in follow-up slices. Until then it is exercised only by tests.
+from shared.avsdlc_realized_vector import (  # noqa: E402
+    realized_vector_from_frame as _avi_realized_vector_from_frame,
+)
+
+_avi_realized_vector_from_frame
+
+# avsdlc_witness (CASE-AVSDLC-VISUAL-INTENT-20260622, PR 4b): the witness producer
+# helper that binds (intent_hash, intent_pass) from a declared record + a captured
+# frame ships AHEAD of the live screwm-cns-witness --intent-record wiring (a tight
+# follow-up slice). The release-gate conjunct that CONSUMES the bound verdict lands
+# in this same PR 4b; this producer helper is exercised only by tests until the
+# witness CLI flag is wired.
+from shared.avsdlc_witness import (  # noqa: E402
+    intent_fields_from_record_and_frame as _avi_intent_fields_from_record_and_frame,
+)
+
+_avi_intent_fields_from_record_and_frame

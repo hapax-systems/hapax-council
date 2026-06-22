@@ -20,18 +20,30 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
 import numpy as np
 
+# Make ``shared`` importable when run directly (script lives at <repo>/scripts/).
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 # Substrate taps (exists()-guarded; corrected paths per the witness-procedure audit).
 SHM = Path("/dev/shm")
 ARTIFACTS = {
     "reverie": (SHM / "hapax-sources/reverie.rgba", (540, 960, 4)),
-    "drift_field": (SHM / "hapax-compositor/quake-drift-field.bgra", (256, 256, 4)),
-    "drift_currency": (SHM / "hapax-compositor/quake-drift-currency.bgra", (256, 256, 4)),
+    # drift_field/drift_currency RETIRED 2026-06-22: quake-drift-field.bgra's producer
+    # (hapax-quake-drift-field.service) is inactive+disabled, and quake-drift-currency.bgra has no
+    # producer — both taps were always ABSENT, leaving the witness blind to drift liveness and the
+    # reverie→drift causality edges dead. Repoint both at the LIVE drift-applied reverie surface
+    # (quake-live-reverie.bgra, 540×960×4) so coverage is restored. Same file, two lenses:
+    # drift_field (spatial, general verdict) + drift_currency (temporal-variance, special-cased).
+    "drift_field": (SHM / "hapax-compositor/quake-live-reverie.bgra", (540, 960, 4)),
+    "drift_currency": (SHM / "hapax-compositor/quake-live-reverie.bgra", (540, 960, 4)),
     "reverie_frame": (SHM / "hapax-visual/frame.jpg", None),  # jpg, bytes-only liveness
 }
 # Causality edges: downstream must advance IFF upstream advances.
@@ -179,7 +191,8 @@ def capture_obs(out: Path, source: str, scene: str, hold_s: float, interval_s: f
         )
     except Exception as e:
         return {"error": f"obs connect failed: {e}", "verdict": "OBS-UNAVAILABLE"}
-    res = {}
+    # Record the capture instrument so the emitted receipt binds it (require_via).
+    res: dict = {"via": "obs-websocket"}
     for target, kind in ((source, "source"), (scene, "scene")):
         frames, hashes, grays = [], [], []
         n = max(2, int(hold_s / interval_s))
@@ -226,6 +239,77 @@ def capture_obs(out: Path, source: str, scene: str, hold_s: float, interval_s: f
     return res
 
 
+def _read_intent_record(spec: str | None) -> str | None:
+    """Read a declared VisualIntentRecord from a file path, or return inline JSON as-is.
+    None when absent/unreadable. Never raises (a bad record binds no intent → under
+    require_intent the gate blocks avsdlc_intent_not_confirmed, which is the right call)."""
+    if not spec:
+        return None
+    try:
+        path = Path(spec).expanduser()
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+    except OSError:
+        # A long inline-JSON string can make is_file() raise (Errno 36, component too long);
+        # an unreadable file raises on read_text. Either way, fall through to treat as inline.
+        pass
+    return spec  # treat as inline JSON (or unreadable file)
+
+
+def _load_obs_source_frame(out: Path):
+    """Load the first captured OBS source frame (out/obs-source-00.png) as an RGB numpy
+    array, or None when absent (OBS skipped/failed). Never raises — a missing frame
+    binds no intent and must never break the observe path."""
+    frame_path = out / "obs-source-00.png"
+    if not frame_path.is_file():
+        return None
+    try:
+        import numpy as np
+        from PIL import Image
+
+        return np.asarray(Image.open(frame_path).convert("RGB"))
+    except Exception:  # noqa: BLE001 — a bad frame must never break the observe path.
+        return None
+
+
+def _emit_witness_receipt(
+    args: argparse.Namespace,
+    manifest: dict,
+    *,
+    intent_hash: str = "",
+    intent_pass: bool = False,
+) -> None:
+    """Mint + write a signed AVWitnessReceipt bound to the deployed gamedir bytes.
+
+    Best-effort: a receipt-emission failure must NEVER break the witness's
+    primary observe role (the daemon reads the exit code, not the receipt)."""
+    try:
+        from shared.avsdlc_witness import emit_receipt
+
+        key = Path(args.key_file).read_bytes()
+        gamedir = args.gamedir or os.environ.get("HAPAX_AVSDLC_GAMEDIR") or ""
+        if not gamedir:
+            root = os.environ.get("DARKPLACES_GAME_ROOT", "")
+            gamedir = str(Path(root) / "screwm") if root else ""
+        receipt = emit_receipt(
+            gamedir=gamedir,
+            current_json=args.current_json,
+            manifest=manifest,
+            out_path=args.receipt_out,
+            key=key,
+            ttl_s=args.receipt_ttl,
+            now=time.time(),
+            intent_hash=intent_hash,
+            intent_pass=intent_pass,
+        )
+        print(
+            f"  receipt {receipt.status} obs_moving={receipt.obs_moving} "
+            f"hash={receipt.content_hash[:12] or 'ABSENT'} -> {args.receipt_out}"
+        )
+    except Exception as e:  # noqa: BLE001 — observe path must be unaffected.
+        print(f"  receipt-emit FAILED (observe unaffected): {e}", file=sys.stderr)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--label", default="witness")
@@ -237,6 +321,41 @@ def main() -> int:
     ap.add_argument("--hold-s", type=float, default=12.0)
     ap.add_argument("--hold-interval-s", type=float, default=2.0)
     ap.add_argument("--skip-obs", action="store_true")
+    ap.add_argument(
+        "--emit-receipt",
+        action="store_true",
+        help="Mint + write a signed AVWitnessReceipt bound to the deployed gamedir bytes.",
+    )
+    ap.add_argument(
+        "--receipt-out",
+        default=str(Path.home() / ".cache/hapax/avsdlc/runtime-witness-receipt.json"),
+    )
+    ap.add_argument("--receipt-ttl", type=float, default=1800.0)
+    ap.add_argument(
+        "--gamedir",
+        default=None,
+        help="Deployed gamedir root to content-hash (default: $DARKPLACES_GAME_ROOT/screwm).",
+    )
+    ap.add_argument(
+        "--current-json",
+        default=str(Path.home() / ".cache/hapax/source-activation/current.json"),
+    )
+    ap.add_argument(
+        "--key-file",
+        default=os.environ.get("HAPAX_COORD_KEY_FILE")
+        or str(Path.home() / ".cache/hapax/coord/grant-key"),
+    )
+    ap.add_argument(
+        "--intent-record",
+        default=None,
+        help="Path to a JSON VisualIntentRecord OR inline JSON. With --emit-receipt, binds the "
+        "witness's independent intent_hash/intent_pass verdict into the receipt.",
+    )
+    ap.add_argument(
+        "--intent-pov",
+        default="obs-source",
+        help="POV label for the realized-vector computation (must match the record's predicates).",
+    )
     args = ap.parse_args()
 
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -270,6 +389,27 @@ def main() -> int:
         "overall": overall,
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
+
+    # Bind the independent intent verdict (PR 4b follow-up): when a record is declared +
+    # a live OBS source frame was captured, compute the realized-vector verdict so the
+    # emitted receipt carries intent_hash/intent_pass. Missing frame/record → empty
+    # (under require_intent the gate then blocks avsdlc_intent_not_confirmed). Never raises.
+    intent_hash, intent_pass = "", False
+    if args.emit_receipt and args.intent_record:
+        record = _read_intent_record(args.intent_record)
+        frame = _load_obs_source_frame(out)
+        if record and frame is not None:
+            try:
+                from shared.avsdlc_witness import intent_fields_from_record_and_frame
+
+                intent_hash, intent_pass = intent_fields_from_record_and_frame(
+                    record, frame, args.intent_pov
+                )
+            except Exception as e:  # noqa: BLE001 — never break the observe path.
+                print(f"  intent-bind skipped (observe unaffected): {e}", file=sys.stderr)
+
+    if args.emit_receipt:
+        _emit_witness_receipt(args, manifest, intent_hash=intent_hash, intent_pass=intent_pass)
 
     print(f"== CNS WITNESS [{args.label}] {overall} ==  -> {out}")
     for k, v in substrate.items():

@@ -298,6 +298,178 @@ def verify_escape_grant(
     return gate is None or grant.covers(gate)
 
 
+# --- AVWitnessReceipt (AVSDLC Tier-C: independent runtime-witness evidence) ----
+
+
+@dataclass(frozen=True)
+class AVWitnessReceipt:
+    """A signed receipt the independent runtime-witness emits and the release
+    gate VERIFIES (it never mints its own verdict).
+
+    Carries the deployed gamedir ``content_hash`` and the ``active_source_head``;
+    the verifier ENFORCES the byte-binding when the caller supplies the expected
+    ``content_hash`` (a receipt then cannot be reused for different bytes). A
+    genuine PASS requires ``status == "pass"`` AND ``obs_moving`` (the change
+    actually reached air). Unforgeable (HMAC over the canonical payload) and
+    short-lived (freshness in minutes via ``expires_at``).
+    """
+
+    receipt_id: str
+    content_hash: str
+    active_source_head: str
+    status: str  # "pass" | "fail"
+    obs_moving: bool
+    collected_at: float
+    expires_at: float
+    signature: str
+    via: str = ""  # the capture instrument that produced the verdict (e.g. obs-websocket)
+    perceptual_digest: str = ""  # sha256 over the witness per-region perceptual stats
+    intent_hash: str = ""  # sha256 of the pre-authored VisualIntentRecord (tamper-evident)
+    intent_pass: bool = (
+        False  # the witness's independent verdict: realized vector satisfied the declared intent?
+    )
+
+    def _signing_payload(self) -> dict[str, object]:
+        return {
+            "kind": "av_witness",
+            "receipt_id": self.receipt_id,
+            "content_hash": self.content_hash,
+            "active_source_head": self.active_source_head,
+            "status": self.status,
+            "obs_moving": self.obs_moving,
+            "collected_at": self.collected_at,
+            "expires_at": self.expires_at,
+            "via": self.via,
+            "perceptual_digest": self.perceptual_digest,
+            "intent_hash": self.intent_hash,
+            "intent_pass": self.intent_pass,
+        }
+
+    def is_expired(self, now: float) -> bool:
+        return now > self.expires_at
+
+    def is_pass(self) -> bool:
+        # Reaches-air binding: a "pass" verdict only counts if OBS was moving.
+        return self.status == "pass" and bool(self.obs_moving)
+
+
+#: Trusted capture instruments. A receipt whose ``via`` is outside this set is
+#: rejected when verification runs in ``require_via`` mode (staged rollout).
+_ALLOWED_VIA = frozenset({"obs-websocket"})
+
+
+def mint_av_witness_receipt(
+    *,
+    content_hash: str,
+    active_source_head: str,
+    status: str,
+    obs_moving: bool,
+    ttl_s: float,
+    key: bytes,
+    now: float,
+    via: str = "",
+    perceptual_digest: str = "",
+    intent_hash: str = "",
+    intent_pass: bool = False,
+) -> AVWitnessReceipt:
+    """Mint a signed runtime-witness receipt. The witness daemon is the only
+    legitimate minter — the release gate must never mint its own. ``via`` (the
+    capture instrument), ``perceptual_digest`` (over the per-region stats),
+    ``intent_hash`` (the pre-authored intent), and ``intent_pass`` (the witness's
+    independent verdict on it) are folded into the signature so none can be
+    altered after minting."""
+    fields = {
+        "receipt_id": secrets.token_hex(16),
+        "content_hash": content_hash,
+        "active_source_head": active_source_head,
+        "status": status,
+        "obs_moving": bool(obs_moving),
+        "collected_at": now,
+        "expires_at": now + ttl_s,
+        "via": via,
+        "perceptual_digest": perceptual_digest,
+        "intent_hash": intent_hash,
+        "intent_pass": bool(intent_pass),
+    }
+    payload = {"kind": "av_witness", **fields}
+    return AVWitnessReceipt(signature=_sign(payload, key), **fields)
+
+
+def verify_av_witness_receipt(
+    receipt: AVWitnessReceipt | None,
+    *,
+    key: bytes,
+    now: float,
+    content_hash: str | None = None,
+    require_via: bool = False,
+) -> bool:
+    """True iff the receipt is genuine and a real PASS:
+
+    - the HMAC signature matches under a NON-EMPTY ``key`` (an absent/empty key
+      hard-fails — an empty-key HMAC is trivially reproducible by anyone),
+    - it is unexpired,
+    - it is a genuine PASS (status pass AND obs moving) over NON-EMPTY deployed
+      bytes (an empty ``content_hash`` means the witness saw nothing → not a pass),
+    - when ``require_via`` is set, the capture instrument (``via``) must be trusted
+      (OBS) — a non-OBS / unknown capture is rejected (staged rollout),
+    - and, when ``content_hash`` is supplied, it binds exactly those bytes.
+
+    Pure: signature + freshness + verdict + optional instrument/byte-binding."""
+    if receipt is None:
+        return False
+    if not key:  # absent/empty key must fail closed, never HMAC under b"".
+        return False
+    if not _verify_sig(receipt._signing_payload(), receipt.signature, key):
+        return False
+    if receipt.is_expired(now):
+        return False
+    if not receipt.content_hash:  # witness saw no deployed bytes → not a pass.
+        return False
+    if not receipt.is_pass():
+        return False
+    if require_via and receipt.via not in _ALLOWED_VIA:
+        return False
+    return content_hash is None or receipt.content_hash == content_hash
+
+
+def serialize_av_receipt(receipt: AVWitnessReceipt) -> str:
+    data = dict(receipt._signing_payload())
+    data["signature"] = receipt.signature
+    return json.dumps(data)
+
+
+def parse_av_receipt(data: str | Mapping[str, object]) -> AVWitnessReceipt | None:
+    """Parse a serialized AV witness receipt. Never raises; returns None on error."""
+    try:
+        obj = json.loads(data) if isinstance(data, str) else data
+        if obj.get("kind") != "av_witness":
+            return None
+        return AVWitnessReceipt(
+            receipt_id=str(obj["receipt_id"]),
+            content_hash=str(obj["content_hash"]),
+            active_source_head=str(obj["active_source_head"]),
+            status=str(obj["status"]),
+            obs_moving=bool(obj["obs_moving"]),
+            collected_at=float(obj["collected_at"]),
+            expires_at=float(obj["expires_at"]),
+            signature=str(obj["signature"]),
+            via=str(obj.get("via", "")),
+            perceptual_digest=str(obj.get("perceptual_digest", "")),
+            intent_hash=str(obj.get("intent_hash", "")),
+            intent_pass=bool(obj.get("intent_pass", False)),
+        )
+    except Exception:  # noqa: BLE001 — malformed/missing input must never raise.
+        return None
+
+
+def read_av_receipt_file(path: str | Path) -> AVWitnessReceipt | None:
+    """Parse an AV witness receipt FILE. Never raises; returns None on error."""
+    try:
+        return parse_av_receipt(Path(path).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — a malformed/missing receipt must never raise.
+        return None
+
+
 # --- Operator CLI (daemon-independent grant tool) -----------------------------
 
 
