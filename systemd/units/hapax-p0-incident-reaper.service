@@ -1,8 +1,5 @@
 [Unit]
 Description=Drain resolved P0 incidents from the coalescing state (the reap half)
-# Route reap failures to the governed per-unit failure notifier, like every other
-# unit (inert while notify-failure@ is neutered; live with the notify-failure@ rearm).
-OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot

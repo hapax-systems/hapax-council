@@ -1050,11 +1050,135 @@ def test_systemd_unit_recovered_keeps_on_probe_exception():
     assert probe("u", run=raise_timeout) is False
 
 
-def test_reaper_service_routes_failures_to_notify_failure():
-    # Pin the durable failure wire: dropping OnFailure must never silently regress
-    # (notify-failure@%n.service is the governed per-unit failure route).
+def test_reap_systemd_task_closed_unit_still_failing_kept(tmp_path):
+    """Fix 3: a systemd incident whose cc-task was closed administratively while the
+    unit STILL fails must NOT be drained — the unit is the ground truth."""
+    task_root = tmp_path / "tasks"
+    (task_root / "active").mkdir(parents=True)
+    (task_root / "closed").mkdir(parents=True)
+    state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+
+    # Task is closed, but the unit is still failing
+    (task_root / "closed" / "p0-incident-systemd-svc.md").write_text("closed", encoding="utf-8")
+    state = {
+        "version": 1,
+        "incidents": {
+            "systemd_service_failed:still-broken.service": {
+                "kind": "systemd_service_failed",
+                "task_id": "p0-incident-systemd-svc",
+            }
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    reaped = p0_intake.reap_resolved_incidents(
+        state_path=state_path,
+        ledger_path=ledger_path,
+        task_root=task_root,
+        unit_recovered=lambda u: False,  # unit still failing
+    )
+    assert reaped == []
+    assert (
+        "systemd_service_failed:still-broken.service"
+        in json.loads(state_path.read_text())["incidents"]
+    )
+
+
+def test_reap_preserves_recurrence_context_in_ledger(tmp_path):
+    """Fix 2: recurrence fields are preserved in the resolved ledger row so a
+    recurrent incident that re-fires after reaping retains its lineage."""
+    task_root = tmp_path / "tasks"
+    (task_root / "active").mkdir(parents=True)
+    (task_root / "closed").mkdir(parents=True)
+    state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+
+    (task_root / "closed" / "p0-incident-base-r1.md").write_text("closed", encoding="utf-8")
+    state = {
+        "version": 1,
+        "incidents": {
+            "operational:recurrent": {
+                "kind": "lane_supervisor",
+                "task_id": "p0-incident-base-r1",
+                "recurrence_count": 1,
+                "recurrence_of_task_id": "p0-incident-base",
+                "base_task_id": "p0-incident-base",
+            }
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    reaped = p0_intake.reap_resolved_incidents(
+        state_path=state_path,
+        ledger_path=ledger_path,
+        task_root=task_root,
+    )
+    assert dict(reaped) == {"operational:recurrent": "task_closed"}
+
+    rows = [json.loads(line) for line in ledger_path.read_text().splitlines() if line.strip()]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["recurrence_count"] == 1
+    assert row["recurrence_of_task_id"] == "p0-incident-base"
+    assert row["base_task_id"] == "p0-incident-base"
+
+
+def test_reap_state_stored_before_ledger(tmp_path, monkeypatch):
+    """Fix 1: _store_state() must run BEFORE append_jsonl() so that a ledger
+    append failure does not leave the incident in state.json (state is SSOT)."""
+    task_root = tmp_path / "tasks"
+    (task_root / "active").mkdir(parents=True)
+    (task_root / "closed").mkdir(parents=True)
+    state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+
+    (task_root / "closed" / "p0-incident-ordering.md").write_text("closed", encoding="utf-8")
+    state = {
+        "version": 1,
+        "incidents": {
+            "operational:ordering": {
+                "kind": "lane_supervisor",
+                "task_id": "p0-incident-ordering",
+            }
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    call_order = []
+    original_store = p0_intake._store_state
+    original_append = p0_intake.append_jsonl
+
+    def tracking_store(path, data):
+        call_order.append("store_state")
+        return original_store(path, data)
+
+    def tracking_append(*args, **kwargs):
+        call_order.append("append_jsonl")
+        return original_append(*args, **kwargs)
+
+    monkeypatch.setattr(p0_intake, "_store_state", tracking_store)
+    monkeypatch.setattr(p0_intake, "append_jsonl", tracking_append)
+
+    reaped = p0_intake.reap_resolved_incidents(
+        state_path=state_path,
+        ledger_path=ledger_path,
+        task_root=task_root,
+    )
+    assert dict(reaped) == {"operational:ordering": "task_closed"}
+    assert call_order.index("store_state") < call_order.index("append_jsonl"), (
+        f"_store_state must run before append_jsonl; got order: {call_order}"
+    )
+
+
+def test_reaper_service_has_no_onfailure():
+    # Pin the REMOVAL of OnFailure: notify-failure@ is permanently neutered
+    # (zz-recovery-disable.conf routes to /bin/true; re-arm dropped from scope).
+    # An OnFailure line pointing at a neutered unit silences reaper failures —
+    # the safe state is no OnFailure (systemd default: logged, visible in
+    # `systemctl --user --failed`). See review round 8+ finding #4 (claude-1).
     svc = (REPO_ROOT / "systemd" / "units" / "hapax-p0-incident-reaper.service").read_text()
-    assert "OnFailure=notify-failure@%n.service" in svc
+    assert "OnFailure" not in svc
 
 
 def test_reaper_timer_is_wired_into_durable_inventories():

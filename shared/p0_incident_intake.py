@@ -465,47 +465,82 @@ def reap_resolved_incidents(
     with _state_file_lock(state_path):
         state = _load_state(state_path)
         incidents = state.get("incidents", {})
+        resolved_rows: list[dict[str, Any]] = []
         for fingerprint, record in list(incidents.items()):
             if not isinstance(record, dict):
                 continue
             task_id = record.get("task_id")
             kind = record.get("kind", "")
             reason: str | None = None
+            task_closed = False
             if task_id:
                 match = _find_task(task_root, str(task_id))
                 if match is not None and match.closed:
-                    reason = "task_closed"
-            if reason is None and kind == "systemd_service_failed" and unit_recovered is not None:
+                    task_closed = True
+            # Fix 3: for systemd_service_failed incidents, require unit recovery
+            # even when the cc-task was closed — an administratively closed task
+            # while the unit STILL fails must not drain the incident.
+            if kind == "systemd_service_failed" and unit_recovered is not None:
                 unit = fingerprint.split(":", 1)[1] if ":" in fingerprint else ""
                 try:
                     if unit and unit_recovered(unit):
                         reason = "unit_recovered"
                 except Exception:  # noqa: BLE001 -- a health-check failure must not block the reap
                     reason = None
-            if reason:
-                reaped.append((fingerprint, reason))
-                del incidents[fingerprint]
+                # Only accept task_closed for systemd incidents if the unit also recovered
+                if reason is None and not task_closed:
+                    continue
+                if reason is None and task_closed:
+                    # task closed but unit still failing — do NOT reap
+                    continue
+            elif task_closed:
+                # Non-systemd incident with closed task — safe to reap
+                reason = "task_closed"
+            else:
+                continue
+            # Fix 2: preserve recurrence context in the resolved row so a
+            # recurrent incident that re-fires after reaping retains its lineage
+            resolved_row: dict[str, Any] = {
+                "ts": _iso(now),
+                "kind": "p0_incident_resolved",
+                "fingerprint": fingerprint,
+                "task_id": task_id,
+                "reason": reason,
+            }
+            recurrence_count = record.get("recurrence_count")
+            if recurrence_count is not None:
+                resolved_row["recurrence_count"] = recurrence_count
+            recurrence_of = record.get("recurrence_of_task_id")
+            if recurrence_of is not None:
+                resolved_row["recurrence_of_task_id"] = recurrence_of
+            base_task = record.get("base_task_id")
+            if base_task is not None:
+                resolved_row["base_task_id"] = base_task
+
+            reaped.append((fingerprint, reason))
+            del incidents[fingerprint]
+            resolved_rows.append(resolved_row)
+        # Fix 1: store state FIRST, then append ledger rows. If the state
+        # write fails, we keep the incidents (fail-safe). If ledger append
+        # fails after state write, the incident is drained but the resolved
+        # row is lost — acceptable (state is the SSOT, ledger is audit trail).
+        # This mirrors the #4165 intake ordering.
+        if reaped:
+            state["updated_at"] = _iso(now)
+            _store_state(state_path, state)
+            for row in resolved_rows:
                 appended = append_jsonl(
                     ledger_path,
-                    {
-                        "ts": _iso(now),
-                        "kind": "p0_incident_resolved",
-                        "fingerprint": fingerprint,
-                        "task_id": task_id,
-                        "reason": reason,
-                    },
+                    row,
                     sort_keys=True,
                     raising=False,
                 )
                 if not appended:
                     log.warning(
                         "p0 incident resolved-row append failed (incident %s drained anyway): %s",
-                        fingerprint,
+                        row.get("fingerprint", "?"),
                         ledger_path,
                     )
-        if reaped:
-            state["updated_at"] = _iso(now)
-            _store_state(state_path, state)
     return reaped
 
 
