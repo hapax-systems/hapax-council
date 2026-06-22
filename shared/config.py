@@ -158,6 +158,23 @@ MODELS: dict[str, str] = {
 EMBEDDING_MODEL: str = "nomic-embed-cpu"
 EXPECTED_EMBED_DIMENSIONS: int = 768
 
+# CPU-only embed models — their Ollama Modelfile pins CPU layers (size_vram:0), so they
+# contend for NO GPU VRAM. Serializing such an embed through the GPU-VRAM coordinator
+# (gpu_slot's fcntl.flock) is a classification bug: the segment-prep producer deadlocked
+# as the 5th waiter on slot.0 behind unrelated GPU-resident work, for VRAM it never
+# touched (py-spy + /proc/locks verified, 2026-06-22). The `-cpu` suffix reflects a real
+# Modelfile placement fact (nomic-embed-cpu size_vram:0 vs nomic-embed-text size_vram:595MB),
+# so it is a reliable signal, not a heuristic — but the explicit set declares intent so a
+# future CPU model does not depend on the naming convention. HAPAX_GPU_SEM_NONBLOCK remains
+# the coarse process-wide override for callers config.py can't see.
+_CPU_EMBED_MODELS: frozenset[str] = frozenset({"nomic-embed-cpu"})
+
+
+def _is_cpu_embed_model(model_name: str) -> bool:
+    """True if the embed model is CPU-resident (no GPU VRAM) and must skip the GPU slot."""
+    return model_name in _CPU_EMBED_MODELS or model_name.endswith("-cpu")
+
+
 # RAG cross-encoder reranking (cost-offload Tier-1; ISAP
 # S5-CAPACITY-ROUTING-COST-OFFLOAD-TIER1 under CASE-CAPACITY-ROUTING-001).
 # Default OFF — byte-identical retrieval when off. Flip on (HAPAX_RAG_RERANK=1)
@@ -492,6 +509,10 @@ def embed(
         RuntimeError: If the Ollama embed call fails (or skips on GPU contention).
     """
     model_name = model or EMBEDDING_MODEL
+    # A CPU-embed model (size_vram:0) contends for no GPU VRAM — never block it on the
+    # GPU-VRAM flock (the classification bug that deadlocked the producer). gpu_slot stays
+    # model-agnostic; the model-awareness lives here at the embed call site.
+    cpu_model = _is_cpu_embed_model(model_name)
     # Capture calling agent name from parent span before entering new span
     _parent = trace.get_current_span()
     _caller_agent = ""
@@ -506,10 +527,17 @@ def embed(
         prefixed = f"{prefix}: {text}" if prefix else text
         _log.debug("embed: model=%s len=%d prefix=%s", model_name, len(text), prefix)
         try:
+            from contextlib import nullcontext
+
             from shared.gpu_semaphore import gpu_slot
 
             client = _get_ollama_client()
-            with gpu_slot(block=block_gpu):
+            # A CPU-embed model (Ollama size_vram:0) contends for no GPU VRAM → bypass the
+            # GPU-VRAM coordinator entirely (per-call HAPAX_GPU_SEM_NONBLOCK equivalent):
+            # never acquires a slot, never blocks, never skips on saturation. Full decoupling
+            # of CPU perception from GPU load — the classification-bug deadlock root.
+            slot = nullcontext() if cpu_model else gpu_slot(block=block_gpu)
+            with slot:
                 result = client.embed(model=model_name, input=prefixed)
         except BlockingIOError as exc:
             # best-effort caller (reactive recruitment on the event loop), GPU
@@ -575,6 +603,10 @@ def embed_batch(
     if not texts:
         return []
     model_name = model or EMBEDDING_MODEL
+    # A CPU-embed model (size_vram:0) contends for no GPU VRAM — never block it on the
+    # GPU-VRAM flock (the classification bug that deadlocked the producer). gpu_slot stays
+    # model-agnostic; the model-awareness lives here at the embed call site.
+    cpu_model = _is_cpu_embed_model(model_name)
     # Capture calling agent name from parent span before entering new span
     _parent = trace.get_current_span()
     _caller_agent = ""
@@ -590,10 +622,14 @@ def embed_batch(
         prefixed = [f"{prefix}: {t}" if prefix else t for t in texts]
         _log.debug("embed_batch: model=%s count=%d prefix=%s", model_name, len(texts), prefix)
         try:
+            from contextlib import nullcontext
+
             from shared.gpu_semaphore import gpu_slot
 
             client = _get_ollama_client()
-            with gpu_slot():
+            # CPU-embed model → bypass the GPU-VRAM coordinator (see embed()).
+            slot = nullcontext() if cpu_model else gpu_slot()
+            with slot:
                 result = client.embed(model=model_name, input=prefixed)
         except Exception as exc:
             span.set_attribute("rag.error", str(exc)[:500])

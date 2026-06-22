@@ -325,16 +325,25 @@ def _gather_sources(topic: str, *, max_per_collection: int = 5) -> list[SourcePa
     """Query Qdrant collections + vault for source material."""
     from agents.programme_authors.asset_resolver import (
         VAULT_ROOT,
-        _qdrant_search,
+        _qdrant_search_by_vector,
         _vault_notes_for_topic,
     )
+    from shared.config import embed_safe
 
     packets: list[SourcePacket] = []
     seen_hashes: set[str] = set()
 
+    # Embed the topic ONCE and reuse the vector across all collections — was: one embed per
+    # collection (the same query vector recomputed N times, the recruit-density probe's
+    # embed cost). Fail-soft: no vector -> skip Qdrant (the vault path still runs).
+    vector = embed_safe(topic, prefix="search_query")
     for collection in QDRANT_COLLECTIONS:
         try:
-            hits = _qdrant_search(collection, topic, limit=max_per_collection)
+            hits = (
+                _qdrant_search_by_vector(collection, vector, limit=max_per_collection)
+                if vector
+                else []
+            )
             for text, source, _score in hits:
                 h = hashlib.sha256(text.encode()).hexdigest()[:16]
                 if h in seen_hashes:
