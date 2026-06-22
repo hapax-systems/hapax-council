@@ -845,35 +845,98 @@ def _recent_vault_topics(*, limit: int) -> list[str]:
     return topics
 
 
-def _candidate_seed_topics(
-    fore_understanding: list[dict[str, Any]] | None, *, limit: int
-) -> list[str]:
-    """Derive candidate seed topics for plan-time recruitment.
+_IMPINGE_SALIENCE_WEIGHT = 1.0
 
-    Prefers prior source-consequence topics (fore-understanding) and supplements
-    from the live vault when that channel is thin — routing around the near-dead
-    source-consequences channel rather than wiring its emptiness.
+
+def _seed_recruit_density(seed: str) -> int:
+    """Cheap recruitability probe: count local hits for a seed WITHOUT a full gather or web.
+
+    A count-only query of the primary grounding collection — enough to rank a groundable
+    seed above an abstract one before paying ``recruit_source_sets``' full per-candidate cost
+    (and it pre-filters dry seeds out of that costly recruit). Fails soft to 0 — an un-probable
+    seed ranks as if dry, never raises.
     """
-    seeds: list[str] = []
+    seed = (seed or "").strip()
+    if not seed:
+        return 0
+    try:
+        from agents.programme_authors.asset_resolver import _qdrant_search
+
+        return len(_qdrant_search("documents", seed, limit=3))
+    except Exception:
+        return 0
+
+
+def _impingement_salience(seed: str, impingements: list[dict[str, Any]] | None) -> float:
+    """How much a seed resonates with what is currently IMPINGING.
+
+    Closes the impingement→selection break: impingements previously reached only the compose
+    seed, never topic selection. A cheap LEXICAL overlap between the seed and recent impingement
+    narratives, weighted by impingement strength — biasing selection toward matter that is live.
+    NOT semantic (an embedding version is a follow-up); a measured resonance, not a topic rule.
+    Only ever BOOSTS an already-groundable seed (see ``_candidate_seed_topics``), so it can never
+    manufacture grounding for an un-recruitable topic.
+    """
+    if not impingements:
+        return 0.0
+    seed_words = set(re.findall(r"[a-z]{4,}", (seed or "").lower()))
+    if not seed_words:
+        return 0.0
+    best = 0.0
+    for imp in impingements:
+        if not isinstance(imp, dict):
+            continue
+        narrative_words = set(re.findall(r"[a-z]{4,}", str(imp.get("content") or "").lower()))
+        overlap = len(seed_words & narrative_words)
+        if not overlap:
+            continue
+        strength = imp.get("strength", 0.0)
+        strength = float(strength) if isinstance(strength, int | float) else 0.0
+        best = max(best, overlap * max(strength, 0.0))
+    return best
+
+
+def _candidate_seed_topics(
+    fore_understanding: list[dict[str, Any]] | None,
+    *,
+    limit: int,
+    impingements: list[dict[str, Any]] | None = None,
+) -> list[str]:
+    """Derive candidate seed topics for plan-time recruitment, RANKED by groundability + salience.
+
+    Collects a POOL from prior source-consequence topics (fore-understanding) + the live vault,
+    then ranks by MEASURED local recruit-density (a cheap probe) plus IMPINGEMENT salience, so
+    seeds that are both groundable AND live rank first. Abstract / un-recruitable seeds are NOT
+    banned — they rank below, and the recruiter's re-angle can still traverse them. Dynamics, not
+    rules: ranking by perceived density + impingement resonance, never a topic allowlist or mode
+    flag. Closes the two breaks the dead-end map found (topics admitted by label; impingements
+    never reaching selection).
+    """
+    pool: list[str] = []
     seen: set[str] = set()
     for entry in fore_understanding or []:
         if not isinstance(entry, dict):
             continue
         topic = str(entry.get("topic") or "").strip()
-        key = topic.lower()
-        if topic and key not in seen:
-            seen.add(key)
-            seeds.append(topic)
-        if len(seeds) >= limit:
-            return seeds
-    for topic in _recent_vault_topics(limit=limit):
-        key = topic.lower()
-        if key not in seen:
-            seen.add(key)
-            seeds.append(topic)
-        if len(seeds) >= limit:
-            break
-    return seeds
+        if topic and topic.lower() not in seen:
+            seen.add(topic.lower())
+            pool.append(topic)
+    for topic in _recent_vault_topics(limit=limit * 2):
+        if topic.lower() not in seen:
+            seen.add(topic.lower())
+            pool.append(topic)
+    if not pool:
+        return []
+
+    def _score(seed: str) -> float:
+        density = _seed_recruit_density(seed)
+        if density <= 0:
+            # Ungroundable: never promoted by impingement, but kept in the pool (banned nothing).
+            return 0.0
+        return density + _IMPINGE_SALIENCE_WEIGHT * _impingement_salience(seed, impingements)
+
+    scored = {seed: _score(seed) for seed in pool}
+    return sorted(pool, key=lambda seed: scored[seed], reverse=True)[:limit]
 
 
 def _gather_planner_channels() -> dict[str, Any]:
@@ -941,7 +1004,11 @@ def _plan_time_context(
     from agents.hapax_daimonion.angle_resolver import recruit_source_sets
     from agents.programme_manager.planner import author_thesis
 
-    seeds = _candidate_seed_topics(fore_understanding, limit=max_candidates)
+    # Re-impinge selection: the live impingement stream biases which seeds rank first, closing
+    # the break where impingements reached only the compose seed and never topic selection.
+    seeds = _candidate_seed_topics(
+        fore_understanding, limit=max_candidates, impingements=_read_recent_impingements()
+    )
     resolved_sources = recruit_source_sets(
         seeds,
         max_candidates=max_candidates,
