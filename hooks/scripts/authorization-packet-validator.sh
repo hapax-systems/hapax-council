@@ -187,6 +187,7 @@ fi
 if [[ -z "$role" ]]; then
   echo "authorization-packet-validator: BLOCKED — cannot determine role for push/PR validation." >&2
   echo "  Release actions require a governed task claim with authority_case." >&2
+  echo "  Governed path: cc-claim <id> a task with authority_case, or mint a coord-grant, then re-run." >&2
   exit 2
 fi
 

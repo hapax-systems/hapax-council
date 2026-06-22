@@ -565,7 +565,9 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
   OWN_RELAY="$RELAY_DIR/${ROLE}.yaml"
   BROADCAST_SEEN_DIR="$RELAY_DIR/.seen"
   BROADCAST_SEEN_FILE="$BROADCAST_SEEN_DIR/${ROLE}-p0-broadcast.seen"
-  if [ -f "$OWN_RELAY" ]; then
+  # A roleless session has no role-targeted broadcasts — skip the empty-ROLE paths
+  # (OWN_RELAY/BROADCAST_SEEN_FILE would otherwise be shared across roleless sessions).
+  if [ -n "$ROLE" ] && [ -f "$OWN_RELAY" ]; then
     BROADCAST_LINES="$(
       awk '
         /^p0_broadcast_inbox_[0-9TZ]+:/ {
@@ -617,8 +619,9 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
     fi
   fi
 
-  # Show work queue items for this role
-  if [ -d "$RELAY_DIR/queue" ]; then
+  # Show work queue items for this role (roleless sessions have no role-keyed queue;
+  # without the guard, `grep -l "assigned_to: "` matches entries with empty assigned_to).
+  if [ -n "$ROLE" ] && [ -d "$RELAY_DIR/queue" ]; then
     QUEUE_ITEMS="$(grep -l "assigned_to: $ROLE" "$RELAY_DIR/queue/"*.yaml 2>/dev/null || true)"
     QUEUE_ITEMS="$(printf '%s\n' "$QUEUE_ITEMS" | sed -n '1,5p')"
     if [ -n "$QUEUE_ITEMS" ]; then
@@ -676,9 +679,11 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
         echo "PLANNING FEED: degraded (${FEED_AGE}s old) — rankings may be outdated"
       fi
       HAS_ACTIVE_CLAIM=false
-      FEED_CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-${ROLE}"
-      if [ -s "$FEED_CLAIM_FILE" ]; then
-        HAS_ACTIVE_CLAIM=true
+      if [ -n "$ROLE" ]; then
+        FEED_CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-${ROLE}"
+        if [ -s "$FEED_CLAIM_FILE" ]; then
+          HAS_ACTIVE_CLAIM=true
+        fi
       fi
       DISPATCHABLE_COUNT="$(jq -r '.dispatch.dispatchable_count // 0' "$PLANNING_FEED" 2>/dev/null || echo 0)"
       PLANNING_COUNT="$(jq -r '.dispatch.planning_attention_count // 0' "$PLANNING_FEED" 2>/dev/null || echo 0)"
@@ -729,8 +734,11 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
   # Surfaces the canonical CC-task state from the operator's vault so
   # sessions onboard with their claim + the next-up queue.
   CC_TASKS_VAULT="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
-  CC_CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-${ROLE}"
-  if [ -d "$CC_TASKS_VAULT" ]; then
+  # A roleless session (ROLE='') has no claim; skip so the empty suffix never reads a
+  # shared cc-active-task- file (the empty-ROLE collision class — same guard as the
+  # broadcast/queue blocks above; the handoff's live cc-active-task- collision).
+  if [ -n "$ROLE" ] && [ -d "$CC_TASKS_VAULT" ]; then
+    CC_CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-${ROLE}"
     echo ""
     echo "CC-TASK SSOT (Obsidian-canonical):"
     if [ -f "$CC_CLAIM_FILE" ]; then

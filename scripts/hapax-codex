@@ -35,7 +35,7 @@ fi
 
 if ! declare -F hapax_agent_worktree_role_or_default >/dev/null 2>&1; then
   hapax_agent_worktree_role_or_default() {
-    printf '%s\n' "${1:-alpha}"
+    printf '%s\n' "${1:-roleless}"
   }
 fi
 
