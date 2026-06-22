@@ -78,13 +78,17 @@ def test_push_and_write_gates_share_one_resolver() -> None:
     gate = CC_TASK_GATE.read_text()
     validator = VALIDATOR.read_text()
     release = RELEASE_GATE.read_text()
+    _hooks = REPO_ROOT / "hooks" / "scripts"
     for name, text in (
         ("cc-task-gate", gate),
         ("auth-packet-validator", validator),
         ("pr-release-gate", release),
+        ("relay-coordination-check", (_hooks / "relay-coordination-check.sh").read_text()),
+        ("escape-grant", (_hooks / "escape-grant.sh").read_text()),
+        ("cc-task-pr-link", (_hooks / "cc-task-pr-link.sh").read_text()),
     ):
         assert "hapax_effective_role" in text, (
-            f"{name} does not call hapax_effective_role — push/write can diverge (split-brain)"
+            f"{name} does not call hapax_effective_role — identity can diverge across consumers"
         )
     # FM-1: branch-name is not identity. No push-gate may infer role from `git symbolic-ref`.
     assert "symbolic-ref --short HEAD" not in validator, (

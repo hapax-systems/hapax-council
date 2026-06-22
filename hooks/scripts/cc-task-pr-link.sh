@@ -142,6 +142,14 @@ fi
 
 # --- 6. Determine session role ---
 role=""
+# Resolve via the single resolver FIRST. This closes the cc-* gap: the legacy scans
+# below only match greek alpha-epsilon + cx-*, so cc-*/vbe-*/antigrav lanes stranded
+# at status 'claimed' (the PR never auto-linked). hapax_effective_role returns the
+# session's actual role (cc-omnigent, cc-compstrat, ...); the scans below remain as a
+# fallback for sessions where the resolver is empty/unavailable.
+if declare -F hapax_effective_role >/dev/null 2>&1; then
+  role="$(hapax_effective_role 2>/dev/null || true)"
+fi
 claim_exists_for_role() {
   local candidate="${1:-}"
   [[ -n "$candidate" && -f "$HOME/.cache/hapax/cc-active-task-$candidate" ]]
