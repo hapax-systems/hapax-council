@@ -20,11 +20,17 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
 import numpy as np
+
+# Make ``shared`` importable when run directly (script lives at <repo>/scripts/).
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 # Substrate taps (exists()-guarded; corrected paths per the witness-procedure audit).
 SHM = Path("/dev/shm")
@@ -226,6 +232,36 @@ def capture_obs(out: Path, source: str, scene: str, hold_s: float, interval_s: f
     return res
 
 
+def _emit_witness_receipt(args: argparse.Namespace, manifest: dict) -> None:
+    """Mint + write a signed AVWitnessReceipt bound to the deployed gamedir bytes.
+
+    Best-effort: a receipt-emission failure must NEVER break the witness's
+    primary observe role (the daemon reads the exit code, not the receipt)."""
+    try:
+        from shared.avsdlc_witness import emit_receipt
+
+        key = Path(args.key_file).read_bytes()
+        gamedir = args.gamedir or os.environ.get("HAPAX_AVSDLC_GAMEDIR") or ""
+        if not gamedir:
+            root = os.environ.get("DARKPLACES_GAME_ROOT", "")
+            gamedir = str(Path(root) / "screwm") if root else ""
+        receipt = emit_receipt(
+            gamedir=gamedir,
+            current_json=args.current_json,
+            manifest=manifest,
+            out_path=args.receipt_out,
+            key=key,
+            ttl_s=args.receipt_ttl,
+            now=time.time(),
+        )
+        print(
+            f"  receipt {receipt.status} obs_moving={receipt.obs_moving} "
+            f"hash={receipt.content_hash[:12] or 'ABSENT'} -> {args.receipt_out}"
+        )
+    except Exception as e:  # noqa: BLE001 — observe path must be unaffected.
+        print(f"  receipt-emit FAILED (observe unaffected): {e}", file=sys.stderr)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--label", default="witness")
@@ -237,6 +273,30 @@ def main() -> int:
     ap.add_argument("--hold-s", type=float, default=12.0)
     ap.add_argument("--hold-interval-s", type=float, default=2.0)
     ap.add_argument("--skip-obs", action="store_true")
+    ap.add_argument(
+        "--emit-receipt",
+        action="store_true",
+        help="Mint + write a signed AVWitnessReceipt bound to the deployed gamedir bytes.",
+    )
+    ap.add_argument(
+        "--receipt-out",
+        default=str(Path.home() / ".cache/hapax/avsdlc/runtime-witness-receipt.json"),
+    )
+    ap.add_argument("--receipt-ttl", type=float, default=1800.0)
+    ap.add_argument(
+        "--gamedir",
+        default=None,
+        help="Deployed gamedir root to content-hash (default: $DARKPLACES_GAME_ROOT/screwm).",
+    )
+    ap.add_argument(
+        "--current-json",
+        default=str(Path.home() / ".cache/hapax/source-activation/current.json"),
+    )
+    ap.add_argument(
+        "--key-file",
+        default=os.environ.get("HAPAX_COORD_KEY_FILE")
+        or str(Path.home() / ".cache/hapax/coord/grant-key"),
+    )
     args = ap.parse_args()
 
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -270,6 +330,9 @@ def main() -> int:
         "overall": overall,
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
+
+    if args.emit_receipt:
+        _emit_witness_receipt(args, manifest)
 
     print(f"== CNS WITNESS [{args.label}] {overall} ==  -> {out}")
     for k, v in substrate.items():
