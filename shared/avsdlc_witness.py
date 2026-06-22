@@ -86,6 +86,47 @@ def receipt_status_from_manifest(manifest: Mapping[str, Any]) -> tuple[str, bool
     return status, obs_moving
 
 
+def via_from_manifest(manifest: Mapping[str, Any]) -> str:
+    """The capture instrument that produced the OBS verdict (e.g. obs-websocket).
+    Empty when OBS was not the capture path — the gate can reject that under
+    ``require_via``."""
+    obs = manifest.get("obs")
+    if isinstance(obs, Mapping):
+        return str(obs.get("via", ""))
+    return ""
+
+
+def perceptual_digest_from_manifest(manifest: Mapping[str, Any]) -> str:
+    """Deterministic sha256 over the witness's per-region / per-artifact perceptual
+    stats — so the receipt BINDS the perceptual evidence instead of discarding it.
+    Returns "" when the manifest carries no perceptual stats (nothing to bind)."""
+    stats: dict[str, Any] = {}
+    substrate = manifest.get("substrate")
+    if isinstance(substrate, Mapping):
+        for name in sorted(substrate):
+            entry = substrate[name]
+            if isinstance(entry, Mapping):
+                stats[f"substrate.{name}"] = [
+                    entry.get("spatial_var"),
+                    entry.get("temporal_zone_moving_frac"),
+                    entry.get("byte_mad"),
+                ]
+    obs = manifest.get("obs")
+    if isinstance(obs, Mapping):
+        for kind in sorted(obs):
+            entry = obs[kind]
+            if isinstance(entry, Mapping) and "mean_consecutive_delta" in entry:
+                stats[f"obs.{kind}"] = [
+                    entry.get("mean_consecutive_delta"),
+                    entry.get("max_consecutive_delta"),
+                    entry.get("distinct"),
+                ]
+    if not stats:
+        return ""
+    blob = json.dumps(stats, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
+
+
 def build_receipt_from_witness(
     manifest: Mapping[str, Any],
     *,
@@ -106,6 +147,8 @@ def build_receipt_from_witness(
         ttl_s=ttl_s,
         key=key,
         now=now,
+        via=via_from_manifest(manifest),
+        perceptual_digest=perceptual_digest_from_manifest(manifest),
     )
 
 

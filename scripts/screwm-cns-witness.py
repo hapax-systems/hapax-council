@@ -185,7 +185,8 @@ def capture_obs(out: Path, source: str, scene: str, hold_s: float, interval_s: f
         )
     except Exception as e:
         return {"error": f"obs connect failed: {e}", "verdict": "OBS-UNAVAILABLE"}
-    res = {}
+    # Record the capture instrument so the emitted receipt binds it (require_via).
+    res: dict = {"via": "obs-websocket"}
     for target, kind in ((source, "source"), (scene, "scene")):
         frames, hashes, grays = [], [], []
         n = max(2, int(hold_s / interval_s))
