@@ -484,17 +484,28 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
     ROLE="$(hapax-whoami 2>/dev/null | tr -d '[:space:]')"
   fi
   if [ -z "$ROLE" ]; then
+    # cwd is a fallback signal ONLY for the interface-qualified worktree slots
+    # (the worktree NAME is the role assignment). The primary council tree and
+    # any other cwd are NOT a role: no explicit grant => ROLELESS, never alpha.
+    # An alpha default here was the identity-leak root cause (cns-vs-alpha).
+    # Operator law: nothing resolves to a role by default.
     case "$PWD" in
-      */hapax-council) ROLE="alpha" ;;
       */hapax-council--beta) ROLE="beta" ;;
       */hapax-council--delta*) ROLE="delta" ;;
       */hapax-council--epsilon*) ROLE="epsilon" ;;
-      *) ROLE="alpha" ;;
+      *) ROLE="" ;;
     esac
   fi
 
+  if [ -z "$ROLE" ]; then
+    echo ""
+    echo "RELAY PROTOCOL ACTIVE — you are **roleless** (no explicit role assigned)"
+    echo "  No role env var / no interface-qualified worktree slot / identity resolver empty."
+    echo "  Do not assume a role or act on a role-keyed queue. Read $RELAY_DIR/PROTOCOL.md only if joining relay coordination."
+  else
   echo ""
   echo "RELAY PROTOCOL ACTIVE — you are **$ROLE**"
+  fi
   if [ -f "$RELAY_DIR/onboarding-${ROLE}.md" ]; then
     echo "Read $RELAY_DIR/onboarding-${ROLE}.md and onboard immediately."
   elif [ -n "${AGENT_SLOT:-}" ] && [ -f "$RELAY_DIR/onboarding-${AGENT_SLOT}.md" ]; then
@@ -534,7 +545,7 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
   # Durable relay MQ consumption. This is fail-open by contract: SQLite
   # missing/locked/corrupt/import failures must not block SessionStart.
   MQ_CONSUMER="$SCRIPT_DIR/../../scripts/hapax-mq-consume"
-  if [ -x "$MQ_CONSUMER" ]; then
+  if [ -x "$MQ_CONSUMER" ] && [ -n "$ROLE" ]; then
     "$MQ_CONSUMER" --role "$ROLE" --limit 8 --timeout 2 2>/dev/null || true
   fi
 
@@ -543,7 +554,7 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
   # filename (`codex-to-alpha-...md`). Surface them on wake/tick and write a
   # read receipt so operator copy/paste is not the coordination transport.
   RELAY_INBOX="$SCRIPT_DIR/../../scripts/hapax-relay-inbox"
-  if [ -x "$RELAY_INBOX" ]; then
+  if [ -x "$RELAY_INBOX" ] && [ -n "$ROLE" ]; then
     "$RELAY_INBOX" --role "$ROLE" --relay-dir "$RELAY_DIR" --mark-seen --limit 8 2>/dev/null || true
   fi
 
