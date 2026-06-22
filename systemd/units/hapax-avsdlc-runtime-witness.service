@@ -1,0 +1,25 @@
+[Unit]
+Description=Hapax AVSDLC independent runtime-witness (signs per-content-hash AV receipts; P0+RED on live AV regression)
+After=hapax-secrets.service hapax-darkplaces-v4l2.service
+Wants=hapax-darkplaces-v4l2.service
+# DELIBERATELY NOT an ExecStartPre on darkplaces/compositor: a fail-closed gate
+# at the live restart would crash-loop air (hapax-darkplaces-v4l2 runs the asset
+# install inside ExecStart with Restart=always). This is a standalone observer
+# — the CI-analogue for live AV — and it carries NO compositor-runtime-source
+# ExecStartPre so it keeps witnessing even while a deploy is mid-flux.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python scripts/avsdlc-runtime-witness-daemon.py --interval 120
+MemoryMax=512M
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=default.target
