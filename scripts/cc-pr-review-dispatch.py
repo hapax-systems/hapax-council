@@ -502,35 +502,109 @@ class ReviewerProcessError(RuntimeError):
         self.returncode = returncode
 
 
-def default_reviewer_runner(seat: review_team.Seat, family_cfg: dict[str, Any], prompt: str) -> str:
-    """Run one reviewer CLI (argv from the registry, prompt on stdin)."""
+@dataclass(frozen=True)
+class ReviewerReply:
+    """A reviewer's stdout plus the route that produced it.
 
-    cmd = [str(part) for part in family_cfg["reviewer_command"]]
+    ``via`` is ``"primary"`` for the family's ``reviewer_command`` or
+    ``"fallback:<n>"`` for the n-th ``fallback_commands`` entry, so the dossier
+    records when a seat answered through its fallback route.
+    """
+
+    stdout: str
+    via: str = "primary"
+
+
+def default_reviewer_runner(
+    seat: review_team.Seat, family_cfg: dict[str, Any], prompt: str
+) -> ReviewerReply:
+    """Run a reviewer CLI, walking provider fallbacks on a process failure.
+
+    Tries ``reviewer_command`` then each ``fallback_commands`` entry in order,
+    returning the first clean (rc=0) reply. Anti-forge channel-trust (round-5/6)
+    is preserved by construction: a NONZERO exit is the CLI/provider speaking,
+    not the model, so walking on it can never let a model-controlled malformed
+    reply buy a second model. A CLEAN exit (rc=0) — even with unparseable stdout
+    (invalid-output) — returns immediately and never reaches a fallback.
+    """
+
     timeout = int(family_cfg.get("timeout_seconds", 1200))
-    proc = subprocess.run(
-        cmd,
-        input=prompt,
-        cwd=str(REPO_ROOT),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout,
-    )
-    if proc.returncode != 0:
+    routes: list[tuple[list[str], str]] = [
+        ([str(part) for part in family_cfg["reviewer_command"]], "primary")
+    ]
+    for index, fallback in enumerate(family_cfg.get("fallback_commands") or []):
+        routes.append(([str(part) for part in fallback], f"fallback:{index}"))
+
+    last_error: ReviewerProcessError | None = None
+    for cmd, via in routes:
+        try:
+            proc = subprocess.run(
+                cmd,
+                input=prompt,
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            # a hung provider is a transport/process failure, not model output
+            # (channel-trust preserved): walk to the next route, and on the final
+            # route raise a diagnostic is_provider_outage matches ('request timed
+            # out after ...') so the family is stamped OUT, not silently cleared
+            # as invalid-output (which would hide the hang).
+            LOG.warning(
+                "reviewer %s (%s) route %s timed out after %ds",
+                seat.id,
+                seat.family,
+                via,
+                timeout,
+            )
+            last_error = ReviewerProcessError(
+                f"request timed out after {timeout}s", returncode=-1, stdout=""
+            )
+            continue
+        except (FileNotFoundError, PermissionError, OSError) as exc:
+            # a missing/non-executable reviewer binary is a route failure, not
+            # model output: walk on, and raise a diagnostic is_reviewer_route_unavailable
+            # matches ('failed to launch reviewer route ...') on the final route.
+            LOG.warning(
+                "reviewer %s (%s) route %s failed to launch: %s",
+                seat.id,
+                seat.family,
+                via,
+                exc,
+            )
+            last_error = ReviewerProcessError(
+                f"failed to launch reviewer route {via}: {exc}", returncode=-1, stdout=""
+            )
+            continue
+        if proc.returncode == 0:
+            if via != "primary":
+                LOG.info(
+                    "reviewer %s (%s) recovered via fallback %s after a primary route failure",
+                    seat.id,
+                    seat.family,
+                    via,
+                )
+            return ReviewerReply(stdout=proc.stdout, via=via)
         LOG.warning(
-            "reviewer %s (%s) exited rc=%d: %s",
+            "reviewer %s (%s) route %s exited rc=%d: %s",
             seat.id,
             seat.family,
+            via,
             proc.returncode,
             proc.stderr.strip()[:300],
         )
-        # a NONZERO exit is the CLI speaking, not the model (round-5 channel
-        # trust): raise so the classifier can inspect stderr. Stdout stays
-        # model-influenced and must not forge a quota wall.
-        raise ReviewerProcessError(
+        # a NONZERO exit is the CLI/provider speaking, not the model (round-5
+        # channel trust): the next fallback may route around it. Capture this
+        # route's diagnostics; if every route fails the LAST one is raised so the
+        # downstream classifier inspects the route tried last.
+        last_error = ReviewerProcessError(
             proc.stderr.strip(), returncode=proc.returncode, stdout=proc.stdout
         )
-    return proc.stdout
+    assert last_error is not None  # routes is non-empty: reviewer_command is always present
+    raise last_error
 
 
 def dispatch_reviews(
@@ -551,8 +625,15 @@ def dispatch_reviews(
         quota_wall_stdout = ""
         diagnostic_output = ""
         diagnostic_stdout = ""
+        via = "primary"
         try:
-            reply = reviewer_runner(seat, family_cfgs[seat.family], prompts[index])
+            result = reviewer_runner(seat, family_cfgs[seat.family], prompts[index])
+            if isinstance(result, ReviewerReply):
+                reply = result.stdout
+                via = result.via
+            else:
+                # backward-compat: an injected test runner may return a bare string.
+                reply = result
         except ReviewerProcessError as exc:
             LOG.warning("reviewer %s (%s) process failed: %s", seat.id, seat.family, exc)
             reply = ""
@@ -623,7 +704,7 @@ def dispatch_reviews(
             reply_excerpt = truncate_context(
                 (reply or process_output or ""), limit=MAX_REVIEW_REPLY_EXCERPT_CHARS
             ).strip()
-            return {
+            invalid_review = {
                 "id": seat.id,
                 "family": seat.family,
                 "verdict": verdict,
@@ -631,11 +712,16 @@ def dispatch_reviews(
                 "checklist": {},
                 "raw_reply_excerpt": reply_excerpt,
             }
+            if via != "primary":
+                invalid_review["via_fallback"] = via
+            return invalid_review
         review = {"id": seat.id, "family": seat.family, **parsed}
         if parsed.get("parse_path") != "fence":
             review["raw_reply_excerpt"] = truncate_context(
                 reply or "", limit=MAX_REVIEW_REPLY_EXCERPT_CHARS
             ).strip()
+        if via != "primary":
+            review["via_fallback"] = via
         return review
 
     with ThreadPoolExecutor(max_workers=max(1, len(constitution.seats))) as pool:

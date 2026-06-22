@@ -445,6 +445,37 @@ def _synth(rt, reviews: list[dict], *, team_class: str = "t2_standard", **kwargs
     )
 
 
+def test_via_fallback_accept_admits_through_admission_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reviewer carrying a ``via_fallback`` provenance key (a seat that recovered
+    via the LiteLLM fallback) must synthesize to QUORUM_ACCEPT and pass the
+    admission gate with no via_fallback / unknown-key blocker. Pins the invariant
+    that the admission gate's per-reviewer field reads (no key allowlist) tolerate
+    the new provenance key, so a fallback-recovered PR is never stranded at
+    admission by a future strict reviewer schema."""
+    rt = _load_review_team_module()
+    reviews = [
+        {
+            "id": "claude-1",
+            "family": "claude",
+            "verdict": "accept",
+            "findings": [],
+            "checklist": ALWAYS_ON_CHECKLIST,
+            "via_fallback": "fallback:0",
+        },
+        _review("gemini-1", "gemini", "accept"),
+    ]
+    dossier = _synth(rt, reviews)
+    assert dossier["review_team_verdict"] == rt.QUORUM_ACCEPT
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".git").mkdir(exist_ok=True)
+    blockers = rt._dossier_validity_blockers(
+        dossier, pr_head_sha="a" * 40, registry=rt.load_lens_registry()
+    )
+    assert not any("via_fallback" in b or "unknown" in b.lower() for b in blockers), blockers
+
+
 class TestSynthesizeDossier:
     def test_dossier_persists_scope_metadata(self) -> None:
         rt = _load_review_team_module()

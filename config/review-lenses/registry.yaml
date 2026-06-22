@@ -95,6 +95,14 @@ families:
     # scripts/hapax-agy-reviewer; codex complies natively.
     reviewer_command: ["claude", "-p", "--append-system-prompt", "You are a blind PR reviewer invoked non-interactively. Output policy is ABSOLUTE and overrides any urge to explain: your ENTIRE reply MUST be exactly one fenced yaml code block (opening ```yaml, your verdict/findings/checklist, closing ```) and NOTHING ELSE — no preamble, no reasoning, no prose, no text whatsoever before or after the fence. The dossier parser requires the whole reply to be a single bare yaml fence; ANY character outside it discards your entire review as invalid-output (a silently lost vote). Do all reasoning silently; emit only the fence."]
     timeout_seconds: 1200
+    # claude seat fallback (eval-plane resilience): when the direct `claude -p`
+    # argv hits a provider wall/degradation (a process failure), re-run the seat
+    # through the loopback LiteLLM gateway under `claude-sonnet`, whose own
+    # fallbacks: chain walks claude-sonnet-or (openrouter/anthropic/claude-sonnet-4.6)
+    # -> deepseek -> gemini-pro. Walked ONLY on a ReviewerProcessError (nonzero
+    # exit); a clean-exit invalid-output never reaches it (anti-forge channel-trust).
+    fallback_commands:
+      - ["scripts/hapax-litellm-reviewer", "--model", "claude-sonnet"]
   - family: codex
     reviewer_command: ["codex", "exec", "--sandbox", "read-only", "-"]
     timeout_seconds: 1200
@@ -115,6 +123,14 @@ families:
     # bypass only under operator/governance authority).
     reviewer_command: ["scripts/hapax-glmcp-reviewer"]
     timeout_seconds: 1200
+    # glm seat fallback: when the direct Z.ai Coding Plan endpoint
+    # (hapax-glmcp-reviewer) is walled/down (a process failure), re-run the seat
+    # through LiteLLM under `glm` (openai/glm-5 via OpenRouter). Same
+    # process-failure-only gate as claude. NOTE: a clean-exit invalid-output (the
+    # model emitting malformed YAML) is NOT a route failure and will NOT trigger
+    # this fallback — that is a model-output defect, not a supply defect.
+    fallback_commands:
+      - ["scripts/hapax-litellm-reviewer", "--model", "glm"]
 
 # Authoring-lane -> model family (writer's family never holds the majority
 # alone). vibe lanes never review (off-limits surfaces per CLAUDE.md).

@@ -156,7 +156,8 @@ _PROVIDER_OUTAGE_LINE_RE = re.compile(
 _PROVIDER_OUTAGE_MAX_CHARS = 4_000
 _REVIEWER_ROUTE_UNAVAILABLE_MAX_CHARS = 4_000
 _UNSUPPORTED_REVIEWER_CLIENT_RE = re.compile(
-    r"(?:IneligibleTierError|UNSUPPORTED_CLIENT|failed to launch .*?\bagy\b.*?install agy)",
+    r"(?:IneligibleTierError|UNSUPPORTED_CLIENT|failed to launch .*?\bagy\b.*?install agy"
+    r"|failed to launch reviewer route\b)",
     re.IGNORECASE,
 )
 _STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES = STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES
