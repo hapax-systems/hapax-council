@@ -1536,9 +1536,19 @@ class TestFamilyOutageDegradation:
         assert "review_dossier_degradation_flags_inconsistent" in blockers
 
     @staticmethod
-    def _witness(tmp_path, families=("claude",), observed="2026-06-11T19:30:00+00:00"):
+    def _witness(
+        tmp_path,
+        families=("claude",),
+        observed="2026-06-11T19:30:00+00:00",
+        started=None,
+    ):
         p = tmp_path / "family-outage.json"
-        p.write_text(json.dumps({f: observed for f in families}), encoding="utf-8")
+        if started is None:
+            state = {f: observed for f in families}  # legacy str format
+        else:
+            # window format: a sustained outage has a stable outage_started_at + a moving observed_at
+            state = {f: {"observed_at": observed, "outage_started_at": started} for f in families}
+        p.write_text(json.dumps(state), encoding="utf-8")
         return p
 
     @staticmethod
@@ -1586,6 +1596,54 @@ class TestFamilyOutageDegradation:
             admission_time="2026-06-11T22:01:00+00:00",
         )
         assert any(b.startswith("review_dossier_degradation_unwitnessed:") for b in blockers)
+
+    def test_sustained_outage_re_stamp_after_constitution_still_admits(
+        self, tmp_path: Path
+    ) -> None:
+        """Clobber regression (#4142): the outage's observed_at is a MOVING latest stamp
+        pushed forward every run. A degraded dossier constituted mid-outage must NOT be
+        un-witnessed when a later run re-stamps observed_at PAST its constituted_at. The
+        window model anchors validity on the STABLE outage_started_at (set when the
+        sustained outage began): the dossier is valid iff constituted + admitted both fall
+        in [outage_started_at, observed_at + TTL]. Re-stamping observed_at forward only
+        EXTENDS the window, so a valid dossier stays valid."""
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._degraded_dossier(rt))  # constituted 20:00
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            # outage started 19:55; a later run re-stamped observed_at to 20:05 (5 min AFTER
+            # constitution). The stable outage_started_at (19:55) <= constituted (20:00) anchors it.
+            outage_state_path=self._witness(
+                tmp_path, observed="2026-06-11T20:05:00+00:00", started="2026-06-11T19:55:00+00:00"
+            ),
+            admission_time="2026-06-11T20:30:00+00:00",
+        )
+        assert blockers == (), f"sustained-outage dossier must admit, got: {blockers}"
+
+    def test_back_dated_constituted_before_outage_started_blocks(self, tmp_path: Path) -> None:
+        """Anti-forge (#4246 review finding): abs() admitted a dossier whose constituted_at
+        was back-dated to BEFORE the sustained outage was first observed. The window model
+        requires constituted >= outage_started_at, so a back-dated dossier is correctly
+        UN-witnessed — the abs() symmetric relaxation is NOT used."""
+        rt = _load_review_team_module()
+        # dossier claims it was constituted at 19:30, but the outage didn't start until 20:00
+        dossier = self._degraded_dossier(rt)
+        dossier["constituted_at"] = "2026-06-11T19:30:00+00:00"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=self._witness(
+                tmp_path, observed="2026-06-11T20:05:00+00:00", started="2026-06-11T20:00:00+00:00"
+            ),
+            admission_time="2026-06-11T20:30:00+00:00",
+        )
+        assert any(b.startswith("review_dossier_degradation_unwitnessed:") for b in blockers), (
+            f"back-dated dossier (before outage started) must block, got: {blockers}"
+        )
 
     def test_non_mapping_witness_is_a_named_blocker(self, tmp_path) -> None:
         rt = _load_review_team_module()

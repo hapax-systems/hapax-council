@@ -1489,7 +1489,34 @@ class TestFamilyOutageDegradation:
         )
 
         recorded = json.loads(state.read_text(encoding="utf-8"))
-        assert recorded == {"glm": "2026-06-12T21:00:00+00:00"}
+        # window format: observed_at + outage_started_at (== now for a brand-new outage)
+        assert recorded == {
+            "glm": {
+                "observed_at": "2026-06-12T21:00:00+00:00",
+                "outage_started_at": "2026-06-12T21:00:00+00:00",
+            }
+        }
+
+    def test_sustained_outage_preserves_started_advances_observed(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Window model (#4246): outage_started_at is the STABLE anchor (set when the
+        sustained outage began, never advanced); observed_at advances each round. A later
+        re-stamp must NOT move outage_started_at forward (the clobber root cause)."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        dispatch.update_family_outage(
+            [{"family": "glm", "verdict": "provider-outage"}],
+            "2026-06-12T21:00:00+00:00",
+            state,
+        )
+        dispatch.update_family_outage(
+            [{"family": "glm", "verdict": "quota-wall"}],
+            "2026-06-12T21:10:00+00:00",
+            state,
+        )
+        recorded = json.loads(state.read_text(encoding="utf-8"))["glm"]
+        assert recorded["outage_started_at"] == "2026-06-12T21:00:00+00:00"  # STABLE
+        assert recorded["observed_at"] == "2026-06-12T21:10:00+00:00"  # ADVANCED
 
     def test_invalid_output_clears_stale_family_outage(
         self, monkeypatch: Any, tmp_path: Path

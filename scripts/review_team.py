@@ -380,6 +380,26 @@ def _seconds_between(later: datetime, earlier: datetime) -> float:
     return (later - earlier).total_seconds()
 
 
+def _witness_window(entry: Any) -> tuple[datetime | None, datetime | None]:
+    """The ``(outage_started_at, observed_at)`` window for a family-outage witness entry.
+
+    Dict entries (current format) carry a stable ``outage_started_at`` (set when the
+    sustained outage began, never advanced) alongside the moving ``observed_at`` (latest
+    observation, pushed forward each run). Legacy str entries (the old single-timestamp
+    format) yield ``(ts, ts)`` — start == observed — so they preserve the prior
+    one-directional behaviour (constituted must be ``>=`` the timestamp). Either value may
+    be ``None`` (malformed/absent), which the caller treats as unwitnessed.
+    """
+    if isinstance(entry, dict):
+        started_raw = entry.get("outage_started_at")
+        observed_raw = entry.get("observed_at", started_raw)
+        return _parse_iso_datetime(started_raw), _parse_iso_datetime(observed_raw)
+    if isinstance(entry, str):
+        dt = _parse_iso_datetime(entry)
+        return dt, dt
+    return None, None
+
+
 GATE_KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_GATE_OFF"
 CHECKLIST_ITEM_RE = re.compile(r"^- \[ \] (?P<slug>[a-z0-9-]+):", re.MULTILINE)
 CHECKLIST_VALUES = frozenset({"pass", "finding", "na"})
@@ -1297,12 +1317,26 @@ def _dossier_validity_blockers(
             unwitnessed = []
             for fam in degraded_outage:
                 try:
-                    observed = _parse_iso_datetime(witness_state.get(fam))
-                    constituted_age_s = _seconds_between(constituted, observed)
-                    admission_age_s = _seconds_between(admitted_at, observed)
+                    started, observed = _witness_window(witness_state.get(fam))
+                    if started is None or observed is None:
+                        unwitnessed.append(fam)
+                        continue
+                    # Window model (#4246 re-design): the dossier is valid iff it was
+                    # constituted AND admitted DURING the sustained outage. The STABLE
+                    # outage_started_at anchors the lower bound (anti-forge: a back-dated
+                    # constituted_at < outage_started_at blocks — the abs() symmetric
+                    # relaxation is NOT used, per the #4246 review finding). The MOVING
+                    # observed_at bounds freshness on the upper side (constituted/admitted
+                    # within TTL of the latest observation) — re-stamping observed_at
+                    # forward only extends the window, so a later run never un-witnesses a
+                    # valid dossier (the clobber fix). Recovery clears the family entirely
+                    # in update_family_outage (-> entry absent -> None -> unwitnessed),
+                    # which mechanically enforces post_recovery_rereview_required.
                     if not (
-                        0 <= constituted_age_s <= FAMILY_OUTAGE_TTL_S
-                        and 0 <= admission_age_s <= FAMILY_OUTAGE_TTL_S
+                        _seconds_between(constituted, started) >= 0
+                        and _seconds_between(constituted, observed) <= FAMILY_OUTAGE_TTL_S
+                        and _seconds_between(admitted_at, started) >= 0
+                        and _seconds_between(admitted_at, observed) <= FAMILY_OUTAGE_TTL_S
                     ):
                         unwitnessed.append(fam)
                 except (TypeError, ValueError):
