@@ -1,4 +1,6 @@
 [Unit]
+StartLimitIntervalSec=300
+StartLimitBurst=1
 Description=Hapax /dev/video42 compositor egress format guard
 Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/hapax-v4l2-video42-format-guard
 Before=studio-compositor.service hapax-v4l2-bridge.service hapax-obs-livestream.service
