@@ -388,26 +388,30 @@ def _gather_sources(topic: str, *, max_per_collection: int = 5) -> list[SourcePa
 
 
 def _web_supplement(topic: str, existing: list[SourcePacket]) -> list[SourcePacket]:
-    """Web supplement is EXCISED — an explicit, logged no-op, not a silent one.
+    """Supplement sparse local sources with the live GROUNDED web path (Tavily).
 
-    The only available web route was the council's ``async`` web-verify tool,
-    which the prior code called WITHOUT ``await``. A coroutine is never a
-    ``str``, so the result check always failed and the supplement silently added
-    nothing. The fix does NOT "add await": awaiting it routes to the
-    ``web-research`` LiteLLM alias the research found mis-routes to a non-grounded
-    model, which would launder ungrounded output as "web verification" —
-    converting a silent no-op into a silent FAILURE. Until a real grounded web
-    provider exists the supplement stays disabled and a sparse-source topic stays
-    sparse (``resolve_angle`` then honestly returns no angle rather than a
-    fabricated one). Loud here so the disablement is visible, not assumed.
+    Unifies the web seam: routes through ``_tavily_packets`` — the SAME direct-Tavily
+    grounded primitive ``recruit_source_set`` / ``recruit_source_sets`` use — NOT the
+    dead LiteLLM ``web-*`` alias (which mis-routes to a non-grounded model and would
+    launder ungrounded output as "verification"). Previously this was an excised no-op,
+    so ``resolve_angle`` saw NO web sources even for a topic whose citation set
+    ``recruit_source_set`` had already bound via Tavily — thinning the advisory angle and
+    emitting a misleading "no sources found" log on a SUCCESSFUL recruitment. Fails soft
+    to the existing local packets on any Tavily outage (never an exception, never
+    fabrication; the min-1-packet honesty floor downstream is untouched).
     """
-    log.warning(
-        "angle_resolver: web supplement DISABLED (no grounded web provider) — "
-        "%d local source(s) for topic stay un-supplemented: %s",
-        len(existing),
-        topic[:80],
-    )
-    return existing
+    if not topic.strip():
+        return existing
+    web = _tavily_packets(topic, max_results=max(1, MIN_SOURCES_FOR_ANGLE - len(existing)))
+    if not web:
+        return existing
+    seen = {p.content_hash for p in existing}
+    merged = list(existing)
+    for packet in web:
+        if packet.content_hash not in seen:
+            seen.add(packet.content_hash)
+            merged.append(packet)
+    return merged
 
 
 def _select_angle(topic: str, packets: list[SourcePacket]) -> AngleHypothesis | None:

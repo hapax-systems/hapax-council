@@ -2614,17 +2614,14 @@ def test_select_angle_routes_through_gateway(monkeypatch: pytest.MonkeyPatch) ->
     assert angle.thesis_position == "a contested thesis"
 
 
-def test_web_supplement_is_excised_loud_noop(caplog: pytest.LogCaptureFixture) -> None:
-    """A1.3: the sparse-source web supplement is EXCISED to a loud no-op. The
-    prior code called the async ``web_verify`` WITHOUT ``await`` — a coroutine is
-    never a ``str``, so it silently did nothing. The fix does NOT add ``await``
-    (that routes to the ``web-research`` alias the research found mis-routes to a
-    non-grounded model, laundering ungrounded output as 'verification'). The
-    supplement stays disabled with a loud ledger entry until a real grounded web
-    provider exists; sparse local sources stay sparse and a no-candidate is the
-    honest outcome."""
-    import logging
-
+def test_web_supplement_routes_through_grounded_tavily(monkeypatch) -> None:
+    """A1.3 (unified seam): the sparse-source web supplement routes through the LIVE
+    GROUNDED Tavily path (``_tavily_packets`` — the same primitive ``recruit_source_set``
+    uses), NOT the excised no-op and NOT the dead LiteLLM ``web-*`` alias. A sparse local
+    set gains real web sources so ``resolve_angle`` sees the same matter the citation set
+    already bound (previously it logged a misleading 'no sources found' for a topic that
+    HAD recruited via Tavily). A Tavily outage fails soft to the existing local packets —
+    never an exception, never fabrication."""
     from agents.hapax_daimonion import angle_resolver
     from shared.source_packet import SourcePacket
 
@@ -2634,15 +2631,27 @@ def test_web_supplement_is_excised_loud_noop(caplog: pytest.LogCaptureFixture) -
         )
     ]
 
-    with caplog.at_level(logging.WARNING, logger="agents.hapax_daimonion.angle_resolver"):
-        out = angle_resolver._web_supplement("a topic", existing)
+    def _tavily(topic: str, *, max_results: int = 3) -> list[SourcePacket]:
+        return [
+            SourcePacket(
+                source_ref="web:tavily:https://example.com/x",
+                content_hash="webhash",
+                snippet=f"web hit for {topic}",
+                freshness="fresh",
+                rights_status="web",
+            )
+        ]
 
-    # Disabled: nothing appended, the original list is returned unchanged.
-    assert out == existing
-    assert len(out) == 1
-    # Loud ledger entry — not a silent no-op.
-    assert any("web supplement" in record.message.lower() for record in caplog.records)
-    # Negative-existence: the broken async web_verify route is gone from the module.
+    monkeypatch.setattr(angle_resolver, "_tavily_packets", _tavily)
+    out = angle_resolver._web_supplement("a topic", existing)
+    assert len(out) == 2  # local + grounded web source
+    assert any(p.source_ref.startswith("web:tavily:") for p in out)
+
+    # Fails soft on a Tavily outage: the existing local packets are returned unchanged.
+    monkeypatch.setattr(angle_resolver, "_tavily_packets", lambda *a, **k: [])
+    assert angle_resolver._web_supplement("a topic", existing) == existing
+
+    # Negative-existence: the broken async web_verify route stays gone from the module.
     source = Path(angle_resolver.__file__).read_text(encoding="utf-8")
     assert "web_verify" not in source
 
