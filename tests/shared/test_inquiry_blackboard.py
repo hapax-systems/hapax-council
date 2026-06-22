@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import os
+from unittest.mock import patch
+
 from shared.inquiry_blackboard import (
     ActionGap,
     AuthorityGap,
     Bid,
     BlackboardState,
+    Challenge,
     ClaimGap,
+    Commitment,
+    ExhaustionAttestation,
     FormProposal,
     LayoutGap,
     Lead,
@@ -160,3 +166,78 @@ class TestResolveGap:
         resolved = resolve_gap(gap, resolution="source recruited successfully")
         assert resolved.status == "resolved"
         assert resolved.resolution == "source recruited successfully"
+
+
+_INVERT_ON = {"HAPAX_INVERTED_QUIESCENCE": "1"}
+
+
+class TestInvertedQuiescence:
+    """Keystone: silence is not rest. Rest requires POSITIVE attestation, not the
+    absence of gaps. The legacy silence-passes behavior survives behind the flag."""
+
+    def _discharged_attested(self) -> BlackboardState:
+        return BlackboardState(
+            commitments=[Commitment(claim_id="c1", discharge_route="deferral")],
+            attestations=[ExhaustionAttestation(claim_id="c1", attester_family="anthropic")],
+        )
+
+    def test_empty_board_is_not_quiescent(self) -> None:
+        # INVERSION CANARY: an empty/thin board can never rest (silence made loud).
+        with patch.dict(os.environ, _INVERT_ON):
+            assert detect_quiescence(BlackboardState()) is False
+
+    def test_open_undischarged_challenge_blocks_rest(self) -> None:
+        # FORWARD-PATH-OBSTACLE CANARY: a vindication-attempted challenge that still
+        # stands is a RED between producer and rest, even on an otherwise-clean claim.
+        state = self._discharged_attested().model_copy(
+            update={
+                "challenges": [
+                    Challenge(
+                        challenge_id="ch1",
+                        target_claim_id="c1",
+                        counter_position="the source does not actually say this",
+                        challenger_family="openai",
+                        status="open",
+                        vindication_attempted=True,
+                    )
+                ]
+            }
+        )
+        with patch.dict(os.environ, _INVERT_ON):
+            assert detect_quiescence(state) is False
+
+    def test_discharged_and_attested_board_rests(self) -> None:
+        # POSITIVE: discharged + independently attested + no standing challenge -> rest.
+        with patch.dict(os.environ, _INVERT_ON):
+            assert detect_quiescence(self._discharged_attested()) is True
+
+    def test_undischarged_unattested_commitment_blocks_rest(self) -> None:
+        state = BlackboardState(commitments=[Commitment(claim_id="c1")])  # undischarged, unattested
+        with patch.dict(os.environ, _INVERT_ON):
+            assert detect_quiescence(state) is False
+
+    def test_unattested_claim_blocks_rest(self) -> None:
+        # A discharged claim with NO independent attestation is still a standing gap.
+        state = BlackboardState(commitments=[Commitment(claim_id="c1", discharge_route="deferral")])
+        with patch.dict(os.environ, _INVERT_ON):
+            assert detect_quiescence(state) is False
+
+    def test_under_projection_attestation_blocks_rest(self) -> None:
+        # A rival found a STRONGER un-declared commitment (under-projection) -> no rest,
+        # even though the commitment is discharged. Reading thinly buys nothing.
+        state = BlackboardState(
+            commitments=[Commitment(claim_id="c1", discharge_route="deferral")],
+            attestations=[
+                ExhaustionAttestation(
+                    claim_id="c1", attester_family="anthropic", found_stronger_commitment=True
+                )
+            ],
+        )
+        with patch.dict(os.environ, _INVERT_ON):
+            assert detect_quiescence(state) is False
+
+    def test_flag_off_preserves_legacy_silence_passes(self) -> None:
+        # Legacy path UNCHANGED: flag off -> empty board is quiescent (the behavior
+        # the live refusal path at daily_segment_prep.py relies on).
+        with patch.dict(os.environ, {"HAPAX_INVERTED_QUIESCENCE": ""}):
+            assert detect_quiescence(BlackboardState()) is True

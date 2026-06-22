@@ -179,8 +179,11 @@ class TestRecruitSourceSet:
     def test_no_sources_refuses_with_none(self, monkeypatch) -> None:
         from agents.hapax_daimonion import angle_resolver
 
+        # Local corpus AND the web leg both dry — recruit must refuse, not fabricate to
+        # fill. Mock the Tavily leg too so the unit stays hermetic (never hits the network);
+        # otherwise the web recruiter resolves a live packet and masks the refuse-on-empty path.
         monkeypatch.setattr(angle_resolver, "_gather_sources", lambda *a, **k: [])
-        # Refuse-on-empty: no fabricate-to-fill, no empty set — just None.
+        monkeypatch.setattr(angle_resolver, "_tavily_packets", lambda *a, **k: [])
         assert angle_resolver.recruit_source_set("topic with no sources") is None
 
 

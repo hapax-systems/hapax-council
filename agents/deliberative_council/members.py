@@ -36,6 +36,15 @@ MODEL_FAMILIES: dict[str, str] = {
     "local-fast": "cohere",
     "web-research": "perplexity",
     "mistral-large": "mistral",
+    # deepseek + glm were added to the roster (PR #4233, models.py) and to the served
+    # substring table below, but were MISSING here — so model_family() returned "unknown"
+    # for healthy on-roster deepseek/glm seats while served_model_family() resolved them,
+    # making the substitution test (engine._assess_health) count them as PHANTOM
+    # substitutions (served_substitutions>=2 unconditionally, quarantining every segment
+    # regardless of provider health). The glm value MUST be "zhipu" to match
+    # _SERVED_FAMILY_SUBSTRINGS, not "glm". 2026-06-21.
+    "deepseek": "deepseek",
+    "glm": "zhipu",
 }
 
 LEGACY_MODEL_ALIASES: dict[str, str] = {
@@ -108,6 +117,13 @@ _SERVED_FAMILY_SUBSTRINGS: tuple[tuple[str, str], ...] = (
     ("compassverifier", "cohere"),
     ("mistral", "mistral"),
     ("sonar", "perplexity"),
+    # The live perplexity routes serve as web-research/web-reason/web-scout (NOT "sonar"),
+    # so the served-family counter was blind to them (returned "unknown"). Map them so a
+    # perplexity->anthropic fail-over is correctly seen as a real cross-family swap.
+    ("web-research", "perplexity"),
+    ("web-reason", "perplexity"),
+    ("web-scout", "perplexity"),
+    ("perplexity", "perplexity"),
     ("deepseek", "deepseek"),
     ("glm", "zhipu"),
 )

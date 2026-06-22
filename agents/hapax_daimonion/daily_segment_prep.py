@@ -40,6 +40,12 @@ from shared.hermeneutic_spiral import (
     persist_source_consequences,
     retrieve_fore_understanding,
 )
+from shared.inquiry_blackboard import (
+    BlackboardState,
+    Commitment,
+    attested_quiescence,
+    inverted_quiescence_enabled,
+)
 from shared.jsonl_append import append_jsonl
 from shared.resident_command_r import (
     RESIDENT_COMMAND_R_MODEL,
@@ -1819,6 +1825,144 @@ def _append_candidate_ledger(prep_dir: Path, payload: dict[str, Any], artifact_p
     append_jsonl(ledger_path, row, sort_keys=True, raising=True)
 
 
+DEONTIC_LEDGER_SCHEMA_VERSION = 1
+
+
+def _coerce_grounds(raw: Any) -> list[str]:
+    """Normalize a claim's grounds to a clean list of refs.
+
+    A bare string is ONE ground, not a character sequence — guards against a model
+    emitting ``"src:0"`` instead of ``["src:0"]`` (iterating the string would fabricate
+    per-character grounds). Non-list/non-str ⇒ no grounds.
+    """
+
+    if isinstance(raw, (list, tuple)):
+        return [str(g).strip() for g in raw if str(g).strip()]
+    if isinstance(raw, str) and raw.strip():
+        return [raw.strip()]
+    return []
+
+
+def _project_commitments_from_contract(
+    segment_prep_contract: Mapping[str, Any],
+) -> list[Commitment]:
+    """Project one ``Commitment`` per composed claim, read off the claim's CONTENT.
+
+    Phase 1 of the deontic ledger: each entry of ``segment_prep_contract['claim_map']``
+    becomes a ``Commitment`` whose purport is read deterministically off the claim text,
+    its grounds, and its source-consequence — never a claim-type flag. Discharge is left
+    ``undischarged`` (discharge/attestation is later-phase work). No LLM call; conservative
+    by construction — it never invents an incompatibility the contract did not record.
+
+    Projection is per claim_map ENTRY, not per claim_id: two entries sharing a claim_id
+    yield two distinct Commitments (no dedupe). The inverted-quiescence path keys identity
+    on claim_id (a set), so a later phase that ships the flag should enforce unique
+    claim_ids upstream or merge by claim_id before resting on this board.
+    """
+
+    claim_map = segment_prep_contract.get("claim_map")
+    if not isinstance(claim_map, list):
+        # A present-but-non-list claim_map (str/dict) would otherwise iterate into
+        # characters/keys and silently yield nothing — treat any non-list as "no claims".
+        return []
+    commitments: list[Commitment] = []
+    for entry in claim_map:
+        if not isinstance(entry, Mapping):
+            continue
+        claim_id = str(entry.get("claim_id") or "").strip()
+        if not claim_id:
+            continue
+        claim_text = str(entry.get("claim_text") or "").strip()
+        grounds = _coerce_grounds(entry.get("grounds"))
+        source_consequence = str(entry.get("source_consequence") or "").strip()
+
+        purport: list[str] = []
+        if claim_text:
+            purport.append(f"asserts: {claim_text}")
+        if grounds:
+            # NOTE: in the live pipeline `grounds` is segment-wide-backfilled with a
+            # fallback recruited ref whenever ANY source was recruited
+            # (segment_prep_contract.py:996-997), so this element tracks
+            # RECRUITMENT-OCCURRED, NOT intrinsic empirical purport — it is
+            # anti-correlated with the R3 anti-fabrication target (the UNGROUNDED
+            # fabricated-empirical claim). It records a DEFERRAL fact ("this claim cites
+            # these grounds"), never the content-projected evidence-existence commitment,
+            # which is R3's purport-reader job. Do NOT calibrate a canary off this element.
+            purport.append("carries recruited grounds: " + ", ".join(grounds))
+        if source_consequence:
+            purport.append(f"licenses consequence: {source_consequence}")
+        if not purport:
+            # A claim that asserts nothing inspectable is itself a thin-reading
+            # fingerprint (the R1b detect-unbitten signal) — record it visibly rather
+            # than as a silent empty tuple.
+            purport.append(f"under-projected: claim {claim_id} carries no inspectable content")
+
+        commitments.append(
+            Commitment(
+                claim_id=claim_id,
+                purport=tuple(purport),
+                incompatibilities=(),
+                rebuttal_condition=str(entry.get("warrant") or ""),
+                qualifier=str(entry.get("qualifier_or_limit") or ""),
+                discharge_route="undischarged",
+            )
+        )
+    return commitments
+
+
+def _build_deontic_ledger(
+    segment_prep_contract: Any,
+    *,
+    segment_prep_contract_sha256: str,
+) -> dict[str, Any]:
+    """Build the OBSERVE-ONLY deontic-ledger record for a released segment artifact.
+
+    Records the projected commitments and ``would_quiesce_inverted`` — the commitment-aware
+    inverted-quiescence verdict, computed observe-only REGARDLESS of the flag (the exact
+    signal R3 will later gate on). In Phase 1 it is False for any board carrying claims
+    because no independent attestations exist yet (silence is not rest); it becomes
+    informative when R2 posts attestations. ``HAPAX_INVERTED_QUIESCENCE`` stays OFF and
+    NOTHING gates on any of this — it is recorded purely for observability and to seed the
+    later phases.
+
+    NEVER raises (the observe-only invariant lives here): any projection failure degrades to
+    a stub so a ledger fault can never block a release the coherence gate already authorized.
+    Every recorded value MUST be JSON-native and round-trip-identical — this dict is covered
+    by ``artifact_sha256`` and re-verified after a json reload.
+    """
+
+    try:
+        inverted_active = inverted_quiescence_enabled()
+        commitments = _project_commitments_from_contract(segment_prep_contract)
+        board = BlackboardState(commitments=commitments)
+        would_quiesce_inverted = attested_quiescence(board)
+        undischarged = sum(1 for c in commitments if c.discharge_route == "undischarged")
+        return {
+            "schema_version": DEONTIC_LEDGER_SCHEMA_VERSION,
+            "commitments": [c.model_dump(mode="json") for c in commitments],
+            "commitment_count": len(commitments),
+            "undischarged_count": undischarged,
+            "would_quiesce_inverted": would_quiesce_inverted,
+            "inverted_quiescence_active": inverted_active,
+            "segment_prep_contract_sha256": segment_prep_contract_sha256,
+        }
+    except Exception as exc:
+        log.warning(
+            "prep_segment: deontic-ledger projection failed (%s) — degraded observe-only stub",
+            exc,
+        )
+        return {
+            "schema_version": DEONTIC_LEDGER_SCHEMA_VERSION,
+            "commitments": [],
+            "commitment_count": 0,
+            "undischarged_count": 0,
+            "would_quiesce_inverted": None,
+            "inverted_quiescence_active": None,
+            "segment_prep_contract_sha256": segment_prep_contract_sha256,
+            "projection_error": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def _format_recruited_source_menu(resolved_source_set: ResolvedSourceSet) -> str:
     """Format the recruited set as a citable menu for the composer's seed.
 
@@ -3540,6 +3684,18 @@ def prep_segment(
     # decisions (coherence / disconfirmation / narrative health, with
     # members_valid/families_valid) into the manifest artifact + append-only ledger.
     payload["council_decisions"] = council_decisions
+    # Phase-1 deontic ledger: project a Commitment per composed claim and record the
+    # (observe-only) blackboard state in the released artifact, BEFORE the artifact hash so
+    # the ledger is covered by artifact_sha256. The flag stays OFF — nothing gates on this.
+    # Wrapped defensively: a ledger failure can at worst omit the key, never block the
+    # release the coherence gate has already authorized.
+    try:
+        payload["deontic_ledger"] = _build_deontic_ledger(
+            segment_prep_contract,
+            segment_prep_contract_sha256=segment_prep_contract_sha256,
+        )
+    except Exception as exc:  # observe-only — never block an authorized release
+        log.warning("prep_segment: deontic-ledger build failed (%s) — omitted", exc)
     payload["artifact_sha256"] = _artifact_hash(payload)
     tmp = out_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -4539,7 +4695,11 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
             source_ref=f"coherence_check:{programme_id}",
             metadata={"check_type": "coherence", "programme_id": programme_id},
         )
-        config = CouncilConfig()
+        # ruler_hash = None => R1_PROTOCOL pilot/operational (resilient: substitution is a
+        # label, not a refusal). When a confirmatory study FREEZES its ruler (R2_PREREGISTER),
+        # it sets HAPAX_SEGMENT_PREP_RULER_HASH (later: read from the active ResearchCase via
+        # the RDLC consume-seam) so a served substitution then refuses (frozen_ruler_deviation).
+        config = CouncilConfig(ruler_hash=os.environ.get("HAPAX_SEGMENT_PREP_RULER_HASH") or None)
         verdict = asyncio.run(
             deliberate(council_input, CouncilMode.DISCONFIRMATION, CoherenceRubric(), config)
         )
@@ -4610,26 +4770,41 @@ def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceO
             passed=False, feedback="", refused=True, council_decisions=decision
         )
 
-    # #6 review-plane pattern -> the SCED ruler: QUARANTINE a verdict from a
-    # DEGRADED roster. If a family was substituted on the wire (served_substitutions
-    # > 0 — e.g. the anthropic seat answered by gemini under an Anthropic cap), the
-    # frozen ruler did NOT actually convene its genuine family-diverse panel, so the
-    # ruling is invalid data: it can never become a released SCED row. This is the
-    # council analog of the review plane's externally-witnessed degraded-family
-    # outage (loud + recorded on the decision + non-promotable). Refuse, like a
-    # below-quorum REFUSAL — the segment re-rules once the roster is healthy, rather
-    # than stamping a criterion-passing row scored by a substitute family.
-    if (health.get("served_substitutions") or 0) > 0:
+    # SCED ruler integrity, STAGE-AWARE (resilience vs confirmatory honesty). The #4224
+    # served-family floor (below_quorum, REFUSED above) already rejects a panel that lost
+    # family diversity. What remains is the FREEZE response to a served substitution
+    # (served_substitutions > 0 = the served roster deviated from the requested one):
+    #   - R1_PROTOCOL / operational (NOT frozen): the roster is not committed and the live
+    #     pool is abundant (6 families vs a floor of 4), so a within-floor substitution is a
+    #     transparency LABEL, not a refusal — the council stays resilient to single-provider
+    #     drop-out instead of falsely quarantining a genuinely family-diverse panel.
+    #   - R2_PREREGISTER -> R3_COLLECTION (frozen via config.ruler_hash): the confirmatory
+    #     study committed to a specific roster, so any deviation refuses (frozen_ruler_deviation).
+    # NOTE: the actual cause of segment-01's false quarantine was PHANTOM substitutions from a
+    # model_family/served-family namespace gap (deepseek/glm missing from MODEL_FAMILIES) — a
+    # fully healthy panel counted served_substitutions=2 with zero provider drop. Fixed in
+    # agents/deliberative_council/members.py. The diversity floor below_quorum is unchanged.
+    served_subs = health.get("served_substitutions") or 0
+    decision["ruler_substituted"] = served_subs > 0  # transparency label, both stages
+    is_frozen = getattr(config, "ruler_hash", None) is not None
+    if is_frozen and served_subs > 0:
         log.warning(
-            "_council_coherence_check: ruler DEGRADED (served_substitutions=%s, served=%s) "
+            "_council_coherence_check: FROZEN ruler deviated (served_substitutions=%s, served=%s) "
             "— QUARANTINED, no release for %s",
-            health.get("served_substitutions"),
+            served_subs,
             verdict.receipt.get("served_models"),
             programme_id,
         )
-        decision["quarantined"] = "ruler_substituted"
+        decision["quarantined"] = "frozen_ruler_deviation"
         return _CoherenceOutcome(
             passed=False, feedback="", refused=True, council_decisions=decision
+        )
+    if served_subs > 0:
+        log.info(
+            "_council_coherence_check: ruler substituted (served_substitutions=%s) — LABELED, "
+            "not refused (pilot/operational, family-diversity floor met) for %s",
+            served_subs,
+            programme_id,
         )
 
     # Critical-axis floor: the mean can MASK a catastrophic single-axis failure
