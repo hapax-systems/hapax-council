@@ -36,8 +36,14 @@ if str(_REPO_ROOT) not in sys.path:
 SHM = Path("/dev/shm")
 ARTIFACTS = {
     "reverie": (SHM / "hapax-sources/reverie.rgba", (540, 960, 4)),
-    "drift_field": (SHM / "hapax-compositor/quake-drift-field.bgra", (256, 256, 4)),
-    "drift_currency": (SHM / "hapax-compositor/quake-drift-currency.bgra", (256, 256, 4)),
+    # drift_field/drift_currency RETIRED 2026-06-22: quake-drift-field.bgra's producer
+    # (hapax-quake-drift-field.service) is inactive+disabled, and quake-drift-currency.bgra has no
+    # producer — both taps were always ABSENT, leaving the witness blind to drift liveness and the
+    # reverie→drift causality edges dead. Repoint both at the LIVE drift-applied reverie surface
+    # (quake-live-reverie.bgra, 540×960×4) so coverage is restored. Same file, two lenses:
+    # drift_field (spatial, general verdict) + drift_currency (temporal-variance, special-cased).
+    "drift_field": (SHM / "hapax-compositor/quake-live-reverie.bgra", (540, 960, 4)),
+    "drift_currency": (SHM / "hapax-compositor/quake-live-reverie.bgra", (540, 960, 4)),
     "reverie_frame": (SHM / "hapax-visual/frame.jpg", None),  # jpg, bytes-only liveness
 }
 # Causality edges: downstream must advance IFF upstream advances.
