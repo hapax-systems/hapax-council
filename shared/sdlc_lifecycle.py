@@ -427,7 +427,10 @@ def task_closure_validity(
 # and whose risk profile carries no governance/public/audio-egress veto.
 # Sensitive tasks stay manual.
 
-#: Risk flags whose presence (explicit or keyword-derived) vetoes auto-arming.
+#: Risk flags whose presence (explicit or keyword-derived) requires mitigation
+#: evidence before auto-arming (see RELEASE_MITIGATION_CHECKS). Historically a
+#: hard veto; per operator directive 2026-06-22 each is an evidence GATE, not a
+#: human-arm trigger.
 SENSITIVE_RISK_FLAGS = (
     "governance_sensitive",
     "public_claim_sensitive",
@@ -435,6 +438,24 @@ SENSITIVE_RISK_FLAGS = (
     "privacy_or_secret_sensitive",
     "provider_billing_sensitive",
 )
+
+#: Per-sensitivity-class mitigation evidence: the CI check name(s) whose PASS
+#: state is sufficient, machine-verified mitigation for that class. When the
+#: release assessment is supplied the PR's verified (passing) checks, a sensitive
+#: class is satisfied (no veto) iff its required checks all passed — so the SDLC
+#: AUTO-arms on evidence rather than holding for a manual arm (operator directive
+#: 2026-06-22: "sensitive changes [are] risk-mitigated sufficiently so as to not
+#: require manual arming"). A class ABSENT from this map has no defined mitigation
+#: gate yet → it fails CLOSED (held) until its gate is defined; it is NEVER
+#: released by a manual override. Extend this map (never add a manual-arm path) to
+#: bring a new sensitivity class under automated, evidence-gated release.
+RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
+    # A privacy/secret-sensitive change auto-arms when the dedicated secret
+    # scanner passes on its diff (no committed credential). The redaction
+    # CORRECTNESS of such a change is separately gated by the general test/review
+    # checks every PR already carries.
+    "privacy_or_secret_sensitive": ("secrets-scan",),
+}
 
 #: Mutation surfaces too high-stakes for the system to auto-authorize release.
 AUTO_ARM_INELIGIBLE_MUTATION_SURFACES = frozenset({"public", "provider_spend"})
@@ -641,7 +662,10 @@ def _route_metadata_assessable(frontmatter: Mapping[str, Any]) -> bool:
 
 
 def _release_auto_arm_blockers(
-    frontmatter: Mapping[str, Any], *, now: float | datetime | None
+    frontmatter: Mapping[str, Any],
+    *,
+    now: float | datetime | None,
+    verified_checks: set[str] | None = None,
 ) -> list[str]:
     from shared.release_gate import evaluate_avsdlc_release_gate
 
@@ -649,8 +673,24 @@ def _release_auto_arm_blockers(
     # ISAP authorization-in-principle precondition.
     if not _auto_arm_truthy(frontmatter.get("implementation_authorized")):
         blockers.append("not_implementation_authorized")
-    # Governance / sensitivity veto (explicit risk flags OR keyword-derived).
-    blockers.extend(f"risk_flag:{name}" for name in _effective_sensitive_flags(frontmatter))
+    # Governance / sensitivity gate. Historically a hard veto (the manual-arm
+    # limbo). Per operator directive 2026-06-22, when the caller supplies the PR's
+    # verified (passing) checks each sensitive class is gated on its mitigation
+    # EVIDENCE: present+verified → no veto (the SDLC auto-arms); missing → held
+    # until the mitigation is produced; no gate defined for the class → fail
+    # CLOSED. With no verified checks supplied (pure-frontmatter assessment) the
+    # historical hard veto is preserved for backward compatibility.
+    for name in _effective_sensitive_flags(frontmatter):
+        if verified_checks is None:
+            blockers.append(f"risk_flag:{name}")
+            continue
+        required = RELEASE_MITIGATION_CHECKS.get(name)
+        if not required:
+            blockers.append(f"unmitigable_risk_flag:{name}")
+            continue
+        missing = [check for check in required if check not in verified_checks]
+        if missing:
+            blockers.append(f"needs_mitigation:{name}:{'|'.join(missing)}")
     # High-stakes mutation surfaces.
     surface = str(frontmatter.get("mutation_surface") or "").strip().lower()
     if surface in AUTO_ARM_INELIGIBLE_MUTATION_SURFACES:
@@ -676,6 +716,7 @@ def assess_release_auto_arm(
     frontmatter: Mapping[str, Any],
     *,
     now: float | datetime | None = None,
+    verified_checks: set[str] | None = None,
 ) -> ReleaseAutoArmAssessment:
     """Assess whether the system may auto-arm (authorize release for) a task.
 
@@ -686,6 +727,11 @@ def assess_release_auto_arm(
     public, audio/live-egress, privacy, or provider-billing veto, its release
     was authorized-in-principle (``implementation_authorized``), and its AVSDLC
     quality axes permit.
+
+    ``verified_checks`` (the PR's passing CI check names) switches the sensitivity
+    classes from a hard veto to evidence-gating: a class is satisfied when its
+    ``RELEASE_MITIGATION_CHECKS`` all passed. Omitted (the default) preserves the
+    historical pure-frontmatter hard veto for backward compatibility.
     """
 
     subject = "release_authorized" in frontmatter
@@ -699,7 +745,7 @@ def assess_release_auto_arm(
             eligible=False,
             blockers=(),
         )
-    blockers = _release_auto_arm_blockers(frontmatter, now=now)
+    blockers = _release_auto_arm_blockers(frontmatter, now=now, verified_checks=verified_checks)
     return ReleaseAutoArmAssessment(
         subject=True,
         armed=False,
