@@ -4409,3 +4409,30 @@ from shared.worker_failure_witness import (  # noqa: E402
 
 _append_failure_receipt_record
 _update_worker_family_availability
+
+# avsdlc_visual_intent (CASE-AVSDLC-VISUAL-INTENT-20260622, PR 3/N): the
+# intent-as-predicate MECHANISM ships AHEAD of its production caller — the witness
+# realized-vector computation and the release-gate conjunct (overall PASS = floors
+# AND intent_pass) land in PR 4/N. Until then these public helpers are exercised
+# only by tests; reference them so the unused-callable gate sees the use.
+from shared.avsdlc_visual_intent import (  # noqa: E402
+    anti_vacuity_check as _avi_anti_vacuity_check,
+)
+from shared.avsdlc_visual_intent import (  # noqa: E402
+    intent_hash_from_record as _avi_intent_hash_from_record,
+)
+from shared.avsdlc_visual_intent import (  # noqa: E402
+    intent_pass as _avi_intent_pass,
+)
+from shared.avsdlc_visual_intent import (  # noqa: E402
+    parse_intent_record as _avi_parse_intent_record,
+)
+from shared.avsdlc_visual_intent import (  # noqa: E402
+    serialize_intent_record as _avi_serialize_intent_record,
+)
+
+_avi_anti_vacuity_check
+_avi_intent_hash_from_record
+_avi_intent_pass
+_avi_parse_intent_record
+_avi_serialize_intent_record
