@@ -145,7 +145,7 @@ hapax_agent_role() {
 }
 
 hapax_agent_identity_or_default() {
-  hapax_agent_identity 2>/dev/null || printf '%s\n' "${1:-alpha}"
+  hapax_agent_identity 2>/dev/null || printf '%s\n' "${1:-roleless}"
 }
 
 hapax_agent_worktree_role() {
@@ -173,7 +173,7 @@ hapax_agent_worktree_role() {
 }
 
 hapax_agent_worktree_role_or_default() {
-  hapax_agent_worktree_role 2>/dev/null || printf '%s\n' "${1:-alpha}"
+  hapax_agent_worktree_role 2>/dev/null || printf '%s\n' "${1:-roleless}"
 }
 
 hapax_agent_role_or_default() {
