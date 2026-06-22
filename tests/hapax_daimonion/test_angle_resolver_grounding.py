@@ -120,6 +120,9 @@ def test_recruit_source_set_use_web_false_stays_local_only() -> None:
     with (
         patch.object(angle_resolver, "_gather_sources", lambda *a, **k: []),
         patch.object(angle_resolver, "_tavily_packets", _must_not_call),
+        # Re-angle uses the LOCAL model (not the web), so it is consistent with use_web=False;
+        # mock it dry to keep this unit hermetic and assert the local-only exhaustion refusal.
+        patch.object(angle_resolver, "_reangle_queries", lambda *a, **k: []),
     ):
         result = angle_resolver.recruit_source_set("dry topic", use_web=False)
 

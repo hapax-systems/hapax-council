@@ -60,32 +60,65 @@ def recruit_source_set(
     *,
     max_sources_per_collection: int = 5,
     use_web: bool = True,
+    max_reangles: int = 2,
 ) -> ResolvedSourceSet | None:
     """Recruit a content-hash-bound ResolvedSourceSet for a topic — the citable surface.
 
-    This is the LLM-free recruiter: it gathers real packets (Qdrant + vault, then
-    the open web via Tavily when the local corpus is dry) and binds them into a
-    closed, deduplicated, set-hashed ``ResolvedSourceSet`` whose handles
-    (``src:0..N``) are the ONLY things a composer may cite. Returns None when no
-    source resolves — the caller must REFUSE, never fabricate to fill.
+    Gathers real packets (Qdrant + vault, then the open web via Tavily when the local
+    corpus is dry) and binds them into a closed, deduplicated, set-hashed
+    ``ResolvedSourceSet`` whose handles (``src:0..N``) are the ONLY things a composer may
+    cite. A DEAD END (0 sources) does not one-shot-refuse: the recruiter RE-ANGLES — it
+    re-frames the same matter via LLM-generated alternative queries and re-gathers, until
+    density is recovered or the generated angles are spent. Returns None only AFTER that
+    traversal honestly exhausts — never a first-miss, never fabricate-to-fill.
 
-    The web leg mirrors ``recruit_source_sets`` (the plan-time recruiter) and
-    ``resolve_angle``: WITHOUT it, an open-world topic the planner grounded via web
-    at plan time dies here at segment compose-time with ``no_resolved_sources`` —
-    refused before the council ever sees it (the recruiter asymmetry, 2026-06-21).
-    Web recruitment is RETRIEVAL (not an LLM) and fails soft to local-only on any
-    Tavily outage, so this surface stays load-bearing — a degraded LLM (or a web
-    outage) cannot collapse the citation set.
+    Web recruitment is RETRIEVAL (not an LLM) and fails soft to local-only on any Tavily
+    outage; the re-angle's query generation is the ONLY LLM call and is bounded + fail-soft,
+    so neither a degraded LLM nor a web outage can collapse the citation set.
     """
-    packets = _gather_sources(topic, max_per_collection=max_sources_per_collection)
-    if use_web and len(packets) < _MIN_LOCAL_PACKETS_BEFORE_WEB:
-        packets.extend(
-            _tavily_packets(topic, max_results=max(1, max_sources_per_collection - len(packets)))
-        )
+    packets = _gather_with_web(
+        topic, max_per_collection=max_sources_per_collection, use_web=use_web
+    )
+    if not packets and max_reangles > 0:
+        # Honest exhaustion THEN pivot: traverse the SAME matter from reframed angles and
+        # re-gather until density is recovered or the generated angles are spent, before the
+        # refusal below fires. "Free to traverse, never free to collapse." The stop is a
+        # measured density target, not a topic rule.
+        seen: set[str] = set()
+        for query in _reangle_queries(topic, packets, limit=max_reangles):
+            fresh = [
+                packet
+                for packet in _gather_with_web(
+                    query, max_per_collection=max_sources_per_collection, use_web=use_web
+                )
+                if packet.content_hash not in seen
+            ]
+            seen.update(packet.content_hash for packet in fresh)
+            packets.extend(fresh)
+            if len(packets) >= MIN_SOURCES_FOR_ANGLE:
+                break
     if not packets:
-        log.warning("recruit_source_set: no sources resolved for topic: %s", topic[:80])
+        log.warning(
+            "recruit_source_set: no sources resolved after re-angle for topic: %s", topic[:80]
+        )
         return None
     return build_resolved_source_set(topic, packets)
+
+
+def _gather_with_web(
+    topic: str, *, max_per_collection: int = 5, use_web: bool = True
+) -> list[SourcePacket]:
+    """Gather local packets (Qdrant + vault) then the open web (Tavily) for ONE query.
+
+    The shared per-query retrieval primitive ``recruit_source_set`` runs for the topic and
+    for each re-angle: local first, Tavily only when local is sparse, fail soft on web outage.
+    """
+    packets = _gather_sources(topic, max_per_collection=max_per_collection)
+    if use_web and len(packets) < _MIN_LOCAL_PACKETS_BEFORE_WEB:
+        packets.extend(
+            _tavily_packets(topic, max_results=max(1, max_per_collection - len(packets)))
+        )
+    return packets
 
 
 def rank_source_sets_by_density(
@@ -141,6 +174,56 @@ def _tavily_packets(topic: str, *, max_results: int = 3) -> list[SourcePacket]:
             )
         )
     return packets
+
+
+def _reangle_queries(topic: str, packets: list[SourcePacket], *, limit: int = 2) -> list[str]:
+    """LLM-generate up to ``limit`` ALTERNATIVE search angles for a dead/sparse topic.
+
+    The pivot half of the researcher dynamic: a 0-source first pass is re-framed —
+    decomposed into a concrete sub-question, broadened to the general phenomenon, or a
+    named related case — to traverse the SAME matter differently rather than one-shot-
+    refusing on the first miss. Derived from the topic (+ any thin signal already found),
+    NOT a fixed synonym table. Routes through the LOCAL resident model (``local-fast``), so
+    the pivot costs no cloud spend; fails soft to ``[]`` on any LLM error (then the recruiter
+    honestly exhausts on what it has). Bounded by ``limit`` to cap pivot depth/cost.
+    """
+    topic = (topic or "").strip()
+    if not topic or limit <= 0:
+        return []
+    try:
+        import litellm
+
+        from shared.config import MODELS
+
+        found = "; ".join(p.snippet[:80] for p in packets[:3]) or "(nothing found locally)"
+        prompt = (
+            f"A search for the topic below returned too few sources. Propose {limit} ALTERNATIVE "
+            "search queries that re-frame the SAME underlying matter to find more — decompose it "
+            "into a concrete sub-question, broaden to the general phenomenon, or name a known "
+            "related case. Stay ON the matter; do not drift to a different topic. One query per "
+            f"line, no numbering or commentary.\n\nTOPIC: {topic}\nALREADY FOUND: {found}"
+        )
+        response = litellm.completion(
+            model=f"openai/{MODELS.get('local-fast', 'local-fast')}",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200,
+            temperature=0.4,
+            api_base=os.environ.get("LITELLM_API_BASE", "http://127.0.0.1:4000"),
+            api_key=os.environ.get("LITELLM_API_KEY", "not-set"),
+            timeout=PREP_LLM_TIMEOUT_S,
+        )
+        text = response.choices[0].message.content or ""
+    except Exception:
+        log.debug(
+            "recruit: re-angle query generation failed for topic=%s", topic[:60], exc_info=True
+        )
+        return []
+    queries: list[str] = []
+    for line in text.splitlines():
+        query = line.strip(" -*\t")
+        if query and query.lower() != topic.lower():
+            queries.append(query)
+    return queries[:limit]
 
 
 def recruit_source_sets(
