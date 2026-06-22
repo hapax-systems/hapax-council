@@ -59,16 +59,12 @@ case "$tool_name" in
   *) exit 0 ;;
 esac
 
-# --- resolve role + claimed task note (mirror cc-task-gate.sh) ---
-role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
-if [ -z "$role" ] && declare -F hapax_agent_role >/dev/null 2>&1; then
-  role="$(hapax_agent_role 2>/dev/null || true)"
-fi
-if [ -z "$role" ]; then
-  _branch="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
-  case "$_branch" in
-    alpha/*|beta/*|gamma/*|delta/*|epsilon/*|zeta/*) role="${_branch%%/*}" ;;
-  esac
+# --- resolve role through the single resolver (same as cc-task-gate + auth-packet-validator);
+# FM-1: branch-name is not identity (the prior branch-regex was phantom-alpha inference). ---
+if declare -F hapax_effective_role >/dev/null 2>&1; then
+  role="$(hapax_effective_role 2>/dev/null || true)"
+else
+  role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
 fi
 if [ -z "$role" ]; then
   echo "pr-release-gate: ADVISORY — cannot determine session role; skipping release precheck." >&2
