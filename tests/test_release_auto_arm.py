@@ -351,3 +351,51 @@ def test_apply_release_auto_arm_updates_timestamp_and_logs() -> None:
     assert "updated_at: 2026-06-01T03:00:00Z" in out
     assert "- prior line" in out  # body preserved
     assert "release auto-arm" in out.lower()  # audit line appended to body
+
+
+# ── evidence-gated auto-arm (no manual arming; operator directive 2026-06-22) ──
+
+
+def test_sensitivity_is_hard_veto_without_verified_checks_backward_compat() -> None:
+    # Pure-frontmatter assessment (no verified_checks) preserves the historical
+    # hard veto so legacy callers are unaffected.
+    fm = _eligible_frontmatter(risk_flags={"privacy_or_secret_sensitive": True})
+    assessment = assess_release_auto_arm(fm)
+    assert not assessment.eligible
+    assert "risk_flag:privacy_or_secret_sensitive" in assessment.blockers
+
+
+def test_privacy_secret_auto_arms_when_mitigation_evidence_present() -> None:
+    # With the dedicated secret scanner passing, a privacy/secret-sensitive change
+    # auto-arms on its evidence — the #4256 proof case. No human arm.
+    fm = _eligible_frontmatter(risk_flags={"privacy_or_secret_sensitive": True})
+    assessment = assess_release_auto_arm(fm, verified_checks={"secrets-scan", "test", "review"})
+    assert assessment.eligible
+    assert assessment.blockers == ()
+
+
+def test_privacy_secret_held_when_mitigation_evidence_missing() -> None:
+    # Evidence absent → held with a "needs_mitigation" reason; resolved by PRODUCING
+    # the mitigation (running secrets-scan), never by a manual override.
+    fm = _eligible_frontmatter(risk_flags={"privacy_or_secret_sensitive": True})
+    assessment = assess_release_auto_arm(fm, verified_checks={"test", "review"})
+    assert not assessment.eligible
+    assert "needs_mitigation:privacy_or_secret_sensitive:secrets-scan" in assessment.blockers
+
+
+def test_undefined_sensitivity_class_fails_closed_under_evidence_gating() -> None:
+    # A sensitive class with no mitigation gate defined yet (governance in v1) fails
+    # CLOSED even with checks present — the model never silently releases something
+    # it cannot mitigate; the resolution is to DEFINE its gate, never to hand-arm.
+    fm = _eligible_frontmatter(risk_flags={"governance_sensitive": True})
+    assessment = assess_release_auto_arm(fm, verified_checks={"secrets-scan", "test", "review"})
+    assert not assessment.eligible
+    assert "unmitigable_risk_flag:governance_sensitive" in assessment.blockers
+
+
+def test_nonsensitive_task_stays_eligible_with_verified_checks() -> None:
+    # Supplying verified_checks must not regress the non-sensitive happy path.
+    assessment = assess_release_auto_arm(
+        _eligible_frontmatter(), verified_checks={"secrets-scan", "test"}
+    )
+    assert assessment.eligible
