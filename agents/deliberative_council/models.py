@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 
 class CouncilMode(StrEnum):
@@ -55,7 +55,12 @@ class CouncilConfig(BaseModel):
         "opus",
         "balanced",
         "gemini-3-pro",
-        "local-fast",
+        # "local-fast" (Command-R on appendix TabbyAPI :5000) is DROPPED while
+        # appendix is down (HTTP 000): a dead canonical seat fails over to
+        # gemini-flash (a cross-family substitution) and falsely trips the
+        # served_substitutions>0 quarantine. RESTORE this line when appendix
+        # TabbyAPI is back up. Panel stays above the 4-family/4-member floor
+        # (7 members / 6 families remain). 2026-06-21.
         "web-research",
         "mistral-large",
         "deepseek",
@@ -86,6 +91,16 @@ class CouncilConfig(BaseModel):
     # required to certify a single axis (a lone score's IQR is 0.0, which must
     # not read as consensus). Applied in aggregate_scores().
     min_axis_values: int = 2
+
+    # ── RDLC FREEZE AXIS (resilience vs confirmatory honesty) ───────────────
+    # None = NOT frozen (R1_PROTOCOL pilot / operational): the release criterion is the
+    # family-diversity FLOOR (below_quorum) + C_k; a served substitution is a transparency
+    # LABEL, never a refusal — so the council is resilient to single-provider drop-out
+    # while the abundant live pool keeps the floor met. A set ruler_hash = the protocol is
+    # FROZEN (R2_PREREGISTER -> R3_COLLECTION confirmatory): the committed roster matters,
+    # so a served substitution refuses (frozen_ruler_deviation). The #4224 served-family
+    # floor computation is unchanged in BOTH stages; only the gate's RESPONSE is staged.
+    ruler_hash: str | None = None
 
 
 class PhaseOneResult(BaseModel):
@@ -140,6 +155,35 @@ class Phase1Output(BaseModel):
     scores: dict[str, Annotated[int, Field(ge=1, le=5)]] = Field(default_factory=dict)
     rationale: dict[str, str] = Field(default_factory=dict)
     research_findings: list[str] = Field(default_factory=list)
+
+
+def build_phase1_model(rubric: Any) -> type[BaseModel]:
+    """Per-rubric Phase 1 output type with a REQUIRED named int field per axis.
+
+    The prior ``Phase1Output.scores`` was a free-form ``dict[str, int]`` with no
+    required keys, so a structurally-valid empty ``{}`` satisfied the output type and
+    only failed LOUDLY downstream (EmptyScores) — Claude/Perplexity comply with the
+    JSON shape but decline to invent axis keys. Requiring one named int field per
+    axis forces a real per-axis score; an omitted axis is a hard validation failure
+    (a real member failure), never a phantom abstainer.
+
+    The axis fields are PLAIN ``int`` — deliberately NOT ``Annotated[int, Field(ge/le)]``:
+    Anthropic's json_schema rejects integer ``minimum``/``maximum`` (HTTP 400), which
+    silently forces an off-family gateway substitution (live-proven 2026-06-21). The
+    1-5 rubric range is enforced in Python after extraction (engine._run_one), where an
+    out-of-range value is dropped as a real member failure, not silently clamped.
+    """
+    score_fields: dict[str, Any] = {axis.name: (int, ...) for axis in rubric.axes}
+    scores_model = create_model(
+        "Phase1Scores", __config__=ConfigDict(extra="forbid"), **score_fields
+    )
+    return create_model(
+        "Phase1OutputDynamic",
+        __config__=ConfigDict(extra="forbid"),
+        scores=(scores_model, ...),
+        rationale=(dict[str, str], Field(default_factory=dict)),
+        research_findings=(list[str], Field(default_factory=list)),
+    )
 
 
 class CouncilHealth(BaseModel):

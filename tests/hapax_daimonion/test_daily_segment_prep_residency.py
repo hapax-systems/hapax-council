@@ -193,16 +193,11 @@ def _s2_reframe_off_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HAPAX_SEGMENT_PREP_S2_REFRAME", "off")
 
 
-def test_coherence_check_quarantines_degraded_ruler(monkeypatch: pytest.MonkeyPatch) -> None:
-    """#6 (review-plane degradation pattern -> the SCED ruler): a verdict from a
-    DEGRADED roster (served_substitutions>0 — a seat served by a substitute family
-    under a cap, e.g. anthropic->gemini) is QUARANTINED: refused, no release, even
-    when CONVERGED with high scores. The frozen ruler's validity is its genuine
-    family-diverse panel; a substitute-family ruling is invalid SCED data."""
-    from agents.deliberative_council import engine as council_engine
+def _substituted_verdict_fn():
+    """A CONVERGED, family-diverse, high-scoring verdict whose served roster substituted 2 seats."""
     from agents.deliberative_council.models import ConvergenceStatus, CouncilVerdict
 
-    async def _degraded(council_input: Any, mode: Any, rubric: Any, config: Any = None) -> Any:
+    async def _substituted(council_input: Any, mode: Any, rubric: Any, config: Any = None) -> Any:
         return CouncilVerdict(
             scores={"coherence": 5, "specificity": 5},
             confidence_bands={},
@@ -220,13 +215,46 @@ def test_coherence_check_quarantines_degraded_ruler(monkeypatch: pytest.MonkeyPa
             },
         )
 
-    monkeypatch.setattr(council_engine, "deliberate", _degraded)
-    outcome = prep._council_coherence_check("a fine and coherent script", "prog-quarantine-1")
+    return _substituted
+
+
+def test_coherence_check_substitution_pilot_labels_not_quarantines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """STAGE-AWARE SCED ruler integrity, R1_PROTOCOL / operational (NOT frozen — the live
+    go-live path). A served substitution (served_substitutions>0) is a transparency LABEL,
+    NOT a refusal: the abundant live pool keeps the family-diversity floor met, so the
+    council is resilient to single-provider drop-out instead of falsely quarantining a
+    genuinely family-diverse, criterion-passing panel. (The segment-01 false quarantine was
+    a PHANTOM count from a model_family/served-family namespace gap — fixed in members.py.)"""
+    from agents.deliberative_council import engine as council_engine
+
+    monkeypatch.setattr(council_engine, "deliberate", _substituted_verdict_fn())
+    monkeypatch.delenv("HAPAX_SEGMENT_PREP_RULER_HASH", raising=False)  # NOT frozen = pilot
+    outcome = prep._council_coherence_check("a fine and coherent script", "prog-pilot-sub-1")
+    assert outcome.passed is True  # family-diverse + above criterion -> RELEASES
+    assert outcome.refused is False
+    assert outcome.council_decisions["ruler_substituted"] is True  # transparency label kept
+    assert outcome.council_decisions["served_substitutions"] == 2
+    assert outcome.council_decisions.get("quarantined") is None  # NOT quarantined in pilot
+
+
+def test_coherence_check_frozen_ruler_deviation_quarantines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In a FROZEN confirmatory run (R2_PREREGISTER->R3_COLLECTION, ruler_hash set), the
+    committed roster matters: a served substitution refuses (frozen_ruler_deviation), even
+    when CONVERGED with high scores. Preserves the #4224/#4233 confirmatory honesty — a
+    substitute-family ruling is invalid SCED data for a study committed to a specific roster."""
+    from agents.deliberative_council import engine as council_engine
+
+    monkeypatch.setattr(council_engine, "deliberate", _substituted_verdict_fn())
+    monkeypatch.setenv("HAPAX_SEGMENT_PREP_RULER_HASH", "frozen-test-hash")  # FROZEN
+    outcome = prep._council_coherence_check("a fine and coherent script", "prog-frozen-sub-1")
     assert outcome.passed is False
     assert outcome.refused is True
     assert outcome.council_decisions["ruler_substituted"] is True
-    assert outcome.council_decisions["served_substitutions"] == 2
-    assert outcome.council_decisions.get("quarantined") == "ruler_substituted"
+    assert outcome.council_decisions.get("quarantined") == "frozen_ruler_deviation"
 
 
 def _patch_axis_b_prep_happy_path(
