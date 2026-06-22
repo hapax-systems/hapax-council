@@ -127,6 +127,42 @@ def perceptual_digest_from_manifest(manifest: Mapping[str, Any]) -> str:
     return hashlib.sha256(blob).hexdigest()
 
 
+def intent_fields_from_record_and_frame(
+    declared_record: Mapping[str, Any] | str,
+    frame: Any,
+    pov_label: str,
+) -> tuple[str, bool]:
+    """Compute ``(intent_hash, intent_pass)`` for a declared ``VisualIntentRecord``
+    against the REALIZED per-region vector derived from one captured frame.
+
+    The independent runtime-witness calls this to bind the prediction's verdict
+    into the receipt: ``intent_hash`` is the canonical hash of the declared record
+    (the gate re-derives it from the frontmatter and demands equality, so a verdict
+    minted against a different prediction cannot replay in), and ``intent_pass`` is
+    the witness's verdict — did the realized vector satisfy the pre-authored
+    predicates? Returns ``("", False)`` when the record is unparseable (the witness
+    binds no intent; under ``require_intent`` the gate then treats it as unconfirmed).
+
+    ``frame`` is a numpy array (HxWx3/4); numpy is imported lazily so this
+    dependency-light module stays importable without it."""
+    from shared.avsdlc_realized_vector import realized_vector_from_frame
+    from shared.avsdlc_visual_intent import (
+        intent_hash_from_record,
+        intent_pass,
+        parse_intent_record,
+    )
+
+    record = parse_intent_record(declared_record)
+    if record is None:
+        return "", False
+    declared_hash = intent_hash_from_record(record)
+    try:
+        realized = realized_vector_from_frame(frame, pov_label)
+    except Exception:  # noqa: BLE001 — a malformed/missing frame must never crash the observe path.
+        return declared_hash, False
+    return declared_hash, intent_pass(record, realized)
+
+
 def build_receipt_from_witness(
     manifest: Mapping[str, Any],
     *,
@@ -135,9 +171,13 @@ def build_receipt_from_witness(
     ttl_s: float,
     key: bytes,
     now: float,
+    intent_hash: str = "",
+    intent_pass: bool = False,
 ) -> AVWitnessReceipt:
     """Build (mint) a signed receipt from a witness manifest + deployed-bytes
-    binding. The witness daemon is the only legitimate caller."""
+    binding. The witness daemon is the only legitimate caller. ``intent_hash`` +
+    ``intent_pass`` bind the independent witness's verdict on the declared
+    VisualIntentRecord (empty/False when no record was declared for this release)."""
     status, obs_moving = receipt_status_from_manifest(manifest)
     return mint_av_witness_receipt(
         content_hash=content_hash,
@@ -149,6 +189,8 @@ def build_receipt_from_witness(
         now=now,
         via=via_from_manifest(manifest),
         perceptual_digest=perceptual_digest_from_manifest(manifest),
+        intent_hash=intent_hash,
+        intent_pass=intent_pass,
     )
 
 
@@ -161,6 +203,8 @@ def emit_receipt(
     key: bytes,
     ttl_s: float = DEFAULT_RECEIPT_TTL_SECONDS,
     now: float,
+    intent_hash: str = "",
+    intent_pass: bool = False,
 ) -> AVWitnessReceipt:
     """Compute the gamedir content hash + active source head, mint a signed
     receipt from the witness manifest, write it to ``out_path``, and return it."""
@@ -171,6 +215,8 @@ def emit_receipt(
         ttl_s=ttl_s,
         key=key,
         now=now,
+        intent_hash=intent_hash,
+        intent_pass=intent_pass,
     )
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)

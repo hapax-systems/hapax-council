@@ -325,6 +325,9 @@ class AVWitnessReceipt:
     via: str = ""  # the capture instrument that produced the verdict (e.g. obs-websocket)
     perceptual_digest: str = ""  # sha256 over the witness per-region perceptual stats
     intent_hash: str = ""  # sha256 of the pre-authored VisualIntentRecord (tamper-evident)
+    intent_pass: bool = (
+        False  # the witness's independent verdict: realized vector satisfied the declared intent?
+    )
 
     def _signing_payload(self) -> dict[str, object]:
         return {
@@ -339,6 +342,7 @@ class AVWitnessReceipt:
             "via": self.via,
             "perceptual_digest": self.perceptual_digest,
             "intent_hash": self.intent_hash,
+            "intent_pass": self.intent_pass,
         }
 
     def is_expired(self, now: float) -> bool:
@@ -366,12 +370,14 @@ def mint_av_witness_receipt(
     via: str = "",
     perceptual_digest: str = "",
     intent_hash: str = "",
+    intent_pass: bool = False,
 ) -> AVWitnessReceipt:
     """Mint a signed runtime-witness receipt. The witness daemon is the only
     legitimate minter — the release gate must never mint its own. ``via`` (the
-    capture instrument), ``perceptual_digest`` (over the per-region stats), and
-    ``intent_hash`` (the pre-authored intent) are folded into the signature so
-    none can be altered after minting."""
+    capture instrument), ``perceptual_digest`` (over the per-region stats),
+    ``intent_hash`` (the pre-authored intent), and ``intent_pass`` (the witness's
+    independent verdict on it) are folded into the signature so none can be
+    altered after minting."""
     fields = {
         "receipt_id": secrets.token_hex(16),
         "content_hash": content_hash,
@@ -383,6 +389,7 @@ def mint_av_witness_receipt(
         "via": via,
         "perceptual_digest": perceptual_digest,
         "intent_hash": intent_hash,
+        "intent_pass": bool(intent_pass),
     }
     payload = {"kind": "av_witness", **fields}
     return AVWitnessReceipt(signature=_sign(payload, key), **fields)
@@ -449,6 +456,7 @@ def parse_av_receipt(data: str | Mapping[str, object]) -> AVWitnessReceipt | Non
             via=str(obj.get("via", "")),
             perceptual_digest=str(obj.get("perceptual_digest", "")),
             intent_hash=str(obj.get("intent_hash", "")),
+            intent_pass=bool(obj.get("intent_pass", False)),
         )
     except Exception:  # noqa: BLE001 — malformed/missing input must never raise.
         return None

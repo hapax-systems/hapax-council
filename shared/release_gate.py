@@ -8,6 +8,7 @@ ISAP: SLICE-006-RELEASE-OPS (CASE-SDLC-REFORM-001)
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Mapping
@@ -17,6 +18,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from shared.avsdlc_visual_intent import intent_hash_from_record, parse_intent_record
 from shared.governance.coord_capabilities import (
     AVWitnessReceipt,
     read_av_receipt_file,
@@ -512,12 +514,80 @@ def _runtime_media_witness_status(
     return "legacy" if not require_signed else "missing"
 
 
+# Frontmatter fields that carry a pre-authored VisualIntentRecord (serialized
+# JSON). The intent-predicate conjunct (PR 4b) reads it to enforce that an
+# independent witness confirmed the prediction over the deployed bytes.
+_AVSDLC_INTENT_RECORD_FIELDS = ("avsdlc_intent_record", "avsdlc_visual_intent")
+_INTENT_AXES = {"visual", "aesthetic", "audiovisual"}
+
+
+def _verified_runtime_receipt(
+    frontmatter: Mapping[str, Any], *, key: bytes, now: float
+) -> AVWitnessReceipt | None:
+    """The runtime-media witness receipt iff it cryptographically verifies against
+    the declared deployed bytes. Single source of truth for any conjunct that needs
+    to read signed receipt fields (signature + freshness + verdict + byte-binding).
+    Returns None when absent, unparseable, or unverifiable."""
+    field = _first_present_field(
+        frontmatter, ("runtime_media_witness", "production_witness", "runtime_media_receipt")
+    )
+    if field is None:
+        return None
+    receipt = _coerce_av_receipt(field[1])
+    if receipt is None:
+        return None
+    expected = _expected_content_hash(frontmatter)
+    return (
+        receipt
+        if verify_av_witness_receipt(receipt, key=key, now=now, content_hash=expected)
+        else None
+    )
+
+
+def _intent_conjunct_blockers(
+    frontmatter: Mapping[str, Any], *, key: bytes, now: float, axes: list[str]
+) -> list[str]:
+    """The intent-predicate conjunct (PR 4b). Fires only under the staged
+    ``require_intent`` switch. A visual/aesthetic/audiovisual change (or any task
+    that declares ``avsdlc_intent_record``) must have its pre-authored prediction
+    CONFIRMED by the independent witness's signed receipt:
+
+    * the receipt's ``intent_hash`` must equal ``intent_hash_from_record(declared)``
+      — the witness committed to THIS record, so a verdict minted against a
+      different prediction cannot replay in (swap-resistant), AND
+    * the receipt's ``intent_pass`` is True — the realized per-region vector, which
+      only the witness can produce from a live frame, satisfied the predicates.
+
+    The authoring session cannot self-mint either fact (witness independence)."""
+    record_field = _first_present_field(frontmatter, _AVSDLC_INTENT_RECORD_FIELDS)
+    if record_field is None:
+        return ["avsdlc_intent_record_missing"] if _INTENT_AXES & set(axes) else []
+    raw = record_field[1]
+    record = parse_intent_record(raw if isinstance(raw, str) else json.dumps(raw))
+    if record is None:
+        return ["avsdlc_intent_record_unparseable"]
+    # The intent confirmation must bind the EXACT deployed bytes — a receipt that
+    # is not byte-bound is portable across tasks within its TTL, so a verdict minted
+    # for one change must not confirm another. Require a declared content hash.
+    if _expected_content_hash(frontmatter) is None:
+        return ["avsdlc_intent_receipt_unbound"]
+    receipt = _verified_runtime_receipt(frontmatter, key=key, now=now)
+    if receipt is None:
+        return ["avsdlc_intent_receipt_missing"]
+    if receipt.intent_hash != intent_hash_from_record(record):
+        return ["avsdlc_intent_hash_mismatch"]
+    if not receipt.intent_pass:
+        return ["avsdlc_intent_not_confirmed"]
+    return []
+
+
 def evaluate_avsdlc_release_gate(
     frontmatter: Mapping[str, Any],
     *,
     now: float | datetime | None = None,
     key: bytes | None = None,
     require_signed_witness: bool | None = None,
+    require_intent: bool | None = None,
 ) -> AvsdlcReleaseGateResult:
     """Evaluate the mechanical AVSDLC evidence gate for one request/task note.
 
@@ -533,6 +603,12 @@ def evaluate_avsdlc_release_gate(
         require_signed_witness
         if require_signed_witness is not None
         else os.environ.get("HAPAX_AVSDLC_REQUIRE_SIGNED_WITNESS", "").strip().lower()
+        in {"1", "true", "yes"}
+    )
+    require_intent_flag = (
+        require_intent
+        if require_intent is not None
+        else os.environ.get("HAPAX_AVSDLC_REQUIRE_INTENT_PREDICATE", "").strip().lower()
         in {"1", "true", "yes"}
     )
     explicit_axes = _explicit_axes(frontmatter)
@@ -597,6 +673,12 @@ def evaluate_avsdlc_release_gate(
 
     blockers = [f"missing:{field}" for field in sorted(set(missing_fields))]
     blockers.extend(f"stale:{field}" for field in sorted(set(stale_fields)))
+    if require_intent_flag:
+        blockers.extend(
+            _intent_conjunct_blockers(
+                frontmatter, key=signing_key, now=timestamp, axes=explicit_axes
+            )
+        )
     return AvsdlcReleaseGateResult(
         required=True,
         passed=not blockers,
