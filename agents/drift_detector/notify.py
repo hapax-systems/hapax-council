@@ -80,7 +80,7 @@ def send_notification(
     topic: str | None = None,
     click_url: str | None = None,
 ) -> bool:
-    """Send a push notification. KDE Plasma native D-Bus via notify-send."""
+    """Send a push notification. KDE Plasma native D-Bus via hapax-alert."""
     msg = message or body
 
     if _is_duplicate(title, msg):
@@ -97,7 +97,7 @@ def send_notification(
     try:
         delivered = _send_desktop(title, msg, priority=priority)
     except Exception as exc:
-        _log.debug("notify-send failed: %s", exc)
+        _log.debug("hapax-alert failed: %s", exc)
         delivered = False
 
     if not delivered and not active:
@@ -110,12 +110,10 @@ def send_notification(
 
 
 def _send_desktop(title: str, message: str, *, priority: str = "default") -> bool:
-    """Send notification via notify-send (desktop only)."""
-    urgency = _DESKTOP_URGENCY.get(priority, "normal")
+    """Send notification via hapax-alert (desktop only)."""
     cmd = [
-        "notify-send",
-        f"--urgency={urgency}",
-        "--app-name=LLM Stack",
+        "hapax-alert",
+        priority,
         title,
         message,
     ]

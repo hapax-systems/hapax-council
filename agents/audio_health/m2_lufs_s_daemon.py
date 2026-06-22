@@ -231,12 +231,11 @@ def _send_ntfy(stage: str, lufs: float, band: LufsBand) -> None:
 
         direction = "above" if lufs > band.high else "below"
         msg = f"LUFS-S breach at {stage}: {lufs:.1f} dBFS ({direction} [{band.low}, {band.high}])"
-        urgency = "critical" if stage == OBS_BOUND_STAGE else "normal"
+        priority = "urgent" if stage == OBS_BOUND_STAGE else "default"
         subprocess.run(
             [
-                "notify-send",
-                f"--urgency={urgency}",
-                "--app-name=LLM Stack",
+                "hapax-alert",
+                priority,
                 "Audio: LUFS Breach",
                 msg,
             ],
@@ -244,7 +243,7 @@ def _send_ntfy(stage: str, lufs: float, band: LufsBand) -> None:
             timeout=5,
         )
     except Exception:
-        log.debug("notify-send failed", exc_info=True)
+        log.debug("hapax-alert failed", exc_info=True)
 
 
 def _format_error(exc: BaseException | str | None) -> str:

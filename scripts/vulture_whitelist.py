@@ -4446,3 +4446,7 @@ from shared.avsdlc_realized_vector import (  # noqa: E402
 )
 
 _avi_realized_vector_from_frame
+# Added by antigrav for agents/_notify.py
+send_webhook
+nudges_uri
+send_enriched_notification

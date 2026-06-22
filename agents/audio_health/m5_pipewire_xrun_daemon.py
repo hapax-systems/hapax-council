@@ -201,9 +201,8 @@ def _send_ntfy(node: str, delta: int) -> None:
     try:
         subprocess.run(
             [
-                "notify-send",
-                "--urgency=critical",
-                "--app-name=LLM Stack",
+                "hapax-alert",
+                priority,
                 "Audio: Xrun Storm",
                 f"{node} xrun storm: {delta} xruns in probe window",
             ],
@@ -211,7 +210,7 @@ def _send_ntfy(node: str, delta: int) -> None:
             timeout=5,
         )
     except Exception:
-        log.debug("notify-send failed", exc_info=True)
+        log.debug("hapax-alert failed", exc_info=True)
 
 
 def run_daemon(config: M5DaemonConfig | None = None) -> None:

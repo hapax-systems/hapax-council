@@ -286,12 +286,11 @@ def _send_ntfy(stage: str, alert_type: str, detail: str) -> None:
     try:
         import subprocess
 
-        urgency = "critical" if stage == OBS_BOUND_STAGE else "normal"
+        priority = "urgent" if stage == OBS_BOUND_STAGE else "default"
         subprocess.run(
             [
-                "notify-send",
-                f"--urgency={urgency}",
-                "--app-name=LLM Stack",
+                "hapax-alert",
+                priority,
                 f"Audio: {alert_type}",
                 f"{alert_type} at {stage}: {detail}",
             ],
@@ -299,7 +298,7 @@ def _send_ntfy(stage: str, alert_type: str, detail: str) -> None:
             timeout=5,
         )
     except Exception:
-        log.debug("notify-send failed", exc_info=True)
+        log.debug("hapax-alert failed", exc_info=True)
 
 
 def _format_error(exc: BaseException | str | None) -> str:

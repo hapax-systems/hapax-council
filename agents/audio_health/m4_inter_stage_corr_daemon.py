@@ -231,9 +231,8 @@ def _send_ntfy(pair: str, correlation: float) -> None:
 
         subprocess.run(
             [
-                "notify-send",
-                "--urgency=critical",
-                "--app-name=LLM Stack",
+                "hapax-alert",
+                priority,
                 "Audio: Signal Loss",
                 f"Signal lost between {pair}: correlation={correlation:.3f}",
             ],
@@ -241,7 +240,7 @@ def _send_ntfy(pair: str, correlation: float) -> None:
             timeout=5,
         )
     except Exception:
-        log.debug("notify-send failed", exc_info=True)
+        log.debug("hapax-alert failed", exc_info=True)
 
 
 def _format_error(exc: BaseException | str | None) -> str:

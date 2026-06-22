@@ -227,9 +227,8 @@ def _send_ntfy(node: str, declared: int, observed: int) -> None:
     try:
         subprocess.run(
             [
-                "notify-send",
-                "--urgency=critical",
-                "--app-name=LLM Stack",
+                "hapax-alert",
+                priority,
                 "Audio: Channel Mismatch",
                 f"Channel mismatch at {node}: declared={declared}, observed={observed}",
             ],
@@ -237,7 +236,7 @@ def _send_ntfy(node: str, declared: int, observed: int) -> None:
             timeout=5,
         )
     except Exception:
-        log.debug("notify-send failed", exc_info=True)
+        log.debug("hapax-alert failed", exc_info=True)
 
 
 def run_daemon(config: M8DaemonConfig | None = None) -> None:

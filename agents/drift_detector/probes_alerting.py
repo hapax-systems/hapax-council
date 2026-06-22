@@ -51,10 +51,10 @@ def _check_notification_chain() -> tuple[bool, str]:
 
     content = notify_file.read_text()
     has_ntfy = "ntfy" in content
-    has_desktop = "notify-send" in content or "notify_send" in content
+    has_desktop = "hapax-alert" in content or "notify_send" in content
 
     if has_ntfy and has_desktop:
-        return True, "notify.py has ntfy (push) and desktop (notify-send) channels"
+        return True, "notify.py has ntfy (push) and desktop (hapax-alert) channels"
     missing: list[str] = []
     if not has_ntfy:
         missing.append("ntfy")

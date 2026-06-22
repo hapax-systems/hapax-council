@@ -36,7 +36,7 @@ def screen_flash(kind: str = "activation") -> None:
     try:
         subprocess.Popen(
             [
-                "notify-send",
+                "hapax-alert",
                 "--app-name=Hapax Daimonion",
                 f"--icon={icons.get(kind, 'dialog-information')}",
                 "--expire-time=1500",

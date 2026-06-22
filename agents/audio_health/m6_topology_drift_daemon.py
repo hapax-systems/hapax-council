@@ -242,9 +242,8 @@ def _send_ntfy(direction: str, detail: str) -> None:
     try:
         subprocess.run(
             [
-                "notify-send",
-                "--urgency=normal",
-                "--app-name=LLM Stack",
+                "hapax-alert",
+                priority,
                 "Audio: Topology Drift",
                 f"Topology drift: module {direction} — {detail}",
             ],
@@ -252,7 +251,7 @@ def _send_ntfy(direction: str, detail: str) -> None:
             timeout=5,
         )
     except Exception:
-        log.debug("notify-send failed", exc_info=True)
+        log.debug("hapax-alert failed", exc_info=True)
 
 
 def run_daemon(config: M6DaemonConfig | None = None) -> None:
