@@ -4436,3 +4436,13 @@ _avi_intent_hash_from_record
 _avi_intent_pass
 _avi_parse_intent_record
 _avi_serialize_intent_record
+
+# avsdlc_realized_vector (CASE-AVSDLC-REALIZED-VECTOR-20260622, PR 4a): the realized
+# per-region vector computation ships AHEAD of its caller — the witness producer
+# (compute from live /dev/video52 frames + emit into the manifest/receipt) and the
+# gate conjunct land in follow-up slices. Until then it is exercised only by tests.
+from shared.avsdlc_realized_vector import (  # noqa: E402
+    realized_vector_from_frame as _avi_realized_vector_from_frame,
+)
+
+_avi_realized_vector_from_frame
