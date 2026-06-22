@@ -14,7 +14,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from shared.p0_incident_intake import classify_notification, record_notification
+from shared.p0_incident_intake import (
+    classify_notification,
+    reap_resolved_incidents,
+    record_notification,
+)
 
 HAPAX_NOTIFICATION_APP_NAMES = {"hapax system", "llm stack"}
 
@@ -242,6 +246,66 @@ def _notification(args: argparse.Namespace) -> int:
     return _record(args, title=args.title, message=args.message, technical=args.technical)
 
 
+def _systemd_unit_recovered(unit: str, *, run=None) -> bool:
+    # POSITIVE-confirmation recovery probe (module-level so its branches are unit
+    # testable). Reap (True) ONLY when systemd KNOWS the unit and reports it cleanly
+    # recovered: loaded AND (active, or a Type=oneshot that exited Result=success).
+    # A probe failure (OSError / timeout / nonzero return), an unknown / never-loaded
+    # unit, or any ambiguous state returns False (keep -- never reap on uncertainty).
+    # Bounded by a 5s timeout so a stalled user-manager / DBus probe can never hang
+    # the reaper while it holds the shared state lock.
+    if run is None:
+
+        def run(argv):
+            return subprocess.run(argv, capture_output=True, text=True, check=False, timeout=5)
+
+    try:
+        proc = run(
+            [
+                "systemctl",
+                "--user",
+                "show",
+                unit,
+                "-p",
+                "LoadState",
+                "-p",
+                "ActiveState",
+                "-p",
+                "Result",
+            ]
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if proc.returncode != 0:
+        return False
+    props: dict[str, str] = {}
+    for line in proc.stdout.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            props[key] = value
+    if props.get("LoadState") != "loaded":
+        return False  # unknown / never-loaded -> cannot confirm recovery
+    active = props.get("ActiveState", "")
+    if active == "active":
+        return True  # running service recovered
+    # a Type=oneshot recovered by exiting cleanly; anything else (failed / activating
+    # / deactivating / ambiguous) is not confirmed-recovered -> keep
+    return active == "inactive" and props.get("Result") == "success"
+
+
+def _reap(args: argparse.Namespace) -> int:
+    reaped = reap_resolved_incidents(
+        state_path=args.state_path,
+        ledger_path=args.ledger_path,
+        task_root=args.task_root,
+        unit_recovered=_systemd_unit_recovered,
+    )
+    for fingerprint, reason in reaped:
+        print(f"reaped {fingerprint} ({reason})")
+    print(f"reaped {len(reaped)} resolved incident(s)")
+    return 0
+
+
 def _drain_desktop(args: argparse.Namespace) -> int:
     try:
         state = json.loads(args.state_path.read_text(encoding="utf-8"))
@@ -383,6 +447,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     add_common(drain)
     drain.set_defaults(func=_drain_desktop)
+
+    reap = sub.add_parser(
+        "reap",
+        help="Drain resolved incidents (closed task or recovered unit) from the coalescing state.",
+    )
+    add_common(reap)
+    reap.set_defaults(func=_reap)
 
     return parser
 

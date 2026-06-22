@@ -240,6 +240,12 @@ from shared.operator_vad_gate import (
     OperatorVADDecision,
     OperatorVADGate,
 )
+from shared.p0_incident_intake import reap_resolved_incidents
+
+# P0 incident reaper: invoked by the `hapax-p0-incident-intake reap` subcommand
+# (an extensionless script vulture does not scan) and the reaper systemd timer.
+reap_resolved_incidents
+
 from shared.policy_decide import evaluate_shadow_clean, replay_decision_log
 
 # Reform 3b shadow producer: replay_decision_log + evaluate_shadow_clean are the

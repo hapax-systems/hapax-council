@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodic reap of resolved P0 incidents (every 15 min)
+
+[Timer]
+OnBootSec=180s
+OnUnitActiveSec=15min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+# Enabled by the governed install-units.sh *.timer sweep + systemd/user-preset.d/hapax.preset
+# (and tracked in audit-runtime-activation-drift CRITICAL_UNITS).
+# Recheck: systemctl --user is-enabled hapax-p0-incident-reaper.timer
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=Drain resolved P0 incidents from the coalescing state (the reap half)
+
+[Service]
+Type=oneshot
+# Reads state.json / ledger / vault tasks and probes unit health via
+# `systemctl --user show`; needs no secrets, so no hapax-secrets dependency.
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-p0-incident-intake reap
+Nice=10
