@@ -39,7 +39,19 @@ _tool_cache: contextvars.ContextVar[dict[tuple[str, ...], str] | None] = context
 
 @contextmanager
 def tool_memoization_scope() -> Iterator[None]:
-    """Activate a fresh per-run memoization cache for the duration of the block."""
+    """Activate a per-run memoization cache for the duration of the block.
+
+    REENTRANT: when a cache is already active (an OUTER scope — e.g. one segment's whole
+    multi-pass prep, opened at the ``prep_segment`` call site), reuse it so research done
+    in an early pass is not re-paid in a later pass; only the OUTERMOST scope creates and
+    tears down the cache. A fresh outermost scope still isolates distinct segments. Without
+    this, each inner ``deliberate()`` opened its own scope and re-ran identical
+    web_verify/grep/read research every recompose pass — a dominant prep-budget sink.
+    """
+    if _tool_cache.get() is not None:
+        # Reuse the active (outer) cache — do NOT reset it, so it survives this block.
+        yield
+        return
     token = _tool_cache.set({})
     try:
         yield
@@ -125,7 +137,17 @@ async def git_provenance(ctx: Any, path: str) -> str:
 
 
 async def web_verify(ctx: Any, query: str) -> str:
-    """Web search via Perplexity Sonar for verifying external claims."""
+    """Web search via Perplexity Sonar for verifying external claims.
+
+    Memoized within the active scope (the dominant research cost): an identical query is
+    fetched once per segment, and a query that TIMES OUT is memoized too — re-asking it
+    would re-pay the full 45s for the same dead result. The per-segment scope is
+    short-lived, so a transient slow query is at most re-checked on the next segment.
+    """
+    key = ("web_verify", query)
+    cached = _memo_get(key)
+    if cached is not None:
+        return cached
     log.info("council_tool call: web_verify(%s)", query[:100])
     from pydantic_ai import Agent
 
@@ -139,8 +161,11 @@ async def web_verify(ctx: Any, query: str) -> str:
         )
     except TimeoutError:
         log.warning("web_verify timed out after %.0fs: %s", _WEB_VERIFY_TIMEOUT_S, query[:80])
-        return f"(web_verify timed out after {_WEB_VERIFY_TIMEOUT_S:.0f}s — no external evidence gathered)"
-    return str(result.output)[:MAX_READ_CHARS]
+        return _memo_put(
+            key,
+            f"(web_verify timed out after {_WEB_VERIFY_TIMEOUT_S:.0f}s — no external evidence gathered)",
+        )
+    return _memo_put(key, str(result.output)[:MAX_READ_CHARS])
 
 
 async def qdrant_lookup(ctx: Any, query: str, collection: str = "affordances") -> str:
