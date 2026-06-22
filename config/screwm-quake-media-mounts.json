@@ -30,7 +30,7 @@
       "latency_budget_s": 5.0,
       "anti_parasocial_posture": "object-of-attention-source-material",
       "projection": "sphere-front",
-      "gpu_drift_intensity": 1.6,
+      "gpu_drift_intensity": 0.2,
       "drift_interaction": {
         "substance_role": "attention-object-form",
         "owner": "hapax-compositor-and-darkplaces",
@@ -94,7 +94,7 @@
       "latency_budget_s": 0.35,
       "anti_parasocial_posture": "geometry-information-surface-not-audience-address",
       "projection": "regular-tetrix-skinframe",
-      "gpu_drift_intensity": 2.25,
+      "gpu_drift_intensity": 0.01,
       "drift_interaction": {
         "substance_role": "attention-lattice-face-form",
         "owner": "hapax-compositor",
