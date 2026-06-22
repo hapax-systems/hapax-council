@@ -18,6 +18,7 @@ from agents.deliberative_council.tools import (
     grep_evidence,
     read_source,
     tool_memoization_scope,
+    web_verify,
 )
 
 
@@ -95,3 +96,94 @@ async def test_memoization_shared_across_gather_member_tasks() -> None:
             )
     assert all(r == "x.py:1:match" for r in results)
     assert calls["n"] == 1
+
+
+async def test_nested_scope_reuses_outer_cache() -> None:
+    # Per-segment carryover: the OUTER scope (one segment's whole multi-pass prep)
+    # must survive across the INNER per-deliberate() scopes, so research done in an
+    # early pass is not re-paid in a later pass. Only the outermost scope owns the cache.
+    calls, fake_run = _counting_subprocess_run()
+    with patch.object(tools.subprocess, "run", side_effect=fake_run):
+        with tool_memoization_scope():  # outer = per-segment
+            await grep_evidence(None, "p", "s")
+            with tool_memoization_scope():  # inner = one deliberate() run — reuses outer
+                await grep_evidence(None, "p", "s")  # cache hit across the inner scope
+            await grep_evidence(None, "p", "s")  # still the same cache after inner exits
+    assert calls["n"] == 1  # one expensive op across the whole segment's passes
+
+
+class _FakeWebOut:
+    output = "external evidence summary"
+
+
+def _counting_web_agent():
+    calls = {"n": 0}
+
+    class _FakeAgent:
+        def __init__(self, *_a, **_k) -> None:
+            pass
+
+        async def run(self, *_a, **_k):
+            calls["n"] += 1
+            return _FakeWebOut()
+
+    return calls, _FakeAgent
+
+
+async def test_web_verify_memoized_within_scope() -> None:
+    # web_verify is the dominant research cost (a 45s-bounded nested web agent). An
+    # identical query asked twice within a deliberation/segment must short-circuit so the
+    # same evidence is not re-fetched (and a slow/dead query is not re-paid).
+    calls, fake_agent = _counting_web_agent()
+    with (
+        patch("pydantic_ai.Agent", fake_agent),
+        patch("shared.config.get_model", return_value="dummy-model"),
+    ):
+        with tool_memoization_scope():
+            r1 = await web_verify(None, "is the launch-team paradox real?")
+            r2 = await web_verify(None, "is the launch-team paradox real?")
+        assert r1 == r2 == "external evidence summary"
+        assert calls["n"] == 1  # the second identical query short-circuited
+        # A distinct query is a cache miss; a fresh scope (new segment) re-pays.
+        with tool_memoization_scope():
+            await web_verify(None, "is the launch-team paradox real?")
+        assert calls["n"] == 2
+
+
+async def test_web_verify_uncached_without_scope() -> None:
+    calls, fake_agent = _counting_web_agent()
+    with (
+        patch("pydantic_ai.Agent", fake_agent),
+        patch("shared.config.get_model", return_value="dummy-model"),
+    ):
+        await web_verify(None, "q")
+        await web_verify(None, "q")
+    assert calls["n"] == 2  # no active scope → every call hits the web agent
+
+
+async def test_web_verify_timeout_memoized_within_scope() -> None:
+    # The dominant budget sink: an identical query that times out (45s) must NOT be
+    # re-paid within the segment's scope. The per-segment window is short, so a dead/slow
+    # query stays dead for that window; it is re-checked on the next segment's fresh scope.
+    calls = {"n": 0}
+
+    class _SlowAgent:
+        def __init__(self, *_a, **_k) -> None:
+            pass
+
+        async def run(self, *_a, **_k):
+            calls["n"] += 1
+            await asyncio.sleep(0.2)
+            return _FakeWebOut()
+
+    with (
+        patch("pydantic_ai.Agent", _SlowAgent),
+        patch("shared.config.get_model", return_value="dummy-model"),
+        patch.object(tools, "_WEB_VERIFY_TIMEOUT_S", 0.01),
+    ):
+        with tool_memoization_scope():
+            r1 = await web_verify(None, "dead query")
+            r2 = await web_verify(None, "dead query")
+        assert "timed out" in r1
+        assert r1 == r2
+        assert calls["n"] == 1  # the 45s timeout is paid once, not re-paid on retry

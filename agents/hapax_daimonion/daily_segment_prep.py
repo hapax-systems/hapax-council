@@ -1633,7 +1633,7 @@ def _build_refine_seed(seed: str, script: list[str], feedback: str) -> str:
     parts = [seed] if seed else []
     parts.append(
         "## REVISION TASK\n"
-        "The PRIOR DRAFT below was composed and then judged by the coherence council. "
+        "The PRIOR DRAFT below was composed and then judged by the council. "
         "Recompose the segment so it DIRECTLY addresses the council feedback — do NOT "
         "restate the prior draft verbatim; fix the named weaknesses (e.g. a flat opening "
         "becomes a real tension; an unresolved close gets a payoff). Keep what already "
@@ -3000,7 +3000,10 @@ def prep_segment(
                         len(refuted),
                         prog_id,
                     )
-                    repair_seed = f"{seed}\n\n{gap_report}" if seed else gap_report
+                    # Iterative recompose (NOT a cold start): carry the prior draft so the
+                    # disconfirmation repair revises it to discharge the gaps instead of
+                    # composing fresh and regressing the coherence already achieved.
+                    repair_seed = _build_refine_seed(seed, script, gap_report)
                     repair_prompt = _build_full_segment_prompt(programme, repair_seed)
                     repair_raw = _call_llm(
                         repair_prompt,
@@ -3099,7 +3102,8 @@ def prep_segment(
                 prog_id,
             )
             feedback = format_narrative_verdict_for_composer(narrative_verdict)
-            repair_seed = f"{seed}\n\n{feedback}" if seed else feedback
+            # Iterative recompose: carry the prior draft, not a cold start from seed.
+            repair_seed = _build_refine_seed(seed, script, feedback)
             repair_prompt = _build_full_segment_prompt(programme, repair_seed)
             repair_raw = _call_llm(
                 repair_prompt,
@@ -3140,7 +3144,9 @@ def prep_segment(
             prog_id,
             _summarize_actionability_failures(actionability),
         )
-        repair_seed = f"{seed}\n\n{feedback}" if seed else feedback
+        # Iterative recompose: carry the prior draft so fixing actionability does not
+        # cold-start a fresh segment and regress the coherence already achieved.
+        repair_seed = _build_refine_seed(seed, script, feedback)
         repair_prompt = _build_full_segment_prompt(programme, repair_seed)
         repair_raw = _call_llm(
             repair_prompt,
@@ -4146,12 +4152,19 @@ def run_prep(
         try:
             # AC 3a: pass the absolute prep deadline so prep_segment can fail
             # LOUD mid-segment instead of overrunning the budget unbounded.
-            path = prep_segment(
-                prog,
-                today,
-                prep_session=prep_session,
-                deadline_monotonic=start + PREP_BUDGET_S,
-            )
+            # Per-segment research scope: ONE memoization cache spans all of this
+            # segment's council passes (coherence, recheck, disconfirmation, narrative,
+            # actionability) so identical web_verify/grep/read research is not re-paid
+            # every recompose — the reentrant scope is reused by each inner deliberate().
+            from agents.deliberative_council.tools import tool_memoization_scope
+
+            with tool_memoization_scope():
+                path = prep_segment(
+                    prog,
+                    today,
+                    prep_session=prep_session,
+                    deadline_monotonic=start + PREP_BUDGET_S,
+                )
         except Exception as exc:
             _update_prep_status(
                 prep_session,
