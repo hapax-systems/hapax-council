@@ -101,6 +101,7 @@ CONCEPT_TYPES = {
 ALLOWED_CONSUMERS = {
     "research_viewer",
     "local_prompt_context",
+    "continuity_context",
     "dashboard",
     "qdrant_rag",
     "public_export",
@@ -111,7 +112,11 @@ ALLOWED_CONSUMERS = {
     "provider_spend_gate",
     "unknown",
 }
-VALIDATOR_FIRST_ALLOWED_CONSUMERS = {"research_viewer", "local_prompt_context"}
+VALIDATOR_FIRST_ALLOWED_CONSUMERS = {
+    "research_viewer",
+    "local_prompt_context",
+    "continuity_context",
+}
 FORBIDDEN_CONSUMERS = {
     "dispatcher",
     "close_gate",
