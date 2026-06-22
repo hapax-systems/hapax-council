@@ -1756,3 +1756,199 @@ class TestFamilyOutageDegradation:
         reviews = dispatch.dispatch_reviews(constitution, ["prompt"], registry, runner)
 
         assert reviews[0]["verdict"] == "provider-outage"
+
+
+class TestReviewerFallbackWalk:
+    """Per-seat provider fallback (eval-plane resilience): on a process-failure
+    (``ReviewerProcessError`` = nonzero exit) the runner walks
+    ``[reviewer_command, *fallback_commands]`` so a seat whose direct provider
+    argv died can answer through the LiteLLM-backed fallback route IN THE SAME
+    ROUND. Anti-forge channel-trust is preserved: a CLEAN exit (the model spoke,
+    even unparseably) never walks — only a nonzero exit does."""
+
+    def test_walks_fallback_on_process_failure_and_marks_via(self) -> None:
+        family_cfg = {
+            "family": "claude",
+            "reviewer_command": ["bash", "-c", "exit 1"],
+            "fallback_commands": [["bash", "-c", "echo recovered"]],
+            "timeout_seconds": 30,
+        }
+        seat = dispatch.review_team.Seat(id="claude-1", family="claude")
+
+        result = dispatch.default_reviewer_runner(seat, family_cfg, "prompt")
+
+        assert isinstance(result, dispatch.ReviewerReply)
+        assert result.stdout.strip() == "recovered"
+        assert result.via.startswith("fallback")
+
+    def test_no_fallback_commands_still_raises_process_error(self) -> None:
+        # regression guard: a family without fallback_commands behaves exactly as before
+        family_cfg = {
+            "family": "claude",
+            "reviewer_command": ["bash", "-c", "exit 1"],
+            "timeout_seconds": 30,
+        }
+        seat = dispatch.review_team.Seat(id="claude-1", family="claude")
+
+        with pytest.raises(dispatch.ReviewerProcessError):
+            dispatch.default_reviewer_runner(seat, family_cfg, "prompt")
+
+    def test_all_routes_fail_raises_with_last_attempt_diagnostics(self) -> None:
+        # the raise carries the LAST attempted route's diagnostics (the fallback),
+        # so the downstream classifier inspects the route tried last, not the primary
+        family_cfg = {
+            "family": "claude",
+            "reviewer_command": ["bash", "-c", "echo PRIMARY_ERR >&2; exit 1"],
+            "fallback_commands": [["bash", "-c", "echo FALLBACK_ERR >&2; exit 1"]],
+            "timeout_seconds": 30,
+        }
+        seat = dispatch.review_team.Seat(id="claude-1", family="claude")
+
+        with pytest.raises(dispatch.ReviewerProcessError) as exc_info:
+            dispatch.default_reviewer_runner(seat, family_cfg, "prompt")
+
+        assert "FALLBACK_ERR" in exc_info.value.output
+        assert "PRIMARY_ERR" not in exc_info.value.output
+
+    def test_clean_exit_does_not_walk_fallback_anti_forge(self, tmp_path: Path) -> None:
+        # THE anti-forge crux: a clean exit (even with garbage stdout = invalid-output)
+        # is the model speaking and must NOT buy a second model. The fallback command
+        # is never invoked.
+        marker = tmp_path / "fallback_invoked"
+        family_cfg = {
+            "family": "claude",
+            "reviewer_command": ["bash", "-c", "echo GARBAGE"],  # exit 0, model-influenced
+            "fallback_commands": [["bash", "-c", f"echo x > {marker}"]],
+            "timeout_seconds": 30,
+        }
+        seat = dispatch.review_team.Seat(id="claude-1", family="claude")
+
+        result = dispatch.default_reviewer_runner(seat, family_cfg, "prompt")
+
+        assert isinstance(result, dispatch.ReviewerReply)
+        assert result.stdout.strip() == "GARBAGE"
+        assert result.via == "primary"
+        assert not marker.exists()  # fallback never ran
+
+    def test_dispatch_reviews_recovers_seat_via_fallback_and_stamps_provenance(
+        self, tmp_path: Path
+    ) -> None:
+        # end-to-end through dispatch_reviews with the REAL runner: primary fails
+        # (process error), fallback returns a valid bare-fence yaml -> the seat
+        # accepts via the fallback and the review carries via_fallback provenance.
+        fence = tmp_path / "reply.yaml"
+        fence.write_text("```yaml\nverdict: accept\nfindings: []\nchecklist: {}\n```\n")
+        constitution = dispatch.review_team.Constitution(
+            team_class="t2_standard",
+            quorum_required=2,
+            seats=(dispatch.review_team.Seat(id="claude-1", family="claude"),),
+            notes=(),
+        )
+        registry = {
+            "families": [
+                {
+                    "family": "claude",
+                    "reviewer_command": ["bash", "-c", "exit 1"],
+                    "fallback_commands": [["cat", str(fence)]],
+                    "timeout_seconds": 30,
+                }
+            ]
+        }
+
+        reviews = dispatch.dispatch_reviews(
+            constitution, ["prompt"], registry, dispatch.default_reviewer_runner
+        )
+
+        assert reviews[0]["verdict"] == "accept"
+        assert reviews[0]["via_fallback"].startswith("fallback")
+
+    def test_recovered_via_fallback_clears_family_outage_witness(self, tmp_path: Path) -> None:
+        # design risk #5: a seat recovered through the fallback yields a parseable
+        # verdict -> update_family_outage CLEARS the family, so the NEXT
+        # constitution re-seats the real family instead of degrading for 2h.
+        witness = dispatch.FAMILY_OUTAGE_STATE
+        witness.parent.mkdir(parents=True, exist_ok=True)
+        witness.write_text(json.dumps({"claude": "2026-06-11T20:00:00+00:00"}))
+        reviews = [
+            {
+                "id": "claude-1",
+                "family": "claude",
+                "verdict": "accept",
+                "via_fallback": "fallback:0",
+            }
+        ]
+
+        still_out = dispatch.update_family_outage(reviews, "2026-06-11T21:00:00+00:00")
+
+        assert "claude" not in still_out
+
+    def test_registry_pins_claude_and_glm_fallback_commands(self) -> None:
+        # the operator-confirmed supply (openrouter/anthropic/claude-sonnet-4.6,
+        # openai/glm-5) is reachable from a review seat ONLY via these pinned
+        # fallback_commands. codex/gemini stay direct (cross-family independence).
+        registry = dispatch.review_team.load_lens_registry()
+        by_family = {entry["family"]: entry for entry in registry["families"]}
+
+        assert by_family["claude"]["fallback_commands"] == [
+            ["scripts/hapax-litellm-reviewer", "--model", "claude-sonnet"]
+        ]
+        assert by_family["glm"]["fallback_commands"] == [
+            ["scripts/hapax-litellm-reviewer", "--model", "glm"]
+        ]
+        # a codex->openai fallback would collapse the cross-family independence the
+        # constitution requires; gemini is the current survivor and stays direct.
+        assert "fallback_commands" not in by_family["codex"]
+        assert "fallback_commands" not in by_family["gemini"]
+
+    def test_primary_timeout_walks_fallback_and_recovers(self) -> None:
+        # a hung direct provider (subprocess.TimeoutExpired) is a process/transport
+        # failure, not model output: the walk must catch it, try the fallback, recover.
+        family_cfg = {
+            "family": "claude",
+            "reviewer_command": ["sleep", "2"],
+            "fallback_commands": [["echo", "recovered"]],
+            "timeout_seconds": 1,
+        }
+        seat = dispatch.review_team.Seat(id="claude-1", family="claude")
+
+        result = dispatch.default_reviewer_runner(seat, family_cfg, "prompt")
+
+        assert isinstance(result, dispatch.ReviewerReply)
+        assert result.stdout.strip() == "recovered"
+        assert result.via.startswith("fallback")
+
+    def test_all_routes_timeout_raises_provider_outage_diagnostic(self) -> None:
+        # when EVERY route times out, the raised diagnostic must read as a provider
+        # outage (is_provider_outage matches 'request timed out after ...') so the
+        # family is stamped OUT in the witness — not silently cleared as invalid-output.
+        family_cfg = {
+            "family": "claude",
+            "reviewer_command": ["sleep", "2"],
+            "fallback_commands": [["sleep", "2"]],
+            "timeout_seconds": 1,
+        }
+        seat = dispatch.review_team.Seat(id="claude-1", family="claude")
+
+        with pytest.raises(dispatch.ReviewerProcessError) as exc_info:
+            dispatch.default_reviewer_runner(seat, family_cfg, "prompt")
+
+        assert dispatch.review_team.is_provider_outage(exc_info.value.output, process_failed=True)
+
+    def test_missing_fallback_binary_raises_route_unavailable(self) -> None:
+        # a missing/non-executable fallback binary (FileNotFoundError) is a route
+        # failure, not model output: it must raise ReviewerProcessError classified
+        # as reviewer-route-unavailable, not escape as invalid-output.
+        family_cfg = {
+            "family": "claude",
+            "reviewer_command": ["bash", "-c", "exit 1"],
+            "fallback_commands": [["definitely-not-a-real-reviewer-binary-xyz"]],
+            "timeout_seconds": 5,
+        }
+        seat = dispatch.review_team.Seat(id="claude-1", family="claude")
+
+        with pytest.raises(dispatch.ReviewerProcessError) as exc_info:
+            dispatch.default_reviewer_runner(seat, family_cfg, "prompt")
+
+        assert dispatch.review_team.is_reviewer_route_unavailable(
+            exc_info.value.output, process_failed=True
+        )
