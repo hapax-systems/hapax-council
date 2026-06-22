@@ -95,6 +95,26 @@ def test_push_and_write_gates_share_one_resolver() -> None:
     )
 
 
+def test_conductor_scripts_skip_roleless_not_alpha() -> None:
+    """The 4 conductor sidecar hooks (start/stop/pre/post) must resolve role through the single
+    resolver (hapax_effective_role) and SKIP for a roleless session — never launch a
+    conductor-alpha sidecar for a roleless session. (The prior ``hapax_agent_role_or_default
+    alpha`` passed an explicit alpha that overrode the roleless default → a roleless session
+    got a conductor-alpha sidecar.)"""
+    conductors = [
+        REPO_ROOT / "hooks" / "scripts" / f"conductor-{phase}.sh"
+        for phase in ("start", "stop", "pre", "post")
+    ]
+    for path in conductors:
+        text = path.read_text()
+        assert "hapax_agent_role_or_default alpha" not in text, (
+            f"{path.name} still defaults to alpha (roleless session would get a conductor-alpha sidecar)"
+        )
+        assert "hapax_effective_role" in text, (
+            f"{path.name} does not resolve via the single resolver (hapax_effective_role)"
+        )
+
+
 def test_validator_resolves_roleless_not_alpha_on_alpha_branch(tmp_path: Path) -> None:
     """The concrete collision regression: a roleless session (no role env/marker) sitting on a
     git branch named alpha/foo must resolve to roleless in the PUSH gate's resolver, not alpha.

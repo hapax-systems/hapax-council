@@ -18,7 +18,8 @@ if [ ! -d "$COUNCIL_DIR/.git" ]; then
 fi
 PID_DIR="$HOME/.cache/hapax/conductor"
 
-ROLE="$(hapax_agent_role_or_default alpha)"
+ROLE="$(hapax_effective_role 2>/dev/null || true)"
+{ [ -z "$ROLE" ] || [ "$ROLE" = "roleless" ]; } && exit 0
 
 # Don't launch if already running for this role
 if [ -f "$PID_DIR/conductor-${ROLE}.pid" ]; then
