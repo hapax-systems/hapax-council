@@ -105,22 +105,6 @@ class ASCIISchematicWard(CairoSource):
         pkg = _package()
         ink = _resolve(pkg, "accent_green")
         muted = _resolve(pkg, "muted")
-        bg = _resolve(pkg, "background")
-
-        cr.save()
-        cr.set_source_rgba(bg[0], bg[1], bg[2], min(bg[3], 0.52))
-        cr.rectangle(0, 0, canvas_w, canvas_h)
-        cr.fill()
-        cr.set_source_rgba(muted[0], muted[1], muted[2], 0.55)
-        cr.set_line_width(1.0)
-        for x in range(0, canvas_w, 16):
-            cr.move_to(x + 0.5, 0)
-            cr.line_to(x + 0.5, canvas_h)
-        for y in range(0, canvas_h, 16):
-            cr.move_to(0, y + 0.5)
-            cr.line_to(canvas_w, y + 0.5)
-        cr.stroke()
-        cr.restore()
 
         from agents.studio_compositor.text_render import TextStyle, render_text
 

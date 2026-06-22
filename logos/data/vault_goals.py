@@ -31,6 +31,14 @@ DEFAULT_VAULT_BASE = Path.home() / "Documents" / "Personal"
 DEFAULT_VAULT_NAME = "Personal"
 TEMPLATE_DIR_NAMES = {"50-templates"}
 
+# Hot-patch 2026-06-21: TTL-cache the whole-vault goal scan. The rglob("*.md")
+# over ~6000 files + per-file YAML parse (~7.6s) ran synchronously on the
+# daimonion's single event loop on every operator utterance, starving the audio
+# drain (frames dropped -> operator never heard). Goals change on the order of
+# hours, so a short TTL is correct. Proper offload+cache lands via PR.
+_GOALS_CACHE: dict = {}
+_GOALS_CACHE_TTL_S = 120.0
+
 # JSON Canvas goal-dependency map produced by ``agents.vault_canvas_writer``.
 DEFAULT_GOAL_MAP_CANVAS = DEFAULT_VAULT_BASE / "20-projects" / "hapax-goals" / "goal-map.canvas"
 
@@ -137,6 +145,20 @@ def collect_vault_goals(
     base = vault_base or DEFAULT_VAULT_BASE
     name = vault_name or DEFAULT_VAULT_NAME
 
+    import time as _t  # noqa: PLC0415
+
+    _ck = (
+        str(base),
+        name,
+        domain_filter,
+        include_templates,
+        str(staleness_days),
+        str(sprint_measure_statuses),
+    )
+    _hit = _GOALS_CACHE.get(_ck)
+    if _hit is not None and (_t.monotonic() - _hit[0]) < _GOALS_CACHE_TTL_S:
+        return list(_hit[1])
+
     if not base.is_dir():
         return []
 
@@ -205,6 +227,7 @@ def collect_vault_goals(
         )
     )
 
+    _GOALS_CACHE[_ck] = (_t.monotonic(), list(goals))
     return goals
 
 

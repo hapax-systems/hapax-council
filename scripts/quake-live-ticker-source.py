@@ -46,6 +46,13 @@ PALETTE = {
 }
 
 
+# director-intent.jsonl is written only by the director thread embedded in the
+# legacy GStreamer compositor, which is parked under the DarkPlaces runtime. Intent
+# older than this reads as idle so the tickers show an honest "awaiting broadcast"
+# line instead of re-rendering month-old content as if it were current.
+INTENT_STALE_S = 180.0
+
+
 def _read_latest_intent(path: Path) -> dict:
     try:
         if not path.exists():
@@ -58,7 +65,15 @@ def _read_latest_intent(path: Path) -> dict:
         if not lines:
             return {}
         data = json.loads(lines[-1])
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        try:
+            age = time.time() - float(data.get("emitted_at"))
+        except (TypeError, ValueError):
+            age = time.time() - path.stat().st_mtime
+        if age > INTENT_STALE_S:
+            return {"_idle_age_s": age}
+        return data
     except Exception:
         return {}
 
@@ -135,6 +150,10 @@ def _chronicle_rows(intent: dict, *, max_rows: int = 3) -> list[str]:
 
 
 def _ticker_rows(intent: dict, role: str, *, max_rows: int = 3) -> list[str]:
+    idle_age = intent.get("_idle_age_s")
+    if idle_age is not None:
+        ago = f"{idle_age / 3600:.0f}h ago" if idle_age >= 3600 else f"{int(idle_age)}s ago"
+        return [f"{role} · director idle — awaiting live broadcast (last intent {ago})"]
     if role == "precedent":
         return _precedent_rows(intent, max_rows=max_rows)
     if role == "chronicle":

@@ -113,12 +113,6 @@ class ScribbleStripSource(CairoSource):
         strip-label text. Indicator art (per-strip status pip + AUX-C
         Scene-8 indicator + feedback-loop warning glow) is Phase 2.
         """
-        # Dark, low-luminosity background; ward is informational, not
-        # broadcast-foreground content.
-        cr.set_source_rgb(0.05, 0.05, 0.07)
-        cr.rectangle(0, 0, canvas_w, canvas_h)
-        cr.fill()
-
         n_strips = len(self._routing_table)
         if n_strips == 0:
             return
@@ -142,12 +136,6 @@ class ScribbleStripSource(CairoSource):
         Indicator state (active/idle, feedback-loop warning, etc.)
         deferred to Phase 2.
         """
-        # Strip border
-        cr.set_source_rgb(0.18, 0.18, 0.22)
-        cr.set_line_width(1.0)
-        cr.rectangle(x + 1, y + 1, w - 2, h - 2)
-        cr.stroke()
-
         # Strip label (top of the strip)
         cr.set_source_rgb(0.85, 0.85, 0.90)
         cr.select_font_face("Px437 IBM VGA 8x16", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)

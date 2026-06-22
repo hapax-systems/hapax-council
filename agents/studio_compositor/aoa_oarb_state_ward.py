@@ -147,16 +147,6 @@ class AoaOarbStateCairoSource(CairoSource):
 
         cr.save()
         try:
-            _set_rgb(cr, (0.015, 0.018, 0.026))
-            cr.paint()
-
-            gradient = cairo.LinearGradient(0, 0, w, h)
-            gradient.add_color_stop_rgba(0.0, 0.02, 0.12, 0.16, 0.82)
-            gradient.add_color_stop_rgba(0.55, 0.05, 0.02, 0.08, 0.78)
-            gradient.add_color_stop_rgba(1.0, 0.14, 0.09, 0.01, 0.78)
-            cr.set_source(gradient)
-            cr.paint()
-
             self._draw_geometry(cr, w, h, contract, phase)
             self._draw_text_panel(cr, w, h, contract)
         finally:
@@ -180,22 +170,6 @@ class AoaOarbStateCairoSource(CairoSource):
         radius = max(5.0, side * 0.175)
 
         cr.save()
-        _set_rgb(cr, (0.00, 0.92, 0.95), 0.20)
-        cr.set_line_width(1.2)
-        step = side / 4.0
-        for i in range(5):
-            y = top + i * step
-            span = (y - top) / max(side, 1.0)
-            cr.move_to(left + side * 0.5 * span, y)
-            cr.line_to(left + side - side * 0.5 * span, y)
-        for i in range(5):
-            x = left + i * step
-            cr.move_to(x, top + side)
-            cr.line_to(left + side * 0.5, top)
-            cr.move_to(x, top + side)
-            cr.line_to(left + side, top + side)
-        cr.stroke()
-
         cr.set_line_width(3.2)
         _set_rgb(cr, (0.20, 0.92, 1.00), 0.92)
         cr.move_to(*p_top)
@@ -241,12 +215,7 @@ class AoaOarbStateCairoSource(CairoSource):
         contract: AoaOarbContract,
     ) -> None:
         x = w * 0.39
-        panel_w = w - x - w * 0.05
         cr.save()
-        _set_rgb(cr, (0.00, 0.00, 0.00), 0.30)
-        cr.rectangle(x - 10.0, h * 0.11, panel_w + 20.0, h * 0.78)
-        cr.fill()
-
         cr.select_font_face("monospace", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
         cr.set_font_size(20.0)
         _set_rgb(cr, (0.94, 1.0, 0.96), 0.98)

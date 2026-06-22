@@ -31,21 +31,9 @@ class ScrewmQuakeStatusCairoSource(CairoSource):
 
         cr.save()
         try:
-            # Flat, sharp-edged review-panel grammar. No pulse, no fade,
-            # no rounded card: the point is a stable review anchor.
-            cr.set_source_rgba(0.0, 0.0, 0.0, 0.82)
-            cr.rectangle(0, 0, canvas_w, canvas_h)
-            cr.fill()
-
-            cr.set_line_width(2.0)
-            cr.set_source_rgba(1.0, 0.56, 0.10, 0.95)
-            cr.rectangle(1.0, 1.0, canvas_w - 2.0, canvas_h - 2.0)
-            cr.stroke()
-
-            cr.set_source_rgba(0.0, 0.92, 0.86, 0.95)
-            cr.rectangle(0.0, 0.0, 7.0, canvas_h)
-            cr.fill()
-
+            # Decorative substrate (full-cell black fill, orange border,
+            # cyan left band) retired per operator directive 2026-06-21:
+            # the status text floats on the void.
             cr.select_font_face(
                 "monospace",
                 cairo.FONT_SLANT_NORMAL,

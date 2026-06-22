@@ -292,7 +292,6 @@ class AssertionReceiptWard(HomageTransitionalSource):
         from agents.studio_compositor.homage.rendering import active_package
 
         pkg = active_package()
-        bg = pkg.palette.background
         muted = pkg.palette.muted
         bright = pkg.palette.bright
 
@@ -315,17 +314,7 @@ class AssertionReceiptWard(HomageTransitionalSource):
             rows += 1
         if snap.applied_layout_changes or snap.applied_ward_changes:
             rows += 1
-        panel_h = header_h + rows * line_h + 24
-
-        cr.save()
-        cr.set_source_rgba(bg[0], bg[1], bg[2], 0.78 * alpha)
-        cr.rectangle(panel_x, panel_y, panel_w, panel_h)
-        cr.fill()
-
-        cr.set_source_rgba(status_rgb[0], status_rgb[1], status_rgb[2], 0.9 * alpha)
-        cr.rectangle(panel_x, panel_y, 3, panel_h)
-        cr.fill()
-        cr.restore()
+        _panel_h = header_h + rows * line_h + 24
 
         inner_x = panel_x + 12
         max_tw = panel_w - 24

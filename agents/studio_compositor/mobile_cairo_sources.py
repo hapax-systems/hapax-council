@@ -93,26 +93,6 @@ class _MobileSourceBase(CairoSource):
     def _spec(self) -> MobileTextSpec:
         return _SPEC_BY_SOURCE[self.source_id]
 
-    def _draw_bg(self, cr: cairo.Context, canvas_w: int, canvas_h: int) -> None:
-        pkg = get_active_package()
-        cr.save()
-        if pkg is not None:
-            bg_r, bg_g, bg_b, _bg_a = pkg.resolve_colour("background")
-            cr.set_source_rgba(bg_r, bg_g, bg_b, 0.74)
-        else:
-            cr.set_source_rgba(0.08, 0.09, 0.09, 0.74)
-        cr.rectangle(0, 0, canvas_w, canvas_h)
-        cr.fill()
-        cr.set_line_width(2)
-        if pkg is not None:
-            mu_r, mu_g, mu_b, _mu_a = pkg.resolve_colour("muted")
-            cr.set_source_rgba(mu_r, mu_g, mu_b, 0.78)
-        else:
-            cr.set_source_rgba(0.45, 0.50, 0.42, 0.78)
-        cr.rectangle(1, 1, max(0, canvas_w - 2), max(0, canvas_h - 2))
-        cr.stroke()
-        cr.restore()
-
     def _draw_text(
         self,
         cr: cairo.Context,
@@ -154,7 +134,9 @@ class _MobileSourceBase(CairoSource):
         t: float,
         state: dict[str, Any],
     ) -> None:
-        self._draw_bg(cr, canvas_w, canvas_h)
+        # Decorative background fill + border removed (operator directive
+        # 2026-06-21: "no grid panels at all"). All mobile source wards paint
+        # their text content directly on the atlas-cleared void.
         self.render_mobile(cr, canvas_w, canvas_h, t, state)
 
     def render_mobile(

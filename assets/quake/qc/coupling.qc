@@ -470,10 +470,19 @@ void() coupling_apply_stimmung =
         float voice_boost = coupling_voice_active * 1.5;
         float audio_boost = coupling_audio_rms * 0.8 + coupling_audio_onset * 1.2;
         aoa_entity.screwm_spin_y = base_rot + voice_boost + audio_boost + aoa_spin_boost;
-        aoa_entity.alpha = coupling_clamp_range(0.16 + aoa_drift_pressure * 0.06 + aoa_pulse * 0.04, 0.12, 0.30);
-        aoa_entity.colormod = '1.06 0.58 0.80' + '0.10 0.20 0.18' * aoa_drift_pressure + '0.06 0.02 0.16' * aoa_pulse;
-        aoa_entity.glowmod = '0.62 0.32 0.48' + '0.28 0.26 0.22' * aoa_drift_pressure + '0.06 0.02 0.14' * aoa_pulse;
-        aoa_entity.glow_size = coupling_clamp_range(6 + aoa_drift_pressure * 26 + aoa_pulse * 16, 0, 68);
+        // 2026-06-21: this per-tick block was OVERWRITING the operator's world.qc
+        // hand-tune every second — re-applying a saturated-pink colormod (R>1.0),
+        // a glow corona up to 68, and a high alpha floor — which (with EF_ADDITIVE)
+        // composited the depth-5 lattice to a solid-white blob. Aligned to world.qc:
+        // cool desaturated tint, NO glow corona, low alpha so the OARB shows through.
+        // alpha raised 2026-06-21: with EF_FULLBRIGHT + dark sparse atlas + no
+        // EF_ADDITIVE, the alpha-over asymptote is the dark atlas (max <200), so a
+        // higher alpha makes the wireframe VISIBLE without going white (0.03-0.07
+        // rendered the lattice invisible). Witness-tuned band.
+        aoa_entity.alpha = coupling_clamp_range(0.16 + aoa_drift_pressure * 0.05 + aoa_pulse * 0.03, 0.12, 0.26);
+        aoa_entity.colormod = '0.86 0.92 1.00' + '0.04 0.06 0.06' * aoa_drift_pressure + '0.02 0.01 0.04' * aoa_pulse;
+        aoa_entity.glowmod = '0.20 0.24 0.30' + '0.06 0.06 0.06' * aoa_drift_pressure;
+        aoa_entity.glow_size = 0;
     }
     if (aoa_sphere_entity)
     {

@@ -330,7 +330,6 @@ class SegmentContentWard(HomageTransitionalSource):
         from agents.studio_compositor.homage.rendering import active_package
 
         pkg = active_package()
-        bg = pkg.palette.background
         accent = _palette_role(pkg, segment.ward_accent_role)
         bright = pkg.palette.bright
         muted = pkg.palette.muted
@@ -342,13 +341,8 @@ class SegmentContentWard(HomageTransitionalSource):
         panel_x = canvas_w - panel_w - margin
         panel_y = margin
 
-        # Background panel with subtle transparency
-        cr.save()
-        cr.set_source_rgba(bg[0], bg[1], bg[2], 0.75 * alpha)
-        cr.rectangle(panel_x, panel_y, panel_w, panel_h)
-        cr.fill()
-
         # Accent border — left edge only, like a sidebar indicator
+        cr.save()
         cr.set_source_rgba(accent[0], accent[1], accent[2], 0.85 * alpha)
         cr.rectangle(panel_x, panel_y, 4, panel_h)
         cr.fill()
@@ -418,14 +412,6 @@ class SegmentContentWard(HomageTransitionalSource):
         )
         y_cursor += 48
 
-        # Divider line
-        cr.save()
-        cr.set_source_rgba(muted[0], muted[1], muted[2], 0.4 * alpha)
-        cr.move_to(inner_x, y_cursor)
-        cr.line_to(inner_x + max_text_w, y_cursor)
-        cr.set_line_width(1.0)
-        cr.stroke()
-        cr.restore()
         y_cursor += 16
 
         # Beat list
