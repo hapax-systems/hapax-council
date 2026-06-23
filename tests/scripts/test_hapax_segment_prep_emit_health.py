@@ -101,6 +101,149 @@ def test_emit_health_fails_completed_no_programmes(tmp_path: Path) -> None:
     assert _json(result)["reason"] == "zero_emit"
 
 
+def test_emit_health_passes_honest_no_eligible_pool(tmp_path: Path) -> None:
+    # The producer ran end-to-end; the deterministic release/eligibility gate was
+    # simply not cleared today (no_eligible_pool). This is the documented
+    # SUCCESSFUL no-release outcome of select_release_pool and must NOT trip the
+    # systemd OnFailure -> P0 path.
+    _write_status(
+        tmp_path,
+        {
+            "status": "completed_no_segments_saved",
+            "phase": "completed_no_segments_saved",
+            "saved_count": 0,
+            "run_saved_programmes": [],
+            "selected_release": {
+                "ok": False,
+                "reason": "no_eligible_pool",
+                "selected_count": 0,
+                "eligible_artifact_count": 0,
+            },
+            "updated_at": "2026-06-18T04:20:00Z",
+        },
+    )
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = _json(result)
+    assert payload["ok"] is True
+    assert payload["reason"] == "honest_no_release"
+    assert payload["selected_release_ok"] is False
+    assert payload["selected_release_reason"] == "no_eligible_pool"
+    assert payload["next_action"] is None
+
+
+def test_emit_health_passes_honest_review_not_ok(tmp_path: Path) -> None:
+    _write_status(
+        tmp_path,
+        {
+            "status": "completed_no_segments_saved",
+            "phase": "completed_no_segments_saved",
+            "saved_count": 0,
+            "run_saved_programmes": [],
+            "selected_release": {"ok": False, "reason": "review_not_ok", "selected_count": 0},
+            "updated_at": "2026-06-18T04:20:00Z",
+        },
+    )
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert _json(result)["reason"] == "honest_no_release"
+
+
+def test_emit_health_passes_honest_authority_gate_no_release(tmp_path: Path) -> None:
+    _write_status(
+        tmp_path,
+        {
+            "status": "completed_no_segments_saved",
+            "phase": "completed_no_segments_saved",
+            "saved_count": 0,
+            "run_saved_programmes": [],
+            "selected_release": {
+                "ok": False,
+                "reason": "segment_prep_authority_gate",
+                "selected_count": 0,
+            },
+            "updated_at": "2026-06-18T04:20:00Z",
+        },
+    )
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert _json(result)["reason"] == "honest_no_release"
+
+
+def test_emit_health_fails_zero_emit_without_selected_release(tmp_path: Path) -> None:
+    # No selected_release verdict at all -> we cannot prove the run reached the
+    # release gate honestly, so fail closed.
+    _write_status(
+        tmp_path,
+        {
+            "status": "completed_no_segments_saved",
+            "phase": "completed_no_segments_saved",
+            "saved_count": 0,
+            "run_saved_programmes": [],
+            "updated_at": "2026-06-18T04:20:00Z",
+        },
+    )
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 1
+    assert _json(result)["reason"] == "zero_emit"
+
+
+def test_emit_health_fails_publication_blocked_no_release(tmp_path: Path) -> None:
+    # Publication-blocked means a selected release existed but could not be
+    # republished/load-verified consistently, which is still a source/runtime
+    # anomaly for this heartbeat and must fail closed.
+    _write_status(
+        tmp_path,
+        {
+            "status": "completed_no_segments_saved",
+            "phase": "completed_no_segments_saved",
+            "saved_count": 0,
+            "run_saved_programmes": [],
+            "selected_release": {
+                "ok": False,
+                "reason": "selected_release_publication_blocked",
+            },
+            "updated_at": "2026-06-18T04:20:00Z",
+        },
+    )
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 1
+    assert _json(result)["reason"] == "zero_emit"
+
+
+def test_emit_health_fails_zero_emit_anomalous_selected_release_reason(
+    tmp_path: Path,
+) -> None:
+    # A selected_release reason that is NOT a recognised honest no-release reason
+    # (e.g. an internal anomaly) must still fail closed rather than be silenced.
+    _write_status(
+        tmp_path,
+        {
+            "status": "completed_no_segments_saved",
+            "phase": "completed_no_segments_saved",
+            "saved_count": 0,
+            "run_saved_programmes": [],
+            "selected_release": {"ok": False, "reason": "internal_writer_crash"},
+            "updated_at": "2026-06-18T04:20:00Z",
+        },
+    )
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 1
+    assert _json(result)["reason"] == "zero_emit"
+
+
 def test_emit_health_fails_missing_status(tmp_path: Path) -> None:
     result = _run(tmp_path)
 

@@ -23,6 +23,18 @@ DEFAULT_PREP_DIR = Path(
 DEFAULT_MAX_IN_PROGRESS_AGE_S = 2 * 60 * 60
 PAUSED_PHASES = {"segment_prep_authority_paused"}
 ZERO_EMIT_STATUSES = {"completed_no_segments_saved", "completed_no_programmes"}
+# A completed run whose selected-release verdict is an HONEST no-release outcome:
+# the producer ran end-to-end and the deterministic quality/eligibility gate was
+# simply not cleared today. This is the producer working AS DESIGNED under its
+# release contract (see ``select_release_pool`` in daily_segment_prep.py:
+# "A no-eligible-pool or failed review is a SUCCESSFUL no-release outcome"). It is
+# recorded in the prep diagnostics/ledger for longitudinal steering, but it is NOT
+# a wedged/crashed producer and must not trip systemd OnFailure -> P0.
+HONEST_NO_RELEASE_REASONS = {
+    "no_eligible_pool",
+    "review_not_ok",
+    "segment_prep_authority_gate",
+}
 NEXT_ACTIONS = {
     "missing_status": "Check journalctl --user -u hapax-segment-prep.service and rerun the prep job after fixing the producer.",
     "unreadable_status": "Inspect the prep-status.json payload and rerun hapax-segment-prep after repairing the status file.",
@@ -51,6 +63,7 @@ class EmitHealthResult:
     run_saved_count: int | None = None
     selected_release_ok: bool | None = None
     selected_release_count: int | None = None
+    selected_release_reason: str | None = None
     started_at: str | None = None
     updated_at: str | None = None
     age_s: float | None = None
@@ -113,13 +126,20 @@ def _next_action(reason: str, ok: bool) -> str | None:
     return NEXT_ACTIONS.get(reason, "Inspect the segment-prep status and producer journal.")
 
 
-def _selected_release(payload: dict[str, Any]) -> tuple[bool | None, int | None]:
+def _selected_release(
+    payload: dict[str, Any],
+) -> tuple[bool | None, int | None, str | None]:
     selected = payload.get("selected_release")
     if not isinstance(selected, dict):
-        return None, None
+        return None, None, None
     ok = selected.get("ok")
     selected_count = _int_value(selected.get("selected_count"))
-    return (ok if isinstance(ok, bool) else None), selected_count
+    reason = selected.get("reason")
+    return (
+        (ok if isinstance(ok, bool) else None),
+        selected_count,
+        str(reason) if isinstance(reason, str) and reason else None,
+    )
 
 
 def _pid_alive(pid: int | None) -> bool | None:
@@ -142,7 +162,7 @@ def _result(
     process_alive: bool | None = None,
 ) -> EmitHealthResult:
     payload = payload or {}
-    selected_ok, selected_count = _selected_release(payload)
+    selected_ok, selected_count, selected_reason = _selected_release(payload)
     pid = _int_value(payload.get("pid"))
     return EmitHealthResult(
         ok=ok,
@@ -154,6 +174,7 @@ def _result(
         run_saved_count=_sequence_count(payload.get("run_saved_programmes")),
         selected_release_ok=selected_ok,
         selected_release_count=selected_count,
+        selected_release_reason=selected_reason,
         started_at=str(payload.get("started_at"))
         if payload.get("started_at") is not None
         else None,
@@ -259,7 +280,16 @@ def evaluate_status(
     if saved_count > 0 or run_saved_count > 0:
         return _result(True, "emitted_segments", status_path, payload)
 
+    # Honest no-release: the producer ran end-to-end and recorded a deterministic
+    # release/eligibility verdict that simply did not clear today. This is the
+    # documented SUCCESSFUL no-release outcome of ``select_release_pool`` — it is
+    # ledgered for longitudinal SDLC steering, but it is not a wedged producer and
+    # must not escalate to a systemd-OnFailure P0. A *zero* selected_release reason
+    # (missing/None) or an anomalous one still fails closed below.
     if status in ZERO_EMIT_STATUSES:
+        _selected_ok, _selected_count, selected_reason = _selected_release(payload)
+        if selected_reason in HONEST_NO_RELEASE_REASONS:
+            return _result(True, "honest_no_release", status_path, payload)
         return _result(False, "zero_emit", status_path, payload)
     if status == "completed":
         return _result(False, "completed_zero_emit", status_path, payload)
