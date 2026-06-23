@@ -288,7 +288,7 @@ def evaluate_status(
     # (missing/None) or an anomalous one still fails closed below.
     if status in ZERO_EMIT_STATUSES:
         _selected_ok, _selected_count, selected_reason = _selected_release(payload)
-        if selected_reason in HONEST_NO_RELEASE_REASONS:
+        if _selected_ok is False and selected_reason in HONEST_NO_RELEASE_REASONS:
             return _result(True, "honest_no_release", status_path, payload)
         return _result(False, "zero_emit", status_path, payload)
     if status == "completed":

@@ -196,6 +196,30 @@ def test_emit_health_fails_zero_emit_without_selected_release(tmp_path: Path) ->
     assert _json(result)["reason"] == "zero_emit"
 
 
+def test_emit_health_fails_zero_emit_when_selected_release_ok_missing(
+    tmp_path: Path,
+) -> None:
+    # A recognized reason is not sufficient by itself. The producer must also
+    # explicitly record an unsuccessful selected-release verdict; missing verdict
+    # fields fail closed.
+    _write_status(
+        tmp_path,
+        {
+            "status": "completed_no_segments_saved",
+            "phase": "completed_no_segments_saved",
+            "saved_count": 0,
+            "run_saved_programmes": [],
+            "selected_release": {"reason": "no_eligible_pool", "selected_count": 0},
+            "updated_at": "2026-06-18T04:20:00Z",
+        },
+    )
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 1
+    assert _json(result)["reason"] == "zero_emit"
+
+
 def test_emit_health_fails_publication_blocked_no_release(tmp_path: Path) -> None:
     # Publication-blocked means a selected release existed but could not be
     # republished/load-verified consistently, which is still a source/runtime
