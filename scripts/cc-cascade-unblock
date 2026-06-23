@@ -32,6 +32,22 @@ ACTIVE = VAULT / "active"
 CLOSED = VAULT / "closed"
 
 
+def _safe_read_text(path: Path) -> str | None:
+    """Read a task note, tolerating concurrent moves/deletes.
+
+    The reconciler enumerates ``active/*.md`` and then reads each file, but
+    ``cc-close`` (and the close path that calls this very script) moves notes
+    out of ``active/`` into ``closed/`` while the sweep is running. That
+    glob-then-read window is a TOCTOU race: a note can vanish between
+    enumeration and ``read_text``. Returning ``None`` lets callers skip the
+    now-absent note instead of crashing the whole reconcile run.
+    """
+    try:
+        return path.read_text(errors="replace")
+    except OSError:
+        return None
+
+
 def _check_pr_merged(pr_number: str) -> str:
     try:
         result = subprocess.run(
@@ -96,7 +112,10 @@ def _trigger_aliases(trigger_task_id: str | None) -> set[str]:
     path = _locate_task(trigger_task_id)
     if path is None:
         return {trigger_task_id}
-    return _task_aliases(path, path.read_text(errors="replace"))
+    text = _safe_read_text(path)
+    if text is None:
+        return {trigger_task_id}
+    return _task_aliases(path, text)
 
 
 def _dependency_validity(dep_ids: set[str]) -> tuple[set[str], dict[str, tuple[str, ...]]]:
@@ -114,7 +133,10 @@ def _dependency_validity(dep_ids: set[str]) -> tuple[set[str], dict[str, tuple[s
         if path is None:
             blockers[dep_id] = ("dependency_not_found",)
             continue
-        text = path.read_text(errors="replace")
+        text = _safe_read_text(path)
+        if text is None:
+            blockers[dep_id] = ("dependency_not_found",)
+            continue
         validity = task_closure_validity(
             text,
             pr_state_lookup=cached_pr_state,
@@ -197,7 +219,9 @@ def _blocked_candidates(trigger_task_id: str | None) -> list[tuple[Path, str, li
     candidates: list[tuple[Path, str, list[str]]] = []
 
     for f in sorted(ACTIVE.glob("*.md")):
-        text = f.read_text(errors="replace")
+        text = _safe_read_text(f)
+        if text is None:
+            continue
         status_m = re.search(r"^status:\s*(\S+)", text, re.M)
         if not status_m or status_m.group(1) != "blocked":
             continue
@@ -257,7 +281,9 @@ def _dep_status(task_id: str) -> str:
     path = _locate_task(task_id)
     if path is None:
         return ""
-    text = path.read_text(errors="replace")
+    text = _safe_read_text(path)
+    if text is None:
+        return ""
     m = re.search(r"^status:\s*(\S+)", text, re.M)
     return m.group(1) if m else ""
 
@@ -269,9 +295,8 @@ def cascade_withdraw() -> int:
 
     withdrawn = 0
     for f in sorted(ACTIVE.glob("*.md")):
-        try:
-            text = f.read_text(errors="replace")
-        except OSError:
+        text = _safe_read_text(f)
+        if text is None:
             continue
         status_m = re.search(r"^status:\s*(\S+)", text, re.M)
         if not status_m or status_m.group(1) in TASK_NON_FULFILLING_CLOSED_STATUSES:
