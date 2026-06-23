@@ -120,6 +120,13 @@ def _render_parent_request_update(decomposition: RequestDecomposition) -> tuple[
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     task_ids = [task.task_id for task in decomposition.tasks]
     downstream_tasks = _as_string_list(frontmatter.get("downstream_tasks"))
+    preexisting = [task_id for task_id in downstream_tasks if task_id not in task_ids]
+    if preexisting:
+        msg = (
+            f"refusing to append duplicate decomposition to {request_path.name}; "
+            f"already has downstream_tasks: {', '.join(preexisting)}"
+        )
+        raise FileExistsError(msg)
     seen = set(downstream_tasks)
     for task_id in task_ids:
         if task_id not in seen:
