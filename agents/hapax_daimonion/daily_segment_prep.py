@@ -867,6 +867,17 @@ def _seed_recruit_densities(seeds: list[str]) -> dict[str, int]:
     except Exception:
         log.debug("recruit-density batch embed failed; fail-soft to 0", exc_info=True)
         return {s: 0 for s in seeds_nn}
+    if len(vectors) != len(seeds_nn):
+        # Defensive: a partial embed failure that returns without raising must not
+        # leak a length-mismatch into the zip (would raise under strict=True, or
+        # silently truncate under plain zip). Fail-soft the whole batch to 0,
+        # consistent with the embed-failure branch above — never raises.
+        log.debug(
+            "recruit-density embed returned %d vectors for %d seeds; fail-soft to 0",
+            len(vectors),
+            len(seeds_nn),
+        )
+        return {s: 0 for s in seeds_nn}
     out: dict[str, int] = {}
     for seed, vec in zip(seeds_nn, vectors, strict=True):
         try:

@@ -75,6 +75,19 @@ def test_seed_recruit_densities_fails_soft_to_zero(monkeypatch) -> None:
     assert prep._seed_recruit_densities(["a", "b"]) == {"a": 0, "b": 0}
 
 
+def test_seed_recruit_densities_fails_soft_on_misaligned_embed(monkeypatch) -> None:
+    # A partial embed failure that RETURNS without raising (fewer vectors than seeds)
+    # must fail-soft the whole batch to 0 — never raise a ValueError out of the zip.
+    # Regression guard for the strict=True-without-len-guard bug class.
+
+    def _short_embed_batch(texts, model=None, prefix=None):
+        # Returns one fewer vector than texts — a misaligned, non-raising failure.
+        return [[0.0] * 768 for _ in list(texts)[1:]]
+
+    monkeypatch.setattr("shared.config.embed_batch", _short_embed_batch)
+    assert prep._seed_recruit_densities(["a", "b", "c"]) == {"a": 0, "b": 0, "c": 0}
+
+
 def test_seed_recruit_densities_embeds_pool_once_not_per_seed(monkeypatch) -> None:
     # The batch probe must call embed_batch ONCE for the whole pool, not once per seed
     # (was: N per-seed embeds — the perception bottleneck under load).
