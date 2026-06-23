@@ -1,7 +1,10 @@
 """Test imagination daemon reads from /dev/shm traces."""
 
+import asyncio
 import json
+import signal
 import time
+from unittest.mock import Mock
 
 
 def test_read_observations_from_shm(tmp_path):
@@ -69,3 +72,30 @@ def test_read_snapshot_returns_none_when_missing(tmp_path):
 
     result = read_snapshot(path=tmp_path / "nonexistent.json", stale_s=30.0)
     assert result is None
+
+
+def test_signal_shutdown_cancels_inflight_daemon_task():
+    """SIGTERM must interrupt cadence sleeps / in-flight awaits before systemd times out."""
+    from agents.imagination_daemon.__main__ import _request_shutdown
+
+    async def wait_forever() -> None:
+        await asyncio.sleep(3600)
+
+    loop = asyncio.new_event_loop()
+    daemon = Mock()
+    try:
+        task = loop.create_task(wait_forever())
+
+        _request_shutdown(daemon=daemon, loop=loop, task=task, sig=signal.SIGTERM)
+
+        try:
+            loop.run_until_complete(task)
+        except asyncio.CancelledError:
+            pass
+        else:  # pragma: no cover - defensive clarity
+            raise AssertionError("shutdown did not cancel daemon task")
+    finally:
+        loop.close()
+
+    daemon.stop.assert_called_once_with()
+    assert task.cancelled()
