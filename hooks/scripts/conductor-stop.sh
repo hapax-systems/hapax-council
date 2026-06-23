@@ -14,7 +14,8 @@ SESSION_ID="$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)"
 
 COUNCIL_DIR="$HOME/projects/hapax-council"
 
-ROLE="$(hapax_agent_role_or_default alpha)"
+ROLE="$(hapax_effective_role 2>/dev/null || true)"
+{ [ -z "$ROLE" ] || [ "$ROLE" = "roleless" ]; } && exit 0
 
 cd "$COUNCIL_DIR" && uv run python -m agents.session_conductor --role "$ROLE" stop \
     2>/dev/null || true

@@ -12,7 +12,8 @@ INPUT="$(cat)"
 SESSION_ID="$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)"
 [ -z "$SESSION_ID" ] && exit 0
 
-ROLE="$(hapax_agent_role_or_default alpha)"
+ROLE="$(hapax_effective_role 2>/dev/null || true)"
+{ [ -z "$ROLE" ] || [ "$ROLE" = "roleless" ]; } && exit 0
 
 SOCK="/run/user/$(id -u)/conductor-${ROLE}.sock"
 [ -S "$SOCK" ] || exit 0

@@ -174,23 +174,20 @@ if [[ "${HAPAX_METHODOLOGY_EMERGENCY:-0}" == "1" ]]; then
   exit 0
 fi
 
-# Determine role
-role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
-if [[ -z "$role" ]] && declare -F hapax_agent_role >/dev/null 2>&1; then
-  role="$(hapax_agent_role 2>/dev/null || true)"
-fi
-if [[ -z "$role" ]]; then
-  _branch_name="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
-  if [[ "$_branch_name" =~ ^([a-z]+)/ ]]; then
-    _branch_role="${BASH_REMATCH[1]}"
-    case "$_branch_role" in
-      alpha|beta|gamma|delta|epsilon|zeta) role="$_branch_role" ;;
-    esac
-  fi
+# Determine role through the SAME single resolver the write-gate (cc-task-gate.impl.sh) uses,
+# so push and write can never disagree on who a session is. FM-1: a worktree's git branch is
+# NOT identity — the prior env-cascade + branch-regex fallback here produced phantom roles
+# (e.g. a roleless session on an alpha/foo branch resolved to alpha), the live push/write
+# split-brain behind the b111a641 triple-claim collision class. (CASE-ROLE-RESOLUTION-DISAMBIG-001.)
+if declare -F hapax_effective_role >/dev/null 2>&1; then
+  role="$(hapax_effective_role 2>/dev/null || true)"
+else
+  role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
 fi
 if [[ -z "$role" ]]; then
   echo "authorization-packet-validator: BLOCKED — cannot determine role for push/PR validation." >&2
-  echo "  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
+  echo "  Release actions require a governed task claim with authority_case." >&2
+  echo "  Governed path: cc-claim <id> a task with authority_case, or mint a coord-grant, then re-run." >&2
   exit 2
 fi
 

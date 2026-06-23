@@ -78,7 +78,7 @@ _escape_grant_ledger() {
   gid="$(printf '%s' "$json" \
     | python3 -c 'import sys,json; print(json.load(sys.stdin).get("grant_id") or "")' \
     2>/dev/null || printf '')"
-  role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-unknown}}}"
+  role="$(hapax_effective_role 2>/dev/null || echo unknown)"
   mkdir -p "$(dirname "$HAPAX_METHODOLOGY_LEDGER")" 2>/dev/null || true
   printf '{"ts":"%s","kind":"escape_grant_honored","gate":"%s","grant_id":"%s","grant_file":"%s","role":"%s"}\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$gate" "$gid" "$file" "$role" \

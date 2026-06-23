@@ -126,14 +126,21 @@ class TestAgentRoleSourcing:
         body = STOP_HOOK.read_text(encoding="utf-8")
         assert "agent-role.sh" in body
 
-    def test_start_uses_default_alpha_role(self) -> None:
-        """When the role helper can't determine a role, default is alpha."""
+    def test_start_resolves_role_via_effective_role_and_skips_roleless(self) -> None:
+        """Role resolves through the shared hapax_effective_role resolver — not an explicit
+        alpha default — and a roleless session is SKIPPED, never given a conductor-alpha sidecar.
+        (CASE-ROLE-RESOLUTION-DISAMBIG-001: the prior `hapax_agent_role_or_default alpha`
+        overrode the roleless default and launched conductor-alpha for roleless sessions.)"""
         body = START_HOOK.read_text(encoding="utf-8")
-        assert "hapax_agent_role_or_default alpha" in body
+        assert "hapax_effective_role" in body
+        assert "hapax_agent_role_or_default alpha" not in body
+        assert "roleless" in body  # roleless sessions exit before launching a sidecar
 
-    def test_stop_uses_default_alpha_role(self) -> None:
+    def test_stop_resolves_role_via_effective_role_and_skips_roleless(self) -> None:
         body = STOP_HOOK.read_text(encoding="utf-8")
-        assert "hapax_agent_role_or_default alpha" in body
+        assert "hapax_effective_role" in body
+        assert "hapax_agent_role_or_default alpha" not in body
+        assert "roleless" in body
 
 
 # ── Hook integrity ─────────────────────────────────────────────────
