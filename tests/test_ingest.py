@@ -503,6 +503,30 @@ class TestRecordIngested:
         assert ingest._should_skip(f, tracker, collection="documents_v2") is True
         assert ingest._should_skip(f, tracker, collection="documents") is False
 
+    def test_vanished_file_is_skipped_not_fatal(self, tmp_path):
+        # A bulk rescan snapshots its file list up front but runs for hours; a
+        # file (e.g. a cc-task moving from active/ to done/) can disappear before
+        # it is recorded. That must not raise and abort the whole rescan.
+        f = tmp_path / "gone.md"
+        tracker = {}
+        # File never existed / already removed → no crash, no entry recorded.
+        ingest._record_ingested(f, tracker)
+        assert str(f) not in tracker
+        assert tracker == {}
+
+    def test_other_files_still_recorded_after_one_vanishes(self, tmp_path):
+        missing = tmp_path / "gone.md"
+        present = tmp_path / "present.md"
+        present.write_text("still here")
+        tracker = {}
+
+        ingest._record_ingested(missing, tracker)  # no-op, file is gone
+        ingest._record_ingested(present, tracker)  # must still succeed
+
+        assert str(missing) not in tracker
+        assert str(present) in tracker
+        assert tracker[str(present)]["hash"] == ingest._file_hash(present)
+
 
 # ── _file_hash ───────────────────────────────────────────────────────────────
 

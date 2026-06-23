@@ -643,12 +643,25 @@ def _should_skip(path: Path, tracker: dict, collection: str | None = None) -> bo
 
 
 def _record_ingested(path: Path, tracker: dict, collection: str | None = None) -> None:
-    """Record a file as successfully ingested."""
-    tracker[_dedup_key(path, collection)] = {
-        "hash": _file_hash(path),
-        "mtime": path.stat().st_mtime,
-        "ingested_at": datetime.now().isoformat(),
-    }
+    """Record a file as successfully ingested.
+
+    A bulk rescan snapshots its file list up front but can run for hours, during
+    which individual files may be moved or deleted (e.g. cc-tasks migrating from
+    ``active/`` to ``done/``). The file may therefore be gone by the time we
+    record it. Treat that as a no-op rather than letting a single vanished file
+    abort the entire rescan with FileNotFoundError. Mirrors the OSError handling
+    already used by ``_should_skip``.
+    """
+    try:
+        entry = {
+            "hash": _file_hash(path),
+            "mtime": path.stat().st_mtime,
+            "ingested_at": datetime.now().isoformat(),
+        }
+    except OSError as e:
+        log.warning("Skipping dedup record for %s — file unavailable: %s", path, e)
+        return
+    tracker[_dedup_key(path, collection)] = entry
 
 
 def _check_consent_for_ingest(payload: dict) -> bool:
