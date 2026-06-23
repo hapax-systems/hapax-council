@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from shared.control_signal import ControlSignal, publish_health
+from shared.exploration import ExplorationSignal
+from shared.exploration_writer import publish_exploration_signal
 
 if TYPE_CHECKING:
     from agents._impingement import Impingement
@@ -97,6 +99,37 @@ class ReverieMixer:
         p.load_activation_state()
         return p
 
+    @staticmethod
+    def _publish_vetoed_visual_chain_signal(reason: str) -> None:
+        """Refresh visual-chain liveness while governance vetoes actuation.
+
+        The health monitor watches `/dev/shm/hapax-exploration/visual_chain.json`
+        as a daemon-liveness predicate. A governance veto means Reverie is alive
+        and intentionally not actuating, not that the visual-chain writer is
+        dead. Publish an explicit degraded signal so the predicate can
+        distinguish "running but vetoed" from "writer stalled".
+        """
+        now = time.time()
+        sig = ExplorationSignal(
+            component="visual_chain",
+            timestamp=now,
+            mean_habituation=0.0,
+            max_novelty_edge=reason,
+            max_novelty_score=0.0,
+            error_improvement_rate=0.0,
+            chronic_error=1.0,
+            mean_trace_interest=0.0,
+            stagnation_duration=0.0,
+            local_coherence=0.0,
+            dwell_time_in_coherence=0.0,
+            boredom_index=0.0,
+            curiosity_index=0.0,
+        )
+        try:
+            publish_exploration_signal(sig)
+        except Exception:
+            log.debug("Failed to publish vetoed visual-chain exploration signal", exc_info=True)
+
     @property
     def pipeline(self):
         return self._pipeline
@@ -140,6 +173,9 @@ class ReverieMixer:
         )
         result = self._veto_chain.evaluate(gov_ctx)
         if not result.allowed:
+            reason = "governance_veto"
+            if result.denied_by:
+                reason = f"{reason}:{','.join(result.denied_by)}"
             if self._tick_count % 30 == 1:
                 log.info(
                     "Mixer vetoed: denied_by=%s axiom_ids=%s",
@@ -156,6 +192,7 @@ class ReverieMixer:
                 self._trace_radius,
                 programme_provider=programme_provider,
             )
+            self._publish_vetoed_visual_chain_signal(reason)
             return
 
         reduction = self._guest_reduction(consent_phase)
