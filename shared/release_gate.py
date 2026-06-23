@@ -480,12 +480,16 @@ def _env_or_secrets_flag(flag: str) -> str:
     membership in {"1","true","yes"}). os.environ wins when set so explicit
     overrides (tests, ad-hoc ``HAPAX_AVSDLC_REQUIRE_INTENT_PREDICATE=1``) still
     work; the secrets file is the shared default so divergent process envs
-    (autoqueue unit vs in-session hook) cannot disagree on enforcement."""
+    (autoqueue unit vs in-session hook) cannot disagree on enforcement.
+
+    Always reads the fixed canonical path (never an env-overridable one): an
+    env-controlled secrets path would both undermine the single-source-of-truth
+    goal and open a read-any-file vector. Tests rebind the module constant
+    ``DEFAULT_HAPAX_SECRETS_ENV`` to a tmp file."""
     value = os.environ.get(flag)
     if value is None or value == "":
-        path = Path(os.environ.get("HAPAX_SECRETS_ENV") or str(DEFAULT_HAPAX_SECRETS_ENV))
         try:
-            for line in path.read_text(encoding="utf-8").splitlines():
+            for line in DEFAULT_HAPAX_SECRETS_ENV.read_text(encoding="utf-8").splitlines():
                 if "=" not in line or line.lstrip().startswith("#"):
                     continue
                 key, _, val = line.partition("=")
