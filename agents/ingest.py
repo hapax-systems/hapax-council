@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from agents._frontmatter import parse_frontmatter
+from shared.frontmatter import parse_frontmatter
 
 # Self-contained config (no shared.config import — this module runs in an
 # isolated venv without pydantic-ai due to docling/huggingface-hub conflict).
