@@ -1115,8 +1115,12 @@ if [[ -n "$edit_path" ]]; then
   # path (e.g. a session rooted at the meta-workspace or the primary council
   # worktree editing a --review-witness / --cns lane worktree). A non-repo
   # cwd/file yields "" and only the remaining anchors apply.
-  _scope_repo_top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-  _scope_file_top="$(git -C "$(dirname "$edit_path")" rev-parse --show-toplevel 2>/dev/null || true)"
+  # Harden BOTH git discovery calls against GIT_DIR/GIT_WORK_TREE env vars:
+  # if set in the hook environment they override -C/cwd discovery, resolving the
+  # toplevel to an unrelated repo (review finding on PR #4280). `env -u` strips
+  # them for the call so discovery proceeds from the intended path.
+  _scope_repo_top="$(env -u GIT_DIR -u GIT_WORK_TREE git rev-parse --show-toplevel 2>/dev/null || true)"
+  _scope_file_top="$(env -u GIT_DIR -u GIT_WORK_TREE git -C "$(dirname "$edit_path")" rev-parse --show-toplevel 2>/dev/null || true)"
   _scope_vault_root="$HOME/Documents/Personal"
   scope_check="$(python3 - "$edit_path" "$mutation_scope_refs" "$_scope_repo_top" "$_scope_vault_root" "$_scope_file_top" <<'PYEOF'
 import os
