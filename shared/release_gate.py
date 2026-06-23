@@ -152,6 +152,15 @@ _AV_SOURCE_SEGMENTS = {
 _AV_SOURCE_EXTENSIONS = {".glsl", ".qc", ".frag", ".vert", ".wgsl", ".bsp", ".lit", ".vmt"}
 _AV_SOURCE_SUBSTRINGS = ("/dev/video", "voice-fx")
 DEFAULT_COORD_KEY_FILE = Path.home() / ".cache" / "hapax" / "coord" / "grant-key"
+# Canonical operator secrets/config env (materialized by hapax-secrets.service).
+# The AVSDLC intent flags are read through here (see _env_or_secrets_flag) so
+# every gate caller — the autoqueue systemd unit, the in-session keystroke hook
+# (pr-release-gate.sh → uv run), and a manual uv run — resolves the flag from the
+# SAME source regardless of whether the caller's process env sourced the file.
+# This closes the cutover gap-#2 env-divergence (autoqueue had no EnvironmentFile
+# and the session never sourced secrets.env, so the two gate-evaluating processes
+# could not agree on enforcement). os.environ still wins when set.
+DEFAULT_HAPAX_SECRETS_ENV = Path("/run/user/1000/hapax-secrets.env")
 _AVSDLC_CONTENT_HASH_FIELDS = (
     "avsdlc_content_hash",
     "deployed_content_hash",
@@ -465,6 +474,33 @@ def _load_coord_key() -> bytes:
         return b""
 
 
+def _env_or_secrets_flag(flag: str) -> str:
+    """Resolve an AVSDLC on/off flag from the process env, falling back to the
+    canonical hapax-secrets.env. Returns the raw string value (callers test
+    membership in {"1","true","yes"}). os.environ wins when set so explicit
+    overrides (tests, ad-hoc ``HAPAX_AVSDLC_REQUIRE_INTENT_PREDICATE=1``) still
+    work; the secrets file is the shared default so divergent process envs
+    (autoqueue unit vs in-session hook) cannot disagree on enforcement.
+
+    Always reads the fixed canonical path (never an env-overridable one): an
+    env-controlled secrets path would both undermine the single-source-of-truth
+    goal and open a read-any-file vector. Tests rebind the module constant
+    ``DEFAULT_HAPAX_SECRETS_ENV`` to a tmp file."""
+    value = os.environ.get(flag)
+    if value is None or value == "":
+        try:
+            for line in DEFAULT_HAPAX_SECRETS_ENV.read_text(encoding="utf-8").splitlines():
+                if "=" not in line or line.lstrip().startswith("#"):
+                    continue
+                key, _, val = line.partition("=")
+                if key.strip() == flag:
+                    return val.strip().strip('"').strip("'")
+        except OSError:
+            pass
+        return ""
+    return value.strip()
+
+
 def _coerce_av_receipt(value: Any) -> AVWitnessReceipt | None:
     """A receipt must be referenced as a FILE the witness daemon owns — provenance
     is the path; there is deliberately no inline-JSON channel."""
@@ -602,13 +638,13 @@ def evaluate_avsdlc_release_gate(
     require_signed = (
         require_signed_witness
         if require_signed_witness is not None
-        else os.environ.get("HAPAX_AVSDLC_REQUIRE_SIGNED_WITNESS", "").strip().lower()
+        else _env_or_secrets_flag("HAPAX_AVSDLC_REQUIRE_SIGNED_WITNESS").lower()
         in {"1", "true", "yes"}
     )
     require_intent_flag = (
         require_intent
         if require_intent is not None
-        else os.environ.get("HAPAX_AVSDLC_REQUIRE_INTENT_PREDICATE", "").strip().lower()
+        else _env_or_secrets_flag("HAPAX_AVSDLC_REQUIRE_INTENT_PREDICATE").lower()
         in {"1", "true", "yes"}
     )
     explicit_axes = _explicit_axes(frontmatter)

@@ -14,6 +14,15 @@ ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktre
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
 Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+# AVSDLC intent-gate env-consistency (cutover gap #2): this unit and the
+# in-session pr-release-gate.sh keystroke hook BOTH evaluate
+# evaluate_avsdlc_release_gate(), which reads HAPAX_AVSDLC_REQUIRE_INTENT_PREDICATE
+# via os.environ. Without this EnvironmentFile the autoqueue ran in a bare env
+# and could never see the flag, so the two gate-evaluating processes could not
+# agree on enforcement. Source the same secrets env the witness daemon
+# (hapax-avsdlc-runtime-witness.service) already sources. The flag is unset in
+# hapax-secrets.env today, so this is inert until the cutover flips it.
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
 # Killswitch: set HAPAX_CC_PR_AUTOQUEUE_OFF=1 to stop PR queue mutations.
 # HAPAX_CC_HYGIENE_OFF=1 also skips this reconciler with the cc-task hygiene tools.
 
