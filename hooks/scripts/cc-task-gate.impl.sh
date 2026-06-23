@@ -1107,11 +1107,22 @@ if [[ -n "$edit_path" ]]; then
   # vault root (in addition to the live cwd), so a vault cc-task's own
   # `20-projects/hapax-cc-tasks/` scope resolves to the absolute note path and a bare
   # repo-relative ref resolves even from a repo subdirectory (fix-cc-gate-fps Fix 2).
-  # git toplevel is computed from the hook's cwd (the session worktree); a non-repo
-  # cwd yields "" and only cwd + vault anchor.
-  _scope_repo_top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  # git toplevel anchors: the hook-cwd toplevel (the session worktree) AND the
+  # edited file's OWN repo/worktree toplevel. The file's toplevel is the
+  # canonical anchor for the file's relative path — without it, an in-scope edit
+  # to a SIBLING worktree's file cannot match: the cwd/primary-worktree toplevel
+  # resolves the scope ref to a DIFFERENT worktree's copy of the same relative
+  # path (e.g. a session rooted at the meta-workspace or the primary council
+  # worktree editing a --review-witness / --cns lane worktree). A non-repo
+  # cwd/file yields "" and only the remaining anchors apply.
+  # Harden BOTH git discovery calls against GIT_DIR/GIT_WORK_TREE env vars:
+  # if set in the hook environment they override -C/cwd discovery, resolving the
+  # toplevel to an unrelated repo (review finding on PR #4280). `env -u` strips
+  # them for the call so discovery proceeds from the intended path.
+  _scope_repo_top="$(env -u GIT_DIR -u GIT_WORK_TREE git rev-parse --show-toplevel 2>/dev/null || true)"
+  _scope_file_top="$(env -u GIT_DIR -u GIT_WORK_TREE git -C "$(dirname "$edit_path")" rev-parse --show-toplevel 2>/dev/null || true)"
   _scope_vault_root="$HOME/Documents/Personal"
-  scope_check="$(python3 - "$edit_path" "$mutation_scope_refs" "$_scope_repo_top" "$_scope_vault_root" <<'PYEOF'
+  scope_check="$(python3 - "$edit_path" "$mutation_scope_refs" "$_scope_repo_top" "$_scope_vault_root" "$_scope_file_top" <<'PYEOF'
 import os
 import sys
 from pathlib import Path
@@ -1120,6 +1131,7 @@ target_raw = sys.argv[1]
 scope_blob = sys.argv[2]
 repo_top = sys.argv[3] if len(sys.argv) > 3 else ""
 vault_root = sys.argv[4] if len(sys.argv) > 4 else ""
+file_top = sys.argv[5] if len(sys.argv) > 5 else ""
 if not scope_blob.strip():
     print("missing")
     sys.exit(0)
@@ -1130,7 +1142,7 @@ if not scope_blob.strip():
 # `20-projects/hapax-cc-tasks/` scope resolves to the absolute note path, not a
 # nonexistent repo-relative path). Absolute paths ignore the anchors.
 anchor_roots = [Path.cwd()]
-for _root in (repo_top, vault_root):
+for _root in (repo_top, vault_root, file_top):
     if _root:
         anchor_roots.append(Path(_root))
 
