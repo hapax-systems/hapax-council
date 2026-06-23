@@ -561,6 +561,62 @@ class TestFileHash:
         assert len(result) == 64  # SHA256 hex digest length
 
 
+# ── ingest_file TOCTOU resilience ───────────────────────────────────────────
+
+
+class TestIngestFileToctou:
+    def test_vanished_during_preflight_is_successful_noop(self, tmp_path, monkeypatch):
+        f = tmp_path / "race.md"
+        f.write_text("content")
+        original_is_file = type(f).is_file
+
+        def is_file_then_vanish(self):
+            if self == f:
+                f.unlink(missing_ok=True)
+                return True
+            return original_is_file(self)
+
+        monkeypatch.setattr(type(f), "is_file", is_file_then_vanish)
+
+        success, error = ingest.ingest_file(f)
+
+        assert success is True
+        assert error == ""
+
+    def test_vanished_during_extract_is_successful_noop(self, tmp_path, monkeypatch):
+        f = tmp_path / "race.md"
+        f.write_text("content")
+
+        def vanish_during_extract(path):
+            raise FileNotFoundError(path)
+
+        monkeypatch.setattr(ingest, "extract_chunks", vanish_during_extract)
+
+        success, error = ingest.ingest_file(f)
+
+        assert success is True
+        assert error == ""
+
+    def test_preflight_oserror_is_reported_not_raised(self, tmp_path, monkeypatch):
+        f = tmp_path / "unreadable.md"
+        f.write_text("content")
+        original_stat = type(f).stat
+
+        monkeypatch.setattr(type(f), "is_file", lambda self: True)
+
+        def stat_denied(self):
+            if self == f:
+                raise PermissionError("denied")
+            return original_stat(self)
+
+        monkeypatch.setattr(type(f), "stat", stat_denied)
+
+        success, error = ingest.ingest_file(f)
+
+        assert success is False
+        assert "denied" in error
+
+
 # ── bulk_ingest with dedup ───────────────────────────────────────────────────
 
 

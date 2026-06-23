@@ -692,20 +692,27 @@ def ingest_file(path: Path) -> tuple[bool, str]:
 
     Returns (True, "") on success, (False, error_message) on failure.
     """
-    if path.suffix.lower() not in CFG.supported_extensions:
-        return (True, "")
-    if not path.is_file():
-        return (True, "")
-    # Skip macOS resource forks and __MACOSX junk
-    if path.name.startswith("._") or "/__MACOSX/" in str(path):
-        return (True, "")
-    # Skip binary files masquerading as text
-    if path.suffix.lower() in (".txt", ".md") and path.stat().st_size < 1024:
-        try:
-            path.read_bytes().decode("utf-8")
-        except UnicodeDecodeError:
-            log.debug(f"Skipping binary file with text extension: {path.name}")
+    try:
+        if path.suffix.lower() not in CFG.supported_extensions:
             return (True, "")
+        if not path.is_file():
+            return (True, "")
+        # Skip macOS resource forks and __MACOSX junk
+        if path.name.startswith("._") or "/__MACOSX/" in str(path):
+            return (True, "")
+        # Skip binary files masquerading as text
+        if path.suffix.lower() in (".txt", ".md") and path.stat().st_size < 1024:
+            try:
+                path.read_bytes().decode("utf-8")
+            except UnicodeDecodeError:
+                log.debug(f"Skipping binary file with text extension: {path.name}")
+                return (True, "")
+    except FileNotFoundError:
+        log.warning("Skipping vanished file during ingest preflight: %s", path)
+        return (True, "")
+    except OSError as e:
+        log.error("Failed ingest preflight for %s: %s", path, e)
+        return (False, str(e))
 
     log.info(f"Ingesting: {path.name}")
     start = time.monotonic()
@@ -780,6 +787,9 @@ def ingest_file(path: Path) -> tuple[bool, str]:
 
         return (True, "")
 
+    except FileNotFoundError:
+        log.warning("Skipping vanished file during ingest: %s", path)
+        return (True, "")
     except Exception as e:
         log.error(f"  ✗ Failed: {e}")
         return (False, str(e))
