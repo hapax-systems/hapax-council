@@ -14,7 +14,16 @@ ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor
 ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run python -m logos.api --host 0.0.0.0 --port 8051
 Restart=on-failure
 RestartSec=5
-SuccessExitStatus=SIGTERM
+# ExecStart runs python via the `uv` wrapper. On stop, systemd sends SIGTERM;
+# uvicorn shuts down gracefully and `uv` propagates the child termination as
+# numeric exit code 143 (128+SIGTERM). systemd reports this as
+# `code=exited, status=143`, which a bare `SuccessExitStatus=SIGTERM` does NOT
+# match (that only covers `code=killed, status=TERM`). Without the numeric 143,
+# every clean stop/restart is recorded as a failure and fires
+# OnFailure=notify-failure@, minting false P0 incidents. List 143 explicitly,
+# matching the working hapax-screwm-guest-source@.service convention. Real
+# crashes exit with other codes (1/137/139) and still trip OnFailure.
+SuccessExitStatus=0 143 SIGTERM
 Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
