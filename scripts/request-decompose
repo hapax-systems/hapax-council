@@ -386,6 +386,213 @@ def _normalize_mutation_surface(value: Any) -> str:
     return normalized if normalized in allowed else "source"
 
 
+def _normalize_task_kind(value: Any) -> str:
+    text = _slugify(_scalar(value), max_length=40).replace("-", "_")
+    aliases = {
+        "code": "build",
+        "coding": "build",
+        "implementation": "build",
+        "implement": "build",
+        "source": "build",
+        "ops": "operator_action",
+        "operator": "operator_action",
+        "operator_task": "operator_action",
+        "research": "research_packet",
+        "research_task": "research_packet",
+        "test": "verification",
+        "tests": "verification",
+        "testing": "verification",
+        "verify": "verification",
+        "validation": "verification",
+        "recovery": "recovery_triage",
+        "remediation": "recovery_triage",
+    }
+    normalized = aliases.get(text, text)
+    allowed = {
+        "build",
+        "operator_action",
+        "recovery_triage",
+        "watcher",
+        "research_packet",
+        "verification",
+    }
+    return normalized if normalized in allowed else "build"
+
+
+def _normalize_priority(value: Any, request_data: dict[str, Any]) -> str:
+    text = _scalar(value).lower().replace("_", "-")
+    aliases = {
+        "critical": "p0",
+        "urgent": "p0",
+        "security-critical": "p0",
+        "incident": "p0",
+        "high": "p1",
+        "important": "p1",
+        "medium": "p2",
+        "normal": "p2",
+        "low": "p3",
+        "later": "p3",
+    }
+    normalized = aliases.get(text, text)
+    if normalized in {"p0", "p1", "p2", "p3"}:
+        return normalized
+    return _priority_for_request(request_data)
+
+
+def _normalize_quality_floor(value: Any, request_data: dict[str, Any]) -> str:
+    text = _scalar(value).lower().replace("-", "_")
+    aliases = {
+        "deterministic": "deterministic_ok",
+        "deterministic_okay": "deterministic_ok",
+        "normal": "deterministic_ok",
+        "frontier": "frontier_required",
+        "frontier_review": "frontier_review_required",
+        "review": "frontier_review_required",
+        "independent_review": "frontier_review_required",
+        "production": "frontier_required",
+        "frontier_required": "frontier_required",
+        "frontier_review_required": "frontier_review_required",
+        "deterministic_ok": "deterministic_ok",
+    }
+    normalized = aliases.get(text, text)
+    if normalized in {"deterministic_ok", "frontier_review_required", "frontier_required"}:
+        return normalized
+    request_floor = _scalar(request_data["frontmatter"].get("quality_floor")).lower()
+    return aliases.get(request_floor.replace("-", "_"), "deterministic_ok")
+
+
+def _normalize_effort_class(value: Any) -> str:
+    text = _scalar(value).lower()
+    if text in {"standard", "high", "max"}:
+        return text
+    if text in {"small", "low", "medium", "normal"}:
+        return "standard"
+    if text in {"large", "complex"}:
+        return "high"
+    return "standard"
+
+
+def _string_items(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [_scalar(item) for item in value if _scalar(item)]
+    text = _scalar(value)
+    if not text:
+        return []
+    lines = [line.strip(" -\t") for line in text.splitlines() if line.strip(" -\t")]
+    return lines or [text]
+
+
+def _completion_content(response: Any) -> str:
+    """Extract LiteLLM/OpenAI-style message content from object or dict responses."""
+    choices = getattr(response, "choices", None)
+    if choices is None and isinstance(response, dict):
+        choices = response.get("choices")
+    if not choices:
+        return ""
+    first = choices[0]
+    message = getattr(first, "message", None)
+    if message is None and isinstance(first, dict):
+        message = first.get("message")
+    content = getattr(message, "content", None)
+    if content is None and isinstance(message, dict):
+        content = message.get("content")
+    return _scalar(content)
+
+
+def _json_object_from_completion(content: str) -> dict[str, Any]:
+    """Parse JSON even when the model wraps it in a fenced block or short preface."""
+    text = content.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text
+        if text.endswith("```"):
+            text = text[:-3].strip()
+        if text.lower().startswith("json\n"):
+            text = text.split("\n", 1)[1].strip()
+    try:
+        loaded = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise
+        loaded = json.loads(text[start : end + 1])
+    if not isinstance(loaded, dict):
+        raise ValueError("LLM response JSON must be an object")
+    return loaded
+
+
+def _request_prompt_context(request_data: dict[str, Any]) -> str:
+    """Build the prompt from body plus frontmatter, for sparse metadata-heavy requests."""
+    fm = request_data["frontmatter"]
+    field_names = (
+        "request_id",
+        "title",
+        "request_type",
+        "priority",
+        "priority_hint",
+        "risk_guess",
+        "surfaces",
+        "mutation_surface",
+        "quality_floor",
+        "authority_level",
+        "principle_flags",
+        "tags",
+    )
+    metadata: dict[str, Any] = {}
+    for field_name in field_names:
+        value = fm.get(field_name)
+        if value not in (None, "", [], {}):
+            metadata[field_name] = value
+    metadata_text = yaml.safe_dump(metadata, sort_keys=False, allow_unicode=True).strip()
+    body = _scalar(request_data.get("body")) or _scalar(fm.get("title")) or request_data["filename"]
+    return (
+        f"Request frontmatter summary:\n{metadata_text or '(none)'}\n\nRequest body:\n{body[:8000]}"
+    )
+
+
+def _coerce_llm_task(
+    raw_task: Any,
+    *,
+    request_data: dict[str, Any],
+    slug: str,
+    req_wsjf: float,
+    index: int,
+) -> dict[str, Any]:
+    if not isinstance(raw_task, dict):
+        raise ValueError(f"task #{index + 1} is not an object")
+    title = _scalar(raw_task.get("title")) or f"Implement {_request_id_for_data(request_data)}"
+    task_id = _slugify(_scalar(raw_task.get("task_id")) or f"{slug}-{index + 1}-{title}")
+    phase_index = raw_task.get("phase_index", index)
+    try:
+        phase = int(phase_index)
+    except (TypeError, ValueError):
+        phase = index
+    try:
+        wsjf = float(raw_task.get("wsjf", req_wsjf * (0.85**phase)))
+    except (TypeError, ValueError):
+        wsjf = req_wsjf * (0.85**phase)
+    acceptance = _string_items(raw_task.get("acceptance_criteria"))
+    if not acceptance:
+        acceptance = [
+            f"{_request_id_for_data(request_data)} has an observable implementation outcome."
+        ]
+    return {
+        "task_id": task_id,
+        "title": title,
+        "kind": _normalize_task_kind(raw_task.get("kind", "build")),
+        "priority": _normalize_priority(raw_task.get("priority"), request_data),
+        "wsjf": wsjf,
+        "depends_on": _string_items(raw_task.get("depends_on")),
+        "phase_index": phase,
+        "intent": _scalar(raw_task.get("intent")),
+        "acceptance_criteria": acceptance,
+        "effort_class": _normalize_effort_class(raw_task.get("effort_class")),
+        "mutation_surface": _normalize_mutation_surface(raw_task.get("mutation_surface")),
+        "quality_floor": _normalize_quality_floor(raw_task.get("quality_floor"), request_data),
+        "target_paths": _string_items(raw_task.get("target_paths")),
+    }
+
+
 def _first_scalar(frontmatter: dict[str, Any], field_names: tuple[str, ...]) -> str:
     for field_name in field_names:
         value = _scalar(frontmatter.get(field_name))
@@ -515,7 +722,7 @@ def _decompose_with_llm(request_data: dict) -> RequestDecomposition | None:
                 {
                     "role": "user",
                     "content": (
-                        f"Request: {request_data['body'][:8000]}\n\n"
+                        f"{_request_prompt_context(request_data)}\n\n"
                         f"Parent WSJF: {req_wsjf}\n"
                         f"Priority: {req_priority}\n"
                         f"Authority case: {authority}\n"
@@ -530,38 +737,45 @@ def _decompose_with_llm(request_data: dict) -> RequestDecomposition | None:
             api_key=LITELLM_KEY,
         )
 
-        content = response.choices[0].message.content or ""
-        content = content.strip()
-        if content.startswith("```"):
-            content = content.split("\n", 1)[1] if "\n" in content else content
-            if content.endswith("```"):
-                content = content[:-3].strip()
-        data = json.loads(content)
+        content = _completion_content(response)
+        data = _json_object_from_completion(content)
         tasks_data = data.get("tasks", [])
+        if not isinstance(tasks_data, list) or not tasks_data:
+            raise ValueError("LLM response did not contain a non-empty tasks array")
 
         tasks = []
-        for t in tasks_data:
+        for index, t in enumerate(tasks_data):
+            normalized = _coerce_llm_task(
+                t,
+                request_data=request_data,
+                slug=slug,
+                req_wsjf=req_wsjf,
+                index=index,
+            )
             tasks.append(
                 TaskSpec(
-                    task_id=t["task_id"],
-                    title=t["title"],
-                    kind=t.get("kind", "build"),
-                    priority=t.get("priority", "p2"),
-                    wsjf=float(t.get("wsjf", req_wsjf * 0.85)),
-                    depends_on=t.get("depends_on", []),
-                    phase_index=t.get("phase_index", 0),
+                    task_id=normalized["task_id"],
+                    title=normalized["title"],
+                    kind=normalized["kind"],
+                    priority=normalized["priority"],
+                    wsjf=normalized["wsjf"],
+                    depends_on=normalized["depends_on"],
+                    phase_index=normalized["phase_index"],
                     parent_request=request_data["filename"],
                     authority_case=authority,
                     parent_spec=parent_spec,
-                    status="ready" if t.get("depends_on") else "offered",
+                    status="ready" if normalized["depends_on"] else "offered",
                     blocked_reason=(
-                        f"Depends on: {', '.join(t['depends_on'])}" if t.get("depends_on") else None
+                        f"Depends on: {', '.join(normalized['depends_on'])}"
+                        if normalized["depends_on"]
+                        else None
                     ),
-                    intent=t.get("intent", ""),
-                    acceptance_criteria=t.get("acceptance_criteria", ["TBD"]),
-                    effort_class=t.get("effort_class", "standard"),
-                    mutation_surface=_normalize_mutation_surface(t.get("mutation_surface")),
-                    quality_floor=t.get("quality_floor", "deterministic_ok"),
+                    intent=normalized["intent"],
+                    acceptance_criteria=normalized["acceptance_criteria"],
+                    effort_class=normalized["effort_class"],
+                    mutation_surface=normalized["mutation_surface"],
+                    quality_floor=normalized["quality_floor"],
+                    target_paths=normalized["target_paths"],
                 )
             )
 

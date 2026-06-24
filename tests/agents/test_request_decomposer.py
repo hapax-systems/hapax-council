@@ -535,6 +535,31 @@ class TestWriter:
             with pytest.raises(FileExistsError):
                 write_decomposition(self._make_decomp(), Path(td))
 
+    def test_refuses_parent_request_with_existing_downstream_tasks(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            request = root / "REQ-test.md"
+            request.write_text(
+                """---
+type: hapax-request
+request_id: REQ-test
+status: accepted_for_planning
+downstream_tasks:
+- existing-task
+---
+
+# Request
+""",
+                encoding="utf-8",
+            )
+            decomp = self._make_decomp()
+            decomp.request_path = str(request)
+
+            with pytest.raises(FileExistsError, match="already has downstream_tasks"):
+                write_decomposition(decomp, root / "tasks")
+
+            assert not list((root / "tasks" / "active").glob("*.md"))
+
     def test_real_write_links_parent_request_downstream_tasks(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -945,6 +970,128 @@ planning_case: CASE-TEST-001
         monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(completion=completion))
 
         assert script._decompose_with_llm(self._request_data(tmp_path, {})) is None
+
+    def test_decomposition_tolerates_synonym_enum_fields(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+
+        def completion(**_kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps(
+                                {
+                                    "tasks": [
+                                        {
+                                            "task_id": "Req Test Implement!",
+                                            "title": "Build the thing",
+                                            "kind": "implementation",
+                                            "priority": "high",
+                                            "effort_class": "large",
+                                            "quality_floor": "review",
+                                            "acceptance_criteria": ["It works"],
+                                        }
+                                    ]
+                                }
+                            )
+                        )
+                    )
+                ]
+            )
+
+        monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(completion=completion))
+
+        request_data = self._request_data(
+            tmp_path,
+            {"status": "accepted_for_planning", "planning_case": "CASE-REAL-001"},
+        )
+        decomp = script._decompose_with_llm(request_data)
+
+        assert decomp is not None
+        task = decomp.tasks[0]
+        assert task.kind == "build"
+        assert task.priority == "p1"
+        assert task.effort_class == "high"
+        # frontier_review_required + authoritative collapses to frontier_required per model rules
+        assert task.quality_floor == "frontier_required"
+        assert task.task_id == "req-test-implement"
+
+    def test_decomposition_parses_fenced_json_with_preamble(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+
+        def completion(**_kwargs):
+            payload = json.dumps({"tasks": [{"title": "Do it"}]})
+            wrapped = f"Sure, here is the decomposition:\n```json\n{payload}\n```\n"
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=wrapped))]
+            )
+
+        monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(completion=completion))
+
+        request_data = self._request_data(
+            tmp_path,
+            {"status": "accepted_for_planning", "planning_case": "CASE-REAL-001"},
+        )
+        decomp = script._decompose_with_llm(request_data)
+
+        assert decomp is not None
+        assert len(decomp.tasks) == 1
+        # title-only task still gets a derived slug and a default acceptance criterion
+        assert decomp.tasks[0].task_id
+        assert decomp.tasks[0].acceptance_criteria
+
+    def test_decomposition_handles_dict_style_response(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+
+        def completion(**_kwargs):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "tasks": [
+                                        {
+                                            "task_id": "req-dict-task",
+                                            "title": "Dict task",
+                                            "acceptance_criteria": ["done"],
+                                        }
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+
+        monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(completion=completion))
+
+        request_data = self._request_data(
+            tmp_path,
+            {"status": "accepted_for_planning", "planning_case": "CASE-REAL-001"},
+        )
+        decomp = script._decompose_with_llm(request_data)
+
+        assert decomp is not None
+        assert decomp.tasks[0].task_id == "req-dict-task"
+
+    def test_decomposition_fails_closed_on_empty_tasks(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+
+        def completion(**_kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(message=SimpleNamespace(content=json.dumps({"tasks": []})))
+                ]
+            )
+
+        monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(completion=completion))
+
+        request_data = self._request_data(
+            tmp_path,
+            {"status": "accepted_for_planning", "planning_case": "CASE-REAL-001"},
+        )
+        assert script._decompose_with_llm(request_data) is None
 
     def test_scan_skips_requests_with_downstream_tasks(self, tmp_path, monkeypatch):
         script = _load_request_decompose_module()
