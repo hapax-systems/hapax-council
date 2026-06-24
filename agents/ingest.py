@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from agents._frontmatter import parse_frontmatter
+from shared.frontmatter import parse_frontmatter
 
 # Self-contained config (no shared.config import — this module runs in an
 # isolated venv without pydantic-ai due to docling/huggingface-hub conflict).
@@ -643,12 +643,25 @@ def _should_skip(path: Path, tracker: dict, collection: str | None = None) -> bo
 
 
 def _record_ingested(path: Path, tracker: dict, collection: str | None = None) -> None:
-    """Record a file as successfully ingested."""
-    tracker[_dedup_key(path, collection)] = {
-        "hash": _file_hash(path),
-        "mtime": path.stat().st_mtime,
-        "ingested_at": datetime.now().isoformat(),
-    }
+    """Record a file as successfully ingested.
+
+    A bulk rescan snapshots its file list up front but can run for hours, during
+    which individual files may be moved or deleted (e.g. cc-tasks migrating from
+    ``active/`` to ``done/``). The file may therefore be gone by the time we
+    record it. Treat that as a no-op rather than letting a single vanished file
+    abort the entire rescan with FileNotFoundError. Mirrors the OSError handling
+    already used by ``_should_skip``.
+    """
+    try:
+        entry = {
+            "hash": _file_hash(path),
+            "mtime": path.stat().st_mtime,
+            "ingested_at": datetime.now().isoformat(),
+        }
+    except OSError as e:
+        log.warning("Skipping dedup record for %s — file unavailable: %s", path, e)
+        return
+    tracker[_dedup_key(path, collection)] = entry
 
 
 def _check_consent_for_ingest(payload: dict) -> bool:
@@ -679,20 +692,27 @@ def ingest_file(path: Path) -> tuple[bool, str]:
 
     Returns (True, "") on success, (False, error_message) on failure.
     """
-    if path.suffix.lower() not in CFG.supported_extensions:
-        return (True, "")
-    if not path.is_file():
-        return (True, "")
-    # Skip macOS resource forks and __MACOSX junk
-    if path.name.startswith("._") or "/__MACOSX/" in str(path):
-        return (True, "")
-    # Skip binary files masquerading as text
-    if path.suffix.lower() in (".txt", ".md") and path.stat().st_size < 1024:
-        try:
-            path.read_bytes().decode("utf-8")
-        except UnicodeDecodeError:
-            log.debug(f"Skipping binary file with text extension: {path.name}")
+    try:
+        if path.suffix.lower() not in CFG.supported_extensions:
             return (True, "")
+        if not path.is_file():
+            return (True, "")
+        # Skip macOS resource forks and __MACOSX junk
+        if path.name.startswith("._") or "/__MACOSX/" in str(path):
+            return (True, "")
+        # Skip binary files masquerading as text
+        if path.suffix.lower() in (".txt", ".md") and path.stat().st_size < 1024:
+            try:
+                path.read_bytes().decode("utf-8")
+            except UnicodeDecodeError:
+                log.debug(f"Skipping binary file with text extension: {path.name}")
+                return (True, "")
+    except FileNotFoundError:
+        log.warning("Skipping vanished file during ingest preflight: %s", path)
+        return (True, "")
+    except OSError as e:
+        log.error("Failed ingest preflight for %s: %s", path, e)
+        return (False, str(e))
 
     log.info(f"Ingesting: {path.name}")
     start = time.monotonic()
@@ -767,6 +787,9 @@ def ingest_file(path: Path) -> tuple[bool, str]:
 
         return (True, "")
 
+    except FileNotFoundError:
+        log.warning("Skipping vanished file during ingest: %s", path)
+        return (True, "")
     except Exception as e:
         log.error(f"  ✗ Failed: {e}")
         return (False, str(e))
