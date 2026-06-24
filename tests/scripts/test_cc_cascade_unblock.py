@@ -395,3 +395,53 @@ def test_cascade_withdraw_skips_already_withdrawn(tmp_path: Path) -> None:
 
     assert module.cascade_withdraw() == 0
     assert "status: withdrawn" in target.read_text(encoding="utf-8")
+
+
+def test_safe_read_text_tolerates_missing_file(tmp_path: Path) -> None:
+    module = _load_module()
+    missing = tmp_path / "gone.md"
+    assert module._safe_read_text(missing) is None
+    present = tmp_path / "here.md"
+    present.write_text("hello", encoding="utf-8")
+    assert module._safe_read_text(present) == "hello"
+
+
+def test_blocked_candidates_survives_concurrent_close(tmp_path: Path, monkeypatch) -> None:
+    """Regression: a note moved out of active/ mid-sweep must not crash.
+
+    Reproduces the P0 failure where cc-close relocates active/*.md while the
+    reconciler is iterating, yielding FileNotFoundError from read_text. The
+    sweep must skip the vanished note and keep processing the rest.
+    """
+    module = _load_module()
+    vault = _make_vault(tmp_path, module)
+    module._check_pr_merged = lambda _pr: "merged"
+
+    _write_task(
+        vault,
+        "closed",
+        "valid-dep",
+        status="done",
+        pr=123,
+        body="## Acceptance criteria\n\n- [x] Evidence exists\n",
+    )
+    vanishing = _write_task(
+        vault, "active", "vanishing", status="blocked", depends_on=["valid-dep"]
+    )
+    survivor = _write_task(vault, "active", "survivor", status="blocked", depends_on=["valid-dep"])
+
+    real_read_text = Path.read_text
+
+    def racing_read_text(self: Path, *args, **kwargs):
+        # Simulate cc-close moving the note to closed/ between glob and read.
+        if self == vanishing and vanishing.exists():
+            vanishing.unlink()
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", racing_read_text)
+
+    # Must not raise FileNotFoundError; survivor still gets processed.
+    assert module.cascade_unblock("valid-dep") == 1
+    monkeypatch.undo()
+    assert "status: offered" in survivor.read_text(encoding="utf-8")
+    assert not vanishing.exists()
