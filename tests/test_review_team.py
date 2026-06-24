@@ -378,6 +378,29 @@ class TestConstitution:
                 "t1_critical", "claude", reg, pr_number=5, available_families=("claude", "codex")
             )
 
+    def test_t1_with_missing_family_and_openrouter_fallback_does_not_fail(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        reg["openrouter_fallback"] = {
+            "enabled": True,
+            "models": [
+                {"provider_family": "gemini", "name": "google/gemini-1.5-pro", "cost_rank": 1}
+            ],
+        }
+        # Only gemini is missing and outaged. We should get an openrouter fallback note for gemini.
+        team = rt.constitute_team(
+            "t1_critical",
+            "claude",
+            reg,
+            pr_number=5,
+            available_families=("claude", "codex", "glm"),
+            outage_families={"gemini"},
+        )
+        # Should not raise, and should append the right notes
+        assert "openrouter_fallback_active" in team.notes
+        assert "openrouter_fallback_for:gemini:google/gemini-1.5-pro" in team.notes
+        assert "gemini" in {seat.family for seat in team.seats}
+
     def test_writer_family_from_lane(self) -> None:
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()
@@ -799,6 +822,60 @@ class TestVerdictBlockers:
         note = _write_dossier(tmp_path, "task-x", dossier)
         blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
         assert "review_dossier_task_id_mismatch:other-task!=task-x" in blockers
+
+    def test_forged_openrouter_fallback_note_blocks(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        # Synthesis without openrouter fallback
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),
+            ],
+            team_class="t1_critical",
+        )
+        # Forging the notes in the dossier
+        dossier["constitution_notes"] = [
+            "openrouter_fallback_active",
+            "openrouter_fallback_for:glm:some-fake-model",
+        ]
+        dossier["review_team_verdict"] = "quorum-accept"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        # Test without registry having fallback enabled
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
+        assert any("missing_accept_from" in b for b in blockers)
+
+    def test_valid_openrouter_fallback_passes(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        reg["openrouter_fallback"] = {
+            "enabled": True,
+            "models": [{"provider_family": "glm", "name": "fake/model", "cost_rank": 1}],
+        }
+
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),
+                _review("glm-1", "glm", "accept"),  # The fallback review has family="glm"
+            ],
+            team_class="t1_critical",
+        )
+        # Legitimate constitution notes
+        dossier["constitution_notes"] = [
+            "openrouter_fallback_active",
+            "openrouter_fallback_for:glm:fake/model",
+        ]
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(), note, pr_head_sha="a" * 40, registry=reg
+        )
+        assert not any("missing_accept_from" in b for b in blockers)
 
     def test_dossier_pr_mismatch_blocks(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
