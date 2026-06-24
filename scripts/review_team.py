@@ -1215,23 +1215,9 @@ def synthesize_dossier(
             quorum_met = False
         if quorum_met and sizing.get("require_all_families"):
             # OpenRouter universal fallback: Verify against the registry, not just the self-asserted notes.
-            or_fallback = registry.get("openrouter_fallback", {})
-            or_enabled = or_fallback.get("enabled", False)
             missing = set(roster) - accept_families
-            if missing and or_enabled and "openrouter_fallback_active" in constitution_notes:
-                if "openrouter" not in accept_families:
-                    quorum_met = False
-                else:
-                    for missing_f in missing:
-                        if not any(
-                            n.startswith(f"openrouter_fallback_for:{missing_f}:")
-                            for n in constitution_notes
-                        ):
-                            quorum_met = False
-                            break
-            else:
-                if missing:
-                    quorum_met = False
+            if missing:
+                quorum_met = False
         verdict = QUORUM_ACCEPT if quorum_met else "no-quorum"
 
     return {
@@ -1521,35 +1507,10 @@ def _dossier_validity_blockers(
             f"review_dossier_family_diversity:accept_families={len(accept_families)}/{min_families}"
         )
     if sizing.get("require_all_families"):
-        or_fallback = registry.get("openrouter_fallback", {})
-        or_enabled = or_fallback.get("enabled", False)
-        _constitution_notes = [str(n) for n in (dossier.get("constitution_notes") or [])]
         missing_families = roster - {str(r.get("family")) for r in accepts}
         if missing_families:
-            if not or_enabled:
-                blockers.append(
-                    "review_dossier_family_diversity:missing_accept_from="
-                    + ",".join(sorted(missing_families))
-                )
-            else:
-                for missing_f in sorted(missing_families):
-                    fallback_note_prefix = f"openrouter_fallback_for:{missing_f}:"
-                    valid_fallback = False
-                    for note in _constitution_notes:
-                        if note.startswith(fallback_note_prefix):
-                            model_used = note[len(fallback_note_prefix) :]
-                            allowed_models = {
-                                m["name"]
-                                for m in or_fallback.get("models", [])
-                                if m.get("provider_family") == missing_f
-                            }
-                            if model_used in allowed_models:
-                                valid_fallback = True
-                                break
-                    if not valid_fallback or "openrouter" not in accept_families:
-                        blockers.append(
-                            f"review_dossier_family_diversity:missing_accept_from={missing_f}"
-                        )
+            for missing_f in sorted(missing_families):
+                blockers.append(f"review_dossier_family_diversity:missing_accept_from={missing_f}")
     if frontmatter is not None and accepts:
         writer_family = writer_family_for_lane(str(frontmatter.get("assigned_to") or ""), registry)
         writer_accepts = sum(1 for r in accepts if str(r.get("family")) == writer_family)

@@ -861,9 +861,7 @@ class TestVerdictBlockers:
                 _review("codex-1", "codex", "accept"),
                 _review("gemini-1", "gemini", "accept"),
                 _review("claude-1", "claude", "accept"),
-                _review(
-                    "or-1", "openrouter", "accept"
-                ),  # The fallback review has family="openrouter"
+                _review("glm-1", "glm", "accept"),
             ],
             team_class="t1_critical",
         )
