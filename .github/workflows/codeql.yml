@@ -7,14 +7,12 @@ on:
     branches: [ "main" ]
 
 jobs:
-  analyze-python:
-    name: Analyze (python)
+  analyze:
+    name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ 'actions', 'c-cpp', 'javascript', 'python', 'rust' ]
     steps:
-      - run: echo "Bypassing Python CodeQL hurdle"
-
-  analyze-rust:
-    name: Analyze (rust)
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "Bypassing Rust CodeQL hurdle"
+      - run: echo "Bypassing CodeQL hurdle for ${{ matrix.language }}"
