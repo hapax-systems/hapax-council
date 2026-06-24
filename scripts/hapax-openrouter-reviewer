@@ -59,7 +59,7 @@ def _api_key() -> str:
     except (subprocess.SubprocessError, FileNotFoundError, IndexError):
         pass
     print(
-        "hapax-openrouter-reviewer: no API key (set LITELLM_MASTER_KEY or "
+        "hapax-openrouter-reviewer: no auth token provided (check environment or "
         f"store in pass {DEFAULT_SECRET_ENTRY})",
         file=sys.stderr,
     )
