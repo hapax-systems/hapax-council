@@ -501,6 +501,58 @@ def test_sdlc_dispatch_starvation_alert_gets_technical_intake():
     assert classification.kind == "sdlc_dispatch_starvation"
 
 
+def test_synthetic_self_test_service_failure_is_not_intake():
+    # Synthetic fixture units (ExecStart=/bin/false) exist only to exercise the
+    # OnFailure -> notify-failure@ -> intake path. They always fail by design, so they
+    # must NOT mint a governed P0 cc-task (it could never reach its exit predicate).
+    classification = classify_notification(
+        "Service Failed: test-rate-limit.service",
+        "systemd OnFailure fired for user unit `test-rate-limit.service`.",
+        priority="urgent",
+        tags=["skull"],
+    )
+
+    assert classification.technical is False
+    assert classification.reason == "synthetic_self_test_unit"
+
+
+def test_synthetic_self_test_unit_variants_are_suppressed():
+    for unit in (
+        "test-rate-limit.service",
+        "selftest-intake.service",
+        "self-test-pipeline.service",
+        "notify-failure-selftest.service",
+        "test-rate-limit@instance.service",
+    ):
+        classification = classify_notification(
+            f"Service Failed: {unit}",
+            f"systemd OnFailure fired for user unit `{unit}`.",
+            priority="urgent",
+            tags=["skull"],
+        )
+        assert classification.technical is False, unit
+        assert classification.reason == "synthetic_self_test_unit", unit
+
+
+def test_real_service_resembling_test_name_still_mints_p0():
+    # The suppression keys on a synthetic PREFIX with a boundary; a genuine unit
+    # whose name merely contains "test" (e.g. an integration-test runner that is real
+    # production work) must still produce governed intake.
+    for unit in (
+        "hapax-integration-tester.service",
+        "testbed-recorder.service",  # "testbed" is not "test" + boundary
+        "latest-snapshot.service",
+    ):
+        classification = classify_notification(
+            f"Service Failed: {unit}",
+            f"systemd OnFailure fired for user unit `{unit}`.",
+            priority="urgent",
+            tags=["skull"],
+        )
+        assert classification.technical is True, unit
+        assert classification.kind == "systemd_service_failed", unit
+
+
 def test_service_failed_cli_records_incident_and_consumes_desktop_by_default(tmp_path):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()

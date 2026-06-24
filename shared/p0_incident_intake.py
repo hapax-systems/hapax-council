@@ -65,6 +65,36 @@ TECHNICAL_TITLE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("Recovery governor fail-open", "recovery_governor_failopen"),
 )
 
+# Synthetic self-test / fixture systemd units exist only to exercise the
+# OnFailure -> notify-failure@ -> p0-incident-intake pipeline. They are designed
+# to ALWAYS fail (e.g. ExecStart=/bin/false) and are not lane-workable recovery
+# work: minting a governed P0 cc-task for them creates a phantom incident that can
+# never reach its exit predicate. Suppress them at classification time so the
+# pipeline can still be exercised without polluting the SDLC intake queue.
+SYNTHETIC_UNIT_RE = re.compile(
+    r"""^
+        (?:                          # any leading namespace prefix is fine
+            test            |        # test-rate-limit.service
+            selftest        |        # selftest-*.service
+            self-test       |
+            notify-failure-selftest
+        )
+        [-_.]                        # boundary so we never match real units
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _is_synthetic_self_test_unit(unit: str) -> bool:
+    """True for synthetic self-test fixture units that must not mint a P0 task."""
+    name = unit.strip()
+    if not name:
+        return False
+    # Compare on the bare unit name (drop any templated instance + .service-style
+    # suffix) so `test-rate-limit.service` and `test-rate-limit@foo.service` match.
+    base = name.rsplit("/", 1)[-1]
+    return bool(SYNTHETIC_UNIT_RE.match(base))
+
 
 @dataclass(frozen=True)
 class IncidentClassification:
@@ -115,6 +145,13 @@ def classify_notification(
         return IncidentClassification("nontechnical", "", False, "technical_false")
 
     kind = _technical_kind(title_s)
+    if kind == "systemd_service_failed":
+        # Synthetic self-test units (e.g. test-rate-limit.service) are designed to
+        # fail on purpose to exercise the notify-failure -> intake path. They are not
+        # recoverable work, so never mint/coalesce a governed P0 cc-task for them.
+        unit = title_s.split(":", 1)[1].strip() if ":" in title_s else ""
+        if _is_synthetic_self_test_unit(unit):
+            return IncidentClassification("nontechnical", "", False, "synthetic_self_test_unit")
     if kind == "sdlc_task_stalled":
         # Self-amplification break: a stalled/blocked AUTO-MINTED incident task
         # (p0-incident-*) must NOT mint another P0 — it would re-enter forever as a
