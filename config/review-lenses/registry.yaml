@@ -148,18 +148,18 @@ lane_families:
     - iota
   default: claude
 
-# OpenRouter universal fallback (operator directive 2026-06-23).
-# When primary families are quota-walled, OpenRouter assembles a non-degraded
-# quorum using the cheapest capable models that span sufficient provider
-# diversity. Each entry maps a primary family to its cheapest OpenRouter-routed
-# substitute (via the LiteLLM gateway). The constitution picks the minimum set
-# that meets the non-degraded capability floor.
+
 # OpenRouter universal fallback (operator directive 2026-06-23).
 # Per-family billing-path fallback: when a primary family is quota-walled,
 # OpenRouter provides the SAME model at the SAME capability tier through
 # independent billing. Apples-to-apples model parity — not cheapest, not
 # degraded. All four review families are available on OpenRouter, so this
 # fallback eliminates degradation entirely when enabled.
+# KILLSWITCH / EMERGENCY BYPASS:
+# If the LiteLLM gateway is compromised, returns garbage, or is otherwise untrusted,
+# set `enabled: false` below. This will force a fail-closed degradation (reducing
+# the team class to t2_standard and requiring post-recovery re-review) rather than
+# routing through OpenRouter.
 openrouter_fallback:
   enabled: true
   reviewer_command: ["scripts/hapax-openrouter-reviewer"]
@@ -174,3 +174,6 @@ openrouter_fallback:
     # glm (direct: glm-5 via Z.ai Coding Plan) → same GLM-5 via OpenRouter
     - name: glm-5-or
       provider_family: glm
+    # gemini (direct: gemini-1.5-pro) → same via OpenRouter
+    - name: gemini-1.5-pro-or
+      provider_family: gemini

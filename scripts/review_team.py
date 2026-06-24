@@ -558,18 +558,12 @@ def constitute_team(
             missing = [f for f in roster if f not in available]
             # OpenRouter universal fallback (operator directive 2026-06-23):
             # when families are outaged but the registry has openrouter_fallback
-            # enabled, substitute outaged seats with the cheapest OpenRouter-
-            # backed models that meet the non-degraded quorum capability floor.
+            # enabled, substitute outaged seats with the equivalent OpenRouter-
+            # backed models to meet the non-degraded quorum capability floor.
             # The team stays at its original class with NO degradation flags.
             or_fallback = registry.get(OPENROUTER_FALLBACK_KEY, {})
             or_enabled = or_fallback.get("enabled", False)
-            or_models = {
-                m["provider_family"]: m["name"]
-                for m in sorted(
-                    or_fallback.get("models", []),
-                    key=lambda m: m.get("cost_rank", 999),
-                )
-            }
+            or_models = {m["provider_family"]: m["name"] for m in or_fallback.get("models", [])}
             or_coverable = (
                 [f for f in missing if f in outage_families and f in or_models]
                 if or_enabled
@@ -577,7 +571,7 @@ def constitute_team(
             )
             if missing and or_enabled and len(or_coverable) == len(missing):
                 # All missing families can be covered by OpenRouter — no degradation.
-                # Each outaged family gets the cheapest capable OpenRouter model.
+                # Each outaged family gets the equivalent capable OpenRouter model.
                 for f in sorted(or_coverable):
                     available.append(f)
                     notes.append(f"openrouter_fallback_for:{f}:{or_models[f]}")
@@ -614,7 +608,7 @@ def constitute_team(
     min_families = int(sizing.get("min_families", 1))
     if not available:
         raise ValueError("no reviewer families available")
-    if len(available) < min_families and "openrouter_fallback_active" not in notes:
+    if len(available) < min_families:
         raise ValueError(
             f"{team_class} requires >={min_families} model families; "
             f"only available: {','.join(available)}"
@@ -1223,10 +1217,21 @@ def synthesize_dossier(
             # OpenRouter universal fallback: Verify against the registry, not just the self-asserted notes.
             or_fallback = registry.get("openrouter_fallback", {})
             or_enabled = or_fallback.get("enabled", False)
-            if or_enabled and "openrouter_fallback_active" in constitution_notes:
-                pass  # OpenRouter covers outaged families — non-degraded by directive and registry
+            missing = set(roster) - accept_families
+            if missing and or_enabled and "openrouter_fallback_active" in constitution_notes:
+                if "openrouter" not in accept_families:
+                    quorum_met = False
+                else:
+                    for missing_f in missing:
+                        if not any(
+                            n.startswith(f"openrouter_fallback_for:{missing_f}:")
+                            for n in constitution_notes
+                        ):
+                            quorum_met = False
+                            break
             else:
-                quorum_met = set(roster) <= accept_families
+                if missing:
+                    quorum_met = False
         verdict = QUORUM_ACCEPT if quorum_met else "no-quorum"
 
     return {
@@ -1541,7 +1546,7 @@ def _dossier_validity_blockers(
                             if model_used in allowed_models:
                                 valid_fallback = True
                                 break
-                    if not valid_fallback:
+                    if not valid_fallback or "openrouter" not in accept_families:
                         blockers.append(
                             f"review_dossier_family_diversity:missing_accept_from={missing_f}"
                         )

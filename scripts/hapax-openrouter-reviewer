@@ -3,7 +3,7 @@
 
 The review dispatcher passes a fully rendered prompt on stdin and expects the
 reviewer reply on stdout. This adapter calls the local LiteLLM gateway which
-routes to OpenRouter-backed models (claude-sonnet-or, deepseek, etc.),
+routes to OpenRouter-backed models (claude-opus-or, deepseek, etc.),
 providing billing-path resilience when direct provider endpoints are
 quota-walled.
 
@@ -26,7 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-DEFAULT_MODEL = "claude-sonnet-or"
+DEFAULT_MODEL = "claude-opus-or"
 DEFAULT_GATEWAY = "http://127.0.0.1:4000/v1/chat/completions"
 PASS_STORE_PATH = "litellm/master-key"
 

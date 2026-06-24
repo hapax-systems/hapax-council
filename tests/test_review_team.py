@@ -861,7 +861,9 @@ class TestVerdictBlockers:
                 _review("codex-1", "codex", "accept"),
                 _review("gemini-1", "gemini", "accept"),
                 _review("claude-1", "claude", "accept"),
-                _review("glm-1", "glm", "accept"),  # The fallback review has family="glm"
+                _review(
+                    "or-1", "openrouter", "accept"
+                ),  # The fallback review has family="openrouter"
             ],
             team_class="t1_critical",
         )
@@ -876,6 +878,37 @@ class TestVerdictBlockers:
             self._frontmatter(), note, pr_head_sha="a" * 40, registry=reg
         )
         assert not any("missing_accept_from" in b for b in blockers)
+
+    def test_openrouter_fallback_missing_accept_fails(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        reg["openrouter_fallback"] = {
+            "enabled": True,
+            "models": [{"provider_family": "glm", "name": "fake/model"}],
+        }
+
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),
+                # openrouter did NOT accept (error or block)
+            ],
+            team_class="t1_critical",
+        )
+        dossier["constitution_notes"] = [
+            "openrouter_fallback_active",
+            "openrouter_fallback_for:glm:fake/model",
+        ]
+        assert dossier["review_team_verdict"] == "no-quorum"
+
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(), note, pr_head_sha="a" * 40, registry=reg
+        )
+        print("BLOCKERS IN MISSING ACCEPT:", blockers)
+        assert any("review_dossier_family_diversity:missing_accept_from=glm" in b for b in blockers)
 
     def test_dossier_pr_mismatch_blocks(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
