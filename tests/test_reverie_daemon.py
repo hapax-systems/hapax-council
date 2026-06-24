@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -113,3 +115,83 @@ async def test_daemon_tick_tolerates_missing_impingement_file(tmp_path: Path):
 
     mock_mixer.tick.assert_awaited_once()
     mock_mixer.dispatch_impingement.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_daemon_stop_interrupts_inter_tick_wait(tmp_path: Path):
+    """stop() must wake the run loop immediately, not park the tick interval.
+
+    Regression for the systemd ``Failed with result 'timeout'`` P0
+    (hapax-reverie.service): SIGTERM only flipped ``self._running`` and the
+    loop then slept the full ``TICK_INTERVAL_S`` before re-checking, so a
+    restart could not exit within ``TimeoutStopSec=10s``. The run loop now
+    waits on an interruptible stop event.
+    """
+    from agents.reverie import __main__ as main_mod
+    from agents.reverie.__main__ import ReverieDaemon
+
+    mock_mixer = MagicMock()
+    mock_mixer.tick = AsyncMock()
+    mock_mixer.dispatch_impingement = MagicMock()
+
+    daemon = ReverieDaemon(
+        impingement_path=tmp_path / "none.jsonl",
+        mixer=mock_mixer,
+        skip_bootstrap=True,
+    )
+    # Force a long inter-tick interval so a non-interruptible sleep would hang
+    # the test well past the assertion deadline.
+    original = main_mod.TICK_INTERVAL_S
+    main_mod.TICK_INTERVAL_S = 30.0
+    try:
+        run_task = asyncio.ensure_future(daemon.run())
+        await asyncio.sleep(0.1)  # let it reach the inter-tick wait
+        t0 = time.monotonic()
+        daemon.stop()
+        await asyncio.wait_for(run_task, timeout=5.0)
+        elapsed = time.monotonic() - t0
+    finally:
+        main_mod.TICK_INTERVAL_S = original
+    assert elapsed < 2.0, f"stop() should wake the loop promptly; took {elapsed:.2f}s"
+
+
+@pytest.mark.asyncio
+async def test_daemon_stop_cancels_in_flight_blocking_tick(tmp_path: Path):
+    """stop() must abort a mid-flight tick so SIGTERM is honored within timeout.
+
+    A reverie tick can block for many seconds on Qdrant round-trips. Before the
+    fix, an in-flight tick was not cancellable, so ``self._running = False`` was
+    only re-checked after the (possibly multi-minute) tick returned and systemd
+    SIGKILLed the unit at the 10s stop deadline. The loop now races each tick
+    against the stop event and cancels the tick on shutdown.
+    """
+    from agents.reverie import __main__ as main_mod
+    from agents.reverie.__main__ import ReverieDaemon
+
+    tick_started = asyncio.Event()
+
+    async def blocking_tick() -> None:
+        tick_started.set()
+        await asyncio.sleep(30.0)  # simulate a long Qdrant-bound tick
+
+    mock_mixer = MagicMock()
+    mock_mixer.tick = AsyncMock(side_effect=blocking_tick)
+    mock_mixer.dispatch_impingement = MagicMock()
+
+    daemon = ReverieDaemon(
+        impingement_path=tmp_path / "none.jsonl",
+        mixer=mock_mixer,
+        skip_bootstrap=True,
+    )
+    original = main_mod.TICK_INTERVAL_S
+    main_mod.TICK_INTERVAL_S = 1.0
+    try:
+        run_task = asyncio.ensure_future(daemon.run())
+        await asyncio.wait_for(tick_started.wait(), timeout=2.0)
+        t0 = time.monotonic()
+        daemon.stop()
+        await asyncio.wait_for(run_task, timeout=5.0)
+        elapsed = time.monotonic() - t0
+    finally:
+        main_mod.TICK_INTERVAL_S = original
+    assert elapsed < 2.0, f"stop() should cancel the in-flight tick promptly; took {elapsed:.2f}s"

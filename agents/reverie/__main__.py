@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import signal
 import time
@@ -44,6 +45,11 @@ class ReverieDaemon:
         # re-populates state, so crash-resume semantics are not needed here.
         self._consumer = ImpingementConsumer(impingement_path, start_at_end=True)
         self._running = True
+        # Shutdown coordination: an asyncio.Event lets a SIGTERM interrupt both
+        # the inter-tick sleep AND an in-flight tick, so the daemon exits well
+        # within systemd's TimeoutStopSec (see run()/_tick_bounded_by_stop).
+        self._stop_event: asyncio.Event | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         # Control law state
         self._cl_errors = 0
         self._cl_ok = 0
@@ -80,14 +86,57 @@ class ReverieDaemon:
         if self._mixer is not None:
             await self._mixer.tick()
 
+    async def _tick_bounded_by_stop(self) -> None:
+        """Run one tick, but abort it promptly if shutdown is requested.
+
+        A reverie tick can block for many seconds — the affordance pipeline
+        does Qdrant round-trips (see F6 note above), and a single tick has
+        been observed to run 5–15 min on a stale backlog. systemd stops the
+        unit with SIGTERM and ``TimeoutStopSec=10s``; if an in-flight tick is
+        not cancellable, the handler's ``self._running = False`` is not
+        re-checked until the tick returns, so the stop times out. systemd then
+        ``State 'stop-sigterm' timed out. Killing`` → ``status=9/KILL`` →
+        ``Failed with result 'timeout'`` → ``Triggering OnFailure=``, which
+        mints a P0 on *every* restart (health-monitor, deploy, or
+        source-activation swap). Racing the tick against the stop event makes
+        shutdown bounded so an ordinary restart is clean, not a failure.
+        """
+        assert self._stop_event is not None
+        tick_task = asyncio.ensure_future(self.tick())
+        stop_task = asyncio.ensure_future(self._stop_event.wait())
+        try:
+            await asyncio.wait({tick_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            if not stop_task.done():
+                stop_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await stop_task
+        if not tick_task.done():
+            # Stop requested mid-tick: cancel it so SIGTERM is honored fast.
+            tick_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await tick_task
+            raise asyncio.CancelledError
+        # Tick finished first: surface its result (and any exception) to the
+        # control-law handling in run().
+        tick_task.result()
+
     async def run(self) -> None:
         """Main loop — never stops unless signalled."""
         global TICK_INTERVAL_S
         log.info("Reverie daemon starting")
         self._last_save = time.monotonic()
+        if self._stop_event is None:
+            self._stop_event = asyncio.Event()
+        self._loop = asyncio.get_running_loop()
         while self._running:
+            if self._stop_event.is_set():
+                break
             try:
-                await self.tick()
+                await self._tick_bounded_by_stop()
+            except asyncio.CancelledError:
+                # Shutdown cancelled an in-flight tick — exit promptly.
+                break
             except Exception:
                 log.exception("Reverie tick failed")
                 publish_health(ControlSignal(component="reverie", reference=1.0, perception=0.0))
@@ -108,7 +157,14 @@ class ReverieDaemon:
                     TICK_INTERVAL_S = self._cl_original_tick
                     self._cl_degraded = False
                     log.info("Control law [reverie]: recovered")
-            await asyncio.sleep(TICK_INTERVAL_S)
+            # Interruptible inter-tick wait: a stop request wakes us at once
+            # instead of parking the full interval in an uninterruptible sleep.
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=TICK_INTERVAL_S)
+            except TimeoutError:
+                pass
+            else:
+                break
         log.info("Reverie daemon stopped")
 
     def _save_exploration_state(self) -> None:
@@ -151,6 +207,18 @@ class ReverieDaemon:
 
     def stop(self) -> None:
         self._running = False
+        # Wake the run loop immediately. The signal handler runs in the main
+        # thread; if the event loop is mid-await we must hop the set() onto the
+        # loop thread-safely so the inter-tick wait / in-flight tick is
+        # interrupted at once rather than parking the full tick interval.
+        stop_event = self._stop_event
+        loop = self._loop
+        if stop_event is not None and loop is not None:
+            try:
+                loop.call_soon_threadsafe(stop_event.set)
+            except RuntimeError:
+                # Loop already closed/closing — nothing left to wake.
+                pass
         # Persist recruitment learning (Thompson sampling + Hebbian associations)
         if self._mixer is not None:
             try:

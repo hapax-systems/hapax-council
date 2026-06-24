@@ -2,7 +2,12 @@
 
 import json
 import tempfile
+import time
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
 
 from agents.reverie.mixer import ReverieMixer
 
@@ -45,6 +50,77 @@ def test_mixer_writes_visual_salience():
         assert data["source"] == "reverie"
         assert data["signals"]["salience"] == 0.6
         assert data["signals"]["content_density"] == 2
+
+
+def test_vetoed_visual_chain_signal_refreshes_liveness(monkeypatch):
+    """Governance veto is degraded liveness, not a dead visual_chain writer."""
+    from agents.reverie import mixer as mixer_mod
+
+    published = []
+
+    def capture(signal):
+        published.append(signal)
+
+    monkeypatch.setattr(mixer_mod, "publish_exploration_signal", capture)
+
+    ReverieMixer._publish_vetoed_visual_chain_signal("governance_veto:health_critical")
+
+    assert len(published) == 1
+    sig = published[0]
+    assert sig.component == "visual_chain"
+    assert sig.max_novelty_edge == "governance_veto:health_critical"
+    assert sig.chronic_error == 1.0
+    assert sig.curiosity_index == 0.0
+    assert sig.boredom_index == 0.0
+
+
+@pytest.mark.asyncio
+async def test_governance_veto_tick_refreshes_visual_chain_liveness(monkeypatch):
+    """The health-critical veto path must still refresh the writer mtime."""
+    from agents.reverie import _uniforms, governance
+    from agents.reverie import mixer as mixer_mod
+
+    mixer = ReverieMixer.__new__(ReverieMixer)
+    mixer._last_tick = time.monotonic()
+    mixer._tick_count = 0
+    mixer._recruited_content_count = 0
+    mixer._satellites = MagicMock()
+    mixer._read_acoustic_impulse = MagicMock(return_value=None)
+    mixer._context = MagicMock(
+        assemble=MagicMock(
+            return_value=SimpleNamespace(
+                stimmung_stance="critical",
+                stimmung_raw={"overall_stance": "critical"},
+                imagination_fragments=[],
+            )
+        )
+    )
+    mixer._pipeline = MagicMock()
+    mixer._veto_chain = MagicMock(
+        evaluate=MagicMock(
+            return_value=SimpleNamespace(
+                allowed=False,
+                denied_by=("health_critical",),
+                axiom_ids=(),
+            )
+        )
+    )
+    mixer._visual_chain = MagicMock()
+    mixer._trace_strength = 0.0
+    mixer._trace_center = (0.5, 0.5)
+    mixer._trace_radius = 0.0
+
+    reasons = []
+    monkeypatch.setattr(governance, "read_consent_phase", lambda: "no_guest")
+    monkeypatch.setattr(_uniforms, "write_uniforms", MagicMock())
+    monkeypatch.setattr(
+        mixer_mod.ReverieMixer, "_publish_vetoed_visual_chain_signal", reasons.append
+    )
+
+    await mixer.tick()
+
+    assert reasons == ["governance_veto:health_critical"]
+    mixer._visual_chain.write_state.assert_called_once()
 
 
 def test_mixer_has_same_interface_as_actuation_loop():
