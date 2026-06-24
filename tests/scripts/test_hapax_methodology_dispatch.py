@@ -360,6 +360,8 @@ def _run(
     durable_mq: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    env.pop("HAPAX_DISPATCH_HOST", None)
+    env.pop("HAPAX_DEFAULT_DISPATCH_HOST", None)
     env["HOME"] = str(tmp_path / "home")
     env["HAPAX_CC_TASK_ROOT"] = str(tmp_path / "tasks")
     env["HAPAX_DISPATCH_WORKTREE"] = str(tmp_path / "worktree")
@@ -699,6 +701,25 @@ def test_blocks_stale_worktree_cc_close_before_launch(tmp_path: Path) -> None:
 
     assert result.returncode == 10
     assert "stale cc-close" in result.stderr
+
+
+def test_blocks_claude_dev_operator_pool_before_worktree_probe(tmp_path: Path) -> None:
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+
+    result = _run(tmp_path, "--task", "governed-build", "--lane", "dev")
+
+    assert result.returncode == 10
+    assert "interactive Claude operator pool" in result.stderr
+    assert "missing cc-claim" not in result.stderr
 
 
 def test_prompt_contains_worktree_local_cc_claim_path(tmp_path: Path) -> None:
