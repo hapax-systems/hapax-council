@@ -551,7 +551,7 @@ def constitute_team(
     out = [f for f in available if f in outage_families]
     available = [f for f in available if f not in outage_families]
     notes = [f"family_unavailable:{f}" for f in roster if f not in available and f not in out]
-    degraded: list[str] = []
+
 
     if team_class == "t1_critical":
         size = int(sizing["team_size_min"])
