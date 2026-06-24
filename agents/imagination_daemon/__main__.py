@@ -241,21 +241,55 @@ class ImaginationDaemon:
         self._running = False
 
 
+def _signal_name(sig: int) -> str:
+    try:
+        return signal.Signals(sig).name
+    except ValueError:
+        return str(sig)
+
+
+def _request_shutdown(
+    *,
+    daemon: ImaginationDaemon,
+    loop: asyncio.AbstractEventLoop,
+    task: asyncio.Task[None],
+    sig: int,
+) -> None:
+    """Request prompt shutdown from a POSIX signal handler.
+
+    The previous SIGTERM path only flipped ``daemon._running``. That is too
+    slow when the daemon is inside an LLM request or a long cadence sleep:
+    systemd's user-manager stop timeout can expire first, mark the unit
+    ``failed``, and fire ``OnFailure=`` even though the service was being
+    intentionally restarted. Cancelling the run task interrupts those awaits.
+    """
+
+    log.info("Imagination daemon received %s; cancelling run task", _signal_name(sig))
+    daemon.stop()
+    if not task.done():
+        loop.call_soon_threadsafe(task.cancel)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s %(message)s")
     daemon = ImaginationDaemon()
 
     loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    task = loop.create_task(daemon.run())
 
     def _handle_signal(sig: int, frame: object) -> None:
-        daemon.stop()
+        _request_shutdown(daemon=daemon, loop=loop, task=task, sig=sig)
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
 
     try:
-        loop.run_until_complete(daemon.run())
+        loop.run_until_complete(task)
+    except asyncio.CancelledError:
+        pass
     finally:
+        loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
 
 
