@@ -580,7 +580,25 @@ def dispatch_reviews(
         diagnostic_output = ""
         diagnostic_stdout = ""
         try:
-            reply = reviewer_runner(seat, family_cfgs[seat.family], prompts[index])
+            # OpenRouter fallback: if this seat's family has an openrouter
+            # substitution in the constitution notes, route through the
+            # openrouter reviewer with the specified gateway model.
+            or_model = None
+            for note in constitution.notes:
+                if note.startswith(f"openrouter_fallback_for:{seat.family}:"):
+                    or_model = note.split(":", 2)[2]
+                    break
+            if or_model and "openrouter" in family_cfgs:
+                import copy as _copy
+
+                or_cfg = _copy.deepcopy(family_cfgs["openrouter"])
+                or_cfg["reviewer_command"] = list(or_cfg["reviewer_command"]) + [
+                    "--model",
+                    or_model,
+                ]
+                reply = reviewer_runner(seat, or_cfg, prompts[index])
+            else:
+                reply = reviewer_runner(seat, family_cfgs[seat.family], prompts[index])
         except ReviewerProcessError as exc:
             LOG.warning("reviewer %s (%s) process failed: %s", seat.id, seat.family, exc)
             reply = ""

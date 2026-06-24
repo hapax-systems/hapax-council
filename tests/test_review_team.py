@@ -338,7 +338,7 @@ class TestConstitution:
         reg = rt.load_lens_registry()
         team = rt.constitute_team("t1_critical", "claude", reg, pr_number=7)
         assert 4 <= len(team.seats) <= 5
-        roster = {entry["family"] for entry in reg["families"]}
+        roster = {entry["family"] for entry in reg["families"] if entry["family"] != "openrouter"}
         assert roster <= {seat.family for seat in team.seats}
 
     def test_t2_team_can_seat_glm_as_independent_family(self) -> None:
@@ -1338,9 +1338,30 @@ class TestFamilyOutageDegradation:
         assert rt.is_quota_wall(self.WALL_2026_06_12, process_failed=True)
         assert rt.is_quota_wall("HTTP 429 Too Many Requests", process_failed=True, model_stdout="")
 
-    def test_t1_degrades_on_evidenced_outage(self) -> None:
+    def test_t1_openrouter_fallback_on_evidenced_outage(self) -> None:
+        """When a family is outaged and OpenRouter can cover it, no degradation."""
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()
+        team = rt.constitute_team(
+            "t1_critical", "codex", reg, pr_number=7, outage_families=frozenset({"claude"})
+        )
+        families = {seat.family for seat in team.seats}
+        # OpenRouter covers claude — it stays in the team, no degradation
+        assert "claude" in families
+        assert "openrouter_fallback_active" in team.notes
+        assert "openrouter_fallback_for:claude:claude-opus-or" in team.notes
+        assert "degraded_to:t2_standard" not in team.notes
+        assert "post_recovery_rereview_required" not in team.notes
+        # quorum stays at T1 level
+        assert team.quorum_required == int(reg["sizing"]["t1_critical"]["quorum_accept"])
+
+    def test_t1_degrades_when_openrouter_disabled(self) -> None:
+        """Without OpenRouter fallback, the old degradation path still works."""
+        import copy
+
+        rt = _load_review_team_module()
+        reg = copy.deepcopy(rt.load_lens_registry())
+        reg.get("openrouter_fallback", {})["enabled"] = False
         team = rt.constitute_team(
             "t1_critical", "codex", reg, pr_number=7, outage_families=frozenset({"claude"})
         )
@@ -1350,7 +1371,6 @@ class TestFamilyOutageDegradation:
         assert "degraded_family_outage:claude" in team.notes
         assert "degraded_to:t2_standard" in team.notes
         assert "post_recovery_rereview_required" in team.notes
-        # degraded quorum is t2's, and reachable with claude gone
         assert team.quorum_required == int(reg["sizing"]["t2_standard"]["quorum_accept"])
 
     def test_t1_still_seals_when_family_missing_without_outage_evidence(self) -> None:
