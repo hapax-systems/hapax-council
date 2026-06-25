@@ -4,6 +4,7 @@ on: pull_request_target
 
 permissions:
   contents: write
+  issues: write
   pull-requests: write
 
 jobs:
@@ -19,6 +20,7 @@ jobs:
 
       - name: Auto-merge minor/patch
         if: steps.metadata.outputs.update-type != 'version-update:semver-major'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh pr merge --auto --squash "${{ github.event.pull_request.html_url }}"
