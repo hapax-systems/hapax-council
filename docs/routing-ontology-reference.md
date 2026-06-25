@@ -171,8 +171,8 @@ Tasks without explicit `route_metadata` get conservative derived metadata via
 ## Demand Vector
 
 For dispatcher-level routing, `build_demand_vector()` projects route metadata
-plus task-specific signals into a 17-dimension `DemandVector` used by the
-policy layer.
+plus task-specific signals into the capacity-dimensional `DemandVector` used by
+the policy layer.
 
 ## Task Dimension Fit Extension
 

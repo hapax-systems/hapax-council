@@ -312,6 +312,16 @@ def test_missing_route_envelope_defaults_fail_closed_without_breaking_flat_metad
     assert envelope.learning_eligibility.local_posterior_update_allowed is False
 
 
+def test_route_envelope_requires_all_consumers_when_explicitly_listed() -> None:
+    payload = {
+        **_explicit_metadata(),
+        "route_envelope": {"consumers": ["primary_dispatch"]},
+    }
+
+    with pytest.raises(ValidationError, match="add all RouteEnvelopeConsumer values"):
+        RouteMetadata.model_validate(payload)
+
+
 def test_low_confidence_classification_can_only_hold_or_shadow() -> None:
     payload = {
         **_explicit_metadata(),

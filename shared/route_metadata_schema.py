@@ -703,7 +703,11 @@ class RouteEnvelope(_RouteModel):
         missing_consumers = REQUIRED_ROUTE_ENVELOPE_CONSUMERS - set(self.consumers)
         if missing_consumers:
             missing = ", ".join(sorted(consumer.value for consumer in missing_consumers))
-            raise ValueError(f"route envelope missing required consumers: {missing}")
+            raise ValueError(
+                "route envelope missing required consumers: "
+                f"{missing}; add all RouteEnvelopeConsumer values or omit consumers "
+                "to use the default"
+            )
         classification = self.classification_envelope
         if classification.confidence < 0.5 and self.admission.admission_action not in {
             RouteAdmissionAction.HOLD,
