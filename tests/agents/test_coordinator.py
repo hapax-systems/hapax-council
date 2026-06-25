@@ -1350,8 +1350,7 @@ class TestDispatchableLaneSelection:
             patch.object(
                 Coordinator,
                 "_dispatch",
-                side_effect=lambda t, lane: dispatched.append((t.task_id, lane.role))
-                or (True, ""),
+                side_effect=lambda t, lane: dispatched.append((t.task_id, lane.role)) or (True, ""),
             ),
             patch.object(Coordinator, "_write_state"),
             patch(
@@ -1387,8 +1386,7 @@ class TestDispatchableLaneSelection:
             patch.object(
                 Coordinator,
                 "_dispatch",
-                side_effect=lambda t, lane: dispatched.append((t.task_id, lane.role))
-                or (True, ""),
+                side_effect=lambda t, lane: dispatched.append((t.task_id, lane.role)) or (True, ""),
             ),
             patch.object(Coordinator, "_write_state"),
             patch(
