@@ -86,7 +86,7 @@ updates:
         patterns:
           - "*"
 
-  - package-ecosystem: "pnpm"
+  - package-ecosystem: "npm"
     directory: "/hapax-logos"
     schedule:
       interval: "weekly"
@@ -98,7 +98,7 @@ updates:
       hapax-logos-prod:
         dependency-type: "production"
 
-  - package-ecosystem: "pnpm"
+  - package-ecosystem: "npm"
     directory: "/obsidian-hapax"
     schedule:
       interval: "weekly"
@@ -110,7 +110,7 @@ updates:
       obsidian-hapax-prod:
         dependency-type: "production"
 
-  - package-ecosystem: "pnpm"
+  - package-ecosystem: "npm"
     directory: "/vscode"
     schedule:
       interval: "weekly"
