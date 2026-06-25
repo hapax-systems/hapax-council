@@ -27,6 +27,7 @@ REQUIRED_ACTION_PATTERNS = (
     "dtolnay/rust-toolchain@*",
     "github/codeql-action/upload-sarif@*",
     "ossf/scorecard-action@*",
+    "oven-sh/setup-bun@*",
     "pnpm/action-setup@*",
     "pypa/gh-action-pypi-publish@*",
     "quarto-dev/quarto-actions/setup@*",
