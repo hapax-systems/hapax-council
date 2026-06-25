@@ -227,6 +227,28 @@ class TavilyAccountUsage(BaseModel):
     paygo_usage: float = 0
     paygo_limit: float = 0
 
+    @field_validator(
+        "usage",
+        "limit",
+        "search_usage",
+        "extract_usage",
+        "crawl_usage",
+        "map_usage",
+        "research_usage",
+        "plan_usage",
+        "plan_limit",
+        "paygo_usage",
+        "paygo_limit",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_nullable_numeric(cls, value: Any) -> Any:
+        if value is None:
+            return 0.0
+        if isinstance(value, str) and not value.strip():
+            return 0.0
+        return value
+
 
 class TavilyUsageResponse(BaseModel):
     """Normalized response for Tavily `/usage`."""
