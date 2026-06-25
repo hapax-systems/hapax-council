@@ -25,6 +25,7 @@ from pathlib import Path
 import yaml
 
 from agents.coordinator.refusal_ledger import DispatchRefusalLedger
+from shared import sdlc_dispatch_guards as dispatch_guards
 from shared.dispatch_service_time import (
     AGE_NORM_S,
     QueueLane,
@@ -1323,45 +1324,20 @@ def _live_headless_launcher(role: str) -> tuple[int, str | None] | None:
     return None
 
 
-COORDINATOR_DISPATCHABLE_PLATFORMS = frozenset({"claude", "codex", "vibe"})
+COORDINATOR_DISPATCHABLE_PLATFORMS = dispatch_guards.COORDINATOR_HEADLESS_DISPATCHABLE_PLATFORMS
+_DISPATCH_CLAIM_GUARD_MARKERS = dispatch_guards.DISPATCH_CLAIM_GUARD_MARKERS
+_DISPATCH_CLOSE_GUARD_MARKERS = dispatch_guards.DISPATCH_CLOSE_GUARD_MARKERS
 
 
 def _dispatch_worktree(role: str, platform: str) -> Path:
-    """Mirror hapax-methodology-dispatch's lane -> worktree mapping.
+    """Resolve through the shared mapping used by hapax-methodology-dispatch.
 
     The coordinator must not advertise a lane as dispatch capacity when the
     dispatcher would immediately fail its worktree-local cc-task tool guard.
     ``HAPAX_DISPATCH_WORKTREE`` overrides the resolved worktree outright;
     ``HAPAX_DISPATCH_PROJECT_ROOT`` overrides the root used for lane mappings.
     """
-    override = os.environ.get("HAPAX_DISPATCH_WORKTREE")
-    if override:
-        return Path(override).expanduser()
-    root = Path(os.environ.get("HAPAX_DISPATCH_PROJECT_ROOT", str(Path.home() / "projects")))
-    if platform == "codex":
-        if role.startswith("cx-"):
-            return root / f"hapax-council--{role}"
-        return root / f"hapax-council--cx-{role}"
-    if platform == "claude":
-        return root / "hapax-council" if role == "alpha" else root / f"hapax-council--{role}"
-    if platform == "vibe":
-        return root / f"hapax-council--{role}"
-    if platform == "antigrav":
-        normalized = "antigrav" if role == "antigravity" else role
-        return root / f"hapax-council--{normalized}"
-    return root / "hapax-council"
-
-
-_DISPATCH_CLAIM_GUARD_MARKERS = (
-    "missing required AuthorityCase/ISAP fields",
-    "authority_case",
-    "parent_spec",
-)
-_DISPATCH_CLOSE_GUARD_MARKERS = (
-    "frontmatter_task_id",
-    "closed_duplicate",
-    "closed task duplicate has task_id",
-)
+    return dispatch_guards.dispatch_worktree(role, platform)
 
 
 def _dispatch_tool_next_action(worktree: Path) -> str:

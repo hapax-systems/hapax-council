@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
-import inspect
 import json
 import os
 import sqlite3
@@ -46,11 +45,11 @@ DISPATCHER_SCRIPT = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
 def _guarded_worktree(path: Path) -> None:
     (path / "scripts").mkdir(parents=True)
     (path / "scripts" / "cc-claim").write_text(
-        "#!/bin/sh\n# missing required AuthorityCase/ISAP fields authority_case parent_spec\n",
+        f"#!/bin/sh\n# {' '.join(_DISPATCH_CLAIM_GUARD_MARKERS)}\n",
         encoding="utf-8",
     )
     (path / "scripts" / "cc-close").write_text(
-        "#!/bin/sh\n# frontmatter_task_id closed_duplicate closed task duplicate has task_id\n",
+        f"#!/bin/sh\n# {' '.join(_DISPATCH_CLOSE_GUARD_MARKERS)}\n",
         encoding="utf-8",
     )
 
@@ -145,19 +144,19 @@ class TestDispatchWorktreeGuard:
 
     def test_dispatch_guard_markers_match_methodology_dispatcher(self):
         dispatcher = _dispatcher_module()
-        claim_source = inspect.getsource(dispatcher.check_worktree_claim_guard)
-        close_source = inspect.getsource(dispatcher.check_worktree_close_guard)
 
-        for marker in _DISPATCH_CLAIM_GUARD_MARKERS:
-            assert marker in claim_source
-        for marker in _DISPATCH_CLOSE_GUARD_MARKERS:
-            assert marker in close_source
+        assert tuple(_DISPATCH_CLAIM_GUARD_MARKERS) == tuple(
+            dispatcher.DISPATCH_CLAIM_GUARD_MARKERS
+        )
+        assert tuple(_DISPATCH_CLOSE_GUARD_MARKERS) == tuple(
+            dispatcher.DISPATCH_CLOSE_GUARD_MARKERS
+        )
 
     def test_dispatch_tool_blocker_reports_missing_close_with_next_action(self, tmp_path: Path):
         worktree = tmp_path / "projects" / "hapax-council--beta"
         (worktree / "scripts").mkdir(parents=True)
         (worktree / "scripts" / "cc-claim").write_text(
-            "#!/bin/sh\n# missing required AuthorityCase/ISAP fields authority_case parent_spec\n",
+            f"#!/bin/sh\n# {' '.join(_DISPATCH_CLAIM_GUARD_MARKERS)}\n",
             encoding="utf-8",
         )
 

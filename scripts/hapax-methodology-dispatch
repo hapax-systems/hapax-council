@@ -57,6 +57,11 @@ from shared.failure_classification import FailureCode, FailureReceipt
 from shared.frontmatter import parse_frontmatter as parse_document_frontmatter
 from shared.quota_wall import QUOTA_WALL_EXIT_CODE
 from shared.route_metadata_schema import assess_route_metadata
+from shared.sdlc_dispatch_guards import (
+    DISPATCH_CLAIM_GUARD_MARKERS,
+    DISPATCH_CLOSE_GUARD_MARKERS,
+    dispatch_worktree,
+)
 from shared.sdlc_lifecycle import TASK_DISPATCHABLE_STATUSES
 from shared.sdlc_pressure_gate import (
     AdmissionDecision,
@@ -525,22 +530,7 @@ def resolve_declared_path(raw: str | list[str] | None, *, base: Path) -> Path | 
 
 
 def lane_worktree(lane: str, platform: str) -> Path:
-    override = os.environ.get("HAPAX_DISPATCH_WORKTREE")
-    if override:
-        return Path(override).expanduser()
-    root = Path(os.environ.get("HAPAX_DISPATCH_PROJECT_ROOT", str(Path.home() / "projects")))
-    if platform == "codex":
-        if lane.startswith("cx-"):
-            return root / f"hapax-council--{lane}"
-        return root / f"hapax-council--cx-{lane}"
-    if platform == "claude":
-        return root / "hapax-council" if lane == "alpha" else root / f"hapax-council--{lane}"
-    if platform == "vibe":
-        return root / f"hapax-council--{lane}"
-    if platform == "antigrav":
-        normalized = "antigrav" if lane == "antigravity" else lane
-        return root / f"hapax-council--{normalized}"
-    return root / "hapax-council"
+    return dispatch_worktree(lane, platform)
 
 
 # --- capability-gated SYSTEM drain of an orphaned dead-lane task --------------
@@ -767,11 +757,7 @@ def check_worktree_claim_guard(worktree: Path) -> tuple[bool, str]:
     if not script.is_file():
         return False, f"missing cc-claim at {script}"
     text = script.read_text(encoding="utf-8", errors="replace")
-    required = [
-        "missing required AuthorityCase/ISAP fields",
-        "authority_case",
-        "parent_spec",
-    ]
+    required = DISPATCH_CLAIM_GUARD_MARKERS
     missing = [needle for needle in required if needle not in text]
     if missing:
         return False, f"stale cc-claim in {worktree}: missing {', '.join(missing)}"
@@ -783,11 +769,7 @@ def check_worktree_close_guard(worktree: Path) -> tuple[bool, str]:
     if not script.is_file():
         return False, f"missing cc-close at {script}"
     text = script.read_text(encoding="utf-8", errors="replace")
-    required = [
-        "frontmatter_task_id",
-        "closed_duplicate",
-        "closed task duplicate has task_id",
-    ]
+    required = DISPATCH_CLOSE_GUARD_MARKERS
     missing = [needle for needle in required if needle not in text]
     if missing:
         return False, f"stale cc-close in {worktree}: missing {', '.join(missing)}"
