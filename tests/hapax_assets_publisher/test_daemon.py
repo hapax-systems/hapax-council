@@ -18,35 +18,35 @@ class TestNormalizeRemote:
     """Both schemes for the same repo must normalize to the same string."""
 
     def test_ssh_and_https_match_for_same_repo(self) -> None:
-        ssh = _normalize_remote("git@github.com:ryanklee/hapax-assets.git")
-        https = _normalize_remote("https://github.com/ryanklee/hapax-assets.git")
+        ssh = _normalize_remote("git@github.com:hapax-systems/hapax-assets.git")
+        https = _normalize_remote("https://github.com/hapax-systems/hapax-assets.git")
         assert ssh == https
-        assert ssh == "github.com/ryanklee/hapax-assets"
+        assert ssh == "github.com/hapax-systems/hapax-assets"
 
     def test_http_and_https_match(self) -> None:
         assert _normalize_remote(
-            "https://github.com/ryanklee/hapax-assets.git"
-        ) == _normalize_remote("http://github.com/ryanklee/hapax-assets.git")
+            "https://github.com/hapax-systems/hapax-assets.git"
+        ) == _normalize_remote("http://github.com/hapax-systems/hapax-assets.git")
 
     def test_ssh_url_form_matches_short_ssh(self) -> None:
         assert _normalize_remote(
-            "ssh://git@github.com/ryanklee/hapax-assets.git"
-        ) == _normalize_remote("git@github.com:ryanklee/hapax-assets.git")
+            "ssh://git@github.com/hapax-systems/hapax-assets.git"
+        ) == _normalize_remote("git@github.com:hapax-systems/hapax-assets.git")
 
     def test_trailing_dot_git_optional(self) -> None:
-        assert _normalize_remote("https://github.com/ryanklee/hapax-assets") == _normalize_remote(
-            "https://github.com/ryanklee/hapax-assets.git"
-        )
+        assert _normalize_remote(
+            "https://github.com/hapax-systems/hapax-assets"
+        ) == _normalize_remote("https://github.com/hapax-systems/hapax-assets.git")
 
     def test_whitespace_stripped(self) -> None:
         assert (
-            _normalize_remote("  https://github.com/ryanklee/hapax-assets.git\n")
-            == "github.com/ryanklee/hapax-assets"
+            _normalize_remote("  https://github.com/hapax-systems/hapax-assets.git\n")
+            == "github.com/hapax-systems/hapax-assets"
         )
 
     def test_different_repos_do_not_match(self) -> None:
         assert _normalize_remote(
-            "https://github.com/ryanklee/hapax-assets.git"
+            "https://github.com/hapax-systems/hapax-assets.git"
         ) != _normalize_remote("https://github.com/ryanklee/hapax-council.git")
 
     def test_unknown_scheme_returns_input_minus_dot_git(self) -> None:
@@ -60,16 +60,16 @@ class TestNormalizeRemote:
     "url_a,url_b",
     [
         (
-            "git@github.com:ryanklee/hapax-assets.git",
-            "https://github.com/ryanklee/hapax-assets",
+            "git@github.com:hapax-systems/hapax-assets.git",
+            "https://github.com/hapax-systems/hapax-assets",
         ),
         (
-            "https://github.com/ryanklee/hapax-assets.git",
-            "git@github.com:ryanklee/hapax-assets",
+            "https://github.com/hapax-systems/hapax-assets.git",
+            "git@github.com:hapax-systems/hapax-assets",
         ),
         (
-            "ssh://git@github.com/ryanklee/hapax-assets",
-            "https://github.com/ryanklee/hapax-assets.git",
+            "ssh://git@github.com/hapax-systems/hapax-assets",
+            "https://github.com/hapax-systems/hapax-assets.git",
         ),
     ],
 )

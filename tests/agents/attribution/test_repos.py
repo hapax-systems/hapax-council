@@ -26,8 +26,8 @@ class TestHapaxRepos:
 
     def test_all_repos_have_github_urls(self) -> None:
         for repo in HAPAX_REPOS:
-            assert repo.git_url.startswith("https://github.com/ryanklee/"), (
-                f"{repo.slug} git_url should be ryanklee/<slug> form"
+            assert repo.git_url.startswith("https://github.com/hapax-systems/"), (
+                f"{repo.slug} git_url should be hapax-systems/<slug> form"
             )
 
     def test_slugs_are_unique(self) -> None:

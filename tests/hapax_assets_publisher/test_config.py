@@ -12,7 +12,7 @@ from agents.hapax_assets_publisher.config import PublisherConfig
 class TestPublisherConfig:
     def test_defaults(self) -> None:
         cfg = PublisherConfig()
-        assert cfg.remote_url == "git@github.com:ryanklee/hapax-assets.git"
+        assert cfg.remote_url == "git@github.com:hapax-systems/hapax-assets.git"
         assert cfg.branch == "main"
         assert cfg.min_push_interval_sec == 30
         assert cfg.source_dir.name == "aesthetic-library"
