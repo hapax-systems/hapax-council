@@ -423,7 +423,12 @@ class BenchmarkGap(_RouteModel):
                 self.exposes_llm_failure_mode,
             )
         ):
-            raise ValueError("public benchmark candidates must satisfy all five criteria")
+            raise ValueError(
+                "public benchmark candidates must satisfy all five criteria; next action: "
+                "set meaningful_sdlc_slice, public_benchmarks_absent_or_stale, "
+                "hapax_operational_value, external_utility, and exposes_llm_failure_mode "
+                "or set public_candidate=false"
+            )
         if not self.evidence_refs:
             raise ValueError("public benchmark candidates require evidence_refs")
         return self

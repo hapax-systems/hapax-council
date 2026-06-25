@@ -461,7 +461,7 @@ def test_benchmark_gap_and_public_projection_round_trip_through_demand_vector() 
     (
         (
             {"meaningful_sdlc_slice": False},
-            "public benchmark candidates must satisfy all five criteria",
+            "public benchmark candidates must satisfy all five criteria; next action:",
         ),
         (
             {"evidence_refs": []},
