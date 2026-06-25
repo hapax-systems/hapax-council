@@ -576,6 +576,23 @@ class RouteEligibility(_RouteModel):
         return _coerce_string_list(value)
 
 
+def _route_admission_disqualifiers_from_eligibility(
+    eligibility: RouteEligibility,
+) -> list[str]:
+    disqualifiers: list[str] = []
+    for field_name in (
+        "authority_allowed",
+        "privacy_allowed",
+        "freshness_ok",
+        "quality_floor_satisfied",
+        "required_tools_available",
+        "budget_allowed",
+    ):
+        if not getattr(eligibility, field_name):
+            disqualifiers.append(f"eligibility_not_satisfied:{field_name}")
+    return disqualifiers
+
+
 class RouteAdmission(_RouteModel):
     admission_action: RouteAdmissionAction = RouteAdmissionAction.HOLD
     wip_state: str = "unknown"
@@ -700,9 +717,12 @@ class RouteEnvelope(_RouteModel):
             raise ValueError("stale or missing classification cannot route")
         if self.admission.admission_action is RouteAdmissionAction.ROUTE:
             route_disqualifiers = _route_admission_disqualifiers_from_classification(classification)
+            route_disqualifiers.extend(
+                _route_admission_disqualifiers_from_eligibility(self.eligibility)
+            )
             if route_disqualifiers:
                 raise ValueError(
-                    "route admission requires authoritative classification evidence: "
+                    "route admission requires authoritative classification and eligibility evidence: "
                     + ", ".join(route_disqualifiers)
                 )
         if self.public_release_projection.public_projection_forbidden and (

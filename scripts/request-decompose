@@ -613,6 +613,8 @@ def _coerce_llm_task(
             "requirement_vector_validity_mask",
             raw_task.get("validity_mask", {}),
         ),
+        "route_envelope": raw_task.get("route_envelope"),
+        "task_demand": raw_task.get("task_demand", {}),
     }
 
 
@@ -803,6 +805,8 @@ def _decompose_with_llm(request_data: dict) -> RequestDecomposition | None:
                     requirement_vector=normalized["requirement_vector"],
                     composition_tolerance=normalized["composition_tolerance"],
                     requirement_vector_validity_mask=normalized["requirement_vector_validity_mask"],
+                    route_envelope=normalized["route_envelope"],
+                    task_demand=normalized["task_demand"],
                 )
             )
 

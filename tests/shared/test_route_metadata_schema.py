@@ -86,6 +86,20 @@ def _valid_classification_payload(**overrides: object) -> dict[str, object]:
     return payload
 
 
+def _valid_route_eligibility_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "authority_allowed": True,
+        "privacy_allowed": True,
+        "freshness_ok": True,
+        "quality_floor_satisfied": True,
+        "required_tools_available": True,
+        "budget_allowed": True,
+        "reason_codes": ["eligibility_witnessed"],
+    }
+    payload.update(overrides)
+    return payload
+
+
 def test_full_explicit_route_metadata_validates() -> None:
     metadata = validate_route_metadata(_explicit_metadata())
 
@@ -318,6 +332,23 @@ def test_low_confidence_classification_can_only_hold_or_shadow() -> None:
     assert metadata.route_envelope.admission.admission_action is RouteAdmissionAction.SHADOW
 
 
+def test_route_admission_requires_explicit_eligibility_evidence() -> None:
+    payload = {
+        **_explicit_metadata(),
+        "route_envelope": {
+            "classification_envelope": _valid_classification_payload(),
+            "admission": {"admission_action": "route", "reason_codes": ["fresh"]},
+        },
+    }
+
+    with pytest.raises(ValidationError, match="eligibility_not_satisfied:authority_allowed"):
+        RouteMetadata.model_validate(payload)
+
+    payload["route_envelope"]["eligibility"] = _valid_route_eligibility_payload()  # type: ignore[index]
+    metadata = RouteMetadata.model_validate(payload)
+    assert metadata.route_envelope.admission.admission_action is RouteAdmissionAction.ROUTE
+
+
 def test_high_confidence_classification_requires_justifying_evidence() -> None:
     with pytest.raises(ValidationError, match="high-confidence classification"):
         ClassificationEnvelope.model_validate(
@@ -349,6 +380,7 @@ def test_benchmark_gap_and_public_projection_round_trip_through_demand_vector() 
             "authority_case": "CASE-TEST-001",
             "route_envelope": {
                 "classification_envelope": _valid_classification_payload(),
+                "eligibility": _valid_route_eligibility_payload(),
                 "admission": {"admission_action": "route", "reason_codes": ["fresh"]},
                 "benchmark_gap": {
                     "coverage": {
@@ -388,6 +420,7 @@ def test_forbidden_public_projection_blocks_learning_even_without_public_action_
         **_explicit_metadata(),
         "route_envelope": {
             "classification_envelope": _valid_classification_payload(),
+            "eligibility": _valid_route_eligibility_payload(),
             "admission": {"admission_action": "route", "reason_codes": ["fresh"]},
             "public_release_projection": {"projection_state": "forbidden"},
             "learning_eligibility": {
@@ -432,6 +465,7 @@ def test_explicit_learning_updates_must_match_classification_provenance(
         **_explicit_metadata(),
         "route_envelope": {
             "classification_envelope": _valid_classification_payload(**classification_overrides),
+            "eligibility": _valid_route_eligibility_payload(),
             "admission": {"admission_action": admission_action, "reason_codes": ["fresh"]},
             "public_release_projection": {"projection_state": "internal_only"},
             "learning_eligibility": {
@@ -461,6 +495,7 @@ def test_route_admission_rejects_support_only_hkp_classification_without_learnin
                 source_kind="hkp_cache",
                 authority_ceiling="support_only",
             ),
+            "eligibility": _valid_route_eligibility_payload(),
             "admission": {"admission_action": "route", "reason_codes": ["fresh"]},
         },
     }

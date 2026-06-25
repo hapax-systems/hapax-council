@@ -72,6 +72,15 @@ def _route_envelope(**classification_overrides: object) -> dict[str, object]:
     classification.update(classification_overrides)
     return {
         "classification_envelope": classification,
+        "eligibility": {
+            "authority_allowed": True,
+            "privacy_allowed": True,
+            "freshness_ok": True,
+            "quality_floor_satisfied": True,
+            "required_tools_available": True,
+            "budget_allowed": True,
+            "reason_codes": ["eligibility_witnessed"],
+        },
         "admission": {"admission_action": "route", "reason_codes": ["fresh"]},
     }
 
@@ -1231,6 +1240,52 @@ planning_case: CASE-TEST-001
         assert "routing_class" in script.DECOMPOSITION_PROMPT
         assert "requirement_vector" in script.DECOMPOSITION_PROMPT
         assert "requirement_vector_validity_mask" in script.DECOMPOSITION_PROMPT
+
+    def test_decomposition_carries_llm_route_envelope_and_task_demand(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+
+        def completion(**_kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps(
+                                {
+                                    "tasks": [
+                                        {
+                                            "task_id": "req-test-route-aware",
+                                            "title": "Build route-aware task",
+                                            "kind": "build",
+                                            "routing_class": "source_python",
+                                            "requirement_vector": _requirement_vector(),
+                                            "requirement_vector_validity_mask": _validity_mask(),
+                                            "route_envelope": _route_envelope(),
+                                            "task_demand": {"fixed_route_overhead_sensitivity": 5},
+                                            "acceptance_criteria": [
+                                                "Route envelope and demand survive normalization."
+                                            ],
+                                        }
+                                    ]
+                                }
+                            )
+                        )
+                    )
+                ]
+            )
+
+        monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(completion=completion))
+
+        request_data = self._request_data(
+            tmp_path,
+            {"status": "accepted_for_planning", "planning_case": "CASE-REAL-001"},
+        )
+        decomp = script._decompose_with_llm(request_data)
+
+        assert decomp is not None
+        task = decomp.tasks[0]
+        assert task.route_envelope is not None
+        assert task.route_envelope.classification_envelope.label == "source_python"
+        assert task.task_demand["fixed_route_overhead_sensitivity"] == 5
 
     def test_decomposition_parses_taxonomy_held_set(self, tmp_path, monkeypatch):
         script = _load_request_decompose_module()
