@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import builtins
 from unittest.mock import MagicMock, patch
 
 from pydantic import BaseModel
 
+import shared.context_compression as context_compression
 from shared.context_compression import compress_history, to_toon
 
 
@@ -137,6 +139,32 @@ class TestCompressHistory:
 
         result = compress_history(messages, keep_recent=2)
         assert result == messages
+
+    def test_missing_llmlingua_dependency_returns_original(self, monkeypatch):
+        monkeypatch.setattr(context_compression, "_compressor", None)
+        monkeypatch.setattr(context_compression, "_compressor_load_attempted", False)
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "llmlingua":
+                raise ModuleNotFoundError("No module named 'llmlingua'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+        messages = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "1"},
+            {"role": "assistant", "content": "2"},
+            {"role": "user", "content": "3"},
+            {"role": "assistant", "content": "4"},
+            {"role": "user", "content": "5"},
+            {"role": "assistant", "content": "6"},
+        ]
+
+        result = compress_history(messages, keep_recent=2)
+        assert result == messages
+        assert context_compression._compressor_load_attempted is True
 
     @patch("shared.context_compression._get_compressor")
     def test_compression_failure_returns_original(self, mock_get):
