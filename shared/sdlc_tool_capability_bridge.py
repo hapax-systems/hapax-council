@@ -169,7 +169,7 @@ class SdlcRouteSupplyFact(BridgeModel):
 
     @model_validator(mode="after")
     def _satisfying_fact_obeys_role_gates(self) -> Self:
-        if self.supplied_evidence_only:
+        if self.role is RouteSupplyRole.SUPPLIED_EVIDENCE_RECALL or self.supplied_evidence_only:
             if self.fresh_current_world_evidence_allowed or self.public_claim_evidence_allowed:
                 raise ValueError("supplied-evidence recall cannot satisfy fresh/public claims")
 
@@ -258,6 +258,12 @@ def assess_sdlc_route_supply(
 
     if not fact.can_satisfy_required_demands:
         reason_codes.extend(["supply_fact_held", *fact.blocking_reasons])
+
+    if fact.role is RouteSupplyRole.SUPPLIED_EVIDENCE_RECALL:
+        if demand.requires_fresh_current_world_evidence:
+            reason_codes.append("supplied_evidence_recall_not_fresh_current_world_evidence")
+        if demand.requires_public_claim_evidence:
+            reason_codes.append("supplied_evidence_recall_not_public_claim_evidence")
 
     if demand.requires_fresh_current_world_evidence:
         if not fact.fresh_current_world_evidence_allowed:

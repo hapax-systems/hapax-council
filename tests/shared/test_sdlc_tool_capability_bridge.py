@@ -147,6 +147,46 @@ def test_supplied_evidence_recall_cannot_satisfy_current_world_or_public_claims(
     assert "source_acquisition_capability_absent" in assessment.reason_codes
     assert "supplied_evidence_not_public_claim_evidence" in assessment.reason_codes
 
+    malformed_payload = supplied.model_dump(mode="python")
+    malformed_payload.update(
+        {
+            "supplied_evidence_only": False,
+            "source_acquisition_capable": True,
+            "source_acquisition_evidence_refs": ("test:malformed-source-evidence",),
+            "fresh_current_world_evidence_allowed": True,
+            "public_claim_evidence_allowed": True,
+            "public_claim_outcome_refs": ("test:malformed-public-claim",),
+            "can_satisfy_required_demands": True,
+        }
+    )
+    with pytest.raises(
+        ValidationError,
+        match="supplied-evidence recall cannot satisfy fresh/public claims",
+    ):
+        SdlcRouteSupplyFact.model_validate(malformed_payload)
+
+    malformed = supplied.model_copy(update=malformed_payload)
+    malformed_assessment = malformed.assess(
+        SdlcRouteDemand(
+            role=RouteSupplyRole.SUPPLIED_EVIDENCE_RECALL,
+            source_grounding_need=SourceGroundingNeed.WEB_CURRENT,
+            requires_public_claim_evidence=True,
+        )
+    )
+
+    assert malformed.supplied_evidence_only is False
+    assert malformed.fresh_current_world_evidence_allowed is True
+    assert malformed.public_claim_evidence_allowed is True
+    assert malformed_assessment.satisfies is False
+    assert (
+        "supplied_evidence_recall_not_fresh_current_world_evidence"
+        in malformed_assessment.reason_codes
+    )
+    assert (
+        "supplied_evidence_recall_not_public_claim_evidence"
+        in malformed_assessment.reason_codes
+    )
+
 
 def test_publication_egress_remains_held_without_authority_evidence_and_receipts() -> None:
     facts = project_sdlc_route_supply_facts(include_inventory_rows=False)
