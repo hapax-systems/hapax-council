@@ -715,11 +715,12 @@ def test_blocks_claude_dev_operator_pool_before_worktree_probe(tmp_path: Path) -
         """,
     )
 
-    result = _run(tmp_path, "--task", "governed-build", "--lane", "dev")
+    for lane in ("dev", "dev1"):
+        result = _run(tmp_path, "--task", "governed-build", "--lane", lane)
 
-    assert result.returncode == 10
-    assert "interactive Claude operator pool" in result.stderr
-    assert "missing cc-claim" not in result.stderr
+        assert result.returncode == 10
+        assert "interactive Claude operator pool" in result.stderr
+        assert "missing cc-claim" not in result.stderr
 
 
 def test_prompt_contains_worktree_local_cc_claim_path(tmp_path: Path) -> None:
