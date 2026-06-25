@@ -23,6 +23,7 @@ from agents.coordinator.core import (
     _dispatch_landed,
     _effective_platform_suitability,
     _headless_task_from_argv,
+    _lane_from_tmux_session,
     _lane_to_dict,
     _live_headless_launcher,
     _parse_task,
@@ -267,6 +268,7 @@ current_claim: null
 
         with (
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", tmp_path / ".cache/hapax"),
             patch("pathlib.Path.home", return_value=tmp_path),
         ):
             state = _check_lane(
@@ -299,6 +301,7 @@ current_claim: relay-task
 
         with (
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", claim_dir),
             patch("pathlib.Path.home", return_value=tmp_path),
         ):
             state = _check_lane(
@@ -684,7 +687,13 @@ retired_reason: clean exit
         completed = subprocess.CompletedProcess(
             args=["tmux"],
             returncode=0,
-            stdout="hapax-claude-alpha\nhapax-codex-cx-red\nwork\n",
+            stdout=(
+                "hapax-claude-alpha\n"
+                "hapax-claude-dev\n"
+                "hapax-claude-dev2\n"
+                "hapax-codex-cx-red\n"
+                "work\n"
+            ),
             stderr="",
         )
 
@@ -714,6 +723,10 @@ retired_reason: clean exit
         assert lanes["alpha"].platform == "claude"
         assert lanes["cx-red"].alive is True
         assert lanes["cx-red"].platform == "codex"
+        assert "dev" not in lanes
+        assert "dev2" not in lanes
+        assert _lane_from_tmux_session("hapax-claude-dev") is None
+        assert _lane_from_tmux_session("hapax-claude-dev2") is None
 
     def test_pid_backed_headless_lane_is_discovered_with_existing_tmux_sessions(
         self, tmp_path: Path

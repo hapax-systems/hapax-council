@@ -408,6 +408,13 @@ def lane_worktree(lane: str, platform: str) -> Path:
     return root / "hapax-council"
 
 
+def is_claude_operator_pool_lane(lane: str, platform: str | None) -> bool:
+    """True for interactive `hapax-claude dev*` sessions, which are not dispatch lanes."""
+    lane = strip_scalar(str(lane)).strip()
+    platform_name = strip_scalar(str(platform or "")).strip().lower()
+    return platform_name == "claude" and re.fullmatch(r"dev[0-9]*", lane) is not None
+
+
 # --- capability-gated SYSTEM drain of an orphaned dead-lane task --------------
 # (dn-validate-task-relax; CASE-SDLC-REFORM-001). A narrow, ADDITIVE admit edge:
 # the reserved __system__ actor may advance an orphaned pr_open/claimed/in_progress
@@ -911,6 +918,14 @@ def validate_task(
             status=status,
             assigned_to=assigned_to,
             capability_path=dispatch_capability_path,
+        )
+
+    if is_claude_operator_pool_lane(lane, platform):
+        return Validation(
+            False,
+            f"lane {lane!r} is an interactive Claude operator pool, not a governed "
+            "dispatch lane; use a supervised Claude lane or a Codex cx-* lane",
+            task,
         )
 
     if status not in TASK_DISPATCHABLE_STATUSES:
