@@ -26,8 +26,6 @@ def test_no_first_party_nltk_data_load_usage():
 
 def test_no_first_party_torch_jit_usage():
     offenders = [
-        str(path)
-        for path in _source_files()
-        if "torch.jit" in path.read_text(encoding="utf-8")
+        str(path) for path in _source_files() if "torch.jit" in path.read_text(encoding="utf-8")
     ]
     assert offenders == []
