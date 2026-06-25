@@ -961,7 +961,11 @@ class RouteMetadataAssessment(_RouteModel):
 
     @property
     def dispatchable(self) -> bool:
-        return self.status in {RouteMetadataStatus.EXPLICIT, RouteMetadataStatus.DERIVED}
+        return (
+            self.status in {RouteMetadataStatus.EXPLICIT, RouteMetadataStatus.DERIVED}
+            and self.metadata is not None
+            and not _route_envelope_dispatch_hold_reasons(self.metadata)
+        )
 
     def planning_status(self) -> dict[str, object]:
         metadata = self.metadata
@@ -1065,6 +1069,7 @@ def assess_route_metadata(frontmatter: Mapping[str, Any]) -> RouteMetadataAssess
     return RouteMetadataAssessment(
         status=RouteMetadataStatus.DERIVED,
         metadata=metadata,
+        hold_reasons=_route_envelope_dispatch_hold_reasons(metadata),
         derived_fields=derived_fields,
     )
 
@@ -1101,6 +1106,16 @@ def build_demand_vector(
                     *assessment.validation_errors,
                 ]
             )
+        )
+    if not assessment.dispatchable:
+        reasons = [
+            *assessment.hold_reasons,
+            *assessment.missing_fields,
+            *assessment.validation_errors,
+        ]
+        raise ValueError(
+            "cannot build demand vector for non-dispatchable route metadata: "
+            + ", ".join(reasons or [assessment.status.value])
         )
 
     metadata = assessment.metadata
@@ -1499,7 +1514,21 @@ def _assess_explicit_route_metadata(frontmatter: Mapping[str, Any]) -> RouteMeta
             validation_errors=_validation_error_messages(exc),
             missing_fields=missing_fields,
         )
-    return RouteMetadataAssessment(status=RouteMetadataStatus.EXPLICIT, metadata=metadata)
+    return RouteMetadataAssessment(
+        status=RouteMetadataStatus.EXPLICIT,
+        metadata=metadata,
+        hold_reasons=_route_envelope_dispatch_hold_reasons(metadata),
+    )
+
+
+def _route_envelope_dispatch_hold_reasons(metadata: RouteMetadata) -> list[str]:
+    admission = metadata.route_envelope.admission
+    if admission.admission_action is RouteAdmissionAction.ROUTE:
+        return []
+    reasons = list(admission.reason_codes)
+    if not reasons:
+        reasons.append(f"route_envelope_not_route:{admission.admission_action.value}")
+    return list(dict.fromkeys(reasons))
 
 
 def _derive_quality_floor(frontmatter: Mapping[str, Any]) -> QualityFloor | None:

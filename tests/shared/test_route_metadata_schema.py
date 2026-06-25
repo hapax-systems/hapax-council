@@ -104,6 +104,20 @@ def _valid_route_eligibility_payload(**overrides: object) -> dict[str, object]:
     return payload
 
 
+def _valid_route_envelope_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "classification_envelope": _valid_classification_payload(),
+        "eligibility": _valid_route_eligibility_payload(),
+        "admission": {"admission_action": "route", "reason_codes": ["fresh"]},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _dispatchable_metadata() -> dict[str, object]:
+    return {**_explicit_metadata(), "route_envelope": _valid_route_envelope_payload()}
+
+
 def test_full_explicit_route_metadata_validates() -> None:
     metadata = validate_route_metadata(_explicit_metadata())
 
@@ -315,6 +329,21 @@ def test_missing_route_envelope_defaults_fail_closed_without_breaking_flat_metad
     assert envelope.learning_eligibility.thompson_update_allowed is False
     assert envelope.learning_eligibility.local_posterior_update_allowed is False
 
+    assessment = assess_route_metadata(_explicit_metadata())
+    assert assessment.status is RouteMetadataStatus.EXPLICIT
+    assert assessment.dispatchable is False
+    assert "route_envelope_missing" in assessment.hold_reasons
+    assert assessment.planning_status()["dispatchable"] is False
+
+    with pytest.raises(ValueError, match="route_envelope_missing"):
+        build_demand_vector(
+            {
+                **_explicit_metadata(),
+                "task_id": "flat-metadata",
+                "authority_case": "CASE-TEST-001",
+            }
+        )
+
 
 def test_route_envelope_requires_all_consumers_when_explicitly_listed() -> None:
     payload = {
@@ -393,9 +422,7 @@ def test_benchmark_gap_and_public_projection_round_trip_through_demand_vector() 
             "task_id": "benchmark-public-projection",
             "authority_case": "CASE-TEST-001",
             "route_envelope": {
-                "classification_envelope": _valid_classification_payload(),
-                "eligibility": _valid_route_eligibility_payload(),
-                "admission": {"admission_action": "route", "reason_codes": ["fresh"]},
+                **_valid_route_envelope_payload(),
                 "benchmark_gap": {
                     "coverage": {
                         "coverage_state": "absent",
@@ -730,7 +757,7 @@ def test_demand_vector_hashes_frontmatter_and_source_refs(tmp_path) -> None:
     parent_spec.write_text("---\ncase_id: CASE-TEST-001\n---\n", encoding="utf-8")
     task_note.write_text("---\ntask_id: source-task\n---\n", encoding="utf-8")
     frontmatter = {
-        **_explicit_metadata(),
+        **_dispatchable_metadata(),
         "task_id": "source-task",
         "authority_case": "CASE-TEST-001",
         "parent_spec": str(parent_spec),
@@ -752,7 +779,7 @@ def test_demand_vector_freshness_stales_when_frontmatter_changes(tmp_path) -> No
     task_note = tmp_path / "task.md"
     task_note.write_text("---\ntask_id: source-task\n---\n", encoding="utf-8")
     frontmatter = {
-        **_explicit_metadata(),
+        **_dispatchable_metadata(),
         "task_id": "source-task",
         "authority_case": "CASE-TEST-001",
         "title": "Original",
@@ -786,7 +813,7 @@ def test_demand_axis_vocabulary_pins_the_registry_enums() -> None:
 
 
 def _demand_frontmatter(**task_demand: object) -> dict[str, object]:
-    payload = _explicit_metadata()
+    payload = _dispatchable_metadata()
     payload["task_id"] = "demand-axis-test"
     payload["authority_case"] = "CASE-TEST-001"
     if task_demand:

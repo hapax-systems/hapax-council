@@ -736,6 +736,7 @@ class TestWriter:
                     mutation_surface="source",
                     acceptance_criteria=["Route validates"],
                     intent="Write dispatchable metadata.",
+                    route_envelope=_route_envelope(),
                 ),
             ],
         )
@@ -765,6 +766,7 @@ class TestWriter:
                     mutation_surface="vault_docs",
                     acceptance_criteria=["Route validates"],
                     intent="Write support metadata.",
+                    route_envelope=_route_envelope(),
                 ),
             ],
         )

@@ -30,7 +30,7 @@ from shared.quota_spend_ledger import (
     QUOTA_SPEND_LEDGER_LIVE_ENV,
     QuotaSpendLedger,
 )
-from shared.route_metadata_schema import DemandVector, build_demand_vector
+from shared.route_metadata_schema import DemandVector, RouteEnvelope, build_demand_vector
 
 if TYPE_CHECKING:
     import pytest
@@ -399,15 +399,20 @@ def test_malformed_route_metadata_holds_before_launch() -> None:
 
 
 def test_route_envelope_hold_blocks_dispatch_launch() -> None:
-    request = _request(
-        demand_vector=_demand(
-            route_envelope={
-                "admission": {
-                    "admission_action": "hold",
-                    "reason_codes": ["route_envelope_missing"],
+    demand = _demand().model_copy(
+        update={
+            "route_envelope": RouteEnvelope.model_validate(
+                {
+                    "admission": {
+                        "admission_action": "hold",
+                        "reason_codes": ["route_envelope_missing"],
+                    }
                 }
-            }
-        )
+            )
+        }
+    )
+    request = _request(
+        demand_vector=demand,
     )
 
     decision = evaluate_dispatch_policy(request, now=NOW)
@@ -447,9 +452,9 @@ def test_build_dispatch_request_missing_route_envelope_holds_before_launch() -> 
 
     decision = evaluate_dispatch_policy(request, now=NOW)
 
-    assert request.demand_vector is not None
+    assert request.demand_vector is None
     assert decision.action is DispatchAction.HOLD
-    assert "route_envelope_admission_hold" in decision.reason_codes
+    assert "missing_demand_vector" in decision.reason_codes
     assert "route_envelope_missing" in decision.reason_codes
     assert "policy_launch" not in decision.reason_codes
 
