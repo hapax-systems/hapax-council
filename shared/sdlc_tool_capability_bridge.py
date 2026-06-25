@@ -256,8 +256,7 @@ def assess_sdlc_route_supply(
             evidence_refs=tuple(dict.fromkeys(evidence_refs)),
         )
 
-    if not fact.can_satisfy_required_demands or fact.blocking_reasons:
-        reason_codes.extend(["supply_fact_held", *fact.blocking_reasons])
+    reason_codes.extend(_fact_satisfaction_blocking_reasons(fact))
 
     if fact.role is RouteSupplyRole.SUPPLIED_EVIDENCE_RECALL:
         if demand.requires_fresh_current_world_evidence:
@@ -753,13 +752,85 @@ def _unique(values: Iterable[str | None]) -> list[str]:
     return list(dict.fromkeys(value for value in values if value))
 
 
+def _fact_satisfaction_blocking_reasons(fact: SdlcRouteSupplyFact) -> tuple[str, ...]:
+    reasons: list[str] = []
+    if not fact.can_satisfy_required_demands or fact.blocking_reasons:
+        reasons.append("supply_fact_held")
+    reasons.extend(fact.blocking_reasons)
+
+    if not fact.visible:
+        reasons.append("route_supply_hidden")
+
+    if fact.role is RouteSupplyRole.PROVIDER_GATEWAY:
+        if fact.availability_state not in {None, *SATISFYING_PROVIDER_GATEWAY_STATES}:
+            reasons.append(f"provider_gateway_route_state:{fact.availability_state}")
+    elif fact.availability_state not in {None, *SATISFYING_AVAILABILITY_STATES}:
+        reasons.append(f"availability:{fact.availability_state}")
+
+    if fact.health_status not in {None, *SATISFYING_PROVIDER_HEALTH_STATUSES}:
+        reasons.append(f"health_status:{fact.health_status}")
+
+    if fact.role is RouteSupplyRole.SUPPLIED_EVIDENCE_RECALL:
+        if fact.fresh_current_world_evidence_allowed:
+            reasons.append("supplied_evidence_recall_not_fresh_current_world_evidence")
+        if fact.public_claim_evidence_allowed:
+            reasons.append("supplied_evidence_recall_not_public_claim_evidence")
+
+    if fact.supplied_evidence_only:
+        if fact.fresh_current_world_evidence_allowed:
+            reasons.append("supplied_evidence_not_fresh_current_world_evidence")
+        if fact.public_claim_evidence_allowed:
+            reasons.append("supplied_evidence_not_public_claim_evidence")
+
+    if fact.role is RouteSupplyRole.SOURCE_ACQUISITION:
+        if not fact.source_acquisition_capable:
+            reasons.append("source_acquisition_capability_absent")
+        if not fact.source_acquisition_evidence_refs:
+            reasons.append("source_acquisition_evidence_absent")
+        if not fact.fresh_current_world_evidence_allowed:
+            reasons.append("fresh_current_world_evidence_absent")
+
+    if fact.role is RouteSupplyRole.PUBLICATION_EGRESS:
+        if not fact.publication_egress_allowed:
+            reasons.append("publication_egress_held")
+        if not fact.publication_authority_granted:
+            reasons.append("publication_authority_absent")
+        if not fact.rights_evidence_refs:
+            reasons.append("publication_rights_evidence_absent")
+        if not fact.privacy_redaction_evidence_refs:
+            reasons.append("publication_privacy_redaction_evidence_absent")
+        if not fact.explicit_receipt_refs:
+            reasons.append("publication_explicit_receipts_absent")
+
+    if fact.role is RouteSupplyRole.PROVIDER_GATEWAY:
+        if fact.routine_fallback_allowed:
+            reasons.append("provider_gateway_routine_fallback_forbidden")
+        if not fact.provider_spend_required:
+            reasons.append("provider_gateway_spend_posture_absent")
+        if (
+            fact.provider_spend_posture is not ProviderSpendPosture.SPEND_EVIDENCED
+            or not fact.provider_budget_evidence_refs
+        ):
+            reasons.append("provider_budget_evidence_absent")
+
+    reasons = _unique(reasons)
+    if reasons and "supply_fact_held" not in reasons:
+        reasons.insert(0, "supply_fact_held")
+    return tuple(reasons)
+
+
+def _fact_satisfies_required_demands(fact: SdlcRouteSupplyFact) -> bool:
+    return not _fact_satisfaction_blocking_reasons(fact)
+
+
 def bridge_policy_summary(facts: Sequence[SdlcRouteSupplyFact]) -> Mapping[str, int]:
     """Return a compact summary for tests and operator receipts."""
 
+    satisfying_facts = sum(_fact_satisfies_required_demands(fact) for fact in facts)
     return {
         "total_facts": len(facts),
-        "satisfying_facts": sum(fact.can_satisfy_required_demands for fact in facts),
-        "held_facts": sum(not fact.can_satisfy_required_demands for fact in facts),
+        "satisfying_facts": satisfying_facts,
+        "held_facts": len(facts) - satisfying_facts,
         "source_acquisition_facts": sum(
             fact.role is RouteSupplyRole.SOURCE_ACQUISITION for fact in facts
         ),

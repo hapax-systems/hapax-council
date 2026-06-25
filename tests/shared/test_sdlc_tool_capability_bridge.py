@@ -147,6 +147,41 @@ def test_blocking_reasons_fail_closed_even_if_positive_flag_is_set() -> None:
     assert "test_blocking_reason" in assessment.reason_codes
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "reason_code"),
+    (
+        ("visible", False, "route_supply_hidden"),
+        ("availability_state", "private_only", "availability:private_only"),
+        ("availability_state", "unavailable", "availability:unavailable"),
+        ("health_status", "stale", "health_status:stale"),
+    ),
+)
+def test_model_copy_hard_blockers_fail_closed_in_assessment_and_summary(
+    field: str,
+    value: object,
+    reason_code: str,
+) -> None:
+    facts = project_sdlc_route_supply_facts(include_inventory_rows=False)
+    tavily = _fact(facts, "sdlc_route_supply:provider_tool.search.tavily_source_acquisition")
+    malformed = tavily.model_copy(
+        update={field: value, "can_satisfy_required_demands": True}
+    )
+
+    assessment = malformed.assess(
+        SdlcRouteDemand(
+            role=RouteSupplyRole.SOURCE_ACQUISITION,
+            source_grounding_need=SourceGroundingNeed.WEB_CURRENT,
+            requires_public_claim_evidence=True,
+        )
+    )
+    summary = bridge_policy_summary([malformed])
+
+    assert assessment.satisfies is False
+    assert reason_code in assessment.reason_codes
+    assert summary["satisfying_facts"] == 0
+    assert summary["held_facts"] == 1
+
+
 def test_supplied_evidence_only_blocks_fresh_current_world_demands_by_policy() -> None:
     facts = project_sdlc_route_supply_facts(include_inventory_rows=False)
     tavily = _fact(facts, "sdlc_route_supply:provider_tool.search.tavily_source_acquisition")
