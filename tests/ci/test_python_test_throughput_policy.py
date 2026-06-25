@@ -29,6 +29,10 @@ def _workflow_job_block(workflow_text: str, job_name: str) -> str:
     return match.group(0)
 
 
+def _assert_uses_pinned_action(block: str, action: str) -> None:
+    assert re.search(rf"{re.escape(action)}@[0-9a-f]{{40}}\b", block), action
+
+
 def test_required_test_check_keeps_full_pytest_on_merge_queue_and_main() -> None:
     ci_text = CI_WORKFLOW.read_text(encoding="utf-8")
     test_block = _workflow_job_block(ci_text, "test")
@@ -85,7 +89,7 @@ def test_required_test_check_keeps_full_pytest_on_merge_queue_and_main() -> None
     assert '--duration-artifact "$duration_artifact"' in shard_block
     assert "--require-durations" in shard_block
     assert "Upload pytest node duration artifacts" in shard_block
-    assert "actions/upload-artifact@v7" in shard_block
+    _assert_uses_pinned_action(shard_block, "actions/upload-artifact")
     assert "pytest-node-durations-shard-${{ matrix.shard }}-of-${{ matrix.shard_count }}" in (
         shard_block
     )
