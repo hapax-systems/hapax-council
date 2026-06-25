@@ -39,7 +39,10 @@ _MOD = "shared.capability_adapter_protocol"
 def _mentions_hkp_model(text: str) -> bool:
     lowered = text.lower()
     normalized = "".join(char if char.isalnum() else "_" for char in lowered)
-    return "hkp" in lowered or "knowledge_projection" in normalized
+    compact = "".join(char for char in lowered if char.isalnum())
+    return (
+        "hkp" in lowered or "knowledge_projection" in normalized or "knowledgeprojection" in compact
+    )
 
 
 def _decision(
@@ -152,6 +155,19 @@ def test_platform_classvars_are_pinned() -> None:
     assert BudgetAuthorityAdapter.PLATFORM is Platform.API
     assert ReviewSeatAdapter.PLATFORM is Platform.GLMCP
     assert AntigravAdapter.PLATFORM is Platform.ANTIGRAV
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "hkp",
+        "knowledge_projection",
+        "knowledge-projection",
+        "KnowledgeProjectionAdapter",
+    ],
+)
+def test_hkp_model_matcher_catches_known_alias_shapes(text: str) -> None:
+    assert _mentions_hkp_model(text)
 
 
 def test_hkp_outside_model() -> None:
