@@ -359,6 +359,93 @@ def test_malformed_route_metadata_holds_before_launch() -> None:
     assert "route_metadata_malformed" in decision.reason_codes
 
 
+def test_operator_coupled_headless_refuses_before_capability_lookup() -> None:
+    request = _request(
+        operator_coupled=True,
+        operator_coupled_evidence_refs=("operator_coupled:frontmatter",),
+        capability=None,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert decision.launch_allowed is False
+    assert "operator_coupled_interactive_only" in decision.reason_codes
+    assert "interactive_path:hapax-claude --terminal tmux" in decision.reason_codes
+    assert "operator_coupled:frontmatter" in decision.reason_codes
+    assert "capability_registry_unavailable" not in decision.reason_codes
+
+
+def test_build_dispatch_request_refuses_path_derived_operator_coupled_headless() -> None:
+    task_fields = _task_fields()
+    task_fields["__operator_coupled_path_matches"] = [
+        "agents/studio_compositor/programme.py#operator-coupled-broadcast-visual"
+    ]
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert request.operator_coupled is True
+    assert request.operator_coupled_evidence_refs == (
+        "operator_coupled:path:agents/studio_compositor/programme.py"
+        "#operator-coupled-broadcast-visual",
+    )
+    assert decision.action is DispatchAction.REFUSE
+    assert "operator_coupled_interactive_only" in decision.reason_codes
+
+
+def test_build_dispatch_request_refuses_dispatch_mode_interactive_only_headless() -> None:
+    task_fields = _task_fields()
+    task_fields["dispatch_mode"] = "interactive_only"
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert request.operator_coupled is True
+    assert request.operator_coupled_evidence_refs == ("operator_coupled:dispatch_mode",)
+    assert decision.action is DispatchAction.REFUSE
+    assert "operator_coupled_interactive_only" in decision.reason_codes
+    assert "operator_coupled:dispatch_mode" in decision.reason_codes
+
+
+def test_build_dispatch_request_without_operator_evidence_is_not_operator_coupled() -> None:
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert request.operator_coupled is False
+    assert request.operator_coupled_evidence_refs == ()
+    assert "operator_coupled_interactive_only" not in decision.reason_codes
+    assert all(not reason.startswith("operator_coupled:path:") for reason in decision.reason_codes)
+
+
 def test_stale_capability_data_holds() -> None:
     request = _request(
         capability=_capability(

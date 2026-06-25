@@ -297,6 +297,8 @@ class DispatchRequest(_PolicyModel):
     authority_level: str | None = None
     mutation_surface: str | None = None
     mutation_scope_refs: tuple[str, ...] = Field(default=())
+    operator_coupled: bool = False
+    operator_coupled_evidence_refs: tuple[str, ...] = Field(default=())
     risk_flags: dict[str, bool] = Field(default_factory=dict)
     context_shape: dict[str, object] = Field(default_factory=dict)
     cloud_burst: dict[str, object] = Field(default_factory=dict)
@@ -511,6 +513,12 @@ def build_dispatch_request(
         now=now,
     )
     route_metadata = metadata.metadata
+    operator_evidence_refs = _operator_coupled_evidence_refs(task_fields)
+    operator_coupled = (
+        _truthy(task_fields.get("operator_coupled"))
+        or _optional_string(task_fields.get("dispatch_mode")) == "interactive_only"
+        or bool(operator_evidence_refs)
+    )
     return DispatchRequest(
         task_id=task_id,
         lane=lane,
@@ -529,6 +537,8 @@ def build_dispatch_request(
         authority_level=route_metadata.authority_level.value if route_metadata else None,
         mutation_surface=route_metadata.mutation_surface.value if route_metadata else None,
         mutation_scope_refs=tuple(route_metadata.mutation_scope_refs) if route_metadata else (),
+        operator_coupled=operator_coupled,
+        operator_coupled_evidence_refs=operator_evidence_refs,
         risk_flags=route_metadata.risk_flags.model_dump(mode="json") if route_metadata else {},
         context_shape=route_metadata.context_shape.model_dump(mode="json")
         if route_metadata
@@ -596,6 +606,20 @@ def evaluate_dispatch_policy(
             request,
             DispatchAction.HOLD,
             ("route_metadata_malformed", *request.route_metadata_validation_errors),
+            checked_at,
+            quality_floor_satisfied=False,
+            authority_allowed=False,
+        )
+
+    if request.operator_coupled and request.mode == "headless":
+        return _decision(
+            request,
+            DispatchAction.REFUSE,
+            (
+                "operator_coupled_interactive_only",
+                "interactive_path:hapax-claude --terminal tmux",
+                *request.operator_coupled_evidence_refs,
+            ),
             checked_at,
             quality_floor_satisfied=False,
             authority_allowed=False,
@@ -2353,6 +2377,29 @@ def _route_constraint_reasons(request: DispatchRequest) -> tuple[str, ...]:
     return tuple(reasons)
 
 
+def _operator_coupled_evidence_refs(task_fields: Mapping[str, object]) -> tuple[str, ...]:
+    refs: list[str] = []
+    if _truthy(task_fields.get("operator_coupled")):
+        refs.append("operator_coupled:frontmatter")
+    if _optional_string(task_fields.get("dispatch_mode")) == "interactive_only":
+        refs.append("operator_coupled:dispatch_mode")
+    for value in _operator_coupled_path_values(task_fields.get("__operator_coupled_path_matches")):
+        refs.append(f"operator_coupled:path:{value}")
+    return tuple(dict.fromkeys(refs))
+
+
+def _operator_coupled_path_values(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        text = value.strip()
+        return (text,) if text else ()
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    text = str(value).strip()
+    return (text,) if text else ()
+
+
 def _privacy_sensitive(request: DispatchRequest) -> bool:
     return bool(request.risk_flags.get("privacy_or_secret_sensitive"))
 
@@ -2632,6 +2679,17 @@ def _string_set(value: object) -> set[str]:
     if isinstance(value, (list, tuple, set, frozenset)):
         return {str(item).strip() for item in value if str(item).strip()}
     return {str(value).strip()}
+
+
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    return text in {"1", "true", "yes", "on"}
 
 
 def _slug(value: str) -> str:

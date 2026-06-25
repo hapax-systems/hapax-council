@@ -154,6 +154,77 @@ def _default_route_metadata(frontmatter: str) -> str:
     return frontmatter
 
 
+def _governed_source_frontmatter(
+    spec: Path,
+    *,
+    extra: str = "",
+    mutation_scope_refs: str = "[]",
+) -> str:
+    return f"""
+    kind: build
+    authority_case: CASE-TEST-001
+    parent_spec: {spec}
+    {extra}
+    route_metadata_schema: 1
+    quality_floor: frontier_required
+    authority_level: authoritative
+    mutation_surface: source
+    mutation_scope_refs: {mutation_scope_refs}
+    risk_flags:
+      governance_sensitive: false
+      privacy_or_secret_sensitive: false
+      public_claim_sensitive: false
+      aesthetic_theory_sensitive: false
+      audio_or_live_egress_sensitive: false
+      provider_billing_sensitive: false
+    context_shape:
+      codebase_locality: module
+      vault_context_required: true
+      external_docs_required: false
+      currentness_required: false
+    verification_surface:
+      deterministic_tests: []
+      static_checks: []
+      runtime_observation: []
+      operator_only: false
+    route_constraints:
+      preferred_platforms: []
+      allowed_platforms: []
+      prohibited_platforms: []
+      required_mode: null
+      required_profile: null
+    review_requirement:
+      support_artifact_allowed: false
+      independent_review_required: false
+      authoritative_acceptor_profile: null
+    """
+
+
+def _operator_coupled_manifest(tmp_path: Path, *, body: str | None = None) -> Path:
+    manifest = tmp_path / "invariant-manifest.yaml"
+    manifest.write_text(
+        body
+        if body is not None
+        else textwrap.dedent(
+            """\
+            schema_version: 1
+            unknown_path_policy: flag
+            classes:
+              operator_coupled:
+                policy:
+                  dispatch_mode: interactive_only
+            invariants:
+              - id: operator-coupled-broadcast-visual
+                class: operator_coupled
+                globs:
+                  - agents/studio_compositor/**
+            """
+        ),
+        encoding="utf-8",
+    )
+    return manifest
+
+
 def _write(path: Path, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -351,6 +422,176 @@ def test_lane_active_task_lease_reads_session_keyed_claim(tmp_path: Path) -> Non
             os.environ.pop("HAPAX_CC_CLAIMS_DIR", None)
         else:
             os.environ["HAPAX_CC_CLAIMS_DIR"] = previous
+
+
+def test_operator_coupled_path_match_accepts_absolute_repo_paths(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    absolute_ref = str(REPO_ROOT / "agents" / "studio_compositor" / "programme.py")
+    previous = os.environ.get("HAPAX_INVARIANT_MANIFEST")
+    os.environ["HAPAX_INVARIANT_MANIFEST"] = str(_operator_coupled_manifest(tmp_path))
+    try:
+        matches = module.operator_coupled_path_matches({"mutation_scope_refs": [absolute_ref]})
+    finally:
+        if previous is None:
+            os.environ.pop("HAPAX_INVARIANT_MANIFEST", None)
+        else:
+            os.environ["HAPAX_INVARIANT_MANIFEST"] = previous
+
+    assert matches == ("agents/studio_compositor/programme.py#operator-coupled-broadcast-visual",)
+
+
+def test_operator_coupled_path_match_reads_nested_route_metadata(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    previous = os.environ.get("HAPAX_INVARIANT_MANIFEST")
+    os.environ["HAPAX_INVARIANT_MANIFEST"] = str(_operator_coupled_manifest(tmp_path))
+    try:
+        matches = module.operator_coupled_path_matches(
+            {
+                "route_metadata": {
+                    "route_metadata_schema": 1,
+                    "quality_floor": "frontier_required",
+                    "authority_level": "authoritative",
+                    "mutation_surface": "source",
+                    "mutation_scope_refs": ["agents/studio_compositor/programme.py"],
+                }
+            }
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("HAPAX_INVARIANT_MANIFEST", None)
+        else:
+            os.environ["HAPAX_INVARIANT_MANIFEST"] = previous
+
+    assert matches == ("agents/studio_compositor/programme.py#operator-coupled-broadcast-visual",)
+
+
+def test_operator_coupled_path_match_reports_manifest_failure_detail(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    previous = os.environ.get("HAPAX_INVARIANT_MANIFEST")
+    os.environ["HAPAX_INVARIANT_MANIFEST"] = str(_operator_coupled_manifest(tmp_path, body="[]\n"))
+    try:
+        matches = module.operator_coupled_path_matches(
+            {"mutation_scope_refs": ["agents/studio_compositor/programme.py"]}
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("HAPAX_INVARIANT_MANIFEST", None)
+        else:
+            os.environ["HAPAX_INVARIANT_MANIFEST"] = previous
+
+    assert matches == ("manifest_unavailable:RuntimeError:invariant-manifest-is-not-a-mapping",)
+
+
+def test_operator_coupled_path_match_rejects_non_string_globs(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    manifest = _operator_coupled_manifest(
+        tmp_path,
+        body=textwrap.dedent(
+            """\
+            schema_version: 1
+            unknown_path_policy: flag
+            classes:
+              operator_coupled:
+                policy:
+                  dispatch_mode: interactive_only
+            invariants:
+              - id: operator-coupled-broadcast-visual
+                class: operator_coupled
+                globs:
+                  - agents/studio_compositor/**
+                  - 123
+            """
+        ),
+    )
+    previous = os.environ.get("HAPAX_INVARIANT_MANIFEST")
+    os.environ["HAPAX_INVARIANT_MANIFEST"] = str(manifest)
+    try:
+        matches = module.operator_coupled_path_matches(
+            {"mutation_scope_refs": ["agents/studio_compositor/programme.py"]}
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("HAPAX_INVARIANT_MANIFEST", None)
+        else:
+            os.environ["HAPAX_INVARIANT_MANIFEST"] = previous
+
+    assert matches == (
+        "manifest_unavailable:RuntimeError:"
+        "operator_coupled-invariant-operator-coupled-broadcast-visual-has-non-string-glob",
+    )
+
+
+def test_operator_coupled_path_match_rejects_non_list_globs(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    manifest = _operator_coupled_manifest(
+        tmp_path,
+        body=textwrap.dedent(
+            """\
+            schema_version: 1
+            unknown_path_policy: flag
+            classes:
+              operator_coupled:
+                policy:
+                  dispatch_mode: interactive_only
+            invariants:
+              - id: operator-coupled-broadcast-visual
+                class: operator_coupled
+                globs: agents/studio_compositor/**
+            """
+        ),
+    )
+    previous = os.environ.get("HAPAX_INVARIANT_MANIFEST")
+    os.environ["HAPAX_INVARIANT_MANIFEST"] = str(manifest)
+    try:
+        matches = module.operator_coupled_path_matches(
+            {"mutation_scope_refs": ["agents/studio_compositor/programme.py"]}
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("HAPAX_INVARIANT_MANIFEST", None)
+        else:
+            os.environ["HAPAX_INVARIANT_MANIFEST"] = previous
+
+    assert matches == (
+        "manifest_unavailable:RuntimeError:"
+        "operator_coupled-invariant-operator-coupled-broadcast-visual-globs-is-not-a-list",
+    )
+
+
+def test_operator_coupled_path_match_reports_missing_manifest(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    previous = os.environ.get("HAPAX_INVARIANT_MANIFEST")
+    os.environ["HAPAX_INVARIANT_MANIFEST"] = str(tmp_path / "missing-invariant-manifest.yaml")
+    try:
+        matches = module.operator_coupled_path_matches(
+            {"mutation_scope_refs": ["agents/studio_compositor/programme.py"]}
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("HAPAX_INVARIANT_MANIFEST", None)
+        else:
+            os.environ["HAPAX_INVARIANT_MANIFEST"] = previous
+
+    assert len(matches) == 1
+    assert matches[0].startswith("manifest_unavailable:FileNotFoundError:")
+
+
+def test_operator_coupled_glob_matching_segment_semantics() -> None:
+    module = _dispatcher_module()
+
+    assert module._path_matches_glob(
+        "agents/studio_compositor/programme.py",
+        "agents/studio_compositor/**",
+    )
+    assert module._path_matches_glob(
+        "agents/studio_compositor/programme.py",
+        "agents/**/programme.py",
+    )
+    assert module._path_matches_glob("config/screwm-a.json", "config/screwm-?.json")
+    assert not module._path_matches_glob(
+        "agents/studio_compositor/nested/programme.py",
+        "agents/studio_compositor/*.py",
+    )
 
 
 def _run(
@@ -843,6 +1084,249 @@ printf '%s\\n' "$@" > {launcher_args}
     )
     assert dispatch_receipt["prompt"] is None
     assert dispatch_receipt["route_policy_action"] == "hold"
+
+
+def test_operator_coupled_frontmatter_refuses_headless_before_prompt_or_launch(
+    tmp_path: Path,
+) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "operator-coupled-build",
+        _governed_source_frontmatter(spec, extra="operator_coupled: true"),
+        route_metadata_defaults=False,
+    )
+    launcher_args = tmp_path / "launcher-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "operator-coupled-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--print-prompt",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher)},
+    )
+
+    assert result.returncode == 10
+    assert result.stdout == ""
+    assert not launcher_args.exists()
+    assert "operator_coupled_interactive_only" in result.stderr
+    assert "hapax-claude --terminal tmux" in result.stderr
+    route_receipt = json.loads(
+        (tmp_path / "ledger" / "route-decisions.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    )
+    assert route_receipt["action"] == "refuse"
+    assert "operator_coupled_interactive_only" in route_receipt["reason_codes"]
+    assert "operator_coupled:frontmatter" in route_receipt["reason_codes"]
+    dispatch_receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert dispatch_receipt["prompt"] is None
+    assert dispatch_receipt["route_policy_action"] == "refuse"
+    assert "operator_coupled_interactive_only" in dispatch_receipt["route_policy_reason_codes"]
+
+
+def test_operator_coupled_manifest_path_refuses_headless(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    manifest = _operator_coupled_manifest(tmp_path)
+    _task(
+        tmp_path / "tasks",
+        "operator-path-build",
+        _governed_source_frontmatter(
+            spec,
+            mutation_scope_refs="[agents/studio_compositor/programme.py]",
+        ),
+        route_metadata_defaults=False,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "operator-path-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--print-prompt",
+        extra_env={"HAPAX_INVARIANT_MANIFEST": str(manifest)},
+    )
+
+    assert result.returncode == 10
+    assert result.stdout == ""
+    route_receipt = json.loads(
+        (tmp_path / "ledger" / "route-decisions.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    )
+    assert route_receipt["action"] == "refuse"
+    assert "operator_coupled_interactive_only" in route_receipt["reason_codes"]
+    assert (
+        "operator_coupled:path:agents/studio_compositor/programme.py"
+        "#operator-coupled-broadcast-visual" in route_receipt["reason_codes"]
+    )
+
+
+def test_operator_coupled_nested_route_metadata_path_refuses_headless(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    manifest = _operator_coupled_manifest(tmp_path)
+    _task(
+        tmp_path / "tasks",
+        "operator-nested-path-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        route_metadata:
+          route_metadata_schema: 1
+          quality_floor: frontier_required
+          authority_level: authoritative
+          mutation_surface: source
+          mutation_scope_refs:
+            - agents/studio_compositor/programme.py
+        """,
+        route_metadata_defaults=False,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "operator-nested-path-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--print-prompt",
+        extra_env={"HAPAX_INVARIANT_MANIFEST": str(manifest)},
+    )
+
+    assert result.returncode == 10
+    assert result.stdout == ""
+    route_receipt = json.loads(
+        (tmp_path / "ledger" / "route-decisions.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    )
+    assert route_receipt["action"] == "refuse"
+    assert "operator_coupled_interactive_only" in route_receipt["reason_codes"]
+    assert (
+        "operator_coupled:path:agents/studio_compositor/programme.py"
+        "#operator-coupled-broadcast-visual" in route_receipt["reason_codes"]
+    )
+
+
+def test_operator_coupled_malformed_manifest_refuses_headless(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    manifest = _operator_coupled_manifest(tmp_path, body="schema_version: [\n")
+    _task(
+        tmp_path / "tasks",
+        "operator-malformed-manifest-build",
+        _governed_source_frontmatter(
+            spec,
+            mutation_scope_refs="[agents/studio_compositor/programme.py]",
+        ),
+        route_metadata_defaults=False,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "operator-malformed-manifest-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--print-prompt",
+        extra_env={"HAPAX_INVARIANT_MANIFEST": str(manifest)},
+    )
+
+    assert result.returncode == 10
+    assert result.stdout == ""
+    assert "operator_coupled_interactive_only" in result.stderr
+    assert "manifest_unavailable:RuntimeError:invariant-manifest-parse-error" in result.stderr
+    route_receipt = json.loads(
+        (tmp_path / "ledger" / "route-decisions.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    )
+    assert route_receipt["action"] == "refuse"
+    assert "operator_coupled_interactive_only" in route_receipt["reason_codes"]
+    assert (
+        "operator_coupled:path:manifest_unavailable:RuntimeError:invariant-manifest-parse-error"
+        in route_receipt["reason_codes"]
+    )
+
+
+def test_operator_coupled_interactive_and_receipt_only_still_dispatch(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "operator-interactive-build",
+        _governed_source_frontmatter(spec, extra="operator_coupled: true"),
+        route_metadata_defaults=False,
+    )
+    _task(
+        tmp_path / "tasks",
+        "operator-receipt-build",
+        _governed_source_frontmatter(spec, extra="dispatch_mode: interactive_only"),
+        route_metadata_defaults=False,
+    )
+
+    interactive = _run(
+        tmp_path,
+        "--task",
+        "operator-interactive-build",
+        "--lane",
+        "beta",
+        "--platform",
+        "claude",
+        "--mode",
+        "interactive",
+        "--print-prompt",
+    )
+    receipt_only = _run(
+        tmp_path,
+        "--task",
+        "operator-receipt-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "receipt-only",
+        "--print-prompt",
+    )
+
+    assert interactive.returncode == 0, interactive.stderr
+    assert (
+        "eligible: operator-interactive-build -> claude/interactive/full/beta" in interactive.stdout
+    )
+    assert receipt_only.returncode == 0, receipt_only.stderr
+    assert (
+        "eligible: operator-receipt-build -> codex/receipt-only/full/cx-green"
+        in receipt_only.stdout
+    )
 
 
 def test_launch_blocks_without_durable_mq_authority_binding(tmp_path: Path) -> None:

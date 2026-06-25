@@ -102,6 +102,7 @@ CAPACITY_INVARIANT = (
     "fit, quota state, resource contention, or explicit operator hold."
 )
 DEFAULT_P0_CODEX_DRAIN_LANES = ("cx-p0", "cx-crit")
+DEFAULT_INVARIANT_MANIFEST = REPO_ROOT_FOR_IMPORTS / "config" / "invariant-manifest.yaml"
 
 
 @dataclass(frozen=True)
@@ -357,6 +358,140 @@ def allow_codex_p0_local_dispatch_fallback(
 def parse_frontmatter(text: str) -> dict[str, Any]:
     fields, _body = parse_document_frontmatter(text)
     return dict(fields)
+
+
+def _glob_to_regex(glob: str) -> re.Pattern[str]:
+    out: list[str] = []
+    i = 0
+    while i < len(glob):
+        if glob.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif glob.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif glob[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif glob[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(glob[i]))
+            i += 1
+    return re.compile("^" + "".join(out) + "$")
+
+
+def _path_matches_glob(path: str, glob: str) -> bool:
+    return _glob_to_regex(glob).match(path) is not None
+
+
+def _scalar_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = strip_scalar(value)
+        return [] if is_nullish(text) else [text]
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [strip_scalar(str(item)) for item in value if not is_nullish(str(item))]
+    return [strip_scalar(str(value))]
+
+
+def _repo_relative_ref(value: str) -> str:
+    text = strip_scalar(value).replace("\\", "/").strip()
+    if text.startswith("./"):
+        text = text[2:]
+    path = Path(text).expanduser()
+    if path.is_absolute():
+        try:
+            return path.resolve().relative_to(REPO_ROOT_FOR_IMPORTS.resolve()).as_posix()
+        except ValueError:
+            return path.as_posix().lstrip("/")
+    return text.lstrip("/")
+
+
+def _reason_slug(value: str) -> str:
+    chars = [ch if ch.isalnum() or ch in {"_", ".", "-"} else "-" for ch in value.lower()]
+    slug = "".join(chars).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug or "unknown"
+
+
+def invariant_manifest_path() -> Path:
+    configured = os.environ.get("HAPAX_INVARIANT_MANIFEST", "").strip()
+    return Path(configured).expanduser() if configured else DEFAULT_INVARIANT_MANIFEST
+
+
+def _operator_coupled_manifest_entries() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    try:
+        import yaml
+    except ModuleNotFoundError as exc:  # pragma: no cover - project env dependency guard
+        raise RuntimeError("PyYAML unavailable for invariant-manifest operator gate") from exc
+    manifest_path = invariant_manifest_path()
+    try:
+        raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise RuntimeError("invariant manifest parse error") from exc
+    if not isinstance(raw, dict):
+        raise RuntimeError("invariant manifest is not a mapping")
+    classes = raw.get("classes")
+    if not isinstance(classes, dict):
+        raise RuntimeError("invariant manifest missing classes mapping")
+    operator_class = classes.get("operator_coupled")
+    if not isinstance(operator_class, dict):
+        raise RuntimeError("invariant manifest missing operator_coupled class")
+    policy = operator_class.get("policy")
+    if not isinstance(policy, dict) or policy.get("dispatch_mode") != "interactive_only":
+        raise RuntimeError("operator_coupled manifest policy is not interactive_only")
+    entries: list[tuple[str, tuple[str, ...]]] = []
+    invariants = raw.get("invariants")
+    if not isinstance(invariants, list):
+        raise RuntimeError("invariant manifest missing invariants list")
+    for entry in invariants:
+        if not isinstance(entry, dict) or entry.get("class") != "operator_coupled":
+            continue
+        inv_id = str(entry.get("id") or "operator_coupled")
+        globs = entry.get("globs")
+        if not isinstance(globs, list):
+            raise RuntimeError(f"operator_coupled invariant {inv_id} globs is not a list")
+        cleaned_items: list[str] = []
+        for glob in globs:
+            if not isinstance(glob, str):
+                raise RuntimeError(f"operator_coupled invariant {inv_id} has non-string glob")
+            text = glob.strip()
+            if text:
+                cleaned_items.append(text)
+        cleaned = tuple(cleaned_items)
+        if cleaned:
+            entries.append((inv_id, cleaned))
+    if not entries:
+        raise RuntimeError("invariant manifest has no operator_coupled globs")
+    return tuple(entries)
+
+
+def _operator_gate_mutation_scope_refs(fields: dict[str, Any]) -> list[str]:
+    metadata = assess_route_metadata(fields).metadata
+    if metadata is not None:
+        return metadata.mutation_scope_refs
+    return _scalar_list(fields.get("mutation_scope_refs"))
+
+
+def operator_coupled_path_matches(fields: dict[str, Any]) -> tuple[str, ...]:
+    refs = [_repo_relative_ref(ref) for ref in _operator_gate_mutation_scope_refs(fields)]
+    if not refs:
+        return ()
+    try:
+        entries = _operator_coupled_manifest_entries()
+    except (OSError, RuntimeError) as exc:
+        return (f"manifest_unavailable:{type(exc).__name__}:{_reason_slug(str(exc))}",)
+    matches: list[str] = []
+    for ref in refs:
+        for inv_id, globs in entries:
+            if any(_path_matches_glob(ref, glob) for glob in globs):
+                matches.append(f"{ref}#{inv_id}")
+                break
+    return tuple(dict.fromkeys(matches))
 
 
 def read_task(task_root: Path, task_id: str) -> TaskNote | None:
@@ -1456,6 +1591,9 @@ def policy_task_fields(validation: Validation) -> dict[str, Any]:
     fields, _body = parse_document_frontmatter(validation.task.path)
     payload = dict(fields or validation.task.fields)
     payload["__task_note_path"] = str(validation.task.path)
+    path_matches = operator_coupled_path_matches(payload)
+    if path_matches:
+        payload["__operator_coupled_path_matches"] = list(path_matches)
     return payload
 
 
