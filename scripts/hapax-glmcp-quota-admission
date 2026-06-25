@@ -195,11 +195,11 @@ def _bool(value: bool) -> str:
 
 
 def _classify_error(args: argparse.Namespace) -> ErrorObservation:
-    provider_code = args.provider_code.strip() if args.provider_code else None
+    provider_code = args.provider_code.strip() if args.provider_code is not None else None
     if provider_code is not None:
         if args.failure_class or args.action:
             raise ValueError("--provider-code cannot be combined with --failure-class or --action")
-        if provider_code and (not provider_code.isdigit() or len(provider_code) != 4):
+        if not provider_code or not provider_code.isdigit() or len(provider_code) != 4:
             raise ValueError("provider code must be a four-digit Z.ai diagnostic code")
         if provider_code in ZAI_ERROR_CLASS_BY_CODE:
             error_class, action = ZAI_ERROR_CLASS_BY_CODE[provider_code]

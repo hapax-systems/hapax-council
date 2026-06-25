@@ -367,6 +367,10 @@ def test_observe_error_backoff_codes_write_quota_wall_without_payg_fallback(
             ("observe-error", "--provider-code", "1308", "--action", "hold_until_reset"),
             "--provider-code cannot be combined",
         ),
+        (
+            ("observe-error", "--provider-code", ""),
+            "provider code must be a four-digit Z.ai diagnostic code",
+        ),
     ],
 )
 def test_validation_errors_do_not_write_receipts(
