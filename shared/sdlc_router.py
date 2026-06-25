@@ -311,7 +311,32 @@ class SdlcRouter:
         )
 
         if not activation.active:
+            frontier_score = next(
+                (
+                    score
+                    for score in scores
+                    if score.route_id == request.frontier_incumbent_route_id
+                ),
+                None,
+            )
             shadow = _best_non_frontier(scores, request.frontier_incumbent_route_id)
+            if frontier_score is None:
+                return SdlcRouteDecision(
+                    task_id=request.task_id,
+                    routing_class=request.routing_class,
+                    action=SdlcRouterAction.HOLD,
+                    selected_route_id=None,
+                    shadow_route_id=shadow.route_id if shadow else None,
+                    frontier_incumbent_route_id=request.frontier_incumbent_route_id,
+                    reason_codes=(
+                        "class_activation_gate_not_clear",
+                        *activation.reason_codes,
+                        "frontier_incumbent_not_feasible",
+                    ),
+                    candidate_scores=scores,
+                    vetoes=vetoes,
+                    class_activation=activation,
+                )
             return SdlcRouteDecision(
                 task_id=request.task_id,
                 routing_class=request.routing_class,

@@ -229,6 +229,38 @@ def _classification_validity_mask_is_complete(validity_mask: Mapping[str, bool])
     )
 
 
+def _learning_disqualifiers_from_classification(
+    classification: ClassificationEnvelope,
+    public_projection: PublicReleaseProjection,
+) -> list[str]:
+    disqualifiers: list[str] = []
+    if classification.freshness is not FreshnessState.FRESH:
+        disqualifiers.append("stale_or_missing_evidence")
+    if classification.source_kind in {
+        ClassificationSourceKind.HKP_CACHE,
+        ClassificationSourceKind.INFERRED,
+        ClassificationSourceKind.OPERATOR_SUPPLIED,
+        ClassificationSourceKind.SUPPLIED_ONLY,
+    }:
+        disqualifiers.append(f"classification_source_kind:{classification.source_kind.value}")
+    if classification.confidence < 0.8:
+        disqualifiers.append("low_confidence")
+    if not classification.valid_for_dispatch:
+        disqualifiers.append("invalid_envelope")
+    if classification.authority_ceiling in {
+        ClassificationAuthorityCeiling.SUPPORT_ONLY,
+        ClassificationAuthorityCeiling.READ_ONLY,
+    }:
+        disqualifiers.append("support_only")
+    if classification.source_kind is ClassificationSourceKind.HKP_CACHE:
+        disqualifiers.append("hkp_only")
+    if public_projection.public_projection_forbidden:
+        disqualifiers.append("public_projection_forbidden")
+    if not classification.evidence_refs:
+        disqualifiers.append("missing_evidence_refs")
+    return list(dict.fromkeys(disqualifiers))
+
+
 def _coerce_bool_mapping(value: object) -> dict[str, bool]:
     if value in (None, "", [], {}):
         return {}
@@ -648,6 +680,19 @@ class RouteEnvelope(_RouteModel):
             or self.learning_eligibility.local_posterior_update_allowed
         ):
             raise ValueError("public-projection-forbidden evidence cannot update learning")
+        if (
+            self.learning_eligibility.thompson_update_allowed
+            or self.learning_eligibility.local_posterior_update_allowed
+        ):
+            learning_disqualifiers = _learning_disqualifiers_from_classification(
+                classification,
+                self.public_release_projection,
+            )
+            if learning_disqualifiers:
+                raise ValueError(
+                    "learning updates conflict with classification envelope: "
+                    + ", ".join(learning_disqualifiers)
+                )
         return self
 
 

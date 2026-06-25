@@ -102,6 +102,46 @@ def test_inactive_class_stays_frontier_and_only_shadows_best_candidate() -> None
     assert router.state.route_posteriors == {}
 
 
+def test_inactive_class_holds_when_frontier_incumbent_is_not_feasible() -> None:
+    router = SdlcRouter(thompson_sampler=lambda _state: 0.5)
+    request = _request(requirement_vector=_requirement_vector(context_length=4))
+    local = _candidate("local_tool.local.worker", score=5)
+    frontier = _candidate(
+        DEFAULT_FRONTIER_INCUMBENT_ROUTE_ID,
+        score=3,
+        capability_scores={
+            "information_scope": 5,
+            "context_length": 2,
+            "mutation_risk": 5,
+            "verification_demand": 5,
+            "ambiguity_novelty": 5,
+            "composition_coupling": 5,
+            "governance_sensitivity": 5,
+        },
+    )
+
+    decision = router.route(request, (local, frontier))
+
+    assert decision.action is SdlcRouterAction.HOLD
+    assert decision.selected_route_id is None
+    assert decision.shadow_route_id == "local_tool.local.worker"
+    assert "frontier_incumbent_not_feasible" in decision.reason_codes
+    assert any(veto.route_id == DEFAULT_FRONTIER_INCUMBENT_ROUTE_ID for veto in decision.vetoes)
+
+
+def test_inactive_class_holds_when_frontier_incumbent_is_absent() -> None:
+    router = SdlcRouter(thompson_sampler=lambda _state: 0.5)
+    request = _request()
+    local = _candidate("local_tool.local.worker", score=5)
+
+    decision = router.route(request, (local,))
+
+    assert decision.action is SdlcRouterAction.HOLD
+    assert decision.selected_route_id is None
+    assert decision.shadow_route_id == "local_tool.local.worker"
+    assert "frontier_incumbent_not_feasible" in decision.reason_codes
+
+
 def test_active_class_routes_to_best_feasible_candidate() -> None:
     router = SdlcRouter(
         activation_evidence={"source_python": _active_gate()},

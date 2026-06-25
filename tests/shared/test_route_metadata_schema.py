@@ -409,6 +409,50 @@ def test_forbidden_public_projection_blocks_learning_even_without_public_action_
         RouteMetadata.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    ("classification_overrides", "expected_reason", "admission_action"),
+    (
+        ({"source_kind": "supplied_only"}, "classification_source_kind:supplied_only", "route"),
+        ({"source_kind": "inferred"}, "classification_source_kind:inferred", "route"),
+        ({"authority_ceiling": "support_only"}, "support_only", "route"),
+        ({"confidence": 0.4}, "low_confidence", "shadow"),
+        (
+            {"source_kind": "hkp_cache", "authority_ceiling": "support_only"},
+            "hkp_only",
+            "route",
+        ),
+    ),
+)
+def test_explicit_learning_updates_must_match_classification_provenance(
+    classification_overrides: dict[str, object],
+    expected_reason: str,
+    admission_action: str,
+) -> None:
+    payload = {
+        **_explicit_metadata(),
+        "route_envelope": {
+            "classification_envelope": _valid_classification_payload(**classification_overrides),
+            "admission": {"admission_action": admission_action, "reason_codes": ["fresh"]},
+            "public_release_projection": {"projection_state": "internal_only"},
+            "learning_eligibility": {
+                "thompson_update_allowed": True,
+                "local_posterior_update_allowed": True,
+                "evidence_kind": "witnessed",
+                "evidence_freshness": "fresh",
+                "confidence": 0.9,
+                "envelope_valid": True,
+                "support_only": False,
+                "hkp_only": False,
+                "public_projection_forbidden": False,
+                "evidence_refs": ["witness:route-success"],
+            },
+        },
+    }
+
+    with pytest.raises(ValidationError, match=expected_reason):
+        RouteMetadata.model_validate(payload)
+
+
 def test_hardening_allocation_derives_from_public_ambiguous_source_work() -> None:
     assessment = assess_route_metadata(
         {
