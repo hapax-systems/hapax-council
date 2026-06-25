@@ -355,7 +355,24 @@ def test_structural_verification_contract_blocker_fails_in_scope_decision():
     assert verdict.verdict == mod.FAIL
 
 
-def test_test_failure_does_not_mask_verification_contract_blocker():
+def test_structural_verification_contract_blocker_fails_before_coverage_gap():
+    verdict = mod.decide(
+        _obs(
+            deterministic_tests=[],
+            verification_contract_blockers=[
+                "verification_contract_malformed:verification_surface must be a mapping"
+            ],
+        )
+    )
+
+    assert verdict.verdict == mod.FAIL
+    assert verdict.reasons == (
+        "verification-blocker:verification_contract_malformed:"
+        "verification_surface must be a mapping",
+    )
+
+
+def test_verification_contract_blocker_precedes_test_failure():
     verdict = mod.decide(
         _obs(
             test_failures=["uv run pytest tests/test_demo.py -q"],
@@ -367,7 +384,6 @@ def test_test_failure_does_not_mask_verification_contract_blocker():
 
     assert verdict.verdict == mod.FAIL
     assert verdict.reasons == (
-        "test-failed:uv run pytest tests/test_demo.py -q",
         "verification-blocker:verification_contract_malformed:"
         "verification_surface must be a mapping",
     )

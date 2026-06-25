@@ -173,9 +173,11 @@ class Observation:
 
 
 def decide(obs: Observation) -> Verdict:
-    """Pure decision logic. INDETERMINATE short-circuits ALWAYS precede any FAIL,
-    so a task the oracle cannot judge is never blocked — only a concrete,
-    reproducible FAIL (tamper or a failing declared test) returns FAIL."""
+    """Pure decision logic.
+
+    Scope/load/clean-tree uncertainty stays indeterminate, but malformed
+    verification contracts fail closed before coverage-gap exits.
+    """
     if obs.oracle_off:
         return Verdict(INDETERMINATE, ("bypassed:HAPAX_ACCEPTANCE_ORACLE_OFF=1",))
     if obs.kind not in IN_SCOPE_KINDS or obs.mutation_surface not in IN_SCOPE_SURFACES:
@@ -187,6 +189,11 @@ def decide(obs: Observation) -> Verdict:
         return Verdict(INDETERMINATE, ("deferred-high-load",))
     if obs.clean_tree_sha is None:
         return Verdict(INDETERMINATE, ("no-clean-tree:post-commit-only",))
+    if obs.verification_contract_blockers:
+        return Verdict(
+            FAIL,
+            tuple(f"verification-blocker:{b}" for b in obs.verification_contract_blockers),
+        )
     if not obs.deterministic_tests:
         return Verdict(INDETERMINATE, ("no-declared-tests:coverage-gap",))
     if obs.tampered_test_paths and not obs.authorizes_test_changes:
@@ -194,8 +201,6 @@ def decide(obs: Observation) -> Verdict:
     fail_reasons: list[str] = []
     if obs.test_failures:
         fail_reasons.extend(f"test-failed:{c}" for c in obs.test_failures)
-    if obs.verification_contract_blockers:
-        fail_reasons.extend(f"verification-blocker:{b}" for b in obs.verification_contract_blockers)
     if fail_reasons:
         return Verdict(FAIL, tuple(fail_reasons))
     surface = obs.verification_surface if isinstance(obs.verification_surface, dict) else {}
