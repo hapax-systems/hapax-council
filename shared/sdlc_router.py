@@ -85,6 +85,15 @@ class SdlcRoutingRequest(_RouterModel):
 
     @model_validator(mode="after")
     def _requirement_vector_scores_are_bounded(self) -> SdlcRoutingRequest:
+        missing_dimensions = tuple(
+            dimension
+            for dimension in REQUIREMENT_VECTOR_DIMENSIONS
+            if dimension not in self.requirement_vector
+        )
+        if missing_dimensions:
+            raise ValueError(
+                "requirement_vector missing dimensions: " + ",".join(missing_dimensions)
+            )
         for dimension, score in self.requirement_vector.items():
             if dimension not in REQUIREMENT_VECTOR_DIMENSIONS:
                 raise ValueError(f"unknown requirement_vector dimension: {dimension}")

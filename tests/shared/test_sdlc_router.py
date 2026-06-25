@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from shared.gate_log import GateEvent
 from shared.platform_capability_registry import (
     build_supply_vector,
@@ -115,6 +117,16 @@ def test_active_class_routes_to_best_feasible_candidate() -> None:
     assert decision.selected_route_id == "local_tool.local.worker"
     assert decision.candidate_scores[0].route_id == "local_tool.local.worker"
     assert decision.route_allowed is True
+
+
+def test_routing_request_requires_complete_requirement_vector() -> None:
+    with pytest.raises(ValueError, match="requirement_vector missing dimensions"):
+        SdlcRoutingRequest.model_validate(
+            {"task_id": "task-router-test", "routing_class": "source_python"}
+        )
+
+    with pytest.raises(ValueError, match="requirement_vector missing dimensions"):
+        _request(requirement_vector={"quality_floor": 4})
 
 
 def test_requirement_floor_veto_runs_before_thompson_scoring() -> None:

@@ -329,6 +329,18 @@ def test_high_confidence_classification_requires_justifying_evidence() -> None:
         )
 
 
+def test_classification_validity_mask_must_contain_required_keys_for_dispatch() -> None:
+    with pytest.raises(ValidationError, match="fully valid mask"):
+        ClassificationEnvelope.model_validate(
+            _valid_classification_payload(validity_mask={"label": True})
+        )
+
+    envelope = ClassificationEnvelope.model_validate(
+        _valid_classification_payload(confidence=0.4, validity_mask={"label": True})
+    )
+    assert envelope.valid_for_dispatch is False
+
+
 def test_benchmark_gap_and_public_projection_round_trip_through_demand_vector() -> None:
     demand = build_demand_vector(
         {

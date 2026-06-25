@@ -223,6 +223,12 @@ def _default_classification_validity_mask() -> dict[str, bool]:
     return {key: False for key in _CLASSIFICATION_VALIDITY_KEYS}
 
 
+def _classification_validity_mask_is_complete(validity_mask: Mapping[str, bool]) -> bool:
+    return all(validity_mask.get(key) is True for key in _CLASSIFICATION_VALIDITY_KEYS) and all(
+        validity_mask.values()
+    )
+
+
 def _coerce_bool_mapping(value: object) -> dict[str, bool]:
     if value in (None, "", [], {}):
         return {}
@@ -486,7 +492,7 @@ class ClassificationEnvelope(_RouteModel):
                 raise ValueError("high-confidence classification requires evidence_refs")
             if not self.deterministic_facts_used:
                 raise ValueError("high-confidence classification requires deterministic_facts_used")
-            if not self.validity_mask or not all(self.validity_mask.values()):
+            if not _classification_validity_mask_is_complete(self.validity_mask):
                 raise ValueError("high-confidence classification requires a fully valid mask")
         return self
 
@@ -496,8 +502,7 @@ class ClassificationEnvelope(_RouteModel):
             self.confidence >= 0.8
             and self.freshness is FreshnessState.FRESH
             and bool(self.evidence_refs)
-            and bool(self.validity_mask)
-            and all(self.validity_mask.values())
+            and _classification_validity_mask_is_complete(self.validity_mask)
         )
 
 
