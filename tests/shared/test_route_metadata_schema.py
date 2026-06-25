@@ -5,11 +5,15 @@ from pydantic import ValidationError
 
 from shared.route_metadata_schema import (
     AuthorityLevel,
+    BenchmarkGap,
     ClassificationEnvelope,
+    FixedRouteOverhead,
     FreshnessState,
+    HardeningAllocation,
     HardeningIntensity,
     LearningEligibility,
     MutationSurface,
+    PublicReleaseProjection,
     QualityFloor,
     RouteAdmissionAction,
     RouteMetadata,
@@ -423,6 +427,106 @@ def test_benchmark_gap_and_public_projection_round_trip_through_demand_vector() 
     assert envelope.model_dump(mode="json")["benchmark_gap"]["coverage"]["coverage_state"] == (
         "absent"
     )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_error"),
+    (
+        (
+            {"meaningful_sdlc_slice": False},
+            "public benchmark candidates must satisfy all five criteria",
+        ),
+        (
+            {"evidence_refs": []},
+            "public benchmark candidates require evidence_refs",
+        ),
+    ),
+)
+def test_public_benchmark_candidates_require_all_criteria_and_evidence(
+    overrides: dict[str, object],
+    expected_error: str,
+) -> None:
+    payload = {
+        "public_candidate": True,
+        "meaningful_sdlc_slice": True,
+        "public_benchmarks_absent_or_stale": True,
+        "hapax_operational_value": True,
+        "external_utility": True,
+        "exposes_llm_failure_mode": True,
+        "evidence_refs": ["eval-ledger:benchmark-gap"],
+        **overrides,
+    }
+
+    with pytest.raises(ValidationError, match=expected_error):
+        BenchmarkGap.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("projection_payload", "expected_error"),
+    (
+        (
+            {
+                "projection_state": "approved",
+                "may_create_public_claim": True,
+                "publication_authorized": False,
+            },
+            "approved public-claim projections require publication_authorized",
+        ),
+        (
+            {
+                "projection_state": "approved",
+                "may_create_dataset_export": True,
+                "dataset_export_authorized": False,
+            },
+            "approved dataset projections require dataset_export_authorized",
+        ),
+    ),
+)
+def test_approved_public_projection_requires_specific_authorization(
+    projection_payload: dict[str, object],
+    expected_error: str,
+) -> None:
+    with pytest.raises(ValidationError, match=expected_error):
+        PublicReleaseProjection.model_validate(projection_payload)
+
+
+@pytest.mark.parametrize(
+    "overhead_payload",
+    (
+        {"fixed_cost_score": 1},
+        {"setup_seconds": 30},
+        {"context_tokens": 1000},
+        {"coordination_steps": 1},
+    ),
+)
+def test_nonzero_fixed_route_overhead_requires_evidence_refs(
+    overhead_payload: dict[str, object],
+) -> None:
+    with pytest.raises(
+        ValidationError, match="nonzero fixed route overhead requires evidence_refs"
+    ):
+        FixedRouteOverhead.model_validate(overhead_payload)
+
+    metadata = FixedRouteOverhead.model_validate(
+        {**overhead_payload, "evidence_refs": ["route-history:fixed-overhead"]}
+    )
+    assert metadata.evidence_refs == ["route-history:fixed-overhead"]
+
+
+def test_break_glass_hardening_requires_receipt_ref() -> None:
+    payload = {
+        "hardening_intensity": "break_glass",
+        "axes": ["public_release"],
+        "justification": ["operator-authorized emergency hardening"],
+    }
+
+    with pytest.raises(ValidationError, match="break_glass hardening requires receipt_ref"):
+        HardeningAllocation.model_validate(payload)
+
+    allocation = HardeningAllocation.model_validate(
+        {**payload, "receipt_ref": "hardening-receipt:break-glass"}
+    )
+    assert allocation.hardening_intensity is HardeningIntensity.BREAK_GLASS
 
 
 def test_forbidden_public_projection_blocks_learning_even_without_public_action_flags() -> None:
