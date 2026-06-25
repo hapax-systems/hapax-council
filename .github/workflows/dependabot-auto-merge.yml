@@ -22,28 +22,33 @@ jobs:
         if: steps.metadata.outputs.update-type != 'version-update:semver-major'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           if ! gh pr merge --auto --squash "${{ github.event.pull_request.html_url }}"; then
             echo "::warning::Dependabot auto-merge request failed; leaving PR for human review"
             gh label create needs-human \
               --description "Major-version dependency bump or other change requiring human review" \
               --color FBCA04 \
+              --repo "$GH_REPO" \
               --force
-            gh pr edit --add-label "needs-human" "${{ github.event.pull_request.html_url }}"
+            gh pr edit --repo "$GH_REPO" --add-label "needs-human" "${{ github.event.pull_request.html_url }}"
           fi
 
       - name: Ensure needs-human label exists
         if: steps.metadata.outputs.update-type == 'version-update:semver-major'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           gh label create needs-human \
             --description "Major-version dependency bump or other change requiring human review" \
             --color FBCA04 \
+            --repo "$GH_REPO" \
             --force
 
       - name: Label major updates
         if: steps.metadata.outputs.update-type == 'version-update:semver-major'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr edit --add-label "needs-human" "${{ github.event.pull_request.html_url }}"
+          GH_REPO: ${{ github.repository }}
+        run: gh pr edit --repo "$GH_REPO" --add-label "needs-human" "${{ github.event.pull_request.html_url }}"
