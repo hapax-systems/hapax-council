@@ -760,6 +760,15 @@ def bridge_policy_summary(facts: Sequence[SdlcRouteSupplyFact]) -> Mapping[str, 
     }
 
 
+# Pydantic invokes model validators through decorator metadata. The diff-aware
+# vulture gate scans production code statically, so keep direct references here
+# instead of broadening scripts/vulture_whitelist.py for this bridge.
+_PYDANTIC_VALIDATOR_ENTRYPOINTS = (
+    SdlcRouteDemand._current_world_need_sets_fresh_requirement,
+    SdlcRouteSupplyFact._satisfying_fact_obeys_role_gates,
+)
+
+
 __all__ = [
     "CURRENT_WORLD_SOURCE_NEEDS",
     "ProviderSpendPosture",
