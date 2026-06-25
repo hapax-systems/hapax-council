@@ -1119,6 +1119,7 @@ DIMENSION_WEIGHTS: Mapping[str, int] = {
     # _aggregate_score never assumes a constant divisor, so this is harmless.
     "effort_fit": 12,
     "context_mode_fit": 12,
+    "fixed_route_overhead": 6,
 }
 
 #: The reasoning-effort ordinal ladder (none < low < ... < max), derived from the supply-side
@@ -1584,7 +1585,34 @@ def _capability_fit_scores(request: DispatchRequest) -> tuple[DimensionalScore, 
             )
         )
 
+    if task_demand.fixed_route_overhead_sensitivity > 0:
+        overhead = supply.historical_performance.fixed_route_overhead
+        fits.append(
+            DimensionalScore(
+                dimension="fixed_route_overhead",
+                demand=task_demand.fixed_route_overhead_sensitivity,
+                supply=overhead.fixed_cost_score,
+                score=_fixed_route_overhead_fit_score(
+                    overhead.fixed_cost_score,
+                    task_demand.fixed_route_overhead_sensitivity,
+                ),
+                confidence=3.0 if overhead.evidence_refs else 1.0,
+                evidence_refs=tuple(overhead.evidence_refs),
+            )
+        )
+
     return tuple(fits)
+
+
+def _fixed_route_overhead_fit_score(overhead_score: int, sensitivity: int) -> float:
+    """Bounded setup-cost penalty: fixed overhead can affect a demanded route, not dominate it."""
+
+    bounded_overhead = max(0, min(5, overhead_score))
+    bounded_sensitivity = max(0, min(5, sensitivity))
+    if bounded_sensitivity == 0:
+        return 5.0
+    penalty = min(4.0, (bounded_overhead * bounded_sensitivity) / 5.0)
+    return round(max(1.0, 5.0 - penalty), 4)
 
 
 def _effort_fit_score(effort_demand: str, reachable_efforts: tuple[str, ...]) -> float:

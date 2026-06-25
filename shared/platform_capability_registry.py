@@ -27,7 +27,12 @@ from shared.platform_capability_receipts import (
     load_platform_capability_receipts,
     receipt_reference,
 )
-from shared.route_metadata_schema import ToolAuthorityUse
+from shared.route_metadata_schema import (
+    BenchmarkCoverage,
+    FixedRouteOverhead,
+    LocalCalibrationProvenance,
+    ToolAuthorityUse,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLATFORM_CAPABILITY_REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
@@ -501,6 +506,11 @@ class HistoricalPerformance(StrictModel):
     calibration_window: str = "unscored"
     evidence_refs: list[str] = Field(default_factory=list)
     class_posteriors: dict[str, ScoreConfidence] = Field(default_factory=dict)
+    benchmark_coverage: BenchmarkCoverage = Field(default_factory=BenchmarkCoverage)
+    fixed_route_overhead: FixedRouteOverhead = Field(default_factory=FixedRouteOverhead)
+    local_calibration_provenance: LocalCalibrationProvenance = Field(
+        default_factory=LocalCalibrationProvenance
+    )
 
 
 class OperatorConstraints(StrictModel):
@@ -582,6 +592,7 @@ class PlatformCapabilityRoute(StrictModel):
     quality_envelope: QualityEnvelope
     capability_scores: CapabilityScores
     tool_state: list[ToolState] = Field(default_factory=list)
+    historical_performance: HistoricalPerformance = Field(default_factory=HistoricalPerformance)
     context_limits: ContextLimits
     telemetry: Telemetry
     freshness: Freshness
@@ -1085,6 +1096,7 @@ def build_supply_vector(
             if route.freshness.provider_docs_checked_at is not None
             else "unknown",
         ),
+        historical_performance=route.historical_performance,
         freshness=SupplyFreshness(
             observed_at=ensure_utc(freshness_observed_at)
             if freshness_observed_at is not None

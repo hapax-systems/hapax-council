@@ -36,6 +36,10 @@ def _render_task_note(task: TaskSpec, blocks: list[str]) -> str:
         "priority": task.priority,
         "wsjf": task.wsjf,
         "effort_class": task.effort_class,
+        "routing_class": task.routing_class,
+        "requirement_vector": task.requirement_vector,
+        "composition_tolerance": task.composition_tolerance,
+        "requirement_vector_validity_mask": task.requirement_vector_validity_mask,
         "quality_floor": task.quality_floor,
         "mutation_surface": task.mutation_surface,
         "mutation_scope_refs": scope_refs,
@@ -57,6 +61,10 @@ def _render_task_note(task: TaskSpec, blocks: list[str]) -> str:
         "authority_case": task.authority_case,
         "tags": ["cc-task", task.priority, "auto-decomposed"],
     }
+    if task.route_envelope is not None:
+        frontmatter["route_envelope"] = task.route_envelope.model_dump(mode="json")
+    if task.task_demand:
+        frontmatter["task_demand"] = task.task_demand
     if task.quality_floor == "frontier_review_required":
         frontmatter["review_requirement"] = {
             "support_artifact_allowed": True,

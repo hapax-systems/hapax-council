@@ -112,6 +112,82 @@ class FreshnessState(StrEnum):
     MANUAL_ASSERTION = "manual_assertion"
 
 
+class RouteEnvelopeConsumer(StrEnum):
+    PRIMARY_DISPATCH = "primary_dispatch"
+    REVIEW_TEAM_ROUTING = "review_team_routing"
+    CCTV_OBSERVER_ROUTING = "cctv_observer_routing"
+    REQUEST_HARDENING_ROUTING = "request_hardening_routing"
+    EVAL_PLANE_SELECTION = "eval_plane_selection"
+    VERIFIER_FLOOR_CHECKER_ASSIGNMENT = "verifier_floor_checker_assignment"
+    LOCAL_JUDGE_ACCEPTOR_ROUTING = "local_judge_acceptor_routing"
+    PROVIDER_SOURCE_ACQUISITION_ROUTING = "provider_source_acquisition_routing"
+    REINS_PROJECTION = "reins_projection"
+
+
+REQUIRED_ROUTE_ENVELOPE_CONSUMERS = frozenset(RouteEnvelopeConsumer)
+
+
+class ClassificationSourceKind(StrEnum):
+    DETERMINISTIC = "deterministic"
+    LLM = "llm"
+    OPERATOR_SUPPLIED = "operator_supplied"
+    SUPPLIED_ONLY = "supplied_only"
+    INFERRED = "inferred"
+    HKP_CACHE = "hkp_cache"
+
+
+class ClassificationAuthorityCeiling(StrEnum):
+    AUTHORITATIVE = "authoritative"
+    FRONTIER_REVIEW_REQUIRED = "frontier_review_required"
+    SUPPORT_ONLY = "support_only"
+    READ_ONLY = "read_only"
+
+
+class RouteAdmissionAction(StrEnum):
+    ROUTE = "route"
+    SHADOW = "shadow"
+    HOLD = "hold"
+    SUPPORT_ONLY = "support_only"
+    REFUSE = "refuse"
+
+
+class BenchmarkCoverageState(StrEnum):
+    UNKNOWN = "unknown"
+    COVERED = "covered"
+    PARTIAL = "partial"
+    ABSENT = "absent"
+    STALE = "stale"
+    MISLEADING = "misleading"
+
+
+class PublicReleaseProjectionState(StrEnum):
+    NOT_APPLICABLE = "not_applicable"
+    INTERNAL_ONLY = "internal_only"
+    CANDIDATE = "candidate"
+    GATED = "gated"
+    APPROVED = "approved"
+    FORBIDDEN = "forbidden"
+
+
+class HardeningIntensity(StrEnum):
+    NONE = "none"
+    LIGHT = "light"
+    TARGETED = "targeted"
+    STANDARD = "standard"
+    DEEP = "deep"
+    BREAK_GLASS = "break_glass"
+
+
+class LearningEvidenceKind(StrEnum):
+    WITNESSED = "witnessed"
+    INFERRED = "inferred"
+    SUPPLIED_ONLY = "supplied_only"
+    REDACTED = "redacted"
+    HKP_ONLY = "hkp_only"
+    PUBLIC_PROJECTION = "public_projection"
+    MISSING = "missing"
+
+
 class RouteMetadataStatus(StrEnum):
     EXPLICIT = "explicit"
     DERIVED = "derived"
@@ -132,6 +208,38 @@ def _coerce_string_list(value: object) -> list[str]:
     if isinstance(value, (list, tuple, set, frozenset)):
         return [str(item).strip() for item in value if str(item).strip()]
     return [str(value).strip()]
+
+
+_CLASSIFICATION_VALIDITY_KEYS = (
+    "label",
+    "source",
+    "confidence",
+    "freshness",
+    "authority_ceiling",
+)
+
+
+def _default_classification_validity_mask() -> dict[str, bool]:
+    return {key: False for key in _CLASSIFICATION_VALIDITY_KEYS}
+
+
+def _coerce_bool_mapping(value: object) -> dict[str, bool]:
+    if value in (None, "", [], {}):
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("validity mask must be a mapping")
+    return {str(key): _coerce_mask_boolish(raw) for key, raw in value.items()}
+
+
+def _coerce_mask_boolish(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"true", "yes", "y", "1"}:
+        return True
+    if text in {"false", "no", "n", "0"}:
+        return False
+    raise ValueError("validity mask values must be booleans")
 
 
 class RiskFlags(_RouteModel):
@@ -186,6 +294,358 @@ class VerificationDemand(_RouteModel):
         return _coerce_string_list(value)
 
 
+class FixedRouteOverhead(_RouteModel):
+    """Bounded route setup cost used as evidence, never as an unbounded veto."""
+
+    fixed_cost_score: int = Field(default=0, ge=0, le=5)
+    setup_seconds: int = Field(default=0, ge=0)
+    context_tokens: int = Field(default=0, ge=0)
+    coordination_steps: int = Field(default=0, ge=0)
+    evidence_refs: list[str] = Field(default_factory=list)
+    projection_ref: str | None = None
+
+    @field_validator("evidence_refs", mode="before")
+    @classmethod
+    def _evidence_refs_are_string_lists(cls, value: object) -> list[str]:
+        return _coerce_string_list(value)
+
+    @model_validator(mode="after")
+    def _nonzero_overhead_needs_evidence(self) -> Self:
+        if (
+            self.fixed_cost_score
+            or self.setup_seconds
+            or self.context_tokens
+            or self.coordination_steps
+        ) and not self.evidence_refs:
+            raise ValueError("nonzero fixed route overhead requires evidence_refs")
+        return self
+
+
+class BenchmarkCoverage(_RouteModel):
+    coverage_state: BenchmarkCoverageState = BenchmarkCoverageState.UNKNOWN
+    benchmark_refs: list[str] = Field(default_factory=list)
+    gap_refs: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+
+    @field_validator("benchmark_refs", "gap_refs", "evidence_refs", mode="before")
+    @classmethod
+    def _lists_are_string_lists(cls, value: object) -> list[str]:
+        return _coerce_string_list(value)
+
+
+class BenchmarkGap(_RouteModel):
+    coverage: BenchmarkCoverage = Field(default_factory=BenchmarkCoverage)
+    public_candidate: bool = False
+    meaningful_sdlc_slice: bool = False
+    public_benchmarks_absent_or_stale: bool = False
+    hapax_operational_value: bool = False
+    external_utility: bool = False
+    exposes_llm_failure_mode: bool = False
+    gap_summary: str = ""
+    evidence_refs: list[str] = Field(default_factory=list)
+
+    @field_validator("evidence_refs", mode="before")
+    @classmethod
+    def _evidence_refs_are_string_lists(cls, value: object) -> list[str]:
+        return _coerce_string_list(value)
+
+    @model_validator(mode="after")
+    def _public_candidate_requires_all_five_criteria(self) -> Self:
+        if not self.public_candidate:
+            return self
+        if not all(
+            (
+                self.meaningful_sdlc_slice,
+                self.public_benchmarks_absent_or_stale,
+                self.hapax_operational_value,
+                self.external_utility,
+                self.exposes_llm_failure_mode,
+            )
+        ):
+            raise ValueError("public benchmark candidates must satisfy all five criteria")
+        if not self.evidence_refs:
+            raise ValueError("public benchmark candidates require evidence_refs")
+        return self
+
+
+class PublicReleaseProjection(_RouteModel):
+    projection_state: PublicReleaseProjectionState = PublicReleaseProjectionState.NOT_APPLICABLE
+    may_create_public_claim: bool = False
+    may_create_dataset_export: bool = False
+    publication_authorized: bool = False
+    dataset_export_authorized: bool = False
+    research_corpus_ledger_ref: str | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
+
+    @field_validator("evidence_refs", mode="before")
+    @classmethod
+    def _evidence_refs_are_string_lists(cls, value: object) -> list[str]:
+        return _coerce_string_list(value)
+
+    @model_validator(mode="after")
+    def _approved_projection_requires_authority(self) -> Self:
+        if self.projection_state is not PublicReleaseProjectionState.APPROVED:
+            return self
+        if self.may_create_public_claim and not self.publication_authorized:
+            raise ValueError("approved public-claim projections require publication_authorized")
+        if self.may_create_dataset_export and not self.dataset_export_authorized:
+            raise ValueError("approved dataset projections require dataset_export_authorized")
+        return self
+
+    @property
+    def public_projection_forbidden(self) -> bool:
+        if not (self.may_create_public_claim or self.may_create_dataset_export):
+            return False
+        if self.projection_state is PublicReleaseProjectionState.FORBIDDEN:
+            return True
+        if self.may_create_public_claim and not self.publication_authorized:
+            return True
+        return self.may_create_dataset_export and not self.dataset_export_authorized
+
+
+class HardeningBudget(_RouteModel):
+    max_minutes: int | None = Field(default=None, ge=0)
+    max_context_tokens: int | None = Field(default=None, ge=0)
+    max_provider_spend_usd: float | None = Field(default=None, ge=0)
+
+
+class HardeningAllocation(_RouteModel):
+    hardening_intensity: HardeningIntensity = HardeningIntensity.NONE
+    scope: str = "request"
+    axes: list[str] = Field(default_factory=list)
+    budget: HardeningBudget = Field(default_factory=HardeningBudget)
+    expected_value: int = Field(default=0, ge=0, le=5)
+    opportunity_cost: int = Field(default=0, ge=0, le=5)
+    justification: list[str] = Field(default_factory=list)
+    request_claims_as_priors: bool = True
+    stop_condition: str = "deterministic_request_sufficient"
+    receipt_ref: str | None = None
+
+    @field_validator("axes", "justification", mode="before")
+    @classmethod
+    def _lists_are_string_lists(cls, value: object) -> list[str]:
+        return _coerce_string_list(value)
+
+    @model_validator(mode="after")
+    def _intensive_hardening_requires_receipts_and_axes(self) -> Self:
+        if self.hardening_intensity in {
+            HardeningIntensity.TARGETED,
+            HardeningIntensity.STANDARD,
+            HardeningIntensity.DEEP,
+            HardeningIntensity.BREAK_GLASS,
+        }:
+            if not self.axes:
+                raise ValueError("targeted or stronger hardening requires axes")
+            if not self.justification:
+                raise ValueError("targeted or stronger hardening requires justification")
+        if self.hardening_intensity is HardeningIntensity.BREAK_GLASS and not self.receipt_ref:
+            raise ValueError("break_glass hardening requires receipt_ref")
+        return self
+
+
+class ClassificationEnvelope(_RouteModel):
+    classification_schema: Literal[1] = 1
+    label: str = "unknown"
+    classifier: str = "missing"
+    source_kind: ClassificationSourceKind = ClassificationSourceKind.INFERRED
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    evidence_refs: list[str] = Field(default_factory=list)
+    freshness: FreshnessState = FreshnessState.MISSING
+    authority_ceiling: ClassificationAuthorityCeiling = ClassificationAuthorityCeiling.SUPPORT_ONLY
+    validity_mask: dict[str, bool] = Field(default_factory=_default_classification_validity_mask)
+    ambiguity_tie_reason: str | None = None
+    deterministic_facts_used: list[str] = Field(default_factory=list)
+    consumer_floor: QualityFloor = QualityFloor.FRONTIER_REQUIRED
+
+    @field_validator("evidence_refs", "deterministic_facts_used", mode="before")
+    @classmethod
+    def _lists_are_string_lists(cls, value: object) -> list[str]:
+        return _coerce_string_list(value)
+
+    @field_validator("validity_mask", mode="before")
+    @classmethod
+    def _validity_mask_is_bool_mapping(cls, value: object) -> dict[str, bool]:
+        coerced = _coerce_bool_mapping(value)
+        return coerced or _default_classification_validity_mask()
+
+    @model_validator(mode="after")
+    def _classification_contract_fails_closed(self) -> Self:
+        if (
+            self.source_kind is ClassificationSourceKind.HKP_CACHE
+            and self.authority_ceiling
+            not in {
+                ClassificationAuthorityCeiling.SUPPORT_ONLY,
+                ClassificationAuthorityCeiling.READ_ONLY,
+            }
+        ):
+            raise ValueError("HKP cache classification is support-only and non-authoritative")
+        if self.confidence >= 0.8:
+            if self.freshness is not FreshnessState.FRESH:
+                raise ValueError("high-confidence classification requires fresh evidence")
+            if not self.evidence_refs:
+                raise ValueError("high-confidence classification requires evidence_refs")
+            if not self.deterministic_facts_used:
+                raise ValueError("high-confidence classification requires deterministic_facts_used")
+            if not self.validity_mask or not all(self.validity_mask.values()):
+                raise ValueError("high-confidence classification requires a fully valid mask")
+        return self
+
+    @property
+    def valid_for_dispatch(self) -> bool:
+        return (
+            self.confidence >= 0.8
+            and self.freshness is FreshnessState.FRESH
+            and bool(self.evidence_refs)
+            and bool(self.validity_mask)
+            and all(self.validity_mask.values())
+        )
+
+
+class RouteEligibility(_RouteModel):
+    authority_allowed: bool = False
+    privacy_allowed: bool = False
+    freshness_ok: bool = False
+    quality_floor_satisfied: bool = False
+    required_tools_available: bool = False
+    budget_allowed: bool = False
+    reason_codes: list[str] = Field(default_factory=lambda: ["route_envelope_missing"])
+
+    @field_validator("reason_codes", mode="before")
+    @classmethod
+    def _reason_codes_are_string_lists(cls, value: object) -> list[str]:
+        return _coerce_string_list(value)
+
+
+class RouteAdmission(_RouteModel):
+    admission_action: RouteAdmissionAction = RouteAdmissionAction.HOLD
+    wip_state: str = "unknown"
+    active_wip: int | None = Field(default=None, ge=0)
+    wip_limit: int | None = Field(default=None, ge=0)
+    quota_state: str = "unknown"
+    estimated_context_tokens: int | None = Field(default=None, ge=0)
+    context_budget_tokens: int | None = Field(default=None, ge=0)
+    fixed_route_overhead: FixedRouteOverhead = Field(default_factory=FixedRouteOverhead)
+    opportunity_cost: int = Field(default=5, ge=0, le=5)
+    reason_codes: list[str] = Field(default_factory=lambda: ["route_envelope_missing"])
+
+    @field_validator("reason_codes", mode="before")
+    @classmethod
+    def _reason_codes_are_string_lists(cls, value: object) -> list[str]:
+        return _coerce_string_list(value)
+
+
+class LearningEligibility(_RouteModel):
+    learning_eligibility_schema: Literal[1] = 1
+    thompson_update_allowed: bool = False
+    local_posterior_update_allowed: bool = False
+    evidence_kind: LearningEvidenceKind = LearningEvidenceKind.INFERRED
+    evidence_freshness: FreshnessState = FreshnessState.MISSING
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    envelope_valid: bool = False
+    support_only: bool = True
+    hkp_only: bool = False
+    public_projection_forbidden: bool = True
+    reason_codes: list[str] = Field(default_factory=lambda: ["learning_fail_closed"])
+    evidence_refs: list[str] = Field(default_factory=list)
+
+    @field_validator("reason_codes", "evidence_refs", mode="before")
+    @classmethod
+    def _lists_are_string_lists(cls, value: object) -> list[str]:
+        return _coerce_string_list(value)
+
+    @model_validator(mode="after")
+    def _allowed_updates_have_no_disqualifier(self) -> Self:
+        if not (self.thompson_update_allowed or self.local_posterior_update_allowed):
+            return self
+        disqualifiers: list[str] = []
+        if self.evidence_freshness is not FreshnessState.FRESH:
+            disqualifiers.append("stale_or_missing_evidence")
+        if self.evidence_kind is not LearningEvidenceKind.WITNESSED:
+            disqualifiers.append(f"evidence_kind:{self.evidence_kind.value}")
+        if self.confidence < 0.8:
+            disqualifiers.append("low_confidence")
+        if not self.envelope_valid:
+            disqualifiers.append("invalid_envelope")
+        if self.support_only:
+            disqualifiers.append("support_only")
+        if self.hkp_only:
+            disqualifiers.append("hkp_only")
+        if self.public_projection_forbidden:
+            disqualifiers.append("public_projection_forbidden")
+        if not self.evidence_refs:
+            disqualifiers.append("missing_evidence_refs")
+        if disqualifiers:
+            raise ValueError(
+                "learning updates require witnessed fresh authoritative evidence; "
+                + ", ".join(disqualifiers)
+            )
+        return self
+
+
+class LocalCalibrationProvenance(_RouteModel):
+    source: str = "unknown"
+    posterior_receipt_refs: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    observed_at: datetime | None = None
+    stale_after: str = "24h"
+
+    @field_validator("posterior_receipt_refs", "evidence_refs", mode="before")
+    @classmethod
+    def _lists_are_string_lists(cls, value: object) -> list[str]:
+        return _coerce_string_list(value)
+
+
+class RouteReceipts(_RouteModel):
+    evidence_receipt_refs: list[str] = Field(default_factory=list)
+    outcome_receipt_refs: list[str] = Field(default_factory=list)
+
+    @field_validator("evidence_receipt_refs", "outcome_receipt_refs", mode="before")
+    @classmethod
+    def _lists_are_string_lists(cls, value: object) -> list[str]:
+        return _coerce_string_list(value)
+
+
+class RouteEnvelope(_RouteModel):
+    route_envelope_schema: Literal[1] = 1
+    consumers: list[RouteEnvelopeConsumer] = Field(
+        default_factory=lambda: list(RouteEnvelopeConsumer)
+    )
+    classification_envelope: ClassificationEnvelope = Field(default_factory=ClassificationEnvelope)
+    eligibility: RouteEligibility = Field(default_factory=RouteEligibility)
+    admission: RouteAdmission = Field(default_factory=RouteAdmission)
+    benchmark_gap: BenchmarkGap = Field(default_factory=BenchmarkGap)
+    public_release_projection: PublicReleaseProjection = Field(
+        default_factory=PublicReleaseProjection
+    )
+    hardening_allocation: HardeningAllocation = Field(default_factory=HardeningAllocation)
+    learning_eligibility: LearningEligibility = Field(default_factory=LearningEligibility)
+    receipts: RouteReceipts = Field(default_factory=RouteReceipts)
+
+    @model_validator(mode="after")
+    def _route_envelope_fails_closed(self) -> Self:
+        missing_consumers = REQUIRED_ROUTE_ENVELOPE_CONSUMERS - set(self.consumers)
+        if missing_consumers:
+            missing = ", ".join(sorted(consumer.value for consumer in missing_consumers))
+            raise ValueError(f"route envelope missing required consumers: {missing}")
+        classification = self.classification_envelope
+        if classification.confidence < 0.5 and self.admission.admission_action not in {
+            RouteAdmissionAction.HOLD,
+            RouteAdmissionAction.SHADOW,
+        }:
+            raise ValueError("low-confidence classification can only hold or shadow")
+        if (
+            classification.freshness is not FreshnessState.FRESH
+            and self.admission.admission_action is RouteAdmissionAction.ROUTE
+        ):
+            raise ValueError("stale or missing classification cannot route")
+        if self.public_release_projection.public_projection_forbidden and (
+            self.learning_eligibility.thompson_update_allowed
+            or self.learning_eligibility.local_posterior_update_allowed
+        ):
+            raise ValueError("public-projection-forbidden evidence cannot update learning")
+        return self
+
+
 # The operator-steered execution-axis DEMANDS. The VALUE strings mirror the supply-side
 # Effort / ContextMode StrEnums owned by shared.platform_capability_registry — but that module
 # is HIGHER (it imports ToolAuthorityUse from here), so this lower module speaks the value strings
@@ -217,6 +677,7 @@ class TaskDemand(_RouteModel):
     # conditional execution-axis demands; None = undemanded (the non-perturbation default)
     effort_demand: str | None = None
     context_mode_demand: str | None = None
+    fixed_route_overhead_sensitivity: int = Field(default=0, ge=0, le=5)
 
     @field_validator("effort_demand")
     @classmethod
@@ -279,6 +740,7 @@ class DemandVector(_RouteModel):
     demand_vector_schema: Literal[1] = 1
     routing_model_version: Literal["capacity-dimensional-v1"] = "capacity-dimensional-v1"
     work_item: DemandWorkItem
+    route_envelope: RouteEnvelope = Field(default_factory=RouteEnvelope)
     quality_floor: QualityFloor
     authority_level: AuthorityLevel
     mutation_surface: MutationSurface
@@ -353,6 +815,7 @@ class CloudBurst(_RouteModel):
 
 class RouteMetadata(_RouteModel):
     route_metadata_schema: Literal[1] = 1
+    route_envelope: RouteEnvelope = Field(default_factory=RouteEnvelope)
     quality_floor: QualityFloor
     authority_level: AuthorityLevel
     mutation_surface: MutationSurface
@@ -422,12 +885,20 @@ _PYDANTIC_DYNAMIC_ENTRYPOINTS = (
     RouteMetadataAssessment.planning_status,
     CloudBurst._spike_reasons_are_string_lists,
     CloudBurst._eligible_requires_reasons_and_no_secret_egress,
+    ClassificationEnvelope._lists_are_string_lists,
+    ClassificationEnvelope._validity_mask_is_bool_mapping,
+    ClassificationEnvelope._classification_contract_fails_closed,
+    RouteEnvelope._route_envelope_fails_closed,
+    LearningEligibility._allowed_updates_have_no_disqualifier,
+    HardeningAllocation._intensive_hardening_requires_receipts_and_axes,
+    FixedRouteOverhead._nonzero_overhead_needs_evidence,
 )
 
 
 ROUTE_METADATA_FIELDS = frozenset(
     {
         "route_metadata_schema",
+        "route_envelope",
         "quality_floor",
         "authority_level",
         "mutation_surface",
@@ -561,6 +1032,7 @@ def build_demand_vector(
             frontmatter_observed_at=checked_at,
             frontmatter_hash=stable_payload_hash(frontmatter),
         ),
+        route_envelope=metadata.route_envelope,
         quality_floor=metadata.quality_floor,
         authority_level=metadata.authority_level,
         mutation_surface=metadata.mutation_surface,
@@ -671,7 +1143,242 @@ def derive_route_metadata_payload(
     derived_fields.append("review_requirement")
     payload["cloud_burst"] = _derive_cloud_burst(frontmatter, payload["risk_flags"])
     derived_fields.append("cloud_burst")
+    payload["route_envelope"] = _derive_route_envelope(frontmatter, payload)
+    derived_fields.append("route_envelope")
     return payload, derived_fields
+
+
+def _derive_route_envelope(
+    frontmatter: Mapping[str, Any],
+    route_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    classification = _derive_classification_envelope(frontmatter, route_payload)
+    public_projection = _derive_public_release_projection(frontmatter, route_payload)
+    learning = _derive_learning_eligibility(classification, public_projection)
+    confidence = float(classification["confidence"])
+    admission_action = "hold" if confidence == 0.0 else "shadow"
+    return {
+        "classification_envelope": classification,
+        "eligibility": {
+            "reason_codes": ["derived_route_envelope_requires_router_admission"],
+        },
+        "admission": {
+            "admission_action": admission_action,
+            "estimated_context_tokens": _int_or_none(frontmatter.get("estimated_context_tokens")),
+            "reason_codes": [
+                "classification_missing" if confidence == 0.0 else "classification_shadow_only"
+            ],
+        },
+        "benchmark_gap": _derive_benchmark_gap(frontmatter),
+        "public_release_projection": public_projection,
+        "hardening_allocation": _derive_hardening_allocation(frontmatter, route_payload),
+        "learning_eligibility": learning,
+        "receipts": {
+            "evidence_receipt_refs": _coerce_string_list(frontmatter.get("evidence_receipt_refs")),
+            "outcome_receipt_refs": _coerce_string_list(frontmatter.get("outcome_receipt_refs")),
+        },
+    }
+
+
+def _derive_classification_envelope(
+    frontmatter: Mapping[str, Any],
+    route_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    label = _optional_frontmatter_string(
+        frontmatter.get("routing_class") or frontmatter.get("classification_label")
+    )
+    facts = [
+        f"{field}:{frontmatter[field]}"
+        for field in ("quality_floor", "mutation_surface", "authority_level", "routing_class")
+        if field in frontmatter and not _is_empty_frontmatter_value(frontmatter[field])
+    ]
+    validity = _default_classification_validity_mask()
+    if label:
+        validity.update(
+            {
+                "label": True,
+                "source": True,
+                "confidence": False,
+                "freshness": False,
+                "authority_ceiling": True,
+            }
+        )
+    authority = route_payload.get("authority_level")
+    authority_value = authority.value if isinstance(authority, StrEnum) else str(authority or "")
+    ceiling = (
+        ClassificationAuthorityCeiling.AUTHORITATIVE.value
+        if authority_value == AuthorityLevel.AUTHORITATIVE.value
+        else ClassificationAuthorityCeiling.SUPPORT_ONLY.value
+    )
+    return {
+        "label": label or "unknown",
+        "classifier": "frontmatter_deterministic_derivation" if label else "missing",
+        "source_kind": ClassificationSourceKind.DETERMINISTIC.value
+        if label
+        else ClassificationSourceKind.INFERRED.value,
+        "confidence": 0.6 if label else 0.0,
+        "evidence_refs": _coerce_string_list(frontmatter.get("classification_evidence_refs")),
+        "freshness": FreshnessState.MANUAL_ASSERTION.value
+        if label
+        else FreshnessState.MISSING.value,
+        "authority_ceiling": ceiling,
+        "validity_mask": validity,
+        "ambiguity_tie_reason": "deterministic derivation is a routing prior, not truth",
+        "deterministic_facts_used": facts,
+        "consumer_floor": route_payload.get("quality_floor") or QualityFloor.FRONTIER_REQUIRED,
+    }
+
+
+def _derive_benchmark_gap(frontmatter: Mapping[str, Any]) -> dict[str, Any]:
+    tags = _lower_strings(frontmatter.get("tags"))
+    title = _lower_scalar(frontmatter.get("title"))
+    combined = " ".join([title, *tags])
+    if not _contains_any(combined, ("benchmark", "eval")):
+        return {}
+    return {
+        "coverage": {
+            "coverage_state": BenchmarkCoverageState.PARTIAL.value,
+            "gap_refs": _coerce_string_list(frontmatter.get("benchmark_gap_refs")),
+            "evidence_refs": _coerce_string_list(frontmatter.get("benchmark_evidence_refs")),
+        },
+        "public_candidate": False,
+        "gap_summary": "benchmark-shaped work requires eval-ledger review before priority override",
+        "evidence_refs": _coerce_string_list(frontmatter.get("benchmark_evidence_refs")),
+    }
+
+
+def _derive_public_release_projection(
+    frontmatter: Mapping[str, Any],
+    route_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    risk_flags = route_payload.get("risk_flags") or {}
+    public_sensitive = bool(
+        getattr(risk_flags, "public_claim_sensitive", False)
+        if not isinstance(risk_flags, Mapping)
+        else risk_flags.get("public_claim_sensitive")
+    )
+    mutation_surface = route_payload.get("mutation_surface")
+    mutation_value = (
+        mutation_surface.value if isinstance(mutation_surface, StrEnum) else str(mutation_surface)
+    )
+    may_create_public_claim = public_sensitive or mutation_value == MutationSurface.PUBLIC.value
+    may_create_dataset = _boolish(frontmatter.get("may_create_dataset_export"))
+    if not (may_create_public_claim or may_create_dataset):
+        return {}
+    return {
+        "projection_state": PublicReleaseProjectionState.CANDIDATE.value,
+        "may_create_public_claim": may_create_public_claim,
+        "may_create_dataset_export": may_create_dataset,
+        "publication_authorized": _boolish(frontmatter.get("publication_authorized")),
+        "dataset_export_authorized": _boolish(frontmatter.get("dataset_export_authorized")),
+        "research_corpus_ledger_ref": _optional_frontmatter_string(
+            frontmatter.get("research_corpus_ledger_ref")
+        ),
+        "evidence_refs": _coerce_string_list(frontmatter.get("public_projection_evidence_refs")),
+    }
+
+
+def _derive_hardening_allocation(
+    frontmatter: Mapping[str, Any],
+    route_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    risk_flags = route_payload.get("risk_flags") or {}
+    risk = RiskFlags.model_validate(risk_flags)
+    tags = _lower_strings(frontmatter.get("tags"))
+    axes: list[str] = []
+    if risk.governance_sensitive:
+        axes.append("authority")
+    if risk.privacy_or_secret_sensitive:
+        axes.append("privacy")
+    if risk.public_claim_sensitive:
+        axes.append("public_release")
+    if "ambiguous" in tags or "research" in tags:
+        axes.append("ambiguity")
+
+    mutation_surface = route_payload.get("mutation_surface")
+    mutation_value = (
+        mutation_surface.value if isinstance(mutation_surface, StrEnum) else str(mutation_surface)
+    )
+    if mutation_value == MutationSurface.SOURCE.value or _lower_scalar(
+        frontmatter.get("kind") or frontmatter.get("task_type")
+    ) in {"implementation", "source", "build"}:
+        axes.append("implementation")
+
+    if risk.audio_or_live_egress_sensitive or risk.provider_billing_sensitive:
+        intensity = HardeningIntensity.DEEP
+    elif any(axis in axes for axis in ("authority", "privacy", "public_release", "ambiguity")):
+        intensity = HardeningIntensity.TARGETED
+    elif mutation_value == MutationSurface.SOURCE.value:
+        intensity = HardeningIntensity.LIGHT
+    else:
+        intensity = HardeningIntensity.NONE
+
+    if intensity is HardeningIntensity.NONE:
+        return {}
+
+    budget_minutes = {
+        HardeningIntensity.LIGHT: 15,
+        HardeningIntensity.TARGETED: 45,
+        HardeningIntensity.STANDARD: 90,
+        HardeningIntensity.DEEP: 180,
+        HardeningIntensity.BREAK_GLASS: 360,
+    }.get(intensity, 0)
+    return {
+        "hardening_intensity": intensity.value,
+        "scope": "request",
+        "axes": list(dict.fromkeys(axes or ["schema"])),
+        "budget": {
+            "max_minutes": budget_minutes,
+            "max_context_tokens": budget_minutes * 1000 if budget_minutes else None,
+        },
+        "expected_value": 4 if intensity is not HardeningIntensity.LIGHT else 2,
+        "opportunity_cost": 3 if intensity is not HardeningIntensity.LIGHT else 1,
+        "justification": [
+            "hardening is routed from risk, ambiguity, mutation surface, and evidence deficit"
+        ],
+        "request_claims_as_priors": True,
+        "stop_condition": "targeted axes have fresh evidence or an explicit hold receipt",
+        "receipt_ref": _optional_frontmatter_string(frontmatter.get("hardening_receipt_ref")),
+    }
+
+
+def _derive_learning_eligibility(
+    classification: Mapping[str, Any],
+    public_projection: Mapping[str, Any],
+) -> dict[str, Any]:
+    source_kind = str(classification.get("source_kind") or ClassificationSourceKind.INFERRED.value)
+    evidence_kind = {
+        ClassificationSourceKind.HKP_CACHE.value: LearningEvidenceKind.HKP_ONLY.value,
+        ClassificationSourceKind.SUPPLIED_ONLY.value: LearningEvidenceKind.SUPPLIED_ONLY.value,
+        ClassificationSourceKind.INFERRED.value: LearningEvidenceKind.INFERRED.value,
+    }.get(source_kind, LearningEvidenceKind.INFERRED.value)
+    projection = PublicReleaseProjection.model_validate(public_projection or {})
+    confidence = float(classification.get("confidence") or 0.0)
+    envelope_valid = bool(ClassificationEnvelope.model_validate(classification).valid_for_dispatch)
+    reasons = ["learning_fail_closed"]
+    if confidence < 0.8:
+        reasons.append("low_confidence")
+    if not envelope_valid:
+        reasons.append("invalid_envelope")
+    if evidence_kind != LearningEvidenceKind.WITNESSED.value:
+        reasons.append(f"evidence_kind:{evidence_kind}")
+    if projection.public_projection_forbidden:
+        reasons.append("public_projection_forbidden")
+    return {
+        "evidence_kind": evidence_kind,
+        "evidence_freshness": classification.get("freshness", FreshnessState.MISSING.value),
+        "confidence": confidence,
+        "envelope_valid": envelope_valid,
+        "support_only": classification.get("authority_ceiling")
+        in {
+            ClassificationAuthorityCeiling.SUPPORT_ONLY.value,
+            ClassificationAuthorityCeiling.READ_ONLY.value,
+        },
+        "hkp_only": source_kind == ClassificationSourceKind.HKP_CACHE.value,
+        "public_projection_forbidden": projection.public_projection_forbidden,
+        "reason_codes": list(dict.fromkeys(reasons)),
+        "evidence_refs": _coerce_string_list(classification.get("evidence_refs")),
+    }
 
 
 def _assess_explicit_route_metadata(frontmatter: Mapping[str, Any]) -> RouteMetadataAssessment:
@@ -1000,6 +1707,9 @@ def _derived_task_demand_payload(
         else 4
         if risk.governance_sensitive
         else 2,
+        "fixed_route_overhead_sensitivity": 5
+        if "fixed-overhead-sensitive" in tags or "fixed_overhead_sensitive" in tags
+        else 0,
     }
 
 
