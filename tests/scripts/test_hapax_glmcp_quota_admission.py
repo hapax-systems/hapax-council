@@ -445,6 +445,21 @@ def test_write_failure_reports_next_action_without_path_details(tmp_path: Path) 
     assert str(receipt_dir) not in result.stderr
 
 
+def test_observe_error_unknown_provider_code_writes_non_admission_hold(tmp_path: Path) -> None:
+    result, receipt_dir = _run(tmp_path, "observe-error", "--provider-code", "9999")
+
+    assert result.returncode == 0, result.stderr
+    fields = _read_flat_fields(receipt_dir / "glmcp-quota-hold.yaml")
+    assert fields["status"] == "hold"
+    assert fields["provider_code"] == "9999"
+    assert fields["failure_class"] == "unknown_provider_code"
+    assert fields["action"] == "manual_hold_no_quota_admission"
+    assert fields["failure_code"] == "unknown"
+    assert fields["positive_admission"] == "false"
+    assert fields["payg_fallback"] == "false"
+    assert not (receipt_dir / "glmcp-quota-admission.yaml").exists()
+
+
 @pytest.mark.parametrize(
     ("provider_code", "failure_class", "action", "failure_code"),
     [
