@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import ast
 import os
+import tomllib
+from collections.abc import Iterable
 from pathlib import Path
+
+from packaging.requirements import Requirement
 
 EXCLUDED_DIRS = {
     ".git",
@@ -21,6 +25,7 @@ EXCLUDED_DIRS = {
 
 FORBIDDEN_SYMBOLS = ("nltk.data.load", "torch.jit")
 FORBIDDEN_STAR_IMPORT_MODULES = {"nltk", "nltk.data", "torch", "torch.jit"}
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _is_python_source(path: Path) -> bool:
@@ -61,23 +66,43 @@ def _resolve_symbol(symbol: str, aliases: dict[str, str]) -> str:
     return f"{resolved_head}.{tail}" if tail else resolved_head
 
 
+def _dynamic_import_symbol(node: ast.Call, aliases: dict[str, str]) -> str | None:
+    func_symbol = _expr_symbol(node.func, aliases)
+    if func_symbol not in {"importlib.import_module", "__import__"}:
+        return None
+    if not node.args:
+        return None
+    target = node.args[0]
+    if isinstance(target, ast.Constant) and isinstance(target.value, str):
+        return target.value
+    return None
+
+
 def _expr_symbol(node: ast.AST, aliases: dict[str, str]) -> str | None:
     if isinstance(node, ast.Name):
         return _resolve_symbol(node.id, aliases)
     if isinstance(node, ast.Attribute):
         base = _expr_symbol(node.value, aliases)
         return f"{base}.{node.attr}" if base else None
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "getattr"
-        and len(node.args) >= 2
-        and isinstance(node.args[1], ast.Constant)
-        and isinstance(node.args[1].value, str)
-    ):
-        base = _expr_symbol(node.args[0], aliases)
-        return f"{base}.{node.args[1].value}" if base else None
+    if isinstance(node, ast.Call):
+        dynamic_import = _dynamic_import_symbol(node, aliases)
+        if dynamic_import:
+            return dynamic_import
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and isinstance(node.args[1].value, str)
+        ):
+            base = _expr_symbol(node.args[0], aliases)
+            return f"{base}.{node.args[1].value}" if base else None
+        return None
     return None
+
+
+def _requirement_names(requirements: Iterable[str]) -> set[str]:
+    return {Requirement(requirement).name.lower().replace("_", "-") for requirement in requirements}
 
 
 def _forbidden_reachability(path: Path) -> list[str]:
@@ -168,6 +193,30 @@ def test_reachability_guard_detects_direct_star_and_getattr_forms(tmp_path: Path
     assert any("nltk.data.load" in offender for offender in offenders)
 
 
+def test_reachability_guard_detects_dynamic_import_forms(tmp_path: Path):
+    sample = tmp_path / "uses_dynamic_forbidden_advisory_forms.py"
+    sample.write_text(
+        "\n".join(
+            [
+                "import importlib",
+                "from importlib import import_module as load_module",
+                "",
+                "def use_dynamic_forms():",
+                "    importlib.import_module('torch.jit').script(lambda value: value)",
+                "    load_module('nltk.data').load('tokenizers/punkt')",
+                "    __import__('nltk.data', fromlist=['load']).load('tokenizers/punkt')",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    offenders = _forbidden_reachability(sample)
+
+    assert any("torch.jit.script" in offender for offender in offenders)
+    assert any("nltk.data.load" in offender for offender in offenders)
+
+
 def test_source_files_include_python_shebang_entrypoints(tmp_path: Path):
     module = tmp_path / "module.py"
     module.write_text("print('module')\n", encoding="utf-8")
@@ -180,6 +229,39 @@ def test_source_files_include_python_shebang_entrypoints(tmp_path: Path):
     ignored.write_text("print('ignored')\n", encoding="utf-8")
 
     assert {path.name for path in _source_files(tmp_path)} == {"entrypoint", "module.py"}
+
+
+def test_source_files_skip_unreadable_extensionless_sources(tmp_path: Path):
+    assert _is_python_source(tmp_path / "missing-entrypoint") is False
+
+
+def test_default_dependencies_do_not_restore_no_patch_llmlingua_edge():
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = _requirement_names(pyproject["project"]["dependencies"])
+
+    assert "llmlingua" not in dependencies
+
+
+def test_direct_constraints_do_not_restore_no_patch_nltk_edge():
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    constraint_dependencies = _requirement_names(
+        pyproject["tool"]["uv"].get("constraint-dependencies", [])
+    )
+
+    assert "nltk" not in constraint_dependencies
+
+
+def test_lockfile_keeps_nltk_transitive_not_llmlingua_default():
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    packages = {package["name"]: package for package in lock["package"]}
+    project_package = packages["hapax-council"]
+    project_dependencies = _requirement_names(
+        dependency["name"] for dependency in project_package["dependencies"]
+    )
+
+    assert "llmlingua" not in packages
+    assert "nltk" in packages
+    assert "nltk" not in project_dependencies
 
 
 def test_no_first_party_nltk_data_load_or_torch_jit_reachability():
