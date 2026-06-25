@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import inspect
 import json
 import os
 import sqlite3
@@ -15,6 +16,8 @@ from types import ModuleType
 from unittest.mock import patch
 
 from agents.coordinator.core import (
+    _DISPATCH_CLAIM_GUARD_MARKERS,
+    _DISPATCH_CLOSE_GUARD_MARKERS,
     Coordinator,
     CoordinatorState,
     LaneDescriptor,
@@ -94,6 +97,7 @@ class TestDispatchWorktreeGuard:
     def test_dispatch_worktree_matches_methodology_dispatcher(self, tmp_path: Path):
         dispatcher = _dispatcher_module()
         root = tmp_path / "projects"
+        override = tmp_path / "custom-worktree"
         cases = (
             ("cx-red", "codex"),
             ("red", "codex"),
@@ -105,7 +109,29 @@ class TestDispatchWorktreeGuard:
             ("other", "unknown"),
         )
 
-        with patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(root)}, clear=False):
+        with patch.dict(os.environ, {"HAPAX_DISPATCH_PROJECT_ROOT": str(root)}, clear=True):
+            for role, platform in cases:
+                assert _dispatch_worktree(role, platform) == dispatcher.lane_worktree(
+                    role, platform
+                )
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            for role, platform in cases:
+                assert _dispatch_worktree(role, platform) == dispatcher.lane_worktree(
+                    role, platform
+                )
+
+        with patch.dict(
+            os.environ,
+            {
+                "HAPAX_DISPATCH_PROJECT_ROOT": str(root),
+                "HAPAX_DISPATCH_WORKTREE": str(override),
+            },
+            clear=True,
+        ):
             for role, platform in cases:
                 assert _dispatch_worktree(role, platform) == dispatcher.lane_worktree(
                     role, platform
@@ -116,6 +142,16 @@ class TestDispatchWorktreeGuard:
 
         with patch.dict("os.environ", {"HAPAX_DISPATCH_WORKTREE": str(override)}, clear=False):
             assert _dispatch_worktree("cx-red", "codex") == override
+
+    def test_dispatch_guard_markers_match_methodology_dispatcher(self):
+        dispatcher = _dispatcher_module()
+        claim_source = inspect.getsource(dispatcher.check_worktree_claim_guard)
+        close_source = inspect.getsource(dispatcher.check_worktree_close_guard)
+
+        for marker in _DISPATCH_CLAIM_GUARD_MARKERS:
+            assert marker in claim_source
+        for marker in _DISPATCH_CLOSE_GUARD_MARKERS:
+            assert marker in close_source
 
     def test_dispatch_tool_blocker_reports_missing_close_with_next_action(self, tmp_path: Path):
         worktree = tmp_path / "projects" / "hapax-council--beta"
