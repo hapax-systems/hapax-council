@@ -405,9 +405,16 @@ class TaskSpec(BaseModel):
         if not has_taxonomy:
             return self
         if not self.requirement_vector:
-            raise ValueError("routing taxonomy requires requirement_vector")
+            raise ValueError(
+                "routing taxonomy requires requirement_vector; next action: add one "
+                "0-5 score for each taxonomy dimension or omit all taxonomy fields"
+            )
         if not self.requirement_vector_validity_mask:
-            raise ValueError("routing taxonomy requires requirement_vector_validity_mask")
+            raise ValueError(
+                "routing taxonomy requires requirement_vector_validity_mask; next "
+                "action: add true/false validity for each taxonomy dimension or omit "
+                "all taxonomy fields"
+            )
         return self
 
     @model_validator(mode="after")

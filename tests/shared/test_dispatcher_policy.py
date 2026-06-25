@@ -315,6 +315,26 @@ def _task_fields() -> dict[str, object]:
     return payload
 
 
+def _move_route_metadata_under_nested_key(task_fields: dict[str, object]) -> None:
+    route_metadata_keys = (
+        "route_metadata_schema",
+        "route_envelope",
+        "quality_floor",
+        "authority_level",
+        "mutation_surface",
+        "mutation_scope_refs",
+        "risk_flags",
+        "context_shape",
+        "verification_surface",
+        "route_constraints",
+        "review_requirement",
+        "cloud_burst",
+    )
+    task_fields["route_metadata"] = {
+        key: task_fields.pop(key) for key in route_metadata_keys if key in task_fields
+    }
+
+
 def _review_task_fields() -> dict[str, object]:
     # A review-seat task: non-mutating, support-non-authoritative — the work a
     # read-only ReviewSeatAdapter (glmcp.review.direct) actually does. Used to
@@ -462,6 +482,33 @@ def test_build_dispatch_request_missing_route_envelope_holds_before_launch() -> 
 def test_build_dispatch_request_preserves_explicit_route_envelope_hold_reasons() -> None:
     task_fields = _task_fields()
     task_fields["route_envelope"] = _route_envelope(admission_action="hold")
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert request.demand_vector is not None
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
+    assert "route_envelope_admission_hold" in decision.reason_codes
+    assert "route_envelope_hold" in decision.reason_codes
+    assert "missing_demand_vector" not in decision.reason_codes
+    assert "route_envelope_missing" not in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_build_dispatch_request_preserves_nested_route_envelope_hold_reasons() -> None:
+    task_fields = _task_fields()
+    task_fields["route_envelope"] = _route_envelope(admission_action="hold")
+    _move_route_metadata_under_nested_key(task_fields)
     request = build_dispatch_request(
         task_id="policy-test",
         lane="cx-green",

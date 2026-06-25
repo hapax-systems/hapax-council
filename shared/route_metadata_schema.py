@@ -1193,9 +1193,18 @@ def build_demand_vector(
                 ]
             )
         )
+    nested_route_metadata = frontmatter.get("route_metadata")
+    explicit_route_envelope_present = (
+        "route_envelope" in frontmatter
+        and not _is_empty_frontmatter_value(frontmatter.get("route_envelope"))
+    ) or (
+        isinstance(nested_route_metadata, Mapping)
+        and "route_envelope" in nested_route_metadata
+        and not _is_empty_frontmatter_value(nested_route_metadata.get("route_envelope"))
+    )
     preserving_explicit_route_envelope_hold = (
         preserve_route_envelope_hold
-        and "route_envelope" in frontmatter
+        and explicit_route_envelope_present
         and assessment.status in {RouteMetadataStatus.EXPLICIT, RouteMetadataStatus.DERIVED}
         and not assessment.missing_fields
         and not assessment.validation_errors

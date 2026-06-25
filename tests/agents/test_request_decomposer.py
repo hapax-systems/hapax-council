@@ -164,7 +164,13 @@ class TestTaskSpec:
             )
 
     def test_taxonomy_without_validity_mask_rejected(self):
-        with pytest.raises(ValueError, match="requirement_vector_validity_mask"):
+        with pytest.raises(
+            ValueError,
+            match=(
+                "routing taxonomy requires requirement_vector_validity_mask; next action: add "
+                "true/false validity"
+            ),
+        ):
             TaskSpec(
                 task_id="taxonomy-no-mask",
                 title="No mask",
@@ -173,6 +179,21 @@ class TestTaskSpec:
                 acceptance_criteria=["It works"],
                 routing_class="source_python",
                 requirement_vector=_requirement_vector(),
+            )
+
+    def test_taxonomy_without_requirement_vector_rejected_with_next_action(self):
+        with pytest.raises(
+            ValueError,
+            match=("routing taxonomy requires requirement_vector; next action: add one 0-5 score"),
+        ):
+            TaskSpec(
+                task_id="taxonomy-no-vector",
+                title="No vector",
+                parent_request="REQ-test.md",
+                authority_case="CASE-TEST",
+                acceptance_criteria=["It works"],
+                routing_class="source_python",
+                requirement_vector_validity_mask=_validity_mask(),
             )
 
     def test_invalid_taxonomy_score_rejected(self):
