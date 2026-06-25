@@ -1323,6 +1323,35 @@ def test_dimensional_policy_vetoes_missing_required_tool() -> None:
     assert any(veto.code == "required_tool_unavailable" for veto in candidate.vetoes)
 
 
+def test_dimensional_policy_scores_fixed_route_overhead_through_dispatch() -> None:
+    demand = _demand(tags=["fixed-overhead-sensitive"])
+    route_payload = _route_with_scores("codex.headless.full", score=5).model_dump(mode="json")
+    route_payload["historical_performance"]["fixed_route_overhead"] = {
+        "fixed_cost_score": 4,
+        "setup_seconds": 90,
+        "context_tokens": 3000,
+        "coordination_steps": 2,
+        "evidence_refs": ["overhead:test:codex-headless-full"],
+        "projection_ref": "overhead:test:projection",
+    }
+    supply = build_supply_vector(PlatformCapabilityRoute.model_validate(route_payload), now=NOW)
+    request = _request(demand_vector=demand, supply_vector=supply)
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.dimensional_receipt is not None
+    [candidate] = decision.dimensional_receipt.candidates
+    overhead_score = next(
+        score for score in candidate.dimensional_scores if score.dimension == "fixed_route_overhead"
+    )
+    assert overhead_score.demand == 5
+    assert overhead_score.supply == 4
+    assert overhead_score.score == 1.0
+    assert overhead_score.confidence == 3.0
+    assert overhead_score.evidence_refs == ("overhead:test:codex-headless-full",)
+
+
 def test_policy_rollback_is_retired_and_requires_signed_route_receipts() -> None:
     request = _request(rollback_mode=True)
 
