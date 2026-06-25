@@ -4234,6 +4234,9 @@ from shared.sdlc_router import (
 from shared.sdlc_router import (
     SdlcRoutingRequest as _SdlcRoutingRequest,
 )
+from shared.sdlc_router import (
+    gate_event_learning_allowed,
+)
 
 _DagComposability.is_parallel_independent
 _DagComposability.is_sequential
@@ -4251,6 +4254,7 @@ _SdlcRouteCandidate._capability_maps_use_strict_bounded_scores
 _SdlcRouteCandidate.from_supply_vector
 _SdlcRouteDecision.route_allowed
 _SdlcRouter.ingest_gate_events
+gate_event_learning_allowed
 
 # InterviewConductor is the new turn-state-motor MVP (cc-task
 # voice-interview-conductor-turn-motor-20260615, REQ-20260616 Track A). Its live caller
