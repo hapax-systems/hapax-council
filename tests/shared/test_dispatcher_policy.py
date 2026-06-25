@@ -676,6 +676,8 @@ def test_candidate_set_cannot_bypass_primary_missing_route_envelope() -> None:
 
 
 def test_candidate_set_cannot_bypass_primary_route_envelope_hold() -> None:
+    # Regression guard: candidate-set evaluation used to run before the primary
+    # route-envelope hold, allowing an alternate route to bypass admission.
     task_fields = _task_fields()
     task_fields["route_envelope"] = _route_envelope(admission_action="hold")
     primary = build_dispatch_request(
@@ -711,6 +713,8 @@ def test_candidate_set_cannot_bypass_primary_route_envelope_hold() -> None:
 
 
 def test_candidate_set_keeps_primary_for_same_route_candidate() -> None:
+    # Regression guard: same-route candidates used to overwrite the primary
+    # request in candidate-set deduplication.
     primary = _dimensional_request("codex.headless.full", score=3)
     same_route_candidate = _dimensional_request("codex.headless.full", score=5)
     primary_only = evaluate_dispatch_policy(primary, candidate_requests=(), now=NOW)

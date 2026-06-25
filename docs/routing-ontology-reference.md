@@ -156,10 +156,15 @@ route_metadata:
 ```
 
 Missing or invalid `route_envelope` / `DemandVector` evidence is not
-dispatchable: primary dispatch holds before `policy_launch`. Recheck with:
+dispatchable: primary dispatch holds before candidate-set scoring and before
+`policy_launch`. Recheck the envelope construction and dispatch gates with:
 
 ```bash
-uv run pytest tests/shared/test_dispatcher_policy.py
+uv run pytest \
+  tests/shared/test_dispatcher_policy.py \
+  tests/shared/test_route_metadata_schema.py \
+  tests/shared/test_dispatcher_capability_fit_dimensions.py \
+  tests/test_request_intake_consumer.py
 ```
 
 ## Derivation
