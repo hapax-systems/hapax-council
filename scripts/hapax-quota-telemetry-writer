@@ -436,7 +436,7 @@ def active_glmcp_admission_receipts(
                 "evidence_ref unsafe; expected a sanitized witness reference, not raw secret material",
             )
             continue
-        if fields.get("captured_at", "").strip() or fields.get("detected_at", "").strip():
+        if "captured_at" in fields or "detected_at" in fields:
             reject(
                 path,
                 "unsupported timestamp field; expected observed_at only",
@@ -494,16 +494,16 @@ def active_glmcp_admission_receipts(
         if fields.get("secret_source", "") != "pass:glmcp/api-key":
             reject(path, "secret_source missing or unsupported")
             continue
-        if str(fields.get("secret_value_persisted", "")).lower() != "false":
+        if fields.get("secret_value_persisted", "") != "false":
             reject(path, "secret_value_persisted must be false")
             continue
-        if str(fields.get("prompt_or_output_persisted", "")).lower() != "false":
+        if fields.get("prompt_or_output_persisted", "") != "false":
             reject(path, "prompt_or_output_persisted must be false")
             continue
         if fields.get("billing_mode", "") != "coding_plan_subscription":
             reject(path, "billing_mode missing or unsupported")
             continue
-        if str(fields.get("payg_fallback", "")).lower() != "false":
+        if fields.get("payg_fallback", "") != "false":
             reject(path, "payg_fallback must be false")
             continue
         refs.append(
