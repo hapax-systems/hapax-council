@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import os
 from pathlib import Path
 
 EXCLUDED_DIRS = {
@@ -21,13 +22,26 @@ EXCLUDED_DIRS = {
 FORBIDDEN_SYMBOLS = ("nltk.data.load", "torch.jit")
 
 
-def _source_files() -> list[Path]:
-    repo_root = Path(__file__).resolve().parents[1]
-    return sorted(
-        path
-        for path in repo_root.rglob("*.py")
-        if not EXCLUDED_DIRS.intersection(path.relative_to(repo_root).parts)
-    )
+def _is_python_source(path: Path) -> bool:
+    if path.suffix == ".py":
+        return True
+    try:
+        first_line = path.open("rb").readline(200)
+    except OSError:
+        return False
+    return first_line.startswith(b"#!") and b"python" in first_line.lower()
+
+
+def _source_files(repo_root: Path | None = None) -> list[Path]:
+    repo_root = repo_root or Path(__file__).resolve().parents[1]
+    files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(repo_root):
+        dirnames[:] = sorted(name for name in dirnames if name not in EXCLUDED_DIRS)
+        for filename in filenames:
+            path = Path(dirpath) / filename
+            if _is_python_source(path):
+                files.append(path)
+    return sorted(files)
 
 
 def _imported_name(module: str | None, name: str) -> str:
@@ -124,6 +138,20 @@ def test_reachability_guard_detects_alias_imports(tmp_path: Path):
     assert any("from nltk.data import load" in offender for offender in offenders)
     assert any("from torch import jit" in offender for offender in offenders)
     assert any("torch.jit.script" in offender for offender in offenders)
+
+
+def test_source_files_include_python_shebang_entrypoints(tmp_path: Path):
+    module = tmp_path / "module.py"
+    module.write_text("print('module')\n", encoding="utf-8")
+    entrypoint = tmp_path / "entrypoint"
+    entrypoint.write_text("#!/usr/bin/env python3\nprint('entrypoint')\n", encoding="utf-8")
+    shell = tmp_path / "script.sh"
+    shell.write_text("#!/usr/bin/env bash\necho shell\n", encoding="utf-8")
+    ignored = tmp_path / ".venv" / "ignored.py"
+    ignored.parent.mkdir()
+    ignored.write_text("print('ignored')\n", encoding="utf-8")
+
+    assert {path.name for path in _source_files(tmp_path)} == {"entrypoint", "module.py"}
 
 
 def test_no_first_party_nltk_data_load_or_torch_jit_reachability():
