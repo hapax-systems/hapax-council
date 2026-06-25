@@ -222,6 +222,98 @@
         "local_calibration": {"$ref": "#/$defs/score_confidence"}
       }
     },
+    "benchmark_coverage_state": {
+      "enum": ["unknown", "covered", "partial", "absent", "stale", "misleading"]
+    },
+    "benchmark_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coverage_state", "benchmark_refs", "gap_refs", "evidence_refs"],
+      "properties": {
+        "coverage_state": {"$ref": "#/$defs/benchmark_coverage_state"},
+        "benchmark_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "gap_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "fixed_route_overhead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixed_cost_score",
+        "setup_seconds",
+        "context_tokens",
+        "coordination_steps",
+        "evidence_refs",
+        "projection_ref"
+      ],
+      "properties": {
+        "fixed_cost_score": {"type": "integer", "minimum": 0, "maximum": 5},
+        "setup_seconds": {"type": "integer", "minimum": 0},
+        "context_tokens": {"type": "integer", "minimum": 0},
+        "coordination_steps": {"type": "integer", "minimum": 0},
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "projection_ref": {
+          "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+        }
+      }
+    },
+    "local_calibration_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "posterior_receipt_refs", "evidence_refs", "observed_at", "stale_after"],
+      "properties": {
+        "source": {"type": "string", "minLength": 1},
+        "posterior_receipt_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "observed_at": {"$ref": "#/$defs/timestamp_or_null"},
+        "stale_after": {"$ref": "#/$defs/duration"}
+      }
+    },
+    "historical_performance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "calibration_window",
+        "evidence_refs",
+        "class_posteriors",
+        "benchmark_coverage",
+        "fixed_route_overhead",
+        "local_calibration_provenance"
+      ],
+      "properties": {
+        "calibration_window": {"type": "string", "minLength": 1},
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "class_posteriors": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/score_confidence"}
+        },
+        "benchmark_coverage": {"$ref": "#/$defs/benchmark_coverage"},
+        "fixed_route_overhead": {"$ref": "#/$defs/fixed_route_overhead"},
+        "local_calibration_provenance": {"$ref": "#/$defs/local_calibration_provenance"}
+      }
+    },
     "tool_authority_use": {
       "enum": ["read", "write", "execute", "verify"]
     },
@@ -475,6 +567,7 @@
           "type": "array",
           "items": {"$ref": "#/$defs/tool_state"}
         },
+        "historical_performance": {"$ref": "#/$defs/historical_performance"},
         "context_limits": {"$ref": "#/$defs/context_limits"},
         "telemetry": {"$ref": "#/$defs/telemetry"},
         "freshness": {"$ref": "#/$defs/freshness"},

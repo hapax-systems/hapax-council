@@ -60,6 +60,13 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
     ):
         assert field in required
 
+    assert "historical_performance" in route["properties"]
+    history = schema["$defs"]["historical_performance"]
+    assert history["properties"]["class_posteriors"]["additionalProperties"] == {
+        "$ref": "#/$defs/score_confidence"
+    }
+    assert history["properties"]["fixed_route_overhead"] == {"$ref": "#/$defs/fixed_route_overhead"}
+
     assert set(schema["$defs"]["platform"]["enum"]) >= {
         "claude",
         "codex",

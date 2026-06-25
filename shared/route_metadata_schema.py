@@ -1220,6 +1220,9 @@ def build_demand_vector(
         raise ValueError(
             "cannot build demand vector for non-dispatchable route metadata: "
             + ", ".join(reasons or [assessment.status.value])
+            + "; next action: attach a dispatchable route_envelope with "
+            "admission_action=route and fresh authoritative evidence, or keep "
+            "admission_action=hold/shadow/support_only so dispatch remains held"
         )
 
     metadata = assessment.metadata
