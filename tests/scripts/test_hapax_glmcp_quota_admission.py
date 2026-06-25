@@ -14,6 +14,14 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-glmcp-quota-admission"
 NOW = "2026-06-10T00:00:00Z"
+SUCCESS_METADATA_ARGS = (
+    "--supported-tool",
+    "claude_code",
+    "--endpoint",
+    "https://api.z.ai/api/anthropic",
+    "--model",
+    "glm-5.2[1m]",
+)
 
 
 def _run(
@@ -55,6 +63,7 @@ def test_observe_success_writes_private_exact_positive_receipt(tmp_path: Path) -
         "observe-success",
         "--evidence-ref",
         "sanctioned-glmcp-usage-001",
+        *SUCCESS_METADATA_ARGS,
     )
 
     assert result.returncode == 0, result.stderr
@@ -97,6 +106,7 @@ def test_observe_success_does_not_persist_env_secret_or_prompt_content(tmp_path:
         "observe-success",
         "--evidence-ref",
         "sanctioned-glmcp-usage-001",
+        *SUCCESS_METADATA_ARGS,
         extra_env={
             "ANTHROPIC_AUTH_TOKEN": secret_value,
             "HAPAX_TEST_PROMPT_CONTENT": prompt_content,
@@ -129,11 +139,69 @@ def test_observe_success_rejects_unsafe_evidence_refs(
         "observe-success",
         "--evidence-ref",
         evidence_ref,
+        *SUCCESS_METADATA_ARGS,
     )
 
     assert result.returncode == 2
     assert "unsafe evidence ref" in result.stderr
     assert evidence_ref not in result.stderr
+    assert not receipt_dir.exists()
+
+
+@pytest.mark.parametrize(
+    ("metadata_args", "expected_message"),
+    [
+        (
+            (
+                "--supported-tool",
+                "hapax-glmcp-reviewer",
+                "--endpoint",
+                "https://api.z.ai/api/anthropic",
+                "--model",
+                "glm-5.2[1m]",
+            ),
+            "--supported-tool must be claude_code",
+        ),
+        (
+            (
+                "--supported-tool",
+                "claude_code",
+                "--endpoint",
+                "https://api.z.ai/api/coding/paas/v4",
+                "--model",
+                "glm-5.2[1m]",
+            ),
+            "--endpoint must be https://api.z.ai/api/anthropic",
+        ),
+        (
+            (
+                "--supported-tool",
+                "claude_code",
+                "--endpoint",
+                "https://api.z.ai/api/anthropic",
+                "--model",
+                "glm-5",
+            ),
+            "--model must be glm-5.2[1m]",
+        ),
+    ],
+)
+def test_observe_success_requires_observed_supported_metadata(
+    tmp_path: Path,
+    metadata_args: tuple[str, ...],
+    expected_message: str,
+) -> None:
+    result, receipt_dir = _run(
+        tmp_path,
+        "observe-success",
+        "--evidence-ref",
+        "sanctioned-glmcp-usage-001",
+        *metadata_args,
+    )
+
+    assert result.returncode == 2
+    assert expected_message in result.stderr
+    assert "next action:" in result.stderr
     assert not receipt_dir.exists()
 
 
@@ -186,6 +254,27 @@ def test_observe_error_1308_writes_quota_wall_until_reset_plus_jitter(tmp_path: 
     assert fields["payg_fallback"] == "false"
 
 
+def test_observe_error_1310_writes_quota_wall_until_reset_plus_jitter(tmp_path: Path) -> None:
+    result, receipt_dir = _run(
+        tmp_path,
+        "observe-error",
+        "--provider-code",
+        "1310",
+        "--reset-at",
+        "2026-06-10T05:00:00Z",
+        "--jitter-seconds",
+        "120",
+    )
+
+    assert result.returncode == 0, result.stderr
+    fields = _read_flat_fields(receipt_dir / "cx-glmcp-quota-wall.yaml")
+    assert fields["status"] == "quota_blocked"
+    assert fields["provider_code"] == "1310"
+    assert fields["failure_class"] == "quota_exhausted"
+    assert fields["action"] == "hold_until_reset"
+    assert fields["resets_at"] == "2026-06-10T05:02:00Z"
+
+
 @pytest.mark.parametrize(
     ("provider_code", "failure_class", "action"),
     [
@@ -220,6 +309,77 @@ def test_observe_error_backoff_codes_write_quota_wall_without_payg_fallback(
     assert fields["resets_at"] == "2026-06-10T00:20:00Z"
     assert fields["positive_admission"] == "false"
     assert fields["payg_fallback"] == "false"
+
+
+@pytest.mark.parametrize(
+    ("args", "expected_message"),
+    [
+        (
+            (
+                "observe-success",
+                "--evidence-ref",
+                "sanctioned-glmcp-usage-001",
+                *SUCCESS_METADATA_ARGS,
+                "--stale-after-seconds",
+                "0",
+            ),
+            "--stale-after-seconds must be between 1 and 3600",
+        ),
+        (
+            (
+                "observe-success",
+                "--evidence-ref",
+                "sanctioned-glmcp-usage-001",
+                *SUCCESS_METADATA_ARGS,
+                "--stale-after-seconds",
+                "3601",
+            ),
+            "--stale-after-seconds must be between 1 and 3600",
+        ),
+        (
+            (
+                "--receipt-name",
+                "glmcp-quota-admission-secret-token.yaml",
+                "observe-success",
+                "--evidence-ref",
+                "sanctioned-glmcp-usage-001",
+                *SUCCESS_METADATA_ARGS,
+            ),
+            "unsafe receipt name",
+        ),
+        (
+            ("observe-error", "--provider-code", "1308", "--reset-at", "not-a-date"),
+            "invalid --reset-at",
+        ),
+        (
+            ("observe-error", "--provider-code", "1302", "--backoff-until", "not-a-date"),
+            "invalid --backoff-until",
+        ),
+        (
+            ("observe-error", "--provider-code", "1308", "--jitter-seconds", "-1"),
+            "--jitter-seconds must be non-negative",
+        ),
+        (
+            ("observe-error", "--provider-code", "1302", "--backoff-seconds", "0"),
+            "--backoff-seconds must be positive",
+        ),
+        (
+            ("observe-error", "--provider-code", "1308", "--action", "hold_until_reset"),
+            "--provider-code cannot be combined",
+        ),
+    ],
+)
+def test_validation_errors_do_not_write_receipts(
+    tmp_path: Path,
+    args: tuple[str, ...],
+    expected_message: str,
+) -> None:
+    result, receipt_dir = _run(tmp_path, *args)
+
+    assert result.returncode == 2
+    assert expected_message in result.stderr
+    assert "next action:" in result.stderr
+    assert not receipt_dir.exists()
 
 
 @pytest.mark.parametrize(
@@ -270,12 +430,19 @@ def test_observe_error_prompt_length_writes_non_admission_hold(tmp_path: Path) -
 
 
 @pytest.mark.parametrize(
-    "failure_class",
-    ["auth_failed", "network_error", "redirect_error", "server_error", "tls_error"],
+    ("failure_class", "action"),
+    [
+        ("auth_failed", "check_api_key"),
+        ("network_error", "manual_hold_no_quota_admission"),
+        ("redirect_error", "manual_hold_no_quota_admission"),
+        ("server_error", "manual_hold_no_quota_admission"),
+        ("tls_error", "manual_hold_no_quota_admission"),
+    ],
 )
 def test_observe_error_transport_and_auth_failures_never_create_positive_admission(
     tmp_path: Path,
     failure_class: str,
+    action: str,
 ) -> None:
     result, receipt_dir = _run(
         tmp_path,
@@ -283,7 +450,7 @@ def test_observe_error_transport_and_auth_failures_never_create_positive_admissi
         "--failure-class",
         failure_class,
         "--action",
-        "manual_hold_no_quota_admission",
+        action,
     )
 
     assert result.returncode == 0, result.stderr
@@ -294,3 +461,19 @@ def test_observe_error_transport_and_auth_failures_never_create_positive_admissi
     assert fields["secret_value_persisted"] == "false"
     assert fields["prompt_or_output_persisted"] == "false"
     assert not (receipt_dir / "glmcp-quota-admission.yaml").exists()
+
+
+def test_observe_error_rejects_misleading_non_provider_action(tmp_path: Path) -> None:
+    result, receipt_dir = _run(
+        tmp_path,
+        "observe-error",
+        "--failure-class",
+        "fair_use_restricted",
+        "--action",
+        "backoff",
+    )
+
+    assert result.returncode == 2
+    assert "is not valid for failure class 'fair_use_restricted'" in result.stderr
+    assert "expected 'hold_until_manual_clear'" in result.stderr
+    assert not receipt_dir.exists()

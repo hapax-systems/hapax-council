@@ -96,6 +96,19 @@ BACKOFF_ERROR_CLASSES = frozenset(
 )
 RESET_ERROR_CLASSES = frozenset({"daily_limit_exhausted", "quota_exhausted"})
 QUOTA_WALL_ERROR_CLASSES = RESET_ERROR_CLASSES | BACKOFF_ERROR_CLASSES
+CANONICAL_ACTION_BY_ERROR_CLASS = {
+    error_class: action for error_class, action in ZAI_ERROR_CLASS_BY_CODE.values()
+} | {
+    "input_failure": "manual_hold_no_quota_admission",
+    "network_error": "manual_hold_no_quota_admission",
+    "redirect_error": "manual_hold_no_quota_admission",
+    "server_error": "manual_hold_no_quota_admission",
+    "tls_error": "manual_hold_no_quota_admission",
+    "unknown": "manual_hold_no_quota_admission",
+    "unknown_provider_code": "manual_hold_no_quota_admission",
+    "unsupported_endpoint": "manual_hold_no_quota_admission",
+    "unsupported_model": "manual_hold_no_quota_admission",
+}
 
 
 @dataclass(frozen=True)
@@ -139,10 +152,14 @@ def _safe_reference(value: str, *, label: str) -> str:
 
 def _safe_token(value: str, *, label: str) -> str:
     normalized = value.strip().lower()
+    secretish = SECRETISH_RE.search(normalized) is not None
     if (
         not normalized
         or SAFE_VALUE_RE.fullmatch(normalized) is None
-        or SECRETISH_RE.search(normalized) is not None
+        or (
+            secretish
+            and not (label == "action" and normalized in CANONICAL_ACTION_BY_ERROR_CLASS.values())
+        )
     ):
         raise ValueError(f"unsafe {label}")
     return normalized
@@ -180,6 +197,8 @@ def _bool(value: bool) -> str:
 def _classify_error(args: argparse.Namespace) -> ErrorObservation:
     provider_code = args.provider_code.strip() if args.provider_code else None
     if provider_code is not None:
+        if args.failure_class or args.action:
+            raise ValueError("--provider-code cannot be combined with --failure-class or --action")
         if provider_code and (not provider_code.isdigit() or len(provider_code) != 4):
             raise ValueError("provider code must be a four-digit Z.ai diagnostic code")
         if provider_code in ZAI_ERROR_CLASS_BY_CODE:
@@ -193,6 +212,15 @@ def _classify_error(args: argparse.Namespace) -> ErrorObservation:
 
     error_class = _safe_token(error_class, label="failure class")
     action = _safe_token(action, label="action")
+    if provider_code is None:
+        expected_action = CANONICAL_ACTION_BY_ERROR_CLASS.get(
+            error_class, "manual_hold_no_quota_admission"
+        )
+        if action != expected_action:
+            raise ValueError(
+                f"action {action!r} is not valid for failure class {error_class!r}; "
+                f"expected {expected_action!r}"
+            )
     failure_code = failure_code_for_zai(error_class)
     if failure_code is FailureCode.UNKNOWN and error_class in {
         "network_error",
@@ -245,7 +273,13 @@ def _error_release_time(
 
 
 def _success_fields(
-    *, observed_at: datetime, stale_after_seconds: int, evidence_ref: str
+    *,
+    observed_at: datetime,
+    stale_after_seconds: int,
+    evidence_ref: str,
+    supported_tool: str,
+    endpoint: str,
+    model: str,
 ) -> list[tuple[str, object]]:
     return [
         ("schema", ADMISSION_SCHEMA),
@@ -253,9 +287,9 @@ def _success_fields(
         ("provider", PROVIDER),
         ("route_id", ROUTE_ID),
         ("capacity_pool", CAPACITY_POOL),
-        ("supported_tool", SUPPORTED_TOOL),
-        ("endpoint", ENDPOINT),
-        ("model", MODEL),
+        ("supported_tool", supported_tool),
+        ("endpoint", endpoint),
+        ("model", model),
         ("observed_at", _iso(observed_at)),
         ("stale_after_seconds", stale_after_seconds),
         ("evidence_ref", evidence_ref),
@@ -273,6 +307,15 @@ def observe_success(args: argparse.Namespace) -> int:
     if stale_after_seconds <= 0 or stale_after_seconds > MAX_STALE_AFTER_SECONDS:
         raise ValueError(f"--stale-after-seconds must be between 1 and {MAX_STALE_AFTER_SECONDS}")
     evidence_ref = _safe_reference(args.evidence_ref, label="evidence ref")
+    supported_tool = _safe_token(args.supported_tool, label="supported tool")
+    endpoint = args.endpoint.strip().rstrip("/")
+    model = args.model.strip()
+    if supported_tool != SUPPORTED_TOOL:
+        raise ValueError(f"--supported-tool must be {SUPPORTED_TOOL}")
+    if endpoint != ENDPOINT:
+        raise ValueError(f"--endpoint must be {ENDPOINT}")
+    if model != MODEL:
+        raise ValueError(f"--model must be {MODEL}")
     name = _receipt_name(
         args,
         default="glmcp-quota-admission.yaml",
@@ -283,6 +326,9 @@ def observe_success(args: argparse.Namespace) -> int:
         observed_at=observed_at,
         stale_after_seconds=stale_after_seconds,
         evidence_ref=evidence_ref,
+        supported_tool=supported_tool,
+        endpoint=endpoint,
+        model=model,
     )
     _write_flat_yaml_atomic(path, fields)
     _print_summary(
@@ -416,6 +462,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--evidence-ref",
         required=True,
         help="Sanitized sanctioned-invocation witness ref, not prompt/output/secret content",
+    )
+    success.add_argument(
+        "--supported-tool",
+        required=True,
+        help="Supported Coding Plan tool observed for this invocation",
+    )
+    success.add_argument(
+        "--endpoint",
+        required=True,
+        help="Observed supported-tool endpoint for this invocation",
+    )
+    success.add_argument(
+        "--model",
+        required=True,
+        help="Observed model id for this invocation",
     )
     success.add_argument(
         "--stale-after-seconds",
