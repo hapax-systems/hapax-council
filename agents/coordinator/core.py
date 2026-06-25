@@ -1359,6 +1359,10 @@ def _dispatch_tool_block(reason: str, worktree: Path, *, next_action: str | None
     return f"{reason}; next_action={next_action or _dispatch_tool_next_action(worktree)}"
 
 
+def _read_dispatch_guard(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
 def _dispatch_tool_blocker(role: str, platform: str) -> str | None:
     worktree = _dispatch_worktree(role, platform)
     if platform not in COORDINATOR_DISPATCHABLE_PLATFORMS:
@@ -1374,7 +1378,7 @@ def _dispatch_tool_blocker(role: str, platform: str) -> str | None:
     if not claim.is_file():
         return _dispatch_tool_block(f"missing cc-claim at {claim}", worktree)
     try:
-        claim_text = claim.read_text(encoding="utf-8", errors="replace")
+        claim_text = _read_dispatch_guard(claim)
     except OSError as exc:
         return _dispatch_tool_block(f"unreadable cc-claim at {claim}: {exc}", worktree)
     missing_claim = [marker for marker in _DISPATCH_CLAIM_GUARD_MARKERS if marker not in claim_text]
@@ -1388,7 +1392,7 @@ def _dispatch_tool_blocker(role: str, platform: str) -> str | None:
     if not close.is_file():
         return _dispatch_tool_block(f"missing cc-close at {close}", worktree)
     try:
-        close_text = close.read_text(encoding="utf-8", errors="replace")
+        close_text = _read_dispatch_guard(close)
     except OSError as exc:
         return _dispatch_tool_block(f"unreadable cc-close at {close}: {exc}", worktree)
     missing_close = [marker for marker in _DISPATCH_CLOSE_GUARD_MARKERS if marker not in close_text]

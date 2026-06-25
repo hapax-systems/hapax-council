@@ -184,16 +184,15 @@ class TestDispatchWorktreeGuard:
         worktree = tmp_path / "projects" / "hapax-council--beta"
         _guarded_worktree(worktree)
         claim = worktree / "scripts" / "cc-claim"
-        original_read_text = Path.read_text
 
-        def fake_read_text(path: Path, *args: object, **kwargs: object) -> str:
+        def fake_read_guard(path: Path) -> str:
             if path == claim:
                 raise OSError("permission denied")
-            return original_read_text(path, *args, **kwargs)
+            raise AssertionError(f"unexpected guard read: {path}")
 
         with (
             patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
-            patch.object(Path, "read_text", fake_read_text),
+            patch("agents.coordinator.core._read_dispatch_guard", side_effect=fake_read_guard),
         ):
             blocker = _dispatch_tool_blocker("beta", "claude")
 
@@ -205,16 +204,17 @@ class TestDispatchWorktreeGuard:
         worktree = tmp_path / "projects" / "hapax-council--beta"
         _guarded_worktree(worktree)
         close = worktree / "scripts" / "cc-close"
-        original_read_text = Path.read_text
 
-        def fake_read_text(path: Path, *args: object, **kwargs: object) -> str:
+        def fake_read_guard(path: Path) -> str:
             if path == close:
                 raise OSError("permission denied")
-            return original_read_text(path, *args, **kwargs)
+            if path == worktree / "scripts" / "cc-claim":
+                return path.read_text(encoding="utf-8", errors="replace")
+            raise AssertionError(f"unexpected guard read: {path}")
 
         with (
             patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
-            patch.object(Path, "read_text", fake_read_text),
+            patch("agents.coordinator.core._read_dispatch_guard", side_effect=fake_read_guard),
         ):
             blocker = _dispatch_tool_blocker("beta", "claude")
 
