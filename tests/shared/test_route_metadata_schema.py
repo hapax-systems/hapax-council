@@ -453,6 +453,22 @@ def test_explicit_learning_updates_must_match_classification_provenance(
         RouteMetadata.model_validate(payload)
 
 
+def test_route_admission_rejects_support_only_hkp_classification_without_learning() -> None:
+    payload = {
+        **_explicit_metadata(),
+        "route_envelope": {
+            "classification_envelope": _valid_classification_payload(
+                source_kind="hkp_cache",
+                authority_ceiling="support_only",
+            ),
+            "admission": {"admission_action": "route", "reason_codes": ["fresh"]},
+        },
+    }
+
+    with pytest.raises(ValidationError, match="hkp_only"):
+        RouteMetadata.model_validate(payload)
+
+
 def test_hardening_allocation_derives_from_public_ambiguous_source_work() -> None:
     assessment = assess_route_metadata(
         {

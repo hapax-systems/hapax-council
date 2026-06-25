@@ -261,6 +261,29 @@ def _learning_disqualifiers_from_classification(
     return list(dict.fromkeys(disqualifiers))
 
 
+def _route_admission_disqualifiers_from_classification(
+    classification: ClassificationEnvelope,
+) -> list[str]:
+    disqualifiers: list[str] = []
+    if classification.source_kind in {
+        ClassificationSourceKind.HKP_CACHE,
+        ClassificationSourceKind.INFERRED,
+        ClassificationSourceKind.OPERATOR_SUPPLIED,
+        ClassificationSourceKind.SUPPLIED_ONLY,
+    }:
+        disqualifiers.append(f"classification_source_kind:{classification.source_kind.value}")
+    if not classification.valid_for_dispatch:
+        disqualifiers.append("invalid_envelope")
+    if classification.authority_ceiling in {
+        ClassificationAuthorityCeiling.SUPPORT_ONLY,
+        ClassificationAuthorityCeiling.READ_ONLY,
+    }:
+        disqualifiers.append("support_only")
+    if classification.source_kind is ClassificationSourceKind.HKP_CACHE:
+        disqualifiers.append("hkp_only")
+    return list(dict.fromkeys(disqualifiers))
+
+
 def _coerce_bool_mapping(value: object) -> dict[str, bool]:
     if value in (None, "", [], {}):
         return {}
@@ -675,6 +698,13 @@ class RouteEnvelope(_RouteModel):
             and self.admission.admission_action is RouteAdmissionAction.ROUTE
         ):
             raise ValueError("stale or missing classification cannot route")
+        if self.admission.admission_action is RouteAdmissionAction.ROUTE:
+            route_disqualifiers = _route_admission_disqualifiers_from_classification(classification)
+            if route_disqualifiers:
+                raise ValueError(
+                    "route admission requires authoritative classification evidence: "
+                    + ", ".join(route_disqualifiers)
+                )
         if self.public_release_projection.public_projection_forbidden and (
             self.learning_eligibility.thompson_update_allowed
             or self.learning_eligibility.local_posterior_update_allowed
