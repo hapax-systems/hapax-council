@@ -43,19 +43,19 @@ CURRENT_REFRESH_NOW = datetime(2026, 6, 4, 17, 10, 0, tzinfo=UTC)
 GLMCP_ADMISSION_EVIDENCE_REF = (
     "relay-receipt:glmcp-quota-admission.yaml:"
     "witness:supported-tool-usage-witness:"
-    "supported_tool:hapax-glmcp-reviewer:"
-    "endpoint:https://api.z.ai/api/coding/paas/v4:"
-    "model:glm-5:"
+    "supported_tool:claude_code:"
+    "endpoint:https://api.z.ai/api/anthropic:"
+    "model:glm-5.2[1m]:"
     "observed_at:2026-05-17T07:59:00Z:"
     "fresh_until:2026-05-17T08:05:00Z"
 )
-GLMCP_CLAUDE_TOOL_REVIEWER_ENDPOINT_EVIDENCE_REF = GLMCP_ADMISSION_EVIDENCE_REF.replace(
-    "supported_tool:hapax-glmcp-reviewer:",
-    "supported_tool:claude_code:",
-)
 GLMCP_REVIEWER_TOOL_CLAUDE_ENDPOINT_EVIDENCE_REF = GLMCP_ADMISSION_EVIDENCE_REF.replace(
-    "endpoint:https://api.z.ai/api/coding/paas/v4:",
+    "supported_tool:claude_code:",
+    "supported_tool:hapax-glmcp-reviewer:",
+)
+GLMCP_CLAUDE_TOOL_CODING_ENDPOINT_EVIDENCE_REF = GLMCP_ADMISSION_EVIDENCE_REF.replace(
     "endpoint:https://api.z.ai/api/anthropic:",
+    "endpoint:https://api.z.ai/api/coding/paas/v4:",
 )
 GLMCP_HASHED_ADMISSION_EVIDENCE_REF = GLMCP_ADMISSION_EVIDENCE_REF.replace(
     "glmcp-quota-admission.yaml",
@@ -338,8 +338,8 @@ def test_receipt_bounded_route_fresh_snapshot_requires_glmcp_admission_evidence(
 @pytest.mark.parametrize(
     "evidence_ref",
     [
-        GLMCP_CLAUDE_TOOL_REVIEWER_ENDPOINT_EVIDENCE_REF,
         GLMCP_REVIEWER_TOOL_CLAUDE_ENDPOINT_EVIDENCE_REF,
+        GLMCP_CLAUDE_TOOL_CODING_ENDPOINT_EVIDENCE_REF,
     ],
 )
 def test_receipt_bounded_route_rejects_mismatched_tool_endpoint_evidence(

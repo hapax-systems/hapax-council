@@ -37,10 +37,10 @@ Each tick does two writes:
      Admission receipts with ``stale_after_seconds`` above 3600 seconds are
      intentionally ignored; write a fresh short-lived witness instead.
      The emergency false-negative recovery path is to create a fresh
-     short-lived admission receipt with status, provider, capacity_pool,
-     route_id, supported_tool, endpoint, model, one of observed_at/captured_at/
-     detected_at, stale_after_seconds, and evidence_ref fields, then rerun this
-     writer so the live ledger is refreshed.
+     short-lived admission receipt with schema, status, provider, capacity_pool,
+     route_id, supported_tool, endpoint, model, observed_at, stale_after_seconds,
+     evidence_ref, and explicit no-secret/no-content/billing fields, then rerun
+     this writer so the live ledger is refreshed.
      That receipt-plane refresh is the canonical emergency procedure for a
      false negative.
      There is intentionally no environment-variable bypass for stale/unknown
@@ -104,24 +104,22 @@ SUBSCRIPTION_PROVIDERS = {
 
 GLMCP_ADMISSION_PROVIDER = SUBSCRIPTION_PROVIDERS["glmcp"]
 GLMCP_ADMISSION_CAPACITY_POOL = "subscription_quota"
-# ``claude_code`` is accepted as a receipt ``supported_tool`` value only when
-# paired with the official Z.ai Coding Plan Claude Code endpoint/model evidence
-# below; route-specific quota still gates dispatch.
+GLMCP_ADMISSION_SCHEMA = "hapax.glmcp_quota_admission.v1"
 GLMCP_ADMISSION_TOOL_ENDPOINTS = {
-    "hapax-glmcp-reviewer": frozenset({"https://api.z.ai/api/coding/paas/v4"}),
     "claude_code": frozenset({"https://api.z.ai/api/anthropic"}),
 }
 GLMCP_ADMISSION_SUPPORTED_TOOLS = frozenset(GLMCP_ADMISSION_TOOL_ENDPOINTS)
 GLMCP_ADMISSION_ENDPOINTS = frozenset(
     endpoint for endpoints in GLMCP_ADMISSION_TOOL_ENDPOINTS.values() for endpoint in endpoints
 )
-# Keep this fail-closed. Recheck before edits against Z.ai Coding Plan docs
-# (`/websites/z_ai_devpack`) and the official GLM-5 repo (`/zai-org/glm-5`).
-# The latest open-weights release is GLM-5.2, but the Coding Plan custom-tool
-# docs currently use ``glm-5`` as the API model id for Max/Pro GLM-5 access.
-GLMCP_ADMISSION_MODELS = frozenset({"glm-5"})
+# Keep this fail-closed. Rechecked against Context7 `/websites/z_ai_devpack`
+# on 2026-06-25: Z.ai's Claude Code GLM-5.2 switch guide documents
+# ``glm-5.2[1m]`` for the Opus/Sonnet defaults on the Anthropic-compatible
+# endpoint.
+GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2[1m]"})
 GLMCP_ADMISSION_FIELDS = frozenset(
     {
+        "billing_mode",
         "capacity_pool",
         "captured_at",
         "detected_at",
@@ -129,8 +127,13 @@ GLMCP_ADMISSION_FIELDS = frozenset(
         "evidence_ref",
         "model",
         "observed_at",
+        "payg_fallback",
         "provider",
+        "prompt_or_output_persisted",
         "route_id",
+        "schema",
+        "secret_source",
+        "secret_value_persisted",
         "stale_after_seconds",
         "status",
         "supported_tool",
@@ -151,9 +154,11 @@ GLMCP_ADMISSION_RECHECK_COMMAND = (
 )
 GLMCP_ADMISSION_RECOVERY_HINT = (
     "false-negative recovery: repair receipt permissions/encoding or create a fresh "
-    "short-lived admission receipt with status, provider, capacity_pool, route_id, "
-    "supported_tool, endpoint, model, one of observed_at/captured_at/detected_at, "
-    "stale_after_seconds, and 3-240 character evidence_ref, then rerun writer"
+    "short-lived admission receipt with schema, status, provider, capacity_pool, route_id, "
+    "supported_tool, endpoint, model, observed_at, stale_after_seconds, "
+    "3-240 character evidence_ref, secret_source, secret_value_persisted=false, "
+    "prompt_or_output_persisted=false, billing_mode, and payg_fallback=false, "
+    "then rerun writer"
 )
 
 
@@ -353,10 +358,10 @@ def active_glmcp_admission_receipts(
             reject(path, parse_error)
             continue
         status = fields.get("status", "")
-        if status not in {"quota_available", "admitted"}:
+        if status != "quota_available":
             reject(
                 path,
-                "status missing or unsupported; expected quota_available or admitted",
+                "status missing or unsupported; expected quota_available",
             )
             continue
         provider = fields.get("provider", "")
@@ -410,7 +415,7 @@ def active_glmcp_admission_receipts(
         if model not in GLMCP_ADMISSION_MODELS:
             reject(
                 path,
-                "model missing or unsupported; expected documented Coding Plan model id glm-5",
+                "model missing or unsupported; expected documented Claude Code model id glm-5.2[1m]",
             )
             continue
         receipt_evidence_ref = fields.get("evidence_ref", "").strip()
@@ -433,37 +438,22 @@ def active_glmcp_admission_receipts(
                 "evidence_ref unsafe; expected a sanitized witness reference, not raw secret material",
             )
             continue
-        timestamp_fields = [
-            key
-            for key in ("observed_at", "captured_at", "detected_at")
-            if fields.get(key, "").strip()
-        ]
-        if not timestamp_fields:
+        if fields.get("captured_at", "").strip() or fields.get("detected_at", "").strip():
             reject(
                 path,
-                "missing timestamp field; expected exactly one of observed_at/captured_at/detected_at",
+                "unsupported timestamp field; expected observed_at only",
             )
             continue
-        if len(timestamp_fields) > 1:
-            reject(
-                path,
-                "ambiguous timestamp fields; expected exactly one of observed_at/captured_at/detected_at",
-            )
+        observed_raw = fields.get("observed_at", "").strip()
+        if not observed_raw:
+            reject(path, "missing or malformed observed_at")
             continue
-        timestamp_key = timestamp_fields[0]
-        observed_raw = fields[timestamp_key]
         observed_at = _parse_utc(observed_raw)
         if observed_at is None:
-            reject(
-                path,
-                f"missing or malformed {timestamp_key}",
-            )
+            reject(path, "missing or malformed observed_at")
             continue
         if observed_at > now:
-            reject(
-                path,
-                f"{timestamp_key} is in the future",
-            )
+            reject(path, "observed_at is in the future")
             continue
         stale_after_raw = fields.get("stale_after_seconds", "").strip()
         if not stale_after_raw:
@@ -495,6 +485,28 @@ def active_glmcp_admission_receipts(
                 path,
                 "receipt expired",
             )
+            continue
+        schema = fields.get("schema", "")
+        if schema != GLMCP_ADMISSION_SCHEMA:
+            reject(
+                path,
+                f"schema missing or unsupported; expected {GLMCP_ADMISSION_SCHEMA}",
+            )
+            continue
+        if fields.get("secret_source", "") != "pass:glmcp/api-key":
+            reject(path, "secret_source missing or unsupported")
+            continue
+        if fields.get("secret_value_persisted", "").lower() != "false":
+            reject(path, "secret_value_persisted must be false")
+            continue
+        if fields.get("prompt_or_output_persisted", "").lower() != "false":
+            reject(path, "prompt_or_output_persisted must be false")
+            continue
+        if fields.get("billing_mode", "") != "coding_plan_subscription":
+            reject(path, "billing_mode missing or unsupported")
+            continue
+        if fields.get("payg_fallback", "").lower() != "false":
+            reject(path, "payg_fallback must be false")
             continue
         refs.append(
             GlmcpAdmission(

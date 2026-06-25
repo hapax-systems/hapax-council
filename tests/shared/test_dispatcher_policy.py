@@ -39,9 +39,9 @@ NOW = datetime(2026, 5, 9, 22, 30, tzinfo=UTC)
 GLMCP_ADMISSION_EVIDENCE_REF = (
     "relay-receipt:glmcp-quota-admission.yaml:"
     "witness:supported-tool-usage-witness:"
-    "supported_tool:hapax-glmcp-reviewer:"
-    "endpoint:https://api.z.ai/api/coding/paas/v4:"
-    "model:glm-5:"
+    "supported_tool:claude_code:"
+    "endpoint:https://api.z.ai/api/anthropic:"
+    "model:glm-5.2[1m]:"
     "observed_at:2026-05-09T22:00:00Z:"
     "fresh_until:2026-05-09T23:00:00Z"
 )
