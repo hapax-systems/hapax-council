@@ -158,6 +158,19 @@ class SdlcRouteCandidate(_RouterModel):
     historical_class_confidence: int = Field(default=0, ge=0, le=5)
     historical_evidence_refs: tuple[str, ...] = Field(default=())
 
+    @field_validator("capability_scores", "capability_confidence", mode="before")
+    @classmethod
+    def _capability_maps_use_strict_bounded_scores(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            raise ValueError("candidate capability maps must be mappings")
+        allowed_dimensions = set(REQUIREMENT_VECTOR_DIMENSIONS) - {"quality_floor"}
+        for dimension, score in value.items():
+            if dimension not in allowed_dimensions:
+                raise ValueError(f"unknown candidate capability dimension: {dimension}")
+            if isinstance(score, bool) or not isinstance(score, int) or score < 0 or score > 5:
+                raise ValueError("candidate capability scores must be strict integers 0..5")
+        return value
+
     @classmethod
     def from_supply_vector(
         cls,
@@ -385,7 +398,7 @@ class SdlcRouter:
         if (
             event.gate_type not in LEARNING_GATE_TYPES
             or event.gate_result not in LEARNING_GATE_RESULTS
-            or not gate_event_learning_allowed(event)
+            or not gate_event_thompson_update_allowed(event)
         ):
             return False
         event_hash = gate_event_hash(event)
@@ -446,8 +459,21 @@ def gate_event_learning_allowed(event: GateEvent) -> bool:
     eligibility = event.learning_eligibility
     if eligibility is None:
         return False
-    if not (eligibility.thompson_update_allowed and eligibility.local_posterior_update_allowed):
+    if not (eligibility.thompson_update_allowed or eligibility.local_posterior_update_allowed):
         return False
+    return _gate_event_learning_evidence_complete(event)
+
+
+def gate_event_thompson_update_allowed(event: GateEvent) -> bool:
+    eligibility = event.learning_eligibility
+    if eligibility is None:
+        return False
+    if not eligibility.thompson_update_allowed:
+        return False
+    return _gate_event_learning_evidence_complete(event)
+
+
+def _gate_event_learning_evidence_complete(event: GateEvent) -> bool:
     if not event.task_hash.strip():
         return False
     return _gate_event_requirement_vector_is_complete(event.requirement_vector)
@@ -504,6 +530,7 @@ def _authority_satisfies(authority_level: str, authority_ceiling: str) -> bool:
             "authoritative",
             "frontier_review_required",
             "support_only",
+            "read_only",
         }
     if authority_level in {"evidence_receipt", "relay_only"}:
         return authority_ceiling in {

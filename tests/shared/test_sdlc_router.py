@@ -19,6 +19,8 @@ from shared.sdlc_router import (
     SdlcRouter,
     SdlcRouterAction,
     SdlcRoutingRequest,
+    gate_event_learning_allowed,
+    gate_event_thompson_update_allowed,
 )
 
 
@@ -192,6 +194,27 @@ def test_routing_request_rejects_bool_requirement_scores_before_coercion() -> No
         _request(requirement_vector=_requirement_vector(context_length=True))
 
 
+def test_candidate_rejects_unbounded_or_unknown_capability_scores() -> None:
+    with pytest.raises(ValueError, match="strict integers 0..5"):
+        _candidate("local_tool.local.worker", score=999)
+
+    with pytest.raises(ValueError, match="strict integers 0..5"):
+        _candidate(
+            "local_tool.local.worker", score=5, capability_confidence={"context_length": True}
+        )
+
+    with pytest.raises(ValueError, match="unknown candidate capability dimension"):
+        _candidate(
+            "local_tool.local.worker",
+            score=5,
+            capability_scores={
+                "information_scope": 5,
+                "context_length": 5,
+                "unsupported_dimension": 5,
+            },
+        )
+
+
 def test_requirement_floor_veto_runs_before_thompson_scoring() -> None:
     router = SdlcRouter(
         activation_evidence={"source_python": _active_gate()},
@@ -260,6 +283,34 @@ def test_authority_ceiling_veto_prevents_authoritative_route_to_support_only_can
     assert "authority_ceiling_not_satisfied:support_only" in decision.vetoes[0].reason_codes
 
 
+def test_support_request_can_use_read_only_support_ceiling() -> None:
+    router = SdlcRouter(
+        activation_evidence={"source_python": _active_gate()},
+        thompson_sampler=lambda _state: 0.25,
+    )
+    request = _request(
+        authority_level="support_non_authoritative",
+        mutation_surface="none",
+        requirement_vector=_requirement_vector(mutation_risk=0),
+    )
+    readonly = _candidate(
+        "local_tool.readonly.research",
+        score=5,
+        authority_ceiling="read_only",
+        supported_mutation_surfaces=("none",),
+    )
+    frontier = _candidate(DEFAULT_FRONTIER_INCUMBENT_ROUTE_ID, score=3)
+
+    decision = router.route(request, (frontier, readonly))
+
+    assert decision.action is SdlcRouterAction.ROUTE
+    assert decision.selected_route_id == "local_tool.readonly.research"
+    assert all(
+        "authority_ceiling_not_satisfied:read_only" not in veto.reason_codes
+        for veto in decision.vetoes
+    )
+
+
 def test_gate_pass_reward_updates_posteriors_and_selection_does_not() -> None:
     router = SdlcRouter(
         activation_evidence={"source_python": _active_gate()},
@@ -305,6 +356,52 @@ def test_gate_pass_reward_updates_posteriors_and_selection_does_not() -> None:
     posterior = router.state.posterior_for_read("source_python", "local_tool.local.worker")
     assert posterior.use_count == 2
     assert posterior.ts_beta > 1.0
+
+
+def test_thompson_gate_update_does_not_require_local_posterior_update() -> None:
+    router = SdlcRouter()
+    accept = GateEvent(
+        route="local_tool.local.worker",
+        routing_class="source_python",
+        requirement_vector=_requirement_vector(),
+        task_hash="sha256:task-router-test",
+        gate_result="accept",
+        gate_type="deterministic",
+        ts="2026-06-25T00:00:00+00:00",
+        learning_eligibility=_learning_eligibility(
+            thompson_update_allowed=True,
+            local_posterior_update_allowed=False,
+        ),
+    )
+
+    assert gate_event_learning_allowed(accept) is True
+    assert gate_event_thompson_update_allowed(accept) is True
+    assert router.record_gate_event(accept) is True
+    posterior = router.state.posterior_for_read("source_python", "local_tool.local.worker")
+    assert posterior.use_count == 1
+    assert posterior.ts_alpha > 2.0
+
+
+def test_local_only_learning_gate_does_not_update_thompson_posterior() -> None:
+    router = SdlcRouter()
+    local_only = GateEvent(
+        route="local_tool.local.worker",
+        routing_class="source_python",
+        requirement_vector=_requirement_vector(),
+        task_hash="sha256:task-router-test",
+        gate_result="accept",
+        gate_type="deterministic",
+        ts="2026-06-25T00:00:00+00:00",
+        learning_eligibility=_learning_eligibility(
+            thompson_update_allowed=False,
+            local_posterior_update_allowed=True,
+        ),
+    )
+
+    assert gate_event_learning_allowed(local_only) is True
+    assert gate_event_thompson_update_allowed(local_only) is False
+    assert router.record_gate_event(local_only) is False
+    assert router.state.route_posteriors == {}
 
 
 def test_bare_gate_events_do_not_train_posteriors() -> None:
