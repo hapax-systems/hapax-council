@@ -54,3 +54,12 @@ test("serializeFrontmatter writes parseable YAML frontmatter", () => {
     content: "Body\n",
   });
 });
+
+test("serializeFrontmatter fails loudly for unsupported YAML values", () => {
+  const { serializeFrontmatter } = loadFrontmatterModule();
+
+  assert.throws(
+    () => serializeFrontmatter({ unsupported: Symbol("x") }, "Body\n"),
+    /Tag not resolved for Symbol value/,
+  );
+});
