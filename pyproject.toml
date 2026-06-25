@@ -20,7 +20,7 @@ dependencies = [
     "httpx>=0.28.0",
     "ollama>=0.6.1",
     "pydantic>=2.12.5",
-    "pydantic-ai[litellm]>=1.63.0",
+    "pydantic-ai>=1.99.0,<2",
     "pyyaml>=6.0",
     "qdrant-client>=1.17.0",
     "opentelemetry-api>=1.39.0",
@@ -261,6 +261,16 @@ override-dependencies = [
     # moviepy 2.2.1 still declares pillow<12, but the patched Pillow floor is
     # required for the high-severity Dependabot alerts covered by this task.
     "pillow>=12.2.0",
+    # atproto 0.0.69 still declares cryptography<47 even though the APIs used
+    # by the Bluesky publisher are compatible with the patched cryptography
+    # floor. Keep this override until atproto relaxes its bound upstream.
+    "cryptography>=48.0.1",
+    # Chatterbox 0.1.7 pins Gradio 6.8.0, and older metrics/gradio releases pin
+    # Starlette below the patched 1.3.1 floor. These upstream releases support
+    # Starlette 1.x and clear the Starlette alert set.
+    "gradio>=6.19.0",
+    "prometheus-fastapi-instrumentator>=8.0.2",
+    "starlette>=1.3.1",
 ]
 
 [tool.uv.sources]

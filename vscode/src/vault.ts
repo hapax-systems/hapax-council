@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import matter = require("gray-matter");
+import YAML = require("yaml");
 
 /** Check if the vault is a work vault (contains 10-work/ directory). */
 export async function isWorkVault(): Promise<boolean> {
@@ -54,10 +54,17 @@ export function parseFrontmatter(raw: string): {
   data: Record<string, unknown>;
   content: string;
 } {
-  const parsed = matter(raw);
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(raw);
+  if (!match) {
+    return { data: {}, content: raw };
+  }
+  const parsed = YAML.parse(match[1]);
   return {
-    data: parsed.data as Record<string, unknown>,
-    content: parsed.content,
+    data:
+      parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {},
+    content: raw.slice(match[0].length),
   };
 }
 
@@ -66,5 +73,5 @@ export function serializeFrontmatter(
   data: Record<string, unknown>,
   content: string,
 ): string {
-  return matter.stringify(content, data);
+  return `---\n${YAML.stringify(data).trimEnd()}\n---\n${content}`;
 }

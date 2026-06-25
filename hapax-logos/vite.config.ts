@@ -36,11 +36,21 @@ export default defineConfig({
     reportCompressedSize: false,
     rollupOptions: {
       output: {
-        manualChunks: {
-          "vendor-react": ["react", "react-dom", "react-router-dom"],
-          "vendor-recharts": ["recharts"],
-          "vendor-xyflow": ["@xyflow/react"],
-          "vendor-hls": ["hls.js"],
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (/[\\/]node_modules[\\/](react|react-dom|react-router-dom)[\\/]/.test(id)) {
+            return "vendor-react";
+          }
+          if (/[\\/]node_modules[\\/]recharts[\\/]/.test(id)) {
+            return "vendor-recharts";
+          }
+          if (/[\\/]node_modules[\\/]@xyflow[\\/]react[\\/]/.test(id)) {
+            return "vendor-xyflow";
+          }
+          if (/[\\/]node_modules[\\/]hls\.js[\\/]/.test(id)) {
+            return "vendor-hls";
+          }
+          return undefined;
         },
       },
     },
