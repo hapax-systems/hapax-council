@@ -1344,7 +1344,7 @@ def _dispatch_worktree(role: str, platform: str) -> Path:
         return root / f"hapax-council--cx-{role}"
     if platform == "claude":
         return root / "hapax-council" if role == "alpha" else root / f"hapax-council--{role}"
-    if platform in {"vibe", "gemini"}:
+    if platform == "vibe":
         return root / f"hapax-council--{role}"
     if platform == "antigrav":
         normalized = "antigrav" if role == "antigravity" else role

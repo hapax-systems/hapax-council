@@ -66,7 +66,7 @@ class TestDispatchWorktreeGuard:
             assert _dispatch_worktree("red", "codex") == root / "hapax-council--cx-red"
             assert _dispatch_worktree("alpha", "claude") == root / "hapax-council"
             assert _dispatch_worktree("beta", "claude") == root / "hapax-council--beta"
-            assert _dispatch_worktree("gamma", "gemini") == root / "hapax-council--gamma"
+            assert _dispatch_worktree("gamma", "gemini") == root / "hapax-council"
             assert _dispatch_worktree("vbe-1", "vibe") == root / "hapax-council--vbe-1"
             assert _dispatch_worktree("antigravity", "antigrav") == root / "hapax-council--antigrav"
             assert _dispatch_worktree("other", "unknown") == root / "hapax-council"
@@ -1578,16 +1578,20 @@ Body.
             stderr="",
         )
 
+        def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            if cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]:
+                return completed
+            raise AssertionError(f"unexpected dispatch subprocess call: {cmd!r}")
+
         with (
             patch.object(Coordinator, "_scan_tasks", return_value=[task]),
-            patch.object(Coordinator, "_dispatch") as dispatch,
             patch.object(Coordinator, "_write_state") as write_state,
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", cache_dir),
             patch("agents.coordinator.core.PID_DIR", pid_dir),
             patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
             patch("agents.coordinator.core._live_headless_launcher", return_value=None),
-            patch("agents.coordinator.core.subprocess.run", return_value=completed),
+            patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
             patch("pathlib.Path.home", return_value=tmp_path),
             patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
             patch(
@@ -1597,7 +1601,6 @@ Body.
         ):
             coord.tick()
 
-        dispatch.assert_not_called()
         state = write_state.call_args.args[0]
         assert state.lanes_idle == 0
         assert state.dispatches_this_tick == 0
