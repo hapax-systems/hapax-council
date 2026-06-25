@@ -151,8 +151,10 @@ def test_blocking_reasons_fail_closed_even_if_positive_flag_is_set() -> None:
     ("field", "value", "reason_code"),
     (
         ("visible", False, "route_supply_hidden"),
+        ("availability_state", None, "availability:missing"),
         ("availability_state", "private_only", "availability:private_only"),
         ("availability_state", "unavailable", "availability:unavailable"),
+        ("health_status", None, "health_status:missing"),
         ("health_status", "stale", "health_status:stale"),
     ),
 )
@@ -178,6 +180,26 @@ def test_model_copy_hard_blockers_fail_closed_in_assessment_and_summary(
     assert reason_code in assessment.reason_codes
     assert summary["satisfying_facts"] == 0
     assert summary["held_facts"] == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "message"),
+    (
+        ("availability_state", "next action: project a concrete availability"),
+        ("health_status", "next action: project provider/tool health_status"),
+    ),
+)
+def test_satisfying_fact_validator_requires_state_with_actionable_next_step(
+    field: str,
+    message: str,
+) -> None:
+    facts = project_sdlc_route_supply_facts(include_inventory_rows=False)
+    tavily = _fact(facts, "sdlc_route_supply:provider_tool.search.tavily_source_acquisition")
+    payload = tavily.model_dump(mode="python")
+    payload.update({field: None, "can_satisfy_required_demands": True})
+
+    with pytest.raises(ValidationError, match=message):
+        SdlcRouteSupplyFact.model_validate(payload)
 
 
 def test_supplied_evidence_only_blocks_fresh_current_world_demands_by_policy() -> None:

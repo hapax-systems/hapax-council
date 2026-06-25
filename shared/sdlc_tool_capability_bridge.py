@@ -183,14 +183,39 @@ class SdlcRouteSupplyFact(BridgeModel):
             return self
 
         if not self.visible:
-            raise ValueError("hidden route supply cannot satisfy demands")
+            raise ValueError(
+                "hidden route supply cannot satisfy demands; next action: keep "
+                "can_satisfy_required_demands false until the row is visible"
+            )
+        if self.availability_state is None:
+            raise ValueError(
+                "route supply needs availability_state before satisfying demands; next action: "
+                "project a concrete availability or route_state value, or keep "
+                "can_satisfy_required_demands false"
+            )
         if self.role is RouteSupplyRole.PROVIDER_GATEWAY:
-            if self.availability_state not in {None, *SATISFYING_PROVIDER_GATEWAY_STATES}:
-                raise ValueError("inactive provider gateway supply cannot satisfy demands")
-        elif self.availability_state not in {None, *SATISFYING_AVAILABILITY_STATES}:
-            raise ValueError("non-available route supply cannot satisfy demands")
+            if self.availability_state not in SATISFYING_PROVIDER_GATEWAY_STATES:
+                raise ValueError(
+                    "inactive provider gateway supply cannot satisfy demands; next action: "
+                    "project an active registry route with spend evidence, or keep "
+                    "can_satisfy_required_demands false"
+                )
+        elif self.availability_state not in SATISFYING_AVAILABILITY_STATES:
+            raise ValueError(
+                "non-available route supply cannot satisfy demands; next action: keep "
+                "can_satisfy_required_demands false until availability_state is available"
+            )
+        if self.origin is RouteSupplyOrigin.PROVIDER_TOOL_HEALTH and self.health_status is None:
+            raise ValueError(
+                "provider/tool route supply needs health_status before satisfying demands; "
+                "next action: project provider/tool health_status, or keep "
+                "can_satisfy_required_demands false"
+            )
         if self.health_status not in {None, *SATISFYING_PROVIDER_HEALTH_STATUSES}:
-            raise ValueError("non-healthy provider/tool route cannot satisfy demands")
+            raise ValueError(
+                "non-healthy provider/tool route cannot satisfy demands; next action: keep "
+                "can_satisfy_required_demands false until provider/tool health is healthy"
+            )
 
         if self.role is RouteSupplyRole.SOURCE_ACQUISITION:
             if not self.source_acquisition_capable or not self.source_acquisition_evidence_refs:
@@ -761,12 +786,16 @@ def _fact_satisfaction_blocking_reasons(fact: SdlcRouteSupplyFact) -> tuple[str,
     if not fact.visible:
         reasons.append("route_supply_hidden")
 
-    if fact.role is RouteSupplyRole.PROVIDER_GATEWAY:
-        if fact.availability_state not in {None, *SATISFYING_PROVIDER_GATEWAY_STATES}:
+    if fact.availability_state is None:
+        reasons.append("availability:missing")
+    elif fact.role is RouteSupplyRole.PROVIDER_GATEWAY:
+        if fact.availability_state not in SATISFYING_PROVIDER_GATEWAY_STATES:
             reasons.append(f"provider_gateway_route_state:{fact.availability_state}")
-    elif fact.availability_state not in {None, *SATISFYING_AVAILABILITY_STATES}:
+    elif fact.availability_state not in SATISFYING_AVAILABILITY_STATES:
         reasons.append(f"availability:{fact.availability_state}")
 
+    if fact.origin is RouteSupplyOrigin.PROVIDER_TOOL_HEALTH and fact.health_status is None:
+        reasons.append("health_status:missing")
     if fact.health_status not in {None, *SATISFYING_PROVIDER_HEALTH_STATUSES}:
         reasons.append(f"health_status:{fact.health_status}")
 
