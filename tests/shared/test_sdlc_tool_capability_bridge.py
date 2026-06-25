@@ -182,10 +182,7 @@ def test_supplied_evidence_recall_cannot_satisfy_current_world_or_public_claims(
         "supplied_evidence_recall_not_fresh_current_world_evidence"
         in malformed_assessment.reason_codes
     )
-    assert (
-        "supplied_evidence_recall_not_public_claim_evidence"
-        in malformed_assessment.reason_codes
-    )
+    assert "supplied_evidence_recall_not_public_claim_evidence" in malformed_assessment.reason_codes
 
 
 def test_publication_egress_remains_held_without_authority_evidence_and_receipts() -> None:
