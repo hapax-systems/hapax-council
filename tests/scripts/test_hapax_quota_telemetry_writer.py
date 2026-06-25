@@ -80,20 +80,27 @@ def _glmcp_admission(
     stale_after_seconds: int = 900,
     supported_tool: str = "hapax-glmcp-reviewer",
     endpoint: str = "https://api.z.ai/api/coding/paas/v4",
+    model: str = "glm-5",
     name: str = "glmcp-quota-admission.yaml",
     timestamp_field: str = "observed_at",
 ) -> None:
     (relay / name).write_text(
-        f"""status: quota_available
+        f"""schema: hapax.glmcp_quota_admission.v1
+status: quota_available
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: {supported_tool}
 endpoint: {endpoint}
-model: glm-5
+model: {model}
 {timestamp_field}: {observed_at}
 stale_after_seconds: {stale_after_seconds}
 evidence_ref: supported-tool-usage-witness
+secret_source: pass:glmcp/api-key
+secret_value_persisted: false
+prompt_or_output_persisted: false
+billing_mode: coding_plan_subscription
+payg_fallback: false
 """,
         encoding="utf-8",
     )
@@ -331,7 +338,7 @@ def test_glmcp_admission_hashes_unsafe_receipt_name_in_evidence(tmp_path: Path) 
 
 
 @pytest.mark.parametrize("timestamp_field", ["captured_at", "detected_at"])
-def test_glmcp_admission_accepts_timestamp_fallback_fields(
+def test_glmcp_admission_rejects_timestamp_fallback_fields(
     tmp_path: Path,
     timestamp_field: str,
 ) -> None:
@@ -353,15 +360,14 @@ def test_glmcp_admission_accepts_timestamp_fallback_fields(
         for snapshot in payload["quota_snapshots"]
         if snapshot["route_id"] == "glmcp.review.direct"
     )
-    assert glmcp_snapshot["subscription_quota_state"] == "fresh"
-    assert glmcp_snapshot["fresh_until"] == "2026-06-10T00:10:00Z"
-    assert any(
-        f"glmcp-quota-admission-{timestamp_field}.yaml" in ref
-        for ref in glmcp_snapshot["evidence_refs"]
-    )
+    assert glmcp_snapshot["subscription_quota_state"] == "unknown"
+    assert "unsupported timestamp field; expected observed_at only" in result.stderr
+    assert json.loads(result.stdout)["glmcp_admissions"] == 0
 
 
-def test_glmcp_admission_accepts_claude_code_with_anthropic_endpoint(tmp_path: Path) -> None:
+def test_glmcp_admission_rejects_claude_code_anthropic_evidence_for_review_route(
+    tmp_path: Path,
+) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
     _glmcp_admission(
@@ -380,16 +386,18 @@ def test_glmcp_admission_accepts_claude_code_with_anthropic_endpoint(tmp_path: P
         for snapshot in payload["quota_snapshots"]
         if snapshot["route_id"] == "glmcp.review.direct"
     )
-    assert glmcp_snapshot["subscription_quota_state"] == "fresh"
+    assert glmcp_snapshot["subscription_quota_state"] == "unknown"
+    assert "supported_tool missing or unsupported" in result.stderr
     summary = json.loads(result.stdout)
-    assert summary["glmcp_admissions"] == 1
+    assert summary["glmcp_admissions"] == 0
 
 
-def test_glmcp_admission_rejects_supported_tool_endpoint_mismatches(tmp_path: Path) -> None:
+def test_glmcp_admission_rejects_unsupported_tool_or_endpoint(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
     (relay / "glmcp-quota-admission-claude-code-coding-endpoint.yaml").write_text(
-        """status: quota_available
+        """schema: hapax.glmcp_quota_admission.v1
+status: quota_available
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
@@ -399,11 +407,17 @@ model: glm-5
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
+secret_source: pass:glmcp/api-key
+secret_value_persisted: false
+prompt_or_output_persisted: false
+billing_mode: coding_plan_subscription
+payg_fallback: false
 """,
         encoding="utf-8",
     )
     (relay / "glmcp-quota-admission-reviewer-anthropic-endpoint.yaml").write_text(
-        """status: quota_available
+        """schema: hapax.glmcp_quota_admission.v1
+status: quota_available
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
@@ -413,6 +427,31 @@ model: glm-5
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
+secret_source: pass:glmcp/api-key
+secret_value_persisted: false
+prompt_or_output_persisted: false
+billing_mode: coding_plan_subscription
+payg_fallback: false
+""",
+        encoding="utf-8",
+    )
+    (relay / "glmcp-quota-admission-reviewer-trailing-slash-endpoint.yaml").write_text(
+        """schema: hapax.glmcp_quota_admission.v1
+status: quota_available
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4/
+model: glm-5
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 900
+evidence_ref: supported-tool-usage-witness
+secret_source: pass:glmcp/api-key
+secret_value_persisted: false
+prompt_or_output_persisted: false
+billing_mode: coding_plan_subscription
+payg_fallback: false
 """,
         encoding="utf-8",
     )
@@ -427,7 +466,8 @@ evidence_ref: supported-tool-usage-witness
         if snapshot["route_id"] == "glmcp.review.direct"
     )
     assert glmcp_snapshot["subscription_quota_state"] == "unknown"
-    assert result.stderr.count("supported_tool/endpoint mismatch") == 2
+    assert "endpoint missing or unsupported" in result.stderr
+    assert "supported_tool missing or unsupported" in result.stderr
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
 
@@ -506,7 +546,7 @@ evidence_ref: supported-tool-usage-witness
         for snapshot in payload["quota_snapshots"]
     }
     assert states["glmcp.review.direct"] == "unknown"
-    assert "status missing or unsupported; expected quota_available or admitted" in result.stderr
+    assert "status missing or unsupported; expected quota_available" in result.stderr
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
 
@@ -673,6 +713,12 @@ stale_after_seconds: 900
         ("model", "model missing or unsupported"),
         ("observed_at", "missing or malformed observed_at"),
         ("stale_after_seconds", "malformed stale_after_seconds"),
+        ("schema", "schema missing or unsupported"),
+        ("secret_source", "secret_source missing or unsupported"),
+        ("secret_value_persisted", "secret_value_persisted must be false"),
+        ("prompt_or_output_persisted", "prompt_or_output_persisted must be false"),
+        ("billing_mode", "billing_mode missing or unsupported"),
+        ("payg_fallback", "payg_fallback must be false"),
     ],
 )
 def test_glmcp_admission_rejection_warnings_do_not_echo_untrusted_values(
@@ -684,6 +730,7 @@ def test_glmcp_admission_rejection_warnings_do_not_echo_untrusted_values(
     relay.mkdir()
     secretish_value = "sk-live-secret-token-000000000000000000000000"
     fields = {
+        "schema": "hapax.glmcp_quota_admission.v1",
         "status": "quota_available",
         "provider": "z_ai-glm-coding-plan",
         "capacity_pool": "subscription_quota",
@@ -694,6 +741,11 @@ def test_glmcp_admission_rejection_warnings_do_not_echo_untrusted_values(
         "observed_at": "2026-06-09T23:55:00Z",
         "stale_after_seconds": "900",
         "evidence_ref": "supported-tool-usage-witness",
+        "secret_source": "pass:glmcp/api-key",
+        "secret_value_persisted": "false",
+        "prompt_or_output_persisted": "false",
+        "billing_mode": "coding_plan_subscription",
+        "payg_fallback": "false",
     }
     fields[field_name] = secretish_value
     receipt_body = "".join(f"{key}: {value}\n" for key, value in fields.items())
@@ -715,6 +767,60 @@ def test_glmcp_admission_rejection_warnings_do_not_echo_untrusted_values(
     assert expected_reason in result.stderr
     assert secretish_value not in result.stderr
     assert secretish_value not in payload_text
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
+
+
+@pytest.mark.parametrize(
+    ("field_name", "expected_reason"),
+    [
+        ("secret_value_persisted", "secret_value_persisted must be false"),
+        ("prompt_or_output_persisted", "prompt_or_output_persisted must be false"),
+        ("payg_fallback", "payg_fallback must be false"),
+    ],
+)
+def test_glmcp_admission_rejects_noncanonical_false_booleans(
+    tmp_path: Path,
+    field_name: str,
+    expected_reason: str,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    fields = {
+        "schema": "hapax.glmcp_quota_admission.v1",
+        "status": "quota_available",
+        "provider": "z_ai-glm-coding-plan",
+        "capacity_pool": "subscription_quota",
+        "route_id": "glmcp.review.direct",
+        "supported_tool": "hapax-glmcp-reviewer",
+        "endpoint": "https://api.z.ai/api/coding/paas/v4",
+        "model": "glm-5",
+        "observed_at": "2026-06-09T23:55:00Z",
+        "stale_after_seconds": "900",
+        "evidence_ref": "supported-tool-usage-witness",
+        "secret_source": "pass:glmcp/api-key",
+        "secret_value_persisted": "false",
+        "prompt_or_output_persisted": "false",
+        "billing_mode": "coding_plan_subscription",
+        "payg_fallback": "false",
+    }
+    fields[field_name] = "False"
+    receipt_body = "".join(f"{key}: {value}\n" for key, value in fields.items())
+    (relay / f"glmcp-quota-admission-noncanonical-{field_name}.yaml").write_text(
+        receipt_body,
+        encoding="utf-8",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["glmcp.review.direct"] == "unknown"
+    assert expected_reason in result.stderr
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
 
@@ -850,11 +956,22 @@ def test_future_glmcp_admission_receipt_keeps_glmcp_unknown(tmp_path: Path) -> N
     assert summary["glmcp_admissions"] == 0
 
 
-def test_ambiguous_glmcp_admission_timestamps_keep_glmcp_unknown(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "legacy_timestamp_line",
+    [
+        "captured_at: 2026-06-10T00:05:00Z",
+        "captured_at:",
+        "detected_at:",
+    ],
+)
+def test_ambiguous_glmcp_admission_timestamps_keep_glmcp_unknown(
+    tmp_path: Path,
+    legacy_timestamp_line: str,
+) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
     (relay / "glmcp-quota-admission-ambiguous-timestamp.yaml").write_text(
-        """status: quota_available
+        f"""status: quota_available
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
@@ -862,7 +979,7 @@ supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
 model: glm-5
 observed_at: 2026-06-09T23:55:00Z
-captured_at: 2026-06-10T00:05:00Z
+{legacy_timestamp_line}
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
 """,
@@ -880,9 +997,9 @@ evidence_ref: supported-tool-usage-witness
     )
     assert glmcp_snapshot["subscription_quota_state"] == "unknown"
     assert any(
-        ":ignored:ambiguous-timestamp-fields" in ref for ref in glmcp_snapshot["evidence_refs"]
+        ":ignored:unsupported-timestamp-field" in ref for ref in glmcp_snapshot["evidence_refs"]
     )
-    assert "ambiguous timestamp fields" in result.stderr
+    assert "unsupported timestamp field; expected observed_at only" in result.stderr
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
     assert summary["glmcp_ignored_admissions"] == 1
@@ -902,6 +1019,25 @@ model: glm-5
 observed_at: definitely-not-a-date
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
+""",
+        encoding="utf-8",
+    )
+    (relay / "glmcp-quota-admission-blank-observed-at.yaml").write_text(
+        """status: quota_available
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5
+observed_at:
+stale_after_seconds: 900
+evidence_ref: supported-tool-usage-witness
+secret_source: pass:glmcp/api-key
+secret_value_persisted: false
+prompt_or_output_persisted: false
+billing_mode: coding_plan_subscription
+payg_fallback: false
 """,
         encoding="utf-8",
     )

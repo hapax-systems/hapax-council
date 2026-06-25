@@ -1,0 +1,555 @@
+#!/usr/bin/env python3
+"""Write passive GLMCP quota-admission and hold receipts.
+
+This command records local observations from sanctioned GLM Coding Plan usage.
+It does not call Z.ai, invoke Claude Code, read pass, or store prompt/output
+content. Positive receipts are short-lived witnesses for the quota telemetry
+writer; error receipts hold/back off without creating quota availability.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+import tempfile
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.failure_classification import (  # noqa: E402
+    ZAI_ERROR_CLASS_BY_CODE,
+    FailureCode,
+    failure_code_for_zai,
+)
+
+DEFAULT_RECEIPT_DIR = Path(
+    os.environ.get(
+        "HAPAX_RELAY_RECEIPT_DIR",
+        str(Path.home() / ".cache/hapax/relay/receipts"),
+    )
+)
+
+ADMISSION_SCHEMA = "hapax.glmcp_quota_admission.v1"
+HOLD_SCHEMA = "hapax.glmcp_quota_hold.v1"
+PROVIDER = "z_ai-glm-coding-plan"
+ROUTE_ID = "glmcp.review.direct"
+CAPACITY_POOL = "subscription_quota"
+SUPPORTED_TOOL = "hapax-glmcp-reviewer"
+ENDPOINT = "https://api.z.ai/api/coding/paas/v4"
+MODEL = "glm-5"
+SECRET_SOURCE = "pass:glmcp/api-key"
+BILLING_MODE = "coding_plan_subscription"
+DEFAULT_STALE_AFTER_SECONDS = 900
+MAX_STALE_AFTER_SECONDS = 3600
+DEFAULT_BACKOFF_SECONDS = 900
+DEFAULT_RESET_JITTER_SECONDS = 60
+DEFAULT_ROLE = "cx-glmcp"
+ERROR_HINT = (
+    "next action: rerun with sanitized local observation metadata only; do not include "
+    "secret values, prompt text, response text, or account identifiers"
+)
+
+SAFE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
+SAFE_VALUE_RE = re.compile(r"\A[a-z0-9_.+:/\[\]-]+\Z")
+SAFE_RECEIPT_NAME_RE = re.compile(r"\A[a-z0-9_.+-]+\.yaml\Z")
+SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
+
+MANUAL_HOLD_ERROR_CLASSES = frozenset(
+    {
+        "account_balance_or_arrears",
+        "account_hard_hold",
+        "fair_use_restricted",
+        "model_not_found",
+        "plan_model_unavailable",
+        "subscription_expired",
+        "unsupported_endpoint",
+        "unsupported_model",
+    }
+)
+PROMPT_INPUT_ERROR_CLASSES = frozenset({"prompt_too_long", "input_failure"})
+TRANSPORT_OR_AUTH_HOLD_ERROR_CLASSES = frozenset(
+    {
+        "auth_failed",
+        "network_error",
+        "redirect_error",
+        "server_error",
+        "tls_error",
+    }
+)
+BACKOFF_ERROR_CLASSES = frozenset(
+    {
+        "provider_high_traffic",
+        "rate_limited",
+        "rate_limited_concurrency",
+        "rate_limited_frequency",
+    }
+)
+RESET_ERROR_CLASSES = frozenset({"daily_limit_exhausted", "quota_exhausted"})
+QUOTA_WALL_ERROR_CLASSES = RESET_ERROR_CLASSES | BACKOFF_ERROR_CLASSES
+CANONICAL_ACTION_BY_ERROR_CLASS = {
+    error_class: action for error_class, action in ZAI_ERROR_CLASS_BY_CODE.values()
+} | {
+    "input_failure": "manual_hold_no_quota_admission",
+    "network_error": "manual_hold_no_quota_admission",
+    "redirect_error": "manual_hold_no_quota_admission",
+    "server_error": "manual_hold_no_quota_admission",
+    "tls_error": "manual_hold_no_quota_admission",
+    "unknown": "manual_hold_no_quota_admission",
+    "unknown_provider_code": "manual_hold_no_quota_admission",
+    "unsupported_endpoint": "manual_hold_no_quota_admission",
+    "unsupported_model": "manual_hold_no_quota_admission",
+}
+
+
+@dataclass(frozen=True)
+class ErrorObservation:
+    provider_code: str | None
+    error_class: str
+    action: str
+    failure_code: FailureCode
+    receipt_kind: str
+
+
+def _parse_utc(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).replace(microsecond=0)
+
+
+def _iso(value: datetime) -> str:
+    return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _now(args: argparse.Namespace) -> datetime:
+    if args.now:
+        parsed = _parse_utc(args.now)
+        if parsed is None:
+            raise ValueError("invalid --now; expected ISO-8601 UTC timestamp")
+        return parsed
+    return datetime.now(UTC).replace(microsecond=0)
+
+
+def _safe_reference(value: str, *, label: str) -> str:
+    normalized = " ".join(value.strip().split())
+    if SAFE_REF_RE.fullmatch(normalized) is None or SECRETISH_RE.search(normalized) is not None:
+        raise ValueError(f"unsafe {label}; expected a 3-240 character sanitized reference")
+    return normalized
+
+
+def _safe_token(value: str, *, label: str) -> str:
+    normalized = value.strip().lower()
+    secretish = SECRETISH_RE.search(normalized) is not None
+    if (
+        not normalized
+        or SAFE_VALUE_RE.fullmatch(normalized) is None
+        or (
+            secretish
+            and not (label == "action" and normalized in CANONICAL_ACTION_BY_ERROR_CLASS.values())
+        )
+    ):
+        raise ValueError(f"unsafe {label}")
+    return normalized
+
+
+def _is_glmcp_role(role: str) -> bool:
+    normalized = role.lower().replace("_", "-")
+    return (
+        normalized in {"cx-glmcp", "codex-glmcp", "glmcp"}
+        or normalized.startswith("cx-glmcp")
+        or normalized.startswith("codex-glmcp")
+        or normalized.startswith("glm-")
+        or normalized.startswith("glmcp-")
+    )
+
+
+def _receipt_name(args: argparse.Namespace, *, default: str, must_contain: str) -> str:
+    name = args.receipt_name or default
+    if SAFE_RECEIPT_NAME_RE.fullmatch(name) is None or SECRETISH_RE.search(name) is not None:
+        raise ValueError("unsafe receipt name")
+    if must_contain not in name:
+        raise ValueError(f"receipt name must contain {must_contain!r}")
+    return name
+
+
+def _write_flat_yaml_atomic(path: Path, fields: list[tuple[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            for key, value in fields:
+                rendered = str(value).replace("\n", " ").replace("\r", " ")
+                fh.write(f"{key}: {rendered}\n")
+        os.replace(tmp_name, path)
+        os.chmod(path, 0o600)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+
+
+def _bool(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _classify_error(args: argparse.Namespace) -> ErrorObservation:
+    provider_code = args.provider_code.strip() if args.provider_code is not None else None
+    if provider_code is not None:
+        if args.failure_class or args.action:
+            raise ValueError("--provider-code cannot be combined with --failure-class or --action")
+        if not provider_code or not provider_code.isdigit() or len(provider_code) != 4:
+            raise ValueError("provider code must be a four-digit Z.ai diagnostic code")
+        if provider_code in ZAI_ERROR_CLASS_BY_CODE:
+            error_class, action = ZAI_ERROR_CLASS_BY_CODE[provider_code]
+        else:
+            error_class = "unknown_provider_code"
+            action = "manual_hold_no_quota_admission"
+    else:
+        error_class = args.failure_class or "unknown"
+        action = args.action or "manual_hold_no_quota_admission"
+
+    error_class = _safe_token(error_class, label="failure class")
+    action = _safe_token(action, label="action")
+    if provider_code is None:
+        expected_action = CANONICAL_ACTION_BY_ERROR_CLASS.get(
+            error_class, "manual_hold_no_quota_admission"
+        )
+        if action != expected_action:
+            raise ValueError(
+                f"action {action!r} is not valid for failure class {error_class!r}; "
+                f"expected {expected_action!r}"
+            )
+    failure_code = failure_code_for_zai(error_class)
+    if failure_code is FailureCode.UNKNOWN and error_class in {
+        "network_error",
+        "redirect_error",
+        "server_error",
+        "tls_error",
+    }:
+        failure_code = FailureCode.PROVIDER_OUTAGE
+    if error_class in PROMPT_INPUT_ERROR_CLASSES:
+        receipt_kind = "hold"
+    elif (
+        error_class in QUOTA_WALL_ERROR_CLASSES
+        or error_class in MANUAL_HOLD_ERROR_CLASSES
+        or error_class in TRANSPORT_OR_AUTH_HOLD_ERROR_CLASSES
+    ):
+        receipt_kind = "quota_wall"
+    else:
+        receipt_kind = "hold"
+    return ErrorObservation(
+        provider_code=provider_code,
+        error_class=error_class,
+        action=action,
+        failure_code=failure_code,
+        receipt_kind=receipt_kind,
+    )
+
+
+def _error_release_time(
+    args: argparse.Namespace,
+    *,
+    observed_at: datetime,
+    observation: ErrorObservation,
+) -> datetime | None:
+    reset_at = _parse_utc(args.reset_at) if args.reset_at else None
+    if args.reset_at and reset_at is None:
+        raise ValueError("invalid --reset-at; expected ISO-8601 UTC timestamp")
+    backoff_until = _parse_utc(args.backoff_until) if args.backoff_until else None
+    if args.backoff_until and backoff_until is None:
+        raise ValueError("invalid --backoff-until; expected ISO-8601 UTC timestamp")
+    if args.jitter_seconds < 0:
+        raise ValueError("--jitter-seconds must be non-negative")
+    if args.backoff_seconds <= 0:
+        raise ValueError("--backoff-seconds must be positive")
+
+    fallback_release = observed_at + timedelta(seconds=args.backoff_seconds)
+    if observation.error_class in RESET_ERROR_CLASSES and reset_at is not None:
+        release_at = reset_at + timedelta(seconds=args.jitter_seconds)
+        return release_at if release_at > observed_at else fallback_release
+    if observation.error_class in BACKOFF_ERROR_CLASSES:
+        if backoff_until is not None and backoff_until > observed_at:
+            return backoff_until
+        return fallback_release
+    return None
+
+
+def _success_fields(
+    *,
+    observed_at: datetime,
+    stale_after_seconds: int,
+    evidence_ref: str,
+    supported_tool: str,
+    endpoint: str,
+    model: str,
+) -> list[tuple[str, object]]:
+    return [
+        ("schema", ADMISSION_SCHEMA),
+        ("status", "quota_available"),
+        ("provider", PROVIDER),
+        ("route_id", ROUTE_ID),
+        ("capacity_pool", CAPACITY_POOL),
+        ("supported_tool", supported_tool),
+        ("endpoint", endpoint),
+        ("model", model),
+        ("observed_at", _iso(observed_at)),
+        ("stale_after_seconds", stale_after_seconds),
+        ("evidence_ref", evidence_ref),
+        ("secret_source", SECRET_SOURCE),
+        ("secret_value_persisted", _bool(False)),
+        ("prompt_or_output_persisted", _bool(False)),
+        ("billing_mode", BILLING_MODE),
+        ("payg_fallback", _bool(False)),
+    ]
+
+
+def observe_success(args: argparse.Namespace) -> int:
+    observed_at = _now(args)
+    stale_after_seconds = args.stale_after_seconds
+    if stale_after_seconds <= 0 or stale_after_seconds > MAX_STALE_AFTER_SECONDS:
+        raise ValueError(f"--stale-after-seconds must be between 1 and {MAX_STALE_AFTER_SECONDS}")
+    evidence_ref = _safe_reference(args.evidence_ref, label="evidence ref")
+    supported_tool = _safe_token(args.supported_tool, label="supported tool")
+    endpoint = args.endpoint.strip()
+    model = args.model.strip()
+    if supported_tool != SUPPORTED_TOOL:
+        raise ValueError(f"--supported-tool must be {SUPPORTED_TOOL}")
+    if endpoint != ENDPOINT:
+        raise ValueError(f"--endpoint must be {ENDPOINT}")
+    if model != MODEL:
+        raise ValueError(f"--model must be {MODEL}")
+    name = _receipt_name(
+        args,
+        default="glmcp-quota-admission.yaml",
+        must_contain="glmcp-quota-admission",
+    )
+    path = args.receipt_dir / name
+    fields = _success_fields(
+        observed_at=observed_at,
+        stale_after_seconds=stale_after_seconds,
+        evidence_ref=evidence_ref,
+        supported_tool=supported_tool,
+        endpoint=endpoint,
+        model=model,
+    )
+    _write_flat_yaml_atomic(path, fields)
+    _print_summary(
+        args,
+        {
+            "path": str(path),
+            "receipt_kind": "admission",
+            "status": "quota_available",
+            "observed_at": _iso(observed_at),
+            "stale_after_seconds": stale_after_seconds,
+        },
+    )
+    return 0
+
+
+def _error_fields(
+    *,
+    role: str,
+    observed_at: datetime,
+    observation: ErrorObservation,
+    release_at: datetime | None,
+) -> list[tuple[str, object]]:
+    status = "quota_blocked" if observation.receipt_kind == "quota_wall" else "hold"
+    fields: list[tuple[str, object]] = [
+        ("schema", HOLD_SCHEMA),
+        ("status", status),
+        ("role", role),
+        ("provider", PROVIDER),
+        ("route_id", ROUTE_ID),
+        ("capacity_pool", CAPACITY_POOL),
+        ("supported_tool", SUPPORTED_TOOL),
+        ("endpoint", ENDPOINT),
+        ("model", MODEL),
+        ("detected_at", _iso(observed_at)),
+        ("observed_at", _iso(observed_at)),
+        ("failure_class", observation.error_class),
+        ("failure_code", observation.failure_code.value),
+        ("action", observation.action),
+        ("secret_source", SECRET_SOURCE),
+        ("secret_value_persisted", _bool(False)),
+        ("prompt_or_output_persisted", _bool(False)),
+        ("billing_mode", BILLING_MODE),
+        ("payg_fallback", _bool(False)),
+        ("positive_admission", _bool(False)),
+    ]
+    if observation.provider_code is not None:
+        fields.append(("provider_code", observation.provider_code))
+    if observation.receipt_kind == "quota_wall":
+        fields.append(("signal_kind", "glmcp_quota_admission_error"))
+        fields.append(("rate_limit_type", observation.error_class))
+    if release_at is not None:
+        if observation.error_class in BACKOFF_ERROR_CLASSES:
+            fields.append(("backoff_until", _iso(release_at)))
+        fields.append(("resets_at", _iso(release_at)))
+    return fields
+
+
+def observe_error(args: argparse.Namespace) -> int:
+    observed_at = _now(args)
+    observation = _classify_error(args)
+    role = _safe_token(args.role, label="role")
+    if not _is_glmcp_role(role):
+        raise ValueError("--role must identify a GLMCP quota-wall role")
+    release_at = _error_release_time(args, observed_at=observed_at, observation=observation)
+    default_name = (
+        f"{role}-quota-wall.yaml"
+        if observation.receipt_kind == "quota_wall"
+        else "glmcp-quota-hold.yaml"
+    )
+    name = _receipt_name(
+        args,
+        default=default_name,
+        must_contain="quota-wall" if observation.receipt_kind == "quota_wall" else "quota-hold",
+    )
+    path = args.receipt_dir / name
+    _write_flat_yaml_atomic(
+        path,
+        _error_fields(
+            role=role,
+            observed_at=observed_at,
+            observation=observation,
+            release_at=release_at,
+        ),
+    )
+    _print_summary(
+        args,
+        {
+            "path": str(path),
+            "receipt_kind": observation.receipt_kind,
+            "status": "quota_blocked" if observation.receipt_kind == "quota_wall" else "hold",
+            "failure_class": observation.error_class,
+            "failure_code": observation.failure_code.value,
+            "provider_code": observation.provider_code,
+            "release_at": _iso(release_at) if release_at is not None else None,
+        },
+    )
+    return 0
+
+
+def _print_summary(args: argparse.Namespace, summary: dict[str, object]) -> None:
+    if args.json:
+        print(json.dumps(summary, sort_keys=True))
+        return
+    print(
+        f"hapax-glmcp-quota-admission: wrote {summary['receipt_kind']} receipt -> {summary['path']}"
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="hapax-glmcp-quota-admission",
+        description="Write passive GLMCP quota admission/hold receipts.",
+    )
+    parser.add_argument(
+        "--receipt-dir",
+        type=Path,
+        default=DEFAULT_RECEIPT_DIR,
+        help="Receipt directory (default: $HAPAX_RELAY_RECEIPT_DIR or cache path)",
+    )
+    parser.add_argument(
+        "--receipt-name", help="Safe receipt filename override for tests/manual repair"
+    )
+    parser.add_argument("--now", help="Observation time as ISO-8601 UTC (default: current UTC)")
+    parser.add_argument("--json", action="store_true", help="Print a JSON summary")
+
+    subparsers = parser.add_subparsers(dest="mode", required=True)
+
+    success = subparsers.add_parser(
+        "observe-success",
+        help="Record a fresh positive supported-tool GLMCP success witness",
+    )
+    success.add_argument(
+        "--evidence-ref",
+        required=True,
+        help="Sanitized sanctioned-invocation witness ref, not prompt/output/secret content",
+    )
+    success.add_argument(
+        "--supported-tool",
+        required=True,
+        help="Supported Coding Plan tool observed for this invocation",
+    )
+    success.add_argument(
+        "--endpoint",
+        required=True,
+        help="Observed supported-tool endpoint for this invocation",
+    )
+    success.add_argument(
+        "--model",
+        required=True,
+        help="Observed model id for this invocation",
+    )
+    success.add_argument(
+        "--stale-after-seconds",
+        type=int,
+        default=DEFAULT_STALE_AFTER_SECONDS,
+        help=f"Positive receipt TTL, 1-{MAX_STALE_AFTER_SECONDS}s",
+    )
+    success.set_defaults(func=observe_success)
+
+    error = subparsers.add_parser(
+        "observe-error",
+        help="Record a classified GLMCP error without creating admission",
+    )
+    error.add_argument("--provider-code", help="Z.ai provider error code, when present")
+    error.add_argument(
+        "--failure-class",
+        help="Sanitized failure class for non-provider-code failures",
+    )
+    error.add_argument("--action", help="Sanitized action for non-provider-code failures")
+    error.add_argument("--reset-at", help="Provider reset timestamp, when supplied")
+    error.add_argument("--backoff-until", help="Explicit backoff-until timestamp")
+    error.add_argument(
+        "--backoff-seconds",
+        type=int,
+        default=DEFAULT_BACKOFF_SECONDS,
+        help="Default relative backoff for rate/high-traffic errors",
+    )
+    error.add_argument(
+        "--jitter-seconds",
+        type=int,
+        default=DEFAULT_RESET_JITTER_SECONDS,
+        help="Deterministic safety jitter added to provider reset timestamps",
+    )
+    error.add_argument("--role", default=DEFAULT_ROLE, help="Quota-wall role label")
+    error.set_defaults(func=observe_error)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return args.func(args)
+    except ValueError as exc:
+        print(f"hapax-glmcp-quota-admission: {exc}; {ERROR_HINT}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(
+            "hapax-glmcp-quota-admission: failed to write receipt: "
+            f"{type(exc).__name__}; next action: check --receipt-dir permissions "
+            "and retry locally",
+            file=sys.stderr,
+        )
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -34,15 +34,13 @@ RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
 GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"
 GLMCP_ADMISSION_TOOL_ENDPOINTS = {
     "hapax-glmcp-reviewer": frozenset({"https://api.z.ai/api/coding/paas/v4"}),
-    "claude_code": frozenset({"https://api.z.ai/api/anthropic"}),
 }
 GLMCP_ADMISSION_SUPPORTED_TOOLS = frozenset(GLMCP_ADMISSION_TOOL_ENDPOINTS)
 GLMCP_ADMISSION_ENDPOINTS = frozenset(
     endpoint for endpoints in GLMCP_ADMISSION_TOOL_ENDPOINTS.values() for endpoint in endpoints
 )
-# Mirrors scripts/hapax-quota-telemetry-writer: Coding Plan docs currently use
-# ``glm-5`` as the API model id even though the newest open-weights release is
-# GLM-5.2.
+# Mirrors scripts/hapax-quota-telemetry-writer and the direct
+# scripts/hapax-glmcp-reviewer route metadata.
 GLMCP_ADMISSION_MODELS = frozenset({"glm-5"})
 GLMCP_ADMISSION_RECEIPT_LABEL_RE = re.compile(
     r"\Arelay-receipt:"
