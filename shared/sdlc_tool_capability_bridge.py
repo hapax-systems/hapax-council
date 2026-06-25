@@ -278,9 +278,7 @@ def assess_sdlc_route_supply(
             reason_codes.append("publication_authority_absent")
         if not (demand.rights_evidence_refs and fact.rights_evidence_refs):
             reason_codes.append("publication_rights_evidence_absent")
-        if not (
-            demand.privacy_redaction_evidence_refs and fact.privacy_redaction_evidence_refs
-        ):
+        if not (demand.privacy_redaction_evidence_refs and fact.privacy_redaction_evidence_refs):
             reason_codes.append("publication_privacy_redaction_evidence_absent")
         if not (demand.explicit_receipt_refs and fact.explicit_receipt_refs):
             reason_codes.append("publication_explicit_receipts_absent")
@@ -304,16 +302,16 @@ def assess_sdlc_route_supply(
             reason_codes.append("provider_budget_evidence_absent")
         if not demand.provider_budget_evidence_refs:
             reason_codes.append("provider_budget_receipt_absent")
-        evidence_refs.extend([*fact.provider_budget_evidence_refs, *demand.provider_budget_evidence_refs])
+        evidence_refs.extend(
+            [*fact.provider_budget_evidence_refs, *demand.provider_budget_evidence_refs]
+        )
 
     reason_codes = list(dict.fromkeys(reason_codes))
     satisfies = not reason_codes
     return RouteSupplyAssessment(
         supply_id=fact.supply_id,
         demand_role=demand.role,
-        status=RouteSupplyMatchStatus.SATISFIES
-        if satisfies
-        else RouteSupplyMatchStatus.HELD,
+        status=RouteSupplyMatchStatus.SATISFIES if satisfies else RouteSupplyMatchStatus.HELD,
         satisfies=satisfies,
         reason_codes=tuple(reason_codes),
         evidence_refs=tuple(dict.fromkeys(evidence_refs)),
@@ -397,11 +395,11 @@ def project_provider_tool_route_supply_fact(
         outcome.outcome_id for outcome in outcomes if outcome.can_support_fresh_source_claim()
     ]
     supplied_outcomes = [
-        outcome.outcome_id
-        for outcome in outcomes
-        if outcome.can_support_supplied_evidence_claim()
+        outcome.outcome_id for outcome in outcomes if outcome.can_support_supplied_evidence_claim()
     ]
-    public_outcomes = [outcome.outcome_id for outcome in outcomes if outcome.can_support_public_claim()]
+    public_outcomes = [
+        outcome.outcome_id for outcome in outcomes if outcome.can_support_public_claim()
+    ]
     evidence_refs = _unique(
         [
             *route.source_refs,
@@ -503,7 +501,9 @@ def _inventory_row_supply_fact(row: CapabilityClassificationRow) -> SdlcRouteSup
         public_claim_policy=row.public_claim_policy.value,
         can_satisfy_required_demands=not blocking_reasons,
         source_acquisition_capable=row.can_acquire_sources,
-        source_acquisition_evidence_refs=tuple(row.evidence_refs if row.can_acquire_sources else ()),
+        source_acquisition_evidence_refs=tuple(
+            row.evidence_refs if row.can_acquire_sources else ()
+        ),
         fresh_current_world_evidence_allowed=source_ready,
         public_claim_evidence_allowed=(
             source_ready and row.public_claim_policy is PublicClaimPolicy.PUBLIC_GATE_REQUIRED
@@ -512,14 +512,16 @@ def _inventory_row_supply_fact(row: CapabilityClassificationRow) -> SdlcRouteSup
         publication_egress_allowed=False,
         publication_authority_granted=False,
         rights_evidence_refs=tuple(
-            ref for ref in (row.projection.rights_ref if row.projection else None, row.evidence_ref) if ref
+            ref
+            for ref in (row.projection.rights_ref if row.projection else None, row.evidence_ref)
+            if ref
         ),
         privacy_redaction_evidence_refs=tuple(row.evidence_refs),
         blocking_reasons=tuple(blocking_reasons),
-        warnings=(
-            "capability_inventory_fact_is_static_route_supply_not_dispatch_authority",
+        warnings=("capability_inventory_fact_is_static_route_supply_not_dispatch_authority",),
+        evidence_refs=tuple(
+            _unique([row.evidence_ref, *row.evidence_refs, *row.witness_requirements])
         ),
-        evidence_refs=tuple(_unique([row.evidence_ref, *row.evidence_refs, *row.witness_requirements])),
     )
 
 
@@ -579,7 +581,10 @@ def _provider_gateway_supply_fact(route: PlatformCapabilityRoute) -> SdlcRouteSu
 
 
 def _provider_tool_role(route: ProviderToolRouteHealth) -> RouteSupplyRole:
-    if route.route_family in {ProviderToolRouteFamily.SEARCH_PROVIDER, ProviderToolRouteFamily.MCP_TOOL}:
+    if route.route_family in {
+        ProviderToolRouteFamily.SEARCH_PROVIDER,
+        ProviderToolRouteFamily.MCP_TOOL,
+    }:
         if route.source_acquisition_capability:
             return RouteSupplyRole.SOURCE_ACQUISITION
         return RouteSupplyRole.SUPPLIED_EVIDENCE_RECALL
@@ -587,7 +592,10 @@ def _provider_tool_role(route: ProviderToolRouteHealth) -> RouteSupplyRole:
         return RouteSupplyRole.SUPPLIED_EVIDENCE_RECALL
     if route.route_family is ProviderToolRouteFamily.PUBLICATION_ENDPOINT:
         return RouteSupplyRole.PUBLICATION_EGRESS
-    if route.route_family in {ProviderToolRouteFamily.STORAGE_SYNC, ProviderToolRouteFamily.DOCKER_CONTAINER}:
+    if route.route_family in {
+        ProviderToolRouteFamily.STORAGE_SYNC,
+        ProviderToolRouteFamily.DOCKER_CONTAINER,
+    }:
         return RouteSupplyRole.STORAGE_INFRA_CONTROL
     if route.route_family is ProviderToolRouteFamily.LOCAL_API:
         return RouteSupplyRole.TELEMETRY_RESOURCE
