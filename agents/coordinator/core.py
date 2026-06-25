@@ -1347,8 +1347,21 @@ def _dispatch_tool_next_action(worktree: Path) -> str:
     )
 
 
+def _lane_not_alive_next_action(role: str, platform: str, worktree: Path) -> str:
+    if platform not in COORDINATOR_DISPATCHABLE_PLATFORMS:
+        supported = ", ".join(COORDINATOR_DISPATCHABLE_PLATFORMS)
+        return (
+            f"do not count dead {platform!r} lane {role!r} as coordinator headless capacity; "
+            f"route work to a supported platform ({supported}) or add coordinator support first"
+        )
+    return (
+        f"start or relaunch lane {role!r} before checking guarded cc-task scripts in {worktree}, "
+        "or leave the lane unavailable for dispatch"
+    )
+
+
 def _unsupported_dispatch_platform_next_action(platform: str) -> str:
-    supported = ", ".join(sorted(COORDINATOR_DISPATCHABLE_PLATFORMS))
+    supported = ", ".join(COORDINATOR_DISPATCHABLE_PLATFORMS)
     return (
         f"route work to a supported coordinator headless platform ({supported}), "
         f"or add coordinator headless dispatch support for {platform!r}"
@@ -1480,9 +1493,11 @@ def _check_lane(lane: str | LaneDescriptor) -> LaneState:
 
     if not state.alive:
         state.dispatch_ready = False
+        worktree = _dispatch_worktree(state.role, state.platform)
         state.dispatch_blocked_reason = _dispatch_tool_block(
             "lane_not_alive",
-            _dispatch_worktree(state.role, state.platform),
+            worktree,
+            next_action=_lane_not_alive_next_action(state.role, state.platform, worktree),
         )
     else:
         blocker = _dispatch_tool_blocker(state.role, state.platform)

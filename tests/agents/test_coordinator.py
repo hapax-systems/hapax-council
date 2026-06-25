@@ -60,6 +60,11 @@ def _stale_worktree(path: Path) -> None:
     (path / "scripts" / "cc-close").write_text("#!/bin/sh\n# legacy cc-close\n", encoding="utf-8")
 
 
+def _stale_claim_worktree(path: Path) -> None:
+    _guarded_worktree(path)
+    (path / "scripts" / "cc-claim").write_text("#!/bin/sh\n# legacy cc-claim\n", encoding="utf-8")
+
+
 def _stale_close_worktree(path: Path) -> None:
     _guarded_worktree(path)
     (path / "scripts" / "cc-close").write_text("#!/bin/sh\n# legacy cc-close\n", encoding="utf-8")
@@ -1759,6 +1764,7 @@ Body.
         assert state.lanes["alpha"]["alive"] is False
         assert state.lanes["alpha"]["dispatch_ready"] is False
         assert "lane_not_alive" in state.lanes["alpha"]["dispatch_blocked_reason"]
+        assert "start or relaunch lane 'alpha'" in state.lanes["alpha"]["dispatch_blocked_reason"]
 
     def test_tick_dispatches_to_guarded_ready_lane(self, tmp_path: Path):
         coord = Coordinator()
@@ -1840,6 +1846,69 @@ Body.
                 "--launch",
             ]
         ]
+
+    def test_tick_does_not_dispatch_to_stale_claim_lane(self, tmp_path: Path):
+        coord = Coordinator()
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("claude",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+        )
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
+        _stale_claim_worktree(tmp_path / "projects" / "hapax-council--dev")
+        completed = subprocess.CompletedProcess(
+            args=["tmux"],
+            returncode=0,
+            stdout="hapax-claude-dev\n",
+            stderr="",
+        )
+
+        def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            if cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]:
+                return completed
+            raise AssertionError(f"unexpected dispatch subprocess call: {cmd!r}")
+
+        with (
+            patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_write_state") as write_state,
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.PID_DIR", pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
+            patch("agents.coordinator.core._live_headless_launcher", return_value=None),
+            patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=AdmissionDecision(state="open"),
+            ),
+        ):
+            coord.tick()
+
+        state = write_state.call_args.args[0]
+        assert state.offered_tasks == 1
+        assert state.task_flow_counts["offered"] == 1
+        assert state.lanes_idle == 0
+        assert state.dispatches_this_tick == 0
+        assert state.lanes["dev"]["alive"] is True
+        assert state.lanes["dev"]["idle"] is True
+        assert state.lanes["dev"]["dispatch_ready"] is False
+        assert "stale cc-claim" in state.lanes["dev"]["dispatch_blocked_reason"]
+        assert "authority_case" in state.lanes["dev"]["dispatch_blocked_reason"]
 
     def test_tick_does_not_dispatch_to_stale_close_lane(self, tmp_path: Path):
         coord = Coordinator()
