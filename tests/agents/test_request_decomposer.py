@@ -176,7 +176,7 @@ class TestTaskSpec:
             )
 
     def test_invalid_taxonomy_score_rejected(self):
-        with pytest.raises(ValueError, match="integers 0..5"):
+        with pytest.raises(ValueError, match="next action: set each requirement vector score"):
             TaskSpec(
                 task_id="taxonomy-bad-score",
                 title="Bad score",
@@ -185,6 +185,38 @@ class TestTaskSpec:
                 acceptance_criteria=["It works"],
                 routing_class="source_python",
                 requirement_vector=_requirement_vector(context_length=6),
+                requirement_vector_validity_mask=_validity_mask(),
+            )
+
+    def test_invalid_taxonomy_mask_error_includes_next_action(self):
+        validity_mask: dict[str, object] = _validity_mask()
+        validity_mask["context_length"] = "maybe"
+
+        with pytest.raises(
+            ValueError,
+            match="next action: set each requirement_vector_validity_mask value",
+        ):
+            TaskSpec(
+                task_id="taxonomy-bad-mask",
+                title="Bad mask",
+                parent_request="REQ-test.md",
+                authority_case="CASE-TEST",
+                acceptance_criteria=["It works"],
+                routing_class="source_python",
+                requirement_vector=_requirement_vector(),
+                requirement_vector_validity_mask=validity_mask,
+            )
+
+    def test_unknown_taxonomy_dimension_error_includes_next_action(self):
+        with pytest.raises(ValueError, match="next action: provide one value"):
+            TaskSpec(
+                task_id="taxonomy-unknown-dimension",
+                title="Unknown taxonomy dimension",
+                parent_request="REQ-test.md",
+                authority_case="CASE-TEST",
+                acceptance_criteria=["It works"],
+                routing_class="source_python",
+                requirement_vector={**_requirement_vector(), "unknown_dimension": 1},
                 requirement_vector_validity_mask=_validity_mask(),
             )
 

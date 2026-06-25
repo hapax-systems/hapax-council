@@ -127,6 +127,16 @@ REQUIREMENT_VECTOR_DIMENSIONS = (
     "governance_sensitivity",
 )
 _REQUIREMENT_VECTOR_DIMENSION_SET = frozenset(REQUIREMENT_VECTOR_DIMENSIONS)
+_REQUIREMENT_VECTOR_NEXT_ACTION = (
+    "next action: provide one value for each taxonomy dimension: "
+    + ", ".join(REQUIREMENT_VECTOR_DIMENSIONS)
+)
+_REQUIREMENT_SCORE_NEXT_ACTION = (
+    "next action: set each requirement vector score to an integer from 0 through 5"
+)
+_VALIDITY_MASK_NEXT_ACTION = (
+    "next action: set each requirement_vector_validity_mask value to true or false"
+)
 _REQUIREMENT_VECTOR_ALIASES = {
     "d1": "quality_floor",
     "quality": "quality_floor",
@@ -166,15 +176,23 @@ def _normalize_requirement_dimension(value: object) -> str:
 
 def _coerce_requirement_score(value: object) -> int:
     if isinstance(value, bool):
-        raise ValueError("requirement vector scores must be integers 0..5")
+        raise ValueError(
+            f"requirement vector scores must be integers 0..5; {_REQUIREMENT_SCORE_NEXT_ACTION}"
+        )
     if isinstance(value, float) and not value.is_integer():
-        raise ValueError("requirement vector scores must be integers 0..5")
+        raise ValueError(
+            f"requirement vector scores must be integers 0..5; {_REQUIREMENT_SCORE_NEXT_ACTION}"
+        )
     try:
         score = int(str(value).strip() if isinstance(value, str) else value)
     except (TypeError, ValueError) as exc:
-        raise ValueError("requirement vector scores must be integers 0..5") from exc
+        raise ValueError(
+            f"requirement vector scores must be integers 0..5; {_REQUIREMENT_SCORE_NEXT_ACTION}"
+        ) from exc
     if score < 0 or score > 5:
-        raise ValueError("requirement vector scores must be integers 0..5")
+        raise ValueError(
+            f"requirement vector scores must be integers 0..5; {_REQUIREMENT_SCORE_NEXT_ACTION}"
+        )
     return score
 
 
@@ -186,7 +204,9 @@ def _coerce_mask_bool(value: object) -> bool:
         return True
     if text in {"false", "no", "n", "0"}:
         return False
-    raise ValueError("requirement vector validity values must be booleans")
+    raise ValueError(
+        f"requirement vector validity values must be booleans; {_VALIDITY_MASK_NEXT_ACTION}"
+    )
 
 
 def _ordered_dimension_mapping(value: object, *, mask: bool) -> dict[str, int] | dict[str, bool]:
@@ -196,11 +216,17 @@ def _ordered_dimension_mapping(value: object, *, mask: bool) -> dict[str, int] |
         items = list(value.items())
     elif isinstance(value, Sequence) and not isinstance(value, str):
         if len(value) != len(REQUIREMENT_VECTOR_DIMENSIONS):
-            msg = "requirement vector sequences must have exactly 8 values"
+            msg = (
+                "requirement vector sequences must have exactly 8 values; "
+                f"{_REQUIREMENT_VECTOR_NEXT_ACTION}"
+            )
             raise ValueError(msg)
         items = list(zip(REQUIREMENT_VECTOR_DIMENSIONS, value, strict=True))
     else:
-        msg = "requirement vector must be an object keyed by the 8 taxonomy dimensions"
+        msg = (
+            "requirement vector must be an object keyed by the 8 taxonomy dimensions; "
+            f"{_REQUIREMENT_VECTOR_NEXT_ACTION}"
+        )
         raise ValueError(msg)
 
     out: dict[str, int] | dict[str, bool] = {}
@@ -208,10 +234,15 @@ def _ordered_dimension_mapping(value: object, *, mask: bool) -> dict[str, int] |
     for raw_key, raw_value in items:
         key = _normalize_requirement_dimension(raw_key)
         if key not in _REQUIREMENT_VECTOR_DIMENSION_SET:
-            msg = f"unknown requirement vector dimension: {raw_key}"
+            msg = (
+                f"unknown requirement vector dimension: {raw_key}; "
+                f"{_REQUIREMENT_VECTOR_NEXT_ACTION}"
+            )
             raise ValueError(msg)
         if key in seen:
-            msg = f"duplicate requirement vector dimension: {key}"
+            msg = (
+                f"duplicate requirement vector dimension: {key}; {_REQUIREMENT_VECTOR_NEXT_ACTION}"
+            )
             raise ValueError(msg)
         seen.add(key)
         out[key] = _coerce_mask_bool(raw_value) if mask else _coerce_requirement_score(raw_value)
@@ -222,7 +253,10 @@ def _ordered_dimension_mapping(value: object, *, mask: bool) -> dict[str, int] |
         detail = f"missing={missing}"
         if extra:
             detail += f", extra={extra}"
-        msg = f"requirement vector must include exactly 8 dimensions ({detail})"
+        msg = (
+            f"requirement vector must include exactly 8 dimensions ({detail}); "
+            f"{_REQUIREMENT_VECTOR_NEXT_ACTION}"
+        )
         raise ValueError(msg)
     return out
 

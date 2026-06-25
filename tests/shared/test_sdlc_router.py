@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from shared.gate_log import GateEvent
+from shared.gate_log import GateEvent, append_gate_event
 from shared.platform_capability_registry import (
     build_supply_vector,
     load_platform_capability_registry,
@@ -356,6 +356,48 @@ def test_gate_pass_reward_updates_posteriors_and_selection_does_not() -> None:
     posterior = router.state.posterior_for_read("source_python", "local_tool.local.worker")
     assert posterior.use_count == 2
     assert posterior.ts_beta > 1.0
+
+
+def test_ingest_gate_events_accepts_explicit_event_iterable() -> None:
+    router = SdlcRouter()
+    accept = GateEvent(
+        route="local_tool.local.worker",
+        routing_class="source_python",
+        requirement_vector=_requirement_vector(),
+        task_hash="sha256:task-router-test",
+        gate_result="accept",
+        gate_type="deterministic",
+        ts="2026-06-25T00:00:00+00:00",
+        learning_eligibility=_learning_eligibility(),
+    )
+
+    assert router.ingest_gate_events(events=[accept, accept]) == 1
+    posterior = router.state.posterior_for_read("source_python", "local_tool.local.worker")
+    assert posterior.use_count == 1
+    assert posterior.ts_alpha > 2.0
+
+
+def test_ingest_gate_events_reads_gate_log_path(tmp_path: Path) -> None:
+    path = tmp_path / "gate-events.jsonl"
+    accept = GateEvent(
+        route="local_tool.local.worker",
+        routing_class="source_python",
+        requirement_vector=_requirement_vector(),
+        task_hash="sha256:task-router-test",
+        gate_result="accept",
+        gate_type="deterministic",
+        ts="2026-06-25T00:00:00+00:00",
+        learning_eligibility=_learning_eligibility(),
+    )
+    append_gate_event(accept, path=path)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write("{not-valid-json}\n")
+
+    router = SdlcRouter()
+
+    assert router.ingest_gate_events(path=path) == 1
+    posterior = router.state.posterior_for_read("source_python", "local_tool.local.worker")
+    assert posterior.use_count == 1
 
 
 def test_thompson_gate_update_does_not_require_local_posterior_update() -> None:
