@@ -23,7 +23,11 @@ DISPATCH_CLOSE_GUARD_MARKERS = (
 
 
 def dispatch_worktree(role: str, platform: str) -> Path:
-    """Resolve the lane worktree used by governed dispatch preflight and launch."""
+    """Resolve a lane worktree for governed dispatch preflight and launch.
+
+    This is mapping only, not coordinator headless eligibility; gate scheduler
+    capacity with ``COORDINATOR_HEADLESS_DISPATCHABLE_PLATFORMS``.
+    """
     override = os.environ.get("HAPAX_DISPATCH_WORKTREE")
     if override:
         return Path(override).expanduser()

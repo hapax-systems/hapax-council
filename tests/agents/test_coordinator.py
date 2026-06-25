@@ -244,6 +244,11 @@ class TestDispatchWorktreeGuard:
     ):
         with (
             patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.object(
+                Path,
+                "is_file",
+                side_effect=AssertionError("unsupported platform should not inspect guard files"),
+            ),
             patch(
                 "agents.coordinator.core._read_dispatch_guard",
                 side_effect=AssertionError("unsupported platform should not read guard files"),
