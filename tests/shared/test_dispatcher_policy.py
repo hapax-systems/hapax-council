@@ -133,6 +133,8 @@ def _request(**overrides: object) -> DispatchRequest:
         "legacy_route_mutable": True,
     }
     payload.update(overrides)
+    if "demand_vector" not in overrides and payload.get("route_metadata_status") == "explicit":
+        payload["demand_vector"] = _demand()
     return DispatchRequest.model_validate(payload)
 
 
@@ -413,6 +415,66 @@ def test_route_envelope_hold_blocks_dispatch_launch() -> None:
     assert decision.action is DispatchAction.HOLD
     assert decision.launch_allowed is False
     assert "route_envelope_admission_hold" in decision.reason_codes
+    assert "route_envelope_missing" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_missing_demand_vector_blocks_dispatch_launch() -> None:
+    request = _request(demand_vector=None)
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
+    assert "missing_demand_vector" in decision.reason_codes
+    assert "route_envelope_missing" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_build_dispatch_request_missing_route_envelope_holds_before_launch() -> None:
+    task_fields = _task_fields()
+    task_fields.pop("route_envelope", None)
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert request.demand_vector is not None
+    assert decision.action is DispatchAction.HOLD
+    assert "route_envelope_admission_hold" in decision.reason_codes
+    assert "route_envelope_missing" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_build_dispatch_request_invalid_demand_vector_holds_before_launch() -> None:
+    task_fields = _task_fields()
+    task_demand = dict(task_fields["task_demand"])  # type: ignore[index]
+    task_demand["fixed_route_overhead_sensitivity"] = 999
+    task_fields["task_demand"] = task_demand
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert request.demand_vector is None
+    assert decision.action is DispatchAction.HOLD
+    assert "missing_demand_vector" in decision.reason_codes
     assert "route_envelope_missing" in decision.reason_codes
     assert "policy_launch" not in decision.reason_codes
 

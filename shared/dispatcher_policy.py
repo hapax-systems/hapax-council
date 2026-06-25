@@ -1345,7 +1345,7 @@ def _policy_vetoes(gate: RouteDecision) -> tuple[DimensionalVeto, ...]:
 def _route_envelope_hold_reasons(request: DispatchRequest) -> tuple[str, ...]:
     demand = request.demand_vector
     if demand is None:
-        return ()
+        return ("missing_demand_vector", "route_envelope_missing")
     admission = demand.route_envelope.admission
     action = admission.admission_action.value
     if action == "route":

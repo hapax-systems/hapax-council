@@ -125,6 +125,41 @@ route_metadata:
   review_requirement:
     support_artifact_allowed: false
     independent_review_required: false
+  route_envelope:
+    classification_envelope:
+      label: source_python
+      classifier: deterministic-route-classifier
+      source_kind: deterministic
+      confidence: 0.9
+      evidence_refs: [route-classifier:source-python]
+      freshness: fresh
+      authority_ceiling: authoritative
+      validity_mask:
+        label: true
+        source: true
+        confidence: true
+        freshness: true
+        authority_ceiling: true
+      deterministic_facts_used: [mutation_surface:source]
+      consumer_floor: frontier_required
+    eligibility:
+      authority_allowed: true
+      privacy_allowed: true
+      freshness_ok: true
+      quality_floor_satisfied: true
+      required_tools_available: true
+      budget_allowed: true
+      reason_codes: [eligibility_witnessed]
+    admission:
+      admission_action: route
+      reason_codes: [route_envelope_route]
+```
+
+Missing or invalid `route_envelope` / `DemandVector` evidence is not
+dispatchable: primary dispatch holds before `policy_launch`. Recheck with:
+
+```bash
+uv run pytest tests/shared/test_dispatcher_policy.py
 ```
 
 ## Derivation
