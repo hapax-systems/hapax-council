@@ -41,9 +41,9 @@ HOLD_SCHEMA = "hapax.glmcp_quota_hold.v1"
 PROVIDER = "z_ai-glm-coding-plan"
 ROUTE_ID = "glmcp.review.direct"
 CAPACITY_POOL = "subscription_quota"
-SUPPORTED_TOOL = "claude_code"
-ENDPOINT = "https://api.z.ai/api/anthropic"
-MODEL = "glm-5.2[1m]"
+SUPPORTED_TOOL = "hapax-glmcp-reviewer"
+ENDPOINT = "https://api.z.ai/api/coding/paas/v4"
+MODEL = "glm-5"
 SECRET_SOURCE = "pass:glmcp/api-key"
 BILLING_MODE = "coding_plan_subscription"
 DEFAULT_STALE_AFTER_SECONDS = 900
@@ -265,10 +265,14 @@ def _error_release_time(
     if args.backoff_seconds <= 0:
         raise ValueError("--backoff-seconds must be positive")
 
+    fallback_release = observed_at + timedelta(seconds=args.backoff_seconds)
     if observation.error_class in RESET_ERROR_CLASSES and reset_at is not None:
-        return reset_at + timedelta(seconds=args.jitter_seconds)
+        release_at = reset_at + timedelta(seconds=args.jitter_seconds)
+        return release_at if release_at > observed_at else fallback_release
     if observation.error_class in BACKOFF_ERROR_CLASSES:
-        return backoff_until or observed_at + timedelta(seconds=args.backoff_seconds)
+        if backoff_until is not None and backoff_until > observed_at:
+            return backoff_until
+        return fallback_release
     return None
 
 

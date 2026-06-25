@@ -106,17 +106,15 @@ GLMCP_ADMISSION_PROVIDER = SUBSCRIPTION_PROVIDERS["glmcp"]
 GLMCP_ADMISSION_CAPACITY_POOL = "subscription_quota"
 GLMCP_ADMISSION_SCHEMA = "hapax.glmcp_quota_admission.v1"
 GLMCP_ADMISSION_TOOL_ENDPOINTS = {
-    "claude_code": frozenset({"https://api.z.ai/api/anthropic"}),
+    "hapax-glmcp-reviewer": frozenset({"https://api.z.ai/api/coding/paas/v4"}),
 }
 GLMCP_ADMISSION_SUPPORTED_TOOLS = frozenset(GLMCP_ADMISSION_TOOL_ENDPOINTS)
 GLMCP_ADMISSION_ENDPOINTS = frozenset(
     endpoint for endpoints in GLMCP_ADMISSION_TOOL_ENDPOINTS.values() for endpoint in endpoints
 )
-# Keep this fail-closed. Rechecked against Context7 `/websites/z_ai_devpack`
-# on 2026-06-25: Z.ai's Claude Code GLM-5.2 switch guide documents
-# ``glm-5.2[1m]`` for the Opus/Sonnet defaults on the Anthropic-compatible
-# endpoint.
-GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2[1m]"})
+# Keep this fail-closed. This receipt gates the direct GLM review route, so the
+# model must match scripts/hapax-glmcp-reviewer's Coding Plan adapter.
+GLMCP_ADMISSION_MODELS = frozenset({"glm-5"})
 GLMCP_ADMISSION_FIELDS = frozenset(
     {
         "billing_mode",
@@ -415,7 +413,7 @@ def active_glmcp_admission_receipts(
         if model not in GLMCP_ADMISSION_MODELS:
             reject(
                 path,
-                "model missing or unsupported; expected documented Claude Code model id glm-5.2[1m]",
+                "model missing or unsupported; expected documented GLM review model id glm-5",
             )
             continue
         receipt_evidence_ref = fields.get("evidence_ref", "").strip()

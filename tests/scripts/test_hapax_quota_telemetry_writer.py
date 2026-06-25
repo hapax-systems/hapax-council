@@ -78,9 +78,9 @@ def _glmcp_admission(
     *,
     observed_at: str,
     stale_after_seconds: int = 900,
-    supported_tool: str = "claude_code",
-    endpoint: str = "https://api.z.ai/api/anthropic",
-    model: str = "glm-5.2[1m]",
+    supported_tool: str = "hapax-glmcp-reviewer",
+    endpoint: str = "https://api.z.ai/api/coding/paas/v4",
+    model: str = "glm-5",
     name: str = "glmcp-quota-admission.yaml",
     timestamp_field: str = "observed_at",
 ) -> None:
@@ -278,9 +278,9 @@ def test_fresh_glmcp_admission_receipt_marks_glmcp_fresh(tmp_path: Path) -> None
     assert any("glmcp-quota-admission.yaml" in ref for ref in glmcp_snapshot["evidence_refs"])
     assert any(
         "witness:supported-tool-usage-witness" in ref
-        and "supported_tool:claude_code" in ref
-        and "endpoint:https://api.z.ai/api/anthropic" in ref
-        and "model:glm-5.2[1m]" in ref
+        and "supported_tool:hapax-glmcp-reviewer" in ref
+        and "endpoint:https://api.z.ai/api/coding/paas/v4" in ref
+        and "model:glm-5" in ref
         for ref in glmcp_snapshot["evidence_refs"]
     )
     assert "finite" in glmcp_snapshot["operator_visible_reason"]
@@ -365,7 +365,9 @@ def test_glmcp_admission_rejects_timestamp_fallback_fields(
     assert json.loads(result.stdout)["glmcp_admissions"] == 0
 
 
-def test_glmcp_admission_accepts_claude_code_with_anthropic_endpoint(tmp_path: Path) -> None:
+def test_glmcp_admission_rejects_claude_code_anthropic_evidence_for_review_route(
+    tmp_path: Path,
+) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
     _glmcp_admission(
@@ -384,12 +386,13 @@ def test_glmcp_admission_accepts_claude_code_with_anthropic_endpoint(tmp_path: P
         for snapshot in payload["quota_snapshots"]
         if snapshot["route_id"] == "glmcp.review.direct"
     )
-    assert glmcp_snapshot["subscription_quota_state"] == "fresh"
+    assert glmcp_snapshot["subscription_quota_state"] == "unknown"
+    assert "supported_tool missing or unsupported" in result.stderr
     summary = json.loads(result.stdout)
-    assert summary["glmcp_admissions"] == 1
+    assert summary["glmcp_admissions"] == 0
 
 
-def test_glmcp_admission_rejects_supported_tool_endpoint_mismatches(tmp_path: Path) -> None:
+def test_glmcp_admission_rejects_unsupported_tool_or_endpoint(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
     (relay / "glmcp-quota-admission-claude-code-coding-endpoint.yaml").write_text(
@@ -400,7 +403,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: claude_code
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5.2[1m]
+model: glm-5
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
@@ -420,7 +423,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/anthropic
-model: glm-5.2[1m]
+model: glm-5
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
@@ -504,9 +507,9 @@ def test_glmcp_admission_receipt_warns_on_unsupported_status(tmp_path: Path) -> 
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
-supported_tool: claude_code
-endpoint: https://api.z.ai/api/anthropic
-model: glm-5.2[1m]
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
@@ -605,7 +608,7 @@ route_id: glmcp.review.direct
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 endpoint:
-  endpoint: https://api.z.ai/api/anthropic
+  endpoint: https://api.z.ai/api/coding/paas/v4
 """,
         encoding="utf-8",
     )
@@ -712,9 +715,9 @@ def test_glmcp_admission_rejection_warnings_do_not_echo_untrusted_values(
         "provider": "z_ai-glm-coding-plan",
         "capacity_pool": "subscription_quota",
         "route_id": "glmcp.review.direct",
-        "supported_tool": "claude_code",
-        "endpoint": "https://api.z.ai/api/anthropic",
-        "model": "glm-5.2[1m]",
+        "supported_tool": "hapax-glmcp-reviewer",
+        "endpoint": "https://api.z.ai/api/coding/paas/v4",
+        "model": "glm-5",
         "observed_at": "2026-06-09T23:55:00Z",
         "stale_after_seconds": "900",
         "evidence_ref": "supported-tool-usage-witness",
@@ -767,9 +770,9 @@ evidence_ref: supported-tool-usage-witness
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
-supported_tool: claude_code
+supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/v1
-model: glm-5.2[1m]
+model: glm-5
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
@@ -781,8 +784,8 @@ evidence_ref: supported-tool-usage-witness
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
-supported_tool: claude_code
-endpoint: https://api.z.ai/api/anthropic
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
 model: glm-4.7
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
@@ -795,9 +798,9 @@ evidence_ref: supported-tool-usage-witness
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
-supported_tool: claude_code
-endpoint: https://api.z.ai/api/anthropic
-model: glm-5.2[1m]
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 """,
@@ -887,9 +890,9 @@ def test_ambiguous_glmcp_admission_timestamps_keep_glmcp_unknown(tmp_path: Path)
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
-supported_tool: claude_code
-endpoint: https://api.z.ai/api/anthropic
-model: glm-5.2[1m]
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5
 observed_at: 2026-06-09T23:55:00Z
 captured_at: 2026-06-10T00:05:00Z
 stale_after_seconds: 900
@@ -925,9 +928,9 @@ def test_malformed_glmcp_admission_timestamps_are_operator_visible(tmp_path: Pat
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
-supported_tool: claude_code
-endpoint: https://api.z.ai/api/anthropic
-model: glm-5.2[1m]
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5
 observed_at: definitely-not-a-date
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
@@ -939,9 +942,9 @@ evidence_ref: supported-tool-usage-witness
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
-supported_tool: claude_code
-endpoint: https://api.z.ai/api/anthropic
-model: glm-5.2[1m]
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: soon
 evidence_ref: supported-tool-usage-witness
@@ -953,9 +956,9 @@ evidence_ref: supported-tool-usage-witness
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
-supported_tool: claude_code
-endpoint: https://api.z.ai/api/anthropic
-model: glm-5.2[1m]
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 0
 evidence_ref: supported-tool-usage-witness
@@ -990,9 +993,9 @@ def test_glmcp_admission_receipt_requires_explicit_stale_after_seconds(
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
-supported_tool: claude_code
-endpoint: https://api.z.ai/api/anthropic
-model: glm-5.2[1m]
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5
 observed_at: 2026-06-09T23:55:00Z
 evidence_ref: supported-tool-usage-witness
 """,
@@ -1024,9 +1027,9 @@ def test_glmcp_admission_ttl_rejection_does_not_echo_numeric_secret(
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
-supported_tool: claude_code
-endpoint: https://api.z.ai/api/anthropic
-model: glm-5.2[1m]
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: {numeric_secret}
 evidence_ref: supported-tool-usage-witness
@@ -1063,9 +1066,9 @@ def test_glmcp_admission_receipt_rejects_secretish_evidence_ref(tmp_path: Path) 
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
-supported_tool: claude_code
-endpoint: https://api.z.ai/api/anthropic
-model: glm-5.2[1m]
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: {secretish_ref}
@@ -1077,9 +1080,9 @@ evidence_ref: {secretish_ref}
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
-supported_tool: claude_code
-endpoint: https://api.z.ai/api/anthropic
-model: glm-5.2[1m]
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: {colon_ref}
@@ -1091,9 +1094,9 @@ evidence_ref: {colon_ref}
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
-supported_tool: claude_code
-endpoint: https://api.z.ai/api/anthropic
-model: glm-5.2[1m]
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: {email_ref}
@@ -1105,9 +1108,9 @@ evidence_ref: {email_ref}
 provider: z_ai-glm-coding-plan
 capacity_pool: subscription_quota
 route_id: glmcp.review.direct
-supported_tool: claude_code
-endpoint: https://api.z.ai/api/anthropic
-model: glm-5.2[1m]
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: {overlong_secretish_ref}

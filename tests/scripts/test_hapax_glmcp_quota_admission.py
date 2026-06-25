@@ -16,11 +16,11 @@ SCRIPT = REPO_ROOT / "scripts" / "hapax-glmcp-quota-admission"
 NOW = "2026-06-10T00:00:00Z"
 SUCCESS_METADATA_ARGS = (
     "--supported-tool",
-    "claude_code",
+    "hapax-glmcp-reviewer",
     "--endpoint",
-    "https://api.z.ai/api/anthropic",
+    "https://api.z.ai/api/coding/paas/v4",
     "--model",
-    "glm-5.2[1m]",
+    "glm-5",
 )
 
 
@@ -82,9 +82,9 @@ def test_observe_success_writes_private_exact_positive_receipt(tmp_path: Path) -
         "provider": "z_ai-glm-coding-plan",
         "route_id": "glmcp.review.direct",
         "capacity_pool": "subscription_quota",
-        "supported_tool": "claude_code",
-        "endpoint": "https://api.z.ai/api/anthropic",
-        "model": "glm-5.2[1m]",
+        "supported_tool": "hapax-glmcp-reviewer",
+        "endpoint": "https://api.z.ai/api/coding/paas/v4",
+        "model": "glm-5",
         "observed_at": NOW,
         "stale_after_seconds": "900",
         "evidence_ref": "sanctioned-glmcp-usage-001",
@@ -154,35 +154,35 @@ def test_observe_success_rejects_unsafe_evidence_refs(
         (
             (
                 "--supported-tool",
-                "hapax-glmcp-reviewer",
-                "--endpoint",
-                "https://api.z.ai/api/anthropic",
-                "--model",
-                "glm-5.2[1m]",
-            ),
-            "--supported-tool must be claude_code",
-        ),
-        (
-            (
-                "--supported-tool",
                 "claude_code",
                 "--endpoint",
                 "https://api.z.ai/api/coding/paas/v4",
                 "--model",
-                "glm-5.2[1m]",
+                "glm-5",
             ),
-            "--endpoint must be https://api.z.ai/api/anthropic",
+            "--supported-tool must be hapax-glmcp-reviewer",
         ),
         (
             (
                 "--supported-tool",
-                "claude_code",
+                "hapax-glmcp-reviewer",
                 "--endpoint",
                 "https://api.z.ai/api/anthropic",
                 "--model",
                 "glm-5",
             ),
-            "--model must be glm-5.2[1m]",
+            "--endpoint must be https://api.z.ai/api/coding/paas/v4",
+        ),
+        (
+            (
+                "--supported-tool",
+                "hapax-glmcp-reviewer",
+                "--endpoint",
+                "https://api.z.ai/api/coding/paas/v4",
+                "--model",
+                "glm-5.2[1m]",
+            ),
+            "--model must be glm-5",
         ),
     ],
 )
@@ -275,6 +275,26 @@ def test_observe_error_1310_writes_quota_wall_until_reset_plus_jitter(tmp_path: 
     assert fields["resets_at"] == "2026-06-10T05:02:00Z"
 
 
+def test_observe_error_stale_reset_timestamp_writes_future_hold(tmp_path: Path) -> None:
+    result, receipt_dir = _run(
+        tmp_path,
+        "observe-error",
+        "--provider-code",
+        "1308",
+        "--reset-at",
+        "2026-06-09T23:00:00Z",
+        "--backoff-seconds",
+        "1200",
+    )
+
+    assert result.returncode == 0, result.stderr
+    fields = _read_flat_fields(receipt_dir / "cx-glmcp-quota-wall.yaml")
+    assert fields["status"] == "quota_blocked"
+    assert fields["provider_code"] == "1308"
+    assert fields["action"] == "hold_until_reset"
+    assert fields["resets_at"] == "2026-06-10T00:20:00Z"
+
+
 @pytest.mark.parametrize(
     ("provider_code", "failure_class", "action"),
     [
@@ -309,6 +329,26 @@ def test_observe_error_backoff_codes_write_quota_wall_without_payg_fallback(
     assert fields["resets_at"] == "2026-06-10T00:20:00Z"
     assert fields["positive_admission"] == "false"
     assert fields["payg_fallback"] == "false"
+
+
+def test_observe_error_stale_backoff_until_writes_future_hold(tmp_path: Path) -> None:
+    result, receipt_dir = _run(
+        tmp_path,
+        "observe-error",
+        "--provider-code",
+        "1302",
+        "--backoff-until",
+        "2026-06-09T23:00:00Z",
+        "--backoff-seconds",
+        "600",
+    )
+
+    assert result.returncode == 0, result.stderr
+    fields = _read_flat_fields(receipt_dir / "cx-glmcp-quota-wall.yaml")
+    assert fields["status"] == "quota_blocked"
+    assert fields["provider_code"] == "1302"
+    assert fields["backoff_until"] == "2026-06-10T00:10:00Z"
+    assert fields["resets_at"] == "2026-06-10T00:10:00Z"
 
 
 @pytest.mark.parametrize(
