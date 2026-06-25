@@ -62,7 +62,7 @@ jobs:
       docs_only: ${{ steps.diff.outputs.docs_only }}
       changed_count: ${{ steps.diff.outputs.changed_count }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           fetch-depth: 0
       - name: Detect docs-only change set
@@ -172,9 +172,9 @@ jobs:
       - name: Docs-only required-check sentinel
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only == 'true'
         run: echo "Docs-only change set; lint reports success without running heavy gates."
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           enable-cache: true
@@ -183,11 +183,11 @@ jobs:
           cache-dependency-glob: |
             pyproject.toml
             uv.lock
-      - uses: astral-sh/ruff-action@v4.0.0
+      - uses: astral-sh/ruff-action@0ce1b0bf8b818ef400413f810f8a11cdbda0034b
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           args: "check"
-      - uses: astral-sh/ruff-action@v4.0.0
+      - uses: astral-sh/ruff-action@0ce1b0bf8b818ef400413f810f8a11cdbda0034b
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           args: "format --check"
@@ -394,9 +394,9 @@ jobs:
       - name: Docs-only required-check sentinel
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only == 'true'
         run: echo "Docs-only change set; typecheck reports success without running pyrefly."
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           enable-cache: true
@@ -424,8 +424,8 @@ jobs:
         shard: [1, 2, 3, 4]
         shard_count: [4]
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
         with:
           enable-cache: true
           restore-cache: true
@@ -638,7 +638,7 @@ jobs:
           exit 1
       - name: Upload pytest node duration artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: pytest-node-durations-shard-${{ matrix.shard }}-of-${{ matrix.shard_count }}
           path: |
@@ -692,7 +692,7 @@ jobs:
       - name: Docs-only required-check sentinel
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only == 'true'
         run: echo "Docs-only change set; test reports success without running pytest."
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && github.event_name != 'merge_group'
       - name: Determine Python test mode
         id: test_mode
@@ -726,7 +726,7 @@ jobs:
           echo "Full pytest shard result: $TEST_FULL_SHARD_RESULT"
           echo "Serial title-card result: $TEST_TITLE_CARDS_RESULT"
           exit 1
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode != 'merge-group-shards'
         with:
           enable-cache: true
@@ -835,6 +835,8 @@ jobs:
           timeout -s KILL 1200 \
             uv run --no-sync pytest tests/ -q --tb=line --durations=25 \
               --benchmark-disable \
+              --cov=agents --cov=logos --cov=shared \
+              --cov-report=xml:coverage.xml --cov-report=term \
               -n 4 --dist loadfile \
               --ignore=tests/hapax_daimonion --ignore=tests/contract \
               --ignore=tests/test_frame_gate.py \
@@ -891,6 +893,14 @@ jobs:
           fi
           echo "Tests failed (pytest exit $PYTEST_EXIT)"
           exit 1
+      - name: Upload Python coverage artifact
+        if: always() && needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: python-coverage-xml
+          path: coverage.xml
+          if-no-files-found: error
+          retention-days: 7
       - name: Governance coverage gate
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
         env:
@@ -900,6 +910,30 @@ jobs:
           OTEL_SDK_DISABLED: "true"
           LANGFUSE_HOST: "http://0.0.0.0:1"
         run: uv run --no-sync python scripts/ci_governance_coverage_gate.py
+
+  codecov-upload:
+    needs: [docs_only_filter, post_merge_duplicate_filter, test]
+    if: always() && github.event_name == 'push' && needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && needs.test.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Download Python coverage artifact
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: python-coverage-xml
+      - name: Upload Python coverage to Codecov
+        continue-on-error: true
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac
+        with:
+          files: ./coverage.xml
+          flags: python
+          name: hapax-council-python
+          fail_ci_if_error: false
+          use_oidc: true
 
   homage-visual-regression:
     needs: post_merge_duplicate_filter
@@ -938,7 +972,7 @@ jobs:
     # ~24h granularity, well inside the operator's ward-iteration cycle.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
       # Path filter: detect whether this PR/push touches files that
       # plausibly affect visual-regression output. Outputs `homage_inputs`
       # (string "true"|"false") consumed by every downstream step's `if:`
@@ -946,7 +980,7 @@ jobs:
       # vs base) and push (diff vs before-SHA) automatically.
       - name: Detect homage-vr input changes
         id: filter
-        uses: dorny/paths-filter@v4
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d
         with:
           filters: |
             homage_inputs:
@@ -968,7 +1002,7 @@ jobs:
           fc-cache -fv
           fc-list | grep -i 'Px437.*IBM VGA 8x16' \
             || (echo "font install failed (fc-list)" >&2; exit 1)
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
         if: steps.filter.outputs.homage_inputs == 'true'
         with:
           enable-cache: true
@@ -995,7 +1029,7 @@ jobs:
             -q --tb=short
       - name: Upload diff PNGs on failure
         if: steps.filter.outputs.homage_inputs == 'true' && steps.vr.outcome == 'failure'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: homage-visual-regression-diffs
           path: /tmp/homage-visual-regression-diffs/
@@ -1036,12 +1070,12 @@ jobs:
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only == 'true'
         working-directory: .
         run: echo "Docs-only change set; web-build reports success without running pnpm."
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
       - name: Detect web-build input changes
         id: filter
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
-        uses: dorny/paths-filter@v4
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d
         with:
           filters: |
             web_build:
@@ -1055,11 +1089,11 @@ jobs:
           echo "Inputs:"
           echo "  - .github/workflows/ci.yml"
           echo "  - hapax-logos/**"
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.web_build == 'true'
         with:
-          version: 9
-      - uses: actions/setup-node@v6
+          version: 11
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.web_build == 'true'
         with:
           node-version: 22
@@ -1077,13 +1111,13 @@ jobs:
     if: github.event_name != 'push' || needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
       # Match hooks/scripts/cargo-check-rust.sh: only crate source edits under
       # hapax-logos/crates/** need the fast Rust check. The job still reports
       # success when skipped so branch protection sees an honest status.
       - name: Detect Rust crate changes
         id: filter
-        uses: dorny/paths-filter@v4
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d
         with:
           filters: |
             rust_crates:
@@ -1091,7 +1125,7 @@ jobs:
               - 'hapax-logos/crates/**'
       - name: Install Rust toolchain
         if: steps.filter.outputs.rust_crates == 'true'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
       - name: Install Rust crate system deps
         if: steps.filter.outputs.rust_crates == 'true'
         run: |
@@ -1099,7 +1133,7 @@ jobs:
           sudo apt-get install -y nasm
       - name: Cache cargo registry and build output
         if: steps.filter.outputs.rust_crates == 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             ~/.cargo/registry
@@ -1142,12 +1176,12 @@ jobs:
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only == 'true'
         working-directory: .
         run: echo "Docs-only change set; vscode-build reports success without running pnpm."
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
       - name: Detect vscode-build input changes
         id: filter
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
-        uses: dorny/paths-filter@v4
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d
         with:
           filters: |
             vscode_build:
@@ -1161,11 +1195,11 @@ jobs:
           echo "Inputs:"
           echo "  - .github/workflows/ci.yml"
           echo "  - vscode/**"
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.vscode_build == 'true'
         with:
-          version: 9
-      - uses: actions/setup-node@v6
+          version: 11
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.vscode_build == 'true'
         with:
           node-version: 22
@@ -1181,7 +1215,7 @@ jobs:
     if: github.event_name != 'push' || needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           # Shallow clone vs full-history. gitleaks scans current diff;
           # 50 commits is sufficient for typical PRs.
@@ -1223,8 +1257,8 @@ jobs:
     if: github.event_name != 'push' || needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.12"
           cache: pip

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# setup-hapax-assets-repo.sh — one-time bootstrap for the ryanklee/hapax-assets
+# setup-hapax-assets-repo.sh — one-time bootstrap for the hapax-systems/hapax-assets
 # external repo that serves as the aesthetic-library CDN.
 #
 # Operator action — run once to:
-#   1. Create the public GitHub repo `ryanklee/hapax-assets`
+#   1. Create the public GitHub repo `hapax-systems/hapax-assets`
 #   2. Initialize it with README + .github/workflows/publish.yml (from
 #      config/hapax-assets/ in this repo)
 #   3. Seed it with the current aesthetic-library tree
@@ -19,7 +19,7 @@
 
 set -euo pipefail
 
-REPO="ryanklee/hapax-assets"
+REPO="hapax-systems/hapax-assets"
 CHECKOUT_DIR="${HAPAX_ASSETS_CHECKOUT_DIR:-$HOME/.cache/hapax/hapax-assets-checkout}"
 COUNCIL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_DIR="$COUNCIL_ROOT/config/hapax-assets"
@@ -68,9 +68,16 @@ else
   git commit -m "init: README"
 fi
 
-# Step 4: install the publish workflow + README (idempotent).
+# Step 4: install GitHub App config, workflows, validation, and README (idempotent).
 mkdir -p .github/workflows
+mkdir -p scripts
 cp "$CONFIG_DIR/publish.yml" .github/workflows/publish.yml
+cp "$CONFIG_DIR/ci.yml" .github/workflows/ci.yml
+cp "$CONFIG_DIR/semgrep.yml" .github/workflows/semgrep.yml
+cp "$CONFIG_DIR/.coderabbit.yaml" .coderabbit.yaml
+cp "$CONFIG_DIR/codecov.yml" codecov.yml
+cp "$CONFIG_DIR/AGENTS.md" AGENTS.md
+cp "$CONFIG_DIR/scripts/validate_manifest.py" scripts/validate_manifest.py
 cp "$CONFIG_DIR/README.md" README.md
 
 # Step 5: seed aesthetic-library tree.
@@ -101,6 +108,6 @@ gh api -X PUT "repos/$REPO/pages" \
 echo ""
 echo "Done. Next:"
 echo "  1. Wait ~1–2 minutes for the first Pages deploy to finish"
-echo "  2. Visit https://ryanklee.github.io/hapax-assets/ to verify"
+echo "  2. Visit https://hapax-systems.github.io/hapax-assets/ to verify"
 echo "  3. Enable the publisher daemon:"
 echo "       systemctl --user enable --now hapax-assets-publisher.service"

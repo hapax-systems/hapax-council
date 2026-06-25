@@ -18,7 +18,7 @@ class PublisherConfig(BaseModel):
 
     source_dir: Path = _COUNCIL_ASSETS_DEFAULT
     checkout_dir: Path = _CHECKOUT_DEFAULT
-    remote_url: str = "git@github.com:ryanklee/hapax-assets.git"
+    remote_url: str = "git@github.com:hapax-systems/hapax-assets.git"
     branch: str = "main"
     min_push_interval_sec: int = 30
     rate_state_file: Path = _RATE_STATE_DEFAULT
@@ -32,7 +32,7 @@ class PublisherConfig(BaseModel):
             checkout_dir=Path(os.environ.get("HAPAX_ASSETS_CHECKOUT_DIR", str(_CHECKOUT_DEFAULT))),
             remote_url=os.environ.get(
                 "HAPAX_ASSETS_REMOTE_URL",
-                "git@github.com:ryanklee/hapax-assets.git",
+                "git@github.com:hapax-systems/hapax-assets.git",
             ),
             branch=os.environ.get("HAPAX_ASSETS_BRANCH", "main"),
             min_push_interval_sec=int(os.environ.get("HAPAX_ASSETS_MIN_PUSH_INTERVAL_SEC", "30")),

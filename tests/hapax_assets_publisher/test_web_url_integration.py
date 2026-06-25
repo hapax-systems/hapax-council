@@ -1,7 +1,7 @@
 """Integration test — ytb-AUTH-HOSTING consumes AUTH1's web_url synthesis.
 
 Verifies that the AestheticLibrary's web_url() method produces URLs that
-would resolve against the ryanklee.github.io/hapax-assets CDN once the
+would resolve against the hapax-systems.github.io/hapax-assets CDN once the
 publisher daemon has rsynced assets to the external repo.
 """
 
@@ -13,14 +13,14 @@ from shared.aesthetic_library.web_export import CDN_BASE_URL
 
 class TestWebUrlEndToEnd:
     def test_cdn_base_url_points_at_hapax_assets(self) -> None:
-        assert CDN_BASE_URL == "https://ryanklee.github.io/hapax-assets"
+        assert CDN_BASE_URL == "https://hapax-systems.github.io/hapax-assets"
 
     def test_real_asset_produces_valid_cdn_url(self) -> None:
         lib = AestheticLibrary(root=ASSETS_ROOT_DEFAULT / "aesthetic-library")
         asset = lib.get("fonts", "font", "px437-woff2")
         url = lib.web_url(asset)
 
-        assert url.startswith("https://ryanklee.github.io/hapax-assets/")
+        assert url.startswith("https://hapax-systems.github.io/hapax-assets/")
         assert url.endswith(f"?sha={asset.sha256[:8]}")
         assert "fonts/Px437_IBM_VGA_8x16.woff2" in url
 

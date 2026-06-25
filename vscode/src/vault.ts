@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import matter = require("gray-matter");
+export { parseFrontmatter, serializeFrontmatter } from "./frontmatter";
 
 /** Check if the vault is a work vault (contains 10-work/ directory). */
 export async function isWorkVault(): Promise<boolean> {
@@ -47,24 +47,4 @@ export async function listVaultFiles(
     `${relativeDir}/${glob || "**/*"}`,
   );
   return vscode.workspace.findFiles(pattern);
-}
-
-/** Parse YAML frontmatter from a markdown string. Returns { data, content }. */
-export function parseFrontmatter(raw: string): {
-  data: Record<string, unknown>;
-  content: string;
-} {
-  const parsed = matter(raw);
-  return {
-    data: parsed.data as Record<string, unknown>,
-    content: parsed.content,
-  };
-}
-
-/** Serialize data as YAML frontmatter + content. */
-export function serializeFrontmatter(
-  data: Record<string, unknown>,
-  content: string,
-): string {
-  return matter.stringify(content, data);
 }

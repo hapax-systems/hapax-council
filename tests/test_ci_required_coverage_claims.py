@@ -28,6 +28,10 @@ def _workflow_job_block(workflow_text: str, job_name: str) -> str:
     return match.group(0)
 
 
+def _assert_uses_pinned_action(block: str, action: str) -> None:
+    assert re.search(rf"{re.escape(action)}@[0-9a-f]{{40}}\b", block), action
+
+
 def _workflow_shell_function(workflow_text: str, function_name: str) -> str:
     match = re.search(
         rf"^ {{10}}{re.escape(function_name)}\(\) \{{\n(?P<body>.*?^ {{10}}\}})",
@@ -135,7 +139,7 @@ def test_ci_typecheck_uses_minimal_pyrefly_fast_path() -> None:
     ci_text = _read(".github/workflows/ci.yml")
     typecheck_block = _workflow_job_block(ci_text, "typecheck")
 
-    assert "astral-sh/setup-uv@v7" in typecheck_block
+    _assert_uses_pinned_action(typecheck_block, "astral-sh/setup-uv")
     assert "enable-cache: true" in typecheck_block
     assert "uv run --no-project --with pyrefly==0.62.0 pyrefly check" in typecheck_block
     assert "apt-get" not in typecheck_block
@@ -294,7 +298,7 @@ def test_security_extras_push_keeps_only_lightweight_actionlint() -> None:
     assert "rhysd/actionlint:1.7.12" in actionlint_block
     assert "if: github.event_name == 'schedule'" in rust_audit_block
     assert "if: github.event_name == 'schedule'" in scorecard_block
-    assert "ossf/scorecard-action@v2.4.3" in scorecard_block
+    _assert_uses_pinned_action(scorecard_block, "ossf/scorecard-action")
 
 
 def test_required_frontend_build_jobs_are_path_gated_without_absent_checks() -> None:
@@ -305,7 +309,7 @@ def test_required_frontend_build_jobs_are_path_gated_without_absent_checks() -> 
     assert "pull-requests: read" in ci_text
 
     assert "Detect web-build input changes" in web_block
-    assert "dorny/paths-filter@v4" in web_block
+    _assert_uses_pinned_action(web_block, "dorny/paths-filter")
     assert "web_build:" in web_block
     assert "'hapax-logos/**'" in web_block
     assert "Non-web required-check sentinel" in web_block
@@ -314,7 +318,7 @@ def test_required_frontend_build_jobs_are_path_gated_without_absent_checks() -> 
     assert "No web-build inputs changed; web-build reports success" in web_block
 
     assert "Detect vscode-build input changes" in vscode_block
-    assert "dorny/paths-filter@v4" in vscode_block
+    _assert_uses_pinned_action(vscode_block, "dorny/paths-filter")
     assert "vscode_build:" in vscode_block
     assert "'vscode/**'" in vscode_block
     assert "Non-vscode required-check sentinel" in vscode_block

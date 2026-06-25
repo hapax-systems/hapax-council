@@ -1,0 +1,8 @@
+allowBuilds:
+  esbuild: true
+overrides:
+  "@babel/core": 7.29.6
+  "brace-expansion@<1.1.13": 1.1.13
+  "brace-expansion@>=4.0.0 <5.0.6": 5.0.6
+  flatted: 3.4.2
+  js-yaml: 4.2.0

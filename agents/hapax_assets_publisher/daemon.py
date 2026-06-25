@@ -1,5 +1,5 @@
 """Long-running publisher daemon — watches the aesthetic-library source tree and
-pushes changes to the ryanklee/hapax-assets external repository.
+pushes changes to the hapax-systems/hapax-assets external repository.
 
 Modes:
     --dry-run   compute what would be synced; do not touch the checkout
@@ -53,8 +53,8 @@ def _git(checkout: Path, *args: str) -> subprocess.CompletedProcess:
 def _normalize_remote(url: str) -> str:
     """Reduce a git remote URL to ``host/owner/repo`` for scheme-agnostic comparison.
 
-    Both ``git@github.com:ryanklee/hapax-assets.git`` and
-    ``https://github.com/ryanklee/hapax-assets.git`` are valid remotes for
+    Both ``git@github.com:hapax-systems/hapax-assets.git`` and
+    ``https://github.com/hapax-systems/hapax-assets.git`` are valid remotes for
     the same repo; the bootstrap script clones HTTPS by default but
     operators may switch to SSH. Comparing on the normalized form avoids a
     spurious "remote mismatch" warning that would prevent the daemon from

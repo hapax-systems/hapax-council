@@ -254,7 +254,7 @@ class TestWebUrl:
     def test_url_includes_base_and_relative_path(self, lib: AestheticLibrary) -> None:
         asset = lib.get("fonts", "font", "px437")
         url = lib.web_url(asset)
-        assert url.startswith("https://ryanklee.github.io/hapax-assets/")
+        assert url.startswith("https://hapax-systems.github.io/hapax-assets/")
         assert "fonts/px437.ttf" in url
 
     def test_url_is_sha_pinned_for_cache_busting(self, lib: AestheticLibrary) -> None:

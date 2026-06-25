@@ -64,12 +64,30 @@
     ],
     "menus": {
       "commandPalette": [
-        { "command": "hapax.prepare1on1", "when": "hapax.isWorkVault" },
-        { "command": "hapax.teamSnapshot", "when": "hapax.isWorkVault" },
-        { "command": "hapax.searchKnowledge", "when": "hapax.isWorkVault" },
-        { "command": "hapax.viewNudges", "when": "hapax.isWorkVault" },
-        { "command": "hapax.viewProfile", "when": "hapax.isWorkVault" },
-        { "command": "hapax.captureDecision", "when": "hapax.isWorkVault" }
+        {
+          "command": "hapax.prepare1on1",
+          "when": "hapax.isWorkVault"
+        },
+        {
+          "command": "hapax.teamSnapshot",
+          "when": "hapax.isWorkVault"
+        },
+        {
+          "command": "hapax.searchKnowledge",
+          "when": "hapax.isWorkVault"
+        },
+        {
+          "command": "hapax.viewNudges",
+          "when": "hapax.isWorkVault"
+        },
+        {
+          "command": "hapax.viewProfile",
+          "when": "hapax.isWorkVault"
+        },
+        {
+          "command": "hapax.captureDecision",
+          "when": "hapax.isWorkVault"
+        }
       ]
     },
     "configuration": {
@@ -137,24 +155,18 @@
     "build": "node esbuild.config.mjs",
     "watch": "node esbuild.config.mjs --watch",
     "package": "vsce package",
-    "lint": "eslint src/"
+    "lint": "eslint src/",
+    "test": "node --test test/*.test.cjs"
   },
   "devDependencies": {
     "@types/node": "^25.6.2",
     "@types/vscode": "^1.118.0",
-    "@vscode/vsce": "^3.9.1",
-    "esbuild": "^0.28.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.1",
     "typescript": "^6.0.3"
   },
   "dependencies": {
-    "gray-matter": "^4.0.3",
-    "marked": "^18.0.3"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "@vscode/vsce-sign",
-      "keytar"
-    ]
+    "marked": "^18.0.3",
+    "yaml": "^2.9.0"
   }
 }

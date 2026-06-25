@@ -16,18 +16,18 @@ REPORT_SCHEMA_VERSION: int = 1
 CLAIM_CEILING: str = "public_archive"
 
 INTENDED_PUBLIC_REPOS: tuple[str, ...] = (
-    "ryanklee/hapax-council",
-    "ryanklee/hapax-constitution",
-    "ryanklee/hapax-officium",
-    "ryanklee/hapax-watch",
-    "ryanklee/hapax-phone",
-    "ryanklee/hapax-mcp",
-    "ryanklee/hapax-assets",
+    "hapax-systems/hapax-council",
+    "hapax-systems/hapax-constitution",
+    "hapax-systems/hapax-officium",
+    "hapax-systems/hapax-watch",
+    "hapax-systems/hapax-phone",
+    "hapax-systems/hapax-mcp",
+    "hapax-systems/hapax-assets",
 )
 
 PROFILE_REPO_CANDIDATES: tuple[str, ...] = (
     "ryanklee/ryanklee",
-    "ryanklee/.github",
+    "hapax-systems/.github",
 )
 
 REQUIRED_FILE_PATHS: tuple[str, ...] = (
@@ -229,17 +229,17 @@ def build_drift_findings(
     """Build deterministic drift findings from live state and repo evidence."""
 
     findings: list[DriftFinding] = []
-    council = repos.get("ryanklee/hapax-council")
-    constitution = repos.get("ryanklee/hapax-constitution")
-    assets = repos.get("ryanklee/hapax-assets")
+    council = repos.get("hapax-systems/hapax-council")
+    constitution = repos.get("hapax-systems/hapax-constitution")
+    assets = repos.get("hapax-systems/hapax-assets")
     user_profile = repos.get("ryanklee/ryanklee")
-    org_profile = repos.get("ryanklee/.github")
+    org_profile = repos.get("hapax-systems/.github")
 
     for repo_id in INTENDED_PUBLIC_REPOS:
         repo = repos.get(repo_id)
         if repo is None:
             continue
-        if repo_id != "ryanklee/hapax-assets" and (
+        if repo_id != "hapax-systems/hapax-assets" and (
             not repo.exists or repo.private or repo.visibility != "public"
         ):
             findings.append(
@@ -259,7 +259,7 @@ def build_drift_findings(
 
         expected_license = local.registry_license_by_repo.get(repo.name)
         if (
-            repo_id != "ryanklee/hapax-council"
+            repo_id != "hapax-systems/hapax-council"
             and expected_license
             and repo.exists
             and repo.visibility == "public"
@@ -288,7 +288,7 @@ def build_drift_findings(
                     finding_id="github.license.hapax-council.apache-vs-polyform",
                     severity="blocking",
                     category="license_detection",
-                    surface="ryanklee/hapax-council",
+                    surface="hapax-systems/hapax-council",
                     status="blocked",
                     summary="GitHub/root license detection contradicts the repo registry policy.",
                     expected=f"GitHub public license surfaces align to {expected_license}.",
@@ -298,7 +298,7 @@ def build_drift_findings(
                         "LICENSE",
                         "CITATION.cff",
                         "codemeta.json",
-                        "gh:repos/ryanklee/hapax-council",
+                        "gh:repos/hapax-systems/hapax-council",
                     ),
                     blocks=("github-readme-profile-current-project-refresh",),
                 )
@@ -328,7 +328,7 @@ def build_drift_findings(
                     finding_id="github.governance.root-file-missing",
                     severity="high",
                     category="contributing_governance",
-                    surface="ryanklee/hapax-council",
+                    surface="hapax-systems/hapax-council",
                     status="drift",
                     summary="GOVERNANCE.md is missing from the public repo root.",
                     expected="Governance/refusal posture is surfaced by a live public file.",
@@ -348,14 +348,14 @@ def build_drift_findings(
                     finding_id="github.settings.issues-enabled-without-template",
                     severity="high",
                     category="settings_truth",
-                    surface="ryanklee/hapax-council",
+                    surface="hapax-systems/hapax-council",
                     status="unreconciled",
                     summary="Issues are enabled while GitHub does not report an issue template.",
                     expected="Issue/refusal posture either matches has_issues or is marked unreconciled.",
                     observed="has_issues=true and community profile issue_template=false.",
                     evidence_refs=(
-                        "gh:repos/ryanklee/hapax-council",
-                        "gh:repos/ryanklee/hapax-council/community/profile",
+                        "gh:repos/hapax-systems/hapax-council",
+                        "gh:repos/hapax-systems/hapax-council/community/profile",
                         ".github/ISSUE_TEMPLATE/config.yml",
                     ),
                     blocks=("github-public-claim-evidence-gate",),
@@ -372,7 +372,7 @@ def build_drift_findings(
                 summary="README currentness must be regenerated after live-state reconciliation.",
                 expected="README/profile copy cites current project-spine evidence and report head.",
                 observed="README predates this live-state report and cannot claim reconciled state.",
-                evidence_refs=("README.md", "CLAUDE.md", "gh:repos/ryanklee/hapax-council"),
+                evidence_refs=("README.md", "CLAUDE.md", "gh:repos/hapax-systems/hapax-council"),
                 blocks=("github-readme-profile-current-project-refresh",),
             )
         )
@@ -417,13 +417,13 @@ def build_drift_findings(
                 finding_id="github.profile.org-profile-candidate-not-user-surface",
                 severity="medium",
                 category="profile_repo_state",
-                surface="ryanklee/.github",
+                surface="hapax-systems/.github",
                 status="observed",
                 summary="The .github/profile path is an organization-profile pattern, not the user-profile README path.",
                 expected="Use ryanklee/ryanklee for the operator user profile unless ryanklee is an organization.",
-                observed="ryanklee/.github is visible but is not the selected user-profile target.",
+                observed="hapax-systems/.github is visible but is not the selected user-profile target.",
                 evidence_refs=(
-                    "gh:repos/ryanklee/.github",
+                    "gh:repos/hapax-systems/.github",
                     "https://docs.github.com/en/organizations/collaborating-with-groups-in-organizations/customizing-your-organizations-profile",
                 ),
             )
@@ -437,14 +437,14 @@ def build_drift_findings(
                 finding_id="github.pages.hapax-assets-not-public-cdn",
                 severity="blocking",
                 category="pages_cdn_state",
-                surface="ryanklee/hapax-assets",
+                surface="hapax-systems/hapax-assets",
                 status="blocked",
                 summary="hapax-assets is not a verified public Pages/CDN surface.",
                 expected="hapax-assets is visible and Pages state is explicit before public CDN claims.",
                 observed=_repo_visibility_observed(assets),
                 evidence_refs=(
-                    "gh:repos/ryanklee/hapax-assets",
-                    "gh:repos/ryanklee/hapax-assets/pages",
+                    "gh:repos/hapax-systems/hapax-assets",
+                    "gh:repos/hapax-systems/hapax-assets/pages",
                 ),
                 blocks=("github-public-claim-evidence-gate",),
             )
@@ -455,12 +455,12 @@ def build_drift_findings(
                 finding_id="github.pages.hapax-assets-pages-missing",
                 severity="high",
                 category="pages_cdn_state",
-                surface="ryanklee/hapax-assets",
+                surface="hapax-systems/hapax-assets",
                 status="unreconciled",
                 summary="hapax-assets is visible but GitHub Pages is not enabled or not readable.",
                 expected="Public CDN claims cite a live Pages state.",
                 observed=assets.pages.error or "Pages API returned no site.",
-                evidence_refs=("gh:repos/ryanklee/hapax-assets/pages",),
+                evidence_refs=("gh:repos/hapax-systems/hapax-assets/pages",),
                 blocks=("github-public-claim-evidence-gate",),
             )
         )
@@ -471,7 +471,7 @@ def build_drift_findings(
                 finding_id="github.settings.constitution-wiki-disabled",
                 severity="medium",
                 category="settings_truth",
-                surface="ryanklee/hapax-constitution",
+                surface="hapax-systems/hapax-constitution",
                 status="drift",
                 summary="hapax-constitution wiki is expected as the axiom-registry exception.",
                 expected="has_wiki=true for the constitution repo only.",
@@ -600,7 +600,10 @@ def build_closed_repo_pres_claims(
             claimed_status="done",
             live_status=license_live,
             summary="License policy closed state compared to GitHub detected license.",
-            evidence_refs=("docs/repo-pres/repo-registry.yaml", "gh:repos/ryanklee/hapax-council"),
+            evidence_refs=(
+                "docs/repo-pres/repo-registry.yaml",
+                "gh:repos/hapax-systems/hapax-council",
+            ),
         ),
         ClosedRepoPresClaim(
             task_id="repo-pres-notice-md-all-repos",
@@ -632,7 +635,7 @@ def build_closed_repo_pres_claims(
             claimed_status="implicit-or-docs",
             live_status=assets_live,
             summary="hapax-assets CDN/public visibility claim compared to live repo and Pages state.",
-            evidence_refs=("CLAUDE.md", "gh:repos/ryanklee/hapax-assets"),
+            evidence_refs=("CLAUDE.md", "gh:repos/hapax-systems/hapax-assets"),
         ),
     )
 
@@ -651,9 +654,9 @@ def build_report(
     findings = build_drift_findings(repos=repos, local=local_evidence)
     claims = build_closed_repo_pres_claims(
         local=local_evidence,
-        council=repos.get("ryanklee/hapax-council"),
+        council=repos.get("hapax-systems/hapax-council"),
         user_profile=repos.get("ryanklee/ryanklee"),
-        assets=repos.get("ryanklee/hapax-assets"),
+        assets=repos.get("hapax-systems/hapax-assets"),
     )
     return GitHubPublicSurfaceReport(
         schema_version=1,

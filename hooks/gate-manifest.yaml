@@ -241,6 +241,7 @@ runtimes:
       - test-full-shard
       - test-title-cards
       - test
+      - codecov-upload
       - homage-visual-regression
       - web-build
       - rust-check
@@ -249,7 +250,7 @@ runtimes:
       - security
       - all-green
     run_markers:
-      - 'astral-sh/ruff-action@v4.0.0'
+      - 'astral-sh/ruff-action@0ce1b0bf8b818ef400413f810f8a11cdbda0034b'
       - 'uv run python scripts/check-unused-functions.py'
       - 'uv run python scripts/check-new-module-consumers.py'
       - 'uv run python scripts/check-producer-consumers.py'

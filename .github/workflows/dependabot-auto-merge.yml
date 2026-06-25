@@ -4,6 +4,7 @@ on: pull_request_target
 
 permissions:
   contents: write
+  issues: write
   pull-requests: write
 
 jobs:
@@ -13,7 +14,7 @@ jobs:
     steps:
       - name: Fetch dependabot metadata
         id: metadata
-        uses: dependabot/fetch-metadata@v3
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -21,7 +22,15 @@ jobs:
         if: steps.metadata.outputs.update-type != 'version-update:semver-major'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr merge --auto --squash "${{ github.event.pull_request.html_url }}"
+        run: |
+          if ! gh pr merge --auto --squash "${{ github.event.pull_request.html_url }}"; then
+            echo "::warning::Dependabot auto-merge request failed; leaving PR for human review"
+            gh label create needs-human \
+              --description "Major-version dependency bump or other change requiring human review" \
+              --color FBCA04 \
+              --force
+            gh pr edit --add-label "needs-human" "${{ github.event.pull_request.html_url }}"
+          fi
 
       - name: Ensure needs-human label exists
         if: steps.metadata.outputs.update-type == 'version-update:semver-major'

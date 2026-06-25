@@ -1,7 +1,7 @@
 """hapax-assets publisher — ytb-AUTH-HOSTING.
 
 Watches `assets/aesthetic-library/` (in council) and mirrors changes into a
-checkout of `ryanklee/hapax-assets`, then commits + pushes to `main`. The
+checkout of `hapax-systems/hapax-assets`, then commits + pushes to `main`. The
 external repo's GitHub Action deploys `main` → `gh-pages`, serving the
 aesthetic library as a public CDN for omg.lol surfaces that embed
 `@font-face`, background-images, etc.

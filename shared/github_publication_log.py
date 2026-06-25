@@ -445,7 +445,7 @@ def _package_event(
     payload = package_surface.model_dump(mode="json")
     path = package_surface.path
     return build_github_publication_event(
-        repo="ryanklee/hapax-council",
+        repo="hapax-systems/hapax-council",
         surface="package",
         generated_at=generated_at,
         occurred_at=generated_at,
@@ -455,9 +455,9 @@ def _package_event(
         evidence_refs=tuple(package_surface.evidence_refs),
         publication_state="public",
         publication_mode="public_archive",
-        live_url=f"https://github.com/ryanklee/hapax-council/tree/{repo_head}/{path}",
+        live_url=f"https://github.com/hapax-systems/hapax-council/tree/{repo_head}/{path}",
         ref=repo_head,
-        surface_id=f"github.package.ryanklee/hapax-council.{path}",
+        surface_id=f"github.package.hapax-systems/hapax-council.{path}",
         notes=(f"package_claim_status:{package_surface.claim_status}",),
     )
 

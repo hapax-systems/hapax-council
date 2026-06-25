@@ -136,7 +136,7 @@ class TestRenderCreditsHtml:
     def test_html_has_epanel_stylesheet_link(self, fake_library_root: Path) -> None:
         model = build_credits_model(fake_library_root)
         html = render_credits_html(model)
-        assert "ryanklee.github.io/hapax-assets" in html
+        assert "hapax-systems.github.io/hapax-assets" in html
 
     def test_html_has_epanel_structural_element(self, fake_library_root: Path) -> None:
         model = build_credits_model(fake_library_root)

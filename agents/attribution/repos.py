@@ -32,38 +32,58 @@ class HapaxRepo:
 HAPAX_REPOS: Final[list[HapaxRepo]] = [
     HapaxRepo(
         slug="hapax-assets",
-        git_url="https://github.com/ryanklee/hapax-assets",
+        git_url="https://github.com/hapax-systems/hapax-assets",
         description="Public CDN mirror of aesthetic library (BitchX/Px437/Enlightenment).",
     ),
     HapaxRepo(
         slug="hapax-constitution",
-        git_url="https://github.com/ryanklee/hapax-constitution",
+        git_url="https://github.com/hapax-systems/hapax-constitution",
         description="Governance specification (axioms, implications, canons).",
     ),
     HapaxRepo(
         slug="hapax-council",
-        git_url="https://github.com/ryanklee/hapax-council",
+        git_url="https://github.com/hapax-systems/hapax-council",
         description="Personal operating environment; Logos API; agent fleet.",
     ),
     HapaxRepo(
+        slug="hapax-coord",
+        git_url="https://github.com/hapax-systems/hapax-coord",
+        description="SBCL/CLOG coordination interface for bounded Hapax operations.",
+    ),
+    HapaxRepo(
         slug="hapax-mcp",
-        git_url="https://github.com/ryanklee/hapax-mcp",
+        git_url="https://github.com/hapax-systems/hapax-mcp",
         description="MCP server bridging Logos APIs to Claude Code tools.",
     ),
     HapaxRepo(
         slug="hapax-officium",
-        git_url="https://github.com/ryanklee/hapax-officium",
+        git_url="https://github.com/hapax-systems/hapax-officium",
         description="Management decision support; filesystem-as-bus data model.",
     ),
     HapaxRepo(
         slug="hapax-phone",
-        git_url="https://github.com/ryanklee/hapax-phone",
+        git_url="https://github.com/hapax-systems/hapax-phone",
         description="Android companion app (Kotlin/Compose); biometric stream.",
     ),
     HapaxRepo(
+        slug="hapax-research-ledger",
+        git_url="https://github.com/hapax-systems/hapax-research-ledger",
+        description="Open numeric SCED observation ledger for Hapax research.",
+    ),
+    HapaxRepo(
         slug="hapax-watch",
-        git_url="https://github.com/ryanklee/hapax-watch",
+        git_url="https://github.com/hapax-systems/hapax-watch",
         description="Wear OS companion app; biometric sensor data stream.",
+    ),
+    HapaxRepo(
+        slug="reins",
+        git_url="https://github.com/hapax-systems/reins",
+        description="Terminal decision support and attention-routing interface.",
+    ),
+    HapaxRepo(
+        slug="reins-prototype",
+        git_url="https://github.com/hapax-systems/reins-prototype",
+        description="Prototype Reins interface and scored screenspace smoke harness.",
     ),
 ]
 
