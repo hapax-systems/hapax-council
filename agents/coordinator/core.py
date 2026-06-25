@@ -1359,6 +1359,8 @@ def _dispatch_tool_blocker(role: str, platform: str) -> str | None:
             worktree,
         )
 
+    # Intentionally uncached: these scripts are small, lane count is bounded, and
+    # worktree guard repairs should affect dispatch readiness on the next tick.
     claim = worktree / "scripts" / "cc-claim"
     if not claim.is_file():
         return _dispatch_tool_block(f"missing cc-claim at {claim}", worktree)

@@ -1717,6 +1717,8 @@ Body.
             coord.tick()
 
         state = write_state.call_args.args[0]
+        assert state.offered_tasks == 1
+        assert state.task_flow_counts["offered"] == 1
         assert state.lanes_idle == 0
         assert state.dispatches_this_tick == 0
         assert state.lanes["dev"]["alive"] is True
@@ -1780,6 +1782,8 @@ Body.
             coord.tick()
 
         state = write_state.call_args.args[0]
+        assert state.offered_tasks == 1
+        assert state.task_flow_counts["offered"] == 1
         assert state.lanes_idle == 0
         assert state.dispatches_this_tick == 0
         assert state.lanes["dev"]["alive"] is True

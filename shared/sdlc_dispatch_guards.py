@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+# Single source of truth for dispatcher/coordinator mapping and guard markers.
+# Consumers must import these names rather than re-declare local copies.
 COORDINATOR_HEADLESS_DISPATCHABLE_PLATFORMS = frozenset({"claude", "codex", "vibe"})
 
 DISPATCH_CLAIM_GUARD_MARKERS = (
