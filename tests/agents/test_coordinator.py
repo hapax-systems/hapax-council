@@ -246,7 +246,7 @@ class TestDispatchWorktreeGuard:
         assert blocker is not None
         assert "unsupported dispatch platform 'antigrav'" in blocker
         assert "next_action=" in blocker
-        assert str(worktree) in blocker
+        assert "add coordinator headless dispatch support for 'antigrav'" in blocker
 
 
 class TestParseTask:
@@ -635,6 +635,7 @@ current_claim: null
         assert state.dispatch_ready is False
         assert state.dispatch_blocked_reason is not None
         assert "unsupported dispatch platform 'gemini'" in state.dispatch_blocked_reason
+        assert "supported coordinator headless platform" in state.dispatch_blocked_reason
 
     def test_antigrav_lane_with_guarded_worktree_is_not_dispatch_ready(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
@@ -660,6 +661,10 @@ current_claim: null
         assert state.dispatch_ready is False
         assert state.dispatch_blocked_reason is not None
         assert "unsupported dispatch platform 'antigrav'" in state.dispatch_blocked_reason
+        assert (
+            "add coordinator headless dispatch support for 'antigrav'"
+            in state.dispatch_blocked_reason
+        )
 
     def test_relay_claim_beats_stale_active_claim_file(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
@@ -1728,6 +1733,85 @@ Body.
         assert state.lanes["alpha"]["alive"] is False
         assert state.lanes["alpha"]["dispatch_ready"] is False
         assert "lane_not_alive" in state.lanes["alpha"]["dispatch_blocked_reason"]
+
+    def test_tick_dispatches_to_guarded_ready_lane(self, tmp_path: Path):
+        coord = Coordinator()
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("claude",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+        )
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
+        _guarded_worktree(tmp_path / "projects" / "hapax-council--dev")
+        dispatcher = tmp_path / "hapax-methodology-dispatch"
+        dispatcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        dispatcher.chmod(0o755)
+        completed = subprocess.CompletedProcess(
+            args=["tmux"],
+            returncode=0,
+            stdout="hapax-claude-dev\n",
+            stderr="",
+        )
+        dispatch_calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            if cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]:
+                return completed
+            dispatch_calls.append(cmd)
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        with (
+            patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_write_state") as write_state,
+            patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.PID_DIR", pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
+            patch("agents.coordinator.core._live_headless_launcher", return_value=None),
+            patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=AdmissionDecision(state="open"),
+            ),
+        ):
+            coord.tick()
+
+        state = write_state.call_args.args[0]
+        assert state.offered_tasks == 1
+        assert state.lanes_idle == 1
+        assert state.dispatches_this_tick == 1
+        assert state.lanes["dev"]["alive"] is True
+        assert state.lanes["dev"]["dispatch_ready"] is True
+        assert dispatch_calls == [
+            [
+                str(dispatcher),
+                "--task",
+                "t1",
+                "--lane",
+                "dev",
+                "--platform",
+                "claude",
+                "--mode",
+                "headless",
+                "--launch",
+            ]
+        ]
 
     def test_tick_does_not_dispatch_to_stale_close_lane(self, tmp_path: Path):
         coord = Coordinator()

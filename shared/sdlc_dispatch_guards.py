@@ -37,6 +37,8 @@ def dispatch_worktree(role: str, platform: str) -> Path:
     if platform == "vibe":
         return root / f"hapax-council--{role}"
     if platform == "antigrav":
+        # Antigrav has governed interactive dispatch, so the dispatcher needs a
+        # worktree mapping even though coordinator headless dispatch excludes it.
         normalized = "antigrav" if role == "antigravity" else role
         return root / f"hapax-council--{normalized}"
     return root / "hapax-council"

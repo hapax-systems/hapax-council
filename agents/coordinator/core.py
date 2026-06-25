@@ -1347,8 +1347,16 @@ def _dispatch_tool_next_action(worktree: Path) -> str:
     )
 
 
-def _dispatch_tool_block(reason: str, worktree: Path) -> str:
-    return f"{reason}; next_action={_dispatch_tool_next_action(worktree)}"
+def _unsupported_dispatch_platform_next_action(platform: str) -> str:
+    supported = ", ".join(sorted(COORDINATOR_DISPATCHABLE_PLATFORMS))
+    return (
+        f"route work to a supported coordinator headless platform ({supported}), "
+        f"or add coordinator headless dispatch support for {platform!r}"
+    )
+
+
+def _dispatch_tool_block(reason: str, worktree: Path, *, next_action: str | None = None) -> str:
+    return f"{reason}; next_action={next_action or _dispatch_tool_next_action(worktree)}"
 
 
 def _dispatch_tool_blocker(role: str, platform: str) -> str | None:
@@ -1357,6 +1365,7 @@ def _dispatch_tool_blocker(role: str, platform: str) -> str | None:
         return _dispatch_tool_block(
             f"unsupported dispatch platform {platform!r} for coordinator headless dispatch",
             worktree,
+            next_action=_unsupported_dispatch_platform_next_action(platform),
         )
 
     # Intentionally uncached: these scripts are small, lane count is bounded, and
