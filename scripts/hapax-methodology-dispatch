@@ -533,6 +533,16 @@ def lane_worktree(lane: str, platform: str) -> Path:
     return dispatch_worktree(lane, platform)
 
 
+def is_claude_operator_pool_lane(lane: str, platform: str) -> bool:
+    """True for visible Claude dev-pool sessions that are not dispatch lanes."""
+
+    lane_name = strip_scalar(lane).lower()
+    return (
+        strip_scalar(platform).lower() == "claude"
+        and re.fullmatch(r"dev[0-9]*", lane_name) is not None
+    )
+
+
 # --- capability-gated SYSTEM drain of an orphaned dead-lane task --------------
 # (dn-validate-task-relax; CASE-SDLC-REFORM-001). A narrow, ADDITIVE admit edge:
 # the reserved __system__ actor may advance an orphaned pr_open/claimed/in_progress
@@ -1083,6 +1093,16 @@ def validate_task(
                 parent_spec_path,
                 exempt,
             )
+
+    if is_claude_operator_pool_lane(lane, platform):
+        return Validation(
+            False,
+            f"lane {lane!r} is an interactive Claude operator pool, not a governed "
+            "dispatch lane; use a supervised Claude lane or a Codex cx-* lane",
+            task,
+            parent_spec_path,
+            exempt,
+        )
 
     if strict_worktree:
         ok, reason = check_worktree_cc_task_tool_guards(lane_worktree(lane, platform))

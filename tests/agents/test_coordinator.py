@@ -1324,6 +1324,83 @@ class TestPickLane:
         assert result is None
 
 
+class TestDispatchableLaneSelection:
+    def test_tick_excludes_claude_dev_operator_pool_lanes(self):
+        coordinator = Coordinator()
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("claude",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+        )
+        lanes = {
+            "dev": LaneState(role="dev", platform="claude", alive=True, idle=True),
+            "beta": LaneState(role="beta", platform="claude", alive=True, idle=True),
+        }
+        dispatched: list[tuple[str, str]] = []
+
+        with (
+            patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_check_lanes", return_value=lanes),
+            patch.object(
+                Coordinator,
+                "_dispatch",
+                side_effect=lambda t, lane: dispatched.append((t.task_id, lane.role))
+                or (True, ""),
+            ),
+            patch.object(Coordinator, "_write_state"),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=AdmissionDecision(state="open"),
+            ),
+        ):
+            coordinator.tick()
+
+        assert dispatched == [("t1", "beta")]
+
+    def test_tick_does_not_dispatch_when_only_claude_dev_operator_pool_is_idle(self):
+        coordinator = Coordinator()
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("claude",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+        )
+        lanes = {
+            "dev2": LaneState(role="dev2", platform="claude", alive=True, idle=True),
+        }
+        dispatched: list[tuple[str, str]] = []
+
+        with (
+            patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_check_lanes", return_value=lanes),
+            patch.object(
+                Coordinator,
+                "_dispatch",
+                side_effect=lambda t, lane: dispatched.append((t.task_id, lane.role))
+                or (True, ""),
+            ),
+            patch.object(Coordinator, "_write_state"),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=AdmissionDecision(state="open"),
+            ),
+        ):
+            coordinator.tick()
+
+        assert dispatched == []
+
+
 class TestDispatch:
     def test_methodology_dispatcher_honors_environment_override(self, tmp_path: Path):
         override = tmp_path / "hapax-methodology-dispatch"

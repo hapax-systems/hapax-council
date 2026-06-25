@@ -379,8 +379,19 @@ class QueueLane:
 
 
 def _routable(task: QueueTask, lane: QueueLane) -> bool:
+    if not is_dispatchable_lane(lane):
+        return False
     platforms = {p.lower() for p in task.platform_suitability}
     return "any" in platforms or lane.platform.lower() in platforms
+
+
+def is_dispatchable_lane(lane: QueueLane) -> bool:
+    """False for live operator-pool sessions that must never receive queue work."""
+
+    role = lane.role.strip().lower()
+    if lane.platform.lower() != "claude":
+        return True
+    return not (role == "dev" or (role.startswith("dev") and role[3:].isdigit()))
 
 
 def plan_dispatches(
