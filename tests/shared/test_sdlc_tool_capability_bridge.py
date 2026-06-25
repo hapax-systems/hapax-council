@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 
 from shared.capability_classification_inventory import load_capability_classification_inventory
+from shared.platform_capability_registry import (
+    PlatformCapabilityRegistry,
+    load_platform_capability_registry,
+)
 from shared.route_metadata_schema import SourceGroundingNeed
 from shared.sdlc_tool_capability_bridge import (
     ProviderSpendPosture,
@@ -22,6 +28,31 @@ from shared.world_surface_provider_tool_health import load_provider_tool_health_
 
 def _fact(facts: list[SdlcRouteSupplyFact], supply_id: str) -> SdlcRouteSupplyFact:
     return next(fact for fact in facts if fact.supply_id == supply_id)
+
+
+def _registry_with_active_provider_gateway() -> PlatformCapabilityRegistry:
+    registry = load_platform_capability_registry()
+    payload: dict[str, Any] = registry.model_dump(mode="json")
+    checked_at = "2026-06-25T16:30:00Z"
+
+    for route in payload["routes"]:
+        if route["route_id"] != "api.headless.provider_gateway":
+            continue
+
+        route["route_state"] = "active"
+        route["blocked_reasons"] = []
+        freshness = route["freshness"]
+        for surface in ("capability", "quota", "resource"):
+            freshness[f"{surface}_checked_at"] = checked_at
+            freshness["evidence"][surface]["evidence_refs"] = [
+                f"test:provider-gateway:{surface}:observed"
+            ]
+            freshness["evidence"][surface]["blocked_reasons"] = []
+        break
+    else:  # pragma: no cover - registry contract pins this route.
+        raise AssertionError("api.headless.provider_gateway missing from registry")
+
+    return PlatformCapabilityRegistry.model_validate(payload)
 
 
 def test_bridge_projects_expected_roles_and_visible_held_rows() -> None:
@@ -169,6 +200,30 @@ def test_provider_gateway_carries_spend_posture_and_is_not_routine_fallback() ->
     assert "provider_gateway_routine_fallback_forbidden" in routine_fallback.reason_codes
     assert no_spend_authority.satisfies is False
     assert "provider_spend_authority_absent" in no_spend_authority.reason_codes
+
+
+def test_evidenced_authorized_provider_gateway_can_satisfy_route_demand() -> None:
+    facts = project_provider_gateway_supply_facts(
+        platform_registry=_registry_with_active_provider_gateway()
+    )
+    gateway = _fact(facts, "sdlc_route_supply:platform:api.headless.provider_gateway")
+
+    assert gateway.can_satisfy_required_demands is True
+    assert gateway.availability_state == "active"
+    assert gateway.provider_spend_posture is ProviderSpendPosture.SPEND_EVIDENCED
+
+    assessment = gateway.assess(
+        SdlcRouteDemand(
+            role=RouteSupplyRole.PROVIDER_GATEWAY,
+            provider_spend_authorized=True,
+            provider_budget_evidence_refs=("budget:test-approved",),
+        )
+    )
+
+    assert assessment.satisfies is True
+    assert assessment.reason_codes == ()
+    assert "test:provider-gateway:quota:observed" in assessment.evidence_refs
+    assert "budget:test-approved" in assessment.evidence_refs
 
 
 def test_provider_tool_mismatch_remains_visible_but_cannot_satisfy() -> None:

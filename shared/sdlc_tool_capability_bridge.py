@@ -55,6 +55,7 @@ CURRENT_WORLD_SOURCE_NEEDS = frozenset(
 )
 
 SATISFYING_AVAILABILITY_STATES = frozenset({AvailabilityState.AVAILABLE.value})
+SATISFYING_PROVIDER_GATEWAY_STATES = frozenset({RouteState.ACTIVE.value})
 SATISFYING_PROVIDER_HEALTH_STATUSES = frozenset({"healthy"})
 
 
@@ -183,7 +184,10 @@ class SdlcRouteSupplyFact(BridgeModel):
 
         if not self.visible:
             raise ValueError("hidden route supply cannot satisfy demands")
-        if self.availability_state not in {None, *SATISFYING_AVAILABILITY_STATES}:
+        if self.role is RouteSupplyRole.PROVIDER_GATEWAY:
+            if self.availability_state not in {None, *SATISFYING_PROVIDER_GATEWAY_STATES}:
+                raise ValueError("inactive provider gateway supply cannot satisfy demands")
+        elif self.availability_state not in {None, *SATISFYING_AVAILABILITY_STATES}:
             raise ValueError("non-available route supply cannot satisfy demands")
         if self.health_status not in {None, *SATISFYING_PROVIDER_HEALTH_STATUSES}:
             raise ValueError("non-healthy provider/tool route cannot satisfy demands")
