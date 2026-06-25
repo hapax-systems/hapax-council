@@ -378,7 +378,10 @@ class FixedRouteOverhead(_RouteModel):
             or self.context_tokens
             or self.coordination_steps
         ) and not self.evidence_refs:
-            raise ValueError("nonzero fixed route overhead requires evidence_refs")
+            raise ValueError(
+                "nonzero fixed route overhead requires evidence_refs; next action: add "
+                "fixed_route_overhead evidence_refs or reset the overhead fields to zero"
+            )
         return self
 
 
@@ -453,9 +456,17 @@ class PublicReleaseProjection(_RouteModel):
         if self.projection_state is not PublicReleaseProjectionState.APPROVED:
             return self
         if self.may_create_public_claim and not self.publication_authorized:
-            raise ValueError("approved public-claim projections require publication_authorized")
+            raise ValueError(
+                "approved public-claim projections require publication_authorized; next action: "
+                "set publication_authorized=true with authority evidence or disable "
+                "may_create_public_claim"
+            )
         if self.may_create_dataset_export and not self.dataset_export_authorized:
-            raise ValueError("approved dataset projections require dataset_export_authorized")
+            raise ValueError(
+                "approved dataset projections require dataset_export_authorized; next action: "
+                "set dataset_export_authorized=true with authority evidence or disable "
+                "may_create_dataset_export"
+            )
         return self
 
     @property
@@ -501,11 +512,20 @@ class HardeningAllocation(_RouteModel):
             HardeningIntensity.BREAK_GLASS,
         }:
             if not self.axes:
-                raise ValueError("targeted or stronger hardening requires axes")
+                raise ValueError(
+                    "targeted or stronger hardening requires axes; next action: list the "
+                    "hardening axes being justified or lower hardening_intensity"
+                )
             if not self.justification:
-                raise ValueError("targeted or stronger hardening requires justification")
+                raise ValueError(
+                    "targeted or stronger hardening requires justification; next action: add "
+                    "value/risk/opportunity-cost justification or lower hardening_intensity"
+                )
         if self.hardening_intensity is HardeningIntensity.BREAK_GLASS and not self.receipt_ref:
-            raise ValueError("break_glass hardening requires receipt_ref")
+            raise ValueError(
+                "break_glass hardening requires receipt_ref; next action: attach the "
+                "break-glass receipt or use a lower hardening_intensity"
+            )
         return self
 
 
@@ -544,16 +564,32 @@ class ClassificationEnvelope(_RouteModel):
                 ClassificationAuthorityCeiling.READ_ONLY,
             }
         ):
-            raise ValueError("HKP cache classification is support-only and non-authoritative")
+            raise ValueError(
+                "HKP cache classification is support-only and non-authoritative; next action: "
+                "lower authority_ceiling to support_only/read_only or replace HKP cache "
+                "classification with fresh authoritative evidence"
+            )
         if self.confidence >= 0.8:
             if self.freshness is not FreshnessState.FRESH:
-                raise ValueError("high-confidence classification requires fresh evidence")
+                raise ValueError(
+                    "high-confidence classification requires fresh evidence; next action: "
+                    "refresh the classifier evidence or lower confidence"
+                )
             if not self.evidence_refs:
-                raise ValueError("high-confidence classification requires evidence_refs")
+                raise ValueError(
+                    "high-confidence classification requires evidence_refs; next action: add "
+                    "source evidence refs or lower confidence"
+                )
             if not self.deterministic_facts_used:
-                raise ValueError("high-confidence classification requires deterministic_facts_used")
+                raise ValueError(
+                    "high-confidence classification requires deterministic_facts_used; next "
+                    "action: record deterministic routing facts or lower confidence"
+                )
             if not _classification_validity_mask_is_complete(self.validity_mask):
-                raise ValueError("high-confidence classification requires a fully valid mask")
+                raise ValueError(
+                    "high-confidence classification requires a fully valid mask; next action: "
+                    "set every validity-mask field true only after evidence exists"
+                )
         return self
 
     @property
@@ -660,6 +696,8 @@ class LearningEligibility(_RouteModel):
             raise ValueError(
                 "learning updates require witnessed fresh authoritative evidence; "
                 + ", ".join(disqualifiers)
+                + "; next action: disable learning updates or attach fresh witnessed evidence, "
+                "valid envelope data, and non-support-only authority"
             )
         return self
 
@@ -718,12 +756,18 @@ class RouteEnvelope(_RouteModel):
             RouteAdmissionAction.HOLD,
             RouteAdmissionAction.SHADOW,
         }:
-            raise ValueError("low-confidence classification can only hold or shadow")
+            raise ValueError(
+                "low-confidence classification can only hold or shadow; next action: set "
+                "admission_action=hold/shadow or attach higher-confidence fresh evidence"
+            )
         if (
             classification.freshness is not FreshnessState.FRESH
             and self.admission.admission_action is RouteAdmissionAction.ROUTE
         ):
-            raise ValueError("stale or missing classification cannot route")
+            raise ValueError(
+                "stale or missing classification cannot route; next action: refresh the "
+                "classification envelope or set admission_action=hold/shadow"
+            )
         if self.admission.admission_action is RouteAdmissionAction.ROUTE:
             route_disqualifiers = _route_admission_disqualifiers_from_classification(classification)
             route_disqualifiers.extend(
@@ -733,12 +777,17 @@ class RouteEnvelope(_RouteModel):
                 raise ValueError(
                     "route admission requires authoritative classification and eligibility evidence: "
                     + ", ".join(route_disqualifiers)
+                    + "; next action: satisfy the listed classification/eligibility fields or set "
+                    "admission_action=hold/shadow"
                 )
         if self.public_release_projection.public_projection_forbidden and (
             self.learning_eligibility.thompson_update_allowed
             or self.learning_eligibility.local_posterior_update_allowed
         ):
-            raise ValueError("public-projection-forbidden evidence cannot update learning")
+            raise ValueError(
+                "public-projection-forbidden evidence cannot update learning; next action: disable "
+                "learning updates or obtain publication/dataset projection authority"
+            )
         if (
             self.learning_eligibility.thompson_update_allowed
             or self.learning_eligibility.local_posterior_update_allowed
@@ -751,6 +800,8 @@ class RouteEnvelope(_RouteModel):
                 raise ValueError(
                     "learning updates conflict with classification envelope: "
                     + ", ".join(learning_disqualifiers)
+                    + "; next action: disable learning updates or repair the classification/public "
+                    "projection evidence"
                 )
         return self
 
