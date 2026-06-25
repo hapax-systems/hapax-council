@@ -386,6 +386,25 @@ def test_validation_errors_do_not_write_receipts(
     assert not receipt_dir.exists()
 
 
+def test_write_failure_reports_next_action_without_path_details(tmp_path: Path) -> None:
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.write_text("not a directory\n", encoding="utf-8")
+
+    result, _ = _run(
+        tmp_path,
+        "observe-success",
+        "--evidence-ref",
+        "sanctioned-glmcp-usage-001",
+        *SUCCESS_METADATA_ARGS,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "failed to write receipt: FileExistsError" in result.stderr
+    assert "next action: check --receipt-dir permissions" in result.stderr
+    assert str(receipt_dir) not in result.stderr
+
+
 @pytest.mark.parametrize(
     ("provider_code", "failure_class", "action", "failure_code"),
     [
