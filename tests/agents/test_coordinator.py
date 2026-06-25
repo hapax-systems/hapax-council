@@ -233,6 +233,32 @@ class TestDispatchWorktreeGuard:
         assert "unsupported dispatch platform 'gemini'" in blocker
         assert "next_action=" in blocker
 
+    def test_dispatch_tool_blocker_rejects_unsupported_platform_before_guard_reads(
+        self,
+        tmp_path: Path,
+    ):
+        with (
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch(
+                "agents.coordinator.core._read_dispatch_guard",
+                side_effect=AssertionError("unsupported platform should not read guard files"),
+            ),
+        ):
+            blocker = _dispatch_tool_blocker("gamma", "gemini")
+
+        assert blocker is not None
+        assert "unsupported dispatch platform 'gemini'" in blocker
+        assert "supported coordinator headless platform" in blocker
+
+    def test_dispatch_tool_blocker_allows_vibe_with_guarded_worktree(self, tmp_path: Path):
+        worktree = tmp_path / "projects" / "hapax-council--vbe-1"
+        _guarded_worktree(worktree)
+
+        with patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}):
+            blocker = _dispatch_tool_blocker("vbe-1", "vibe")
+
+        assert blocker is None
+
     def test_dispatch_tool_blocker_rejects_antigrav_even_with_guarded_worktree(
         self,
         tmp_path: Path,
@@ -1756,6 +1782,8 @@ Body.
         codex_pid_dir = tmp_path / "codex-pids"
         codex_pid_dir.mkdir()
         _guarded_worktree(tmp_path / "projects" / "hapax-council--dev")
+        # Scope: coordinator-side readiness, planning, and dispatch argv. The
+        # dispatcher script's own guard behavior is covered in dispatcher tests.
         dispatcher = tmp_path / "hapax-methodology-dispatch"
         dispatcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         dispatcher.chmod(0o755)
