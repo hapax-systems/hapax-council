@@ -513,6 +513,35 @@ def test_local_only_learning_gate_does_not_update_thompson_posterior() -> None:
     assert router.state.route_posteriors == {}
 
 
+def test_gate_event_learning_allowed_requires_complete_learning_receipt() -> None:
+    accept = GateEvent(
+        route="local_tool.local.worker",
+        routing_class="source_python",
+        requirement_vector=_requirement_vector(),
+        task_hash="sha256:task-router-test",
+        gate_result="accept",
+        gate_type="deterministic",
+        ts="2026-06-25T00:00:00+00:00",
+        learning_eligibility=_learning_eligibility(),
+    )
+
+    assert gate_event_learning_allowed(accept) is True
+    assert gate_event_learning_allowed(accept.model_copy(update={"task_hash": ""})) is False
+    assert (
+        gate_event_learning_allowed(
+            accept.model_copy(
+                update={
+                    "learning_eligibility": _learning_eligibility(
+                        thompson_update_allowed=False,
+                        local_posterior_update_allowed=False,
+                    )
+                }
+            )
+        )
+        is False
+    )
+
+
 def test_bare_gate_events_do_not_train_posteriors() -> None:
     router = SdlcRouter()
     bare_accept = GateEvent(

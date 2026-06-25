@@ -174,7 +174,8 @@ For dispatcher-level routing, `build_demand_vector()` projects route metadata
 plus task-specific signals into the `DemandVector` used by the policy layer. The
 vector is capacity-oriented: it carries quality, authority, mutation, risk,
 context, verification, tool, budget, benchmark, public-projection, and hardening
-allocation fields rather than exposing a fixed numbered dimension set.
+allocation fields, plus fixed-route-overhead sensitivity, rather than exposing a
+fixed numbered dimension set.
 
 ## Task Dimension Fit Extension
 
