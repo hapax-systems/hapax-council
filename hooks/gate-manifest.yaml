@@ -241,6 +241,7 @@ runtimes:
       - test-full-shard
       - test-title-cards
       - test
+      - codecov-upload
       - homage-visual-regression
       - web-build
       - rust-check

@@ -11,7 +11,6 @@ on:
 permissions:
   actions: read
   contents: read
-  id-token: write
   pull-requests: read
   security-events: write
 
@@ -894,16 +893,14 @@ jobs:
           fi
           echo "Tests failed (pytest exit $PYTEST_EXIT)"
           exit 1
-      - name: Upload Python coverage to Codecov
+      - name: Upload Python coverage artifact
         if: always() && needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
-        continue-on-error: true
-        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          files: ./coverage.xml
-          flags: python
-          name: hapax-council-python
-          fail_ci_if_error: false
-          use_oidc: true
+          name: python-coverage-xml
+          path: coverage.xml
+          if-no-files-found: error
+          retention-days: 7
       - name: Governance coverage gate
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
         env:
@@ -913,6 +910,30 @@ jobs:
           OTEL_SDK_DISABLED: "true"
           LANGFUSE_HOST: "http://0.0.0.0:1"
         run: uv run --no-sync python scripts/ci_governance_coverage_gate.py
+
+  codecov-upload:
+    needs: [docs_only_filter, post_merge_duplicate_filter, test]
+    if: always() && github.event_name == 'push' && needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && needs.test.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Download Python coverage artifact
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: python-coverage-xml
+      - name: Upload Python coverage to Codecov
+        continue-on-error: true
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac
+        with:
+          files: ./coverage.xml
+          flags: python
+          name: hapax-council-python
+          fail_ci_if_error: false
+          use_oidc: true
 
   homage-visual-regression:
     needs: post_merge_duplicate_filter

@@ -47,7 +47,7 @@ class TestNormalizeRemote:
     def test_different_repos_do_not_match(self) -> None:
         assert _normalize_remote(
             "https://github.com/hapax-systems/hapax-assets.git"
-        ) != _normalize_remote("https://github.com/ryanklee/hapax-council.git")
+        ) != _normalize_remote("https://github.com/hapax-systems/hapax-council.git")
 
     def test_unknown_scheme_returns_input_minus_dot_git(self) -> None:
         # Belt-and-suspenders: unrecognized scheme falls through to the

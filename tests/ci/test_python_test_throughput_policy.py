@@ -38,10 +38,12 @@ def test_required_test_check_keeps_full_pytest_on_merge_queue_and_main() -> None
     test_block = _workflow_job_block(ci_text, "test")
     shard_block = _workflow_job_block(ci_text, "test-full-shard")
     title_card_block = _workflow_job_block(ci_text, "test-title-cards")
+    codecov_block = _workflow_job_block(ci_text, "codecov-upload")
 
     assert "merge_group:" in ci_text
     assert "push:" in ci_text
     assert "branches: [main]" in ci_text
+    assert "\n  id-token: write\n" not in ci_text.split("\njobs:", maxsplit=1)[0]
     assert (
         "needs: [docs_only_filter, post_merge_duplicate_filter, test-full-shard, "
         "test-title-cards]" in test_block
@@ -68,6 +70,19 @@ def test_required_test_check_keeps_full_pytest_on_merge_queue_and_main() -> None
     assert "--ignore=tests/test_demo_video_integration.py" in test_block
     assert "Run serial title-card tests" in test_block
     assert "tests/test_demo_video_integration.py" in test_block
+    assert "codecov/codecov-action" not in test_block
+    assert "Upload Python coverage artifact" in test_block
+    assert "name: python-coverage-xml" in test_block
+    _assert_uses_pinned_action(test_block, "actions/upload-artifact")
+
+    assert "needs: [docs_only_filter, post_merge_duplicate_filter, test]" in codecov_block
+    assert "github.event_name == 'push'" in codecov_block
+    assert "needs.test.result == 'success'" in codecov_block
+    assert "id-token: write" in codecov_block
+    _assert_uses_pinned_action(codecov_block, "actions/checkout")
+    _assert_uses_pinned_action(codecov_block, "actions/download-artifact")
+    _assert_uses_pinned_action(codecov_block, "codecov/codecov-action")
+    assert "use_oidc: true" in codecov_block
 
     assert "github.event_name == 'merge_group'" in shard_block
     assert "strategy:" in shard_block

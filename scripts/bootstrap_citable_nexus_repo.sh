@@ -43,8 +43,8 @@ COUNCIL_REPO="${HAPAX_COUNCIL_REPO:-$HOME/projects/hapax-council}"
 DRY_RUN=true
 ENABLE_PAGES=true
 
-if [[ "${REPO_OWNER}" == "ryanklee" ]]; then
-    echo "bootstrap_citable_nexus_repo.sh: refusing personal-account owner 'ryanklee'; use hapax-systems" >&2
+if [[ "${REPO_OWNER}" != "hapax-systems" ]]; then
+    echo "bootstrap_citable_nexus_repo.sh: refusing owner '${REPO_OWNER}'; Hapax repositories must live under hapax-systems" >&2
     exit 2
 fi
 
