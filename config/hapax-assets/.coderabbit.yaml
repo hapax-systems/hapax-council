@@ -1,0 +1,40 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+early_access: false
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  review_details: false
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+    ignore_title_keywords:
+      - "WIP"
+      - "[skip review]"
+    ignore_usernames:
+      - "dependabot[bot]"
+      - "renovate[bot]"
+  path_filters:
+    - "!**/.pytest_cache/**"
+    - "!**/__pycache__/**"
+  path_instructions:
+    - path: ".github/workflows/**"
+      instructions: |
+        Keep Codecov, Semgrep, CodeRabbit, Claude, and Codex checks advisory unless a governed Hapax task explicitly promotes a stable aggregate check to branch protection.
+    - path: "_manifest.yaml"
+      instructions: |
+        Review asset entries for complete provenance fields and sha256 pins matching the committed files.
+    - path: "**/provenance.yaml"
+      instructions: |
+        Check provenance for source URL, extraction date, license, author, and attribution accuracy.
+    - path: "README.md"
+      instructions: |
+        Keep consumer URLs under hapax-systems.github.io and source repo links under github.com/hapax-systems.
+
+chat:
+  auto_reply: true

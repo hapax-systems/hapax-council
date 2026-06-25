@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-CDN_BASE_URL = "https://ryanklee.github.io/hapax-assets"
+CDN_BASE_URL = "https://hapax-systems.github.io/hapax-assets"
 
 
 def build_web_url(library_root: Path, asset_path: Path, sha256: str) -> str:

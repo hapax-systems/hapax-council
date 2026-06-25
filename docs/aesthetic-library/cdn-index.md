@@ -9,9 +9,9 @@ query-string flip → cached references invalidate cleanly.
 
 | Source | Asset | Kind | License | URL |
 |---|---|---|---|---|
-| bitchx | `banner` | splash | BSD-3-Clause | [afb5a432…](https://ryanklee.github.io/hapax-assets/bitchx/splash/banner.txt?sha=afb5a432) |
-| bitchx | `mirc16` | palette | BSD-3-Clause | [fd59032a…](https://ryanklee.github.io/hapax-assets/bitchx/colors/mirc16.yaml?sha=fd59032a) |
-| bitchx | `quit` | quotes | BSD-3-Clause | [4c457bc5…](https://ryanklee.github.io/hapax-assets/bitchx/quotes/bitchx-quit.txt?sha=4c457bc5) |
-| enlightenment | `moksha` | theme | CC0-1.0 | [7f5a6367…](https://ryanklee.github.io/hapax-assets/enlightenment/themes/moksha.edc?sha=7f5a6367) |
-| fonts | `px437` | font | CC-BY-SA-4.0 | [56ccd986…](https://ryanklee.github.io/hapax-assets/fonts/Px437_IBM_VGA_8x16.ttf?sha=56ccd986) |
-| fonts | `px437-woff2` | font | CC-BY-SA-4.0 | [0cc1138b…](https://ryanklee.github.io/hapax-assets/fonts/Px437_IBM_VGA_8x16.woff2?sha=0cc1138b) |
+| bitchx | `banner` | splash | BSD-3-Clause | [afb5a432…](https://hapax-systems.github.io/hapax-assets/bitchx/splash/banner.txt?sha=afb5a432) |
+| bitchx | `mirc16` | palette | BSD-3-Clause | [fd59032a…](https://hapax-systems.github.io/hapax-assets/bitchx/colors/mirc16.yaml?sha=fd59032a) |
+| bitchx | `quit` | quotes | BSD-3-Clause | [4c457bc5…](https://hapax-systems.github.io/hapax-assets/bitchx/quotes/bitchx-quit.txt?sha=4c457bc5) |
+| enlightenment | `moksha` | theme | CC0-1.0 | [7f5a6367…](https://hapax-systems.github.io/hapax-assets/enlightenment/themes/moksha.edc?sha=7f5a6367) |
+| fonts | `px437` | font | CC-BY-SA-4.0 | [56ccd986…](https://hapax-systems.github.io/hapax-assets/fonts/Px437_IBM_VGA_8x16.ttf?sha=56ccd986) |
+| fonts | `px437-woff2` | font | CC-BY-SA-4.0 | [0cc1138b…](https://hapax-systems.github.io/hapax-assets/fonts/Px437_IBM_VGA_8x16.woff2?sha=0cc1138b) |

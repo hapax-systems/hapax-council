@@ -3,7 +3,7 @@
 **Status:** Phase 0 (renderer + content-generator) ships in this PR.
 The full cc-task `citable-nexus-front-door-static-site` (WSJF 11.5)
 is multi-phase; Phase 0 establishes the static-HTML rendering
-substrate that the eventual external repo (`ryanklee/hapax-research`,
+substrate that the eventual external repo (`hapax-systems/hapax-research`,
 deployed at `hapax.research`) will serve. **No external repo is
 created in this PR.** The renderer ships in `agents/citable_nexus/`
 and the build CLI ships at `scripts/build_citable_nexus.py`; both
@@ -93,7 +93,7 @@ the renderer. Two output modes:
 
 ### 2.1 External repo + DNS
 
-The cc-task scope names `ryanklee/hapax-research` as the source repo
+The cc-task scope names `hapax-systems/hapax-research` as the source repo
 and `hapax.research` as the deployment URL. **Neither is created in
 this PR.** Repo creation + DNS configuration is operator-action; the
 sequence is documented in §3 below.
@@ -118,7 +118,7 @@ sequence is documented in §3 below.
 ### 2.4 GitHub Actions auto-deploy + uptime probe
 
 - `.github/workflows/citable-nexus-deploy.yml` lives in the eventual
-  `ryanklee/hapax-research` repo, not in `hapax-council`. Phase 1
+  `hapax-systems/hapax-research` repo, not in `hapax-council`. Phase 1
   ships a template for that workflow.
 - `hapax-citable-nexus-health.timer` (uptime probe per cc-task
   acceptance) ships once the site has a live URL to probe.
@@ -131,7 +131,7 @@ When the operator wants to bootstrap the external repo:
 
 1. **Create the GitHub repo:**
    ```fish
-   gh repo create ryanklee/hapax-research \
+   gh repo create hapax-systems/hapax-research \
        --public \
        --description "Citable nexus for Hapax / Oudepode published artifacts" \
        --homepage "https://hapax.research"
@@ -142,7 +142,7 @@ When the operator wants to bootstrap the external repo:
    set tmp (mktemp -d)
    cd ~/projects/hapax-council
    uv run python scripts/build_citable_nexus.py --out $tmp
-   git clone https://github.com/ryanklee/hapax-research $tmp/repo
+   git clone https://github.com/hapax-systems/hapax-research $tmp/repo
    cp -r $tmp/* $tmp/repo/
    cd $tmp/repo
    git add .
@@ -154,7 +154,7 @@ When the operator wants to bootstrap the external repo:
    - Settings → Pages → Source = `main` branch, `/` (root).
 
 4. **Configure DNS:**
-   - Add a CNAME record: `hapax.research` → `ryanklee.github.io`.
+   - Add a CNAME record: `hapax.research` → `hapax-systems.github.io`.
    - Add a `CNAME` file at the repo root: `hapax.research`.
    - GitHub will auto-provision a Let's Encrypt certificate.
 

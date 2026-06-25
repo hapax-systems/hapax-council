@@ -24,11 +24,17 @@ set -euo pipefail
 
 # Family of repos. hapax-constitution is special (wiki kept for axiom registry).
 REPOS_NO_WIKI=(
+  agentgov
+  hapax-assets
+  hapax-coord
   hapax-council
+  hapax-research-ledger
   hapax-mcp
   hapax-phone
   hapax-watch
   hapax-officium
+  reins
+  reins-prototype
 )
 REPOS_KEEP_WIKI=(
   hapax-constitution
@@ -45,11 +51,17 @@ REPO_TOPICS[hapax-constitution]="research-software single-operator philosophy-of
 REPO_TOPICS[hapax-mcp]="research-software single-operator infrastructure-as-argument"
 REPO_TOPICS[hapax-phone]="research-software single-operator infrastructure-as-argument"
 REPO_TOPICS[hapax-watch]="research-software single-operator infrastructure-as-argument"
+REPO_TOPICS[hapax-assets]="research-software single-operator infrastructure-as-argument"
+REPO_TOPICS[hapax-research-ledger]="research-software single-operator philosophy-of-science"
+REPO_TOPICS[hapax-coord]="research-software single-operator governance"
+REPO_TOPICS[reins]="research-software single-operator infrastructure-as-argument"
+REPO_TOPICS[reins-prototype]="research-software single-operator infrastructure-as-argument"
+REPO_TOPICS[agentgov]="research-software single-operator governance"
 
 # Banned topics — drop 4 §7. Trend-chasing surfaces wrong audience.
 BANNED_TOPICS=(ai agents framework tool library awesome)
 
-OWNER="ryanklee"
+OWNER="${HAPAX_GITHUB_OWNER:-hapax-systems}"
 MODE="enforce"  # or "check"
 
 while [[ $# -gt 0 ]]; do
@@ -60,6 +72,11 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+if [[ "$OWNER" == "ryanklee" ]]; then
+  echo "repo-presentation-enforce.sh: refusing personal-account owner 'ryanklee'; use hapax-systems" >&2
+  exit 2
+fi
 
 drift=0
 

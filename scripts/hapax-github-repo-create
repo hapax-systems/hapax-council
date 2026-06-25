@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Create a Hapax GitHub repository under the required hapax-systems org.
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  scripts/hapax-github-repo-create <repo-name> [gh repo create flags...]
+  scripts/hapax-github-repo-create hapax-example --private --description "..."
+
+Rules:
+  - Hapax repos are always created under hapax-systems.
+  - owner/name arguments must use hapax-systems/<name>.
+  - ryanklee/<name> is refused.
+  - After creation, apply the CI/CD baseline and run:
+      scripts/hapax-github-repo-standards-audit.py --repo hapax-systems/<name>
+EOF
+}
+
+if [[ $# -lt 1 || "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+fi
+
+input="$1"
+shift
+
+owner="${HAPAX_GITHUB_OWNER:-hapax-systems}"
+name="$input"
+
+if [[ "$input" == */* ]]; then
+  owner="${input%%/*}"
+  name="${input#*/}"
+fi
+
+if [[ "$owner" == "ryanklee" ]]; then
+  echo "hapax-github-repo-create: refusing personal-account owner 'ryanklee'; use hapax-systems" >&2
+  exit 2
+fi
+if [[ "$owner" != "hapax-systems" ]]; then
+  echo "hapax-github-repo-create: refusing owner '$owner'; Hapax repos must live under hapax-systems" >&2
+  exit 2
+fi
+if [[ -z "$name" || "$name" == */* ]]; then
+  echo "hapax-github-repo-create: invalid repo name '$name'" >&2
+  exit 2
+fi
+
+gh repo create "hapax-systems/$name" "$@"
+
+cat >&2 <<EOF
+
+Created or requested hapax-systems/$name.
+
+Required next steps before treating the repo as Hapax-ready:
+  1. Add AGENTS.md with hapax-systems ownership and advisory-app review rules.
+  2. Add .github/workflows/ci.yml with a stable all-green aggregate where runnable.
+  3. Add .github/workflows/semgrep.yml using SEMGREP_APP_TOKEN.
+  4. Add .coderabbit.yaml with request_changes_workflow: false.
+  5. Add codecov.yml and Codecov upload when the repo produces coverage.
+  6. Add CODECOV_TOKEN and SEMGREP_APP_TOKEN as repo or org secrets.
+  7. Run scripts/hapax-github-repo-standards-audit.py --repo hapax-systems/$name.
+EOF

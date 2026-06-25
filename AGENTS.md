@@ -34,3 +34,6 @@ When reviewing changes in this repository:
 - Flag attempts to make Codecov, Semgrep, CodeRabbit, Claude, or Codex a required branch-protection context unless the PR includes a governed task authorizing that gate change and rollback.
 - For CI/CD edits, verify merge-queue behavior explicitly: required contexts should remain stable and aggregate, while advisory checks must not wedge queued PRs.
 - For secrets and provider credentials, verify values are referenced through GitHub Secrets, `pass`, or `hapax-secrets`; never request plaintext values in files, PR comments, or logs.
+- New Hapax repositories must be created under `hapax-systems`, never under
+  `ryanklee`. Use `scripts/hapax-github-repo-create` for new repos and
+  `scripts/hapax-github-repo-standards-audit.py` to check CI/app baselines.

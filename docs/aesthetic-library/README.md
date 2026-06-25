@@ -7,7 +7,7 @@ ergonomic surface `library().web_url(asset)`.
 ## Why a primitive
 
 The aesthetic library at `assets/aesthetic-library/` is mirrored to a
-public CDN at `https://ryanklee.github.io/hapax-assets/` (governance
+public CDN at `https://hapax-systems.github.io/hapax-assets/` (governance
 + standup details in `agents/hapax_assets_publisher/`). Any surface
 that wants to embed a stable reference to a redistributable asset
 (font, palette excerpt, image, splash text) needs:
@@ -29,7 +29,7 @@ from shared.aesthetic_library import library
 
 asset = library().assets["fonts/Px437_IBM_VGA_8x16.woff2"]
 url = library().web_url(asset)
-# → 'https://ryanklee.github.io/hapax-assets/fonts/Px437_IBM_VGA_8x16.woff2?sha=abc12345'
+# → 'https://hapax-systems.github.io/hapax-assets/fonts/Px437_IBM_VGA_8x16.woff2?sha=abc12345'
 ```
 
 The implementation is a 3-line function in
@@ -68,7 +68,7 @@ Production consumers as of 2026-04-25:
     (used to populate `docs/aesthetic-library/cdn-index.md`)
 
 When adding a new consumer, prefer `library().web_url(asset)` over
-hardcoded `https://ryanklee.github.io/hapax-assets/...` URLs.
+hardcoded `https://hapax-systems.github.io/hapax-assets/...` URLs.
 Hardcoded URLs:
 
   * skip the SHA invalidation handle, so cached references go stale

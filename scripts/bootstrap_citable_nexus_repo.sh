@@ -31,7 +31,7 @@ set -euo pipefail
 
 # ── Defaults (operator-overridable) ──────────────────────────────────
 
-REPO_OWNER="${HAPAX_NEXUS_REPO_OWNER:-ryanklee}"
+REPO_OWNER="${HAPAX_NEXUS_REPO_OWNER:-hapax-systems}"
 REPO_NAME="${HAPAX_NEXUS_REPO_NAME:-hapax-research}"
 REPO_DESCRIPTION="${HAPAX_NEXUS_REPO_DESC:-Citable nexus for Hapax / Oudepode published artifacts}"
 REPO_HOMEPAGE="${HAPAX_NEXUS_REPO_HOMEPAGE:-https://hapax.research}"
@@ -42,6 +42,11 @@ COUNCIL_REPO="${HAPAX_COUNCIL_REPO:-$HOME/projects/hapax-council}"
 
 DRY_RUN=true
 ENABLE_PAGES=true
+
+if [[ "${REPO_OWNER}" == "ryanklee" ]]; then
+    echo "bootstrap_citable_nexus_repo.sh: refusing personal-account owner 'ryanklee'; use hapax-systems" >&2
+    exit 2
+fi
 
 # ── Argv parse ──────────────────────────────────────────────────────
 
