@@ -502,6 +502,26 @@ def test_gate_events_need_complete_learning_receipt_to_train_posteriors() -> Non
         ts="2026-06-25T00:01:00+00:00",
         learning_eligibility=_learning_eligibility(),
     )
+    missing_route = GateEvent(
+        route=" ",
+        routing_class="source_python",
+        requirement_vector=_requirement_vector(),
+        task_hash="sha256:task-router-test",
+        gate_result="accept",
+        gate_type="deterministic",
+        ts="2026-06-25T00:01:30+00:00",
+        learning_eligibility=_learning_eligibility(),
+    )
+    missing_routing_class = GateEvent(
+        route="local_tool.local.worker",
+        routing_class=" ",
+        requirement_vector=_requirement_vector(),
+        task_hash="sha256:task-router-test",
+        gate_result="accept",
+        gate_type="deterministic",
+        ts="2026-06-25T00:01:45+00:00",
+        learning_eligibility=_learning_eligibility(),
+    )
     learning_not_allowed = GateEvent(
         route="local_tool.local.worker",
         routing_class="source_python",
@@ -518,6 +538,8 @@ def test_gate_events_need_complete_learning_receipt_to_train_posteriors() -> Non
 
     assert router.record_gate_event(missing_task_hash) is False
     assert router.record_gate_event(incomplete_requirement_vector) is False
+    assert router.record_gate_event(missing_route) is False
+    assert router.record_gate_event(missing_routing_class) is False
     assert router.record_gate_event(learning_not_allowed) is False
     assert router.state.route_posteriors == {}
 

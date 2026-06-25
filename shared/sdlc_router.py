@@ -508,6 +508,10 @@ def gate_event_thompson_update_allowed(event: GateEvent) -> bool:
 def _gate_event_learning_evidence_complete(event: GateEvent) -> bool:
     if not event.task_hash.strip():
         return False
+    if not event.route.strip():
+        return False
+    if not event.routing_class.strip():
+        return False
     return _gate_event_requirement_vector_is_complete(event.requirement_vector)
 
 

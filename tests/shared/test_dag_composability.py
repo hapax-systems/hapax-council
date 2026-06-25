@@ -118,6 +118,59 @@ class TestDagComposabilityDetails:
         with pytest.raises(DagComposabilityError, match="duplicate task_id"):
             classify_dag_composability([TaskDependency("task-a"), TaskDependency("task-a")])
 
+    @pytest.mark.parametrize(
+        "action, error_type",
+        [
+            (
+                lambda: classify_dag_composability([{"task_id": ""}]),
+                DagComposabilityError,
+            ),
+            (
+                lambda: classify_dag_composability([{"task_id": "a", "depends_on": "b"}]),
+                DagComposabilityError,
+            ),
+            (
+                lambda: classify_dag_composability([{"task_id": "a", "depends_on": [" "]}]),
+                DagComposabilityError,
+            ),
+            (
+                lambda: classify_dag_composability([TaskDependency("task-a", ("missing",))]),
+                DagComposabilityError,
+            ),
+            (
+                lambda: classify_dag_composability(
+                    [
+                        TaskDependency("task-a", ("task-c",)),
+                        TaskDependency("task-b", ("task-a",)),
+                        TaskDependency("task-c", ("task-b",)),
+                    ]
+                ),
+                DagComposabilityError,
+            ),
+            (
+                lambda: classify_dag_composability(
+                    [TaskDependency("task-a"), TaskDependency("task-a")]
+                ),
+                DagComposabilityError,
+            ),
+            (
+                lambda: required_step_probability(-0.01, 1),
+                ValueError,
+            ),
+            (
+                lambda: required_step_probability(0.95, 0),
+                ValueError,
+            ),
+        ],
+    )
+    def test_malformed_graph_errors_include_next_actions(
+        self,
+        action,
+        error_type: type[Exception],
+    ) -> None:
+        with pytest.raises(error_type, match="next action"):
+            action()
+
 
 class TestRequiredStepProbability:
     def test_chain_floor_is_distributed_across_steps(self) -> None:

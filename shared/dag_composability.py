@@ -70,9 +70,15 @@ def required_step_probability(chain_floor: float, step_count: int) -> float:
     """
 
     if chain_floor < 0.0 or chain_floor > 1.0:
-        raise ValueError("chain_floor must be between 0.0 and 1.0")
+        raise ValueError(
+            "chain_floor must be between 0.0 and 1.0; next action: provide a "
+            "probability floor in the inclusive range [0.0, 1.0]"
+        )
     if step_count < 1:
-        raise ValueError("step_count must be at least 1")
+        raise ValueError(
+            "step_count must be at least 1; next action: classify a non-empty "
+            "dependency chain or use one step for an atomic task"
+        )
     return pow(chain_floor, 1.0 / step_count)
 
 
@@ -134,7 +140,10 @@ def _normalize_task_graph(
     for task in tasks:
         dependency = _coerce_task_dependency(task)
         if dependency.task_id in graph:
-            raise DagComposabilityError(f"duplicate task_id: {dependency.task_id}")
+            raise DagComposabilityError(
+                f"duplicate task_id: {dependency.task_id}; next action: make task_id "
+                "values unique before classifying composability"
+            )
         graph[dependency.task_id] = dependency.depends_on
     return graph
 
@@ -150,7 +159,10 @@ def _coerce_task_dependency(task: TaskDependency | Mapping[str, Any] | object) -
         depends_on = getattr(task, "depends_on", ())
 
     if not isinstance(task_id, str) or not task_id.strip():
-        raise DagComposabilityError("task must have a non-empty string task_id")
+        raise DagComposabilityError(
+            "task must have a non-empty string task_id; next action: add a stable "
+            "task_id before classifying composability"
+        )
     return TaskDependency(
         task_id=task_id.strip(),
         depends_on=_normalize_depends_on(depends_on),
@@ -161,17 +173,26 @@ def _normalize_depends_on(value: object) -> tuple[str, ...]:
     if value in (None, "", [], ()):
         return ()
     if isinstance(value, str):
-        raise DagComposabilityError("depends_on must be an iterable of task id strings")
+        raise DagComposabilityError(
+            "depends_on must be an iterable of task id strings; next action: use a "
+            "list of dependency task ids or omit depends_on"
+        )
     try:
         items = tuple(value)  # type: ignore[arg-type]
     except TypeError as exc:
-        raise DagComposabilityError("depends_on must be an iterable of task id strings") from exc
+        raise DagComposabilityError(
+            "depends_on must be an iterable of task id strings; next action: use a "
+            "list of dependency task ids or omit depends_on"
+        ) from exc
 
     out: list[str] = []
     seen: set[str] = set()
     for item in items:
         if not isinstance(item, str) or not item.strip():
-            raise DagComposabilityError("depends_on entries must be non-empty strings")
+            raise DagComposabilityError(
+                "depends_on entries must be non-empty strings; next action: remove "
+                "blank dependency ids or replace them with valid task ids"
+            )
         dep = item.strip()
         if dep not in seen:
             out.append(dep)
@@ -185,7 +206,9 @@ def _validate_known_dependencies(graph: Mapping[str, tuple[str, ...]]) -> None:
         missing = [dep for dep in deps if dep not in ids]
         if missing:
             raise DagComposabilityError(
-                f"{task_id} depends_on unknown task(s): {', '.join(missing)}"
+                f"{task_id} depends_on unknown task(s): {', '.join(missing)}; "
+                "next action: add the missing tasks to the graph or remove those "
+                "dependency edges"
             )
 
 
@@ -210,7 +233,10 @@ def _topological_order(graph: Mapping[str, tuple[str, ...]]) -> tuple[str, ...]:
 
     if len(ordered) != len(graph):
         cyclic = sorted(task_id for task_id, count in indegree.items() if count > 0)
-        raise DagComposabilityError(f"dependency cycle detected: {', '.join(cyclic)}")
+        raise DagComposabilityError(
+            f"dependency cycle detected: {', '.join(cyclic)}; next action: break the "
+            "cycle so dependencies form a DAG"
+        )
     return tuple(ordered)
 
 
