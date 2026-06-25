@@ -323,7 +323,7 @@ def observe_success(args: argparse.Namespace) -> int:
         raise ValueError(f"--stale-after-seconds must be between 1 and {MAX_STALE_AFTER_SECONDS}")
     evidence_ref = _safe_reference(args.evidence_ref, label="evidence ref")
     supported_tool = _safe_token(args.supported_tool, label="supported tool")
-    endpoint = args.endpoint.strip().rstrip("/")
+    endpoint = args.endpoint.strip()
     model = args.model.strip()
     if supported_tool != SUPPORTED_TOOL:
         raise ValueError(f"--supported-tool must be {SUPPORTED_TOOL}")

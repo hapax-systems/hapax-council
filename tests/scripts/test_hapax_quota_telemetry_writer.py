@@ -435,6 +435,26 @@ payg_fallback: false
 """,
         encoding="utf-8",
     )
+    (relay / "glmcp-quota-admission-reviewer-trailing-slash-endpoint.yaml").write_text(
+        """schema: hapax.glmcp_quota_admission.v1
+status: quota_available
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4/
+model: glm-5
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 900
+evidence_ref: supported-tool-usage-witness
+secret_source: pass:glmcp/api-key
+secret_value_persisted: false
+prompt_or_output_persisted: false
+billing_mode: coding_plan_subscription
+payg_fallback: false
+""",
+        encoding="utf-8",
+    )
 
     result, out = _run_writer(tmp_path)
 
@@ -999,6 +1019,25 @@ model: glm-5
 observed_at: definitely-not-a-date
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
+""",
+        encoding="utf-8",
+    )
+    (relay / "glmcp-quota-admission-blank-observed-at.yaml").write_text(
+        """status: quota_available
+provider: z_ai-glm-coding-plan
+capacity_pool: subscription_quota
+route_id: glmcp.review.direct
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5
+observed_at:
+stale_after_seconds: 900
+evidence_ref: supported-tool-usage-witness
+secret_source: pass:glmcp/api-key
+secret_value_persisted: false
+prompt_or_output_persisted: false
+billing_mode: coding_plan_subscription
+payg_fallback: false
 """,
         encoding="utf-8",
     )

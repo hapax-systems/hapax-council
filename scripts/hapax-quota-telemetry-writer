@@ -396,7 +396,7 @@ def active_glmcp_admission_receipts(
                 "supported_tool missing or unsupported; expected supported Coding Plan tool",
             )
             continue
-        endpoint = fields.get("endpoint", "").rstrip("/")
+        endpoint = fields.get("endpoint", "")
         if endpoint not in GLMCP_ADMISSION_ENDPOINTS:
             reject(
                 path,

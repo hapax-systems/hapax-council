@@ -178,6 +178,17 @@ def test_observe_success_rejects_unsafe_evidence_refs(
                 "--supported-tool",
                 "hapax-glmcp-reviewer",
                 "--endpoint",
+                "https://api.z.ai/api/coding/paas/v4/",
+                "--model",
+                "glm-5",
+            ),
+            "--endpoint must be https://api.z.ai/api/coding/paas/v4",
+        ),
+        (
+            (
+                "--supported-tool",
+                "hapax-glmcp-reviewer",
+                "--endpoint",
                 "https://api.z.ai/api/coding/paas/v4",
                 "--model",
                 "glm-5.2[1m]",
