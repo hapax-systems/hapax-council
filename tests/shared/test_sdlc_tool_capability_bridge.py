@@ -163,9 +163,7 @@ def test_model_copy_hard_blockers_fail_closed_in_assessment_and_summary(
 ) -> None:
     facts = project_sdlc_route_supply_facts(include_inventory_rows=False)
     tavily = _fact(facts, "sdlc_route_supply:provider_tool.search.tavily_source_acquisition")
-    malformed = tavily.model_copy(
-        update={field: value, "can_satisfy_required_demands": True}
-    )
+    malformed = tavily.model_copy(update={field: value, "can_satisfy_required_demands": True})
 
     assessment = malformed.assess(
         SdlcRouteDemand(
