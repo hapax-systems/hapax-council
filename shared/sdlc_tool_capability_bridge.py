@@ -256,7 +256,7 @@ def assess_sdlc_route_supply(
             evidence_refs=tuple(dict.fromkeys(evidence_refs)),
         )
 
-    if not fact.can_satisfy_required_demands:
+    if not fact.can_satisfy_required_demands or fact.blocking_reasons:
         reason_codes.extend(["supply_fact_held", *fact.blocking_reasons])
 
     if fact.role is RouteSupplyRole.SUPPLIED_EVIDENCE_RECALL:
@@ -266,6 +266,8 @@ def assess_sdlc_route_supply(
             reason_codes.append("supplied_evidence_recall_not_public_claim_evidence")
 
     if demand.requires_fresh_current_world_evidence:
+        if fact.supplied_evidence_only:
+            reason_codes.append("supplied_evidence_not_fresh_current_world_evidence")
         if not fact.fresh_current_world_evidence_allowed:
             reason_codes.append("fresh_current_world_evidence_absent")
         if not fact.source_acquisition_capable:

@@ -125,6 +125,44 @@ def test_source_acquisition_requires_capability_and_evidence() -> None:
         SdlcRouteSupplyFact.model_validate(forged_payload)
 
 
+def test_blocking_reasons_fail_closed_even_if_positive_flag_is_set() -> None:
+    facts = project_sdlc_route_supply_facts(include_inventory_rows=False)
+    tavily = _fact(facts, "sdlc_route_supply:provider_tool.search.tavily_source_acquisition")
+
+    blocked_payload = tavily.model_dump(mode="python")
+    blocked_payload["can_satisfy_required_demands"] = True
+    blocked_payload["blocking_reasons"] = ("test_blocking_reason",)
+    blocked = SdlcRouteSupplyFact.model_validate(blocked_payload)
+
+    assessment = blocked.assess(
+        SdlcRouteDemand(
+            role=RouteSupplyRole.SOURCE_ACQUISITION,
+            source_grounding_need=SourceGroundingNeed.WEB_CURRENT,
+            requires_public_claim_evidence=True,
+        )
+    )
+
+    assert assessment.satisfies is False
+    assert "supply_fact_held" in assessment.reason_codes
+    assert "test_blocking_reason" in assessment.reason_codes
+
+
+def test_supplied_evidence_only_blocks_fresh_current_world_demands_by_policy() -> None:
+    facts = project_sdlc_route_supply_facts(include_inventory_rows=False)
+    tavily = _fact(facts, "sdlc_route_supply:provider_tool.search.tavily_source_acquisition")
+    supplied_only = tavily.model_copy(update={"supplied_evidence_only": True})
+
+    assessment = supplied_only.assess(
+        SdlcRouteDemand(
+            role=RouteSupplyRole.SOURCE_ACQUISITION,
+            source_grounding_need=SourceGroundingNeed.WEB_CURRENT,
+        )
+    )
+
+    assert assessment.satisfies is False
+    assert "supplied_evidence_not_fresh_current_world_evidence" in assessment.reason_codes
+
+
 def test_supplied_evidence_recall_cannot_satisfy_current_world_or_public_claims() -> None:
     facts = project_sdlc_route_supply_facts(include_inventory_rows=False)
     supplied = _fact(facts, "sdlc_route_supply:provider_tool.model.litellm_supplied_evidence")
