@@ -20,6 +20,7 @@ EXCLUDED_DIRS = {
 }
 
 FORBIDDEN_SYMBOLS = ("nltk.data.load", "torch.jit")
+FORBIDDEN_STAR_IMPORT_MODULES = {"nltk", "nltk.data", "torch", "torch.jit"}
 
 
 def _is_python_source(path: Path) -> bool:
@@ -98,7 +99,7 @@ def _forbidden_reachability(path: Path) -> list[str]:
         elif isinstance(node, ast.ImportFrom):
             for alias in node.names:
                 imported = _imported_name(node.module, alias.name)
-                if alias.name == "*" and node.module in {"nltk.data", "torch.jit"}:
+                if alias.name == "*" and node.module in FORBIDDEN_STAR_IMPORT_MODULES:
                     offenders.append(f"{path}:{node.lineno}: from {node.module} import *")
                     continue
                 aliases[alias.asname or alias.name] = imported
@@ -138,6 +139,33 @@ def test_reachability_guard_detects_alias_imports(tmp_path: Path):
     assert any("from nltk.data import load" in offender for offender in offenders)
     assert any("from torch import jit" in offender for offender in offenders)
     assert any("torch.jit.script" in offender for offender in offenders)
+
+
+def test_reachability_guard_detects_direct_star_and_getattr_forms(tmp_path: Path):
+    sample = tmp_path / "uses_other_forbidden_advisory_forms.py"
+    sample.write_text(
+        "\n".join(
+            [
+                "import torch.jit as torch_jit",
+                "import nltk",
+                "from torch import *",
+                "",
+                "def use_other_forms():",
+                "    torch_jit.script(lambda value: value)",
+                "    getattr(torch, 'jit').script(lambda value: value)",
+                "    getattr(nltk.data, 'load')('tokenizers/punkt')",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    offenders = _forbidden_reachability(sample)
+
+    assert any("import torch.jit" in offender for offender in offenders)
+    assert any("from torch import *" in offender for offender in offenders)
+    assert any("torch.jit.script" in offender for offender in offenders)
+    assert any("nltk.data.load" in offender for offender in offenders)
 
 
 def test_source_files_include_python_shebang_entrypoints(tmp_path: Path):
