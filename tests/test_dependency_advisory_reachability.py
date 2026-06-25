@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 SOURCE_ROOTS = ("agents", "logos", "scripts", "shared")
 
 
