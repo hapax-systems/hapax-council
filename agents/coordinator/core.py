@@ -1489,7 +1489,10 @@ def _check_lane(lane: str | LaneDescriptor) -> LaneState:
 
     if not state.alive:
         state.dispatch_ready = False
-        state.dispatch_blocked_reason = "lane_not_alive"
+        state.dispatch_blocked_reason = _dispatch_tool_block(
+            "lane_not_alive",
+            _dispatch_worktree(state.role, state.platform),
+        )
     else:
         blocker = _dispatch_tool_blocker(state.role, state.platform)
         if blocker:

@@ -362,12 +362,18 @@ class TestLaneState:
         with (
             patch("agents.coordinator.core.PID_DIR", tmp_path / "pids"),
             patch("agents.coordinator.core.RELAY_DIR", tmp_path / "relay"),
+            patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
             patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
         ):
             state = _check_lane("test_lane")
         assert state.alive is False
         assert state.pid is None
         assert state.idle is True
+        assert state.dispatch_ready is False
+        assert state.dispatch_blocked_reason is not None
+        assert "lane_not_alive" in state.dispatch_blocked_reason
+        assert "next_action=" in state.dispatch_blocked_reason
 
     def test_lane_to_dict(self):
         lane = LaneState(
@@ -1557,16 +1563,29 @@ Body.
             quality_floor="deterministic_ok",
             path=Path("/tmp/t1.md"),
         )
-        lane = LaneState(
-            role="dev",
-            session="hapax-claude-dev",
-            platform="claude",
-            alive=True,
-            idle=True,
-            claimed_task=None,
-            dispatch_ready=False,
-            dispatch_blocked_reason="missing cc-claim at /home/hapax/projects/hapax-council--dev/scripts/cc-claim",
-        )
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.PID_DIR", tmp_path / "pids"),
+            patch("agents.coordinator.core._live_headless_launcher", return_value=None),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+        ):
+            lane = _check_lane(
+                LaneDescriptor(
+                    role="dev",
+                    session="hapax-claude-dev",
+                    platform="claude",
+                )
+            )
+
+        assert lane.dispatch_ready is False
+        assert lane.dispatch_blocked_reason is not None
+        assert "missing cc-claim" in lane.dispatch_blocked_reason
 
         with (
             patch.object(Coordinator, "_scan_tasks", return_value=[task]),
