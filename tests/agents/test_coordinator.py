@@ -14,6 +14,8 @@ from agents.coordinator.core import (
     LaneState,
     Task,
     _check_lane,
+    _dispatch_tool_blocker,
+    _dispatch_worktree,
     _lane_to_dict,
     _parse_task,
 )
@@ -41,6 +43,47 @@ def _stale_worktree(path: Path) -> None:
 def _stale_close_worktree(path: Path) -> None:
     _guarded_worktree(path)
     (path / "scripts" / "cc-close").write_text("#!/bin/sh\n# legacy cc-close\n", encoding="utf-8")
+
+
+class TestDispatchWorktreeGuard:
+    def test_dispatch_worktree_mirrors_platform_mappings(self, tmp_path: Path):
+        root = tmp_path / "projects"
+
+        with patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(root)}, clear=False):
+            assert _dispatch_worktree("cx-red", "codex") == root / "hapax-council--cx-red"
+            assert _dispatch_worktree("red", "codex") == root / "hapax-council--cx-red"
+            assert _dispatch_worktree("alpha", "claude") == root / "hapax-council"
+            assert _dispatch_worktree("beta", "claude") == root / "hapax-council--beta"
+            assert _dispatch_worktree("gamma", "gemini") == root / "hapax-council--gamma"
+            assert _dispatch_worktree("vbe-1", "vibe") == root / "hapax-council--vbe-1"
+            assert (
+                _dispatch_worktree("antigravity", "antigrav") == root / "hapax-council--antigrav"
+            )
+            assert _dispatch_worktree("other", "unknown") == root / "hapax-council"
+
+    def test_dispatch_worktree_override_wins(self, tmp_path: Path):
+        override = tmp_path / "custom-worktree"
+
+        with patch.dict("os.environ", {"HAPAX_DISPATCH_WORKTREE": str(override)}, clear=False):
+            assert _dispatch_worktree("cx-red", "codex") == override
+
+    def test_dispatch_tool_blocker_reports_missing_close_with_next_action(self, tmp_path: Path):
+        worktree = tmp_path / "projects" / "hapax-council--beta"
+        (worktree / "scripts").mkdir(parents=True)
+        (worktree / "scripts" / "cc-claim").write_text(
+            "#!/bin/sh\n# missing required AuthorityCase/ISAP fields authority_case parent_spec\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(
+            "os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}
+        ):
+            blocker = _dispatch_tool_blocker("beta", "claude")
+
+        assert blocker is not None
+        assert "missing cc-close" in blocker
+        assert "next_action=" in blocker
+        assert str(worktree) in blocker
 
 
 class TestParseTask:

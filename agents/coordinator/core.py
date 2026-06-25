@@ -826,29 +826,46 @@ _DISPATCH_CLOSE_GUARD_MARKERS = (
 )
 
 
+def _dispatch_tool_next_action(worktree: Path) -> str:
+    return (
+        f"relaunch or provision the lane with guarded cc-task scripts in {worktree}, "
+        "or leave the lane unavailable for dispatch"
+    )
+
+
+def _dispatch_tool_block(reason: str, worktree: Path) -> str:
+    return f"{reason}; next_action={_dispatch_tool_next_action(worktree)}"
+
+
 def _dispatch_tool_blocker(role: str, platform: str) -> str | None:
     worktree = _dispatch_worktree(role, platform)
     claim = worktree / "scripts" / "cc-claim"
     if not claim.is_file():
-        return f"missing cc-claim at {claim}"
+        return _dispatch_tool_block(f"missing cc-claim at {claim}", worktree)
     try:
         claim_text = claim.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
-        return f"unreadable cc-claim at {claim}: {exc}"
+        return _dispatch_tool_block(f"unreadable cc-claim at {claim}: {exc}", worktree)
     missing_claim = [marker for marker in _DISPATCH_CLAIM_GUARD_MARKERS if marker not in claim_text]
     if missing_claim:
-        return f"stale cc-claim in {worktree}: missing {', '.join(missing_claim)}"
+        return _dispatch_tool_block(
+            f"stale cc-claim in {worktree}: missing {', '.join(missing_claim)}",
+            worktree,
+        )
 
     close = worktree / "scripts" / "cc-close"
     if not close.is_file():
-        return f"missing cc-close at {close}"
+        return _dispatch_tool_block(f"missing cc-close at {close}", worktree)
     try:
         close_text = close.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
-        return f"unreadable cc-close at {close}: {exc}"
+        return _dispatch_tool_block(f"unreadable cc-close at {close}: {exc}", worktree)
     missing_close = [marker for marker in _DISPATCH_CLOSE_GUARD_MARKERS if marker not in close_text]
     if missing_close:
-        return f"stale cc-close in {worktree}: missing {', '.join(missing_close)}"
+        return _dispatch_tool_block(
+            f"stale cc-close in {worktree}: missing {', '.join(missing_close)}",
+            worktree,
+        )
     return None
 
 
