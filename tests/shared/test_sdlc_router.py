@@ -129,6 +129,11 @@ def test_routing_request_requires_complete_requirement_vector() -> None:
         _request(requirement_vector={"quality_floor": 4})
 
 
+def test_routing_request_rejects_bool_requirement_scores_before_coercion() -> None:
+    with pytest.raises(ValueError, match="strict integers"):
+        _request(requirement_vector=_requirement_vector(context_length=True))
+
+
 def test_requirement_floor_veto_runs_before_thompson_scoring() -> None:
     router = SdlcRouter(
         activation_evidence={"source_python": _active_gate()},

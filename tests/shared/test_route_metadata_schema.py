@@ -383,6 +383,32 @@ def test_benchmark_gap_and_public_projection_round_trip_through_demand_vector() 
     )
 
 
+def test_forbidden_public_projection_blocks_learning_even_without_public_action_flags() -> None:
+    payload = {
+        **_explicit_metadata(),
+        "route_envelope": {
+            "classification_envelope": _valid_classification_payload(),
+            "admission": {"admission_action": "route", "reason_codes": ["fresh"]},
+            "public_release_projection": {"projection_state": "forbidden"},
+            "learning_eligibility": {
+                "thompson_update_allowed": True,
+                "local_posterior_update_allowed": True,
+                "evidence_kind": "witnessed",
+                "evidence_freshness": "fresh",
+                "confidence": 0.9,
+                "envelope_valid": True,
+                "support_only": False,
+                "hkp_only": False,
+                "public_projection_forbidden": False,
+                "evidence_refs": ["witness:route-success"],
+            },
+        },
+    }
+
+    with pytest.raises(ValidationError, match="public-projection-forbidden"):
+        RouteMetadata.model_validate(payload)
+
+
 def test_hardening_allocation_derives_from_public_ambiguous_source_work() -> None:
     assessment = assess_route_metadata(
         {

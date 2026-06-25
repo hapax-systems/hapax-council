@@ -16,7 +16,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shared.affordance import ActivationState
 from shared.gate_log import GateEvent, read_gate_events
@@ -82,6 +82,16 @@ class SdlcRoutingRequest(_RouterModel):
     mutation_surface: str = "source"
     authority_level: str = "authoritative"
     frontier_incumbent_route_id: str = DEFAULT_FRONTIER_INCUMBENT_ROUTE_ID
+
+    @field_validator("requirement_vector", mode="before")
+    @classmethod
+    def _requirement_vector_uses_strict_int_scores(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            raise ValueError("requirement_vector must be a mapping")
+        for score in value.values():
+            if isinstance(score, bool) or not isinstance(score, int):
+                raise ValueError("requirement_vector scores must be strict integers 0..5")
+        return value
 
     @model_validator(mode="after")
     def _requirement_vector_scores_are_bounded(self) -> SdlcRoutingRequest:

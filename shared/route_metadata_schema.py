@@ -400,10 +400,10 @@ class PublicReleaseProjection(_RouteModel):
 
     @property
     def public_projection_forbidden(self) -> bool:
-        if not (self.may_create_public_claim or self.may_create_dataset_export):
-            return False
         if self.projection_state is PublicReleaseProjectionState.FORBIDDEN:
             return True
+        if not (self.may_create_public_claim or self.may_create_dataset_export):
+            return False
         if self.may_create_public_claim and not self.publication_authorized:
             return True
         return self.may_create_dataset_export and not self.dataset_export_authorized
