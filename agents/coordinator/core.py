@@ -30,7 +30,6 @@ from shared.dispatch_service_time import (
     AGE_NORM_S,
     QueueLane,
     QueueTask,
-    is_dispatchable_lane,
     parse_ts,
     plan_dispatches,
     wsjf_effective,
@@ -81,8 +80,6 @@ def pressure_dispatch_budget(
 
 
 def _queue_task_routable(task: QueueTask, lane: QueueLane) -> bool:
-    if not is_dispatchable_lane(lane):
-        return False
     platforms = {platform.lower() for platform in task.platform_suitability}
     return "any" in platforms or lane.platform.lower() in platforms
 
@@ -444,10 +441,7 @@ class Coordinator:
     def _pick_lane(self, task: Task, idle_lanes: list[LaneState]) -> LaneState | None:
         platforms = {platform.lower() for platform in task.platform_suitability}
         for lane in idle_lanes:
-            queue_lane = QueueLane(role=lane.role, platform=lane.platform)
-            if is_dispatchable_lane(queue_lane) and (
-                "any" in platforms or lane.platform in platforms
-            ):
+            if "any" in platforms or lane.platform in platforms:
                 return lane
         return None
 
