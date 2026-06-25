@@ -193,6 +193,8 @@ class LaneState:
     idle: bool = True
     output_age_s: float = float("inf")  # age of the freshest progress signal
     stalled: bool = False  # ground-truth projection, re-derived each tick
+    dispatch_ready: bool = True
+    dispatch_blocked_reason: str | None = None
 
 
 @dataclass
@@ -244,14 +246,22 @@ class Coordinator:
             offered_tasks=len(offered),
             claimed_tasks=sum(1 for t in tasks if t.status in ("claimed", "in_progress")),
             lanes_alive=sum(1 for l in lanes.values() if l.alive),
-            lanes_idle=sum(1 for l in lanes.values() if l.idle and l.alive),
+            lanes_idle=sum(
+                1
+                for l in lanes.values()
+                if l.idle and l.alive and l.claimed_task is None and l.dispatch_ready
+            ),
             lanes_total=len(lanes),
             task_status_counts=_task_status_counts(tasks),
             task_flow_counts=_task_flow_counts(tasks),
         )
 
         dispatches = 0
-        idle_lanes = [l for l in lanes.values() if l.alive and l.idle and l.claimed_task is None]
+        idle_lanes = [
+            l
+            for l in lanes.values()
+            if l.alive and l.idle and l.claimed_task is None and l.dispatch_ready
+        ]
 
         # L3: pace the dispatch loop under CPU pressure. 'closed' dispatches
         # nothing this tick (tasks stay offered — queued, not dropped); 'paced'
@@ -1313,6 +1323,96 @@ def _live_headless_launcher(role: str) -> tuple[int, str | None] | None:
     return None
 
 
+COORDINATOR_DISPATCHABLE_PLATFORMS = frozenset({"claude", "codex", "vibe"})
+
+
+def _dispatch_worktree(role: str, platform: str) -> Path:
+    """Mirror hapax-methodology-dispatch's lane -> worktree mapping.
+
+    The coordinator must not advertise a lane as dispatch capacity when the
+    dispatcher would immediately fail its worktree-local cc-task tool guard.
+    ``HAPAX_DISPATCH_WORKTREE`` overrides the resolved worktree outright;
+    ``HAPAX_DISPATCH_PROJECT_ROOT`` overrides the root used for lane mappings.
+    """
+    override = os.environ.get("HAPAX_DISPATCH_WORKTREE")
+    if override:
+        return Path(override).expanduser()
+    root = Path(os.environ.get("HAPAX_DISPATCH_PROJECT_ROOT", str(Path.home() / "projects")))
+    if platform == "codex":
+        if role.startswith("cx-"):
+            return root / f"hapax-council--{role}"
+        return root / f"hapax-council--cx-{role}"
+    if platform == "claude":
+        return root / "hapax-council" if role == "alpha" else root / f"hapax-council--{role}"
+    if platform in {"vibe", "gemini"}:
+        return root / f"hapax-council--{role}"
+    if platform == "antigrav":
+        normalized = "antigrav" if role == "antigravity" else role
+        return root / f"hapax-council--{normalized}"
+    return root / "hapax-council"
+
+
+_DISPATCH_CLAIM_GUARD_MARKERS = (
+    "missing required AuthorityCase/ISAP fields",
+    "authority_case",
+    "parent_spec",
+)
+_DISPATCH_CLOSE_GUARD_MARKERS = (
+    "frontmatter_task_id",
+    "closed_duplicate",
+    "closed task duplicate has task_id",
+)
+
+
+def _dispatch_tool_next_action(worktree: Path) -> str:
+    return (
+        f"relaunch or provision the lane with guarded cc-task scripts in {worktree}, "
+        "or leave the lane unavailable for dispatch"
+    )
+
+
+def _dispatch_tool_block(reason: str, worktree: Path) -> str:
+    return f"{reason}; next_action={_dispatch_tool_next_action(worktree)}"
+
+
+def _dispatch_tool_blocker(role: str, platform: str) -> str | None:
+    worktree = _dispatch_worktree(role, platform)
+    if platform not in COORDINATOR_DISPATCHABLE_PLATFORMS:
+        return _dispatch_tool_block(
+            f"unsupported dispatch platform {platform!r} for coordinator headless dispatch",
+            worktree,
+        )
+
+    claim = worktree / "scripts" / "cc-claim"
+    if not claim.is_file():
+        return _dispatch_tool_block(f"missing cc-claim at {claim}", worktree)
+    try:
+        claim_text = claim.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return _dispatch_tool_block(f"unreadable cc-claim at {claim}: {exc}", worktree)
+    missing_claim = [marker for marker in _DISPATCH_CLAIM_GUARD_MARKERS if marker not in claim_text]
+    if missing_claim:
+        return _dispatch_tool_block(
+            f"stale cc-claim in {worktree}: missing {', '.join(missing_claim)}",
+            worktree,
+        )
+
+    close = worktree / "scripts" / "cc-close"
+    if not close.is_file():
+        return _dispatch_tool_block(f"missing cc-close at {close}", worktree)
+    try:
+        close_text = close.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return _dispatch_tool_block(f"unreadable cc-close at {close}: {exc}", worktree)
+    missing_close = [marker for marker in _DISPATCH_CLOSE_GUARD_MARKERS if marker not in close_text]
+    if missing_close:
+        return _dispatch_tool_block(
+            f"stale cc-close in {worktree}: missing {', '.join(missing_close)}",
+            worktree,
+        )
+    return None
+
+
 def _check_lane(lane: str | LaneDescriptor) -> LaneState:
     descriptor = (
         lane
@@ -1386,6 +1486,15 @@ def _check_lane(lane: str | LaneDescriptor) -> LaneState:
             continue
     if progress_mtimes:
         state.output_age_s = time.time() - max(progress_mtimes)
+
+    if not state.alive:
+        state.dispatch_ready = False
+        state.dispatch_blocked_reason = "lane_not_alive"
+    else:
+        blocker = _dispatch_tool_blocker(state.role, state.platform)
+        if blocker:
+            state.dispatch_ready = False
+            state.dispatch_blocked_reason = blocker
 
     return state
 
@@ -1523,5 +1632,7 @@ def _lane_to_dict(lane: LaneState) -> dict:
         "claimed_task": lane.claimed_task,
         "idle": lane.idle,
         "stalled": lane.stalled,
+        "dispatch_ready": lane.dispatch_ready,
+        "dispatch_blocked_reason": lane.dispatch_blocked_reason,
         "output_age_s": round(lane.output_age_s, 1) if lane.output_age_s != float("inf") else None,
     }

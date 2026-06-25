@@ -21,6 +21,8 @@ from agents.coordinator.core import (
     _check_lane,
     _discover_lanes,
     _dispatch_landed,
+    _dispatch_tool_blocker,
+    _dispatch_worktree,
     _effective_platform_suitability,
     _headless_task_from_argv,
     _lane_to_dict,
@@ -29,6 +31,132 @@ from agents.coordinator.core import (
     _prepare_dispatch_message,
     _task_flow_counts,
 )
+from shared.sdlc_pressure_gate import AdmissionDecision
+
+
+def _guarded_worktree(path: Path) -> None:
+    (path / "scripts").mkdir(parents=True)
+    (path / "scripts" / "cc-claim").write_text(
+        "#!/bin/sh\n# missing required AuthorityCase/ISAP fields authority_case parent_spec\n",
+        encoding="utf-8",
+    )
+    (path / "scripts" / "cc-close").write_text(
+        "#!/bin/sh\n# frontmatter_task_id closed_duplicate closed task duplicate has task_id\n",
+        encoding="utf-8",
+    )
+
+
+def _stale_worktree(path: Path) -> None:
+    (path / "scripts").mkdir(parents=True)
+    (path / "scripts" / "cc-claim").write_text("#!/bin/sh\n# legacy cc-claim\n", encoding="utf-8")
+    (path / "scripts" / "cc-close").write_text("#!/bin/sh\n# legacy cc-close\n", encoding="utf-8")
+
+
+def _stale_close_worktree(path: Path) -> None:
+    _guarded_worktree(path)
+    (path / "scripts" / "cc-close").write_text("#!/bin/sh\n# legacy cc-close\n", encoding="utf-8")
+
+
+class TestDispatchWorktreeGuard:
+    def test_dispatch_worktree_mirrors_platform_mappings(self, tmp_path: Path):
+        root = tmp_path / "projects"
+
+        with patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(root)}, clear=False):
+            assert _dispatch_worktree("cx-red", "codex") == root / "hapax-council--cx-red"
+            assert _dispatch_worktree("red", "codex") == root / "hapax-council--cx-red"
+            assert _dispatch_worktree("alpha", "claude") == root / "hapax-council"
+            assert _dispatch_worktree("beta", "claude") == root / "hapax-council--beta"
+            assert _dispatch_worktree("gamma", "gemini") == root / "hapax-council--gamma"
+            assert _dispatch_worktree("vbe-1", "vibe") == root / "hapax-council--vbe-1"
+            assert _dispatch_worktree("antigravity", "antigrav") == root / "hapax-council--antigrav"
+            assert _dispatch_worktree("other", "unknown") == root / "hapax-council"
+
+    def test_dispatch_worktree_override_wins(self, tmp_path: Path):
+        override = tmp_path / "custom-worktree"
+
+        with patch.dict("os.environ", {"HAPAX_DISPATCH_WORKTREE": str(override)}, clear=False):
+            assert _dispatch_worktree("cx-red", "codex") == override
+
+    def test_dispatch_tool_blocker_reports_missing_close_with_next_action(self, tmp_path: Path):
+        worktree = tmp_path / "projects" / "hapax-council--beta"
+        (worktree / "scripts").mkdir(parents=True)
+        (worktree / "scripts" / "cc-claim").write_text(
+            "#!/bin/sh\n# missing required AuthorityCase/ISAP fields authority_case parent_spec\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}):
+            blocker = _dispatch_tool_blocker("beta", "claude")
+
+        assert blocker is not None
+        assert "missing cc-close" in blocker
+        assert "next_action=" in blocker
+        assert str(worktree) in blocker
+
+    def test_dispatch_tool_blocker_reports_stale_close_with_next_action(self, tmp_path: Path):
+        worktree = tmp_path / "projects" / "hapax-council--beta"
+        _stale_close_worktree(worktree)
+
+        with patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}):
+            blocker = _dispatch_tool_blocker("beta", "claude")
+
+        assert blocker is not None
+        assert "stale cc-close" in blocker
+        assert "frontmatter_task_id" in blocker
+        assert "next_action=" in blocker
+
+    def test_dispatch_tool_blocker_reports_unreadable_claim_with_next_action(self, tmp_path: Path):
+        worktree = tmp_path / "projects" / "hapax-council--beta"
+        _guarded_worktree(worktree)
+        claim = worktree / "scripts" / "cc-claim"
+        original_read_text = Path.read_text
+
+        def fake_read_text(path: Path, *args: object, **kwargs: object) -> str:
+            if path == claim:
+                raise OSError("permission denied")
+            return original_read_text(path, *args, **kwargs)
+
+        with (
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.object(Path, "read_text", fake_read_text),
+        ):
+            blocker = _dispatch_tool_blocker("beta", "claude")
+
+        assert blocker is not None
+        assert "unreadable cc-claim" in blocker
+        assert "next_action=" in blocker
+
+    def test_dispatch_tool_blocker_reports_unreadable_close_with_next_action(self, tmp_path: Path):
+        worktree = tmp_path / "projects" / "hapax-council--beta"
+        _guarded_worktree(worktree)
+        close = worktree / "scripts" / "cc-close"
+        original_read_text = Path.read_text
+
+        def fake_read_text(path: Path, *args: object, **kwargs: object) -> str:
+            if path == close:
+                raise OSError("permission denied")
+            return original_read_text(path, *args, **kwargs)
+
+        with (
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.object(Path, "read_text", fake_read_text),
+        ):
+            blocker = _dispatch_tool_blocker("beta", "claude")
+
+        assert blocker is not None
+        assert "unreadable cc-close" in blocker
+        assert "next_action=" in blocker
+
+    def test_dispatch_tool_blocker_rejects_gemini_even_with_guarded_worktree(self, tmp_path: Path):
+        worktree = tmp_path / "projects" / "hapax-council--gamma"
+        _guarded_worktree(worktree)
+
+        with patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}):
+            blocker = _dispatch_tool_blocker("gamma", "gemini")
+
+        assert blocker is not None
+        assert "unsupported dispatch platform 'gemini'" in blocker
+        assert "next_action=" in blocker
 
 
 class TestParseTask:
@@ -256,6 +384,7 @@ class TestLaneState:
     def test_peer_status_fallback_marks_queue_dry_lane_idle(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
         relay_dir.mkdir()
+        _guarded_worktree(tmp_path / "projects" / "hapax-council--cx-red")
         (relay_dir / "peer-status-cx-red.yaml").write_text(
             """session: cx-red
 platform: codex
@@ -267,7 +396,9 @@ current_claim: null
 
         with (
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
             patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
         ):
             state = _check_lane(
                 LaneDescriptor(
@@ -280,11 +411,139 @@ current_claim: null
         assert state.alive is True
         assert state.platform == "codex"
         assert state.idle is True
+        assert state.dispatch_ready is True
         assert state.relay_age_s != float("inf")
+
+    def test_live_lane_without_worktree_is_not_dispatch_ready(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="dev",
+                    session="hapax-claude-dev",
+                    platform="claude",
+                )
+            )
+
+        assert state.alive is True
+        assert state.idle is True
+        assert state.dispatch_ready is False
+        assert state.dispatch_blocked_reason is not None
+        assert "missing cc-claim" in state.dispatch_blocked_reason
+        assert "hapax-council--dev" in state.dispatch_blocked_reason
+
+    def test_live_lane_with_guarded_worktree_is_dispatch_ready(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        _guarded_worktree(tmp_path / "projects" / "hapax-council--beta")
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="beta",
+                    session="hapax-claude-beta",
+                    platform="claude",
+                )
+            )
+
+        assert state.alive is True
+        assert state.idle is True
+        assert state.dispatch_ready is True
+        assert state.dispatch_blocked_reason is None
+
+    def test_live_lane_with_stale_worktree_is_not_dispatch_ready(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        _stale_worktree(tmp_path / "projects" / "hapax-council--beta")
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="beta",
+                    session="hapax-claude-beta",
+                    platform="claude",
+                )
+            )
+
+        assert state.alive is True
+        assert state.idle is True
+        assert state.dispatch_ready is False
+        assert state.dispatch_blocked_reason is not None
+        assert "stale cc-claim" in state.dispatch_blocked_reason
+        assert "authority_case" in state.dispatch_blocked_reason
+
+    def test_live_lane_with_stale_close_guard_is_not_dispatch_ready(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        _stale_close_worktree(tmp_path / "projects" / "hapax-council--beta")
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="beta",
+                    session="hapax-claude-beta",
+                    platform="claude",
+                )
+            )
+
+        assert state.alive is True
+        assert state.idle is True
+        assert state.dispatch_ready is False
+        assert state.dispatch_blocked_reason is not None
+        assert "stale cc-close" in state.dispatch_blocked_reason
+        assert "frontmatter_task_id" in state.dispatch_blocked_reason
+
+    def test_gemini_lane_with_guarded_worktree_is_not_dispatch_ready(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        _guarded_worktree(tmp_path / "projects" / "hapax-council--gamma")
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="gamma",
+                    session="hapax-gemini-gamma",
+                    platform="gemini",
+                )
+            )
+
+        assert state.alive is True
+        assert state.idle is True
+        assert state.dispatch_ready is False
+        assert state.dispatch_blocked_reason is not None
+        assert "unsupported dispatch platform 'gemini'" in state.dispatch_blocked_reason
 
     def test_relay_claim_beats_stale_active_claim_file(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
         relay_dir.mkdir()
+        _guarded_worktree(tmp_path / "projects" / "hapax-council--cx-red")
         (relay_dir / "peer-status-cx-red.yaml").write_text(
             """session: cx-red
 platform: codex
@@ -299,7 +558,9 @@ current_claim: relay-task
 
         with (
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", claim_dir),
             patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
         ):
             state = _check_lane(
                 LaneDescriptor(
@@ -681,6 +942,8 @@ retired_reason: clean exit
         pid_dir.mkdir()
         codex_pid_dir = tmp_path / "codex-pids"
         codex_pid_dir.mkdir()
+        _guarded_worktree(tmp_path / "projects" / "hapax-council")
+        _guarded_worktree(tmp_path / "projects" / "hapax-council--cx-red")
         completed = subprocess.CompletedProcess(
             args=["tmux"],
             returncode=0,
@@ -693,7 +956,9 @@ retired_reason: clean exit
             patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core._live_headless_launcher", return_value=None),
+            patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
             patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
             patch("agents.coordinator.core.subprocess.run", return_value=completed),
         ):
             lanes = Coordinator()._check_lanes()
@@ -712,8 +977,10 @@ retired_reason: clean exit
         assert lanes["alpha"].alive is True
         assert lanes["beta"].alive is False
         assert lanes["alpha"].platform == "claude"
+        assert lanes["alpha"].dispatch_ready is True
         assert lanes["cx-red"].alive is True
         assert lanes["cx-red"].platform == "codex"
+        assert lanes["cx-red"].dispatch_ready is True
 
     def test_pid_backed_headless_lane_is_discovered_with_existing_tmux_sessions(
         self, tmp_path: Path
@@ -1276,6 +1543,49 @@ Body.
 
         assert count == 0
         assert _parse_task(path).status == "claimed"  # type: ignore[union-attr]
+
+    def test_tick_does_not_dispatch_to_missing_worktree_lane(self, tmp_path: Path):
+        coord = Coordinator()
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("claude",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+        )
+        lane = LaneState(
+            role="dev",
+            session="hapax-claude-dev",
+            platform="claude",
+            alive=True,
+            idle=True,
+            claimed_task=None,
+            dispatch_ready=False,
+            dispatch_blocked_reason="missing cc-claim at /home/hapax/projects/hapax-council--dev/scripts/cc-claim",
+        )
+
+        with (
+            patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_check_lanes", return_value={"dev": lane}),
+            patch.object(Coordinator, "_dispatch") as dispatch,
+            patch.object(Coordinator, "_write_state") as write_state,
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=AdmissionDecision(state="open"),
+            ),
+        ):
+            coord.tick()
+
+        dispatch.assert_not_called()
+        state = write_state.call_args.args[0]
+        assert state.lanes_idle == 0
+        assert state.dispatches_this_tick == 0
+        assert state.lanes["dev"]["dispatch_ready"] is False
+        assert "missing cc-claim" in state.lanes["dev"]["dispatch_blocked_reason"]
 
 
 class TestScanTasks:
