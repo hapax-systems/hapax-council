@@ -69,6 +69,36 @@
     "capacity_pool": {
       "enum": ["api_paid_spend", "bootstrap_budget", "local_compute", "subscription_quota"]
     },
+    "consideration_waiver_axis": {
+      "enum": [
+        "capacity_pool",
+        "context_mode",
+        "effort",
+        "fast_mode",
+        "model_id",
+        "platform",
+        "provider_family",
+        "quantization"
+      ]
+    },
+    "consideration_waiver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["axis", "value", "site", "reason", "expires_at", "tracking_ref"],
+      "properties": {
+        "axis": {"$ref": "#/$defs/consideration_waiver_axis"},
+        "value": {"type": "string", "minLength": 1},
+        "site": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "tracking_ref": {"type": "string", "minLength": 1}
+      }
+    },
+    "consideration_waivers": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {"$ref": "#/$defs/consideration_waiver"}
+    },
     "authority_ceiling": {
       "enum": ["authoritative", "frontier_review_required", "read_only", "support_only"]
     },
