@@ -88,6 +88,7 @@ case "$primary_model" in
   *)
     if [[ "${HAPAX_GLMCP_ALLOW_NON_CODING_PLAN_MODEL:-0}" != "1" ]]; then
       echo "hapax-glmcp-claude: refusing primary model '$primary_model'; expected documented GLM Coding Plan model id glm-5.2[1m]" >&2
+      echo "hapax-glmcp-claude: next action: unset HAPAX_GLMCP_MODEL or set it to glm-5.2[1m] for the sanctioned Claude Code GLMCP lane." >&2
       echo "Set HAPAX_GLMCP_ALLOW_NON_CODING_PLAN_MODEL=1 only for explicit experiments after rechecking Z.ai Coding Plan docs." >&2
       exit 2
     fi

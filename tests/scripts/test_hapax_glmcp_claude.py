@@ -196,6 +196,7 @@ def test_rejects_previous_glm5_primary_model_by_default(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert "refusing primary model 'glm-5'" in result.stderr
     assert "expected documented GLM Coding Plan model id glm-5.2[1m]" in result.stderr
+    assert "next action: unset HAPAX_GLMCP_MODEL" in result.stderr
 
 
 def test_allows_non_coding_plan_primary_model_only_with_explicit_gate(tmp_path: Path) -> None:
