@@ -675,6 +675,64 @@ def test_candidate_set_cannot_bypass_primary_missing_route_envelope() -> None:
     assert "policy_launch" not in decision.reason_codes
 
 
+def test_candidate_set_cannot_bypass_primary_route_envelope_hold() -> None:
+    task_fields = _task_fields()
+    task_fields["route_envelope"] = _route_envelope(admission_action="hold")
+    primary = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+    alternative = _dimensional_request("claude.headless.full", score=5)
+
+    decision = evaluate_dispatch_policy(
+        primary,
+        candidate_requests=(alternative,),
+        now=NOW,
+    )
+
+    assert primary.demand_vector is not None
+    assert alternative.demand_vector is not None
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
+    assert "route_envelope_admission_hold" in decision.reason_codes
+    assert "route_envelope_hold" in decision.reason_codes
+    assert "dimensional_unique_dominant_route" not in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+    assert decision.dimensional_receipt is not None
+    assert [candidate.route_id for candidate in decision.dimensional_receipt.candidates] == [
+        "codex.headless.full"
+    ]
+
+
+def test_candidate_set_keeps_primary_for_same_route_candidate() -> None:
+    primary = _dimensional_request("codex.headless.full", score=3)
+    same_route_candidate = _dimensional_request("codex.headless.full", score=5)
+    primary_only = evaluate_dispatch_policy(primary, candidate_requests=(), now=NOW)
+
+    decision = evaluate_dispatch_policy(
+        primary,
+        candidate_requests=(same_route_candidate,),
+        now=NOW,
+    )
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert "dimensional_unique_dominant_route" in decision.reason_codes
+    assert decision.dimensional_receipt is not None
+    assert decision.dimensional_receipt.selected_route_id == "codex.headless.full"
+    assert len(decision.dimensional_receipt.candidates) == 1
+    receipt = decision.dimensional_receipt.candidates[0]
+    assert receipt.route_id == "codex.headless.full"
+    assert receipt.aggregate_score is not None
+    assert primary_only.dimensional_receipt is not None
+    assert receipt.aggregate_score == primary_only.dimensional_receipt.candidates[0].aggregate_score
+
+
 def test_stale_capability_data_holds() -> None:
     request = _request(
         capability=_capability(

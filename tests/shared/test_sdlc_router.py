@@ -269,6 +269,52 @@ def test_requirement_floor_veto_runs_before_thompson_scoring() -> None:
     assert "requirement_floor_not_satisfied:context_length:2<4" in veto.reason_codes
 
 
+def test_active_class_holds_when_all_candidates_are_vetoed() -> None:
+    router = SdlcRouter(
+        activation_evidence={"source_python": _active_gate()},
+        thompson_sampler=lambda _state: 0.99,
+    )
+    request = _request(requirement_vector=_requirement_vector(context_length=4))
+    local = _candidate(
+        "local_tool.local.worker",
+        score=5,
+        capability_scores={
+            "information_scope": 5,
+            "context_length": 2,
+            "mutation_risk": 5,
+            "verification_demand": 5,
+            "ambiguity_novelty": 5,
+            "composition_coupling": 5,
+            "governance_sensitivity": 5,
+        },
+    )
+    frontier = _candidate(
+        DEFAULT_FRONTIER_INCUMBENT_ROUTE_ID,
+        score=4,
+        capability_scores={
+            "information_scope": 4,
+            "context_length": 3,
+            "mutation_risk": 4,
+            "verification_demand": 4,
+            "ambiguity_novelty": 4,
+            "composition_coupling": 4,
+            "governance_sensitivity": 4,
+        },
+    )
+
+    decision = router.route(request, (local, frontier))
+
+    assert decision.action is SdlcRouterAction.HOLD
+    assert decision.selected_route_id is None
+    assert decision.candidate_scores == ()
+    assert decision.route_allowed is False
+    assert decision.reason_codes == ("no_feasible_route_candidates",)
+    assert {veto.route_id for veto in decision.vetoes} == {
+        "local_tool.local.worker",
+        DEFAULT_FRONTIER_INCUMBENT_ROUTE_ID,
+    }
+
+
 def test_quality_floor_veto_prevents_subfloor_route_even_with_high_scores() -> None:
     router = SdlcRouter(
         activation_evidence={"source_python": _active_gate()},

@@ -4197,10 +4197,10 @@ from agents.request_decomposer.models import TaskSpec as _TaskSpecD8  # noqa: E4
 _TaskSpecD8._enforce_d8_governance_floor
 
 # Capability-routing stack consolidation — these are deliberate support APIs
-# and Pydantic validators for the default-off/shadow router stack. They are
-# consumed by governed follow-on routing/runtime tasks or invoked dynamically by
-# Pydantic model validation. REQ-20260616-capability-aware-routing /
-# S5-CAPABILITY-ROUTING-TIER1.
+# and Pydantic validators for the default-off/shadow router stack. Some entries
+# are invoked dynamically by Pydantic; router learning-gate helpers are held as a
+# tested public boundary until the learning-ledger activation slice chooses its
+# production caller. REQ-20260616-capability-aware-routing / S5-CAPABILITY-ROUTING-TIER1.
 from shared.dag_composability import (  # noqa: E402
     DagComposability as _DagComposability,
 )
