@@ -636,6 +636,31 @@ current_claim: null
         assert state.dispatch_blocked_reason is not None
         assert "unsupported dispatch platform 'gemini'" in state.dispatch_blocked_reason
 
+    def test_antigrav_lane_with_guarded_worktree_is_not_dispatch_ready(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        _guarded_worktree(tmp_path / "projects" / "hapax-council--antigrav")
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="antigravity",
+                    session="hapax-antigrav-antigravity",
+                    platform="antigrav",
+                )
+            )
+
+        assert state.alive is True
+        assert state.idle is True
+        assert state.dispatch_ready is False
+        assert state.dispatch_blocked_reason is not None
+        assert "unsupported dispatch platform 'antigrav'" in state.dispatch_blocked_reason
+
     def test_relay_claim_beats_stale_active_claim_file(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
         relay_dir.mkdir()
@@ -1698,6 +1723,9 @@ Body.
         assert state.lanes["dev"]["idle"] is True
         assert state.lanes["dev"]["dispatch_ready"] is False
         assert "missing cc-claim" in state.lanes["dev"]["dispatch_blocked_reason"]
+        assert state.lanes["alpha"]["alive"] is False
+        assert state.lanes["alpha"]["dispatch_ready"] is False
+        assert "lane_not_alive" in state.lanes["alpha"]["dispatch_blocked_reason"]
 
     def test_tick_does_not_dispatch_to_stale_close_lane(self, tmp_path: Path):
         coord = Coordinator()
