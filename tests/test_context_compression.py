@@ -8,7 +8,6 @@ from unittest.mock import MagicMock, patch
 from pydantic import BaseModel
 
 import shared.context_compression as context_compression
-from shared.context_compression import compress_history, to_toon
 
 
 class SimpleModel(BaseModel):
@@ -19,19 +18,19 @@ class SimpleModel(BaseModel):
 
 class TestToToon:
     def test_dict_encoding(self):
-        result = to_toon({"app": "chrome", "mode": "coding"})
+        result = context_compression.to_toon({"app": "chrome", "mode": "coding"})
         assert "app: chrome" in result
         assert "mode: coding" in result
 
     def test_pydantic_model_encoding(self):
         model = SimpleModel(app="firefox", mode="browsing", faces=2)
-        result = to_toon(model)
+        result = context_compression.to_toon(model)
         assert "app: firefox" in result
         assert "faces: 2" in result
 
     def test_nested_dict(self):
         data = {"status": "ok", "details": {"cpu": 45, "mem": 72}}
-        result = to_toon(data)
+        result = context_compression.to_toon(data)
         assert "status: ok" in result
 
     def test_array_tabular(self):
@@ -41,18 +40,18 @@ class TestToToon:
                 {"id": "mpc", "status": "off"},
             ]
         }
-        result = to_toon(data)
+        result = context_compression.to_toon(data)
         assert "sp404" in result
         assert "mpc" in result
 
     def test_list_input(self):
         data = [{"a": 1}, {"a": 2}]
-        result = to_toon(data)
+        result = context_compression.to_toon(data)
         assert "1" in result
         assert "2" in result
 
     def test_empty_dict(self):
-        result = to_toon({})
+        result = context_compression.to_toon({})
         assert isinstance(result, str)
 
 
@@ -65,7 +64,7 @@ class TestToToonSearchResults:
                 {"source": "gmail", "text": "RE: Project kickoff", "score": 0.72},
             ],
         }
-        result = to_toon(data)
+        result = context_compression.to_toon(data)
         assert "obsidian" in result
         import json
 
@@ -80,7 +79,7 @@ class TestCompressHistory:
             {"role": "user", "content": "Hello"},
             {"role": "assistant", "content": "Hi there!"},
         ]
-        result = compress_history(messages, keep_recent=5)
+        result = context_compression.compress_history(messages, keep_recent=5)
         assert result == messages
 
     def test_no_system_message(self):
@@ -88,7 +87,7 @@ class TestCompressHistory:
             {"role": "user", "content": "Hello"},
             {"role": "assistant", "content": "Hi!"},
         ]
-        result = compress_history(messages, keep_recent=5)
+        result = context_compression.compress_history(messages, keep_recent=5)
         assert result == messages
 
     @patch("shared.context_compression._get_compressor")
@@ -111,7 +110,7 @@ class TestCompressHistory:
             {"role": "assistant", "content": "Welcome!"},
         ]
 
-        result = compress_history(messages, keep_recent=4)
+        result = context_compression.compress_history(messages, keep_recent=4)
 
         # System message preserved
         assert result[0]["role"] == "system"
@@ -137,7 +136,7 @@ class TestCompressHistory:
             {"role": "assistant", "content": "6"},
         ]
 
-        result = compress_history(messages, keep_recent=2)
+        result = context_compression.compress_history(messages, keep_recent=2)
         assert result == messages
 
     def test_missing_llmlingua_dependency_returns_original(self, monkeypatch):
@@ -162,7 +161,7 @@ class TestCompressHistory:
             {"role": "assistant", "content": "6"},
         ]
 
-        result = compress_history(messages, keep_recent=2)
+        result = context_compression.compress_history(messages, keep_recent=2)
         assert result == messages
         assert context_compression._compressor_load_attempted is True
 
@@ -182,7 +181,7 @@ class TestCompressHistory:
             {"role": "assistant", "content": "6"},
         ]
 
-        result = compress_history(messages, keep_recent=2)
+        result = context_compression.compress_history(messages, keep_recent=2)
         assert result == messages
 
 
@@ -190,13 +189,9 @@ class TestCompressorHealth:
     @patch("shared.context_compression._compressor", None)
     @patch("shared.context_compression._compressor_load_attempted", True)
     def test_health_reports_unavailable(self):
-        from shared.context_compression import compressor_available
-
-        assert compressor_available() is False
+        assert context_compression.compressor_available() is False
 
     @patch("shared.context_compression._compressor", MagicMock())
     @patch("shared.context_compression._compressor_load_attempted", True)
     def test_health_reports_available(self):
-        from shared.context_compression import compressor_available
-
-        assert compressor_available() is True
+        assert context_compression.compressor_available() is True
