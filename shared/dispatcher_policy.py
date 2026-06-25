@@ -611,6 +611,17 @@ def evaluate_dispatch_policy(
             authority_allowed=False,
         )
 
+    route_envelope_reasons = _route_envelope_hold_reasons(request)
+    if route_envelope_reasons:
+        return _decision(
+            request,
+            DispatchAction.HOLD,
+            route_envelope_reasons,
+            checked_at,
+            quality_floor_satisfied=False,
+            authority_allowed=False,
+        )
+
     if request.operator_coupled and request.mode == "headless":
         return _decision(
             request,
@@ -1328,6 +1339,24 @@ def _policy_vetoes(gate: RouteDecision) -> tuple[DimensionalVeto, ...]:
             message=reason,
         )
         for reason in gate.reason_codes
+    )
+
+
+def _route_envelope_hold_reasons(request: DispatchRequest) -> tuple[str, ...]:
+    demand = request.demand_vector
+    if demand is None:
+        return ()
+    admission = demand.route_envelope.admission
+    action = admission.admission_action.value
+    if action == "route":
+        return ()
+    return tuple(
+        dict.fromkeys(
+            [
+                f"route_envelope_admission_{action}",
+                *admission.reason_codes,
+            ]
+        )
     )
 
 

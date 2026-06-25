@@ -137,6 +137,39 @@ def _request(**overrides: object) -> DispatchRequest:
     return DispatchRequest.model_validate(payload)
 
 
+def _route_envelope() -> dict[str, object]:
+    return {
+        "classification_envelope": {
+            "label": "source_python",
+            "classifier": "test.deterministic",
+            "source_kind": "deterministic",
+            "confidence": 0.92,
+            "evidence_refs": ["test:classification-evidence"],
+            "freshness": "fresh",
+            "authority_ceiling": "authoritative",
+            "validity_mask": {
+                "label": True,
+                "source": True,
+                "confidence": True,
+                "freshness": True,
+                "authority_ceiling": True,
+            },
+            "deterministic_facts_used": ["mutation_surface:source"],
+            "consumer_floor": "frontier_required",
+        },
+        "eligibility": {
+            "authority_allowed": True,
+            "privacy_allowed": True,
+            "freshness_ok": True,
+            "quality_floor_satisfied": True,
+            "required_tools_available": True,
+            "budget_allowed": True,
+            "reason_codes": ["eligibility_witnessed"],
+        },
+        "admission": {"admission_action": "route", "reason_codes": ["route_envelope_route"]},
+    }
+
+
 def _demand(**overrides: object) -> DemandVector:
     payload: dict[str, object] = {
         "route_metadata_schema": 1,
@@ -166,6 +199,7 @@ def _demand(**overrides: object) -> DemandVector:
         },
         "route_constraints": {},
         "review_requirement": {},
+        "route_envelope": _route_envelope(),
         "task_id": "policy-test",
         "authority_case": "CASE-TEST-001",
     }

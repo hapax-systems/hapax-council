@@ -136,6 +136,42 @@ def _request(**overrides: object) -> DispatchRequest:
     return DispatchRequest.model_validate(payload)
 
 
+def _route_envelope(*, admission_action: str = "route") -> dict[str, object]:
+    return {
+        "classification_envelope": {
+            "label": "source_python",
+            "classifier": "test.deterministic",
+            "source_kind": "deterministic",
+            "confidence": 0.92,
+            "evidence_refs": ["test:classification-evidence"],
+            "freshness": "fresh",
+            "authority_ceiling": "authoritative",
+            "validity_mask": {
+                "label": True,
+                "source": True,
+                "confidence": True,
+                "freshness": True,
+                "authority_ceiling": True,
+            },
+            "deterministic_facts_used": ["mutation_surface:source"],
+            "consumer_floor": "frontier_required",
+        },
+        "eligibility": {
+            "authority_allowed": True,
+            "privacy_allowed": True,
+            "freshness_ok": True,
+            "quality_floor_satisfied": True,
+            "required_tools_available": True,
+            "budget_allowed": True,
+            "reason_codes": ["eligibility_witnessed"],
+        },
+        "admission": {
+            "admission_action": admission_action,
+            "reason_codes": [f"route_envelope_{admission_action}"],
+        },
+    }
+
+
 def _demand(**overrides: object) -> DemandVector:
     payload = {
         "route_metadata_schema": 1,
@@ -165,6 +201,7 @@ def _demand(**overrides: object) -> DemandVector:
         },
         "route_constraints": {},
         "review_requirement": {},
+        "route_envelope": _route_envelope(),
         "task_id": "policy-test",
         "authority_case": "CASE-TEST-001",
     }
@@ -357,6 +394,27 @@ def test_malformed_route_metadata_holds_before_launch() -> None:
 
     assert decision.action is DispatchAction.HOLD
     assert "route_metadata_malformed" in decision.reason_codes
+
+
+def test_route_envelope_hold_blocks_dispatch_launch() -> None:
+    request = _request(
+        demand_vector=_demand(
+            route_envelope={
+                "admission": {
+                    "admission_action": "hold",
+                    "reason_codes": ["route_envelope_missing"],
+                }
+            }
+        )
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
+    assert "route_envelope_admission_hold" in decision.reason_codes
+    assert "route_envelope_missing" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
 
 
 def test_operator_coupled_headless_refuses_before_capability_lookup() -> None:
