@@ -44,12 +44,21 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
+
+from pydantic import ValidationError
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from shared.route_metadata_schema import (  # noqa: E402
+    verification_contract_structure_blockers,
+    verification_failure_blockers,
+    verification_surface_from_frontmatter,
+)
 
 FINDINGS_PATH = Path.home() / ".cache" / "hapax" / "acceptance-oracle-findings.jsonl"
 CC_TASKS = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
@@ -104,6 +113,11 @@ class Observation:
     tampered_test_paths: tuple[str, ...] = ()
     test_failures: tuple[str, ...] = ()
     n_tests_run: int = 0
+    verification_surface: Any | None = None
+    verification_contract_blockers: tuple[str, ...] = ()
+    verification_failed_checks: tuple[str, ...] = ()
+    touched_paths: tuple[str, ...] = ()
+    checked_at: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> Observation:
@@ -112,6 +126,30 @@ class Observation:
             if isinstance(value, str):
                 value = [value]
             return tuple(str(v) for v in value)
+
+        route_metadata = data.get("route_metadata")
+        nested_surface_present = (
+            isinstance(route_metadata, dict) and "verification_surface" in route_metadata
+        )
+        raw_verification_surface = (
+            data.get("verification_surface")
+            if "verification_surface" in data
+            else route_metadata.get("verification_surface")
+            if nested_surface_present
+            else None
+        )
+        if "verification_surface" in data or nested_surface_present:
+            try:
+                verification_surface = verification_surface_from_frontmatter(data).model_dump(
+                    mode="json", exclude_defaults=True
+                )
+            except (ValidationError, ValueError):
+                verification_surface = _json_safe(raw_verification_surface)
+        else:
+            verification_surface = None
+        verification_contract_blockers = list(_tup("verification_contract_blockers"))
+        if "verification_surface" in data or nested_surface_present:
+            verification_contract_blockers.extend(verification_contract_structure_blockers(data))
 
         return cls(
             task_id=str(data.get("task_id", "")),
@@ -126,6 +164,11 @@ class Observation:
             tampered_test_paths=_tup("tampered_test_paths"),
             test_failures=_tup("test_failures"),
             n_tests_run=int(data.get("n_tests_run", 0)),
+            verification_surface=verification_surface,
+            verification_contract_blockers=tuple(dict.fromkeys(verification_contract_blockers)),
+            verification_failed_checks=_tup("verification_failed_checks"),
+            touched_paths=_tup("touched_paths"),
+            checked_at=data.get("checked_at"),
         )
 
 
@@ -148,8 +191,22 @@ def decide(obs: Observation) -> Verdict:
         return Verdict(INDETERMINATE, ("no-declared-tests:coverage-gap",))
     if obs.tampered_test_paths and not obs.authorizes_test_changes:
         return Verdict(FAIL, tuple(f"test-file-tamper:{p}" for p in obs.tampered_test_paths))
+    fail_reasons: list[str] = []
     if obs.test_failures:
-        return Verdict(FAIL, tuple(f"test-failed:{c}" for c in obs.test_failures))
+        fail_reasons.extend(f"test-failed:{c}" for c in obs.test_failures)
+    if obs.verification_contract_blockers:
+        fail_reasons.extend(f"verification-blocker:{b}" for b in obs.verification_contract_blockers)
+    if fail_reasons:
+        return Verdict(FAIL, tuple(fail_reasons))
+    surface = obs.verification_surface if isinstance(obs.verification_surface, dict) else {}
+    verification_blockers = verification_failure_blockers(
+        {"verification_surface": surface},
+        failed_checks=obs.verification_failed_checks,
+        touched_paths=obs.touched_paths or None,
+        now=_checked_at(obs.checked_at),
+    )
+    if verification_blockers:
+        return Verdict(FAIL, tuple(f"verification-blocker:{b}" for b in verification_blockers))
     return Verdict(PASS, ())
 
 
@@ -176,6 +233,11 @@ def finding_record(obs: Observation, verdict: Verdict, ts: str) -> dict:
         "divergence": divergence(verdict.verdict, obs.checkbox_complete),
         "clean_tree_sha": obs.clean_tree_sha,
         "n_tests": obs.n_tests_run,
+        "verification_contract_blockers": list(obs.verification_contract_blockers),
+        "verification_failed_checks": list(obs.verification_failed_checks),
+        "verification_surface": obs.verification_surface,
+        "verification_touched_paths": list(obs.touched_paths),
+        "verification_checked_at": obs.checked_at,
         "mode": "shadow",
     }
 
@@ -187,6 +249,63 @@ def extract_test_paths(commands: list[str]) -> list[str]:
         for match in _TEST_PATH_RE.findall(command):
             paths.add(match)
     return sorted(paths)
+
+
+def _checked_at(value: str | None) -> datetime:
+    if not value:
+        return datetime.now(UTC).replace(microsecond=0)
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
+        return datetime.now(UTC).replace(microsecond=0)
+
+
+def _string_tuple(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        text = value.strip()
+        return (text,) if text else ()
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    text = str(value).strip()
+    return (text,) if text else ()
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _raw_verification_surface_payload(frontmatter: dict) -> Any | None:
+    surface = frontmatter.get("verification_surface")
+    if "verification_surface" in frontmatter:
+        return surface
+    nested = frontmatter.get("route_metadata")
+    if isinstance(nested, dict) and "verification_surface" in nested:
+        return nested["verification_surface"]
+    return None
+
+
+def _verification_surface_payload(frontmatter: dict) -> Any | None:
+    raw_surface = _raw_verification_surface_payload(frontmatter)
+    if raw_surface is None:
+        return None
+    try:
+        return verification_surface_from_frontmatter(frontmatter).model_dump(
+            mode="json", exclude_defaults=True
+        )
+    except (ValidationError, ValueError):
+        return _json_safe(raw_surface)
 
 
 # --- impure gather (host probing) -------------------------------------------
@@ -285,11 +404,30 @@ def _frontmatter_and_text(note_path: Path) -> tuple[dict, str]:
 
 
 def _declared_tests(frontmatter: dict) -> list[str]:
-    surface = frontmatter.get("verification_surface")
-    if isinstance(surface, dict):
-        tests = surface.get("deterministic_tests")
-        if tests:
-            return [str(t) for t in tests]
+    declared: list[str] = []
+    try:
+        typed_surface = verification_surface_from_frontmatter(frontmatter)
+    except (ValidationError, ValueError):
+        typed_surface = None
+    if typed_surface is not None:
+        declared.extend(typed_surface.deterministic_tests)
+        for group_name in (
+            "focused_checks",
+            "touched_checks",
+            "adjacent_checks",
+            "required_ci_checks",
+            "full_safety_net_checks",
+        ):
+            for check in getattr(typed_surface, group_name):
+                blocking = (
+                    check.blocking
+                    if check.blocking is not None
+                    else group_name != "full_safety_net_checks"
+                )
+                if blocking and check.command and "pytest" in check.command:
+                    declared.append(check.command)
+    if declared:
+        return list(dict.fromkeys(declared))
     top = frontmatter.get("deterministic_tests")
     if top:
         return [str(t) for t in top]
@@ -304,14 +442,16 @@ def gather(note_path: Path, task_id: str) -> Observation:
 
     frontmatter, text = _frontmatter_and_text(note_path)
     kind = frontmatter.get("kind")
-    surface = frontmatter.get("mutation_surface")
+    mutation_surface = frontmatter.get("mutation_surface")
+    verification_surface = _verification_surface_payload(frontmatter)
+    verification_contract_blockers = verification_contract_structure_blockers(frontmatter)
     declared = _declared_tests(frontmatter)
     checkbox_complete = acceptance_criteria_state(text).complete
     authorizes = bool(frontmatter.get("authorizes_test_changes", False))
     oracle_off = os.environ.get("HAPAX_ACCEPTANCE_ORACLE_OFF") == "1"
     load_ok = _load_ok()
 
-    in_scope = kind in IN_SCOPE_KINDS and surface in IN_SCOPE_SURFACES
+    in_scope = kind in IN_SCOPE_KINDS and mutation_surface in IN_SCOPE_SURFACES
     clean_sha = (
         resolve_clean_sha(frontmatter) if (in_scope and load_ok and not oracle_off) else None
     )
@@ -326,7 +466,7 @@ def gather(note_path: Path, task_id: str) -> Observation:
     return Observation(
         task_id=task_id,
         kind=kind,
-        mutation_surface=surface,
+        mutation_surface=mutation_surface,
         deterministic_tests=tuple(declared),
         checkbox_complete=checkbox_complete,
         oracle_off=oracle_off,
@@ -336,6 +476,10 @@ def gather(note_path: Path, task_id: str) -> Observation:
         tampered_test_paths=tuple(tampered),
         test_failures=tuple(failures),
         n_tests_run=n_run,
+        verification_surface=verification_surface,
+        verification_contract_blockers=verification_contract_blockers,
+        touched_paths=_string_tuple(frontmatter.get("mutation_scope_refs")),
+        checked_at=now_iso(),
     )
 
 

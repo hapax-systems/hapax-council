@@ -56,6 +56,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import review_team  # noqa: E402
 
+from shared.route_metadata_schema import verification_contract_summary  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_path,
     requires_acceptance_receipt,
@@ -1275,6 +1276,7 @@ def review_pr(
             changed_file_count=pr_info.changed_file_count,
             repo_root=repo_root,
         )
+        dossier["verification_contract"] = verification_contract_summary(target_frontmatter)
         if dossier["review_team_verdict"] == "no-quorum":
             dead = [
                 str(r.get("id") or r.get("family"))

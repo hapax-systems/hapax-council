@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 from pydantic import ValidationError
 
@@ -14,6 +16,9 @@ from shared.route_metadata_schema import (
     build_demand_vector,
     check_demand_vector_freshness,
     validate_route_metadata,
+    verification_contract_structure_blockers,
+    verification_contract_summary,
+    verification_failure_blockers,
 )
 
 
@@ -258,6 +263,493 @@ def test_support_artifact_requires_independent_frontier_review() -> None:
     payload["authority_level"] = "authoritative"
     with pytest.raises(ValidationError, match="cannot be authoritative directly"):
         RouteMetadata.model_validate(payload)
+
+
+def test_verification_contract_accepts_auditable_safety_net_waiver() -> None:
+    metadata = validate_route_metadata(
+        {
+            **_explicit_metadata(),
+            "verification_surface": {
+                "focused_checks": [
+                    {
+                        "name": "focused adapter tests",
+                        "command": "uv run pytest tests/test_capability_adapter_protocol.py -q",
+                    }
+                ],
+                "required_ci_checks": [{"name": "all-green", "contexts": ["all-green"]}],
+                "full_safety_net_checks": [
+                    {
+                        "name": "pyright-safety-net",
+                        "command": "uv run pyright",
+                        "blocking": False,
+                    }
+                ],
+                "baseline_waivers": [
+                    {
+                        "waiver_id": "baseline-pyright-20260625",
+                        "check_name": "pyright-safety-net",
+                        "witness": "/tmp/pyright-baseline.yaml",
+                        "observed_at": "2026-06-25T18:19:00Z",
+                        "expires_at": "2026-07-02T18:19:00Z",
+                        "tracking_ref": "CASE-CAPACITY-ROUTING-001#pyright-baseline",
+                        "affected_scope": ["agents/coordination_tui/**"],
+                        "rationale": "Known pyright baseline outside the adapter mutation scope.",
+                    }
+                ],
+                "allocation": {
+                    "request_hardening": "targeted",
+                    "review_intensity": "standard",
+                    "verifier_intensity": "targeted",
+                    "opportunity_cost": "full-suite baseline remediation is separate work",
+                },
+            },
+        }
+    )
+
+    surface = metadata.verification_surface
+    assert surface.required_ci_checks[0].contexts == ["all-green"]
+    assert surface.full_safety_net_checks[0].blocking is False
+    assert surface.baseline_waivers[0].tracking_ref.endswith("pyright-baseline")
+    assert surface.allocation.request_hardening.value == "targeted"
+
+
+def test_baseline_waiver_missing_witness_fails_schema_validation() -> None:
+    assessment = assess_route_metadata(
+        {
+            **_explicit_metadata(),
+            "verification_surface": {
+                "full_safety_net_checks": [{"name": "pyright-safety-net"}],
+                "baseline_waivers": [
+                    {
+                        "waiver_id": "baseline-pyright-20260625",
+                        "check_name": "pyright-safety-net",
+                        "observed_at": "2026-06-25T18:19:00Z",
+                        "expires_at": "2026-07-02T18:19:00Z",
+                        "tracking_ref": "CASE-CAPACITY-ROUTING-001#pyright-baseline",
+                        "affected_scope": ["agents/coordination_tui/**"],
+                        "rationale": "Known baseline outside this mutation scope.",
+                    }
+                ],
+            },
+        }
+    )
+
+    assert assessment.status == RouteMetadataStatus.MALFORMED
+    assert any("baseline_waivers.0.witness" in error for error in assessment.validation_errors)
+
+
+def test_baseline_waiver_mapping_scope_fails_schema_validation() -> None:
+    assessment = assess_route_metadata(
+        {
+            **_explicit_metadata(),
+            "verification_surface": {
+                "full_safety_net_checks": [{"name": "pyright-safety-net"}],
+                "baseline_waivers": [
+                    {
+                        "waiver_id": "baseline-pyright-20260625",
+                        "check_name": "pyright-safety-net",
+                        "witness": "/tmp/pyright-baseline.yaml",
+                        "observed_at": "2026-06-25T18:19:00Z",
+                        "expires_at": "2026-07-02T18:19:00Z",
+                        "tracking_ref": "CASE-CAPACITY-ROUTING-001#pyright-baseline",
+                        "affected_scope": {"path": "tests/test_demo.py"},
+                        "rationale": "Known baseline outside this mutation scope.",
+                    }
+                ],
+            },
+        }
+    )
+
+    assert assessment.status == RouteMetadataStatus.MALFORMED
+    assert any("affected_scope" in error for error in assessment.validation_errors)
+
+
+def test_explicit_scalar_verification_surface_fails_closed() -> None:
+    blockers = verification_contract_structure_blockers({"verification_surface": "full pyright"})
+
+    assert blockers == ("verification_contract_malformed:verification_surface must be a mapping",)
+
+
+def test_nested_scalar_verification_surface_fails_closed() -> None:
+    blockers = verification_contract_structure_blockers(
+        {"route_metadata": {"verification_surface": ["full pyright"]}}
+    )
+
+    assert blockers == (
+        "verification_contract_malformed:route_metadata.verification_surface must be a mapping",
+    )
+
+
+def test_verification_failure_blockers_fail_closed_for_explicit_malformed_surface() -> None:
+    blockers = verification_failure_blockers(
+        {"verification_surface": ["full pyright"]},
+        failed_checks=("pyright-safety-net",),
+        touched_paths=("tests/test_capability_adapter_protocol.py",),
+        now=datetime.fromisoformat("2026-06-25T19:00:00+00:00"),
+    )
+
+    assert blockers == ("verification_contract_malformed:verification_surface must be a mapping",)
+
+
+def test_verification_failure_blockers_allow_current_out_of_scope_safety_net_waiver() -> None:
+    frontmatter = {
+        "verification_surface": {
+            "full_safety_net_checks": [{"name": "pyright-safety-net", "blocking": False}],
+            "baseline_waivers": [
+                {
+                    "waiver_id": "baseline-pyright-20260625",
+                    "check_name": "pyright-safety-net",
+                    "witness": "/tmp/pyright-baseline.yaml",
+                    "observed_at": "2026-06-25T18:19:00Z",
+                    "expires_at": "2026-07-02T18:19:00Z",
+                    "tracking_ref": "CASE-CAPACITY-ROUTING-001#pyright-baseline",
+                    "affected_scope": ["agents/coordination_tui/**"],
+                    "rationale": "Known baseline outside this mutation scope.",
+                }
+            ],
+        }
+    }
+
+    blockers = verification_failure_blockers(
+        frontmatter,
+        failed_checks=("pyright-safety-net",),
+        touched_paths=("tests/test_capability_adapter_protocol.py",),
+        now=datetime.fromisoformat("2026-06-25T19:00:00+00:00"),
+    )
+
+    assert blockers == ()
+
+
+def test_verification_failure_blockers_ignore_non_safety_net_blocking_false() -> None:
+    blockers = verification_failure_blockers(
+        {
+            "verification_surface": {
+                "required_ci_checks": [
+                    {"name": "all-green", "contexts": ["all-green"], "blocking": False}
+                ],
+            }
+        },
+        failed_checks=("all-green",),
+        touched_paths=("tests/test_capability_adapter_protocol.py",),
+        now=datetime.fromisoformat("2026-06-25T19:00:00+00:00"),
+    )
+
+    assert blockers == ("verification_failed_check:all-green",)
+
+
+def test_verification_failure_blockers_fail_closed_for_future_dated_waiver() -> None:
+    blockers = verification_failure_blockers(
+        {
+            "verification_surface": {
+                "full_safety_net_checks": [{"name": "pyright-safety-net", "blocking": False}],
+                "baseline_waivers": [
+                    {
+                        "waiver_id": "baseline-pyright-20260625",
+                        "check_name": "pyright-safety-net",
+                        "witness": "/tmp/pyright-baseline.yaml",
+                        "observed_at": "2026-06-26T18:19:00Z",
+                        "expires_at": "2026-07-02T18:19:00Z",
+                        "tracking_ref": "CASE-CAPACITY-ROUTING-001#pyright-baseline",
+                        "affected_scope": ["agents/coordination_tui/**"],
+                        "rationale": "Known baseline outside this mutation scope.",
+                    }
+                ],
+            }
+        },
+        failed_checks=("pyright-safety-net",),
+        touched_paths=("tests/test_capability_adapter_protocol.py",),
+        now=datetime.fromisoformat("2026-06-25T19:00:00+00:00"),
+    )
+
+    assert blockers == (
+        "verification_safety_net_unwaived:"
+        "pyright-safety-net:not_yet_observed:baseline-pyright-20260625",
+    )
+
+
+def test_verification_failure_blockers_fail_closed_for_opted_in_safety_net() -> None:
+    blockers = verification_failure_blockers(
+        {
+            "verification_surface": {
+                "full_safety_net_checks": [{"name": "pyright-safety-net", "blocking": True}],
+                "baseline_waivers": [
+                    {
+                        "waiver_id": "baseline-pyright-20260625",
+                        "check_name": "pyright-safety-net",
+                        "witness": "/tmp/pyright-baseline.yaml",
+                        "observed_at": "2026-06-25T18:19:00Z",
+                        "expires_at": "2026-07-02T18:19:00Z",
+                        "tracking_ref": "CASE-CAPACITY-ROUTING-001#pyright-baseline",
+                        "affected_scope": ["agents/coordination_tui/**"],
+                        "rationale": "Known baseline outside this mutation scope.",
+                    }
+                ],
+            }
+        },
+        failed_checks=("pyright-safety-net",),
+        touched_paths=("tests/test_capability_adapter_protocol.py",),
+        now=datetime.fromisoformat("2026-06-25T19:00:00+00:00"),
+    )
+
+    assert blockers == ("verification_safety_net_opted_in:pyright-safety-net",)
+
+
+def test_verification_failure_blockers_fail_closed_for_unknown_touched_scope() -> None:
+    blockers = verification_failure_blockers(
+        {
+            "verification_surface": {
+                "full_safety_net_checks": [{"name": "pyright-safety-net", "blocking": False}],
+                "baseline_waivers": [
+                    {
+                        "waiver_id": "baseline-pyright-20260625",
+                        "check_name": "pyright-safety-net",
+                        "witness": "/tmp/pyright-baseline.yaml",
+                        "observed_at": "2026-06-25T18:19:00Z",
+                        "expires_at": "2026-07-02T18:19:00Z",
+                        "tracking_ref": "CASE-CAPACITY-ROUTING-001#pyright-baseline",
+                        "affected_scope": ["agents/coordination_tui/**"],
+                        "rationale": "Known baseline outside this mutation scope.",
+                    }
+                ],
+            }
+        },
+        failed_checks=("pyright-safety-net",),
+        touched_paths=None,
+        now=datetime.fromisoformat("2026-06-25T19:00:00+00:00"),
+    )
+
+    assert blockers == ("verification_safety_net_scope_unknown:pyright-safety-net",)
+
+
+def test_verification_failure_blockers_fail_closed_for_implicated_safety_net_scope() -> None:
+    frontmatter = {
+        "verification_surface": {
+            "full_safety_net_checks": [{"name": "pyright-safety-net", "blocking": False}],
+            "baseline_waivers": [
+                {
+                    "waiver_id": "baseline-pyright-20260625",
+                    "check_name": "pyright-safety-net",
+                    "witness": "/tmp/pyright-baseline.yaml",
+                    "observed_at": "2026-06-25T18:19:00Z",
+                    "expires_at": "2026-07-02T18:19:00Z",
+                    "tracking_ref": "CASE-CAPACITY-ROUTING-001#pyright-baseline",
+                    "affected_scope": ["agents/coordination_tui/**"],
+                    "rationale": "Known baseline outside this mutation scope.",
+                }
+            ],
+        }
+    }
+
+    blockers = verification_failure_blockers(
+        frontmatter,
+        failed_checks=("pyright-safety-net",),
+        touched_paths=("agents/coordination_tui/app.py",),
+        now=datetime.fromisoformat("2026-06-25T19:00:00+00:00"),
+    )
+
+    assert blockers == (
+        "verification_safety_net_implicated:pyright-safety-net:baseline-pyright-20260625",
+    )
+
+
+def test_verification_failure_blockers_fail_closed_for_any_implicated_current_waiver() -> None:
+    blockers = verification_failure_blockers(
+        {
+            "verification_surface": {
+                "full_safety_net_checks": [{"name": "pyright-safety-net", "blocking": False}],
+                "baseline_waivers": [
+                    {
+                        "waiver_id": "baseline-pyright-out-of-scope",
+                        "check_name": "pyright-safety-net",
+                        "witness": "/tmp/pyright-baseline-out-of-scope.yaml",
+                        "observed_at": "2026-06-25T18:19:00Z",
+                        "expires_at": "2026-07-02T18:19:00Z",
+                        "tracking_ref": "CASE-CAPACITY-ROUTING-001#pyright-baseline-a",
+                        "affected_scope": ["agents/coordination_tui/**"],
+                        "rationale": "Known baseline outside this mutation scope.",
+                    },
+                    {
+                        "waiver_id": "baseline-pyright-touched-scope",
+                        "check_name": "pyright-safety-net",
+                        "witness": "/tmp/pyright-baseline-touched-scope.yaml",
+                        "observed_at": "2026-06-25T18:20:00Z",
+                        "expires_at": "2026-07-02T18:20:00Z",
+                        "tracking_ref": "CASE-CAPACITY-ROUTING-001#pyright-baseline-b",
+                        "affected_scope": ["tests/test_capability_adapter_protocol.py"],
+                        "rationale": "Known baseline that overlaps this mutation scope.",
+                    },
+                ],
+            }
+        },
+        failed_checks=("pyright-safety-net",),
+        touched_paths=("tests/test_capability_adapter_protocol.py",),
+        now=datetime.fromisoformat("2026-06-25T19:00:00+00:00"),
+    )
+
+    assert blockers == (
+        "verification_safety_net_implicated:pyright-safety-net:baseline-pyright-touched-scope",
+    )
+
+
+@pytest.mark.parametrize(
+    ("observed_at", "expires_at", "expected_state"),
+    (
+        (
+            "2026-06-25T18:20:00Z",
+            "2026-06-25T18:30:00Z",
+            "expired",
+        ),
+        (
+            "2026-06-25T20:20:00Z",
+            "2026-07-02T18:20:00Z",
+            "not_yet_observed",
+        ),
+    ),
+)
+def test_verification_failure_blockers_fail_closed_for_implicated_stale_waiver(
+    observed_at: str,
+    expires_at: str,
+    expected_state: str,
+) -> None:
+    blockers = verification_failure_blockers(
+        {
+            "verification_surface": {
+                "full_safety_net_checks": [{"name": "pyright-safety-net", "blocking": False}],
+                "baseline_waivers": [
+                    {
+                        "waiver_id": "baseline-pyright-current-out-of-scope",
+                        "check_name": "pyright-safety-net",
+                        "witness": "/tmp/pyright-baseline-current-out-of-scope.yaml",
+                        "observed_at": "2026-06-25T18:19:00Z",
+                        "expires_at": "2026-07-02T18:19:00Z",
+                        "tracking_ref": "CASE-CAPACITY-ROUTING-001#pyright-baseline-current",
+                        "affected_scope": ["agents/coordination_tui/**"],
+                        "rationale": "Known current baseline outside this mutation scope.",
+                    },
+                    {
+                        "waiver_id": "baseline-pyright-stale-touched-scope",
+                        "check_name": "pyright-safety-net",
+                        "witness": "/tmp/pyright-baseline-stale-touched-scope.yaml",
+                        "observed_at": observed_at,
+                        "expires_at": expires_at,
+                        "tracking_ref": "CASE-CAPACITY-ROUTING-001#pyright-baseline-stale",
+                        "affected_scope": ["tests/test_capability_adapter_protocol.py"],
+                        "rationale": "Stale evidence overlaps this mutation scope.",
+                    },
+                ],
+            }
+        },
+        failed_checks=("pyright-safety-net",),
+        touched_paths=("tests/test_capability_adapter_protocol.py",),
+        now=datetime.fromisoformat("2026-06-25T19:00:00+00:00"),
+    )
+
+    assert blockers == (
+        "verification_safety_net_unwaived:"
+        f"pyright-safety-net:{expected_state}:baseline-pyright-stale-touched-scope",
+    )
+
+
+@pytest.mark.parametrize(
+    "touched_path",
+    ("agents/config.yaml", "agents/foo/bar/config.yaml"),
+)
+def test_verification_failure_blockers_match_recursive_globstar_scope(
+    touched_path: str,
+) -> None:
+    blockers = verification_failure_blockers(
+        {
+            "verification_surface": {
+                "full_safety_net_checks": [{"name": "pyright-safety-net", "blocking": False}],
+                "baseline_waivers": [
+                    {
+                        "waiver_id": "baseline-pyright-recursive-scope",
+                        "check_name": "pyright-safety-net",
+                        "witness": "/tmp/pyright-baseline-recursive-scope.yaml",
+                        "observed_at": "2026-06-25T18:20:00Z",
+                        "expires_at": "2026-07-02T18:20:00Z",
+                        "tracking_ref": ("CASE-CAPACITY-ROUTING-001#pyright-baseline-recursive"),
+                        "affected_scope": ["agents/**/config.yaml"],
+                        "rationale": "Known baseline that overlaps recursive config paths.",
+                    }
+                ],
+            }
+        },
+        failed_checks=("pyright-safety-net",),
+        touched_paths=(touched_path,),
+        now=datetime.fromisoformat("2026-06-25T19:00:00+00:00"),
+    )
+
+    assert blockers == (
+        "verification_safety_net_implicated:pyright-safety-net:baseline-pyright-recursive-scope",
+    )
+
+
+def test_verification_failure_blockers_ignore_nonmatching_recursive_globstar_scope() -> None:
+    blockers = verification_failure_blockers(
+        {
+            "verification_surface": {
+                "full_safety_net_checks": [{"name": "pyright-safety-net", "blocking": False}],
+                "baseline_waivers": [
+                    {
+                        "waiver_id": "baseline-pyright-recursive-scope",
+                        "check_name": "pyright-safety-net",
+                        "witness": "/tmp/pyright-baseline-recursive-scope.yaml",
+                        "observed_at": "2026-06-25T18:20:00Z",
+                        "expires_at": "2026-07-02T18:20:00Z",
+                        "tracking_ref": ("CASE-CAPACITY-ROUTING-001#pyright-baseline-recursive"),
+                        "affected_scope": ["agents/**/config.yaml"],
+                        "rationale": "Known baseline that overlaps recursive config paths.",
+                    }
+                ],
+            }
+        },
+        failed_checks=("pyright-safety-net",),
+        touched_paths=("tests/foo.py",),
+        now=datetime.fromisoformat("2026-06-25T19:00:00+00:00"),
+    )
+
+    assert blockers == ()
+
+
+def test_verification_contract_summary_preserves_waiver_and_check_audit_fields() -> None:
+    summary = verification_contract_summary(
+        {
+            "verification_surface": {
+                "required_ci_checks": [{"name": "all-green", "contexts": ["all-green"]}],
+                "full_safety_net_checks": [
+                    {
+                        "name": "pyright-safety-net",
+                        "command": "uv run pyright",
+                        "blocking": False,
+                        "touched_path_patterns": ["agents/coordination_tui/**"],
+                    }
+                ],
+                "baseline_waivers": [
+                    {
+                        "waiver_id": "baseline-pyright-20260625",
+                        "check_name": "pyright-safety-net",
+                        "witness": "/tmp/pyright-baseline.yaml",
+                        "observed_at": "2026-06-25T18:19:00Z",
+                        "expires_at": "2026-07-02T18:19:00Z",
+                        "tracking_ref": "CASE-CAPACITY-ROUTING-001#pyright-baseline",
+                        "affected_scope": ["agents/coordination_tui/**"],
+                        "rationale": "Known pyright baseline outside this task.",
+                    }
+                ],
+            }
+        }
+    )
+
+    assert summary["baseline_waivers"][0]["observed_at"] == "2026-06-25T18:19:00Z"
+    assert summary["baseline_waivers"][0]["rationale"] == (
+        "Known pyright baseline outside this task."
+    )
+    safety_net = summary["check_details"]["full_safety_net_checks"][0]
+    assert safety_net["command"] == "uv run pyright"
+    assert safety_net["effective_blocking"] is False
+    assert safety_net["touched_path_patterns"] == ["agents/coordination_tui/**"]
+    assert summary["check_details"]["required_ci_checks"][0]["effective_blocking"] is True
 
 
 def test_demand_vector_hashes_frontmatter_and_source_refs(tmp_path) -> None:

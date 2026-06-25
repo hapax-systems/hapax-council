@@ -376,6 +376,49 @@ def _pr(
     }
 
 
+def _safety_net_verification_surface(
+    *,
+    waiver: bool = True,
+    expires_at: str = "2026-07-02T18:19:00Z",
+) -> dict[str, Any]:
+    surface: dict[str, Any] = {
+        "focused_checks": [
+            {
+                "name": "focused capability adapter tests",
+                "command": "uv run pytest tests/test_capability_adapter_protocol.py -q",
+            }
+        ],
+        "required_ci_checks": [
+            {"name": "lint", "contexts": ["lint"]},
+            {"name": "test", "contexts": ["test"]},
+            {"name": "typecheck", "contexts": ["typecheck"]},
+            {"name": "web-build", "contexts": ["web-build"]},
+            {"name": "vscode-build", "contexts": ["vscode-build"]},
+        ],
+        "full_safety_net_checks": [
+            {
+                "name": "pyright-safety-net",
+                "command": "uv run pyright",
+                "blocking": False,
+            }
+        ],
+    }
+    if waiver:
+        surface["baseline_waivers"] = [
+            {
+                "waiver_id": "baseline-pyright-20260625",
+                "check_name": "pyright-safety-net",
+                "witness": "/tmp/pyright-baseline.yaml",
+                "observed_at": "2026-06-25T18:19:00Z",
+                "expires_at": expires_at,
+                "tracking_ref": "CASE-CAPACITY-ROUTING-001#pyright-baseline",
+                "affected_scope": ["agents/coordination_tui/**"],
+                "rationale": "Known pyright baseline outside this capability-adapter slice.",
+            }
+        ]
+    return surface
+
+
 class _FakeRunner:
     def __init__(self) -> None:
         self.open_prs: list[dict[str, Any]] = []
@@ -588,6 +631,235 @@ def test_blocks_failed_dirty_draft_and_hold_prs(tmp_path: Path) -> None:
     assert "merge_state:DIRTY" in reasons[2]
     assert "draft" in reasons[3]
     assert "hold_labels:do-not-merge" in reasons[4]
+
+
+def test_waived_safety_net_failure_outside_touched_scope_does_not_block(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="capability-adapter",
+        pr=4320,
+        extra_frontmatter={"verification_surface": _safety_net_verification_surface()},
+    )
+    pr = autoqueue._parse_pr(
+        _pr(
+            4320,
+            files=["tests/test_capability_adapter_protocol.py"],
+            checks=[
+                _check("lint"),
+                _check("test"),
+                _check("typecheck"),
+                _check("web-build"),
+                _check("vscode-build"),
+                _check("pyright-safety-net", "FAILURE"),
+            ],
+        )
+    )
+    assert pr is not None
+
+    decision = autoqueue.classify_pr(
+        pr,
+        tasks=autoqueue.load_task_notes(vault),
+        queued_prs=set(),
+        now=datetime.fromisoformat("2026-06-25T19:00:00+00:00"),
+    )
+
+    assert decision.action == "queue", decision.reasons
+
+
+def test_task_required_ci_checks_are_additive_to_canonical_floor(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="capability-adapter",
+        pr=4323,
+        extra_frontmatter={
+            "verification_surface": {
+                "required_ci_checks": [{"name": "lint", "contexts": ["lint"]}],
+            }
+        },
+    )
+    pr = autoqueue._parse_pr(
+        _pr(
+            4323,
+            files=["tests/test_capability_adapter_protocol.py"],
+            checks=[_check("lint")],
+        )
+    )
+    assert pr is not None
+
+    decision = autoqueue.classify_pr(
+        pr,
+        tasks=autoqueue.load_task_notes(vault),
+        queued_prs=set(),
+        now=datetime.fromisoformat("2026-06-25T19:00:00+00:00"),
+    )
+
+    assert decision.action == "blocked"
+    assert "missing_required_checks:test,typecheck,web-build,vscode-build" in decision.reasons
+
+
+def test_pending_task_required_ci_check_blocks_pending_autoqueue(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="capability-adapter",
+        pr=4325,
+        extra_frontmatter={
+            "verification_surface": {
+                "required_ci_checks": [
+                    {"name": "custom-required", "contexts": ["custom-required"]}
+                ],
+            }
+        },
+    )
+    pr = autoqueue._parse_pr(
+        _pr(
+            4325,
+            checks=[
+                _check("lint"),
+                _check("test"),
+                _check("typecheck"),
+                _check("web-build"),
+                _check("vscode-build"),
+                {"name": "custom-required", "status": "IN_PROGRESS"},
+            ],
+        )
+    )
+    assert pr is not None
+
+    decision = autoqueue.classify_pr(
+        pr,
+        tasks=autoqueue.load_task_notes(vault),
+        queued_prs=set(),
+        now=datetime.fromisoformat("2026-06-25T19:00:00+00:00"),
+    )
+
+    assert decision.action == "blocked"
+    assert "missing_required_checks:custom-required" in decision.reasons
+
+
+def test_failed_required_ci_is_not_waived_as_safety_net(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    surface = _safety_net_verification_surface()
+    surface["full_safety_net_checks"] = [
+        {"name": "typecheck", "contexts": ["typecheck"], "blocking": False}
+    ]
+    surface["baseline_waivers"] = [
+        {
+            "waiver_id": "baseline-typecheck-20260625",
+            "check_name": "typecheck",
+            "witness": "/tmp/typecheck-baseline.yaml",
+            "observed_at": "2026-06-25T18:19:00Z",
+            "expires_at": "2026-07-02T18:19:00Z",
+            "tracking_ref": "CASE-CAPACITY-ROUTING-001#typecheck-baseline",
+            "affected_scope": ["agents/coordination_tui/**"],
+            "rationale": "Known baseline outside this capability-adapter slice.",
+        }
+    ]
+    _write_task(
+        vault,
+        task_id="capability-adapter",
+        pr=4324,
+        extra_frontmatter={"verification_surface": surface},
+    )
+    pr = autoqueue._parse_pr(
+        _pr(
+            4324,
+            files=["tests/test_capability_adapter_protocol.py"],
+            checks=[
+                _check("lint"),
+                _check("test"),
+                _check("typecheck", "FAILURE"),
+                _check("web-build"),
+                _check("vscode-build"),
+            ],
+        )
+    )
+    assert pr is not None
+
+    decision = autoqueue.classify_pr(
+        pr,
+        tasks=autoqueue.load_task_notes(vault),
+        queued_prs=set(),
+        now=datetime.fromisoformat("2026-06-25T19:00:00+00:00"),
+    )
+
+    assert decision.action == "blocked"
+    assert "failed_checks:typecheck" in decision.reasons
+
+
+def test_safety_net_failure_touching_waived_scope_blocks(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="capability-adapter",
+        pr=4321,
+        extra_frontmatter={"verification_surface": _safety_net_verification_surface()},
+    )
+    pr = autoqueue._parse_pr(
+        _pr(
+            4321,
+            files=["agents/coordination_tui/app.py"],
+            checks=[
+                _check("lint"),
+                _check("test"),
+                _check("typecheck"),
+                _check("web-build"),
+                _check("vscode-build"),
+                _check("pyright-safety-net", "FAILURE"),
+            ],
+        )
+    )
+    assert pr is not None
+
+    decision = autoqueue.classify_pr(
+        pr,
+        tasks=autoqueue.load_task_notes(vault),
+        queued_prs=set(),
+        now=datetime.fromisoformat("2026-06-25T19:00:00+00:00"),
+    )
+
+    assert decision.action == "blocked"
+    assert (
+        "verification_safety_net_implicated:pyright-safety-net:baseline-pyright-20260625"
+        in decision.reasons
+    )
+
+
+def test_safety_net_failure_without_waiver_blocks(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="capability-adapter",
+        pr=4322,
+        extra_frontmatter={"verification_surface": _safety_net_verification_surface(waiver=False)},
+    )
+    pr = autoqueue._parse_pr(
+        _pr(
+            4322,
+            files=["tests/test_capability_adapter_protocol.py"],
+            checks=[
+                _check("lint"),
+                _check("test"),
+                _check("typecheck"),
+                _check("web-build"),
+                _check("vscode-build"),
+                _check("pyright-safety-net", "FAILURE"),
+            ],
+        )
+    )
+    assert pr is not None
+
+    decision = autoqueue.classify_pr(
+        pr,
+        tasks=autoqueue.load_task_notes(vault),
+        queued_prs=set(),
+        now=datetime.fromisoformat("2026-06-25T19:00:00+00:00"),
+    )
+
+    assert decision.action == "blocked"
+    assert "verification_safety_net_unwaived:pyright-safety-net:missing" in decision.reasons
 
 
 def test_ignores_prior_autoqueue_admission_checks_when_classifying_checks(

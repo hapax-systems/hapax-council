@@ -61,6 +61,11 @@ from shared.merge_queue_lineage import (  # noqa: E402
     write_quarantine,
 )
 from shared.release_gate import evaluate_avsdlc_release_gate  # noqa: E402
+from shared.route_metadata_schema import (  # noqa: E402
+    required_ci_check_contexts,
+    verification_contract_structure_blockers,
+    verification_failure_blockers,
+)
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_MERGE_READY_STATUSES,
     acceptance_receipt_blockers,
@@ -875,6 +880,7 @@ def _task_blockers(
         blockers.append("task_missing_parent_spec")
     if require_route_metadata and task.route_metadata_schema != 1:
         blockers.append("task_missing_route_metadata_schema_1")
+    blockers.extend(verification_contract_structure_blockers(task.frontmatter))
 
     # Routing Phase 0.2: review-floor (frontier_review_required) tasks admit
     # only with a signed acceptance receipt beside the note. Applies to active
@@ -1047,6 +1053,51 @@ def shared_file_epic_affinity_blockers(
     return blockers
 
 
+def _required_checks_for_matches(
+    matched_tasks: tuple[TaskNote, ...], default_required_checks: tuple[str, ...]
+) -> tuple[str, ...]:
+    if not matched_tasks:
+        return default_required_checks
+    required: list[str] = list(default_required_checks)
+    for task in matched_tasks:
+        required.extend(required_ci_check_contexts(task.frontmatter, default=()))
+    return tuple(dict.fromkeys(required)) or default_required_checks
+
+
+def _task_required_checks_for_matches(matched_tasks: tuple[TaskNote, ...]) -> tuple[str, ...]:
+    required: list[str] = []
+    for task in matched_tasks:
+        required.extend(required_ci_check_contexts(task.frontmatter, default=()))
+    return tuple(dict.fromkeys(required))
+
+
+def _verification_failure_reasons(
+    task: TaskNote,
+    failed_checks: tuple[str, ...],
+    *,
+    touched_paths: tuple[str, ...] | None,
+    now: datetime,
+) -> tuple[str, ...]:
+    blockers = verification_failure_blockers(
+        task.frontmatter,
+        failed_checks=failed_checks,
+        touched_paths=touched_paths,
+        now=now,
+    )
+    ordinary_failed: list[str] = []
+    special: list[str] = []
+    for blocker in blockers:
+        if blocker.startswith("verification_failed_check:"):
+            ordinary_failed.append(blocker.split(":", 1)[1])
+        else:
+            special.append(blocker)
+    out: list[str] = []
+    if ordinary_failed:
+        out.append("failed_checks:" + ",".join(ordinary_failed))
+    out.extend(special)
+    return tuple(out)
+
+
 def classify_pr(
     pr: PullRequest,
     *,
@@ -1058,7 +1109,9 @@ def classify_pr(
     active_ci_repair_task_ids: tuple[str, ...] = (),
     storm_admission_active: bool = False,
     storm_reasons: tuple[str, ...] = (),
+    now: datetime | None = None,
 ) -> Decision:
+    now = now or datetime.now(UTC)
     reasons: list[str] = []
     if pr.is_draft:
         reasons.append("draft")
@@ -1080,17 +1133,46 @@ def classify_pr(
         reasons.append("unchecked_pr_checklist:" + " | ".join(unchecked))
     if not pr.check_summary.passed and not pr.check_summary.pending and not pr.check_summary.failed:
         reasons.append("no_status_checks")
-    missing_required = [
-        check for check in required_checks if check not in pr.check_summary.observed
-    ]
-    if missing_required:
-        reasons.append("missing_required_checks:" + ",".join(missing_required))
-    if pr.check_summary.failed:
-        reasons.append("failed_checks:" + ",".join(pr.check_summary.failed))
 
     matches = _matching_tasks(pr, tasks)
     matched_tasks = tuple(matches)
     task: TaskNote | None = matches[0] if len(matches) == 1 else None
+    effective_required_checks = _required_checks_for_matches(matched_tasks, required_checks)
+    task_required_checks = _task_required_checks_for_matches(matched_tasks)
+    pending_checks = set(pr.check_summary.pending)
+    missing_required = [
+        check for check in effective_required_checks if check not in pr.check_summary.observed
+    ]
+    missing_required.extend(check for check in task_required_checks if check in pending_checks)
+    missing_required = list(dict.fromkeys(missing_required))
+    if missing_required:
+        reasons.append("missing_required_checks:" + ",".join(missing_required))
+    failed_checks = tuple(pr.check_summary.failed)
+    if failed_checks:
+        failed_required = tuple(
+            check for check in failed_checks if check in effective_required_checks
+        )
+        if failed_required:
+            reasons.append("failed_checks:" + ",".join(failed_required))
+        remaining_failed_checks = tuple(
+            check for check in failed_checks if check not in effective_required_checks
+        )
+        if matched_tasks and remaining_failed_checks:
+            for matched_task in matched_tasks:
+                check_reasons = _verification_failure_reasons(
+                    matched_task,
+                    remaining_failed_checks,
+                    touched_paths=pr.files,
+                    now=now,
+                )
+                if len(matched_tasks) == 1:
+                    reasons.extend(check_reasons)
+                else:
+                    reasons.extend(
+                        f"task_blocker:{matched_task.task_id}:{reason}" for reason in check_reasons
+                    )
+        elif not matched_tasks:
+            reasons.append("failed_checks:" + ",".join(failed_checks))
     if not matches:
         if TASK_NOTE_PARSE_FAILURES:
             broken = ",".join(name for name, _ in TASK_NOTE_PARSE_FAILURES[:4])
