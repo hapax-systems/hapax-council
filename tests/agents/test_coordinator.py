@@ -723,6 +723,8 @@ retired_reason: clean exit
         assert lanes["alpha"].platform == "claude"
         assert lanes["cx-red"].alive is True
         assert lanes["cx-red"].platform == "codex"
+        assert "dev" not in lanes
+        assert "dev2" not in lanes
         assert _lane_from_tmux_session("hapax-claude-dev") is None
         assert _lane_from_tmux_session("hapax-claude-dev2") is None
 

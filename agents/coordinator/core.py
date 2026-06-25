@@ -105,7 +105,7 @@ SESSION_PREFIXES = (
     ("hapax-codex-", "codex"),
     ("hapax-gemini-", "gemini"),
 )
-CLAUDE_OPERATOR_POOL_RE = re.compile(r"^dev[0-9]*$")
+CLAUDE_OPERATOR_POOL_RE = re.compile(r"dev[0-9]*")
 DISPATCH_COOLDOWN_S = 120.0
 DISPATCH_TIMEOUT_S = _positive_env_float("HAPAX_COORDINATOR_DISPATCH_TIMEOUT_S", 30.0)
 DISPATCH_TIMEOUT_LANDING_GRACE_S = _positive_env_float(
