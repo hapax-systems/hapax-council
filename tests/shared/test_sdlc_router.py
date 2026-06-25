@@ -11,6 +11,7 @@ from shared.platform_capability_registry import (
     build_supply_vector,
     load_platform_capability_registry,
 )
+from shared.route_metadata_schema import LearningEligibility
 from shared.sdlc_router import (
     DEFAULT_FRONTIER_INCUMBENT_ROUTE_ID,
     ClassActivationEvidence,
@@ -83,6 +84,23 @@ def _candidate(route_id: str, *, score: int, **overrides: object) -> SdlcRouteCa
     }
     payload.update(overrides)
     return SdlcRouteCandidate.model_validate(payload)
+
+
+def _learning_eligibility(**overrides: object) -> LearningEligibility:
+    payload: dict[str, object] = {
+        "thompson_update_allowed": True,
+        "local_posterior_update_allowed": True,
+        "evidence_kind": "witnessed",
+        "evidence_freshness": "fresh",
+        "confidence": 0.9,
+        "envelope_valid": True,
+        "support_only": False,
+        "hkp_only": False,
+        "public_projection_forbidden": False,
+        "evidence_refs": ["witness:route-success"],
+    }
+    payload.update(overrides)
+    return LearningEligibility.model_validate(payload)
 
 
 def test_inactive_class_stays_frontier_and_only_shadows_best_candidate() -> None:
@@ -258,16 +276,22 @@ def test_gate_pass_reward_updates_posteriors_and_selection_does_not() -> None:
     accept = GateEvent(
         route="local_tool.local.worker",
         routing_class="source_python",
+        requirement_vector=_requirement_vector(),
+        task_hash="sha256:task-router-test",
         gate_result="accept",
         gate_type="deterministic",
         ts="2026-06-25T00:00:00+00:00",
+        learning_eligibility=_learning_eligibility(),
     )
     reject = GateEvent(
         route="local_tool.local.worker",
         routing_class="source_python",
+        requirement_vector=_requirement_vector(),
+        task_hash="sha256:task-router-test",
         gate_result="reject",
         gate_type="deterministic",
         ts="2026-06-25T00:01:00+00:00",
+        learning_eligibility=_learning_eligibility(),
     )
 
     assert router.record_gate_event(accept) is True
@@ -281,6 +305,61 @@ def test_gate_pass_reward_updates_posteriors_and_selection_does_not() -> None:
     posterior = router.state.posterior_for_read("source_python", "local_tool.local.worker")
     assert posterior.use_count == 2
     assert posterior.ts_beta > 1.0
+
+
+def test_bare_gate_events_do_not_train_posteriors() -> None:
+    router = SdlcRouter()
+    bare_accept = GateEvent(
+        route="local_tool.local.worker",
+        routing_class="source_python",
+        gate_result="accept",
+        gate_type="deterministic",
+        ts="2026-06-25T00:00:00+00:00",
+    )
+
+    assert router.record_gate_event(bare_accept) is False
+    assert router.state.route_posteriors == {}
+
+
+def test_gate_events_need_complete_learning_receipt_to_train_posteriors() -> None:
+    router = SdlcRouter()
+    missing_task_hash = GateEvent(
+        route="local_tool.local.worker",
+        routing_class="source_python",
+        requirement_vector=_requirement_vector(),
+        gate_result="accept",
+        gate_type="deterministic",
+        ts="2026-06-25T00:00:00+00:00",
+        learning_eligibility=_learning_eligibility(),
+    )
+    incomplete_requirement_vector = GateEvent(
+        route="local_tool.local.worker",
+        routing_class="source_python",
+        requirement_vector={"quality_floor": 4},
+        task_hash="sha256:task-router-test",
+        gate_result="accept",
+        gate_type="deterministic",
+        ts="2026-06-25T00:01:00+00:00",
+        learning_eligibility=_learning_eligibility(),
+    )
+    learning_not_allowed = GateEvent(
+        route="local_tool.local.worker",
+        routing_class="source_python",
+        requirement_vector=_requirement_vector(),
+        task_hash="sha256:task-router-test",
+        gate_result="accept",
+        gate_type="deterministic",
+        ts="2026-06-25T00:02:00+00:00",
+        learning_eligibility=_learning_eligibility(
+            thompson_update_allowed=False,
+            local_posterior_update_allowed=False,
+        ),
+    )
+
+    assert router.record_gate_event(missing_task_hash) is False
+    assert router.record_gate_event(incomplete_requirement_vector) is False
+    assert router.record_gate_event(learning_not_allowed) is False
+    assert router.state.route_posteriors == {}
 
 
 def test_non_checker_gate_events_do_not_train_posteriors() -> None:
@@ -321,9 +400,12 @@ def test_router_state_round_trips_to_own_state_file(tmp_path: Path) -> None:
         GateEvent(
             route="codex.headless.full",
             routing_class="source_python",
+            requirement_vector=_requirement_vector(),
+            task_hash="sha256:task-router-test",
             gate_result="accept",
             gate_type="frontier_review",
             ts="2026-06-25T00:00:00+00:00",
+            learning_eligibility=_learning_eligibility(),
         )
     )
 

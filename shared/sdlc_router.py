@@ -385,6 +385,7 @@ class SdlcRouter:
         if (
             event.gate_type not in LEARNING_GATE_TYPES
             or event.gate_result not in LEARNING_GATE_RESULTS
+            or not gate_event_learning_allowed(event)
         ):
             return False
         event_hash = gate_event_hash(event)
@@ -439,6 +440,28 @@ def gate_event_hash(event: GateEvent) -> str:
     payload = event.model_dump(mode="json")
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def gate_event_learning_allowed(event: GateEvent) -> bool:
+    eligibility = event.learning_eligibility
+    if eligibility is None:
+        return False
+    if not (eligibility.thompson_update_allowed and eligibility.local_posterior_update_allowed):
+        return False
+    if not event.task_hash.strip():
+        return False
+    return _gate_event_requirement_vector_is_complete(event.requirement_vector)
+
+
+def _gate_event_requirement_vector_is_complete(
+    requirement_vector: Mapping[str, object],
+) -> bool:
+    if set(requirement_vector) != set(REQUIREMENT_VECTOR_DIMENSIONS):
+        return False
+    return all(
+        not isinstance(score, bool) and isinstance(score, int) and 0 <= score <= 5
+        for score in requirement_vector.values()
+    )
 
 
 def requirement_floor_veto(

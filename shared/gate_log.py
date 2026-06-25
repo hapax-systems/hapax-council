@@ -21,6 +21,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from shared.route_metadata_schema import LearningEligibility
+
 # Persistent (NOT tmpfs): gate history must survive a reboot to be a measurement
 # substrate. ``~/.cache/hapax`` is on the NVMe; ``/tmp`` / ``/dev/shm`` are tmpfs
 # on this host and would be lost (the tmpfs-swap-trap). Overridable for tests.
@@ -49,6 +51,7 @@ class GateEvent(BaseModel):
     p_correct: float | None = None  # judge confidence when gate_type implies one
     latency_ms: float | None = None
     cost_usd: float | None = None
+    learning_eligibility: LearningEligibility | None = None
 
 
 def append_gate_event(event: GateEvent, *, path: Path | str | None = None) -> Path:
