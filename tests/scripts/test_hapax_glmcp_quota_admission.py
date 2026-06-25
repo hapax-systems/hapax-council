@@ -137,6 +137,23 @@ def test_observe_success_rejects_unsafe_evidence_refs(
     assert not receipt_dir.exists()
 
 
+def test_observe_error_rejects_secret_shaped_numeric_provider_code(tmp_path: Path) -> None:
+    numeric_secret = "12345678901234567890123456789012"
+
+    result, receipt_dir = _run(
+        tmp_path,
+        "observe-error",
+        "--provider-code",
+        numeric_secret,
+    )
+
+    assert result.returncode == 2
+    assert "provider code must be a four-digit Z.ai diagnostic code" in result.stderr
+    assert "next action:" in result.stderr
+    assert numeric_secret not in result.stderr
+    assert not receipt_dir.exists()
+
+
 def test_observe_error_1308_writes_quota_wall_until_reset_plus_jitter(tmp_path: Path) -> None:
     result, receipt_dir = _run(
         tmp_path,
@@ -210,12 +227,11 @@ def test_observe_error_backoff_codes_write_quota_wall_without_payg_fallback(
     [
         ("1113", "account_balance_or_arrears", "hold_no_payg_fallback", "fair_use_restricted"),
         ("1211", "model_not_found", "check_model_configuration", "route_unavailable"),
-        ("1261", "prompt_too_long", "reduce_prompt_size", "invalid_output"),
         ("1311", "plan_model_unavailable", "switch_model_or_upgrade_plan", "route_unavailable"),
         ("1313", "fair_use_restricted", "hold_until_manual_clear", "fair_use_restricted"),
     ],
 )
-def test_observe_error_manual_and_input_failures_write_hold_not_positive_admission(
+def test_observe_error_manual_failures_write_blocking_wall_not_positive_admission(
     tmp_path: Path,
     provider_code: str,
     failure_class: str,
@@ -225,15 +241,32 @@ def test_observe_error_manual_and_input_failures_write_hold_not_positive_admissi
     result, receipt_dir = _run(tmp_path, "observe-error", "--provider-code", provider_code)
 
     assert result.returncode == 0, result.stderr
-    fields = _read_flat_fields(receipt_dir / "glmcp-quota-admission-hold.yaml")
-    assert fields["status"] == "hold"
+    fields = _read_flat_fields(receipt_dir / "cx-glmcp-quota-wall.yaml")
+    assert fields["status"] == "quota_blocked"
     assert fields["provider_code"] == provider_code
     assert fields["failure_class"] == failure_class
     assert fields["action"] == action
     assert fields["failure_code"] == failure_code
     assert fields["positive_admission"] == "false"
     assert fields["payg_fallback"] == "false"
+    assert fields["signal_kind"] == "glmcp_quota_admission_error"
+    assert not any(path.name.startswith("glmcp-quota-admission") for path in receipt_dir.iterdir())
+
+
+def test_observe_error_prompt_length_writes_non_admission_hold(tmp_path: Path) -> None:
+    result, receipt_dir = _run(tmp_path, "observe-error", "--provider-code", "1261")
+
+    assert result.returncode == 0, result.stderr
+    fields = _read_flat_fields(receipt_dir / "glmcp-quota-hold.yaml")
+    assert fields["status"] == "hold"
+    assert fields["provider_code"] == "1261"
+    assert fields["failure_class"] == "prompt_too_long"
+    assert fields["action"] == "reduce_prompt_size"
+    assert fields["failure_code"] == "invalid_output"
+    assert fields["positive_admission"] == "false"
+    assert fields["payg_fallback"] == "false"
     assert "signal_kind" not in fields
+    assert not any(path.name.startswith("glmcp-quota-admission") for path in receipt_dir.iterdir())
 
 
 @pytest.mark.parametrize(
@@ -254,8 +287,8 @@ def test_observe_error_transport_and_auth_failures_never_create_positive_admissi
     )
 
     assert result.returncode == 0, result.stderr
-    fields = _read_flat_fields(receipt_dir / "glmcp-quota-admission-hold.yaml")
-    assert fields["status"] == "hold"
+    fields = _read_flat_fields(receipt_dir / "cx-glmcp-quota-wall.yaml")
+    assert fields["status"] == "quota_blocked"
     assert fields["failure_class"] == failure_class
     assert fields["positive_admission"] == "false"
     assert fields["secret_value_persisted"] == "false"

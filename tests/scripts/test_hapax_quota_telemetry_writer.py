@@ -690,6 +690,12 @@ stale_after_seconds: 900
         ("model", "model missing or unsupported"),
         ("observed_at", "missing or malformed observed_at"),
         ("stale_after_seconds", "malformed stale_after_seconds"),
+        ("schema", "schema missing or unsupported"),
+        ("secret_source", "secret_source missing or unsupported"),
+        ("secret_value_persisted", "secret_value_persisted must be false"),
+        ("prompt_or_output_persisted", "prompt_or_output_persisted must be false"),
+        ("billing_mode", "billing_mode missing or unsupported"),
+        ("payg_fallback", "payg_fallback must be false"),
     ],
 )
 def test_glmcp_admission_rejection_warnings_do_not_echo_untrusted_values(

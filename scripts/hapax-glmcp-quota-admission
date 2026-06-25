@@ -51,6 +51,10 @@ MAX_STALE_AFTER_SECONDS = 3600
 DEFAULT_BACKOFF_SECONDS = 900
 DEFAULT_RESET_JITTER_SECONDS = 60
 DEFAULT_ROLE = "cx-glmcp"
+ERROR_HINT = (
+    "next action: rerun with sanitized local observation metadata only; do not include "
+    "secret values, prompt text, response text, or account identifiers"
+)
 
 SAFE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
 SAFE_VALUE_RE = re.compile(r"\A[a-z0-9_.+:/\[\]-]+\Z")
@@ -73,6 +77,15 @@ MANUAL_HOLD_ERROR_CLASSES = frozenset(
     }
 )
 PROMPT_INPUT_ERROR_CLASSES = frozenset({"prompt_too_long", "input_failure"})
+TRANSPORT_OR_AUTH_HOLD_ERROR_CLASSES = frozenset(
+    {
+        "auth_failed",
+        "network_error",
+        "redirect_error",
+        "server_error",
+        "tls_error",
+    }
+)
 BACKOFF_ERROR_CLASSES = frozenset(
     {
         "provider_high_traffic",
@@ -167,8 +180,8 @@ def _bool(value: bool) -> str:
 def _classify_error(args: argparse.Namespace) -> ErrorObservation:
     provider_code = args.provider_code.strip() if args.provider_code else None
     if provider_code is not None:
-        if provider_code and not provider_code.isdigit():
-            raise ValueError("provider code must contain only digits")
+        if provider_code and (not provider_code.isdigit() or len(provider_code) != 4):
+            raise ValueError("provider code must be a four-digit Z.ai diagnostic code")
         if provider_code in ZAI_ERROR_CLASS_BY_CODE:
             error_class, action = ZAI_ERROR_CLASS_BY_CODE[provider_code]
         else:
@@ -188,9 +201,13 @@ def _classify_error(args: argparse.Namespace) -> ErrorObservation:
         "tls_error",
     }:
         failure_code = FailureCode.PROVIDER_OUTAGE
-    if error_class in PROMPT_INPUT_ERROR_CLASSES or error_class in MANUAL_HOLD_ERROR_CLASSES:
+    if error_class in PROMPT_INPUT_ERROR_CLASSES:
         receipt_kind = "hold"
-    elif error_class in QUOTA_WALL_ERROR_CLASSES:
+    elif (
+        error_class in QUOTA_WALL_ERROR_CLASSES
+        or error_class in MANUAL_HOLD_ERROR_CLASSES
+        or error_class in TRANSPORT_OR_AUTH_HOLD_ERROR_CLASSES
+    ):
         receipt_kind = "quota_wall"
     else:
         receipt_kind = "hold"
@@ -331,14 +348,12 @@ def observe_error(args: argparse.Namespace) -> int:
     default_name = (
         f"{role}-quota-wall.yaml"
         if observation.receipt_kind == "quota_wall"
-        else "glmcp-quota-admission-hold.yaml"
+        else "glmcp-quota-hold.yaml"
     )
     name = _receipt_name(
         args,
         default=default_name,
-        must_contain="quota-wall"
-        if observation.receipt_kind == "quota_wall"
-        else "quota-admission",
+        must_contain="quota-wall" if observation.receipt_kind == "quota_wall" else "quota-hold",
     )
     path = args.receipt_dir / name
     _write_flat_yaml_atomic(
@@ -446,11 +461,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except ValueError as exc:
-        print(f"hapax-glmcp-quota-admission: {exc}", file=sys.stderr)
+        print(f"hapax-glmcp-quota-admission: {exc}; {ERROR_HINT}", file=sys.stderr)
         return 2
     except OSError as exc:
         print(
-            f"hapax-glmcp-quota-admission: failed to write receipt: {type(exc).__name__}",
+            "hapax-glmcp-quota-admission: failed to write receipt: "
+            f"{type(exc).__name__}; next action: check --receipt-dir permissions "
+            "and retry locally",
             file=sys.stderr,
         )
         return 1
