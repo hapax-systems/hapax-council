@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import YAML = require("yaml");
+export { parseFrontmatter, serializeFrontmatter } from "./frontmatter";
 
 /** Check if the vault is a work vault (contains 10-work/ directory). */
 export async function isWorkVault(): Promise<boolean> {
@@ -47,31 +47,4 @@ export async function listVaultFiles(
     `${relativeDir}/${glob || "**/*"}`,
   );
   return vscode.workspace.findFiles(pattern);
-}
-
-/** Parse YAML frontmatter from a markdown string. Returns { data, content }. */
-export function parseFrontmatter(raw: string): {
-  data: Record<string, unknown>;
-  content: string;
-} {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(raw);
-  if (!match) {
-    return { data: {}, content: raw };
-  }
-  const parsed = YAML.parse(match[1]);
-  return {
-    data:
-      parsed && typeof parsed === "object" && !Array.isArray(parsed)
-        ? (parsed as Record<string, unknown>)
-        : {},
-    content: raw.slice(match[0].length),
-  };
-}
-
-/** Serialize data as YAML frontmatter + content. */
-export function serializeFrontmatter(
-  data: Record<string, unknown>,
-  content: string,
-): string {
-  return `---\n${YAML.stringify(data).trimEnd()}\n---\n${content}`;
 }

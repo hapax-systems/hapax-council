@@ -20,10 +20,17 @@ jobs:
 
       - name: Auto-merge minor/patch
         if: steps.metadata.outputs.update-type != 'version-update:semver-major'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr merge --auto --squash "${{ github.event.pull_request.html_url }}"
+        run: |
+          if ! gh pr merge --auto --squash "${{ github.event.pull_request.html_url }}"; then
+            echo "::warning::Dependabot auto-merge request failed; leaving PR for human review"
+            gh label create needs-human \
+              --description "Major-version dependency bump or other change requiring human review" \
+              --color FBCA04 \
+              --force
+            gh pr edit --add-label "needs-human" "${{ github.event.pull_request.html_url }}"
+          fi
 
       - name: Ensure needs-human label exists
         if: steps.metadata.outputs.update-type == 'version-update:semver-major'

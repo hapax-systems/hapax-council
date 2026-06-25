@@ -66,6 +66,24 @@ batch:
 scripts/hapax-github-repo-standards-audit.py
 ```
 
+Check the creation wrapper refusal path before documenting a new bootstrap
+pattern:
+
+```bash
+scripts/hapax-github-repo-create ryanklee/hapax-example
+```
+
+That command must fail before invoking `gh repo create`.
+
+Check that a new repo is covered by the organization baseline:
+
+```bash
+gh repo view hapax-systems/hapax-example --json owner,defaultBranchRef
+gh api /orgs/hapax-systems/actions/permissions --jq '{allowed_actions,sha_pinning_required}'
+gh api /orgs/hapax-systems/code-security/configurations/defaults
+scripts/hapax-github-repo-standards-audit.py --repo hapax-systems/hapax-example
+```
+
 External CodeRabbit, Claude, Codex, Codecov, and Semgrep output is advisory
 unless a governed Hapax task explicitly promotes a stable aggregate check to a
 branch-protection gate.

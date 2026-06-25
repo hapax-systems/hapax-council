@@ -155,7 +155,8 @@
     "build": "node esbuild.config.mjs",
     "watch": "node esbuild.config.mjs --watch",
     "package": "vsce package",
-    "lint": "eslint src/"
+    "lint": "eslint src/",
+    "test": "node --test test/*.test.cjs"
   },
   "devDependencies": {
     "@types/node": "^25.6.2",
