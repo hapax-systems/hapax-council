@@ -1,0 +1,15 @@
+.git/
+.venv/
+node_modules/
+dist/
+build/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.pyrefly/
+htmlcov/
+coverage.xml
+uv.lock
+docs/architecture/system-dynamics-map-viewer*.png
+docs/architecture/system-dynamics-map.lock.json
+docs/architecture/system-dynamics-map.observations.jsonl

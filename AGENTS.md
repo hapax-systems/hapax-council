@@ -22,3 +22,15 @@ Core invariants:
 - A `codex-claim-audit.timer` runs every 4 hours and auto-releases phantom claims (claimed > 6h with no PR). Do not disable this timer.
 
 For multi-session work, Codex lane identities use `cx-<color>` and worktree slots remain `alpha`, `beta`, `delta`, `epsilon` as coordination lanes. Greek slot names are not Codex worktree names; do not default Codex work into legacy Claude-era `hapax-council--delta/epsilon/main-red` paths.
+
+## Review Guidelines
+
+External GitHub App reviewers such as CodeRabbit, Claude, and Codex are advisory unless their output is explicitly ingested through the Hapax review-team contract. Do not treat an external AI review, status check, or summary as authoritative closure evidence by itself.
+
+When reviewing changes in this repository:
+
+- Check that source, runtime, provider-spend, and public-surface mutations are tied to a cc-task with `authority_case`, non-null `parent_spec`, route metadata, and scoped mutation refs.
+- Treat review-team quorum, critical findings, and signed acceptance receipts as the authoritative review plane.
+- Flag attempts to make Codecov, Semgrep, CodeRabbit, Claude, or Codex a required branch-protection context unless the PR includes a governed task authorizing that gate change and rollback.
+- For CI/CD edits, verify merge-queue behavior explicitly: required contexts should remain stable and aggregate, while advisory checks must not wedge queued PRs.
+- For secrets and provider credentials, verify values are referenced through GitHub Secrets, `pass`, or `hapax-secrets`; never request plaintext values in files, PR comments, or logs.

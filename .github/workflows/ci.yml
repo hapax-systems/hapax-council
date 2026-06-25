@@ -835,6 +835,8 @@ jobs:
           timeout -s KILL 1200 \
             uv run --no-sync pytest tests/ -q --tb=line --durations=25 \
               --benchmark-disable \
+              --cov=agents --cov=logos --cov=shared \
+              --cov-report=xml:coverage.xml --cov-report=term \
               -n 4 --dist loadfile \
               --ignore=tests/hapax_daimonion --ignore=tests/contract \
               --ignore=tests/test_frame_gate.py \
@@ -891,6 +893,16 @@ jobs:
           fi
           echo "Tests failed (pytest exit $PYTEST_EXIT)"
           exit 1
+      - name: Upload Python coverage to Codecov
+        if: always() && needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
+        continue-on-error: true
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.xml
+          flags: python
+          name: hapax-council-python
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
       - name: Governance coverage gate
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
         env:

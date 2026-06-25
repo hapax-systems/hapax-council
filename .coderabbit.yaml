@@ -1,0 +1,63 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+early_access: false
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  review_details: false
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+    ignore_title_keywords:
+      - "WIP"
+      - "[skip review]"
+      - "[skip coderabbit]"
+    ignore_usernames:
+      - "dependabot[bot]"
+      - "renovate[bot]"
+  path_filters:
+    - "!**/node_modules/**"
+    - "!**/.venv/**"
+    - "!**/.pytest_cache/**"
+    - "!**/.ruff_cache/**"
+    - "!**/.pyrefly/**"
+    - "!**/dist/**"
+    - "!**/build/**"
+    - "!**/htmlcov/**"
+    - "!**/uv.lock"
+    - "!docs/architecture/system-dynamics-map-viewer*.png"
+    - "!docs/architecture/system-dynamics-map.lock.json"
+    - "!docs/architecture/system-dynamics-map.observations.jsonl"
+  path_instructions:
+    - path: ".github/workflows/**"
+      instructions: |
+        Treat Codecov, Semgrep, CodeRabbit, Claude, and Codex checks as advisory unless a Hapax cc-task explicitly makes them authoritative. Do not recommend adding them to branch protection or merge-queue requirements without a governed task that names the required context and rollback.
+    - path: "AGENTS.md"
+      instructions: |
+        Preserve the Hapax rule that external AI reviews are advisory. Authority flows through cc-task gates, review-team quorum, and acceptance receipts.
+    - path: "scripts/**"
+      instructions: |
+        Focus on governance regressions: missing cc-task authority, unsafe bypasses, secret leakage, non-idempotent runtime mutation, generic "claim next" dispatch, or changes that weaken fail-closed behavior.
+    - path: "hooks/**"
+      instructions: |
+        Focus on governance regressions: missing cc-task authority, unsafe bypasses, secret leakage, non-idempotent runtime mutation, generic "claim next" dispatch, or changes that weaken fail-closed behavior.
+    - path: "shared/**"
+      instructions: |
+        Focus on governance regressions: missing cc-task authority, unsafe bypasses, secret leakage, non-idempotent runtime mutation, generic "claim next" dispatch, or changes that weaken fail-closed behavior.
+    - path: "agents/**"
+      instructions: |
+        Focus on governance regressions: missing cc-task authority, unsafe bypasses, secret leakage, non-idempotent runtime mutation, generic "claim next" dispatch, or changes that weaken fail-closed behavior.
+    - path: "systemd/**"
+      instructions: |
+        Focus on governance regressions: missing cc-task authority, unsafe bypasses, secret leakage, non-idempotent runtime mutation, generic "claim next" dispatch, or changes that weaken fail-closed behavior.
+    - path: "docs/**"
+      instructions: |
+        Check that CI/CD and SDLC claims distinguish live GitHub configuration from proposed or advisory tooling. Flag stale statements that imply external AI reviews are required merge gates.
+
+chat:
+  auto_reply: true
