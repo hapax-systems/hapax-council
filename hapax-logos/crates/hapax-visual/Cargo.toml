@@ -4,18 +4,18 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-wgpu = "24"
+wgpu = "29"
 # LRR Phase 0 item 4 / FINDING-Q step 2 — naga static parser used to validate
 # WGSL shaders BEFORE the wgpu hot-reload swap. Same major version as wgpu
 # so the naga the compositor parses with is the same one wgpu will use
 # internally for compilation. This sidesteps the wgpu panic risk on
 # invalid WGSL.
-naga = "24"
+naga = "29"
 winit = "0.30"
 bytemuck = { version = "1", features = ["derive"] }
 blake2 = "0.10"
-glam = "0.29"
-notify = "7"
+glam = "0.33"
+notify = "8"
 pollster = "0.4"
 log = "0.4"
 env_logger = "0.11"
