@@ -45,7 +45,9 @@ REQUIRED_FILES = (
 )
 CI_WORKFLOW = ".github/workflows/ci.yml"
 WORKFLOW_USES_RE = re.compile(r"^\s*-\s*uses:\s*[\"']?(?P<value>[^\s\"']+)", re.MULTILINE)
+WORKFLOW_CONTAINER_IMAGE_RE = re.compile(r"^\s*image:\s*[\"']?(?P<value>[^\s\"']+)", re.MULTILINE)
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+IMAGE_DIGEST_RE = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -285,6 +287,14 @@ def unpinned_action_uses(workflow: str) -> list[str]:
     return unpinned
 
 
+def unpinned_container_images(workflow: str) -> list[str]:
+    return [
+        match.group("value")
+        for match in WORKFLOW_CONTAINER_IMAGE_RE.finditer(workflow)
+        if not IMAGE_DIGEST_RE.fullmatch(match.group("value"))
+    ]
+
+
 def audit_repo(repo: str) -> list[Finding]:
     owner = repo.split("/", 1)[0]
     findings: list[Finding] = []
@@ -325,6 +335,8 @@ def audit_repo(repo: str) -> list[Finding]:
                 continue
             for value in unpinned_action_uses(workflow):
                 findings.append(Finding(repo, f"{path} has unpinned action ref {value}"))
+            for value in unpinned_container_images(workflow):
+                findings.append(Finding(repo, f"{path} has unpinned container image {value}"))
     except RuntimeError as exc:
         findings.append(Finding(repo, str(exc)))
 

@@ -91,6 +91,25 @@ def test_unpinned_action_uses_flags_tags_and_missing_refs() -> None:
     ]
 
 
+def test_unpinned_container_images_flags_floating_images() -> None:
+    audit = _load(
+        "hapax_github_repo_standards_audit_container",
+        REPO / "scripts/hapax-github-repo-standards-audit.py",
+    )
+
+    workflow = """
+    jobs:
+      semgrep:
+        container:
+          image: semgrep/semgrep
+      pinned:
+        container:
+          image: semgrep/semgrep@sha256:06938c1f365d3f67b8cedd8bc117607ae64253f88a0e768e9da9408548927dd6
+    """
+
+    assert audit.unpinned_container_images(workflow) == ["semgrep/semgrep"]
+
+
 def test_audit_repo_reports_owner_and_workflow_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
     audit = _load(
         "hapax_github_repo_standards_audit_repo",
@@ -110,7 +129,9 @@ def test_audit_repo_reports_owner_and_workflow_baseline(monkeypatch: pytest.Monk
     monkeypatch.setattr(
         audit,
         "read_file_at_ref",
-        lambda repo, path, ref: "steps:\n  - uses: astral-sh/setup-uv@v7\n",
+        lambda repo, path, ref: (
+            "steps:\n  - uses: astral-sh/setup-uv@v7\ncontainer:\n  image: semgrep/semgrep\n"
+        ),
     )
 
     messages = [finding.message for finding in audit.audit_repo("ryanklee/hapax-example")]
@@ -120,3 +141,4 @@ def test_audit_repo_reports_owner_and_workflow_baseline(monkeypatch: pytest.Monk
     assert ".coderabbit.yaml must keep request_changes_workflow: false" in messages
     assert "Semgrep workflow must use SEMGREP_APP_TOKEN" in messages
     assert ".github/workflows/ci.yml has unpinned action ref astral-sh/setup-uv@v7" in messages
+    assert ".github/workflows/ci.yml has unpinned container image semgrep/semgrep" in messages

@@ -27,6 +27,23 @@ test("parseFrontmatter reads YAML and preserves markdown body", () => {
   assert.equal(parsed.content, "# Body\n");
 });
 
+test("parseFrontmatter handles CRLF, empty maps, and non-object YAML", () => {
+  const { parseFrontmatter } = loadFrontmatterModule();
+
+  assert.deepEqual(parseFrontmatter("---\r\ntitle: Note\r\n---\r\nBody\r\n"), {
+    data: { title: "Note" },
+    content: "Body\r\n",
+  });
+  assert.deepEqual(parseFrontmatter("---\n---\nBody\n"), {
+    data: {},
+    content: "Body\n",
+  });
+  assert.deepEqual(parseFrontmatter("---\n- item\n---\nBody\n"), {
+    data: {},
+    content: "Body\n",
+  });
+});
+
 test("serializeFrontmatter writes parseable YAML frontmatter", () => {
   const { parseFrontmatter, serializeFrontmatter } = loadFrontmatterModule();
   const raw = serializeFrontmatter({ title: "Note", count: 2 }, "Body\n");

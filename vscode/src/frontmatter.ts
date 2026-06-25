@@ -4,11 +4,11 @@ export function parseFrontmatter(raw: string): {
   data: Record<string, unknown>;
   content: string;
 } {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(raw);
+  const match = /^---\r?\n(?:([\s\S]*?)\r?\n)?---\r?\n?/.exec(raw);
   if (!match) {
     return { data: {}, content: raw };
   }
-  const parsed = YAML.parse(match[1]);
+  const parsed = YAML.parse(match[1] ?? "");
   return {
     data:
       parsed && typeof parsed === "object" && !Array.isArray(parsed)
