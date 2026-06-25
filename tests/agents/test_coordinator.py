@@ -1567,31 +1567,29 @@ Body.
         relay_dir.mkdir()
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
-        with (
-            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
-            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
-            patch("agents.coordinator.core.PID_DIR", tmp_path / "pids"),
-            patch("agents.coordinator.core._live_headless_launcher", return_value=None),
-            patch("pathlib.Path.home", return_value=tmp_path),
-            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
-        ):
-            lane = _check_lane(
-                LaneDescriptor(
-                    role="dev",
-                    session="hapax-claude-dev",
-                    platform="claude",
-                )
-            )
-
-        assert lane.dispatch_ready is False
-        assert lane.dispatch_blocked_reason is not None
-        assert "missing cc-claim" in lane.dispatch_blocked_reason
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
+        completed = subprocess.CompletedProcess(
+            args=["tmux"],
+            returncode=0,
+            stdout="hapax-claude-dev\n",
+            stderr="",
+        )
 
         with (
             patch.object(Coordinator, "_scan_tasks", return_value=[task]),
-            patch.object(Coordinator, "_check_lanes", return_value={"dev": lane}),
             patch.object(Coordinator, "_dispatch") as dispatch,
             patch.object(Coordinator, "_write_state") as write_state,
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.PID_DIR", pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
+            patch("agents.coordinator.core._live_headless_launcher", return_value=None),
+            patch("agents.coordinator.core.subprocess.run", return_value=completed),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
             patch(
                 "agents.coordinator.core.admission_state",
                 return_value=AdmissionDecision(state="open"),
@@ -1603,6 +1601,8 @@ Body.
         state = write_state.call_args.args[0]
         assert state.lanes_idle == 0
         assert state.dispatches_this_tick == 0
+        assert state.lanes["dev"]["alive"] is True
+        assert state.lanes["dev"]["idle"] is True
         assert state.lanes["dev"]["dispatch_ready"] is False
         assert "missing cc-claim" in state.lanes["dev"]["dispatch_blocked_reason"]
 
