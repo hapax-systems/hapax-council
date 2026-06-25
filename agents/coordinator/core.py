@@ -154,6 +154,8 @@ class LaneState:
     idle: bool = True
     output_age_s: float = float("inf")  # age of the freshest progress signal
     stalled: bool = False  # ground-truth projection, re-derived each tick
+    dispatch_ready: bool = True
+    dispatch_blocked_reason: str | None = None
 
 
 @dataclass
@@ -195,12 +197,20 @@ class Coordinator:
             offered_tasks=len(offered),
             claimed_tasks=sum(1 for t in tasks if t.status in ("claimed", "in_progress")),
             lanes_alive=sum(1 for l in lanes.values() if l.alive),
-            lanes_idle=sum(1 for l in lanes.values() if l.idle and l.alive),
+            lanes_idle=sum(
+                1
+                for l in lanes.values()
+                if l.idle and l.alive and l.claimed_task is None and l.dispatch_ready
+            ),
             lanes_total=len(lanes),
         )
 
         dispatches = 0
-        idle_lanes = [l for l in lanes.values() if l.alive and l.idle and l.claimed_task is None]
+        idle_lanes = [
+            l
+            for l in lanes.values()
+            if l.alive and l.idle and l.claimed_task is None and l.dispatch_ready
+        ]
 
         # L3: pace the dispatch loop under CPU pressure. 'closed' dispatches
         # nothing this tick (tasks stay offered — queued, not dropped); 'paced'
@@ -780,6 +790,68 @@ def _active_task_candidates(role: str, session: str = "") -> list[Path]:
     return list(dict.fromkeys(candidates))
 
 
+def _dispatch_worktree(role: str, platform: str) -> Path:
+    """Mirror hapax-methodology-dispatch's lane -> worktree mapping.
+
+    The coordinator must not advertise a lane as dispatch capacity when the
+    dispatcher would immediately fail its worktree-local cc-task tool guard.
+    """
+    override = os.environ.get("HAPAX_DISPATCH_WORKTREE")
+    if override:
+        return Path(override).expanduser()
+    root = Path(os.environ.get("HAPAX_DISPATCH_PROJECT_ROOT", str(Path.home() / "projects")))
+    if platform == "codex":
+        if role.startswith("cx-"):
+            return root / f"hapax-council--{role}"
+        return root / f"hapax-council--cx-{role}"
+    if platform == "claude":
+        return root / "hapax-council" if role == "alpha" else root / f"hapax-council--{role}"
+    if platform in {"vibe", "gemini"}:
+        return root / f"hapax-council--{role}"
+    if platform == "antigrav":
+        normalized = "antigrav" if role == "antigravity" else role
+        return root / f"hapax-council--{normalized}"
+    return root / "hapax-council"
+
+
+_DISPATCH_CLAIM_GUARD_MARKERS = (
+    "missing required AuthorityCase/ISAP fields",
+    "authority_case",
+    "parent_spec",
+)
+_DISPATCH_CLOSE_GUARD_MARKERS = (
+    "frontmatter_task_id",
+    "closed_duplicate",
+    "closed task duplicate has task_id",
+)
+
+
+def _dispatch_tool_blocker(role: str, platform: str) -> str | None:
+    worktree = _dispatch_worktree(role, platform)
+    claim = worktree / "scripts" / "cc-claim"
+    if not claim.is_file():
+        return f"missing cc-claim at {claim}"
+    try:
+        claim_text = claim.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return f"unreadable cc-claim at {claim}: {exc}"
+    missing_claim = [marker for marker in _DISPATCH_CLAIM_GUARD_MARKERS if marker not in claim_text]
+    if missing_claim:
+        return f"stale cc-claim in {worktree}: missing {', '.join(missing_claim)}"
+
+    close = worktree / "scripts" / "cc-close"
+    if not close.is_file():
+        return f"missing cc-close at {close}"
+    try:
+        close_text = close.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return f"unreadable cc-close at {close}: {exc}"
+    missing_close = [marker for marker in _DISPATCH_CLOSE_GUARD_MARKERS if marker not in close_text]
+    if missing_close:
+        return f"stale cc-close in {worktree}: missing {', '.join(missing_close)}"
+    return None
+
+
 def _check_lane(lane: str | LaneDescriptor) -> LaneState:
     descriptor = (
         lane
@@ -839,6 +911,15 @@ def _check_lane(lane: str | LaneDescriptor) -> LaneState:
             continue
     if progress_mtimes:
         state.output_age_s = time.time() - max(progress_mtimes)
+
+    if not state.alive:
+        state.dispatch_ready = False
+        state.dispatch_blocked_reason = "lane_not_alive"
+    else:
+        blocker = _dispatch_tool_blocker(state.role, state.platform)
+        if blocker:
+            state.dispatch_ready = False
+            state.dispatch_blocked_reason = blocker
 
     return state
 
@@ -947,5 +1028,7 @@ def _lane_to_dict(lane: LaneState) -> dict:
         "claimed_task": lane.claimed_task,
         "idle": lane.idle,
         "stalled": lane.stalled,
+        "dispatch_ready": lane.dispatch_ready,
+        "dispatch_blocked_reason": lane.dispatch_blocked_reason,
         "output_age_s": round(lane.output_age_s, 1) if lane.output_age_s != float("inf") else None,
     }
