@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import re
 import subprocess
 import sys
 from collections.abc import Iterable
@@ -42,6 +44,8 @@ REQUIRED_FILES = (
     ".github/workflows/semgrep.yml",
 )
 CI_WORKFLOW = ".github/workflows/ci.yml"
+WORKFLOW_USES_RE = re.compile(r"^\s*-\s*uses:\s*[\"']?(?P<value>[^\s\"']+)", re.MULTILINE)
+FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 @dataclass(frozen=True)
@@ -83,6 +87,33 @@ def list_repos(owner: str) -> list[str]:
     return sorted(repos)
 
 
+def default_branch(repo: str) -> str:
+    data = gh_json("repo", "view", repo, "--json", "defaultBranchRef")
+    if isinstance(data, dict) and isinstance(data.get("defaultBranchRef"), dict):
+        name = data["defaultBranchRef"].get("name")
+        if isinstance(name, str) and name:
+            return name
+    raise RuntimeError(f"could not resolve default branch for {repo}")
+
+
+def workflow_paths(repo: str, ref: str) -> list[str]:
+    data = gh_json("api", f"repos/{repo}/git/trees/{ref}?recursive=1")
+    if not isinstance(data, dict) or not isinstance(data.get("tree"), list):
+        raise RuntimeError(f"could not read git tree for {repo}@{ref}")
+    paths: list[str] = []
+    for item in data["tree"]:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path", ""))
+        if (
+            item.get("type") == "blob"
+            and path.startswith(".github/workflows/")
+            and (path.endswith(".yml") or path.endswith(".yaml"))
+        ):
+            paths.append(path)
+    return sorted(paths)
+
+
 def audit_org(owner: str) -> list[Finding]:
     findings: list[Finding] = []
     repo = f"{owner}/<org>"
@@ -117,10 +148,8 @@ def audit_org(owner: str) -> list[Finding]:
             findings.append(Finding(repo, "Actions must be enabled for all org repositories"))
         if actions.get("allowed_actions") != "selected":
             findings.append(Finding(repo, "Actions allowed_actions must be selected"))
-        if actions.get("sha_pinning_required") is not False:
-            findings.append(
-                Finding(repo, "sha_pinning_required must remain false until refs are pinned")
-            )
+        if actions.get("sha_pinning_required") is not True:
+            findings.append(Finding(repo, "sha_pinning_required must be true"))
     else:
         findings.append(Finding(repo, "could not read org Actions permissions"))
 
@@ -216,6 +245,46 @@ def read_file(repo: str, path: str) -> str | None:
     return decode.stdout
 
 
+def read_file_at_ref(repo: str, path: str, ref: str) -> str | None:
+    proc = subprocess.run(
+        [
+            "gh",
+            "api",
+            "--method",
+            "GET",
+            f"repos/{repo}/contents/{path}",
+            "-f",
+            f"ref={ref}",
+            "--jq",
+            ".content",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    try:
+        return base64.b64decode(proc.stdout).decode("utf-8")
+    except Exception:
+        return None
+
+
+def unpinned_action_uses(workflow: str) -> list[str]:
+    unpinned: list[str] = []
+    for match in WORKFLOW_USES_RE.finditer(workflow):
+        value = match.group("value")
+        if value.startswith(("./", "../", "docker://")):
+            continue
+        if "@" not in value:
+            unpinned.append(value)
+            continue
+        ref = value.rsplit("@", 1)[1]
+        if not FULL_SHA_RE.fullmatch(ref):
+            unpinned.append(value)
+    return unpinned
+
+
 def audit_repo(repo: str) -> list[Finding]:
     owner = repo.split("/", 1)[0]
     findings: list[Finding] = []
@@ -246,6 +315,18 @@ def audit_repo(repo: str) -> list[Finding]:
     semgrep = read_file(repo, ".github/workflows/semgrep.yml")
     if semgrep is not None and "SEMGREP_APP_TOKEN" not in semgrep:
         findings.append(Finding(repo, "Semgrep workflow must use SEMGREP_APP_TOKEN"))
+
+    try:
+        branch = default_branch(repo)
+        for path in workflow_paths(repo, branch):
+            workflow = read_file_at_ref(repo, path, branch)
+            if workflow is None:
+                findings.append(Finding(repo, f"could not read workflow {path}"))
+                continue
+            for value in unpinned_action_uses(workflow):
+                findings.append(Finding(repo, f"{path} has unpinned action ref {value}"))
+    except RuntimeError as exc:
+        findings.append(Finding(repo, str(exc)))
 
     return findings
 
