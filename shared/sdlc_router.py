@@ -41,6 +41,17 @@ REQUIREMENT_VECTOR_DIMENSIONS = (
     "composition_coupling",
     "governance_sensitivity",
 )
+_REQUIREMENT_VECTOR_NEXT_ACTION = (
+    "next action: provide requirement_vector as a mapping with all eight dimensions: "
+    + ", ".join(REQUIREMENT_VECTOR_DIMENSIONS)
+)
+_REQUIREMENT_SCORE_NEXT_ACTION = (
+    "next action: set each requirement_vector score to a strict integer from 0 through 5"
+)
+_CANDIDATE_CAPABILITY_NEXT_ACTION = (
+    "next action: provide candidate capability_scores and capability_confidence as mappings "
+    "keyed by non-quality requirement dimensions with strict integer scores from 0 through 5"
+)
 HARD_ACTIVATION_DIMENSIONS = ("information_scope", "context_length")
 LEARNING_GATE_TYPES = frozenset(
     {"deterministic", "gold_verifier", "llm_acceptor", "frontier_review"}
@@ -87,10 +98,15 @@ class SdlcRoutingRequest(_RouterModel):
     @classmethod
     def _requirement_vector_uses_strict_int_scores(cls, value: object) -> object:
         if not isinstance(value, Mapping):
-            raise ValueError("requirement_vector must be a mapping")
+            raise ValueError(
+                f"requirement_vector must be a mapping; {_REQUIREMENT_VECTOR_NEXT_ACTION}"
+            )
         for score in value.values():
             if isinstance(score, bool) or not isinstance(score, int):
-                raise ValueError("requirement_vector scores must be strict integers 0..5")
+                raise ValueError(
+                    "requirement_vector scores must be strict integers 0..5; "
+                    f"{_REQUIREMENT_SCORE_NEXT_ACTION}"
+                )
         return value
 
     @model_validator(mode="after")
@@ -102,13 +118,21 @@ class SdlcRoutingRequest(_RouterModel):
         )
         if missing_dimensions:
             raise ValueError(
-                "requirement_vector missing dimensions: " + ",".join(missing_dimensions)
+                "requirement_vector missing dimensions: "
+                + ",".join(missing_dimensions)
+                + f"; {_REQUIREMENT_VECTOR_NEXT_ACTION}"
             )
         for dimension, score in self.requirement_vector.items():
             if dimension not in REQUIREMENT_VECTOR_DIMENSIONS:
-                raise ValueError(f"unknown requirement_vector dimension: {dimension}")
+                raise ValueError(
+                    f"unknown requirement_vector dimension: {dimension}; "
+                    f"{_REQUIREMENT_VECTOR_NEXT_ACTION}"
+                )
             if isinstance(score, bool) or score < 0 or score > 5:
-                raise ValueError("requirement_vector scores must be integers 0..5")
+                raise ValueError(
+                    f"requirement_vector scores must be integers 0..5; "
+                    f"{_REQUIREMENT_SCORE_NEXT_ACTION}"
+                )
         return self
 
 
@@ -162,13 +186,21 @@ class SdlcRouteCandidate(_RouterModel):
     @classmethod
     def _capability_maps_use_strict_bounded_scores(cls, value: object) -> object:
         if not isinstance(value, Mapping):
-            raise ValueError("candidate capability maps must be mappings")
+            raise ValueError(
+                f"candidate capability maps must be mappings; {_CANDIDATE_CAPABILITY_NEXT_ACTION}"
+            )
         allowed_dimensions = set(REQUIREMENT_VECTOR_DIMENSIONS) - {"quality_floor"}
         for dimension, score in value.items():
             if dimension not in allowed_dimensions:
-                raise ValueError(f"unknown candidate capability dimension: {dimension}")
+                raise ValueError(
+                    f"unknown candidate capability dimension: {dimension}; "
+                    f"{_CANDIDATE_CAPABILITY_NEXT_ACTION}"
+                )
             if isinstance(score, bool) or not isinstance(score, int) or score < 0 or score > 5:
-                raise ValueError("candidate capability scores must be strict integers 0..5")
+                raise ValueError(
+                    "candidate capability scores must be strict integers 0..5; "
+                    f"{_CANDIDATE_CAPABILITY_NEXT_ACTION}"
+                )
         return value
 
     @classmethod

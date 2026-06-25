@@ -194,6 +194,27 @@ def test_routing_request_rejects_bool_requirement_scores_before_coercion() -> No
         _request(requirement_vector=_requirement_vector(context_length=True))
 
 
+def test_router_validation_errors_include_next_actions() -> None:
+    with pytest.raises(ValueError, match="next action: provide requirement_vector"):
+        SdlcRoutingRequest.model_validate(
+            {"task_id": "task-router-test", "routing_class": "source_python"}
+        )
+
+    with pytest.raises(ValueError, match="next action: set each requirement_vector score"):
+        _request(requirement_vector=_requirement_vector(context_length=True))
+
+    with pytest.raises(ValueError, match="next action: provide candidate capability_scores"):
+        _candidate(
+            "local_tool.local.worker",
+            score=5,
+            capability_scores={
+                "information_scope": 5,
+                "context_length": 5,
+                "unsupported_dimension": 5,
+            },
+        )
+
+
 def test_candidate_rejects_unbounded_or_unknown_capability_scores() -> None:
     with pytest.raises(ValueError, match="strict integers 0..5"):
         _candidate("local_tool.local.worker", score=999)
