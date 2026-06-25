@@ -576,13 +576,6 @@ def evaluate_dispatch_policy(
     """Return a fail-closed route decision without side effects."""
 
     checked_at = now_utc() if now is None else _coerce_utc(now)
-    if candidate_requests is not None:
-        return _evaluate_dimensional_candidate_set(
-            request,
-            candidate_requests=candidate_requests,
-            checked_at=checked_at,
-        )
-
     if request.rollback_mode:
         return _decision(
             request,
@@ -635,6 +628,13 @@ def evaluate_dispatch_policy(
             checked_at,
             quality_floor_satisfied=False,
             authority_allowed=False,
+        )
+
+    if candidate_requests is not None:
+        return _evaluate_dimensional_candidate_set(
+            request,
+            candidate_requests=candidate_requests,
+            checked_at=checked_at,
         )
 
     capability = request.capability
@@ -1268,8 +1268,10 @@ def _evaluate_dimensional_candidate_set(
 def _candidate_set_with_primary(
     request: DispatchRequest, candidates: tuple[DispatchRequest, ...]
 ) -> tuple[DispatchRequest, ...]:
-    by_route = {candidate.route_id: candidate for candidate in candidates}
-    by_route.setdefault(request.route_id, request)
+    by_route = {request.route_id: request}
+    for candidate in candidates:
+        if candidate.route_id != request.route_id:
+            by_route[candidate.route_id] = candidate
     return tuple(by_route[route_id] for route_id in sorted(by_route))
 
 

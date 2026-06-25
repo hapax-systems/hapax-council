@@ -644,6 +644,37 @@ def test_build_dispatch_request_without_operator_evidence_is_not_operator_couple
     assert all(not reason.startswith("operator_coupled:path:") for reason in decision.reason_codes)
 
 
+def test_candidate_set_cannot_bypass_primary_missing_route_envelope() -> None:
+    task_fields = _task_fields()
+    task_fields.pop("route_envelope", None)
+    primary = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+    same_route_candidate = _dimensional_request("codex.headless.full", score=5)
+
+    decision = evaluate_dispatch_policy(
+        primary,
+        candidate_requests=(same_route_candidate,),
+        now=NOW,
+    )
+
+    assert primary.demand_vector is None
+    assert same_route_candidate.demand_vector is not None
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
+    assert "missing_demand_vector" in decision.reason_codes
+    assert "route_envelope_missing" in decision.reason_codes
+    assert "dimensional_unique_dominant_route" not in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
 def test_stale_capability_data_holds() -> None:
     request = _request(
         capability=_capability(
