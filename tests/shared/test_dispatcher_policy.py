@@ -459,6 +459,32 @@ def test_build_dispatch_request_missing_route_envelope_holds_before_launch() -> 
     assert "policy_launch" not in decision.reason_codes
 
 
+def test_build_dispatch_request_preserves_explicit_route_envelope_hold_reasons() -> None:
+    task_fields = _task_fields()
+    task_fields["route_envelope"] = _route_envelope(admission_action="hold")
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert request.demand_vector is not None
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
+    assert "route_envelope_admission_hold" in decision.reason_codes
+    assert "route_envelope_hold" in decision.reason_codes
+    assert "missing_demand_vector" not in decision.reason_codes
+    assert "route_envelope_missing" not in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
 def test_build_dispatch_request_invalid_demand_vector_holds_before_launch() -> None:
     task_fields = _task_fields()
     task_demand = dict(task_fields["task_demand"])  # type: ignore[index]

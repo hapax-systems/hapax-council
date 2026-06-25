@@ -288,7 +288,10 @@ def _coerce_bool_mapping(value: object) -> dict[str, bool]:
     if value in (None, "", [], {}):
         return {}
     if not isinstance(value, Mapping):
-        raise ValueError("validity mask must be a mapping")
+        raise ValueError(
+            "validity mask must be a mapping; next action: provide a key/value mask "
+            "or omit validity_mask to use defaults"
+        )
     return {str(key): _coerce_mask_boolish(raw) for key, raw in value.items()}
 
 
@@ -300,7 +303,10 @@ def _coerce_mask_boolish(value: object) -> bool:
         return True
     if text in {"false", "no", "n", "0"}:
         return False
-    raise ValueError("validity mask values must be booleans")
+    raise ValueError(
+        "validity mask values must be booleans; next action: use true/false values "
+        "for each validity-mask field"
+    )
 
 
 class RiskFlags(_RouteModel):
@@ -433,7 +439,10 @@ class BenchmarkGap(_RouteModel):
                 "or set public_candidate=false"
             )
         if not self.evidence_refs:
-            raise ValueError("public benchmark candidates require evidence_refs")
+            raise ValueError(
+                "public benchmark candidates require evidence_refs; next action: add "
+                "benchmark_gap evidence_refs or set public_candidate=false"
+            )
         return self
 
 
@@ -748,8 +757,8 @@ class RouteEnvelope(_RouteModel):
             missing = ", ".join(sorted(consumer.value for consumer in missing_consumers))
             raise ValueError(
                 "route envelope missing required consumers: "
-                f"{missing}; add all RouteEnvelopeConsumer values or omit consumers "
-                "to use the default"
+                f"{missing}; next action: add all RouteEnvelopeConsumer values or "
+                "omit consumers to use the default"
             )
         classification = self.classification_envelope
         if classification.confidence < 0.5 and self.admission.admission_action not in {
@@ -967,9 +976,15 @@ class CloudBurst(_RouteModel):
         if not self.eligible:
             return self
         if not self.spike_reasons:
-            raise ValueError("cloud_burst eligibility requires spike_reasons")
+            raise ValueError(
+                "cloud_burst eligibility requires spike_reasons; next action: list "
+                "why cloud burst is needed or set eligible=false"
+            )
         if not self.no_secret_egress:
-            raise ValueError("cloud_burst eligibility requires no_secret_egress")
+            raise ValueError(
+                "cloud_burst eligibility requires no_secret_egress; next action: "
+                "prove no secret egress or set eligible=false"
+            )
         return self
 
 
@@ -997,13 +1012,27 @@ class RouteMetadata(_RouteModel):
         if self.quality_floor != QualityFloor.FRONTIER_REVIEW_REQUIRED:
             return self
         if self.authority_level == AuthorityLevel.AUTHORITATIVE:
-            raise ValueError("frontier_review_required artifacts cannot be authoritative directly")
+            raise ValueError(
+                "frontier_review_required artifacts cannot be authoritative directly; "
+                "next action: use support_non_authoritative authority and name an "
+                "authoritative acceptor"
+            )
         if not self.review_requirement.support_artifact_allowed:
-            raise ValueError("frontier_review_required requires support_artifact_allowed")
+            raise ValueError(
+                "frontier_review_required requires support_artifact_allowed; next "
+                "action: set support_artifact_allowed=true for support outputs or "
+                "raise the quality floor"
+            )
         if not self.review_requirement.independent_review_required:
-            raise ValueError("frontier_review_required requires independent_review_required")
+            raise ValueError(
+                "frontier_review_required requires independent_review_required; next "
+                "action: set independent_review_required=true or raise the quality floor"
+            )
         if not self.review_requirement.authoritative_acceptor_profile:
-            raise ValueError("frontier_review_required requires authoritative_acceptor_profile")
+            raise ValueError(
+                "frontier_review_required requires authoritative_acceptor_profile; "
+                "next action: name the profile that can accept the support artifact"
+            )
         return self
 
 
@@ -1148,6 +1177,7 @@ def build_demand_vector(
     *,
     note_path: Path | str | None = None,
     observed_at: datetime | None = None,
+    preserve_route_envelope_hold: bool = False,
 ) -> DemandVector:
     """Build the typed dimensional demand vector for a dispatchable work item."""
 
@@ -1163,7 +1193,16 @@ def build_demand_vector(
                 ]
             )
         )
-    if not assessment.dispatchable:
+    preserving_explicit_route_envelope_hold = (
+        preserve_route_envelope_hold
+        and "route_envelope" in frontmatter
+        and assessment.status in {RouteMetadataStatus.EXPLICIT, RouteMetadataStatus.DERIVED}
+        and not assessment.missing_fields
+        and not assessment.validation_errors
+        and assessment.metadata is not None
+        and bool(_route_envelope_dispatch_hold_reasons(assessment.metadata))
+    )
+    if not assessment.dispatchable and not preserving_explicit_route_envelope_hold:
         reasons = [
             *assessment.hold_reasons,
             *assessment.missing_fields,

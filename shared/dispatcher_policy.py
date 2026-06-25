@@ -499,6 +499,7 @@ def build_dispatch_request(
             {**dict(task_fields), "task_id": task_id},
             note_path=_optional_string(task_fields.get("__task_note_path")),
             observed_at=now,
+            preserve_route_envelope_hold=True,
         )
     except ValueError:
         demand_vector = None
