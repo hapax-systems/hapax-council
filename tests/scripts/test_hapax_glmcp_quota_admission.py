@@ -295,6 +295,27 @@ def test_observe_error_stale_reset_timestamp_writes_future_hold(tmp_path: Path) 
     assert fields["resets_at"] == "2026-06-10T00:20:00Z"
 
 
+def test_observe_error_future_reset_timestamp_honors_reset_plus_jitter(tmp_path: Path) -> None:
+    result, receipt_dir = _run(
+        tmp_path,
+        "observe-error",
+        "--provider-code",
+        "1308",
+        "--reset-at",
+        "2026-06-10T00:10:00Z",
+        "--jitter-seconds",
+        "60",
+        "--backoff-seconds",
+        "1200",
+    )
+
+    assert result.returncode == 0, result.stderr
+    fields = _read_flat_fields(receipt_dir / "cx-glmcp-quota-wall.yaml")
+    assert fields["status"] == "quota_blocked"
+    assert fields["provider_code"] == "1308"
+    assert fields["resets_at"] == "2026-06-10T00:11:00Z"
+
+
 @pytest.mark.parametrize(
     ("provider_code", "failure_class", "action"),
     [
@@ -458,6 +479,22 @@ def test_observe_error_unknown_provider_code_writes_non_admission_hold(tmp_path:
     assert fields["positive_admission"] == "false"
     assert fields["payg_fallback"] == "false"
     assert not (receipt_dir / "glmcp-quota-admission.yaml").exists()
+
+
+def test_observe_error_rejects_non_glmcp_role_without_writing_wall(tmp_path: Path) -> None:
+    result, receipt_dir = _run(
+        tmp_path,
+        "observe-error",
+        "--provider-code",
+        "1308",
+        "--role",
+        "cx-red",
+    )
+
+    assert result.returncode == 2
+    assert "--role must identify a GLMCP quota-wall role" in result.stderr
+    assert "next action:" in result.stderr
+    assert not receipt_dir.exists()
 
 
 @pytest.mark.parametrize(

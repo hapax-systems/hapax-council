@@ -3,6 +3,8 @@
 #
 # This wrapper is intentionally session-scoped. It does not edit
 # ~/.claude/settings.json and it never writes the Z.ai key to disk.
+# It is separate from the glmcp.review.direct review route, whose admission
+# receipts are bound to scripts/hapax-glmcp-reviewer and its Coding Plan model id.
 
 set -euo pipefail
 
