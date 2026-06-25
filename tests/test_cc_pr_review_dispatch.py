@@ -61,8 +61,11 @@ def _write_task(
     quality_floor: str = "frontier_required",
     assigned_to: str = "zeta",
     exit_predicate: str = "dispatcher creates a review-team dossier",
+    extra_frontmatter: dict[str, Any] | None = None,
 ) -> Path:
     path = vault / "active" / f"{task_id}.md"
+    extra = yaml.safe_dump(extra_frontmatter, sort_keys=False).strip() if extra_frontmatter else ""
+    extra = f"{extra}\n" if extra else ""
     path.write_text(
         f"""---
 type: cc-task
@@ -78,6 +81,7 @@ authority_case: CASE-TEST
 parent_spec: docs/spec.md
 route_metadata_schema: 1
 exit_predicate: "{exit_predicate}"
+{extra}
 ---
 
 # {task_id}
@@ -611,6 +615,26 @@ checklist:
         assert dossier["constitution_writer_family"] == "claude"
         assert dossier["changed_file_count"] == 1
         assert dossier["changed_files"] == ["scripts/review_team.py"]
+
+    def test_dossier_records_verification_contract_summary(self, tmp_path: Path) -> None:
+        result, _, _, _ = _review(
+            tmp_path,
+            task_kwargs={
+                "extra_frontmatter": {
+                    "verification_surface": {
+                        "required_ci_checks": [{"name": "all-green"}],
+                        "full_safety_net_checks": [
+                            {"name": "pyright-safety-net", "blocking": False}
+                        ],
+                    }
+                }
+            },
+        )
+
+        contract = result["dossier"]["verification_contract"]
+        assert contract["status"] == "valid"
+        assert contract["required_ci_checks"] == ["all-green"]
+        assert contract["full_safety_net_checks"] == ["pyright-safety-net"]
 
     def test_diff_is_truncated(self, tmp_path: Path) -> None:
         gh = FakeGh()

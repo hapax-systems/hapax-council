@@ -7,6 +7,7 @@ launch routes.
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import re
@@ -119,6 +120,15 @@ class RouteMetadataStatus(StrEnum):
     MALFORMED = "malformed"
 
 
+class HardeningIntensity(StrEnum):
+    NONE = "none"
+    LIGHT = "light"
+    TARGETED = "targeted"
+    STANDARD = "standard"
+    DEEP = "deep"
+    BREAK_GLASS = "break_glass"
+
+
 class _RouteModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -132,6 +142,46 @@ def _coerce_string_list(value: object) -> list[str]:
     if isinstance(value, (list, tuple, set, frozenset)):
         return [str(item).strip() for item in value if str(item).strip()]
     return [str(value).strip()]
+
+
+def _coerce_strict_string_list(value: object, *, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must be a string or list of strings")
+    if isinstance(value, (list, tuple, set, frozenset)):
+        out: list[str] = []
+        for item in value:
+            if isinstance(item, Mapping):
+                raise ValueError(f"{field_name} must be a string or list of strings")
+            out.extend(_coerce_string_list(item))
+        return out
+    return _coerce_string_list(value)
+
+
+def _coerce_verification_check_list(value: object) -> list[object]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [] if not text else [{"name": text, "command": text}]
+    if isinstance(value, (list, tuple, set, frozenset)):
+        out: list[object] = []
+        for item in value:
+            if isinstance(item, str):
+                text = item.strip()
+                if text:
+                    out.append({"name": text, "command": text})
+            elif isinstance(item, Mapping):
+                out.append(dict(item))
+            elif item is not None:
+                text = str(item).strip()
+                if text:
+                    out.append({"name": text, "command": text})
+        return out
+    if isinstance(value, Mapping):
+        return [dict(value)]
+    return [{"name": str(value).strip(), "command": str(value).strip()}]
 
 
 class RiskFlags(_RouteModel):
@@ -150,16 +200,118 @@ class ContextShape(_RouteModel):
     currentness_required: bool = False
 
 
+class VerificationCheck(_RouteModel):
+    name: str
+    command: str | None = None
+    contexts: list[str] = Field(default_factory=list)
+    blocking: bool | None = None
+    touched_path_patterns: list[str] = Field(default_factory=list)
+
+    @field_validator("contexts", mode="before")
+    @classmethod
+    def _contexts_are_string_lists(cls, value: object) -> list[str]:
+        return _coerce_strict_string_list(value, field_name="verification check contexts")
+
+    @field_validator("touched_path_patterns", mode="before")
+    @classmethod
+    def _touched_path_patterns_are_string_lists(cls, value: object) -> list[str]:
+        return _coerce_strict_string_list(
+            value, field_name="verification check touched_path_patterns"
+        )
+
+    @model_validator(mode="after")
+    def _named_check_has_identifier(self) -> Self:
+        if not self.name.strip():
+            raise ValueError(
+                "verification check requires name; add the CI context or command label"
+            )
+        return self
+
+
+class BaselineWaiver(_RouteModel):
+    waiver_id: str
+    check_name: str
+    witness: str
+    observed_at: datetime
+    expires_at: datetime
+    tracking_ref: str
+    affected_scope: list[str] = Field(default_factory=list)
+    rationale: str
+
+    @field_validator("affected_scope", mode="before")
+    @classmethod
+    def _affected_scope_is_string_list(cls, value: object) -> list[str]:
+        return _coerce_strict_string_list(value, field_name="baseline waiver affected_scope")
+
+    @model_validator(mode="after")
+    def _waiver_is_auditable_and_expiring(self) -> Self:
+        required = {
+            "waiver_id": self.waiver_id,
+            "check_name": self.check_name,
+            "witness": self.witness,
+            "tracking_ref": self.tracking_ref,
+            "rationale": self.rationale,
+        }
+        missing = [field for field, value in required.items() if not value.strip()]
+        if missing:
+            raise ValueError(
+                "baseline waiver requires "
+                + ",".join(sorted(missing))
+                + "; add auditable waiver evidence before treating a failure as advisory"
+            )
+        if not self.affected_scope:
+            raise ValueError(
+                "baseline waiver requires affected_scope; add the known failing paths or globs"
+            )
+        if _coerce_utc(self.expires_at) <= _coerce_utc(self.observed_at):
+            raise ValueError(
+                "baseline waiver expires_at must be after observed_at; refresh the witness window"
+            )
+        return self
+
+
+class VerificationAllocation(_RouteModel):
+    request_hardening: HardeningIntensity = HardeningIntensity.LIGHT
+    review_intensity: HardeningIntensity = HardeningIntensity.STANDARD
+    verifier_intensity: HardeningIntensity = HardeningIntensity.TARGETED
+    opportunity_cost: str | None = None
+    rationale_refs: list[str] = Field(default_factory=list)
+
+    @field_validator("rationale_refs", mode="before")
+    @classmethod
+    def _rationale_refs_are_string_lists(cls, value: object) -> list[str]:
+        return _coerce_string_list(value)
+
+
 class VerificationSurface(_RouteModel):
     deterministic_tests: list[str] = Field(default_factory=list)
     static_checks: list[str] = Field(default_factory=list)
     runtime_observation: list[str] = Field(default_factory=list)
     operator_only: bool = False
+    focused_checks: list[VerificationCheck] = Field(default_factory=list)
+    touched_checks: list[VerificationCheck] = Field(default_factory=list)
+    adjacent_checks: list[VerificationCheck] = Field(default_factory=list)
+    required_ci_checks: list[VerificationCheck] = Field(default_factory=list)
+    full_safety_net_checks: list[VerificationCheck] = Field(default_factory=list)
+    baseline_waivers: list[BaselineWaiver] = Field(default_factory=list)
+    allocation: VerificationAllocation = Field(default_factory=VerificationAllocation)
 
     @field_validator("deterministic_tests", "static_checks", "runtime_observation", mode="before")
     @classmethod
     def _lists_are_string_lists(cls, value: object) -> list[str]:
         return _coerce_string_list(value)
+
+    @field_validator(
+        "focused_checks",
+        "touched_checks",
+        "adjacent_checks",
+        "required_ci_checks",
+        "full_safety_net_checks",
+        mode="before",
+    )
+    @classmethod
+    def _checks_are_check_lists(cls, value: object) -> list[object]:
+        return _coerce_verification_check_list(value)
 
 
 class RequiredTool(_RouteModel):
@@ -412,7 +564,14 @@ class RouteMetadataAssessment(_RouteModel):
 
 
 _PYDANTIC_DYNAMIC_ENTRYPOINTS = (
+    VerificationCheck._contexts_are_string_lists,
+    VerificationCheck._touched_path_patterns_are_string_lists,
+    VerificationCheck._named_check_has_identifier,
+    BaselineWaiver._affected_scope_is_string_list,
+    BaselineWaiver._waiver_is_auditable_and_expiring,
+    VerificationAllocation._rationale_refs_are_string_lists,
     VerificationSurface._lists_are_string_lists,
+    VerificationSurface._checks_are_check_lists,
     VerificationDemand._lists_are_string_lists,
     PriorityContext._value_braid_refs_are_string_lists,
     DemandVector._mutation_scope_refs_are_strings,
@@ -803,6 +962,362 @@ def _derive_verification_surface(frontmatter: Mapping[str, Any]) -> dict[str, ob
         "static_checks": static_checks,
         "runtime_observation": [],
         "operator_only": False,
+    }
+
+
+VERIFICATION_CHECK_GROUPS = (
+    "focused_checks",
+    "touched_checks",
+    "adjacent_checks",
+    "required_ci_checks",
+    "full_safety_net_checks",
+)
+SAFETY_NET_CHECK_GROUP = "full_safety_net_checks"
+
+
+def verification_surface_from_frontmatter(frontmatter: Mapping[str, Any]) -> VerificationSurface:
+    """Return the task verification contract, preserving legacy flat fields."""
+
+    payload: dict[str, Any] = {}
+    nested = frontmatter.get("route_metadata")
+    if isinstance(nested, Mapping) and "verification_surface" in nested:
+        nested_surface = nested.get("verification_surface")
+        if isinstance(nested_surface, Mapping):
+            payload.update(dict(nested_surface))
+        elif nested_surface is not None:
+            raise ValueError("route_metadata.verification_surface must be a mapping")
+    surface = frontmatter.get("verification_surface")
+    if isinstance(surface, Mapping):
+        payload.update(dict(surface))
+    elif "verification_surface" in frontmatter and surface is not None:
+        raise ValueError("verification_surface must be a mapping")
+    else:
+        for key in ("deterministic_tests", "static_checks", "runtime_observation"):
+            if key in frontmatter:
+                payload[key] = frontmatter[key]
+        if "operator_only" in frontmatter:
+            payload["operator_only"] = frontmatter["operator_only"]
+    if not payload:
+        payload = _derive_verification_surface(frontmatter)
+    return VerificationSurface.model_validate(payload)
+
+
+def _verification_contract_error_messages(exc: ValidationError | ValueError) -> list[str]:
+    if isinstance(exc, ValidationError):
+        return _validation_error_messages(exc)
+    return [str(exc)]
+
+
+def verification_contract_structure_blockers(frontmatter: Mapping[str, Any]) -> tuple[str, ...]:
+    """Static malformed-contract blockers.
+
+    Expiry is assessed only when a waiver is used for an observed safety-net
+    failure; this structural check catches unauditable waiver shapes up front.
+    """
+
+    try:
+        verification_surface_from_frontmatter(frontmatter)
+    except (ValidationError, ValueError) as exc:
+        return tuple(
+            f"verification_contract_malformed:{msg}"
+            for msg in _verification_contract_error_messages(exc)
+        )
+    return ()
+
+
+def _verification_checks(surface: VerificationSurface) -> tuple[tuple[str, VerificationCheck], ...]:
+    out: list[tuple[str, VerificationCheck]] = []
+    for group in VERIFICATION_CHECK_GROUPS:
+        out.extend((group, check) for check in getattr(surface, group))
+    return tuple(out)
+
+
+def _check_identifiers(check: VerificationCheck) -> frozenset[str]:
+    identifiers = _coerce_string_list([check.name, check.command, *check.contexts])
+    return frozenset(item.lower() for item in identifiers)
+
+
+def _match_failed_check(
+    failed_check: str, checks: tuple[tuple[str, VerificationCheck], ...]
+) -> tuple[str, VerificationCheck] | None:
+    needle = failed_check.strip().lower()
+    for group, check in checks:
+        if needle in _check_identifiers(check):
+            return group, check
+    return None
+
+
+def _check_blocks_by_default(group: str, check: VerificationCheck) -> bool:
+    if group != SAFETY_NET_CHECK_GROUP:
+        return True
+    if check.blocking is not None:
+        return check.blocking
+    return False
+
+
+def _repo_relative_path(value: str) -> str:
+    text = value.strip()
+    worktree_match = re.search(r"/hapax-council(?:--[^/]+)?/", text)
+    if worktree_match is not None:
+        return text[worktree_match.end() :]
+    if text.startswith("~/projects/hapax-council/"):
+        return text.split("~/projects/hapax-council/", 1)[1]
+    shorthand_match = re.match(r"~/projects/hapax-council--[^/]+/(.+)", text)
+    if shorthand_match is not None:
+        return shorthand_match.group(1)
+    return text
+
+
+def _path_pattern_matches(path: str, pattern: str) -> bool:
+    candidates = {_repo_relative_path(path), path.strip()}
+    patterns = {_repo_relative_path(pattern), pattern.strip()}
+    for candidate in candidates:
+        for pat in patterns:
+            if not candidate or not pat:
+                continue
+            if pat in {".", "*", "**", "**/*"}:
+                return True
+            if pat.endswith("/**"):
+                prefix = pat[:-3]
+                if candidate == prefix or candidate.startswith(prefix + "/"):
+                    return True
+            if "**" in pat and _globstar_match(candidate, pat):
+                return True
+            if fnmatch.fnmatch(candidate, pat):
+                return True
+    return False
+
+
+def _globstar_match(candidate: str, pattern: str) -> bool:
+    regex = []
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if pattern[index : index + 3] == "**/":
+            # Recursive segment may match zero directories, e.g. agents/**/x -> agents/x.
+            regex.append("(?:.*/)?")
+            index += 3
+        elif pattern[index : index + 2] == "**":
+            regex.append(".*")
+            index += 2
+        elif char == "*":
+            regex.append("[^/]*")
+            index += 1
+        elif char == "?":
+            regex.append("[^/]")
+            index += 1
+        else:
+            regex.append(re.escape(char))
+            index += 1
+    return re.fullmatch("".join(regex), candidate) is not None
+
+
+def _scope_implicated(
+    touched_paths: tuple[str, ...] | None, patterns: tuple[str, ...]
+) -> bool | None:
+    if touched_paths is None or not touched_paths:
+        return None
+    return any(
+        _path_pattern_matches(path, pattern) for path in touched_paths for pattern in patterns
+    )
+
+
+def _current_matching_waivers(
+    surface: VerificationSurface,
+    check: VerificationCheck,
+    *,
+    now: datetime,
+) -> tuple[tuple[BaselineWaiver, ...], str | None]:
+    checked_at = _coerce_utc(now)
+    matching = _matching_waivers(surface, check)
+    if not matching:
+        return (), "missing"
+    future = [waiver for waiver in matching if _coerce_utc(waiver.observed_at) > checked_at]
+    expired = [waiver for waiver in matching if _coerce_utc(waiver.expires_at) <= checked_at]
+    current = [
+        waiver
+        for waiver in matching
+        if _coerce_utc(waiver.observed_at) <= checked_at < _coerce_utc(waiver.expires_at)
+    ]
+    if current:
+        return tuple(current), None
+    if future:
+        return (), "not_yet_observed:" + ",".join(waiver.waiver_id for waiver in future)
+    return (), "expired:" + ",".join(waiver.waiver_id for waiver in expired)
+
+
+def _matching_waivers(
+    surface: VerificationSurface, check: VerificationCheck
+) -> tuple[BaselineWaiver, ...]:
+    identifiers = _check_identifiers(check)
+    return tuple(
+        waiver
+        for waiver in surface.baseline_waivers
+        if waiver.check_name.strip().lower() in identifiers
+    )
+
+
+def _implicated_stale_waiver_state(
+    surface: VerificationSurface,
+    check: VerificationCheck,
+    *,
+    touched_paths: tuple[str, ...] | None,
+    now: datetime,
+) -> str | None:
+    checked_at = _coerce_utc(now)
+    matching = _matching_waivers(surface, check)
+    stale_groups = (
+        (
+            "not_yet_observed",
+            tuple(waiver for waiver in matching if _coerce_utc(waiver.observed_at) > checked_at),
+        ),
+        (
+            "expired",
+            tuple(waiver for waiver in matching if _coerce_utc(waiver.expires_at) <= checked_at),
+        ),
+    )
+    for state, waivers in stale_groups:
+        implicated_ids = []
+        for waiver in waivers:
+            scope_patterns = tuple([*waiver.affected_scope, *check.touched_path_patterns])
+            if _scope_implicated(touched_paths, scope_patterns):
+                implicated_ids.append(waiver.waiver_id)
+        if implicated_ids:
+            return f"{state}:{','.join(implicated_ids)}"
+    return None
+
+
+def _verification_check_summary(group: str, check: VerificationCheck) -> dict[str, Any]:
+    return {
+        "name": check.name,
+        "command": check.command,
+        "contexts": check.contexts,
+        "blocking": check.blocking,
+        "effective_blocking": _check_blocks_by_default(group, check),
+        "touched_path_patterns": check.touched_path_patterns,
+    }
+
+
+def verification_failure_blockers(
+    frontmatter: Mapping[str, Any],
+    *,
+    failed_checks: list[str] | tuple[str, ...],
+    touched_paths: list[str] | tuple[str, ...] | None = None,
+    now: datetime | None = None,
+) -> tuple[str, ...]:
+    """Admission/closure blockers from observed failed verification checks.
+
+    Unknown failed checks block. Declared full safety-net checks may be advisory
+    only when a current baseline waiver proves an auditable, out-of-scope
+    baseline failure.
+    """
+
+    failed = tuple(item for item in _coerce_string_list(failed_checks) if item)
+    if not failed:
+        return ()
+    try:
+        surface = verification_surface_from_frontmatter(frontmatter)
+    except (ValidationError, ValueError) as exc:
+        return tuple(
+            f"verification_contract_malformed:{msg}"
+            for msg in _verification_contract_error_messages(exc)
+        )
+
+    checks = _verification_checks(surface)
+    changed = tuple(_coerce_string_list(touched_paths)) if touched_paths is not None else None
+    checked_at = _coerce_utc(now)
+    blockers: list[str] = []
+    for failed_check in failed:
+        matched = _match_failed_check(failed_check, checks)
+        if matched is None:
+            blockers.append(f"verification_failed_check:{failed_check}")
+            continue
+        group, check = matched
+        if group != SAFETY_NET_CHECK_GROUP:
+            if _check_blocks_by_default(group, check):
+                blockers.append(f"verification_failed_check:{failed_check}")
+            continue
+        if _check_blocks_by_default(group, check):
+            blockers.append(f"verification_safety_net_opted_in:{failed_check}")
+            continue
+        waivers, waiver_state = _current_matching_waivers(surface, check, now=checked_at)
+        if not waivers:
+            state = waiver_state or "missing"
+            blockers.append(f"verification_safety_net_unwaived:{failed_check}:{state}")
+            continue
+        stale_waiver_state = _implicated_stale_waiver_state(
+            surface,
+            check,
+            touched_paths=changed,
+            now=checked_at,
+        )
+        if stale_waiver_state:
+            blockers.append(f"verification_safety_net_unwaived:{failed_check}:{stale_waiver_state}")
+            continue
+        scope_unknown = False
+        for waiver in waivers:
+            scope_patterns = tuple([*waiver.affected_scope, *check.touched_path_patterns])
+            implicated = _scope_implicated(changed, scope_patterns)
+            if implicated is None:
+                scope_unknown = True
+                continue
+            if implicated:
+                blockers.append(
+                    f"verification_safety_net_implicated:{failed_check}:{waiver.waiver_id}"
+                )
+                break
+        else:
+            if scope_unknown:
+                blockers.append(f"verification_safety_net_scope_unknown:{failed_check}")
+    return tuple(blockers)
+
+
+def required_ci_check_contexts(
+    frontmatter: Mapping[str, Any], *, default: tuple[str, ...] = ()
+) -> tuple[str, ...]:
+    try:
+        surface = verification_surface_from_frontmatter(frontmatter)
+    except (ValidationError, ValueError):
+        return default
+    contexts: list[str] = []
+    for check in surface.required_ci_checks:
+        contexts.extend(check.contexts or [check.name])
+    return tuple(dict.fromkeys(contexts)) or default
+
+
+def verification_contract_summary(frontmatter: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        surface = verification_surface_from_frontmatter(frontmatter)
+    except (ValidationError, ValueError) as exc:
+        return {
+            "status": "malformed",
+            "errors": _verification_contract_error_messages(exc),
+        }
+    return {
+        "status": "valid",
+        "focused_checks": [check.name for check in surface.focused_checks],
+        "touched_checks": [check.name for check in surface.touched_checks],
+        "adjacent_checks": [check.name for check in surface.adjacent_checks],
+        "required_ci_checks": [check.name for check in surface.required_ci_checks],
+        "full_safety_net_checks": [check.name for check in surface.full_safety_net_checks],
+        "baseline_waivers": [
+            {
+                "waiver_id": waiver.waiver_id,
+                "check_name": waiver.check_name,
+                "witness": waiver.witness,
+                "observed_at": _coerce_utc(waiver.observed_at).isoformat().replace("+00:00", "Z"),
+                "expires_at": _coerce_utc(waiver.expires_at).isoformat().replace("+00:00", "Z"),
+                "tracking_ref": waiver.tracking_ref,
+                "affected_scope": waiver.affected_scope,
+                "rationale": waiver.rationale,
+            }
+            for waiver in surface.baseline_waivers
+        ],
+        "check_details": {
+            group: [_verification_check_summary(group, check) for check in getattr(surface, group)]
+            for group in VERIFICATION_CHECK_GROUPS
+        },
+        "allocation": surface.allocation.model_dump(mode="json"),
     }
 
 
