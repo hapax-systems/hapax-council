@@ -1847,6 +1847,76 @@ Body.
             ]
         ]
 
+    def test_tick_does_not_count_failed_dispatch_as_dispatched(self, tmp_path: Path):
+        coord = Coordinator()
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("claude",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+        )
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
+        _guarded_worktree(tmp_path / "projects" / "hapax-council--dev")
+        dispatcher = tmp_path / "hapax-methodology-dispatch"
+        dispatcher.write_text("#!/bin/sh\nexit 42\n", encoding="utf-8")
+        dispatcher.chmod(0o755)
+        completed = subprocess.CompletedProcess(
+            args=["tmux"],
+            returncode=0,
+            stdout="hapax-claude-dev\n",
+            stderr="",
+        )
+        dispatch_calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            if cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]:
+                return completed
+            dispatch_calls.append(cmd)
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=42,
+                stdout="",
+                stderr="BLOCKED: test refusal",
+            )
+
+        with (
+            patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_write_state") as write_state,
+            patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.PID_DIR", pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
+            patch("agents.coordinator.core._live_headless_launcher", return_value=None),
+            patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=AdmissionDecision(state="open"),
+            ),
+        ):
+            coord.tick()
+
+        state = write_state.call_args.args[0]
+        assert state.offered_tasks == 1
+        assert state.lanes_idle == 1
+        assert state.dispatches_this_tick == 0
+        assert state.lanes["dev"]["dispatch_ready"] is True
+        assert len(dispatch_calls) == 1
+
     def test_tick_does_not_dispatch_to_stale_claim_lane(self, tmp_path: Path):
         coord = Coordinator()
         task = Task(
