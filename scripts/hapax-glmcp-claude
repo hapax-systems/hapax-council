@@ -16,11 +16,11 @@ The Z.ai API key is read from pass at runtime.
 Defaults:
   pass entry: glmcp/api-key
   base URL:   https://api.z.ai/api/anthropic
-  model:      glm-5
+  model:      glm-5.2[1m]
 
 Environment overrides:
   HAPAX_GLMCP_SECRET_ENTRY       pass entry name (default: glmcp/api-key)
-  HAPAX_GLMCP_MODEL              primary GLM model (default: glm-5)
+  HAPAX_GLMCP_MODEL              primary GLM model (default: glm-5.2[1m])
   HAPAX_GLMCP_HAIKU_MODEL        Haiku/default-light mapping (default: glm-4.5-air)
   HAPAX_GLMCP_ANTHROPIC_BASE_URL endpoint override, gated to the Z.ai API host
   HAPAX_GLMCP_ALLOW_NON_CODING_PLAN_MODEL=1 allow a non-docs-pinned primary model
@@ -47,7 +47,7 @@ default_secret_entry="glmcp/api-key"
 secret_entry="${HAPAX_GLMCP_SECRET_ENTRY:-$default_secret_entry}"
 official_base_url="https://api.z.ai/api/anthropic"
 base_url="${HAPAX_GLMCP_ANTHROPIC_BASE_URL:-$official_base_url}"
-primary_model="${HAPAX_GLMCP_MODEL:-glm-5}"
+primary_model="${HAPAX_GLMCP_MODEL:-glm-5.2[1m]}"
 haiku_model="${HAPAX_GLMCP_HAIKU_MODEL:-glm-4.5-air}"
 pass_error_file=""
 
@@ -84,10 +84,10 @@ trap 'exit_after_signal 130' INT
 trap 'exit_after_signal 143' TERM
 
 case "$primary_model" in
-  "glm-5") ;;
+  "glm-5.2[1m]") ;;
   *)
     if [[ "${HAPAX_GLMCP_ALLOW_NON_CODING_PLAN_MODEL:-0}" != "1" ]]; then
-      echo "hapax-glmcp-claude: refusing primary model '$primary_model'; expected documented GLM Coding Plan model id glm-5" >&2
+      echo "hapax-glmcp-claude: refusing primary model '$primary_model'; expected documented GLM Coding Plan model id glm-5.2[1m]" >&2
       echo "Set HAPAX_GLMCP_ALLOW_NON_CODING_PLAN_MODEL=1 only for explicit experiments after rechecking Z.ai Coding Plan docs." >&2
       exit 2
     fi
