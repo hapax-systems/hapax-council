@@ -85,6 +85,52 @@ class TestDispatchWorktreeGuard:
         assert "next_action=" in blocker
         assert str(worktree) in blocker
 
+    def test_dispatch_tool_blocker_reports_unreadable_claim_with_next_action(
+        self, tmp_path: Path
+    ):
+        worktree = tmp_path / "projects" / "hapax-council--beta"
+        _guarded_worktree(worktree)
+        claim = worktree / "scripts" / "cc-claim"
+        original_read_text = Path.read_text
+
+        def fake_read_text(path: Path, *args: object, **kwargs: object) -> str:
+            if path == claim:
+                raise OSError("permission denied")
+            return original_read_text(path, *args, **kwargs)
+
+        with (
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.object(Path, "read_text", fake_read_text),
+        ):
+            blocker = _dispatch_tool_blocker("beta", "claude")
+
+        assert blocker is not None
+        assert "unreadable cc-claim" in blocker
+        assert "next_action=" in blocker
+
+    def test_dispatch_tool_blocker_reports_unreadable_close_with_next_action(
+        self, tmp_path: Path
+    ):
+        worktree = tmp_path / "projects" / "hapax-council--beta"
+        _guarded_worktree(worktree)
+        close = worktree / "scripts" / "cc-close"
+        original_read_text = Path.read_text
+
+        def fake_read_text(path: Path, *args: object, **kwargs: object) -> str:
+            if path == close:
+                raise OSError("permission denied")
+            return original_read_text(path, *args, **kwargs)
+
+        with (
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.object(Path, "read_text", fake_read_text),
+        ):
+            blocker = _dispatch_tool_blocker("beta", "claude")
+
+        assert blocker is not None
+        assert "unreadable cc-close" in blocker
+        assert "next_action=" in blocker
+
 
 class TestParseTask:
     def test_valid_task(self, tmp_path: Path):
