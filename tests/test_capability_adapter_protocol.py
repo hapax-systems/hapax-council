@@ -41,8 +41,25 @@ def _mentions_hkp_model(text: str) -> bool:
     normalized = "".join(char if char.isalnum() else "_" for char in lowered)
     compact = "".join(char for char in lowered if char.isalnum())
     return (
-        "hkp" in lowered or "knowledge_projection" in normalized or "knowledgeprojection" in compact
+        "hkp" in lowered
+        or "hkp" in compact
+        or "knowledge_projection" in normalized
+        or "knowledgeprojection" in compact
     )
+
+
+def _concrete_adapter_classes() -> tuple[type[CapabilityAdapter], ...]:
+    classes: list[type[CapabilityAdapter]] = []
+    for name in adapter_protocol.__all__:
+        value = getattr(adapter_protocol, name)
+        if (
+            isinstance(value, type)
+            and issubclass(value, CapabilityAdapter)
+            and value is not CapabilityAdapter
+            and hasattr(value, "PLATFORM")
+        ):
+            classes.append(value)
+    return tuple(classes)
 
 
 def _decision(
@@ -161,6 +178,9 @@ def test_platform_classvars_are_pinned() -> None:
     "text",
     [
         "hkp",
+        "h-k-p",
+        "h_k_p",
+        "H.K.P",
         "knowledge_projection",
         "knowledge-projection",
         "KnowledgeProjectionAdapter",
@@ -180,16 +200,17 @@ def test_hkp_outside_model() -> None:
         for platform in Platform
     )
 
-    concrete_adapters = (
+    concrete_adapters = _concrete_adapter_classes()
+    adapter_names = set(adapter_protocol.__all__) | {cls.__name__ for cls in concrete_adapters}
+    adapter_platforms = {cls.PLATFORM.value for cls in concrete_adapters}
+
+    assert set(concrete_adapters) == {
         AntigravAdapter,
         BudgetAuthorityAdapter,
         ClaudeAdapter,
         CodexAdapter,
         ReviewSeatAdapter,
-    )
-    adapter_names = set(adapter_protocol.__all__) | {cls.__name__ for cls in concrete_adapters}
-    adapter_platforms = {cls.PLATFORM.value for cls in concrete_adapters}
-
+    }
     assert all(not _mentions_hkp_model(name) for name in adapter_names)
     assert all(not _mentions_hkp_model(platform) for platform in adapter_platforms)
     assert not _mentions_hkp_model(inspect.getsource(adapter_protocol))
