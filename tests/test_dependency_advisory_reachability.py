@@ -26,6 +26,20 @@ EXCLUDED_DIRS = {
 FORBIDDEN_SYMBOLS = ("nltk.data.load", "torch.jit")
 FORBIDDEN_STAR_IMPORT_MODULES = {"nltk", "nltk.data", "torch", "torch.jit"}
 REPO_ROOT = Path(__file__).resolve().parents[1]
+FIRST_PARTY_SOURCE_ROOTS = (
+    "agents",
+    "config",
+    "hooks",
+    "logos",
+    "packages",
+    "pi-edge",
+    "plugins",
+    "scripts",
+    "sdlc",
+    "shared",
+    "tests",
+)
+FIRST_PARTY_SOURCE_FILES = ("conftest.py",)
 
 
 def _is_python_source(path: Path) -> bool:
@@ -39,14 +53,31 @@ def _is_python_source(path: Path) -> bool:
 
 
 def _source_files(repo_root: Path | None = None) -> list[Path]:
-    repo_root = repo_root or Path(__file__).resolve().parents[1]
+    if repo_root is None:
+        repo_root = REPO_ROOT
+        search_roots = [
+            repo_root / root for root in FIRST_PARTY_SOURCE_ROOTS if (repo_root / root).exists()
+        ]
+        search_roots.extend(
+            repo_root / filename
+            for filename in FIRST_PARTY_SOURCE_FILES
+            if (repo_root / filename).exists()
+        )
+    else:
+        search_roots = [repo_root]
+
     files: list[Path] = []
-    for dirpath, dirnames, filenames in os.walk(repo_root):
-        dirnames[:] = sorted(name for name in dirnames if name not in EXCLUDED_DIRS)
-        for filename in filenames:
-            path = Path(dirpath) / filename
-            if _is_python_source(path):
-                files.append(path)
+    for search_root in search_roots:
+        if search_root.is_file():
+            if _is_python_source(search_root):
+                files.append(search_root)
+            continue
+        for dirpath, dirnames, filenames in os.walk(search_root):
+            dirnames[:] = sorted(name for name in dirnames if name not in EXCLUDED_DIRS)
+            for filename in filenames:
+                path = Path(dirpath) / filename
+                if _is_python_source(path):
+                    files.append(path)
     return sorted(files)
 
 
@@ -233,6 +264,18 @@ def test_source_files_include_python_shebang_entrypoints(tmp_path: Path):
 
 def test_source_files_skip_unreadable_extensionless_sources(tmp_path: Path):
     assert _is_python_source(tmp_path / "missing-entrypoint") is False
+
+
+def test_source_files_use_reviewed_first_party_python_allowlist():
+    allowed_roots = set(FIRST_PARTY_SOURCE_ROOTS) | set(FIRST_PARTY_SOURCE_FILES)
+    source_roots = {
+        path.relative_to(REPO_ROOT).parts[0]
+        for path in _source_files()
+        if path.is_relative_to(REPO_ROOT)
+    }
+
+    assert source_roots <= allowed_roots
+    assert {"agents", "logos", "scripts", "shared", "tests"} <= source_roots
 
 
 def test_default_dependencies_do_not_restore_no_patch_llmlingua_edge():

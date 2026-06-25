@@ -93,7 +93,7 @@ All code paths verified by direct file reads. Line numbers reference commit `829
 ### History Compression (shared/context_compression.py)
 
 - **Invoked at line 620-622**: `compress_history(self.messages, keep_recent=4)`
-- **Method**: Lazy-loaded LLMLingua-2 (BERT-base, CPU) when the optional package is present; otherwise history compression is disabled and messages pass through unchanged.
+- **Method**: LLMLingua-2 (BERT-base, CPU), compression rate 0.33
 - **Effect**: Older turns compressed into single "user" role message, losing turn structure
 - **Position**: Compressed block sits in MIDDLE of messages list
 
@@ -194,7 +194,7 @@ persona.py or conversation_pipeline.py:
 
 ### Component 4: History Compression Replacement
 
-**Current**: When LLMLingua-2 is installed, older messages compress at 0.33 rate into a single "user" message in the middle of context. Default installs without LLMLingua keep the original messages unchanged.
+**Current**: LLMLingua-2 compresses older messages at 0.33 rate into single "user" message in the middle of context.
 
 **Proposed**: Replace lossy compression with the conversation thread summary (Component 2). Drop old messages entirely. The thread summary IS the distilled common ground, positioned at the TOP of context (system message) where attention is strongest.
 
