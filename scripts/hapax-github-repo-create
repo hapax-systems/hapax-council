@@ -58,7 +58,8 @@ Required next steps before treating the repo as Hapax-ready:
   2. Add .github/workflows/ci.yml with a stable all-green aggregate where runnable.
   3. Add .github/workflows/semgrep.yml using SEMGREP_APP_TOKEN.
   4. Add .coderabbit.yaml with request_changes_workflow: false.
-  5. Add codecov.yml and Codecov upload when the repo produces coverage.
-  6. Add CODECOV_TOKEN and SEMGREP_APP_TOKEN as repo or org secrets.
-  7. Run scripts/hapax-github-repo-standards-audit.py --repo hapax-systems/$name.
+  5. Add codecov.yml and Codecov OIDC upload when the repo produces coverage.
+  6. Add .github/dependabot.yml for Actions and every package manifest.
+  7. Rely on org CODECOV_TOKEN/SEMGREP_APP_TOKEN, adding repo secrets only for exceptions.
+  8. Run scripts/hapax-github-repo-standards-audit.py --repo hapax-systems/$name.
 EOF

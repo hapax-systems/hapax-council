@@ -19,7 +19,7 @@ updates:
         patterns:
           - "*"
 
-  - package-ecosystem: "pip"
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
@@ -30,6 +30,61 @@ updates:
         dependency-type: "development"
       python-prod:
         dependency-type: "production"
+
+  - package-ecosystem: "uv"
+    directory: "/packages/agentgov"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    rebase-strategy: "disabled"
+    groups:
+      agentgov-python:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "uv"
+    directory: "/packages/hapax-axioms"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    rebase-strategy: "disabled"
+    groups:
+      hapax-axioms-python:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "uv"
+    directory: "/packages/hapax-refusals"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    rebase-strategy: "disabled"
+    groups:
+      hapax-refusals-python:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "uv"
+    directory: "/packages/hapax-swarm"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    rebase-strategy: "disabled"
+    groups:
+      hapax-swarm-python:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "uv"
+    directory: "/packages/hapax-velocity-meter"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    rebase-strategy: "disabled"
+    groups:
+      hapax-velocity-meter-python:
+        patterns:
+          - "*"
 
   - package-ecosystem: "pnpm"
     directory: "/hapax-logos"
@@ -44,6 +99,18 @@ updates:
         dependency-type: "production"
 
   - package-ecosystem: "pnpm"
+    directory: "/obsidian-hapax"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    rebase-strategy: "disabled"
+    groups:
+      obsidian-hapax-dev:
+        dependency-type: "development"
+      obsidian-hapax-prod:
+        dependency-type: "production"
+
+  - package-ecosystem: "pnpm"
     directory: "/vscode"
     schedule:
       interval: "weekly"
@@ -54,3 +121,91 @@ updates:
         dependency-type: "development"
       vscode-prod:
         dependency-type: "production"
+
+  - package-ecosystem: "cargo"
+    directory: "/gst-plugin-glfeedback"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    rebase-strategy: "disabled"
+    groups:
+      gst-plugin-glfeedback-rust:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "cargo"
+    directory: "/experiments/slint-logos-spike"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    rebase-strategy: "disabled"
+    groups:
+      slint-logos-spike-rust:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "cargo"
+    directory: "/hapax-logos"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    rebase-strategy: "disabled"
+    groups:
+      hapax-logos-rust:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "cargo"
+    directory: "/hapax-logos/src-imagination"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    rebase-strategy: "disabled"
+    groups:
+      hapax-imagination-rust:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "cargo"
+    directory: "/hapax-logos/src-tauri"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    rebase-strategy: "disabled"
+    groups:
+      hapax-logos-tauri-rust:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "cargo"
+    directory: "/plugins/gst-crossfade"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    rebase-strategy: "disabled"
+    groups:
+      gst-crossfade-rust:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "cargo"
+    directory: "/plugins/gst-smooth-delay"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    rebase-strategy: "disabled"
+    groups:
+      gst-smooth-delay-rust:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "cargo"
+    directory: "/plugins/gst-temporalfx"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    rebase-strategy: "disabled"
+    groups:
+      gst-temporalfx-rust:
+        patterns:
+          - "*"
