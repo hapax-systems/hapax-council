@@ -33,7 +33,7 @@ classifiers = [
 dependencies = ["pyyaml>=6.0"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "hypothesis>=6.0", "ruff>=0.4", "pyright>=1.1"]
+dev = ["pytest>=9.1.1", "hypothesis>=6.155.7", "ruff>=0.15.20", "pyright>=1.1.411"]
 
 [project.urls]
 Homepage = "https://github.com/hapax-systems/agentgov"
