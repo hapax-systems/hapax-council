@@ -98,6 +98,35 @@ def _relay_payload_is_retired(payload: dict[str, Any]) -> bool:
     return False
 
 
+_CODEX_STATUS_SUFFIX = "-status"
+
+
+def _payload_identity_matches(payload: dict[str, Any], role: str) -> bool:
+    """Return true when a relay payload explicitly identifies ``role``."""
+    return any(str(payload.get(key, "")).strip() == role for key in ("session", "role", "lane"))
+
+
+def _canonical_cx_relay_role(path: Path, payload: dict[str, Any]) -> str | None:
+    """Return the Codex lane role for canonical cx relay files.
+
+    Codex lanes now mostly write ``cx-foo-status.yaml`` with ``role``/``lane``
+    fields, while older launchers wrote ``cx-foo.yaml`` with ``session``. Audit
+    sidecars can also match ``cx-*.yaml``, so require the payload identity to
+    agree with the canonical filename.
+    """
+    stem = path.stem
+    if not stem.startswith("cx-"):
+        return None
+    if stem.endswith(_CODEX_STATUS_SUFFIX):
+        role = stem[: -len(_CODEX_STATUS_SUFFIX)]
+        if _payload_identity_matches(payload, role):
+            return role
+        return None
+    if payload.get("session") == stem:
+        return stem
+    return None
+
+
 _AGENT_PGREP_PATTERN = (
     r"claude-code/bin/claude|/\.local/bin/claude|/\.npm-global/bin/codex|(^|/)codex( |$)"
     r"|(^|/)claude( |$)"
@@ -209,12 +238,13 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
             reaped.append(role)
             break  # only one file per role
 
+    reaped_sessions: set[str] = set()
     for path in sorted(relay_root.glob("cx-*.yaml")):
-        session = path.stem
         payload = _read_relay_yaml(path)
         if payload is None or _relay_payload_is_retired(payload):
             continue
-        if payload.get("session") != session:
+        session = _canonical_cx_relay_role(path, payload)
+        if session is None or session in reaped_sessions:
             continue
         if _lane_has_live_process(session):
             continue
@@ -234,6 +264,7 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
             LOG.warning("Failed to retire relay YAML for '%s'", session)
         else:
             reaped.append(session)
+            reaped_sessions.add(session)
 
     return reaped
 
@@ -278,13 +309,16 @@ def _load_relay_payloads(relay_root: Path) -> dict[str, dict[str, Any]]:
                 continue
             payloads[role] = payload
     for path in sorted(relay_root.glob("cx-*.yaml")):
-        role = path.stem
         payload = _read_relay_yaml(path)
         if payload is not None:
             # `cx-*.yaml` also includes read-only audit sidecars such as
-            # `cx-amber-wsjf-007-velocity-audit.yaml`. Only the canonical
-            # live relay file is named exactly after its `session`.
-            if payload.get("session") != role:
+            # `cx-amber-wsjf-007-velocity-audit.yaml`. Only canonical live
+            # relay files are named after their lane (`cx-foo.yaml`) or status
+            # relay (`cx-foo-status.yaml`) and agree with the payload identity.
+            role = _canonical_cx_relay_role(path, payload)
+            if role is None:
+                continue
+            if role in payloads:
                 continue
             if _relay_payload_is_retired(payload):
                 continue

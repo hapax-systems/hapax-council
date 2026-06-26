@@ -1041,6 +1041,116 @@ def test_load_relay_payloads_skips_retired_relays(tmp_path: Path) -> None:
     assert "cx-blue" in payloads
 
 
+def test_load_relay_payloads_accepts_codex_status_yamls(tmp_path: Path) -> None:
+    """Codex lanes write canonical status relays as ``cx-foo-status.yaml``.
+
+    The loader must index those under the lane role, not the literal
+    ``cx-foo-status`` stem, and still reject sidecars whose payload identity
+    does not match the filename.
+    """
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    _write_relay(
+        relay,
+        "cx-p0-status",
+        {
+            "role": "cx-p0",
+            "lane": "cx-p0",
+            "timestamp": _now().isoformat(),
+            "status": "blocked",
+        },
+    )
+    _write_relay(
+        relay,
+        "cx-blue-status",
+        {
+            "role": "cx-other",
+            "lane": "cx-other",
+            "timestamp": _now().isoformat(),
+            "status": "blocked",
+        },
+    )
+
+    payloads = sweeper._load_relay_payloads(relay)
+
+    assert "cx-p0" in payloads
+    assert "cx-p0-status" not in payloads
+    assert "cx-blue" not in payloads
+
+
+def test_load_relay_payloads_keeps_status_relay_when_plain_relay_exists(tmp_path: Path) -> None:
+    """If both Codex relay shapes exist, the status relay is authoritative."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    _write_relay(
+        relay,
+        "cx-p0-status",
+        {
+            "role": "cx-p0",
+            "lane": "cx-p0",
+            "timestamp": _now().isoformat(),
+            "status": "blocked",
+        },
+    )
+    _write_relay(
+        relay,
+        "cx-p0",
+        {
+            "session": "cx-p0",
+            "updated": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "active",
+        },
+    )
+
+    payloads = sweeper._load_relay_payloads(relay)
+
+    assert payloads["cx-p0"]["role"] == "cx-p0"
+    assert "session" not in payloads["cx-p0"]
+
+
+def test_reap_dead_lanes_retires_status_and_plain_codex_relay_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Duplicate Codex relay shapes for one lane should trigger one retire."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    _write_relay(
+        relay,
+        "cx-p0-status",
+        {
+            "role": "cx-p0",
+            "lane": "cx-p0",
+            "timestamp": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "blocked",
+        },
+    )
+    _write_relay(
+        relay,
+        "cx-p0",
+        {
+            "session": "cx-p0",
+            "updated": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "active",
+        },
+    )
+    retire_calls: list[list[str]] = []
+
+    def fake_has_live_process(role: str) -> bool:
+        return role != "cx-p0"
+
+    def fake_retire(args: list[str], **_: Any) -> object:
+        retire_calls.append(args)
+        return object()
+
+    monkeypatch.setattr(sweeper, "_lane_has_live_process", fake_has_live_process)
+    monkeypatch.setattr(sweeper.subprocess, "run", fake_retire)
+
+    reaped = sweeper.reap_dead_lanes(relay)
+
+    assert reaped == ["cx-p0"]
+    assert [call[1] for call in retire_calls] == ["cx-p0"]
+
+
 # ----------------------------------------------------------------------------
 # end-to-end: run_sweep + killswitch
 # ----------------------------------------------------------------------------
@@ -1069,6 +1179,60 @@ def test_run_sweep_finds_ghost_claimed(tmp_path: Path) -> None:
     state = run_sweep(vault_root=vault, relay_root=relay, repo_root=tmp_path, now=_now())
     ghost_events = [e for e in state.events if e.check_id == "ghost_claimed"]
     assert len(ghost_events) == 1
+
+
+def test_run_sweep_reaps_dead_codex_status_relay_before_stale_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression pin for the ``relay_yaml_stale @cx-p0`` storm.
+
+    A dead Codex lane with only ``cx-p0-status.yaml`` must be retired before
+    ``check_relay_yaml_staleness`` runs, otherwise every 5-minute sweep emits
+    the same stale relay event forever.
+    """
+    sweeper = _load_sweeper_module()
+    vault = _build_vault(tmp_path)
+    relay = tmp_path / "relay"
+    relay_path = _write_relay(
+        relay,
+        "cx-p0-status",
+        {
+            "role": "cx-p0",
+            "lane": "cx-p0",
+            "timestamp": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "blocked",
+        },
+    )
+    retire_calls: list[list[str]] = []
+
+    def fake_has_live_process(role: str) -> bool:
+        return role != "cx-p0"
+
+    def fake_retire(args: list[str], **_: Any) -> object:
+        retire_calls.append(args)
+        relay_path.write_text(
+            relay_path.read_text(encoding="utf-8")
+            + "\nstatus: retired\nretired_reason: test reaper\n",
+            encoding="utf-8",
+        )
+        return object()
+
+    monkeypatch.setattr(sweeper, "_lane_has_live_process", fake_has_live_process)
+    monkeypatch.setattr(sweeper.subprocess, "run", fake_retire)
+    with patch("cc_hygiene.checks._gh_pr_list", return_value=[]):
+        state = sweeper.run_sweep(
+            vault_root=vault,
+            relay_root=relay,
+            repo_root=tmp_path,
+            now=_now(),
+        )
+
+    assert retire_calls
+    assert retire_calls[0][1] == "cx-p0"
+    assert "status: retired" in relay_path.read_text(encoding="utf-8")
+    assert not any(
+        event.check_id == "relay_yaml_stale" and event.session == "cx-p0" for event in state.events
+    )
 
 
 def test_main_killswitch_writes_no_events(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
