@@ -1456,6 +1456,33 @@ Updated: 2026-05-01T16:16:39Z
     assert "Refusing to reap protected session 'cx-violet'" in caplog.text
 
 
+def test_session_is_protected_matches_protected_lane_section_shape(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Protection section tracking also accepts lane-shaped headings."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    relay.mkdir()
+    (relay / "session-protection.md").write_text(
+        """# Session Protection
+
+## Protected Lanes
+
+- `cx-violet` visible screen lane; do not kill, replace, or reclaim.
+
+## Retirement log
+
+- `cx-green` retired after session exit.
+""",
+        encoding="utf-8",
+    )
+    caplog.set_level("WARNING")
+
+    assert sweeper._session_is_protected("cx-violet", relay)
+    assert not sweeper._session_is_protected("cx-green", relay)
+    assert "Refusing to reap protected session 'cx-violet'" in caplog.text
+
+
 def test_reap_dead_lanes_skips_protected_codex_status_relay(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

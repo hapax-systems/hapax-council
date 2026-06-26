@@ -202,8 +202,8 @@ def _session_is_protected(session: str, relay_root: Path) -> bool:
         stripped = line.strip()
         lower = stripped.lower()
         if stripped.startswith("#"):
-            in_protected_session_section = "protected" in lower and (
-                "session" in lower or "live" in lower
+            in_protected_session_section = "protected" in lower and any(
+                marker in lower for marker in ("session", "live", "lane")
             )
         if needle in line and ("protected" in lower or in_protected_session_section):
             LOG.warning(
