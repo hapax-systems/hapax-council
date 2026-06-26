@@ -30,6 +30,7 @@ from shared.dispatch_service_time import (
     AGE_NORM_S,
     QueueLane,
     QueueTask,
+    is_claude_operator_pool_role,
     parse_ts,
     plan_dispatches,
     wsjf_effective,
@@ -199,6 +200,12 @@ class LaneState:
     dispatch_blocked_reason: str | None = None
 
 
+def _lane_dispatchable(lane: LaneState) -> bool:
+    if not lane.dispatchable:
+        return False
+    return not (lane.platform.lower() == "claude" and is_claude_operator_pool_role(lane.role))
+
+
 @dataclass
 class CoordinatorState:
     """Full coordinator snapshot written to SHM each tick."""
@@ -255,7 +262,7 @@ class Coordinator:
                 and l.alive
                 and l.claimed_task is None
                 and l.dispatch_ready
-                and l.dispatchable
+                and _lane_dispatchable(l)
             ),
             lanes_total=len(lanes),
             task_status_counts=_task_status_counts(tasks),
@@ -270,7 +277,7 @@ class Coordinator:
             and l.idle
             and l.claimed_task is None
             and l.dispatch_ready
-            and l.dispatchable
+            and _lane_dispatchable(l)
         ]
 
         # L3: pace the dispatch loop under CPU pressure. 'closed' dispatches
@@ -343,7 +350,7 @@ class Coordinator:
                 role=l.role,
                 platform=l.platform,
                 cooldown_remaining_s=cooldown_s - (now_mono - self._last_dispatch.get(l.role, 0.0)),
-                dispatchable=l.dispatchable,
+                dispatchable=_lane_dispatchable(l),
             )
             for l in idle_lanes
         ]
@@ -1468,6 +1475,8 @@ def _check_lane(lane: str | LaneDescriptor) -> LaneState:
         platform=descriptor.platform,
         alive=bool(descriptor.session),
     )
+    if descriptor.platform == "claude" and is_claude_operator_pool_role(descriptor.role):
+        state.dispatchable = False
 
     pidfile = _pid_dir_for_platform(descriptor.platform) / f"{descriptor.role}.pid"
     if pidfile.exists():
@@ -1682,7 +1691,7 @@ def _lane_to_dict(lane: LaneState) -> dict:
         "relay_age_s": round(lane.relay_age_s, 1) if lane.relay_age_s != float("inf") else None,
         "claimed_task": lane.claimed_task,
         "idle": lane.idle,
-        "dispatchable": lane.dispatchable,
+        "dispatchable": _lane_dispatchable(lane),
         "stalled": lane.stalled,
         "dispatch_ready": lane.dispatch_ready,
         "dispatch_blocked_reason": lane.dispatch_blocked_reason,

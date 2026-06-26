@@ -1412,6 +1412,10 @@ class TestDispatchableLaneSelection:
             "dev2": LaneState(role="dev2", platform="claude", alive=True, idle=True),
         }
         dispatched: list[tuple[str, str]] = []
+        written: list[CoordinatorState] = []
+
+        def capture_state(state: CoordinatorState, **_kwargs: object) -> None:
+            written.append(state)
 
         with (
             patch.object(Coordinator, "_scan_tasks", return_value=[task]),
@@ -1421,7 +1425,7 @@ class TestDispatchableLaneSelection:
                 "_dispatch",
                 side_effect=lambda t, lane: dispatched.append((t.task_id, lane.role)) or (True, ""),
             ),
-            patch.object(Coordinator, "_write_state"),
+            patch.object(Coordinator, "_write_state", side_effect=capture_state),
             patch(
                 "agents.coordinator.core.admission_state",
                 return_value=AdmissionDecision(state="open"),
@@ -1430,6 +1434,8 @@ class TestDispatchableLaneSelection:
             coordinator.tick()
 
         assert dispatched == []
+        assert written[0].lanes_idle == 0
+        assert written[0].lanes["dev2"]["dispatchable"] is False
 
     def test_tick_does_not_dispatch_retired_codex_relay_lane(self):
         coordinator = Coordinator()
@@ -1469,6 +1475,67 @@ class TestDispatchableLaneSelection:
             ),
         ):
             coordinator.tick()
+
+    def test_tick_excludes_wind_down_codex_relay_before_dispatch(self, tmp_path: Path):
+        coordinator = Coordinator()
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("codex",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+        )
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / "cx-fugu-1.yaml").write_text(
+            """session: cx-fugu-1
+platform: codex
+status: wind_down
+current_claim: null
+""",
+            encoding="utf-8",
+        )
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        written: list[CoordinatorState] = []
+
+        def capture_state(state: CoordinatorState, **_kwargs: object) -> None:
+            written.append(state)
+
+        with (
+            patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch(
+                "agents.coordinator.core._discover_lanes",
+                return_value=[
+                    LaneDescriptor(
+                        role="cx-fugu-1",
+                        session="hapax-codex-cx-fugu-1",
+                        platform="codex",
+                    )
+                ],
+            ),
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch.object(
+                Coordinator,
+                "_dispatch",
+                side_effect=AssertionError("wind-down codex relay lane was dispatched"),
+            ),
+            patch.object(Coordinator, "_write_state", side_effect=capture_state),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=AdmissionDecision(state="open"),
+            ),
+        ):
+            coordinator.tick()
+
+        assert written[0].lanes_alive == 1
+        assert written[0].lanes_idle == 0
+        assert written[0].lanes["cx-fugu-1"]["dispatchable"] is False
 
 
 class TestDispatch:
