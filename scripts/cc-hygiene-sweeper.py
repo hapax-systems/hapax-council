@@ -210,6 +210,7 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
     reaped: list[str] = []
     retire_script = Path.home() / "projects" / "hapax-council" / "scripts" / "hapax-relay-retire"
 
+    reaped_sessions: set[str] = set()
     for role in KNOWN_ROLES:
         for suffix in (f"{role}-status.yaml", f"{role}.yaml"):
             yaml_path = relay_root / suffix
@@ -236,9 +237,9 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
                 LOG.warning("Failed to retire relay YAML for '%s'", role)
                 continue
             reaped.append(role)
+            reaped_sessions.add(role)
             break  # only one file per role
 
-    reaped_sessions: set[str] = set()
     for path in sorted(relay_root.glob("cx-*.yaml")):
         payload = _read_relay_yaml(path)
         if payload is None or _relay_payload_is_retired(payload):
@@ -300,6 +301,7 @@ def _load_relay_payloads(relay_root: Path) -> dict[str, dict[str, Any]]:
     from cc_hygiene.checks import _read_relay_yaml  # local helper
 
     payloads: dict[str, dict[str, Any]] = {}
+    retired_status_roles: set[str] = set()
     if not relay_root.is_dir():
         return payloads
     for role in KNOWN_ROLES:
@@ -321,6 +323,10 @@ def _load_relay_payloads(relay_root: Path) -> dict[str, dict[str, Any]]:
             if role in payloads:
                 continue
             if _relay_payload_is_retired(payload):
+                if path.stem.endswith(_CODEX_STATUS_SUFFIX):
+                    retired_status_roles.add(role)
+                continue
+            if role in retired_status_roles:
                 continue
             payloads[role] = payload
     return payloads
