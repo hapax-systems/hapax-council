@@ -1468,7 +1468,7 @@ def test_session_is_protected_matches_protected_lane_section_shape(
 
 ## Protected Lanes
 
-- `cx-violet` visible screen lane; do not kill, replace, or reclaim.
+- cx-violet visible screen lane; do not kill, replace, or reclaim.
 
 ## Retirement log
 
@@ -1481,6 +1481,26 @@ def test_session_is_protected_matches_protected_lane_section_shape(
     assert sweeper._session_is_protected("cx-violet", relay)
     assert not sweeper._session_is_protected("cx-green", relay)
     assert "Refusing to reap protected session 'cx-violet'" in caplog.text
+
+
+def test_session_is_protected_does_not_substring_match_unquoted_session(
+    tmp_path: Path,
+) -> None:
+    """Plain session names still have to match as standalone tokens."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    relay.mkdir()
+    (relay / "session-protection.md").write_text(
+        """# Session Protection
+
+## Protected Lanes
+
+- cx-violet-extra visible screen lane; do not kill, replace, or reclaim.
+""",
+        encoding="utf-8",
+    )
+
+    assert not sweeper._session_is_protected("cx-violet", relay)
 
 
 def test_reap_dead_lanes_skips_protected_codex_status_relay(
@@ -1588,6 +1608,47 @@ def test_reap_dead_lanes_records_nonzero_retire_failure(
     assert "recheck with: HAPAX_RELAY_DIR=" in caplog.text
 
 
+def test_reap_dead_lanes_known_role_failure_skips_sibling_but_continues_roles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed retire helper suppresses same-role retries, not later roles."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    for name, role in (
+        ("alpha-status", "alpha"),
+        ("alpha", "alpha"),
+        ("beta-status", "beta"),
+    ):
+        _write_relay(
+            relay,
+            name,
+            {
+                "role": role,
+                "timestamp": (_now() - timedelta(hours=2)).isoformat(),
+                "status": "blocked",
+            },
+        )
+    failures: list[str] = []
+    retire_calls: list[str] = []
+
+    def fake_retire(args: list[str], **_: Any) -> object:
+        role = args[1]
+        retire_calls.append(role)
+        if role == "alpha":
+            return sweeper.subprocess.CompletedProcess(args, 2)
+        return object()
+
+    monkeypatch.setattr(sweeper, "KNOWN_ROLES", ("alpha", "beta"))
+    monkeypatch.setattr(sweeper, "_lane_has_live_process", lambda _role: False)
+    monkeypatch.setattr(sweeper.subprocess, "run", fake_retire)
+
+    reaped = sweeper.reap_dead_lanes(relay, failures=failures)
+
+    assert reaped == ["beta"]
+    assert failures == ["alpha"]
+    assert retire_calls == ["alpha", "beta"]
+
+
 def test_reap_dead_lanes_uses_configured_retire_script(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1682,6 +1743,31 @@ def test_session_is_protected_fails_closed_when_protection_file_unreadable(
     assert str(protection) in caplog.text
     assert "repair the protection file" in caplog.text
     assert "recheck with: test -r" in caplog.text
+
+
+def test_session_is_protected_fails_closed_when_override_file_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Unreadable explicit overrides must fail closed like the default file."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    relay.mkdir()
+    protection = tmp_path / "custom-session-protection.md"
+    protection.write_text("- `cx-violet` is protected.\n", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def raise_for_protection_file(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self == protection:
+            raise OSError("permission denied")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setenv("HAPAX_SESSION_PROTECTION", str(protection))
+    monkeypatch.setattr(Path, "read_text", raise_for_protection_file)
+    caplog.set_level("WARNING")
+
+    assert sweeper._session_is_protected("cx-violet", relay)
+    assert str(protection) in caplog.text
+    assert "repair the protection file" in caplog.text
 
 
 def test_reap_dead_lanes_fail_closed_when_protection_file_unreadable(

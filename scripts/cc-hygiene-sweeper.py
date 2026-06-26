@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -150,6 +151,11 @@ def _protection_recheck_command(protection_file: Path) -> str:
     return f"test -r {quoted} && sed -n '1,120p' {quoted}"
 
 
+def _line_mentions_session(line: str, session: str) -> bool:
+    """Return true when ``line`` names ``session`` as a standalone token."""
+    return bool(re.search(rf"(?<![A-Za-z0-9_-]){re.escape(session)}(?![A-Za-z0-9_-])", line))
+
+
 def _relay_retire_script() -> Path:
     override = os.environ.get(RELAY_RETIRE_SCRIPT_ENV)
     if override:
@@ -196,7 +202,6 @@ def _session_is_protected(session: str, relay_root: Path) -> bool:
             _protection_recheck_command(protection_file),
         )
         return True
-    needle = f"`{session}`"
     in_protected_session_section = False
     for line in text.splitlines():
         stripped = line.strip()
@@ -205,7 +210,9 @@ def _session_is_protected(session: str, relay_root: Path) -> bool:
             in_protected_session_section = "protected" in lower and any(
                 marker in lower for marker in ("session", "live", "lane")
             )
-        if needle in line and ("protected" in lower or in_protected_session_section):
+        if _line_mentions_session(line, session) and (
+            "protected" in lower or in_protected_session_section
+        ):
             LOG.warning(
                 "Refusing to reap protected session '%s' listed in %s: %s",
                 session,
@@ -427,6 +434,8 @@ def reap_dead_lanes(relay_root: Path, *, failures: list[str] | None = None) -> l
             LOG.info("Reaping dead lane '%s' — no running process found", role)
             if not _retire_dead_lane(retire_script, retire_env, relay_root, role):
                 _record_reap_failure(role, failures=failures, failed_roles=failed_roles)
+                # Do not retry the plain/status sibling for a role whose retire helper
+                # already failed, but continue evaluating the remaining roles.
                 break
             reaped.append(role)
             reaped_roles.add(role)
