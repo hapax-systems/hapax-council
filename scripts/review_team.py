@@ -1322,7 +1322,7 @@ def _dossier_validity_blockers(
         except OSError:
             witness_state = dossier.get("degraded_family_outage_witness") or {}
         except (json.JSONDecodeError, TypeError, ValueError):
-            witness_state = {}
+            witness_state = dossier.get("degraded_family_outage_witness") or {}
         if isinstance(witness_state, Mapping):
             try:
                 constituted = _parse_iso_datetime(dossier.get("constituted_at"))
@@ -1341,7 +1341,8 @@ def _dossier_validity_blockers(
                         # relaxation is NOT used, per the #4246 review finding). The MOVING
                         # observed_at bounds freshness on the upper side (constituted/admitted
                         # within TTL of the latest observation) — re-stamping observed_at
-                        # forward only extends the window, so a valid dossier stays valid.
+                        # forward only extends the window, so a later run never un-witnesses a
+                        # valid dossier (the clobber fix).
                         if not (
                             _seconds_between(constituted, started) >= 0
                             and _seconds_between(constituted, observed) <= FAMILY_OUTAGE_TTL_S

@@ -1643,7 +1643,7 @@ class TestFamilyOutageDegradation:
 
         assert any(b.startswith("review_dossier_degradation_unwitnessed:") for b in blockers)
 
-    def test_malformed_external_witness_overrides_embedded_degraded_witness(
+    def test_malformed_external_witness_falls_back_to_embedded_degraded_witness(
         self, tmp_path: Path
     ) -> None:
         rt = _load_review_team_module()
@@ -1661,7 +1661,25 @@ class TestFamilyOutageDegradation:
             admission_time="2026-06-11T20:30:00+00:00",
         )
 
-        assert any(b.startswith("review_dossier_degradation_unwitnessed:") for b in blockers)
+        assert blockers == ()
+
+    def test_live_external_witness_overrides_stale_embedded_degraded_witness(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = self._degraded_dossier(rt)
+        dossier["degraded_family_outage_witness"] = {"claude": "2026-06-11T10:00:00+00:00"}
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=self._witness(tmp_path, observed="2026-06-11T19:30:00+00:00"),
+            admission_time="2026-06-11T20:30:00+00:00",
+        )
+
+        assert blockers == ()
 
     def test_expired_witness_blocks_current_admission(self, tmp_path) -> None:
         rt = _load_review_team_module()
