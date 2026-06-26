@@ -108,3 +108,21 @@ class TestLatency:
         assert hist._sum.get() >= 0
         total_count = sum(b.get() for b in hist._buckets)
         assert total_count >= 1
+
+    def test_set_ttft_seconds_reaches_finish_without_replacing_latency(
+        self, isolated_metrics, monkeypatch
+    ):
+        from agents.telemetry import llm_call_span as span_module
+
+        observed: dict[str, float | str | None] = {}
+
+        def fake_finish(**kwargs):
+            observed.update(kwargs)
+
+        monkeypatch.setattr(span_module, "record_llm_call_finish", fake_finish)
+
+        with span_module.llm_call_span(model="qwen3.5-9b", route="local-fast") as span:
+            span.set_ttft_seconds(0.25)
+
+        assert observed["latency_seconds"] != observed["ttft_seconds"]
+        assert observed["ttft_seconds"] == 0.25

@@ -4458,3 +4458,12 @@ from shared.avsdlc_witness import (  # noqa: E402
 )
 
 _avi_intent_fields_from_record_and_frame
+
+# local-capacity TTFT producer: this setter is the public span API for streaming
+# callers that can observe the first token. Current local Tabby/DMN calls are
+# non-streaming, so they must NOT fabricate TTFT from total response latency.
+# Tests cover the handoff; live callers should invoke this only from a real
+# first-token event.
+from agents.telemetry.llm_call_span import LlmCallSpan as _LocalCapacityLlmCallSpan  # noqa: E402
+
+_LocalCapacityLlmCallSpan.set_ttft_seconds

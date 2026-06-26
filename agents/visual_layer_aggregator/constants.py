@@ -23,6 +23,9 @@ PERCEPTION_MINUTES_PATH = Path.home() / ".cache" / "hapax-daimonion" / "percepti
 HEALTH_HISTORY_PATH = Path("profiles/health-history.jsonl")
 INFRA_SNAPSHOT_PATH = Path("profiles/infra-snapshot.json")
 LANGFUSE_STATE_PATH = Path.home() / ".cache" / "langfuse-sync" / "state.json"
+LOCAL_CAPACITY_FILE = Path(
+    os.environ.get("HAPAX_LOCAL_CAPACITY_FILE", "/dev/shm/hapax-local-capacity.json")
+)
 WATCH_STATE_DIR = Path.home() / "hapax-state" / "watch"
 AUDIO_SELF_PERCEPTION_FILE = Path("/dev/shm/hapax-audio-self-perception/state.json")
 AUDIO_PERCEPTION_FILE = Path("/dev/shm/hapax-perception/audio.json")

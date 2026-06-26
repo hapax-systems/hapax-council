@@ -22,8 +22,8 @@ router = APIRouter(prefix="/api/stimmung", tags=["stimmung"])
 
 # LRR Phase 6 §4.A — when stream is publicly visible, only these three
 # operator-mental-state dimensions survive the redaction (banded into
-# categorical labels). The remaining 8 dims are full-fidelity numeric
-# values that read as biometric/cognitive surveillance on a broadcast.
+# categorical labels). Non-banded projected dimensions are full-fidelity
+# numeric values that read as biometric/cognitive surveillance on a broadcast.
 _BROADCAST_SAFE_BANDED_DIMS: dict[str, callable] = {
     "operator_energy": band_energy,
     "physiological_coherence": band_coherence,
@@ -35,6 +35,7 @@ _SHM_STATE = Path("/dev/shm/hapax-stimmung/state.json")
 _DIMENSION_KEYS = [
     "health",
     "resource_pressure",
+    "local_capacity_pressure",
     "error_rate",
     "processing_throughput",
     "perception_confidence",
@@ -75,9 +76,9 @@ def _build_dimensions(raw: dict) -> dict[str, dict]:
 async def get_stimmung() -> dict:
     """Return structured stimmung state from /dev/shm/hapax-stimmung/state.json.
 
-    LRR Phase 6 §4.A: when stream is publicly visible, replaces the 11
+    LRR Phase 6 §4.A: when stream is publicly visible, replaces projected
     numeric dimension values with categorical bands for energy/coherence/
-    tension and omits the other 8 dimensions entirely. ``overall_stance``
+    tension and omits non-banded dimensions entirely. ``overall_stance``
     is categorical and broadcast-safe as-is.
     """
     raw = _read_json(_SHM_STATE)

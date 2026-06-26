@@ -81,6 +81,12 @@ class TestStimmungReader:
         result = assemble_snapshot(stimmung_path=path, eigenform_path=tmp_path / "no.jsonl")
         assert result["stimmung"]["dimensions"]["resource_pressure"] == 0.4
 
+    def test_top_level_local_capacity_dim_passed(self, tmp_path: Path) -> None:
+        path = tmp_path / "s.json"
+        path.write_text(json.dumps({"local_capacity_pressure": {"value": 0.72}}))
+        result = assemble_snapshot(stimmung_path=path, eigenform_path=tmp_path / "no.jsonl")
+        assert result["stimmung"]["dimensions"]["local_capacity_pressure"] == 0.72
+
     def test_invalid_json_returns_empty_dict(self, tmp_path: Path) -> None:
         path = tmp_path / "s.json"
         path.write_text("{ invalid")

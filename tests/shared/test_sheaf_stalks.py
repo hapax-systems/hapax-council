@@ -36,11 +36,11 @@ class TestConstants:
 
 
 class TestLinearizeStimmung:
-    def test_empty_state_returns_31_zero_vector(self) -> None:
-        """10 dims × 3 floats + 1 stance = 31-element vector, all zero
+    def test_empty_state_returns_34_zero_vector(self) -> None:
+        """11 dims × 3 floats + 1 stance = 34-element vector, all zero
         for an empty state."""
         result = linearize_stimmung({})
-        assert len(result) == 31
+        assert len(result) == 34
         assert all(x == 0.0 for x in result)
 
     def test_dim_value_trend_freshness_serialised(self) -> None:

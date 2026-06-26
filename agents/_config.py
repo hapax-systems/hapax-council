@@ -121,43 +121,10 @@ def get_model(alias_or_id: str = "balanced"):
 
 
 def get_model_adaptive(alias: str = "balanced"):
-    """Stimmung-aware model selection -- downgrades when system is stressed."""
-    import json
-    from pathlib import Path
+    """Stimmung-aware model selection -- delegates to shared.config."""
+    from shared.config import get_model_adaptive as _shared_get_model_adaptive
 
-    try:
-        raw = json.loads(Path("/dev/shm/hapax-stimmung/state.json").read_text(encoding="utf-8"))
-        stance = raw.get("overall_stance", "nominal")
-        cost = raw.get("llm_cost_pressure", {}).get("value", 0.0)
-        resource = raw.get("resource_pressure", {}).get("value", 0.0)
-
-        if stance == "critical":
-            _log.debug("Stimmung critical -> routing to local-fast")
-            return get_model("local-fast")
-
-        if resource > 0.7:
-            downgraded = {"balanced": "fast", "fast": "local-fast", "reasoning": "local-fast"}
-            if alias in downgraded:
-                _log.debug(
-                    "Resource pressure %.2f -> %s downgraded to %s",
-                    resource,
-                    alias,
-                    downgraded[alias],
-                )
-                return get_model(downgraded[alias])
-
-        if cost > 0.6:
-            downgraded = {"balanced": "fast", "reasoning": "fast"}
-            if alias in downgraded:
-                _log.debug(
-                    "Cost pressure %.2f -> %s downgraded to %s", cost, alias, downgraded[alias]
-                )
-                return get_model(downgraded[alias])
-
-    except Exception:
-        pass
-
-    return get_model(alias)
+    return _shared_get_model_adaptive(alias)
 
 
 @functools.lru_cache(maxsize=1)

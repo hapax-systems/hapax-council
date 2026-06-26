@@ -13,5 +13,6 @@ pipeline_state:
   path: "/dev/shm/hapax-stimmung/state.json"
   metrics: [overall_stance, health, resource_pressure, error_rate, processing_throughput,
             perception_confidence, llm_cost_pressure, grounding_quality,
-            operator_stress, operator_energy, physiological_coherence]
+            local_capacity_pressure, operator_stress, operator_energy,
+            physiological_coherence]
   stale_threshold: 120
