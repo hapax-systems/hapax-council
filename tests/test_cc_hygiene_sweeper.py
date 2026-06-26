@@ -1325,6 +1325,42 @@ def test_session_is_protected_fails_closed_when_protection_file_unreadable(
     assert "repair the protection file" in caplog.text
 
 
+def test_reap_dead_lanes_fail_closed_when_protection_file_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreadable protection file must block automated relay retirement."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    _write_relay(
+        relay,
+        "cx-violet-status",
+        {
+            "role": "cx-violet",
+            "lane": "cx-violet",
+            "timestamp": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "blocked",
+        },
+    )
+    protection_file = relay / "session-protection.md"
+    protection_file.write_text("- `cx-violet` is protected.\n", encoding="utf-8")
+    retire_calls: list[list[str]] = []
+    original_read_text = sweeper.Path.read_text
+
+    def fake_read_text(path: Path, *args: Any, **kwargs: Any) -> str:
+        if path == protection_file:
+            raise OSError("permission denied")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(sweeper.Path, "read_text", fake_read_text)
+    monkeypatch.setattr(sweeper, "_lane_has_live_process", lambda _role: False)
+    monkeypatch.setattr(sweeper.subprocess, "run", lambda args, **_: retire_calls.append(args))
+
+    reaped = sweeper.reap_dead_lanes(relay)
+
+    assert reaped == []
+    assert retire_calls == []
+
+
 # ----------------------------------------------------------------------------
 # end-to-end: run_sweep + killswitch
 # ----------------------------------------------------------------------------
