@@ -72,6 +72,7 @@ def _read_stimmung(path: Path) -> dict:
     _DIMENSION_NAMES = {
         "health",
         "resource_pressure",
+        "local_capacity_pressure",
         "error_rate",
         "processing_throughput",
         "perception_confidence",

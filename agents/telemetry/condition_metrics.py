@@ -34,6 +34,14 @@ Usage:
 
 from __future__ import annotations
 
+import json
+import logging
+import math
+import os
+import threading
+import time
+from pathlib import Path
+
 try:
     from prometheus_client import REGISTRY, Counter, Histogram
 
@@ -55,6 +63,42 @@ _LLM_CALL_COST_DOLLARS_TOTAL = None
 _LLM_TOKENS_TOTAL = None
 _EMBED_CALLS_TOTAL = None
 _EMBED_INPUT_CHARS_TOTAL = None
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if math.isfinite(value) else default
+
+
+def _positive_env_float(name: str, default: float) -> float:
+    value = _env_float(name, default)
+    return value if value > 0 else default
+
+
+LOCAL_CAPACITY_FILE = Path(
+    os.environ.get("HAPAX_LOCAL_CAPACITY_FILE", "/dev/shm/hapax-local-capacity.json")
+)
+LOCAL_CAPACITY_LEASE_DIR = Path(
+    os.environ.get(
+        "HAPAX_LOCAL_CAPACITY_LEASE_DIR",
+        str(LOCAL_CAPACITY_FILE.with_suffix(f"{LOCAL_CAPACITY_FILE.suffix}.d")),
+    )
+)
+LOCAL_CAPACITY_CEILING = max(0.0, _env_float("HAPAX_LOCAL_CAPACITY_CEILING", 1.0))
+LOCAL_CAPACITY_BASELINE_S = _positive_env_float("HAPAX_LOCAL_CAPACITY_BASELINE_S", 1.0)
+LOCAL_CAPACITY_LEASE_TTL_S = _positive_env_float("HAPAX_LOCAL_CAPACITY_LEASE_TTL_S", 300.0)
+_LOCAL_CAPACITY_ALPHA = min(
+    1.0,
+    max(0.0, _env_float("HAPAX_LOCAL_CAPACITY_EWMA_ALPHA", 0.2)),
+)
+_LOCAL_CAPACITY_LOCK = threading.Lock()
+_LOCAL_CAPACITY_INFLIGHT = 0
+_LOCAL_CAPACITY_TTFT_EWMA_S: float | None = None
+_DEFAULT_LOCAL_CAPACITY_FILE = Path("/dev/shm/hapax-local-capacity.json")
+_LOG = logging.getLogger(__name__)
 
 _LLM_LATENCY_BUCKETS = (
     0.05,
@@ -151,6 +195,7 @@ def reset_for_testing() -> None:
     global _LLM_CALLS_TOTAL, _LLM_CALL_LATENCY_SECONDS, _LLM_CALL_OUTCOMES_TOTAL
     global _LLM_CALL_COST_DOLLARS_TOTAL
     global _LLM_TOKENS_TOTAL, _EMBED_CALLS_TOTAL, _EMBED_INPUT_CHARS_TOTAL
+    global _LOCAL_CAPACITY_INFLIGHT, _LOCAL_CAPACITY_TTFT_EWMA_S
     _LLM_CALLS_TOTAL = None
     _LLM_CALL_LATENCY_SECONDS = None
     _LLM_CALL_OUTCOMES_TOTAL = None
@@ -158,6 +203,13 @@ def reset_for_testing() -> None:
     _LLM_TOKENS_TOTAL = None
     _EMBED_CALLS_TOTAL = None
     _EMBED_INPUT_CHARS_TOTAL = None
+    with _LOCAL_CAPACITY_LOCK:
+        _LOCAL_CAPACITY_INFLIGHT = 0
+        _LOCAL_CAPACITY_TTFT_EWMA_S = None
+        try:
+            _local_capacity_lease_file().unlink(missing_ok=True)
+        except Exception:
+            _LOG.debug("local capacity lease reset failed", exc_info=True)
 
 
 def _condition() -> str:
@@ -169,8 +221,154 @@ def _condition() -> str:
         return "unknown"
 
 
+def _is_local_capacity_route(*, model: str, route: str) -> bool:
+    model_l = model.lower()
+    route_l = route.lower()
+    if route_l.startswith("local") or route_l in {
+        "dmn-sensory",
+        "dmn-thinking",
+        "local-judge",
+        "resident-command-r",
+        "spontaneous-speech",
+    }:
+        return True
+    local_model_hints = (
+        "local-fast",
+        "exl",
+        "bpw",
+        "tabby",
+        "ollama",
+        "nomic",
+        "mlx",
+    )
+    return any(hint in model_l for hint in local_model_hints)
+
+
+def _local_capacity_lease_file() -> Path:
+    return LOCAL_CAPACITY_LEASE_DIR / f"{os.getpid()}.json"
+
+
+def _safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        coerced = float(value)
+    except (TypeError, ValueError):
+        return default
+    return coerced if math.isfinite(coerced) else default
+
+
+def _write_local_capacity_lease_locked() -> None:
+    try:
+        LOCAL_CAPACITY_LEASE_DIR.mkdir(parents=True, exist_ok=True)
+        lease = _local_capacity_lease_file()
+        if _LOCAL_CAPACITY_INFLIGHT <= 0 and _LOCAL_CAPACITY_TTFT_EWMA_S is None:
+            lease.unlink(missing_ok=True)
+            return
+        payload = {
+            "pid": os.getpid(),
+            "timestamp": time.time(),
+            "inflight": _LOCAL_CAPACITY_INFLIGHT,
+            "ttft_ewma_s": _LOCAL_CAPACITY_TTFT_EWMA_S,
+        }
+        tmp = lease.with_suffix(f"{lease.suffix}.tmp")
+        tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        tmp.replace(lease)
+    except Exception:
+        _LOG.debug("local capacity lease publish failed", exc_info=True)
+
+
+def _aggregate_local_capacity_leases_locked() -> tuple[int, float | None]:
+    now = time.time()
+    inflight = 0
+    ttft_ewma_s: float | None = None
+    try:
+        leases = list(LOCAL_CAPACITY_LEASE_DIR.glob("*.json"))
+    except Exception:
+        _LOG.debug("local capacity lease scan failed", exc_info=True)
+        return max(0, _LOCAL_CAPACITY_INFLIGHT), _LOCAL_CAPACITY_TTFT_EWMA_S
+
+    for lease in leases:
+        try:
+            data = json.loads(lease.read_text(encoding="utf-8"))
+        except Exception:
+            _LOG.debug("local capacity lease read failed: %s", lease, exc_info=True)
+            continue
+
+        timestamp = _safe_float(data.get("timestamp"), default=0.0)
+        if timestamp <= 0 or now - timestamp > LOCAL_CAPACITY_LEASE_TTL_S:
+            try:
+                lease.unlink(missing_ok=True)
+            except Exception:
+                _LOG.debug("stale local capacity lease cleanup failed: %s", lease, exc_info=True)
+            continue
+
+        inflight += max(0, int(_safe_float(data.get("inflight"), default=0.0)))
+        lease_ttft = data.get("ttft_ewma_s")
+        if lease_ttft is not None:
+            lease_ttft_f = _safe_float(lease_ttft, default=0.0)
+            if lease_ttft_f > 0:
+                ttft_ewma_s = max(ttft_ewma_s or 0.0, lease_ttft_f)
+
+    return inflight, ttft_ewma_s
+
+
+def _publish_local_capacity_locked() -> None:
+    if (
+        os.environ.get("PYTEST_CURRENT_TEST")
+        and LOCAL_CAPACITY_FILE == _DEFAULT_LOCAL_CAPACITY_FILE
+    ):
+        return
+    _write_local_capacity_lease_locked()
+    ceiling = max(0.0, LOCAL_CAPACITY_CEILING)
+    inflight, aggregate_ttft_ewma_s = _aggregate_local_capacity_leases_locked()
+    ttft_ewma_s = aggregate_ttft_ewma_s if aggregate_ttft_ewma_s is not None else 0.0
+    baseline_s = LOCAL_CAPACITY_BASELINE_S if LOCAL_CAPACITY_BASELINE_S > 0 else 1.0
+    payload = {
+        "timestamp": time.time(),
+        "inflight": inflight,
+        "ceiling": ceiling,
+        "ttft_ewma_s": round(ttft_ewma_s, 3),
+        "ttft_baseline_s": round(baseline_s, 3),
+        "ttft_ratio": round(ttft_ewma_s / baseline_s, 3) if ttft_ewma_s > 0 else 1.0,
+    }
+    try:
+        LOCAL_CAPACITY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = LOCAL_CAPACITY_FILE.with_suffix(f"{LOCAL_CAPACITY_FILE.suffix}.tmp")
+        tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        tmp.replace(LOCAL_CAPACITY_FILE)
+    except Exception:
+        _LOG.debug("local capacity aggregate publish failed", exc_info=True)
+        return
+
+
+def _record_local_capacity_start(*, model: str, route: str) -> None:
+    global _LOCAL_CAPACITY_INFLIGHT
+    if not _is_local_capacity_route(model=model, route=route):
+        return
+    with _LOCAL_CAPACITY_LOCK:
+        _LOCAL_CAPACITY_INFLIGHT += 1
+        _publish_local_capacity_locked()
+
+
+def _record_local_capacity_finish(*, model: str, route: str, ttft_seconds: float | None) -> None:
+    global _LOCAL_CAPACITY_INFLIGHT, _LOCAL_CAPACITY_TTFT_EWMA_S
+    if not _is_local_capacity_route(model=model, route=route):
+        return
+    with _LOCAL_CAPACITY_LOCK:
+        _LOCAL_CAPACITY_INFLIGHT = max(0, _LOCAL_CAPACITY_INFLIGHT - 1)
+        if ttft_seconds is not None and ttft_seconds > 0:
+            if _LOCAL_CAPACITY_TTFT_EWMA_S is None:
+                _LOCAL_CAPACITY_TTFT_EWMA_S = ttft_seconds
+            else:
+                _LOCAL_CAPACITY_TTFT_EWMA_S = (
+                    _LOCAL_CAPACITY_ALPHA * ttft_seconds
+                    + (1 - _LOCAL_CAPACITY_ALPHA) * _LOCAL_CAPACITY_TTFT_EWMA_S
+                )
+        _publish_local_capacity_locked()
+
+
 def record_llm_call_start(*, model: str, route: str) -> None:
     """Record that a call has begun. Increments the call counter."""
+    _record_local_capacity_start(model=model, route=route)
     _ensure_metrics()
     if _LLM_CALLS_TOTAL is None:
         return
@@ -183,8 +381,10 @@ def record_llm_call_finish(
     route: str,
     outcome: str,
     latency_seconds: float,
+    ttft_seconds: float | None = None,
 ) -> None:
     """Record terminal state for a call: observe latency + outcome."""
+    _record_local_capacity_finish(model=model, route=route, ttft_seconds=ttft_seconds)
     _ensure_metrics()
     cond = _condition()
     if _LLM_CALL_LATENCY_SECONDS is not None:

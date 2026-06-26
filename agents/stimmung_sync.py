@@ -30,6 +30,7 @@ STIMMUNG_STATE = Path("/dev/shm/hapax-stimmung/state.json")
 DIMENSION_NAMES = [
     "health",
     "resource_pressure",
+    "local_capacity_pressure",
     "error_rate",
     "processing_throughput",
     "perception_confidence",

@@ -219,6 +219,35 @@ class TestCostEndpoint:
         data = resp.json()
         assert data["total_cost"] == 1.25
 
+    async def test_cost_returns_local_capacity_from_active_api_shape(self, client):
+        from logos.data.cost import CostSnapshot, LocalVolumeTrend
+
+        cache.cost = CostSnapshot(
+            available=False,
+            local_capacity=LocalVolumeTrend(
+                pressure=0.8,
+                inflight=8,
+                ceiling=10,
+                ttft_ratio=1.4,
+                age_s=2.0,
+                alert_active=True,
+                available=True,
+            ),
+        )
+        resp = await client.get("/api/cost")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["available"] is False
+        assert data["local_capacity"] == {
+            "pressure": 0.8,
+            "inflight": 8,
+            "ceiling": 10,
+            "ttft_ratio": 1.4,
+            "age_s": 2.0,
+            "alert_active": True,
+            "available": True,
+        }
+
 
 class TestGoalsEndpoint:
     async def test_goals_returns_data(self, client):

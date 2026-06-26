@@ -40,7 +40,6 @@ describe("api client (invoke-only)", () => {
     ["perception", "perception", "get_perception"],
     ["visualLayer", "visualLayer", "get_visual_layer"],
     ["demos", "demos", "get_demos"],
-    ["cost", "cost", "get_cost"],
   ];
 
   it.each(noArgCommands)("%s invokes %s with no args", async (_, method, cmd) => {
@@ -76,6 +75,11 @@ describe("api client (invoke-only)", () => {
   });
 
   // --- Proxy commands (no-arg) ---
+
+  it("cost uses active FastAPI proxy path", async () => {
+    await api.cost();
+    expect(mockInvoke).toHaveBeenCalledWith("proxy_get_generic", { path: "/cost" });
+  });
 
   const proxyNoArgCommands: [string, keyof typeof api, string][] = [
     ["compositorLive", "compositorLive", "proxy_compositor_live"],
@@ -195,6 +199,14 @@ describe("api client (invoke-only)", () => {
     });
   });
 
+  it("put invokes proxy_put with path and body", async () => {
+    await api.put("/nudges/src-1", { action: "update" });
+    expect(mockInvoke).toHaveBeenCalledWith("proxy_put", {
+      path: "/nudges/src-1",
+      body: { action: "update" },
+    });
+  });
+
   it("get invokes proxy_get_generic with path", async () => {
     await api.get("/chat/sessions/abc");
     expect(mockInvoke).toHaveBeenCalledWith("proxy_get_generic", {
@@ -211,12 +223,11 @@ describe("api client (invoke-only)", () => {
 
   // --- No HTTP remnants ---
 
-  it("does not export IS_TAURI, BASE, tauriOrHttp, put", () => {
+  it("does not export IS_TAURI, BASE, tauriOrHttp", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const mod = api as any;
     expect(mod.IS_TAURI).toBeUndefined();
     expect(mod.BASE).toBeUndefined();
     expect(mod.tauriOrHttp).toBeUndefined();
-    expect(mod.put).toBeUndefined();
   });
 });

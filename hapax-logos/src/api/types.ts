@@ -258,6 +258,15 @@ export interface CostSnapshot {
   top_models: { model: string; cost: number }[];
   available: boolean;
   tax_percentage?: number;
+  local_capacity?: {
+    pressure: number;
+    inflight: number;
+    ceiling: number;
+    ttft_ratio: number;
+    age_s: number;
+    alert_active: boolean;
+    available: boolean;
+  } | null;
 }
 
 // --- Drift ---

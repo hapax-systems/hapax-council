@@ -15,6 +15,8 @@ The context manager:
 - observes ``hapax_llm_call_latency_seconds{condition, model, route}`` on exit
 - increments ``hapax_llm_call_outcomes_total{condition, model, route, outcome}``
   on exit with outcome in {"success", "error", "timeout"}
+- optionally records true time-to-first-token via ``span.set_ttft_seconds(...)``
+  for local-capacity pressure; total span latency is not a TTFT substitute
 - propagates caller exceptions; does not swallow or catch
 
 Callers override the outcome label explicitly via ``span.set_outcome("refused")``
@@ -48,6 +50,7 @@ class LlmCallSpan:
     route: str
     outcome: str = "success"
     cost_dollars: float | None = None
+    ttft_seconds: float | None = None
     prompt_tokens: int = 0
     completion_tokens: int = 0
 
@@ -68,6 +71,16 @@ class LlmCallSpan:
         proxies that don't return cost).
         """
         self.cost_dollars = cost_dollars
+
+    def set_ttft_seconds(self, ttft_seconds: float | None) -> None:
+        """Record true time-to-first-token for local-capacity pressure.
+
+        Call this when a streaming caller observes the first content/tool
+        delta. Do not pass total completion latency here; when TTFT is
+        unavailable the local-capacity exporter intentionally emits a
+        neutral TTFT ratio and relies on inflight pressure.
+        """
+        self.ttft_seconds = ttft_seconds
 
     def set_tokens(self, *, prompt_tokens: int, completion_tokens: int) -> None:
         """Record per-call token VOLUME (e.g. from a local TabbyAPI ``usage`` block).
@@ -105,6 +118,7 @@ def llm_call_span(*, model: str, route: str):
             route=route,
             outcome=span.outcome,
             latency_seconds=latency,
+            ttft_seconds=span.ttft_seconds,
         )
         if span.cost_dollars is not None:
             record_llm_call_cost(

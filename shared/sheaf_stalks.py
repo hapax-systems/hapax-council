@@ -4,22 +4,24 @@ from __future__ import annotations
 
 STANCE_MAP = {"nominal": 0.0, "seeking": 0.1, "cautious": 0.25, "degraded": 0.5, "critical": 1.0}
 TREND_MAP = {"stable": 0.0, "rising": 0.5, "falling": -0.5}
+STIMMUNG_LINEARIZATION_DIMENSIONS = (
+    "health",
+    "resource_pressure",
+    "local_capacity_pressure",
+    "error_rate",
+    "processing_throughput",
+    "perception_confidence",
+    "llm_cost_pressure",
+    "grounding_quality",
+    "operator_stress",
+    "operator_energy",
+    "physiological_coherence",
+)
 
 
 def linearize_stimmung(state: dict) -> list[float]:
     vec = []
-    for dim_name in [
-        "health",
-        "resource_pressure",
-        "error_rate",
-        "processing_throughput",
-        "perception_confidence",
-        "llm_cost_pressure",
-        "grounding_quality",
-        "operator_stress",
-        "operator_energy",
-        "physiological_coherence",
-    ]:
+    for dim_name in STIMMUNG_LINEARIZATION_DIMENSIONS:
         dim = state.get(dim_name, {})
         if isinstance(dim, dict):
             vec.append(float(dim.get("value", 0.0)))
