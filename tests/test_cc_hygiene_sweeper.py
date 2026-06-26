@@ -1415,6 +1415,44 @@ def test_reap_dead_lanes_continues_when_codex_status_retire_fails(
     assert "Failed to retire relay YAML for 'cx-p0'" in caplog.text
 
 
+def test_reap_dead_lanes_passes_supplied_relay_root_to_retire_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retirement must mutate the relay root that was scanned, not ambient state."""
+    sweeper = _load_sweeper_module()
+    scanned_relay = tmp_path / "scanned-relay"
+    ambient_relay = tmp_path / "ambient-relay"
+    scanned_path = _write_relay(
+        scanned_relay,
+        "cx-p0-status",
+        {
+            "role": "cx-p0",
+            "lane": "cx-p0",
+            "timestamp": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "blocked",
+        },
+    )
+    ambient_path = _write_relay(
+        ambient_relay,
+        "cx-p0-status",
+        {
+            "role": "cx-p0",
+            "lane": "cx-p0",
+            "timestamp": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "blocked",
+        },
+    )
+
+    monkeypatch.setenv("HAPAX_RELAY_DIR", str(ambient_relay))
+    monkeypatch.setattr(sweeper, "_lane_has_live_process", lambda _role: False)
+
+    reaped = sweeper.reap_dead_lanes(scanned_relay)
+
+    assert reaped == ["cx-p0"]
+    assert "status: retired" in scanned_path.read_text(encoding="utf-8")
+    assert "status: retired" not in ambient_path.read_text(encoding="utf-8")
+
+
 def test_session_is_protected_fails_closed_when_protection_file_unreadable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -1566,6 +1604,7 @@ def test_run_sweep_reaps_dead_codex_status_relay_before_stale_event(
             relay_root=relay,
             repo_root=tmp_path,
             now=_now(),
+            reap_relay_yaml=True,
         )
 
     assert retire_calls
@@ -1574,6 +1613,74 @@ def test_run_sweep_reaps_dead_codex_status_relay_before_stale_event(
     assert not any(
         event.check_id == "relay_yaml_stale" and event.session == "cx-p0" for event in state.events
     )
+
+
+def test_run_sweep_snapshot_default_does_not_reap_dead_codex_status_relay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The programmatic snapshot API stays read-only unless reaping is requested."""
+    sweeper = _load_sweeper_module()
+    vault = _build_vault(tmp_path)
+    relay = tmp_path / "relay"
+    relay_path = _write_relay(
+        relay,
+        "cx-p0-status",
+        {
+            "role": "cx-p0",
+            "lane": "cx-p0",
+            "timestamp": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "blocked",
+        },
+    )
+
+    def fail_if_reaped(*_args: Any, **_kwargs: Any) -> object:
+        raise AssertionError("run_sweep snapshot path must not retire relay YAML")
+
+    monkeypatch.setattr(sweeper, "_lane_has_live_process", lambda _role: False)
+    monkeypatch.setattr(sweeper.subprocess, "run", fail_if_reaped)
+    with patch("cc_hygiene.checks._gh_pr_list", return_value=[]):
+        state = sweeper.run_sweep(
+            vault_root=vault,
+            relay_root=relay,
+            repo_root=tmp_path,
+            now=_now(),
+        )
+
+    assert "status: retired" not in relay_path.read_text(encoding="utf-8")
+    assert any(
+        event.check_id == "relay_yaml_stale" and event.session == "cx-p0" for event in state.events
+    )
+
+
+def test_main_no_write_skips_dead_relay_reaping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLI --no-write is diagnostic: no state writes and no relay retirement."""
+    sweeper = _load_sweeper_module()
+    vault = _build_vault(tmp_path)
+    relay = tmp_path / "relay"
+    relay_path = _write_relay(
+        relay,
+        "cx-p0-status",
+        {
+            "role": "cx-p0",
+            "lane": "cx-p0",
+            "timestamp": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "blocked",
+        },
+    )
+
+    def fail_if_reaped(*_args: Any, **_kwargs: Any) -> object:
+        raise AssertionError("--no-write must not retire relay YAML")
+
+    monkeypatch.setattr(sweeper, "_lane_has_live_process", lambda _role: False)
+    monkeypatch.setattr(sweeper.subprocess, "run", fail_if_reaped)
+    with patch("cc_hygiene.checks._gh_pr_list", return_value=[]):
+        rc = sweeper.main(_main_args(tmp_path, vault) + ["--no-write"])
+
+    assert rc == 0
+    assert "status: retired" not in relay_path.read_text(encoding="utf-8")
+    assert not (tmp_path / "state.json").exists()
 
 
 def test_main_killswitch_writes_no_events(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

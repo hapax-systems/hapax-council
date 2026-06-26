@@ -21,10 +21,13 @@ and refuses to reap lanes listed in ``session-protection.md``. The protection
 file defaults to ``<relay-root>/session-protection.md`` and can be overridden by
 ``HAPAX_SESSION_PROTECTION_FILE`` or ``HAPAX_SESSION_PROTECTION``; explicit
 override files fail closed when missing or unreadable and log a concrete
-``test -r ... && sed -n ...`` recheck command. ``--no-actions`` disables only
-the ghost-claim self-heal; relay retirement still runs before stale-relay
-checks and remains guarded by process/protection checks. The other auto-actions
-(H2 stale-in-progress, H7 offered-stale) remain unwired.
+``test -r ... && sed -n ...`` recheck command. The default CLI writing path runs
+relay retirement before stale-relay checks and passes the evaluated
+``--relay-root`` to ``hapax-relay-retire`` through ``HAPAX_RELAY_DIR``. ``--no-write``
+keeps the sweep diagnostic and skips relay retirement. ``--no-actions`` disables
+only the ghost-claim self-heal. ``HAPAX_CC_HYGIENE_OFF=1`` is the global
+killswitch. The other auto-actions (H2 stale-in-progress, H7 offered-stale)
+remain unwired.
 
 Usage::
 
@@ -287,6 +290,7 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
 
     reaped: list[str] = []
     retire_script = Path.home() / "projects" / "hapax-council" / "scripts" / "hapax-relay-retire"
+    retire_env = {**os.environ, "HAPAX_RELAY_DIR": str(relay_root)}
 
     reaped_roles: set[str] = set()
     for role in KNOWN_ROLES:
@@ -317,6 +321,7 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
                         "--reason",
                         "reaped by hygiene sweeper (no running process)",
                     ],
+                    env=retire_env,
                     timeout=5,
                     check=False,
                 )
@@ -347,6 +352,7 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
                     "--reason",
                     "reaped by hygiene sweeper (no running process)",
                 ],
+                env=retire_env,
                 timeout=5,
                 check=False,
             )
@@ -486,14 +492,20 @@ def run_sweep(
     relay_root: Path = DEFAULT_RELAY_ROOT,
     repo_root: Path = DEFAULT_REPO_ROOT,
     now: datetime | None = None,
+    reap_relay_yaml: bool = False,
 ) -> HygieneState:
-    """Perform one sweep and return the snapshot. Does NOT write to disk."""
+    """Perform one sweep and return the snapshot.
+
+    This is read-only by default. Set ``reap_relay_yaml`` only from writing
+    producer paths that intentionally retire dead relay YAMLs before stale checks.
+    """
     now = now or datetime.now(UTC)
     started = time.monotonic()
 
-    reaped = reap_dead_lanes(relay_root)
-    if reaped:
-        LOG.info("Reaped %d dead lane(s): %s", len(reaped), ", ".join(reaped))
+    if reap_relay_yaml:
+        reaped = reap_dead_lanes(relay_root)
+        if reaped:
+            LOG.info("Reaped %d dead lane(s): %s", len(reaped), ", ".join(reaped))
 
     notes = _load_active_notes(vault_root)
     closed_notes = _load_closed_notes(vault_root)
@@ -556,7 +568,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--no-write",
         action="store_true",
-        help="Run the sweep but do not write event log or state JSON (diagnostic mode).",
+        help=(
+            "Run the sweep in diagnostic mode: do not write event log/state JSON, "
+            "do not retire relay YAMLs, and do not self-heal ghost claims."
+        ),
     )
     parser.add_argument(
         "--no-ntfy",
@@ -573,7 +588,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "Skip the ghost-claimed self-heal auto-action only; dead-lane relay "
-            "retirement still runs unless the global killswitch is active."
+            "retirement still runs on writing sweeps unless HAPAX_CC_HYGIENE_OFF=1."
         ),
     )
     parser.add_argument("--verbose", "-v", action="store_true")
@@ -601,6 +616,7 @@ def main(argv: list[str] | None = None) -> int:
         vault_root=args.vault_root,
         relay_root=args.relay_root,
         repo_root=args.repo_root,
+        reap_relay_yaml=not args.no_write,
     )
     LOG.info(
         "sweep complete: %d events in %d ms",
