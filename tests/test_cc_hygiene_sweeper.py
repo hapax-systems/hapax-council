@@ -1279,6 +1279,48 @@ def test_reap_dead_lanes_dedups_known_role_and_codex_status_relay(
     assert [call[1] for call in retire_calls] == ["cx-p0"]
 
 
+def test_reap_dead_lanes_dedups_default_known_role_status_and_plain_relay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default known-role loop should retire one role only once."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    _write_relay(
+        relay,
+        "alpha-status",
+        {
+            "role": "alpha",
+            "timestamp": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "blocked",
+        },
+    )
+    _write_relay(
+        relay,
+        "alpha",
+        {
+            "role": "alpha",
+            "updated": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "active",
+        },
+    )
+    retire_calls: list[list[str]] = []
+
+    def fake_has_live_process(role: str) -> bool:
+        return role != "alpha"
+
+    def fake_retire(args: list[str], **_: Any) -> object:
+        retire_calls.append(args)
+        return object()
+
+    monkeypatch.setattr(sweeper, "_lane_has_live_process", fake_has_live_process)
+    monkeypatch.setattr(sweeper.subprocess, "run", fake_retire)
+
+    reaped = sweeper.reap_dead_lanes(relay)
+
+    assert reaped == ["alpha"]
+    assert [call[1] for call in retire_calls] == ["alpha"]
+
+
 def test_reap_dead_lanes_skips_known_role_status_with_conflicting_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -1413,6 +1455,71 @@ def test_reap_dead_lanes_continues_when_codex_status_retire_fails(
 
     assert reaped == []
     assert "Failed to retire relay YAML for 'cx-p0'" in caplog.text
+
+
+def test_reap_dead_lanes_records_nonzero_retire_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A nonzero retire helper exit is a failed reap, not a successful reaping."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    _write_relay(
+        relay,
+        "cx-p0-status",
+        {
+            "role": "cx-p0",
+            "lane": "cx-p0",
+            "timestamp": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "blocked",
+        },
+    )
+    failures: list[str] = []
+
+    def fake_retire(args: list[str], **_: Any) -> object:
+        return sweeper.subprocess.CompletedProcess(args, 2)
+
+    monkeypatch.setattr(sweeper, "_lane_has_live_process", lambda _role: False)
+    monkeypatch.setattr(sweeper.subprocess, "run", fake_retire)
+    caplog.set_level("WARNING")
+
+    reaped = sweeper.reap_dead_lanes(relay, failures=failures)
+
+    assert reaped == []
+    assert failures == ["cx-p0"]
+    assert "exited with status 2" in caplog.text
+
+
+def test_reap_dead_lanes_uses_configured_retire_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deployments can override the retire helper path instead of using home."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    configured_script = tmp_path / "custom-relay-retire"
+    _write_relay(
+        relay,
+        "cx-p0-status",
+        {
+            "role": "cx-p0",
+            "lane": "cx-p0",
+            "timestamp": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "blocked",
+        },
+    )
+    retire_calls: list[list[str]] = []
+
+    def fake_retire(args: list[str], **_: Any) -> object:
+        retire_calls.append(args)
+        return object()
+
+    monkeypatch.setenv("HAPAX_RELAY_RETIRE_SCRIPT", str(configured_script))
+    monkeypatch.setattr(sweeper, "_lane_has_live_process", lambda _role: False)
+    monkeypatch.setattr(sweeper.subprocess, "run", fake_retire)
+
+    reaped = sweeper.reap_dead_lanes(relay)
+
+    assert reaped == ["cx-p0"]
+    assert retire_calls[0][0] == str(configured_script)
 
 
 def test_reap_dead_lanes_passes_supplied_relay_root_to_retire_script(
@@ -1613,6 +1720,54 @@ def test_run_sweep_reaps_dead_codex_status_relay_before_stale_event(
     assert not any(
         event.check_id == "relay_yaml_stale" and event.session == "cx-p0" for event in state.events
     )
+
+
+def test_run_sweep_retire_failure_emits_violation_not_stale_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed automatic reaping attempt should become the actionable event."""
+    sweeper = _load_sweeper_module()
+    vault = _build_vault(tmp_path)
+    relay = tmp_path / "relay"
+    _write_relay(
+        relay,
+        "cx-p0-status",
+        {
+            "role": "cx-p0",
+            "lane": "cx-p0",
+            "timestamp": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "blocked",
+        },
+    )
+
+    def fake_has_live_process(role: str) -> bool:
+        return role != "cx-p0"
+
+    def fake_retire(args: list[str], **_: Any) -> object:
+        return sweeper.subprocess.CompletedProcess(args, 1)
+
+    monkeypatch.setattr(sweeper, "_lane_has_live_process", fake_has_live_process)
+    monkeypatch.setattr(sweeper.subprocess, "run", fake_retire)
+    with patch("cc_hygiene.checks._gh_pr_list", return_value=[]):
+        state = sweeper.run_sweep(
+            vault_root=vault,
+            relay_root=relay,
+            repo_root=tmp_path,
+            now=_now(),
+            reap_relay_yaml=True,
+        )
+
+    assert any(
+        event.check_id == "relay_retire_failed"
+        and event.session == "cx-p0"
+        and event.severity == "violation"
+        for event in state.events
+    )
+    assert not any(
+        event.check_id == "relay_yaml_stale" and event.session == "cx-p0" for event in state.events
+    )
+    summary = {summary.check_id: summary.fired for summary in state.check_summaries}
+    assert summary["relay_retire_failed"] == 1
 
 
 def test_run_sweep_snapshot_default_does_not_reap_dead_codex_status_relay(

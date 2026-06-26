@@ -23,11 +23,14 @@ file defaults to ``<relay-root>/session-protection.md`` and can be overridden by
 override files fail closed when missing or unreadable and log a concrete
 ``test -r ... && sed -n ...`` recheck command. The default CLI writing path runs
 relay retirement before stale-relay checks and passes the evaluated
-``--relay-root`` to ``hapax-relay-retire`` through ``HAPAX_RELAY_DIR``. ``--no-write``
-keeps the sweep diagnostic and skips relay retirement. ``--no-actions`` disables
-only the ghost-claim self-heal. ``HAPAX_CC_HYGIENE_OFF=1`` is the global
-killswitch. The other auto-actions (H2 stale-in-progress, H7 offered-stale)
-remain unwired.
+``--relay-root`` to ``hapax-relay-retire`` through ``HAPAX_RELAY_DIR``.
+``HAPAX_RELAY_RETIRE_SCRIPT`` can point at an alternate retire helper; otherwise
+the sweeper prefers its sibling ``scripts/hapax-relay-retire``, then ``PATH``,
+then the legacy ``~/projects/hapax-council/scripts/hapax-relay-retire`` path.
+``--no-write`` keeps the sweep diagnostic and skips relay retirement.
+``--no-actions`` disables only the ghost-claim self-heal.
+``HAPAX_CC_HYGIENE_OFF=1`` is the global killswitch. The other auto-actions
+(H2 stale-in-progress, H7 offered-stale) remain unwired.
 
 Usage::
 
@@ -43,6 +46,7 @@ import argparse
 import logging
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -94,6 +98,7 @@ DEFAULT_RELAY_ROOT = Path.home() / ".cache" / "hapax" / "relay"
 DEFAULT_REPO_ROOT = Path.home() / "projects" / "hapax-council"
 
 KILLSWITCH_ENV = "HAPAX_CC_HYGIENE_OFF"
+RELAY_RETIRE_SCRIPT_ENV = "HAPAX_RELAY_RETIRE_SCRIPT"
 
 
 def _relay_payload_is_retired(payload: dict[str, Any]) -> bool:
@@ -135,6 +140,22 @@ def _payload_identity_conflicts(payload: dict[str, Any], role: str) -> bool:
 def _protection_recheck_command(protection_file: Path) -> str:
     quoted = shlex.quote(str(protection_file))
     return f"test -r {quoted} && sed -n '1,120p' {quoted}"
+
+
+def _relay_retire_script() -> Path:
+    override = os.environ.get(RELAY_RETIRE_SCRIPT_ENV)
+    if override:
+        return Path(override).expanduser()
+
+    sibling = _HERE / "hapax-relay-retire"
+    if sibling.exists():
+        return sibling
+
+    found = shutil.which("hapax-relay-retire")
+    if found:
+        return Path(found)
+
+    return DEFAULT_REPO_ROOT / "scripts" / "hapax-relay-retire"
 
 
 def _session_is_protected(session: str, relay_root: Path) -> bool:
@@ -281,19 +302,64 @@ def _lane_has_live_process(role: str) -> bool:
     return False
 
 
-def reap_dead_lanes(relay_root: Path) -> list[str]:
+def _record_reap_failure(
+    role: str,
+    *,
+    failures: list[str] | None,
+    failed_roles: set[str],
+) -> None:
+    failed_roles.add(role)
+    if failures is not None and role not in failures:
+        failures.append(role)
+
+
+def _retire_dead_lane(retire_script: Path, retire_env: dict[str, str], role: str) -> bool:
+    try:
+        result = subprocess.run(
+            [
+                str(retire_script),
+                role,
+                "--reason",
+                "reaped by hygiene sweeper (no running process)",
+            ],
+            env=retire_env,
+            timeout=5,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        LOG.warning("Failed to retire relay YAML for '%s': %s", role, exc)
+        return False
+
+    returncode = getattr(result, "returncode", 0)
+    if returncode != 0:
+        LOG.warning(
+            "Failed to retire relay YAML for '%s': %s exited with status %s",
+            role,
+            retire_script,
+            returncode,
+        )
+        return False
+
+    return True
+
+
+def reap_dead_lanes(relay_root: Path, *, failures: list[str] | None = None) -> list[str]:
     """Retire relay YAMLs for lanes with no running process.
 
-    Returns list of roles that were reaped.
+    Returns list of roles that were reaped. When provided, ``failures`` receives
+    roles whose retire helper invocation failed.
     """
     from cc_hygiene.checks import _read_relay_yaml
 
     reaped: list[str] = []
-    retire_script = Path.home() / "projects" / "hapax-council" / "scripts" / "hapax-relay-retire"
+    retire_script = _relay_retire_script()
     retire_env = {**os.environ, "HAPAX_RELAY_DIR": str(relay_root)}
 
     reaped_roles: set[str] = set()
+    failed_roles: set[str] = set()
     for role in KNOWN_ROLES:
+        if role in failed_roles:
+            continue
         for suffix in (f"{role}-status.yaml", f"{role}.yaml"):
             yaml_path = relay_root / suffix
             if not yaml_path.exists():
@@ -313,21 +379,9 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
             if _lane_has_live_process(role):
                 continue
             LOG.info("Reaping dead lane '%s' — no running process found", role)
-            try:
-                subprocess.run(
-                    [
-                        str(retire_script),
-                        role,
-                        "--reason",
-                        "reaped by hygiene sweeper (no running process)",
-                    ],
-                    env=retire_env,
-                    timeout=5,
-                    check=False,
-                )
-            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-                LOG.warning("Failed to retire relay YAML for '%s'", role)
-                continue
+            if not _retire_dead_lane(retire_script, retire_env, role):
+                _record_reap_failure(role, failures=failures, failed_roles=failed_roles)
+                break
             reaped.append(role)
             reaped_roles.add(role)
             break  # only one file per role
@@ -337,30 +391,18 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
         if payload is None or _relay_payload_is_retired(payload):
             continue
         session = _canonical_cx_relay_role(path, payload)
-        if session is None or session in reaped_roles:
+        if session is None or session in reaped_roles or session in failed_roles:
             continue
         if _session_is_protected(session, relay_root):
             continue
         if _lane_has_live_process(session):
             continue
         LOG.info("Reaping dead cx lane '%s' — no running process found", session)
-        try:
-            subprocess.run(
-                [
-                    str(retire_script),
-                    session,
-                    "--reason",
-                    "reaped by hygiene sweeper (no running process)",
-                ],
-                env=retire_env,
-                timeout=5,
-                check=False,
-            )
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            LOG.warning("Failed to retire relay YAML for '%s'", session)
-        else:
-            reaped.append(session)
-            reaped_roles.add(session)
+        if not _retire_dead_lane(retire_script, retire_env, session):
+            _record_reap_failure(session, failures=failures, failed_roles=failed_roles)
+            continue
+        reaped.append(session)
+        reaped_roles.add(session)
 
     return reaped
 
@@ -477,6 +519,7 @@ def _summarize_checks(events: list[HygieneEvent]) -> list[CheckSummary]:
         "duplicate_claim",
         "orphan_pr",
         "relay_yaml_stale",
+        "relay_retire_failed",
         "wip_limit",
         "offered_stale",
         "refusal_dormancy",
@@ -502,21 +545,43 @@ def run_sweep(
     now = now or datetime.now(UTC)
     started = time.monotonic()
 
+    reap_failures: list[str] = []
     if reap_relay_yaml:
-        reaped = reap_dead_lanes(relay_root)
+        reaped = reap_dead_lanes(relay_root, failures=reap_failures)
         if reaped:
             LOG.info("Reaped %d dead lane(s): %s", len(reaped), ", ".join(reaped))
 
     notes = _load_active_notes(vault_root)
     closed_notes = _load_closed_notes(vault_root)
     relay_payloads = _load_relay_payloads(relay_root)
+    failed_reap_roles = set(reap_failures)
 
     events: list[HygieneEvent] = []
     events.extend(check_stale_in_progress(notes, repo_root, now=now))
     events.extend(check_ghost_claimed(notes, now=now))
     events.extend(check_duplicate_claim(relay_payloads, now=now))
     events.extend(check_orphan_pr(notes, repo_root, closed_notes=closed_notes, now=now))
-    events.extend(check_relay_yaml_staleness(relay_payloads, now=now))
+    for role in sorted(failed_reap_roles):
+        events.append(
+            HygieneEvent(
+                timestamp=now,
+                check_id="relay_retire_failed",
+                severity="violation",
+                session=role,
+                message=(
+                    f"Relay retirement failed for dead lane {role}; stale-relay "
+                    "checks are suppressed for this lane until the retire helper is repaired"
+                ),
+                metadata={
+                    "relay_root": str(relay_root),
+                    "retire_script": str(_relay_retire_script()),
+                },
+            )
+        )
+    relay_payloads_for_stale = {
+        role: payload for role, payload in relay_payloads.items() if role not in failed_reap_roles
+    }
+    events.extend(check_relay_yaml_staleness(relay_payloads_for_stale, now=now))
     events.extend(check_wip_limit(notes, now=now))
     events.extend(check_offered_staleness(notes, now=now))
     events.extend(check_refusal_pipeline_dormancy(closed_notes, now=now))
