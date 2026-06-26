@@ -534,7 +534,7 @@ if claim_mode == "claim":
                 pr_number,
                 repo,
             ),
-            require_route_metadata=True,
+            require_route_metadata_validity=True,
         )
         if not validity.valid:
             unmet.append(f"{dep_id} ({'; '.join(validity.blockers)})")

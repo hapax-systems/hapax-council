@@ -75,7 +75,7 @@ def test_pr_gate_fails_closed_on_unknown():
     """Unknown PR state must fail closed (block), not pass."""
     py_code = _extract_python(SCRIPT)
     assert 'return "unknown"' in py_code
-    assert "require_route_metadata=True" in py_code
+    assert "require_route_metadata_validity=True" in py_code
 
 
 def test_pr_gate_allows_merged():
