@@ -11,12 +11,18 @@ Implements the 8 checks described in §2 and emits:
 * a machine-readable JSON snapshot at
   ``~/.cache/hapax/cc-hygiene-state.json``
 
-The 8 checks are read-only; the only mutation is the ghost-claimed self-heal
-(``cc_hygiene.actions``, scoped to ``ghost_claimed``): a ``status: claimed`` note
-with no claimer/``claimed_at`` is a definitional violation ``cc-claim`` cannot
-produce, so it is reverted to ``offered`` (reversible, re-validated on disk) to
-stop the violation re-firing every sweep. Disable with ``--no-actions``. The
-other auto-actions (H2 stale-in-progress, H7 offered-stale) remain unwired.
+Most checks are read-only. Mutations are limited to the ghost-claimed self-heal
+(``cc_hygiene.actions``, scoped to ``ghost_claimed``) and dead-lane relay
+retirement before stale-relay checks. A ``status: claimed`` note with no
+claimer/``claimed_at`` is a definitional violation ``cc-claim`` cannot produce,
+so it is reverted to ``offered`` (reversible, re-validated on disk) to stop the
+violation re-firing every sweep. Relay retirement uses ``hapax-relay-retire``
+and refuses to reap lanes listed in ``session-protection.md``. The protection
+file defaults to ``<relay-root>/session-protection.md`` and can be overridden by
+``HAPAX_SESSION_PROTECTION_FILE`` or ``HAPAX_SESSION_PROTECTION``; explicit
+override files fail closed when missing or unreadable. Disable ghost-claim
+mutation with ``--no-actions``. The other auto-actions (H2 stale-in-progress,
+H7 offered-stale) remain unwired.
 
 Usage::
 
@@ -120,6 +126,14 @@ def _session_is_protected(session: str, relay_root: Path) -> bool:
         Path(protection_override) if protection_override else relay_root / "session-protection.md"
     )
     if not protection_file.exists():
+        if protection_override:
+            LOG.warning(
+                "Configured session protection file %s is missing; refusing to reap '%s'; "
+                "repair the protection override before reaping",
+                protection_file,
+                session,
+            )
+            return True
         return False
     try:
         text = protection_file.read_text(encoding="utf-8", errors="replace")

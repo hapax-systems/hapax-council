@@ -1361,6 +1361,21 @@ def test_reap_dead_lanes_fail_closed_when_protection_file_unreadable(
     assert retire_calls == []
 
 
+def test_session_is_protected_fails_closed_when_override_file_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An explicit missing protection override is malformed gate input."""
+    sweeper = _load_sweeper_module()
+    missing = tmp_path / "missing-session-protection.md"
+
+    monkeypatch.setenv("HAPAX_SESSION_PROTECTION_FILE", str(missing))
+    caplog.set_level("WARNING")
+
+    assert sweeper._session_is_protected("cx-violet", tmp_path / "relay")
+    assert str(missing) in caplog.text
+    assert "repair the protection override" in caplog.text
+
+
 # ----------------------------------------------------------------------------
 # end-to-end: run_sweep + killswitch
 # ----------------------------------------------------------------------------
