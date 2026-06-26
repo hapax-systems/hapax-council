@@ -27,6 +27,9 @@ relay retirement before stale-relay checks and passes the evaluated
 ``HAPAX_RELAY_RETIRE_SCRIPT`` can point at an alternate retire helper; otherwise
 the sweeper prefers its sibling ``scripts/hapax-relay-retire``, then ``PATH``,
 then the legacy ``~/projects/hapax-council/scripts/hapax-relay-retire`` path.
+Retire helper failures emit ``relay_retire_failed`` every writing sweep until
+the helper path, permissions, or runtime error is repaired using the logged
+recheck command.
 ``--no-write`` is the full diagnostic mode and skips relay retirement.
 ``--no-actions`` disables only the ghost-claim self-heal.
 ``HAPAX_CC_HYGIENE_OFF=1`` is the global killswitch. The other auto-actions
@@ -723,7 +726,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "Skip the ghost-claimed self-heal auto-action only; dead-lane relay "
-            "retirement still runs on writing sweeps unless HAPAX_CC_HYGIENE_OFF=1."
+            "retirement still runs on writing sweeps. Use --no-write for full "
+            "diagnostic mode with no event/state writes, self-heal, or relay retirement."
         ),
     )
     parser.add_argument("--verbose", "-v", action="store_true")

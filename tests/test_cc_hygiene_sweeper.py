@@ -1295,7 +1295,7 @@ def test_reap_dead_lanes_retires_status_and_plain_codex_relay_once(
 
     def fake_retire(args: list[str], **_: Any) -> object:
         retire_calls.append(args)
-        return object()
+        return sweeper.subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(sweeper, "_lane_has_live_process", fake_has_live_process)
     monkeypatch.setattr(sweeper.subprocess, "run", fake_retire)
@@ -1338,7 +1338,7 @@ def test_reap_dead_lanes_dedups_known_role_and_codex_status_relay(
 
     def fake_retire(args: list[str], **_: Any) -> object:
         retire_calls.append(args)
-        return object()
+        return sweeper.subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(sweeper, "KNOWN_ROLES", ("cx-p0",))
     monkeypatch.setattr(sweeper, "_lane_has_live_process", fake_has_live_process)
@@ -1381,7 +1381,7 @@ def test_reap_dead_lanes_dedups_default_known_role_status_and_plain_relay(
 
     def fake_retire(args: list[str], **_: Any) -> object:
         retire_calls.append(args)
-        return object()
+        return sweeper.subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(sweeper, "_lane_has_live_process", fake_has_live_process)
     monkeypatch.setattr(sweeper.subprocess, "run", fake_retire)
@@ -1677,7 +1677,7 @@ def test_reap_dead_lanes_known_role_failure_skips_sibling_but_continues_roles(
         retire_calls.append(role)
         if role == "alpha":
             return sweeper.subprocess.CompletedProcess(args, 2)
-        return object()
+        return sweeper.subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(sweeper, "KNOWN_ROLES", ("alpha", "beta"))
     monkeypatch.setattr(sweeper, "_lane_has_live_process", lambda _role: False)
@@ -1711,7 +1711,7 @@ def test_reap_dead_lanes_second_pass_noops_after_successful_retirement(
     def fake_retire(args: list[str], **_: Any) -> object:
         retire_calls.append(args[1])
         status_path.write_text("role: cx-p0\nlane: cx-p0\nstatus: retired\n", encoding="utf-8")
-        return object()
+        return sweeper.subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(sweeper, "_lane_has_live_process", lambda _role: False)
     monkeypatch.setattr(sweeper.subprocess, "run", fake_retire)
@@ -1742,7 +1742,7 @@ def test_reap_dead_lanes_uses_configured_retire_script(
 
     def fake_retire(args: list[str], **_: Any) -> object:
         retire_calls.append(args)
-        return object()
+        return sweeper.subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setenv("HAPAX_RELAY_RETIRE_SCRIPT", str(configured_script))
     monkeypatch.setattr(sweeper, "_lane_has_live_process", lambda _role: False)
@@ -1978,7 +1978,7 @@ def test_run_sweep_reaps_dead_codex_status_relay_before_stale_event(
             + "\nstatus: retired\nretired_reason: test reaper\n",
             encoding="utf-8",
         )
-        return object()
+        return sweeper.subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(sweeper, "_lane_has_live_process", fake_has_live_process)
     monkeypatch.setattr(sweeper.subprocess, "run", fake_retire)
