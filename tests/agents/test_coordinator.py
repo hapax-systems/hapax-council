@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from agents.coordinator.core import (
@@ -23,10 +24,12 @@ from agents.coordinator.core import (
     _dispatch_landed,
     _effective_platform_suitability,
     _headless_task_from_argv,
+    _is_dispatchable,
     _lane_to_dict,
     _live_headless_launcher,
     _parse_task,
     _prepare_dispatch_message,
+    _stringify_task,
     _task_flow_counts,
 )
 
@@ -807,6 +810,136 @@ retired_reason: clean exit
         assert lanes[role].pid_source == "pidfile"
         assert lanes[role].claimed_task == task_id
         assert lanes[role].idle is False
+
+
+class TestDispatchableLane:
+    """Cover the cold-fleet unwedge: `_is_dispatchable` is the exact predicate `tick()` filters
+    `idle_lanes` by, so a slot becomes dispatchable on absence-of-claim + absence-of-launcher rather
+    than on `alive`. Red-before-green for the deadlock: a cold slot (not alive, unclaimed, no
+    launcher) MUST be dispatchable, which the prior `l.alive and l.idle` gate refused."""
+
+    def test_cold_unclaimed_lane_without_live_worker_is_dispatchable(self):
+        lane = LaneState(role="beta", alive=False, idle=True, claimed_task=None)
+        with patch("agents.coordinator.core._lane_launcher_process_present", return_value=False):
+            assert _is_dispatchable(lane) is True
+
+    def test_claimed_lane_is_not_dispatchable(self):
+        lane = LaneState(role="beta", alive=True, idle=False, claimed_task="t1")
+        with patch("agents.coordinator.core._lane_launcher_process_present", return_value=False):
+            assert _is_dispatchable(lane) is False
+
+    def test_lane_with_live_worker_is_not_dispatchable(self):
+        lane = LaneState(role="beta", alive=False, idle=True, claimed_task=None)
+        with patch("agents.coordinator.core._lane_launcher_process_present", return_value=True):
+            assert _is_dispatchable(lane) is False
+
+    def test_filters_a_cold_fleet_the_way_tick_does(self):
+        # Mirror tick()'s `idle_lanes = [l for l in lanes.values() if _is_dispatchable(l)]` over a
+        # mixed roster: a cold roster (no claims, no live workers) is fully dispatchable EXCEPT the
+        # one busy lane (claimed) and the one lane whose worker is alive.
+        lanes = {
+            "alpha": LaneState(role="alpha", alive=False, claimed_task=None),  # cold → yes
+            "beta": LaneState(role="beta", alive=True, claimed_task="t-running"),  # claimed → no
+            "gamma": LaneState(role="gamma", alive=True, claimed_task=None),  # worker live → no
+            "delta": LaneState(role="delta", alive=False, claimed_task=None),  # cold → yes
+        }
+        live_roles = {"gamma"}
+        with patch(
+            "agents.coordinator.core._lane_launcher_process_present",
+            side_effect=lambda lane: lane.role in live_roles,
+        ):
+            dispatchable = {role for role, lane in lanes.items() if _is_dispatchable(lane)}
+        assert dispatchable == {"alpha", "delta"}
+
+    def test_live_codex_pid_lane_is_not_dispatchable(self, tmp_path: Path):
+        # codex lanes publish liveness as CODEX_PID_DIR/<lane>.pid (a bare pidfile, NOT
+        # <lane>.launcher.pid). A live such lane with NO claim must still be refused, or the
+        # coordinator force-relaunches over an already-running codex worker. Driven through REAL
+        # discovery so the regression covers the actual scheduler path, not a mock of the probe.
+        role = "cx-blue"
+        claude_pid_dir = tmp_path / "claude-pids"
+        claude_pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
+        (codex_pid_dir / f"{role}.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        completed = subprocess.CompletedProcess(args=["tmux"], returncode=0, stdout="", stderr="")
+        with (
+            patch("agents.coordinator.core.PID_DIR", claude_pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.subprocess.run", return_value=completed),
+        ):
+            lane = Coordinator()._check_lanes()[role]
+            assert lane.pid == os.getpid()  # discovered live...
+            assert lane.claimed_task is None  # ...with no claim signal
+            assert _is_dispatchable(lane) is False  # still refused on liveness alone
+
+
+class TestTickColdFleet:
+    """Prove the cold-fleet unwedge through the REAL scheduling path: Coordinator.tick() builds
+    idle_lanes and writes lanes_idle from the dispatchable predicate, so a roster with offered work
+    and EVERY lane alive=False (no launchers, no claims) still dispatches — the exact deadlock the
+    prior `l.alive and l.idle` gate produced."""
+
+    def _offered_task(self) -> Task:
+        return Task(
+            task_id="t-cold",
+            title="cold work",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("claude",),
+            quality_floor="deterministic_ok",
+            path=Path("/dev/null"),
+        )
+
+    def test_tick_dispatches_to_a_cold_fleet(self, tmp_path: Path):
+        cold_lanes = {
+            "alpha": LaneState(role="alpha", platform="claude", alive=False, claimed_task=None),
+            "beta": LaneState(role="beta", platform="claude", alive=False, claimed_task=None),
+        }
+        dispatched: list[tuple[str, str]] = []
+
+        def fake_dispatch(self_, task: Task, lane: LaneState) -> tuple[bool, str]:
+            dispatched.append((task.task_id, lane.role))
+            return True, ""
+
+        with (
+            patch.object(Coordinator, "_scan_tasks", return_value=[self._offered_task()]),
+            patch.object(Coordinator, "_check_lanes", return_value=cold_lanes),
+            patch.object(Coordinator, "_dispatch", autospec=True, side_effect=fake_dispatch),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=SimpleNamespace(state="open", reasons=[]),
+            ),
+            patch("agents.coordinator.core._lane_launcher_process_present", return_value=False),
+            patch("agents.coordinator.core.SHM_DIR", tmp_path),
+            patch("agents.coordinator.core.SHM_FILE", tmp_path / "state.json"),
+        ):
+            Coordinator().tick()
+
+        state = json.loads((tmp_path / "state.json").read_text())
+        # Every cold lane is dispatchable (the new predicate), and offered work actually dispatched.
+        assert state["lanes_idle"] == 2
+        assert state["lanes_alive"] == 0
+        assert state["dispatches_this_tick"] == 1
+        assert len(dispatched) == 1
+        assert dispatched[0][0] == "t-cold"
+        assert dispatched[0][1] in {"alpha", "beta"}
+
+
+class TestStringifyTask:
+    def test_surface_key_is_not_treated_as_a_task_id(self):
+        # B1: `surface` is free-text description, never a task id. A relay value carrying only a
+        # surface must NOT resolve to a phantom task; a real task_id alongside it still wins.
+        assert _stringify_task({"surface": "do the thing"}) is None
+        assert _stringify_task({"surface": "do the thing", "task_id": "real-123"}) == "real-123"
 
 
 class TestCoordinatorState:

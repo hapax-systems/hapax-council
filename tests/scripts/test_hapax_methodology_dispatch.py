@@ -1379,7 +1379,12 @@ printf '%s\\n' "$@" > {launcher_args}
     assert receipt["advisory_only"] is True
 
 
-def test_launch_requires_strict_mq_message_id(tmp_path: Path) -> None:
+def test_launch_uses_durable_binding_without_explicit_message_id(tmp_path: Path) -> None:
+    """Regression test for the #3793 dispatch-jam fix: when a fresh durable dispatch binding EXISTS
+    for the task+lane, a launch with NO explicit --mq-message-id now LOOKS UP that binding and
+    dispatches (adopting its message_id). Pre-fix the strict short-circuit raised
+    ``strict_mq_message_id_required`` and blocked the only automated caller (the coordinator never
+    passes --mq-message-id)."""
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
     _task(
@@ -1419,9 +1424,138 @@ printf '%s\\n' "$@" > {launcher_args}
         },
     )
 
+    assert result.returncode == 0, result.stderr
+    assert launcher_args.exists()
+    assert "BLOCKED" not in result.stderr
+
+
+def test_launch_self_mints_durable_binding_when_absent(tmp_path: Path) -> None:
+    """End-to-end coverage of the missing #3793 producer THROUGH main(): a validated launch for a
+    task with an authority_case but NO existing durable binding (the relay DB exists but holds no
+    binding for this task → mintable `durable_mq_authority_binding_missing`) now self-mints the
+    binding, adopts its message_id, and launches. Pre-fix this path was blocked (offered=N,
+    dispatched=0). Distinct from the binding-already-exists test, which skips the mint branch."""
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "self-mint-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "launcher-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {launcher_args}\n",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    # Materialize the relay DB with an UNRELATED binding so it EXISTS but our task has none — the
+    # difference between the mintable `..._authority_binding_missing` and the non-mintable
+    # `..._database_missing`.
+    db = tmp_path / "relay" / "messages.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    send_message(
+        db,
+        Envelope(
+            sender="seed",
+            message_type="dispatch",
+            priority=0,
+            subject="unrelated-task",
+            authority_case="CASE-OTHER",
+            authority_item="unrelated-task",
+            recipients_spec="zeta",
+            payload="seed binding",
+        ),
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "self-mint-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        durable_mq=False,
+        extra_env={
+            "HAPAX_RELAY_MQ_DB": str(db),
+            "HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID": "",
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert launcher_args.exists()
+    assert "BLOCKED" not in result.stderr
+    # A fresh dispatch binding for THIS task was minted into the existing DB.
+    with sqlite3.connect(db) as conn:
+        subjects = {row[0] for row in conn.execute("SELECT subject FROM messages").fetchall()}
+    assert "self-mint-build" in subjects
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["durable_mq_dispatch_bound"] is True
+
+
+def test_launch_does_not_self_mint_for_a_non_mintable_reason(tmp_path: Path) -> None:
+    """The self-mint gate only fires for `_MINTABLE_BINDING_REASONS`. A MISSING relay DB yields
+    `durable_mq_database_missing` (not mintable) — minting must NOT manufacture a binding/DB; the
+    launch stays blocked. Guards against the gate widening to mint over a genuinely-absent MQ."""
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "non-mintable-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "launcher-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {launcher_args}\n",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    absent_db = tmp_path / "relay" / "absent.db"
+    result = _run(
+        tmp_path,
+        "--task",
+        "non-mintable-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        durable_mq=False,
+        extra_env={
+            "HAPAX_RELAY_MQ_DB": str(absent_db),
+            "HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID": "",
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
+        },
+    )
+
     assert result.returncode == 10
     assert not launcher_args.exists()
-    assert "strict_mq_message_id_required" in result.stderr
+    assert not absent_db.exists()  # minting never manufactured the absent DB
+    assert "durable MQ authority binding required" in result.stderr
 
 
 def test_launch_blocks_mq_message_id_mismatch_without_consuming(tmp_path: Path) -> None:
@@ -2621,3 +2755,101 @@ def test_policy_rollback_help_documents_retirement() -> None:
     # The old help claimed legacy full-profile routes "may launch" — that is now
     # false (rollback HOLDs). Guard against the stale promise regressing.
     assert "may launch" not in help_text
+
+
+def test_mint_dispatch_binding_creates_dispatch_message(tmp_path: Path, monkeypatch) -> None:
+    """Direct coverage for the missing #3793 producer. A validated, dispatch-ready task carrying an
+    authority_case mints a durable `dispatch` relay-MQ binding and returns its message_id; lane
+    underscores normalize to the relay recipient form."""
+    module = _dispatcher_module()
+    db = tmp_path / "relay" / "messages.db"
+    db.parent.mkdir(parents=True)
+    monkeypatch.setenv("HAPAX_RELAY_MQ_DB", str(db))
+
+    message_id = module._mint_dispatch_binding(
+        "build-task-7",
+        "cx_green",
+        {"authority_case": "CASE-TEST-001", "authority_item": "ITEM-9"},
+    )
+
+    assert message_id
+    with sqlite3.connect(db) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT message_id, message_type, subject, authority_case, authority_item FROM messages"
+        ).fetchall()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["message_id"] == message_id
+    assert row["message_type"] == "dispatch"
+    assert row["subject"] == "build-task-7"
+    assert row["authority_case"] == "CASE-TEST-001"
+    assert row["authority_item"] == "ITEM-9"
+    assert _recipient_row(db, message_id, "cx-green")["state"] == "offered"
+
+
+def test_mint_dispatch_binding_defaults_authority_item_to_task_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When the task carries no explicit authority_item, the minted binding falls back to the
+    task_id (the binding still satisfies the dispatch CHECK and stays auditable)."""
+    module = _dispatcher_module()
+    db = tmp_path / "relay" / "messages.db"
+    db.parent.mkdir(parents=True)
+    monkeypatch.setenv("HAPAX_RELAY_MQ_DB", str(db))
+
+    message_id = module._mint_dispatch_binding(
+        "build-task-8", "delta", {"authority_case": "CASE-TEST-001"}
+    )
+
+    assert message_id
+    with sqlite3.connect(db) as conn:
+        authority_item = conn.execute(
+            "SELECT authority_item FROM messages WHERE message_id = ?", (message_id,)
+        ).fetchone()[0]
+    assert authority_item == "build-task-8"
+
+
+def test_mint_dispatch_binding_returns_none_without_authority_case(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Minting cannot manufacture authority: a task with no (or a nullish) authority_case yields
+    None and writes nothing — the caller leaves the task blocked with the true reason."""
+    module = _dispatcher_module()
+    db = tmp_path / "relay" / "messages.db"
+    monkeypatch.setenv("HAPAX_RELAY_MQ_DB", str(db))
+
+    assert module._mint_dispatch_binding("build-task-9", "delta", {}) is None
+    assert (
+        module._mint_dispatch_binding("build-task-9", "delta", {"authority_case": "null"}) is None
+    )
+    assert not db.exists()
+
+
+def test_sliced_call_forwards_caller_path_into_slice_env(tmp_path: Path, monkeypatch) -> None:
+    """Regression for the exit-4 deadlock: the systemd-run SDLC slice does not inherit the caller's
+    PATH, so the launched lane failed `command -v claude`. `_sliced_call` must forward the caller's
+    PATH into the slice's explicit env (and omit it when the caller has none)."""
+    module = _dispatcher_module()
+    # The in-test short-circuit (PYTEST_CURRENT_TEST) returns before the slice-wrap path, so drop it
+    # to exercise the real env construction; stub the wrap + exec so nothing actually launches.
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    captured: dict[str, dict[str, str]] = {}
+
+    def fake_wrap(args: list[str], setenv: dict[str, str] | None = None) -> list[str]:
+        captured["setenv"] = dict(setenv or {})
+        return list(args)
+
+    monkeypatch.setattr(module, "sdlc_slice_wrap", fake_wrap)
+    monkeypatch.setattr(module.subprocess, "call", lambda cmd, env=None: 0)
+
+    assert (
+        module._sliced_call(["echo", "hi"], env={"PATH": "/sentinel/bin:/usr/bin", "HAPAX_X": "1"})
+        == 0
+    )
+    assert captured["setenv"]["PATH"] == "/sentinel/bin:/usr/bin"
+    assert captured["setenv"]["HAPAX_SDLC_SLICE_ATTACHED"] == "1"
+
+    captured.clear()
+    assert module._sliced_call(["echo", "hi"], env={"HAPAX_X": "1"}) == 0
+    assert "PATH" not in captured["setenv"]
