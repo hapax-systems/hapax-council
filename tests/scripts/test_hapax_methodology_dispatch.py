@@ -962,6 +962,8 @@ def test_blocks_claude_dev_operator_pool_before_worktree_probe(tmp_path: Path) -
         assert "not a governed dispatch lane" in result.stderr
         assert "scripts/hapax-codex-health" in result.stderr
         assert "--json <cx-lane>" in result.stderr
+        assert "scripts/hapax-claude-health" in result.stderr
+        assert "--json <lane>" in result.stderr
         assert "not dev/devN" in result.stderr
         assert "missing cc-claim" not in result.stderr
 
