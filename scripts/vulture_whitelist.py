@@ -4458,3 +4458,22 @@ from shared.avsdlc_witness import (  # noqa: E402
 )
 
 _avi_intent_fields_from_record_and_frame
+
+# Coord spine terminal-event emitters (HOS rung 3): emit_task_closed /
+# emit_pr_merged / emit_session_ended are the public library API the consumers
+# (scripts/cc-close, scripts/cc-pr-merge-watcher, session-end teardown) wire in
+# follow-up commits. This slice ships the emitter module + a reference Foldable
+# projection + tests ahead of the consumer wiring; vulture sees only test calls.
+from shared.coord_terminal_events import (  # noqa: E402
+    emit_pr_merged as _coord_emit_pr_merged,
+)
+from shared.coord_terminal_events import (
+    emit_session_ended as _coord_emit_session_ended,
+)
+from shared.coord_terminal_events import (
+    emit_task_closed as _coord_emit_task_closed,
+)
+
+_coord_emit_task_closed
+_coord_emit_pr_merged
+_coord_emit_session_ended
