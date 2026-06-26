@@ -1503,6 +1503,24 @@ def test_session_is_protected_does_not_substring_match_unquoted_session(
     assert not sweeper._session_is_protected("cx-violet", relay)
 
 
+def test_session_is_protected_ignores_unprotected_section_heading(tmp_path: Path) -> None:
+    """The word ``unprotected`` must not open a protected-session section."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    relay.mkdir()
+    (relay / "session-protection.md").write_text(
+        """# Session Protection
+
+## Unprotected Sessions
+
+- cx-violet is available for retirement.
+""",
+        encoding="utf-8",
+    )
+
+    assert not sweeper._session_is_protected("cx-violet", relay)
+
+
 def test_reap_dead_lanes_skips_protected_codex_status_relay(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -1768,6 +1786,26 @@ def test_session_is_protected_fails_closed_when_override_file_unreadable(
     assert sweeper._session_is_protected("cx-violet", relay)
     assert str(protection) in caplog.text
     assert "repair the protection file" in caplog.text
+
+
+def test_session_is_protected_prefers_file_override_over_legacy_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The *_FILE override has precedence over HAPAX_SESSION_PROTECTION."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    relay.mkdir()
+    preferred = tmp_path / "preferred-session-protection.md"
+    legacy = tmp_path / "legacy-session-protection.md"
+    legacy.write_text("- cx-violet is unprotected here.\n", encoding="utf-8")
+
+    monkeypatch.setenv("HAPAX_SESSION_PROTECTION_FILE", str(preferred))
+    monkeypatch.setenv("HAPAX_SESSION_PROTECTION", str(legacy))
+    caplog.set_level("WARNING")
+
+    assert sweeper._session_is_protected("cx-violet", relay)
+    assert str(preferred) in caplog.text
+    assert str(legacy) not in caplog.text
 
 
 def test_reap_dead_lanes_fail_closed_when_protection_file_unreadable(

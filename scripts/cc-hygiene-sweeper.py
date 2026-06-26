@@ -156,6 +156,10 @@ def _line_mentions_session(line: str, session: str) -> bool:
     return bool(re.search(rf"(?<![A-Za-z0-9_-]){re.escape(session)}(?![A-Za-z0-9_-])", line))
 
 
+def _line_has_word(line: str, word: str) -> bool:
+    return bool(re.search(rf"\b{re.escape(word)}\b", line, flags=re.IGNORECASE))
+
+
 def _relay_retire_script() -> Path:
     override = os.environ.get(RELAY_RETIRE_SCRIPT_ENV)
     if override:
@@ -207,11 +211,11 @@ def _session_is_protected(session: str, relay_root: Path) -> bool:
         stripped = line.strip()
         lower = stripped.lower()
         if stripped.startswith("#"):
-            in_protected_session_section = "protected" in lower and any(
+            in_protected_session_section = _line_has_word(stripped, "protected") and any(
                 marker in lower for marker in ("session", "live", "lane")
             )
         if _line_mentions_session(line, session) and (
-            "protected" in lower or in_protected_session_section
+            _line_has_word(stripped, "protected") or in_protected_session_section
         ):
             LOG.warning(
                 "Refusing to reap protected session '%s' listed in %s: %s",
@@ -370,7 +374,9 @@ def _retire_dead_lane(
             timeout=5,
             check=False,
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        # Missing helpers, permission failures, and transient exec errors all leave
+        # the relay unretired, so report them as the same failed-retire condition.
         LOG.warning(
             "Failed to retire relay YAML for '%s': %s; recheck with: %s",
             role,
