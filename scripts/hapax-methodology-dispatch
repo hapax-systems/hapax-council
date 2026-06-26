@@ -1096,7 +1096,9 @@ def validate_task(
             False,
             f"lane {lane!r} is an interactive Claude operator pool, not a governed "
             "dispatch lane; use a supervised Claude lane or a Codex cx-* lane; "
-            "recheck governed lane availability with: scripts/hapax-codex-health",
+            "recheck governed lane availability with: scripts/hapax-codex-health "
+            "--json <cx-lane> and verify the target is a Codex cx-* lane or supervised "
+            "Claude lane, not dev/devN",
             task,
             parent_spec_path,
             exempt,

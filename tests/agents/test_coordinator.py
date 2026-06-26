@@ -34,6 +34,7 @@ from agents.coordinator.core import (
     _live_headless_launcher,
     _parse_task,
     _prepare_dispatch_message,
+    _relay_status_is_retired,
     _task_flow_counts,
 )
 from shared.sdlc_pressure_gate import AdmissionDecision
@@ -1006,6 +1007,82 @@ current_claim: null
         assert state.claimed_task is None
         assert state.idle is True
         assert state.dispatchable is False
+
+    def test_claude_operator_pool_descriptor_is_not_dispatchable(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.PID_DIR", tmp_path / "pids"),
+            patch("agents.coordinator.core._live_headless_launcher", return_value=None),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="dev2",
+                    session="hapax-claude-dev2",
+                    platform="claude",
+                )
+            )
+
+        assert state.alive is True
+        assert state.idle is True
+        assert state.dispatchable is False
+        assert _lane_to_dict(state)["dispatchable"] is False
+
+    def test_retired_relay_status_variants_normalize_and_suppress_claim(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        statuses = (
+            "retired-clean-exit",
+            "superseded-by-cx-blue",
+            "closed-by-operator",
+            "idle_wound_down",
+            "wind_down_idle",
+            "wound_down",
+            "wind_down",
+            "winding_down-after-retire",
+            "antigravity_takeover",
+        )
+        for index, status in enumerate(statuses):
+            role = f"cx-retired-{index}"
+            (relay_dir / f"{role}.yaml").write_text(
+                f"""session: {role}
+platform: codex
+status: {status}
+current_claim: stale-task-{index}
+""",
+                encoding="utf-8",
+            )
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            for index, status in enumerate(statuses):
+                role = f"cx-retired-{index}"
+                state = _check_lane(
+                    LaneDescriptor(
+                        role=role,
+                        session=f"hapax-codex-{role}",
+                        platform="codex",
+                    )
+                )
+
+                assert _relay_status_is_retired(status) is True
+                assert state.alive is True
+                assert state.claimed_task is None
+                assert state.idle is True
+                assert state.dispatchable is False
+
+        assert _relay_status_is_retired("retiring") is False
 
     def test_active_task_file_still_beats_retired_role_status(self, tmp_path: Path):
         role = "ut-role"
