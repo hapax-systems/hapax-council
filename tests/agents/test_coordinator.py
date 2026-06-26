@@ -1520,6 +1520,7 @@ current_claim: null
             ),
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
             patch.object(
                 Coordinator,
                 "_dispatch",
