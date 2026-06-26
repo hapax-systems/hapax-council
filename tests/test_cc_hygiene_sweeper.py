@@ -1521,6 +1521,29 @@ def test_session_is_protected_ignores_unprotected_section_heading(tmp_path: Path
     assert not sweeper._session_is_protected("cx-violet", relay)
 
 
+def test_session_is_protected_resets_context_on_unrelated_section(tmp_path: Path) -> None:
+    """A retirement-log mention of prior protection must not protect a lane."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    relay.mkdir()
+    (relay / "session-protection.md").write_text(
+        """# Session Protection
+
+## Protected Live Sessions
+
+- cx-violet visible screen lane; do not kill, replace, or reclaim.
+
+## Retirement log
+
+- cx-green was previously protected but is now retired.
+""",
+        encoding="utf-8",
+    )
+
+    assert sweeper._session_is_protected("cx-violet", relay)
+    assert not sweeper._session_is_protected("cx-green", relay)
+
+
 def test_reap_dead_lanes_skips_protected_codex_status_relay(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -1665,6 +1688,37 @@ def test_reap_dead_lanes_known_role_failure_skips_sibling_but_continues_roles(
     assert reaped == ["beta"]
     assert failures == ["alpha"]
     assert retire_calls == ["alpha", "beta"]
+
+
+def test_reap_dead_lanes_second_pass_noops_after_successful_retirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relay retired by the first pass is not retired again by the second."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    status_path = _write_relay(
+        relay,
+        "cx-p0-status",
+        {
+            "role": "cx-p0",
+            "lane": "cx-p0",
+            "timestamp": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "blocked",
+        },
+    )
+    retire_calls: list[str] = []
+
+    def fake_retire(args: list[str], **_: Any) -> object:
+        retire_calls.append(args[1])
+        status_path.write_text("role: cx-p0\nlane: cx-p0\nstatus: retired\n", encoding="utf-8")
+        return object()
+
+    monkeypatch.setattr(sweeper, "_lane_has_live_process", lambda _role: False)
+    monkeypatch.setattr(sweeper.subprocess, "run", fake_retire)
+
+    assert sweeper.reap_dead_lanes(relay) == ["cx-p0"]
+    assert sweeper.reap_dead_lanes(relay) == []
+    assert retire_calls == ["cx-p0"]
 
 
 def test_reap_dead_lanes_uses_configured_retire_script(

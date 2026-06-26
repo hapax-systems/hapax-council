@@ -27,7 +27,7 @@ relay retirement before stale-relay checks and passes the evaluated
 ``HAPAX_RELAY_RETIRE_SCRIPT`` can point at an alternate retire helper; otherwise
 the sweeper prefers its sibling ``scripts/hapax-relay-retire``, then ``PATH``,
 then the legacy ``~/projects/hapax-council/scripts/hapax-relay-retire`` path.
-``--no-write`` keeps the sweep diagnostic and skips relay retirement.
+``--no-write`` is the full diagnostic mode and skips relay retirement.
 ``--no-actions`` disables only the ghost-claim self-heal.
 ``HAPAX_CC_HYGIENE_OFF=1`` is the global killswitch. The other auto-actions
 (H2 stale-in-progress, H7 offered-stale) remain unwired.
@@ -207,15 +207,19 @@ def _session_is_protected(session: str, relay_root: Path) -> bool:
         )
         return True
     in_protected_session_section = False
+    in_nonprotected_section = False
     for line in text.splitlines():
         stripped = line.strip()
         lower = stripped.lower()
         if stripped.startswith("#"):
-            in_protected_session_section = _line_has_word(stripped, "protected") and any(
+            protected_section = _line_has_word(stripped, "protected") and any(
                 marker in lower for marker in ("session", "live", "lane")
             )
+            in_protected_session_section = protected_section
+            in_nonprotected_section = stripped.startswith("##") and not protected_section
         if _line_mentions_session(line, session) and (
-            _line_has_word(stripped, "protected") or in_protected_session_section
+            (_line_has_word(stripped, "protected") and not in_nonprotected_section)
+            or in_protected_session_section
         ):
             LOG.warning(
                 "Refusing to reap protected session '%s' listed in %s: %s",
