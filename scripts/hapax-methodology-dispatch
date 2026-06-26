@@ -44,6 +44,7 @@ from shared.coord_dispatch import (
     run_atomic_dispatch_launch,
 )
 from shared.coord_event_log import CoordEventLog, coord_base_dir
+from shared.dispatch_service_time import is_claude_operator_pool_role
 from shared.dispatcher_policy import (
     DispatchAction,
     RouteDecision,
@@ -531,6 +532,12 @@ def resolve_declared_path(raw: str | list[str] | None, *, base: Path) -> Path | 
 
 def lane_worktree(lane: str, platform: str) -> Path:
     return dispatch_worktree(lane, platform)
+
+
+def is_claude_operator_pool_lane(lane: str, platform: str) -> bool:
+    """True for visible Claude dev-pool sessions that are not dispatch lanes."""
+
+    return strip_scalar(platform).lower() == "claude" and is_claude_operator_pool_role(lane)
 
 
 # --- capability-gated SYSTEM drain of an orphaned dead-lane task --------------
@@ -1083,6 +1090,19 @@ def validate_task(
                 parent_spec_path,
                 exempt,
             )
+
+    if is_claude_operator_pool_lane(lane, platform):
+        return Validation(
+            False,
+            f"lane {lane!r} is an interactive Claude operator pool, not a governed "
+            "dispatch lane; use a supervised Claude lane or a Codex cx-* lane; "
+            "recheck governed lane availability with: scripts/hapax-codex-health "
+            "--json <cx-lane> for Codex lanes or scripts/hapax-claude-health "
+            "--json <lane> for supervised Claude lanes; verify the target is not dev/devN",
+            task,
+            parent_spec_path,
+            exempt,
+        )
 
     if strict_worktree:
         ok, reason = check_worktree_cc_task_tool_guards(lane_worktree(lane, platform))

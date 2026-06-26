@@ -34,6 +34,7 @@ from agents.coordinator.core import (
     _live_headless_launcher,
     _parse_task,
     _prepare_dispatch_message,
+    _relay_status_is_retired,
     _task_flow_counts,
 )
 from shared.sdlc_pressure_gate import AdmissionDecision
@@ -973,6 +974,120 @@ retired_reason: clean exit
         assert state.alive is True
         assert state.claimed_task is None
         assert state.idle is True
+        assert state.dispatchable is False
+
+    def test_codex_wound_down_relay_is_not_dispatchable(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / "cx-fugu-1.yaml").write_text(
+            """session: cx-fugu-1
+platform: codex
+status: wind_down_idle
+current_claim: null
+""",
+            encoding="utf-8",
+        )
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="cx-fugu-1",
+                    session="hapax-codex-cx-fugu-1",
+                    platform="codex",
+                )
+            )
+
+        assert state.alive is True
+        assert state.claimed_task is None
+        assert state.idle is True
+        assert state.dispatchable is False
+
+    def test_claude_operator_pool_descriptor_is_not_dispatchable(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.PID_DIR", tmp_path / "pids"),
+            patch("agents.coordinator.core._live_headless_launcher", return_value=None),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="dev2",
+                    session="hapax-claude-dev2",
+                    platform="claude",
+                )
+            )
+
+        assert state.alive is True
+        assert state.idle is True
+        assert state.dispatchable is False
+        assert _lane_to_dict(state)["dispatchable"] is False
+
+    def test_retired_relay_status_variants_normalize_and_suppress_claim(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        statuses = (
+            "retired",
+            "retired-clean-exit",
+            "idle_wound_down",
+            "idle-wound-down-after-close",
+            "wind_down_idle",
+            "wind-down-idle-after-close",
+            "wound_down",
+            "wound-down-by-operator",
+            "wind_down",
+            "wind-down-after-retire",
+            "winding_down",
+            "winding_down-after-retire",
+        )
+        for index, status in enumerate(statuses):
+            role = f"cx-retired-{index}"
+            (relay_dir / f"{role}.yaml").write_text(
+                f"""session: {role}
+platform: codex
+status: {status}
+current_claim: stale-task-{index}
+""",
+                encoding="utf-8",
+            )
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            for index, status in enumerate(statuses):
+                role = f"cx-retired-{index}"
+                state = _check_lane(
+                    LaneDescriptor(
+                        role=role,
+                        session=f"hapax-codex-{role}",
+                        platform="codex",
+                    )
+                )
+
+                assert _relay_status_is_retired(status) is True
+                assert state.alive is True
+                assert state.claimed_task is None
+                assert state.idle is True
+                assert state.dispatchable is False
+
+        assert _relay_status_is_retired("retiring") is False
+        assert _relay_status_is_retired("superseded-by-cx-blue") is False
+        assert _relay_status_is_retired("closed-by-operator") is False
 
     def test_active_task_file_still_beats_retired_role_status(self, tmp_path: Path):
         role = "ut-role"
@@ -1322,6 +1437,199 @@ class TestPickLane:
         lanes = [LaneState(role="beta", alive=True, idle=True)]
         result = coordinator._pick_lane(task, lanes)
         assert result is None
+
+
+class TestDispatchableLaneSelection:
+    def test_tick_excludes_claude_dev_operator_pool_lanes(self):
+        coordinator = Coordinator()
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("claude",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+        )
+        lanes = {
+            "dev": LaneState(role="dev", platform="claude", alive=True, idle=True),
+            "beta": LaneState(role="beta", platform="claude", alive=True, idle=True),
+        }
+        dispatched: list[tuple[str, str]] = []
+
+        with (
+            patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_check_lanes", return_value=lanes),
+            patch.object(
+                Coordinator,
+                "_dispatch",
+                side_effect=lambda t, lane: dispatched.append((t.task_id, lane.role)) or (True, ""),
+            ),
+            patch.object(Coordinator, "_write_state"),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=AdmissionDecision(state="open"),
+            ),
+        ):
+            coordinator.tick()
+
+        assert dispatched == [("t1", "beta")]
+
+    def test_tick_does_not_dispatch_when_only_claude_dev_operator_pool_is_idle(self):
+        coordinator = Coordinator()
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("claude",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+        )
+        lanes = {
+            "dev2": LaneState(role="dev2", platform="claude", alive=True, idle=True),
+        }
+        dispatched: list[tuple[str, str]] = []
+        written: list[CoordinatorState] = []
+
+        def capture_state(state: CoordinatorState, **_kwargs: object) -> None:
+            written.append(state)
+
+        with (
+            patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_check_lanes", return_value=lanes),
+            patch.object(
+                Coordinator,
+                "_dispatch",
+                side_effect=lambda t, lane: dispatched.append((t.task_id, lane.role)) or (True, ""),
+            ),
+            patch.object(Coordinator, "_write_state", side_effect=capture_state),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=AdmissionDecision(state="open"),
+            ),
+        ):
+            coordinator.tick()
+
+        assert dispatched == []
+        assert written[0].lanes_idle == 0
+        assert written[0].lanes["dev2"]["dispatchable"] is False
+
+    def test_tick_does_not_dispatch_retired_codex_relay_lane(self):
+        coordinator = Coordinator()
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("codex",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+        )
+        lanes = {
+            "cx-fugu-1": LaneState(
+                role="cx-fugu-1",
+                platform="codex",
+                alive=True,
+                idle=True,
+                dispatchable=False,
+            ),
+        }
+        dispatched: list[tuple[str, str]] = []
+        written: list[CoordinatorState] = []
+
+        def capture_state(state: CoordinatorState, **_kwargs: object) -> None:
+            written.append(state)
+
+        with (
+            patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_check_lanes", return_value=lanes),
+            patch.object(
+                Coordinator,
+                "_dispatch",
+                side_effect=lambda t, lane: dispatched.append((t.task_id, lane.role)) or (True, ""),
+            ),
+            patch.object(Coordinator, "_write_state", side_effect=capture_state),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=AdmissionDecision(state="open"),
+            ),
+        ):
+            coordinator.tick()
+
+        assert dispatched == []
+        assert written[0].lanes_idle == 0
+        assert written[0].lanes["cx-fugu-1"]["dispatchable"] is False
+
+    def test_tick_excludes_wind_down_codex_relay_before_dispatch(self, tmp_path: Path):
+        coordinator = Coordinator()
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("codex",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+        )
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / "cx-fugu-1.yaml").write_text(
+            """session: cx-fugu-1
+platform: codex
+status: wind_down
+current_claim: null
+""",
+            encoding="utf-8",
+        )
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        dispatched: list[tuple[str, str]] = []
+        written: list[CoordinatorState] = []
+
+        def capture_state(state: CoordinatorState, **_kwargs: object) -> None:
+            written.append(state)
+
+        with (
+            patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch(
+                "agents.coordinator.core._discover_lanes",
+                return_value=[
+                    LaneDescriptor(
+                        role="cx-fugu-1",
+                        session="hapax-codex-cx-fugu-1",
+                        platform="codex",
+                    )
+                ],
+            ),
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.object(
+                Coordinator,
+                "_dispatch",
+                side_effect=lambda t, lane: dispatched.append((t.task_id, lane.role)) or (True, ""),
+            ),
+            patch.object(Coordinator, "_write_state", side_effect=capture_state),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=AdmissionDecision(state="open"),
+            ),
+        ):
+            coordinator.tick()
+
+        assert dispatched == []
+        assert written[0].lanes_alive == 1
+        assert written[0].lanes_idle == 0
+        assert written[0].lanes["cx-fugu-1"]["dispatchable"] is False
 
 
 class TestDispatch:
@@ -1802,7 +2110,7 @@ Body.
         pid_dir.mkdir()
         codex_pid_dir = tmp_path / "codex-pids"
         codex_pid_dir.mkdir()
-        _guarded_worktree(tmp_path / "projects" / "hapax-council--dev")
+        _guarded_worktree(tmp_path / "projects" / "hapax-council--beta")
         # Scope: coordinator-side readiness, planning, and dispatch argv. The
         # dispatcher script's own guard behavior is covered in dispatcher tests.
         dispatcher = tmp_path / "hapax-methodology-dispatch"
@@ -1811,7 +2119,7 @@ Body.
         completed = subprocess.CompletedProcess(
             args=["tmux"],
             returncode=0,
-            stdout="hapax-claude-dev\n",
+            stdout="hapax-claude-beta\n",
             stderr="",
         )
         dispatch_calls: list[list[str]] = []
@@ -1825,6 +2133,12 @@ Body.
         with (
             patch.object(Coordinator, "_scan_tasks", return_value=[task]),
             patch.object(Coordinator, "_write_state") as write_state,
+            patch(
+                "agents.coordinator.core._discover_lanes",
+                return_value=[
+                    LaneDescriptor(role="beta", session="hapax-claude-beta", platform="claude")
+                ],
+            ),
             patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", cache_dir),
@@ -1845,15 +2159,15 @@ Body.
         assert state.offered_tasks == 1
         assert state.lanes_idle == 1
         assert state.dispatches_this_tick == 1
-        assert state.lanes["dev"]["alive"] is True
-        assert state.lanes["dev"]["dispatch_ready"] is True
+        assert state.lanes["beta"]["alive"] is True
+        assert state.lanes["beta"]["dispatch_ready"] is True
         assert dispatch_calls == [
             [
                 str(dispatcher),
                 "--task",
                 "t1",
                 "--lane",
-                "dev",
+                "beta",
                 "--platform",
                 "claude",
                 "--mode",
@@ -1883,14 +2197,14 @@ Body.
         pid_dir.mkdir()
         codex_pid_dir = tmp_path / "codex-pids"
         codex_pid_dir.mkdir()
-        _guarded_worktree(tmp_path / "projects" / "hapax-council--dev")
+        _guarded_worktree(tmp_path / "projects" / "hapax-council--beta")
         dispatcher = tmp_path / "hapax-methodology-dispatch"
         dispatcher.write_text("#!/bin/sh\nexit 42\n", encoding="utf-8")
         dispatcher.chmod(0o755)
         completed = subprocess.CompletedProcess(
             args=["tmux"],
             returncode=0,
-            stdout="hapax-claude-dev\n",
+            stdout="hapax-claude-beta\n",
             stderr="",
         )
         dispatch_calls: list[list[str]] = []
@@ -1909,6 +2223,12 @@ Body.
         with (
             patch.object(Coordinator, "_scan_tasks", return_value=[task]),
             patch.object(Coordinator, "_write_state") as write_state,
+            patch(
+                "agents.coordinator.core._discover_lanes",
+                return_value=[
+                    LaneDescriptor(role="beta", session="hapax-claude-beta", platform="claude")
+                ],
+            ),
             patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", cache_dir),
@@ -1929,7 +2249,7 @@ Body.
         assert state.offered_tasks == 1
         assert state.lanes_idle == 1
         assert state.dispatches_this_tick == 0
-        assert state.lanes["dev"]["dispatch_ready"] is True
+        assert state.lanes["beta"]["dispatch_ready"] is True
         assert len(dispatch_calls) == 1
 
     def test_tick_does_not_dispatch_to_stale_claim_lane(self, tmp_path: Path):

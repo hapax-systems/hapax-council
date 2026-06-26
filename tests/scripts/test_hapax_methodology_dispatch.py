@@ -942,6 +942,32 @@ def test_blocks_stale_worktree_cc_close_before_launch(tmp_path: Path) -> None:
     assert "stale cc-close" in result.stderr
 
 
+def test_blocks_claude_dev_operator_pool_before_worktree_probe(tmp_path: Path) -> None:
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+
+    for lane in ("dev", "dev2", "DEV12"):
+        result = _run(tmp_path, "--task", "governed-build", "--lane", lane)
+
+        assert result.returncode == 10
+        assert "interactive Claude operator pool" in result.stderr
+        assert "not a governed dispatch lane" in result.stderr
+        assert "scripts/hapax-codex-health" in result.stderr
+        assert "--json <cx-lane>" in result.stderr
+        assert "scripts/hapax-claude-health" in result.stderr
+        assert "--json <lane>" in result.stderr
+        assert "not dev/devN" in result.stderr
+        assert "missing cc-claim" not in result.stderr
+
+
 def test_prompt_contains_worktree_local_cc_claim_path(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")

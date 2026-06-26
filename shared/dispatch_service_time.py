@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import statistics
 import time
 from collections import defaultdict
@@ -376,11 +377,30 @@ class QueueLane:
     role: str
     platform: str
     cooldown_remaining_s: float = 0.0
+    dispatchable: bool = True
+
+
+def is_claude_operator_pool_role(role: str) -> bool:
+    """True for visible Claude dev-pool sessions that are not governed lanes."""
+
+    return re.fullmatch(r"dev[0-9]*", role.strip().lower()) is not None
 
 
 def _routable(task: QueueTask, lane: QueueLane) -> bool:
+    if not is_dispatchable_lane(lane):
+        return False
     platforms = {p.lower() for p in task.platform_suitability}
     return "any" in platforms or lane.platform.lower() in platforms
+
+
+def is_dispatchable_lane(lane: QueueLane) -> bool:
+    """False for live operator-pool sessions that must never receive queue work."""
+
+    if not lane.dispatchable:
+        return False
+    if lane.platform.lower() != "claude":
+        return True
+    return not is_claude_operator_pool_role(lane.role)
 
 
 def plan_dispatches(
