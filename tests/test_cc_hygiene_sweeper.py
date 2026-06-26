@@ -1114,6 +1114,20 @@ def test_canonical_cx_relay_role_direct_branches() -> None:
     assert sweeper._canonical_cx_relay_role(Path("cx-blue.yaml"), {"role": "cx-blue"}) is None
 
 
+def test_sweeper_relay_payload_is_retired_accepts_wound_down_variants() -> None:
+    """The loader/reaper retired predicate matches the stale-check contract."""
+    sweeper = _load_sweeper_module()
+
+    for status in (
+        "idle_wound_down",
+        "wind_down_idle",
+        "wound_down",
+        "wind_down",
+        "winding_down",
+    ):
+        assert sweeper._relay_payload_is_retired({"status": status})
+
+
 def test_payload_identity_matches_requires_all_present_fields_to_agree() -> None:
     """Status relay identity accepts absent fields but rejects conflicts."""
     sweeper = _load_sweeper_module()
@@ -1203,6 +1217,35 @@ def test_load_relay_payloads_retired_status_relay_suppresses_plain_relay(
             "lane": "cx-p0",
             "timestamp": (_now() - timedelta(hours=2)).isoformat(),
             "status": "retired",
+        },
+    )
+    _write_relay(
+        relay,
+        "cx-p0",
+        {
+            "session": "cx-p0",
+            "updated": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "active",
+        },
+    )
+
+    payloads = sweeper._load_relay_payloads(relay)
+
+    assert "cx-p0" not in payloads
+
+
+def test_load_relay_payloads_retired_identity_free_status_suppresses_plain_relay(
+    tmp_path: Path,
+) -> None:
+    """A retired status filename can suppress its legacy plain relay."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    _write_relay(
+        relay,
+        "cx-p0-status",
+        {
+            "timestamp": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "wind_down",
         },
     )
     _write_relay(

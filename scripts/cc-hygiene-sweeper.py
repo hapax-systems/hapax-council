@@ -103,6 +103,14 @@ RELAY_RETIRE_SCRIPT_ENV = "HAPAX_RELAY_RETIRE_SCRIPT"
 
 def _relay_payload_is_retired(payload: dict[str, Any]) -> bool:
     """Return true for relays that explicitly mark a retired/superseded lane."""
+    retired_prefixes = ("RETIR", "SUPERSEDED", "CLOSED", "ANTIGRAVITY")
+    retired_exact = {
+        "IDLE_WOUND_DOWN",
+        "WIND_DOWN_IDLE",
+        "WOUND_DOWN",
+        "WIND_DOWN",
+        "WINDING_DOWN",
+    }
     values: list[str] = []
     for key in ("status", "state", "relay_status", "session_state", "role", "session_status"):
         raw = payload.get(key)
@@ -110,7 +118,7 @@ def _relay_payload_is_retired(payload: dict[str, Any]) -> bool:
             values.append(str(raw))
     for value in values:
         normalized = value.strip().strip("\"'").upper()
-        if normalized.startswith(("RETIR", "SUPERSEDED", "CLOSED", "ANTIGRAVITY")):
+        if normalized in retired_exact or normalized.startswith(retired_prefixes):
             return True
     return False
 
@@ -227,6 +235,17 @@ def _canonical_cx_relay_role(path: Path, payload: dict[str, Any]) -> str | None:
     if payload.get("session") == stem and not _payload_identity_conflicts(payload, stem):
         return stem
     return None
+
+
+def _retired_cx_status_relay_role(path: Path, payload: dict[str, Any]) -> str | None:
+    """Return filename role for retired cx status relays unless identity conflicts."""
+    stem = path.stem
+    if not stem.startswith("cx-") or not stem.endswith(_CODEX_STATUS_SUFFIX):
+        return None
+    role = stem[: -len(_CODEX_STATUS_SUFFIX)]
+    if _payload_identity_conflicts(payload, role):
+        return None
+    return role
 
 
 _AGENT_PGREP_PATTERN = (
@@ -487,14 +506,15 @@ def _load_relay_payloads(relay_root: Path) -> dict[str, dict[str, Any]]:
             # `cx-amber-wsjf-007-velocity-audit.yaml`. Only canonical live
             # relay files are named after their lane (`cx-foo.yaml`) or status
             # relay (`cx-foo-status.yaml`) and agree with the payload identity.
+            if _relay_payload_is_retired(payload):
+                role = _retired_cx_status_relay_role(path, payload)
+                if role is not None:
+                    retired_status_roles.add(role)
+                continue
             role = _canonical_cx_relay_role(path, payload)
             if role is None:
                 continue
             if role in payloads:
-                continue
-            if _relay_payload_is_retired(payload):
-                if path.stem.endswith(_CODEX_STATUS_SUFFIX):
-                    retired_status_roles.add(role)
                 continue
             if role in retired_status_roles:
                 continue
