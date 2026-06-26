@@ -1353,7 +1353,9 @@ def _dossier_validity_blockers(
                     except (TypeError, ValueError):
                         unwitnessed.append(fam)
             except (TypeError, ValueError):
-                pass
+                # Malformed admission or witness timestamps keep the prefilled
+                # unwitnessed list intact so the dossier fails closed.
+                unwitnessed = list(unwitnessed)
         else:
             unwitnessed = list(degraded_outage)
         if unwitnessed:
