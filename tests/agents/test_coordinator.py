@@ -2110,7 +2110,7 @@ Body.
         pid_dir.mkdir()
         codex_pid_dir = tmp_path / "codex-pids"
         codex_pid_dir.mkdir()
-        _guarded_worktree(tmp_path / "projects" / "hapax-council--dev")
+        _guarded_worktree(tmp_path / "projects" / "hapax-council--beta")
         # Scope: coordinator-side readiness, planning, and dispatch argv. The
         # dispatcher script's own guard behavior is covered in dispatcher tests.
         dispatcher = tmp_path / "hapax-methodology-dispatch"
@@ -2119,7 +2119,7 @@ Body.
         completed = subprocess.CompletedProcess(
             args=["tmux"],
             returncode=0,
-            stdout="hapax-claude-dev\n",
+            stdout="hapax-claude-beta\n",
             stderr="",
         )
         dispatch_calls: list[list[str]] = []
@@ -2133,6 +2133,12 @@ Body.
         with (
             patch.object(Coordinator, "_scan_tasks", return_value=[task]),
             patch.object(Coordinator, "_write_state") as write_state,
+            patch(
+                "agents.coordinator.core._discover_lanes",
+                return_value=[
+                    LaneDescriptor(role="beta", session="hapax-claude-beta", platform="claude")
+                ],
+            ),
             patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", cache_dir),
@@ -2153,15 +2159,15 @@ Body.
         assert state.offered_tasks == 1
         assert state.lanes_idle == 1
         assert state.dispatches_this_tick == 1
-        assert state.lanes["dev"]["alive"] is True
-        assert state.lanes["dev"]["dispatch_ready"] is True
+        assert state.lanes["beta"]["alive"] is True
+        assert state.lanes["beta"]["dispatch_ready"] is True
         assert dispatch_calls == [
             [
                 str(dispatcher),
                 "--task",
                 "t1",
                 "--lane",
-                "dev",
+                "beta",
                 "--platform",
                 "claude",
                 "--mode",
@@ -2191,14 +2197,14 @@ Body.
         pid_dir.mkdir()
         codex_pid_dir = tmp_path / "codex-pids"
         codex_pid_dir.mkdir()
-        _guarded_worktree(tmp_path / "projects" / "hapax-council--dev")
+        _guarded_worktree(tmp_path / "projects" / "hapax-council--beta")
         dispatcher = tmp_path / "hapax-methodology-dispatch"
         dispatcher.write_text("#!/bin/sh\nexit 42\n", encoding="utf-8")
         dispatcher.chmod(0o755)
         completed = subprocess.CompletedProcess(
             args=["tmux"],
             returncode=0,
-            stdout="hapax-claude-dev\n",
+            stdout="hapax-claude-beta\n",
             stderr="",
         )
         dispatch_calls: list[list[str]] = []
@@ -2217,6 +2223,12 @@ Body.
         with (
             patch.object(Coordinator, "_scan_tasks", return_value=[task]),
             patch.object(Coordinator, "_write_state") as write_state,
+            patch(
+                "agents.coordinator.core._discover_lanes",
+                return_value=[
+                    LaneDescriptor(role="beta", session="hapax-claude-beta", platform="claude")
+                ],
+            ),
             patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core.CACHE_DIR", cache_dir),
@@ -2237,7 +2249,7 @@ Body.
         assert state.offered_tasks == 1
         assert state.lanes_idle == 1
         assert state.dispatches_this_tick == 0
-        assert state.lanes["dev"]["dispatch_ready"] is True
+        assert state.lanes["beta"]["dispatch_ready"] is True
         assert len(dispatch_calls) == 1
 
     def test_tick_does_not_dispatch_to_stale_claim_lane(self, tmp_path: Path):
