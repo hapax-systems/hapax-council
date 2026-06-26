@@ -224,7 +224,7 @@ def _canonical_cx_relay_role(path: Path, payload: dict[str, Any]) -> str | None:
         if _payload_identity_matches(payload, role):
             return role
         return None
-    if payload.get("session") == stem:
+    if payload.get("session") == stem and not _payload_identity_conflicts(payload, stem):
         return stem
     return None
 
@@ -313,7 +313,25 @@ def _record_reap_failure(
         failures.append(role)
 
 
-def _retire_dead_lane(retire_script: Path, retire_env: dict[str, str], role: str) -> bool:
+def _relay_retire_recheck_command(retire_script: Path, relay_root: Path, role: str) -> str:
+    return " ".join(
+        [
+            f"HAPAX_RELAY_DIR={shlex.quote(str(relay_root))}",
+            shlex.quote(str(retire_script)),
+            shlex.quote(role),
+            "--reason",
+            shlex.quote("manual recheck after cc-hygiene relay_retire_failed"),
+        ]
+    )
+
+
+def _retire_dead_lane(
+    retire_script: Path,
+    retire_env: dict[str, str],
+    relay_root: Path,
+    role: str,
+) -> bool:
+    recheck_command = _relay_retire_recheck_command(retire_script, relay_root, role)
     try:
         result = subprocess.run(
             [
@@ -327,16 +345,22 @@ def _retire_dead_lane(retire_script: Path, retire_env: dict[str, str], role: str
             check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-        LOG.warning("Failed to retire relay YAML for '%s': %s", role, exc)
+        LOG.warning(
+            "Failed to retire relay YAML for '%s': %s; recheck with: %s",
+            role,
+            exc,
+            recheck_command,
+        )
         return False
 
     returncode = getattr(result, "returncode", 0)
     if returncode != 0:
         LOG.warning(
-            "Failed to retire relay YAML for '%s': %s exited with status %s",
+            "Failed to retire relay YAML for '%s': %s exited with status %s; recheck with: %s",
             role,
             retire_script,
             returncode,
+            recheck_command,
         )
         return False
 
@@ -367,6 +391,9 @@ def reap_dead_lanes(relay_root: Path, *, failures: list[str] | None = None) -> l
             payload = _read_relay_yaml(yaml_path)
             if payload is None or _relay_payload_is_retired(payload):
                 continue
+            # Legacy Claude relays predate explicit session/role/lane fields.
+            # For KNOWN_ROLES the filename remains authoritative unless the
+            # payload explicitly declares a conflicting identity.
             if _payload_identity_conflicts(payload, role):
                 LOG.warning(
                     "Skipping relay retirement for '%s'; %s declares a different identity",
@@ -379,7 +406,7 @@ def reap_dead_lanes(relay_root: Path, *, failures: list[str] | None = None) -> l
             if _lane_has_live_process(role):
                 continue
             LOG.info("Reaping dead lane '%s' — no running process found", role)
-            if not _retire_dead_lane(retire_script, retire_env, role):
+            if not _retire_dead_lane(retire_script, retire_env, relay_root, role):
                 _record_reap_failure(role, failures=failures, failed_roles=failed_roles)
                 break
             reaped.append(role)
@@ -398,7 +425,7 @@ def reap_dead_lanes(relay_root: Path, *, failures: list[str] | None = None) -> l
         if _lane_has_live_process(session):
             continue
         LOG.info("Reaping dead cx lane '%s' — no running process found", session)
-        if not _retire_dead_lane(retire_script, retire_env, session):
+        if not _retire_dead_lane(retire_script, retire_env, relay_root, session):
             _record_reap_failure(session, failures=failures, failed_roles=failed_roles)
             continue
         reaped.append(session)
@@ -561,7 +588,9 @@ def run_sweep(
     events.extend(check_ghost_claimed(notes, now=now))
     events.extend(check_duplicate_claim(relay_payloads, now=now))
     events.extend(check_orphan_pr(notes, repo_root, closed_notes=closed_notes, now=now))
+    retire_script = _relay_retire_script()
     for role in sorted(failed_reap_roles):
+        recheck_command = _relay_retire_recheck_command(retire_script, relay_root, role)
         events.append(
             HygieneEvent(
                 timestamp=now,
@@ -570,11 +599,13 @@ def run_sweep(
                 session=role,
                 message=(
                     f"Relay retirement failed for dead lane {role}; stale-relay "
-                    "checks are suppressed for this lane until the retire helper is repaired"
+                    "checks are suppressed for this lane until the retire helper is repaired; "
+                    f"recheck with: {recheck_command}"
                 ),
                 metadata={
                     "relay_root": str(relay_root),
-                    "retire_script": str(_relay_retire_script()),
+                    "retire_script": str(retire_script),
+                    "recheck_command": recheck_command,
                 },
             )
         )

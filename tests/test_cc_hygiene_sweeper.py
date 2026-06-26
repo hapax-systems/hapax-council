@@ -1092,6 +1092,12 @@ def test_canonical_cx_relay_role_direct_branches() -> None:
         sweeper._canonical_cx_relay_role(Path("cx-green.yaml"), {"session": "cx-green"})
         == "cx-green"
     )
+    assert (
+        sweeper._canonical_cx_relay_role(
+            Path("cx-green.yaml"), {"session": "cx-green", "role": "cx-other"}
+        )
+        is None
+    )
     assert sweeper._canonical_cx_relay_role(Path("alpha.yaml"), {"session": "alpha"}) is None
     assert (
         sweeper._canonical_cx_relay_role(
@@ -1159,6 +1165,28 @@ def test_load_relay_payloads_keeps_status_relay_when_plain_relay_exists(tmp_path
 
     assert payloads["cx-p0"]["role"] == "cx-p0"
     assert "session" not in payloads["cx-p0"]
+
+
+def test_load_relay_payloads_skips_plain_codex_relay_with_conflicting_identity(
+    tmp_path: Path,
+) -> None:
+    """A plain Codex relay filename must not override explicit payload identity."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    _write_relay(
+        relay,
+        "cx-p0",
+        {
+            "session": "cx-p0",
+            "role": "cx-other",
+            "updated": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "active",
+        },
+    )
+
+    payloads = sweeper._load_relay_payloads(relay)
+
+    assert "cx-p0" not in payloads
 
 
 def test_load_relay_payloads_retired_status_relay_suppresses_plain_relay(
@@ -1487,6 +1515,7 @@ def test_reap_dead_lanes_records_nonzero_retire_failure(
     assert reaped == []
     assert failures == ["cx-p0"]
     assert "exited with status 2" in caplog.text
+    assert "recheck with: HAPAX_RELAY_DIR=" in caplog.text
 
 
 def test_reap_dead_lanes_uses_configured_retire_script(
@@ -1757,12 +1786,15 @@ def test_run_sweep_retire_failure_emits_violation_not_stale_loop(
             reap_relay_yaml=True,
         )
 
-    assert any(
-        event.check_id == "relay_retire_failed"
-        and event.session == "cx-p0"
-        and event.severity == "violation"
+    failure_events = [
+        event
         for event in state.events
-    )
+        if event.check_id == "relay_retire_failed" and event.session == "cx-p0"
+    ]
+    assert len(failure_events) == 1
+    assert failure_events[0].severity == "violation"
+    assert "recheck with: HAPAX_RELAY_DIR=" in failure_events[0].message
+    assert failure_events[0].metadata["recheck_command"].startswith("HAPAX_RELAY_DIR=")
     assert not any(
         event.check_id == "relay_yaml_stale" and event.session == "cx-p0" for event in state.events
     )
@@ -1788,11 +1820,10 @@ def test_run_sweep_snapshot_default_does_not_reap_dead_codex_status_relay(
         },
     )
 
-    def fail_if_reaped(*_args: Any, **_kwargs: Any) -> object:
+    def fail_if_reaped(*_args: Any, **_kwargs: Any) -> list[str]:
         raise AssertionError("run_sweep snapshot path must not retire relay YAML")
 
-    monkeypatch.setattr(sweeper, "_lane_has_live_process", lambda _role: False)
-    monkeypatch.setattr(sweeper.subprocess, "run", fail_if_reaped)
+    monkeypatch.setattr(sweeper, "reap_dead_lanes", fail_if_reaped)
     with patch("cc_hygiene.checks._gh_pr_list", return_value=[]):
         state = sweeper.run_sweep(
             vault_root=vault,
@@ -1825,11 +1856,10 @@ def test_main_no_write_skips_dead_relay_reaping(
         },
     )
 
-    def fail_if_reaped(*_args: Any, **_kwargs: Any) -> object:
+    def fail_if_reaped(*_args: Any, **_kwargs: Any) -> list[str]:
         raise AssertionError("--no-write must not retire relay YAML")
 
-    monkeypatch.setattr(sweeper, "_lane_has_live_process", lambda _role: False)
-    monkeypatch.setattr(sweeper.subprocess, "run", fail_if_reaped)
+    monkeypatch.setattr(sweeper, "reap_dead_lanes", fail_if_reaped)
     with patch("cc_hygiene.checks._gh_pr_list", return_value=[]):
         rc = sweeper.main(_main_args(tmp_path, vault) + ["--no-write"])
 
