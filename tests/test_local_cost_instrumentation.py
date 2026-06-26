@@ -6,8 +6,10 @@ dollars. The cloud-$ cost path must stay untouched.
 
 from __future__ import annotations
 
+import importlib
 import json
 from multiprocessing import Event, Process
+from multiprocessing.synchronize import Event as EventClass
 from pathlib import Path
 
 from prometheus_client import CollectorRegistry
@@ -35,7 +37,12 @@ def _set_capacity_paths(tmp_path: Path, monkeypatch) -> Path:
     return path
 
 
-def _hold_local_capacity_span(file_path: str, lease_dir: str, ready: Event, release: Event) -> None:
+def _hold_local_capacity_span(
+    file_path: str,
+    lease_dir: str,
+    ready: EventClass,
+    release: EventClass,
+) -> None:
     from agents.telemetry import condition_metrics as child_cm
     from agents.telemetry.llm_call_span import llm_call_span as child_llm_call_span
 
@@ -81,9 +88,26 @@ class TestSpanEmitsTokensNotCost:
     def test_local_capacity_route_detection_boundaries(self):
         assert cm._is_local_capacity_route(model="claude-opus", route="local-fast")
         assert cm._is_local_capacity_route(model="claude-opus", route="dmn-thinking")
+        assert cm._is_local_capacity_route(model="command-r", route="resident-command-r")
         assert cm._is_local_capacity_route(model="local-fast", route="conversation")
-        assert cm._is_local_capacity_route(model="qwen2.5-coder", route="general")
+        assert cm._is_local_capacity_route(model="qwen2.5-coder", route="local-fast")
+        assert not cm._is_local_capacity_route(model="qwen2.5-coder", route="general")
+        assert not cm._is_local_capacity_route(model="llama-3.1", route="general")
         assert not cm._is_local_capacity_route(model="claude-opus", route="reasoning")
+
+    def test_local_capacity_env_parsing_uses_safe_defaults(self, monkeypatch):
+        with monkeypatch.context() as m:
+            m.setenv("HAPAX_LOCAL_CAPACITY_CEILING", "not-a-number")
+            m.setenv("HAPAX_LOCAL_CAPACITY_BASELINE_S", "-2")
+            m.setenv("HAPAX_LOCAL_CAPACITY_LEASE_TTL_S", "NaN")
+            m.setenv("HAPAX_LOCAL_CAPACITY_EWMA_ALPHA", "9")
+            reloaded = importlib.reload(cm)
+            assert reloaded.LOCAL_CAPACITY_CEILING == 1.0
+            assert reloaded.LOCAL_CAPACITY_BASELINE_S == 1.0
+            assert reloaded.LOCAL_CAPACITY_LEASE_TTL_S == 300.0
+            assert reloaded._LOCAL_CAPACITY_ALPHA == 1.0
+
+        importlib.reload(cm)
 
     def test_set_tokens_emits_on_exit(self):
         reg = _fresh_registry()

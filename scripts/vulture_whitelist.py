@@ -4466,4 +4466,4 @@ _avi_intent_fields_from_record_and_frame
 # first-token event.
 from agents.telemetry.llm_call_span import LlmCallSpan as _LocalCapacityLlmCallSpan  # noqa: E402
 
-_LocalCapacityLlmCallSpan.set_ttft_seconds
+_local_capacity_set_ttft_seconds = _LocalCapacityLlmCallSpan.set_ttft_seconds

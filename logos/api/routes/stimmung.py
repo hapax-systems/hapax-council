@@ -59,7 +59,11 @@ def _build_dimensions(raw: dict) -> dict[str, dict]:
     """Build structured dimension objects from nested stimmung state."""
     dimensions: dict[str, dict] = {}
     for key in _DIMENSION_KEYS:
+        if key == "local_capacity_pressure" and key not in raw:
+            continue
         dim_data = raw.get(key, {})
+        if key == "local_capacity_pressure" and not isinstance(dim_data, dict):
+            continue
         if isinstance(dim_data, dict):
             value = dim_data.get("value", 0.0)
             trend = dim_data.get("trend", "stable")

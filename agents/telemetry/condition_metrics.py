@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -62,6 +63,21 @@ _LLM_CALL_COST_DOLLARS_TOTAL = None
 _LLM_TOKENS_TOTAL = None
 _EMBED_CALLS_TOTAL = None
 _EMBED_INPUT_CHARS_TOTAL = None
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if math.isfinite(value) else default
+
+
+def _positive_env_float(name: str, default: float) -> float:
+    value = _env_float(name, default)
+    return value if value > 0 else default
+
+
 LOCAL_CAPACITY_FILE = Path(
     os.environ.get("HAPAX_LOCAL_CAPACITY_FILE", "/dev/shm/hapax-local-capacity.json")
 )
@@ -71,10 +87,13 @@ LOCAL_CAPACITY_LEASE_DIR = Path(
         str(LOCAL_CAPACITY_FILE.with_suffix(f"{LOCAL_CAPACITY_FILE.suffix}.d")),
     )
 )
-LOCAL_CAPACITY_CEILING = float(os.environ.get("HAPAX_LOCAL_CAPACITY_CEILING", "1"))
-LOCAL_CAPACITY_BASELINE_S = float(os.environ.get("HAPAX_LOCAL_CAPACITY_BASELINE_S", "1.0"))
-LOCAL_CAPACITY_LEASE_TTL_S = float(os.environ.get("HAPAX_LOCAL_CAPACITY_LEASE_TTL_S", "300"))
-_LOCAL_CAPACITY_ALPHA = float(os.environ.get("HAPAX_LOCAL_CAPACITY_EWMA_ALPHA", "0.2"))
+LOCAL_CAPACITY_CEILING = max(0.0, _env_float("HAPAX_LOCAL_CAPACITY_CEILING", 1.0))
+LOCAL_CAPACITY_BASELINE_S = _positive_env_float("HAPAX_LOCAL_CAPACITY_BASELINE_S", 1.0)
+LOCAL_CAPACITY_LEASE_TTL_S = _positive_env_float("HAPAX_LOCAL_CAPACITY_LEASE_TTL_S", 300.0)
+_LOCAL_CAPACITY_ALPHA = min(
+    1.0,
+    max(0.0, _env_float("HAPAX_LOCAL_CAPACITY_EWMA_ALPHA", 0.2)),
+)
 _LOCAL_CAPACITY_LOCK = threading.Lock()
 _LOCAL_CAPACITY_INFLIGHT = 0
 _LOCAL_CAPACITY_TTFT_EWMA_S: float | None = None
@@ -209,17 +228,17 @@ def _is_local_capacity_route(*, model: str, route: str) -> bool:
         "dmn-sensory",
         "dmn-thinking",
         "local-judge",
+        "resident-command-r",
         "spontaneous-speech",
     }:
         return True
     local_model_hints = (
         "local-fast",
-        "command-r",
-        "qwen",
+        "exl",
+        "bpw",
         "tabby",
         "ollama",
         "nomic",
-        "llama",
         "mlx",
     )
     return any(hint in model_l for hint in local_model_hints)
@@ -231,9 +250,10 @@ def _local_capacity_lease_file() -> Path:
 
 def _safe_float(value: object, default: float = 0.0) -> float:
     try:
-        return float(value)
+        coerced = float(value)
     except (TypeError, ValueError):
         return default
+    return coerced if math.isfinite(coerced) else default
 
 
 def _write_local_capacity_lease_locked() -> None:

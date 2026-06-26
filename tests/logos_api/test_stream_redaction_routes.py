@@ -42,6 +42,17 @@ def stimmung_state(tmp_path, monkeypatch):
 
 
 class TestStimmungRedaction:
+    def test_missing_local_capacity_pressure_is_not_reported_fresh(self):
+        from logos.api.routes.stimmung import _build_dimensions
+
+        dimensions = _build_dimensions(
+            {
+                "health": {"value": 0.95, "trend": "stable", "freshness_s": 5.0},
+                "resource_pressure": {"value": 0.4, "trend": "stable", "freshness_s": 3.0},
+            }
+        )
+        assert "local_capacity_pressure" not in dimensions
+
     @pytest.mark.asyncio
     async def test_private_returns_full_dimensions(self, stimmung_state, monkeypatch):
         monkeypatch.setattr("logos.api.routes.stimmung.is_publicly_visible", lambda: False)

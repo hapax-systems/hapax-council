@@ -6,6 +6,7 @@ Qdrant client, embedding via Ollama, and canonical path constants.
 
 import functools
 import logging
+import math
 import os
 import threading
 import warnings
@@ -205,9 +206,10 @@ _LOCAL_CAPACITY_BACKPRESSURE_LOCK = threading.Lock()
 
 def _coerce_float(value: object, default: float = 0.0) -> float:
     try:
-        return float(value)
+        coerced = float(value)
     except (TypeError, ValueError):
         return default
+    return coerced if math.isfinite(coerced) else default
 
 
 def _local_capacity_backpressure_active(raw: dict) -> bool:
