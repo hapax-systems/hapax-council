@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib.machinery
+import importlib.util
 import json
 import os
 import sqlite3
@@ -9,9 +11,12 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import patch
 
 from agents.coordinator.core import (
+    _DISPATCH_CLAIM_GUARD_MARKERS,
+    _DISPATCH_CLOSE_GUARD_MARKERS,
     Coordinator,
     CoordinatorState,
     LaneDescriptor,
@@ -21,6 +26,8 @@ from agents.coordinator.core import (
     _check_lane,
     _discover_lanes,
     _dispatch_landed,
+    _dispatch_tool_blocker,
+    _dispatch_worktree,
     _effective_platform_suitability,
     _headless_task_from_argv,
     _lane_to_dict,
@@ -29,6 +36,263 @@ from agents.coordinator.core import (
     _prepare_dispatch_message,
     _task_flow_counts,
 )
+from shared.sdlc_pressure_gate import AdmissionDecision
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DISPATCHER_SCRIPT = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
+
+
+def _guarded_worktree(path: Path) -> None:
+    (path / "scripts").mkdir(parents=True)
+    (path / "scripts" / "cc-claim").write_text(
+        f"#!/bin/sh\n# {' '.join(_DISPATCH_CLAIM_GUARD_MARKERS)}\n",
+        encoding="utf-8",
+    )
+    (path / "scripts" / "cc-close").write_text(
+        f"#!/bin/sh\n# {' '.join(_DISPATCH_CLOSE_GUARD_MARKERS)}\n",
+        encoding="utf-8",
+    )
+
+
+def _stale_worktree(path: Path) -> None:
+    (path / "scripts").mkdir(parents=True)
+    (path / "scripts" / "cc-claim").write_text("#!/bin/sh\n# legacy cc-claim\n", encoding="utf-8")
+    (path / "scripts" / "cc-close").write_text("#!/bin/sh\n# legacy cc-close\n", encoding="utf-8")
+
+
+def _stale_claim_worktree(path: Path) -> None:
+    _guarded_worktree(path)
+    (path / "scripts" / "cc-claim").write_text("#!/bin/sh\n# legacy cc-claim\n", encoding="utf-8")
+
+
+def _stale_close_worktree(path: Path) -> None:
+    _guarded_worktree(path)
+    (path / "scripts" / "cc-close").write_text("#!/bin/sh\n# legacy cc-close\n", encoding="utf-8")
+
+
+def _dispatcher_module() -> ModuleType:
+    loader = importlib.machinery.SourceFileLoader(
+        "hapax_methodology_dispatch_coordinator_test",
+        str(DISPATCHER_SCRIPT),
+    )
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[loader.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestDispatchWorktreeGuard:
+    def test_dispatch_worktree_mirrors_platform_mappings(self, tmp_path: Path):
+        root = tmp_path / "projects"
+
+        with patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(root)}, clear=False):
+            assert _dispatch_worktree("cx-red", "codex") == root / "hapax-council--cx-red"
+            assert _dispatch_worktree("red", "codex") == root / "hapax-council--cx-red"
+            assert _dispatch_worktree("alpha", "claude") == root / "hapax-council"
+            assert _dispatch_worktree("beta", "claude") == root / "hapax-council--beta"
+            assert _dispatch_worktree("gamma", "gemini") == root / "hapax-council"
+            assert _dispatch_worktree("vbe-1", "vibe") == root / "hapax-council--vbe-1"
+            assert _dispatch_worktree("antigravity", "antigrav") == root / "hapax-council--antigrav"
+            assert _dispatch_worktree("other", "unknown") == root / "hapax-council"
+
+    def test_dispatch_worktree_expands_project_root_home(self, tmp_path: Path):
+        with patch.dict(
+            "os.environ",
+            {"HOME": str(tmp_path), "HAPAX_DISPATCH_PROJECT_ROOT": "~/projects"},
+            clear=False,
+        ):
+            assert _dispatch_worktree("cx-red", "codex") == (
+                tmp_path / "projects" / "hapax-council--cx-red"
+            )
+
+    def test_dispatch_worktree_matches_methodology_dispatcher(self, tmp_path: Path):
+        dispatcher = _dispatcher_module()
+        root = tmp_path / "projects"
+        override = tmp_path / "custom-worktree"
+        cases = (
+            ("cx-red", "codex"),
+            ("red", "codex"),
+            ("alpha", "claude"),
+            ("beta", "claude"),
+            ("gamma", "gemini"),
+            ("vbe-1", "vibe"),
+            ("antigravity", "antigrav"),
+            ("other", "unknown"),
+        )
+
+        with patch.dict(os.environ, {"HAPAX_DISPATCH_PROJECT_ROOT": str(root)}, clear=True):
+            for role, platform in cases:
+                assert _dispatch_worktree(role, platform) == dispatcher.lane_worktree(
+                    role, platform
+                )
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            for role, platform in cases:
+                assert _dispatch_worktree(role, platform) == dispatcher.lane_worktree(
+                    role, platform
+                )
+
+        with patch.dict(
+            os.environ,
+            {
+                "HAPAX_DISPATCH_PROJECT_ROOT": str(root),
+                "HAPAX_DISPATCH_WORKTREE": str(override),
+            },
+            clear=True,
+        ):
+            for role, platform in cases:
+                assert _dispatch_worktree(role, platform) == dispatcher.lane_worktree(
+                    role, platform
+                )
+
+    def test_dispatch_worktree_override_wins(self, tmp_path: Path):
+        override = tmp_path / "custom-worktree"
+
+        with patch.dict("os.environ", {"HAPAX_DISPATCH_WORKTREE": str(override)}, clear=False):
+            assert _dispatch_worktree("cx-red", "codex") == override
+
+    def test_dispatch_guard_markers_match_methodology_dispatcher(self):
+        dispatcher = _dispatcher_module()
+
+        assert tuple(_DISPATCH_CLAIM_GUARD_MARKERS) == tuple(
+            dispatcher.DISPATCH_CLAIM_GUARD_MARKERS
+        )
+        assert tuple(_DISPATCH_CLOSE_GUARD_MARKERS) == tuple(
+            dispatcher.DISPATCH_CLOSE_GUARD_MARKERS
+        )
+
+    def test_dispatch_tool_blocker_reports_missing_close_with_next_action(self, tmp_path: Path):
+        worktree = tmp_path / "projects" / "hapax-council--beta"
+        (worktree / "scripts").mkdir(parents=True)
+        (worktree / "scripts" / "cc-claim").write_text(
+            f"#!/bin/sh\n# {' '.join(_DISPATCH_CLAIM_GUARD_MARKERS)}\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}):
+            blocker = _dispatch_tool_blocker("beta", "claude")
+
+        assert blocker is not None
+        assert "missing cc-close" in blocker
+        assert "next_action=" in blocker
+        assert str(worktree) in blocker
+
+    def test_dispatch_tool_blocker_reports_stale_close_with_next_action(self, tmp_path: Path):
+        worktree = tmp_path / "projects" / "hapax-council--beta"
+        _stale_close_worktree(worktree)
+
+        with patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}):
+            blocker = _dispatch_tool_blocker("beta", "claude")
+
+        assert blocker is not None
+        assert "stale cc-close" in blocker
+        assert "frontmatter_task_id" in blocker
+        assert "next_action=" in blocker
+
+    def test_dispatch_tool_blocker_reports_unreadable_claim_with_next_action(self, tmp_path: Path):
+        worktree = tmp_path / "projects" / "hapax-council--beta"
+        _guarded_worktree(worktree)
+        claim = worktree / "scripts" / "cc-claim"
+
+        def fake_read_guard(path: Path) -> str:
+            if path == claim:
+                raise OSError("permission denied")
+            raise AssertionError(f"unexpected guard read: {path}")
+
+        with (
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch("agents.coordinator.core._read_dispatch_guard", side_effect=fake_read_guard),
+        ):
+            blocker = _dispatch_tool_blocker("beta", "claude")
+
+        assert blocker is not None
+        assert "unreadable cc-claim" in blocker
+        assert "next_action=" in blocker
+
+    def test_dispatch_tool_blocker_reports_unreadable_close_with_next_action(self, tmp_path: Path):
+        worktree = tmp_path / "projects" / "hapax-council--beta"
+        _guarded_worktree(worktree)
+        close = worktree / "scripts" / "cc-close"
+
+        def fake_read_guard(path: Path) -> str:
+            if path == close:
+                raise OSError("permission denied")
+            if path == worktree / "scripts" / "cc-claim":
+                return path.read_text(encoding="utf-8", errors="replace")
+            raise AssertionError(f"unexpected guard read: {path}")
+
+        with (
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch("agents.coordinator.core._read_dispatch_guard", side_effect=fake_read_guard),
+        ):
+            blocker = _dispatch_tool_blocker("beta", "claude")
+
+        assert blocker is not None
+        assert "unreadable cc-close" in blocker
+        assert "next_action=" in blocker
+
+    def test_dispatch_tool_blocker_rejects_gemini_even_with_guarded_worktree(self, tmp_path: Path):
+        worktree = tmp_path / "projects" / "hapax-council--gamma"
+        _guarded_worktree(worktree)
+
+        with patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}):
+            blocker = _dispatch_tool_blocker("gamma", "gemini")
+
+        assert blocker is not None
+        assert "unsupported dispatch platform 'gemini'" in blocker
+        assert "next_action=" in blocker
+
+    def test_dispatch_tool_blocker_rejects_unsupported_platform_before_guard_reads(
+        self,
+        tmp_path: Path,
+    ):
+        with (
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch.object(
+                Path,
+                "is_file",
+                side_effect=AssertionError("unsupported platform should not inspect guard files"),
+            ),
+            patch(
+                "agents.coordinator.core._read_dispatch_guard",
+                side_effect=AssertionError("unsupported platform should not read guard files"),
+            ),
+        ):
+            blocker = _dispatch_tool_blocker("gamma", "gemini")
+
+        assert blocker is not None
+        assert "unsupported dispatch platform 'gemini'" in blocker
+        assert "supported coordinator headless platform" in blocker
+
+    def test_dispatch_tool_blocker_allows_vibe_with_guarded_worktree(self, tmp_path: Path):
+        worktree = tmp_path / "projects" / "hapax-council--vbe-1"
+        _guarded_worktree(worktree)
+
+        with patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}):
+            blocker = _dispatch_tool_blocker("vbe-1", "vibe")
+
+        assert blocker is None
+
+    def test_dispatch_tool_blocker_rejects_antigrav_even_with_guarded_worktree(
+        self,
+        tmp_path: Path,
+    ):
+        worktree = tmp_path / "projects" / "hapax-council--antigrav"
+        _guarded_worktree(worktree)
+
+        with patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}):
+            blocker = _dispatch_tool_blocker("antigravity", "antigrav")
+
+        assert blocker is not None
+        assert "unsupported dispatch platform 'antigrav'" in blocker
+        assert "next_action=" in blocker
+        assert "add coordinator headless dispatch support for 'antigrav'" in blocker
 
 
 class TestParseTask:
@@ -234,12 +498,18 @@ class TestLaneState:
         with (
             patch("agents.coordinator.core.PID_DIR", tmp_path / "pids"),
             patch("agents.coordinator.core.RELAY_DIR", tmp_path / "relay"),
+            patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
             patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
         ):
             state = _check_lane("test_lane")
         assert state.alive is False
         assert state.pid is None
         assert state.idle is True
+        assert state.dispatch_ready is False
+        assert state.dispatch_blocked_reason is not None
+        assert "lane_not_alive" in state.dispatch_blocked_reason
+        assert "next_action=" in state.dispatch_blocked_reason
 
     def test_lane_to_dict(self):
         lane = LaneState(
@@ -256,6 +526,7 @@ class TestLaneState:
     def test_peer_status_fallback_marks_queue_dry_lane_idle(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
         relay_dir.mkdir()
+        _guarded_worktree(tmp_path / "projects" / "hapax-council--cx-red")
         (relay_dir / "peer-status-cx-red.yaml").write_text(
             """session: cx-red
 platform: codex
@@ -267,7 +538,9 @@ current_claim: null
 
         with (
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
             patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
         ):
             state = _check_lane(
                 LaneDescriptor(
@@ -280,11 +553,169 @@ current_claim: null
         assert state.alive is True
         assert state.platform == "codex"
         assert state.idle is True
+        assert state.dispatch_ready is True
         assert state.relay_age_s != float("inf")
+
+    def test_live_lane_without_worktree_is_not_dispatch_ready(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="dev",
+                    session="hapax-claude-dev",
+                    platform="claude",
+                )
+            )
+
+        assert state.alive is True
+        assert state.idle is True
+        assert state.dispatch_ready is False
+        assert state.dispatch_blocked_reason is not None
+        assert "missing cc-claim" in state.dispatch_blocked_reason
+        assert "hapax-council--dev" in state.dispatch_blocked_reason
+
+    def test_live_lane_with_guarded_worktree_is_dispatch_ready(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        _guarded_worktree(tmp_path / "projects" / "hapax-council--beta")
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="beta",
+                    session="hapax-claude-beta",
+                    platform="claude",
+                )
+            )
+
+        assert state.alive is True
+        assert state.idle is True
+        assert state.dispatch_ready is True
+        assert state.dispatch_blocked_reason is None
+
+    def test_live_lane_with_stale_worktree_is_not_dispatch_ready(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        _stale_worktree(tmp_path / "projects" / "hapax-council--beta")
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="beta",
+                    session="hapax-claude-beta",
+                    platform="claude",
+                )
+            )
+
+        assert state.alive is True
+        assert state.idle is True
+        assert state.dispatch_ready is False
+        assert state.dispatch_blocked_reason is not None
+        assert "stale cc-claim" in state.dispatch_blocked_reason
+        assert "authority_case" in state.dispatch_blocked_reason
+
+    def test_live_lane_with_stale_close_guard_is_not_dispatch_ready(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        _stale_close_worktree(tmp_path / "projects" / "hapax-council--beta")
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="beta",
+                    session="hapax-claude-beta",
+                    platform="claude",
+                )
+            )
+
+        assert state.alive is True
+        assert state.idle is True
+        assert state.dispatch_ready is False
+        assert state.dispatch_blocked_reason is not None
+        assert "stale cc-close" in state.dispatch_blocked_reason
+        assert "frontmatter_task_id" in state.dispatch_blocked_reason
+
+    def test_gemini_lane_with_guarded_worktree_is_not_dispatch_ready(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        _guarded_worktree(tmp_path / "projects" / "hapax-council--gamma")
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="gamma",
+                    session="hapax-gemini-gamma",
+                    platform="gemini",
+                )
+            )
+
+        assert state.alive is True
+        assert state.idle is True
+        assert state.dispatch_ready is False
+        assert state.dispatch_blocked_reason is not None
+        assert "unsupported dispatch platform 'gemini'" in state.dispatch_blocked_reason
+        assert "supported coordinator headless platform" in state.dispatch_blocked_reason
+
+    def test_antigrav_lane_with_guarded_worktree_is_not_dispatch_ready(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        _guarded_worktree(tmp_path / "projects" / "hapax-council--antigrav")
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="antigravity",
+                    session="hapax-antigrav-antigravity",
+                    platform="antigrav",
+                )
+            )
+
+        assert state.alive is True
+        assert state.idle is True
+        assert state.dispatch_ready is False
+        assert state.dispatch_blocked_reason is not None
+        assert "unsupported dispatch platform 'antigrav'" in state.dispatch_blocked_reason
+        assert (
+            "add coordinator headless dispatch support for 'antigrav'"
+            in state.dispatch_blocked_reason
+        )
 
     def test_relay_claim_beats_stale_active_claim_file(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
         relay_dir.mkdir()
+        _guarded_worktree(tmp_path / "projects" / "hapax-council--cx-red")
         (relay_dir / "peer-status-cx-red.yaml").write_text(
             """session: cx-red
 platform: codex
@@ -299,7 +730,9 @@ current_claim: relay-task
 
         with (
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", claim_dir),
             patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
         ):
             state = _check_lane(
                 LaneDescriptor(
@@ -681,6 +1114,8 @@ retired_reason: clean exit
         pid_dir.mkdir()
         codex_pid_dir = tmp_path / "codex-pids"
         codex_pid_dir.mkdir()
+        _guarded_worktree(tmp_path / "projects" / "hapax-council")
+        _guarded_worktree(tmp_path / "projects" / "hapax-council--cx-red")
         completed = subprocess.CompletedProcess(
             args=["tmux"],
             returncode=0,
@@ -693,7 +1128,9 @@ retired_reason: clean exit
             patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
             patch("agents.coordinator.core.RELAY_DIR", relay_dir),
             patch("agents.coordinator.core._live_headless_launcher", return_value=None),
+            patch("agents.coordinator.core.CACHE_DIR", tmp_path / "cache"),
             patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
             patch("agents.coordinator.core.subprocess.run", return_value=completed),
         ):
             lanes = Coordinator()._check_lanes()
@@ -712,8 +1149,10 @@ retired_reason: clean exit
         assert lanes["alpha"].alive is True
         assert lanes["beta"].alive is False
         assert lanes["alpha"].platform == "claude"
+        assert lanes["alpha"].dispatch_ready is True
         assert lanes["cx-red"].alive is True
         assert lanes["cx-red"].platform == "codex"
+        assert lanes["cx-red"].dispatch_ready is True
 
     def test_pid_backed_headless_lane_is_discovered_with_existing_tmux_sessions(
         self, tmp_path: Path
@@ -1276,6 +1715,348 @@ Body.
 
         assert count == 0
         assert _parse_task(path).status == "claimed"  # type: ignore[union-attr]
+
+    def test_tick_does_not_dispatch_to_missing_worktree_lane(self, tmp_path: Path):
+        coord = Coordinator()
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("claude",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+        )
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
+        completed = subprocess.CompletedProcess(
+            args=["tmux"],
+            returncode=0,
+            stdout="hapax-claude-dev\n",
+            stderr="",
+        )
+
+        def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            if cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]:
+                return completed
+            raise AssertionError(f"unexpected dispatch subprocess call: {cmd!r}")
+
+        with (
+            patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_write_state") as write_state,
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.PID_DIR", pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
+            patch("agents.coordinator.core._live_headless_launcher", return_value=None),
+            patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=AdmissionDecision(state="open"),
+            ),
+        ):
+            coord.tick()
+
+        state = write_state.call_args.args[0]
+        assert state.offered_tasks == 1
+        assert state.task_flow_counts["offered"] == 1
+        assert state.lanes_idle == 0
+        assert state.dispatches_this_tick == 0
+        assert state.lanes["dev"]["alive"] is True
+        assert state.lanes["dev"]["idle"] is True
+        assert state.lanes["dev"]["dispatch_ready"] is False
+        assert "missing cc-claim" in state.lanes["dev"]["dispatch_blocked_reason"]
+        assert state.lanes["alpha"]["alive"] is False
+        assert state.lanes["alpha"]["dispatch_ready"] is False
+        assert "lane_not_alive" in state.lanes["alpha"]["dispatch_blocked_reason"]
+        assert "start or relaunch lane 'alpha'" in state.lanes["alpha"]["dispatch_blocked_reason"]
+
+    def test_tick_dispatches_to_guarded_ready_lane(self, tmp_path: Path):
+        coord = Coordinator()
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("claude",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+        )
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
+        _guarded_worktree(tmp_path / "projects" / "hapax-council--dev")
+        # Scope: coordinator-side readiness, planning, and dispatch argv. The
+        # dispatcher script's own guard behavior is covered in dispatcher tests.
+        dispatcher = tmp_path / "hapax-methodology-dispatch"
+        dispatcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        dispatcher.chmod(0o755)
+        completed = subprocess.CompletedProcess(
+            args=["tmux"],
+            returncode=0,
+            stdout="hapax-claude-dev\n",
+            stderr="",
+        )
+        dispatch_calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            if cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]:
+                return completed
+            dispatch_calls.append(cmd)
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        with (
+            patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_write_state") as write_state,
+            patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.PID_DIR", pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
+            patch("agents.coordinator.core._live_headless_launcher", return_value=None),
+            patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=AdmissionDecision(state="open"),
+            ),
+        ):
+            coord.tick()
+
+        state = write_state.call_args.args[0]
+        assert state.offered_tasks == 1
+        assert state.lanes_idle == 1
+        assert state.dispatches_this_tick == 1
+        assert state.lanes["dev"]["alive"] is True
+        assert state.lanes["dev"]["dispatch_ready"] is True
+        assert dispatch_calls == [
+            [
+                str(dispatcher),
+                "--task",
+                "t1",
+                "--lane",
+                "dev",
+                "--platform",
+                "claude",
+                "--mode",
+                "headless",
+                "--launch",
+            ]
+        ]
+
+    def test_tick_does_not_count_failed_dispatch_as_dispatched(self, tmp_path: Path):
+        coord = Coordinator()
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("claude",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+        )
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
+        _guarded_worktree(tmp_path / "projects" / "hapax-council--dev")
+        dispatcher = tmp_path / "hapax-methodology-dispatch"
+        dispatcher.write_text("#!/bin/sh\nexit 42\n", encoding="utf-8")
+        dispatcher.chmod(0o755)
+        completed = subprocess.CompletedProcess(
+            args=["tmux"],
+            returncode=0,
+            stdout="hapax-claude-dev\n",
+            stderr="",
+        )
+        dispatch_calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            if cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]:
+                return completed
+            dispatch_calls.append(cmd)
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=42,
+                stdout="",
+                stderr="BLOCKED: test refusal",
+            )
+
+        with (
+            patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_write_state") as write_state,
+            patch("agents.coordinator.core.METHODOLOGY_DISPATCHER", dispatcher),
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.PID_DIR", pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
+            patch("agents.coordinator.core._live_headless_launcher", return_value=None),
+            patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=AdmissionDecision(state="open"),
+            ),
+        ):
+            coord.tick()
+
+        state = write_state.call_args.args[0]
+        assert state.offered_tasks == 1
+        assert state.lanes_idle == 1
+        assert state.dispatches_this_tick == 0
+        assert state.lanes["dev"]["dispatch_ready"] is True
+        assert len(dispatch_calls) == 1
+
+    def test_tick_does_not_dispatch_to_stale_claim_lane(self, tmp_path: Path):
+        coord = Coordinator()
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("claude",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+        )
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
+        _stale_claim_worktree(tmp_path / "projects" / "hapax-council--dev")
+        completed = subprocess.CompletedProcess(
+            args=["tmux"],
+            returncode=0,
+            stdout="hapax-claude-dev\n",
+            stderr="",
+        )
+
+        def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            if cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]:
+                return completed
+            raise AssertionError(f"unexpected dispatch subprocess call: {cmd!r}")
+
+        with (
+            patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_write_state") as write_state,
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.PID_DIR", pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
+            patch("agents.coordinator.core._live_headless_launcher", return_value=None),
+            patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=AdmissionDecision(state="open"),
+            ),
+        ):
+            coord.tick()
+
+        state = write_state.call_args.args[0]
+        assert state.offered_tasks == 1
+        assert state.task_flow_counts["offered"] == 1
+        assert state.lanes_idle == 0
+        assert state.dispatches_this_tick == 0
+        assert state.lanes["dev"]["alive"] is True
+        assert state.lanes["dev"]["idle"] is True
+        assert state.lanes["dev"]["dispatch_ready"] is False
+        assert "stale cc-claim" in state.lanes["dev"]["dispatch_blocked_reason"]
+        assert "authority_case" in state.lanes["dev"]["dispatch_blocked_reason"]
+
+    def test_tick_does_not_dispatch_to_stale_close_lane(self, tmp_path: Path):
+        coord = Coordinator()
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("claude",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+        )
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
+        codex_pid_dir = tmp_path / "codex-pids"
+        codex_pid_dir.mkdir()
+        _stale_close_worktree(tmp_path / "projects" / "hapax-council--dev")
+        completed = subprocess.CompletedProcess(
+            args=["tmux"],
+            returncode=0,
+            stdout="hapax-claude-dev\n",
+            stderr="",
+        )
+
+        def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            if cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]:
+                return completed
+            raise AssertionError(f"unexpected dispatch subprocess call: {cmd!r}")
+
+        with (
+            patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_write_state") as write_state,
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("agents.coordinator.core.PID_DIR", pid_dir),
+            patch("agents.coordinator.core.CODEX_PID_DIR", codex_pid_dir),
+            patch("agents.coordinator.core._live_headless_launcher", return_value=None),
+            patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=AdmissionDecision(state="open"),
+            ),
+        ):
+            coord.tick()
+
+        state = write_state.call_args.args[0]
+        assert state.offered_tasks == 1
+        assert state.task_flow_counts["offered"] == 1
+        assert state.lanes_idle == 0
+        assert state.dispatches_this_tick == 0
+        assert state.lanes["dev"]["alive"] is True
+        assert state.lanes["dev"]["idle"] is True
+        assert state.lanes["dev"]["dispatch_ready"] is False
+        assert "stale cc-close" in state.lanes["dev"]["dispatch_blocked_reason"]
+        assert "frontmatter_task_id" in state.lanes["dev"]["dispatch_blocked_reason"]
 
 
 class TestScanTasks:
