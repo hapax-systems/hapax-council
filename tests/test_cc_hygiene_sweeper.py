@@ -1099,6 +1099,12 @@ def test_canonical_cx_relay_role_direct_branches() -> None:
         )
         is None
     )
+    assert (
+        sweeper._canonical_cx_relay_role(
+            Path("cx-red-status.yaml"), {"role": "cx-red", "lane": "cx-other"}
+        )
+        is None
+    )
     assert sweeper._canonical_cx_relay_role(Path("cx-blue.yaml"), {"role": "cx-blue"}) is None
 
 
@@ -1248,6 +1254,34 @@ def test_reap_dead_lanes_dedups_known_role_and_codex_status_relay(
 
     assert reaped == ["cx-p0"]
     assert [call[1] for call in retire_calls] == ["cx-p0"]
+
+
+def test_reap_dead_lanes_skips_protected_codex_status_relay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Protected lanes must not be retired by stale-relay automation."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    _write_relay(
+        relay,
+        "cx-violet-status",
+        {
+            "role": "cx-violet",
+            "lane": "cx-violet",
+            "timestamp": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "blocked",
+        },
+    )
+    (relay / "session-protection.md").write_text("- `cx-violet` is protected.\n", encoding="utf-8")
+    retire_calls: list[list[str]] = []
+
+    monkeypatch.setattr(sweeper, "_lane_has_live_process", lambda _role: False)
+    monkeypatch.setattr(sweeper.subprocess, "run", lambda args, **_: retire_calls.append(args))
+
+    reaped = sweeper.reap_dead_lanes(relay)
+
+    assert reaped == []
+    assert retire_calls == []
 
 
 # ----------------------------------------------------------------------------
