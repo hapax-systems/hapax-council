@@ -124,10 +124,24 @@ def _session_is_protected(session: str, relay_root: Path) -> bool:
     try:
         text = protection_file.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        LOG.warning("Unable to read session protection file; refusing to reap '%s'", session)
+        LOG.warning(
+            "Unable to read session protection file %s; refusing to reap '%s'; "
+            "repair the protection file before reaping",
+            protection_file,
+            session,
+        )
         return True
     needle = f"`{session}`"
-    return any(needle in line and "protected" in line.lower() for line in text.splitlines())
+    for line in text.splitlines():
+        if needle in line and "protected" in line.lower():
+            LOG.warning(
+                "Refusing to reap protected session '%s' listed in %s: %s",
+                session,
+                protection_file,
+                line.strip(),
+            )
+            return True
+    return False
 
 
 def _canonical_cx_relay_role(path: Path, payload: dict[str, Any]) -> str | None:
@@ -234,7 +248,7 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
     reaped: list[str] = []
     retire_script = Path.home() / "projects" / "hapax-council" / "scripts" / "hapax-relay-retire"
 
-    reaped_sessions: set[str] = set()
+    reaped_roles: set[str] = set()
     for role in KNOWN_ROLES:
         for suffix in (f"{role}-status.yaml", f"{role}.yaml"):
             yaml_path = relay_root / suffix
@@ -244,7 +258,6 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
             if payload is None or _relay_payload_is_retired(payload):
                 continue
             if _session_is_protected(role, relay_root):
-                LOG.warning("Refusing to reap protected lane '%s'", role)
                 continue
             if _lane_has_live_process(role):
                 continue
@@ -264,7 +277,7 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
                 LOG.warning("Failed to retire relay YAML for '%s'", role)
                 continue
             reaped.append(role)
-            reaped_sessions.add(role)
+            reaped_roles.add(role)
             break  # only one file per role
 
     for path in sorted(relay_root.glob("cx-*.yaml")):
@@ -272,10 +285,9 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
         if payload is None or _relay_payload_is_retired(payload):
             continue
         session = _canonical_cx_relay_role(path, payload)
-        if session is None or session in reaped_sessions:
+        if session is None or session in reaped_roles:
             continue
         if _session_is_protected(session, relay_root):
-            LOG.warning("Refusing to reap protected cx lane '%s'", session)
             continue
         if _lane_has_live_process(session):
             continue
@@ -295,7 +307,7 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
             LOG.warning("Failed to retire relay YAML for '%s'", session)
         else:
             reaped.append(session)
-            reaped_sessions.add(session)
+            reaped_roles.add(session)
 
     return reaped
 

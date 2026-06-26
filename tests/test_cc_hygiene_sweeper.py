@@ -1108,6 +1108,20 @@ def test_canonical_cx_relay_role_direct_branches() -> None:
     assert sweeper._canonical_cx_relay_role(Path("cx-blue.yaml"), {"role": "cx-blue"}) is None
 
 
+def test_payload_identity_matches_requires_all_present_fields_to_agree() -> None:
+    """Status relay identity accepts absent fields but rejects conflicts."""
+    sweeper = _load_sweeper_module()
+
+    assert sweeper._payload_identity_matches({"role": "cx-p0"}, "cx-p0")
+    assert sweeper._payload_identity_matches(
+        {"session": "cx-p0", "role": "cx-p0", "lane": "cx-p0"}, "cx-p0"
+    )
+    assert not sweeper._payload_identity_matches({}, "cx-p0")
+    assert not sweeper._payload_identity_matches(
+        {"session": "cx-p0", "role": "cx-other", "lane": "cx-p0"}, "cx-p0"
+    )
+
+
 def test_load_relay_payloads_keeps_status_relay_when_plain_relay_exists(tmp_path: Path) -> None:
     """If both Codex relay shapes exist, the status relay is authoritative."""
     sweeper = _load_sweeper_module()
@@ -1257,7 +1271,7 @@ def test_reap_dead_lanes_dedups_known_role_and_codex_status_relay(
 
 
 def test_reap_dead_lanes_skips_protected_codex_status_relay(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Protected lanes must not be retired by stale-relay automation."""
     sweeper = _load_sweeper_module()
@@ -1277,11 +1291,38 @@ def test_reap_dead_lanes_skips_protected_codex_status_relay(
 
     monkeypatch.setattr(sweeper, "_lane_has_live_process", lambda _role: False)
     monkeypatch.setattr(sweeper.subprocess, "run", lambda args, **_: retire_calls.append(args))
+    caplog.set_level("WARNING")
 
     reaped = sweeper.reap_dead_lanes(relay)
 
     assert reaped == []
     assert retire_calls == []
+    assert "session-protection.md" in caplog.text
+    assert "`cx-violet` is protected" in caplog.text
+
+
+def test_session_is_protected_fails_closed_when_protection_file_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """If the protection file cannot be read, reaping is refused."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    relay.mkdir()
+    protection = relay / "session-protection.md"
+    protection.write_text("- `cx-violet` is protected.\n", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def raise_for_protection_file(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self == protection:
+            raise OSError("permission denied")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", raise_for_protection_file)
+    caplog.set_level("WARNING")
+
+    assert sweeper._session_is_protected("cx-violet", relay)
+    assert str(protection) in caplog.text
+    assert "repair the protection file" in caplog.text
 
 
 # ----------------------------------------------------------------------------
