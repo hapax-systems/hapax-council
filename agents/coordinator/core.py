@@ -192,6 +192,7 @@ class LaneState:
     relay_age_s: float = float("inf")
     claimed_task: str | None = None
     idle: bool = True
+    dispatchable: bool = True
     output_age_s: float = float("inf")  # age of the freshest progress signal
     stalled: bool = False  # ground-truth projection, re-derived each tick
     dispatch_ready: bool = True
@@ -250,7 +251,11 @@ class Coordinator:
             lanes_idle=sum(
                 1
                 for l in lanes.values()
-                if l.idle and l.alive and l.claimed_task is None and l.dispatch_ready
+                if l.idle
+                and l.alive
+                and l.claimed_task is None
+                and l.dispatch_ready
+                and l.dispatchable
             ),
             lanes_total=len(lanes),
             task_status_counts=_task_status_counts(tasks),
@@ -261,7 +266,11 @@ class Coordinator:
         idle_lanes = [
             l
             for l in lanes.values()
-            if l.alive and l.idle and l.claimed_task is None and l.dispatch_ready
+            if l.alive
+            and l.idle
+            and l.claimed_task is None
+            and l.dispatch_ready
+            and l.dispatchable
         ]
 
         # L3: pace the dispatch loop under CPU pressure. 'closed' dispatches
@@ -334,6 +343,7 @@ class Coordinator:
                 role=l.role,
                 platform=l.platform,
                 cooldown_remaining_s=cooldown_s - (now_mono - self._last_dispatch.get(l.role, 0.0)),
+                dispatchable=l.dispatchable,
             )
             for l in idle_lanes
         ]
@@ -1119,7 +1129,11 @@ def _relay_status_has_no_active_claim(relay: dict) -> bool:
     status = _normalized_status(relay.get("status") or relay.get("session_status"))
     if not status:
         return False
-    if status in {"queue-dry", "equilibrium", "idle", "retired"} or status.startswith("idle-"):
+    if (
+        status in {"queue-dry", "equilibrium", "idle"}
+        or _relay_status_is_retired(status)
+        or status.startswith("idle-")
+    ):
         return True
     return (
         status.startswith("resolved-")
@@ -1162,11 +1176,36 @@ def _claim_from_relay(relay: dict) -> str | None:
     return None
 
 
+_RETIRED_RELAY_STATUS_PREFIXES = (
+    "retired",
+    "superseded",
+    "closed",
+    "idle-wound-down",
+    "wind-down-idle",
+    "wound-down",
+    "wind-down",
+    "winding-down",
+    "antigravity-takeover",
+)
+
+
+def _relay_status_is_retired(value: object) -> bool:
+    status = _normalized_status(value)
+    return bool(status) and any(
+        status == retired or status.startswith(f"{retired}-")
+        for retired in _RETIRED_RELAY_STATUS_PREFIXES
+    )
+
+
 def _relay_status_is_idle(value: object) -> bool | None:
     status = _normalized_status(value)
     if not status:
         return None
-    if status in {"queue-dry", "equilibrium", "idle", "retired"} or status.startswith("idle-"):
+    if (
+        status in {"queue-dry", "equilibrium", "idle"}
+        or _relay_status_is_retired(status)
+        or status.startswith("idle-")
+    ):
         return True
     if status == "blocked-claim-ownership":
         return True
@@ -1459,11 +1498,14 @@ def _check_lane(lane: str | LaneDescriptor) -> LaneState:
         state.relay_age_s = time.time() - relay_mtime
 
     if relay:
+        relay_status = relay.get("status") or relay.get("session_status")
+        if _relay_status_is_retired(relay_status):
+            state.dispatchable = False
         relay_claim = _claim_from_relay(relay)
         if relay_claim:
             state.claimed_task = relay_claim
             state.idle = False
-        relay_idle = _relay_status_is_idle(relay.get("status") or relay.get("session_status"))
+        relay_idle = _relay_status_is_idle(relay_status)
         if relay_idle is not None and not state.claimed_task:
             state.idle = relay_idle
 
@@ -1640,6 +1682,7 @@ def _lane_to_dict(lane: LaneState) -> dict:
         "relay_age_s": round(lane.relay_age_s, 1) if lane.relay_age_s != float("inf") else None,
         "claimed_task": lane.claimed_task,
         "idle": lane.idle,
+        "dispatchable": lane.dispatchable,
         "stalled": lane.stalled,
         "dispatch_ready": lane.dispatch_ready,
         "dispatch_blocked_reason": lane.dispatch_blocked_reason,

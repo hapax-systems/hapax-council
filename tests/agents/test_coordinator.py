@@ -973,6 +973,39 @@ retired_reason: clean exit
         assert state.alive is True
         assert state.claimed_task is None
         assert state.idle is True
+        assert state.dispatchable is False
+
+    def test_codex_wound_down_relay_is_not_dispatchable(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / "cx-fugu-1.yaml").write_text(
+            """session: cx-fugu-1
+platform: codex
+status: wind_down_idle
+current_claim: null
+""",
+            encoding="utf-8",
+        )
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="cx-fugu-1",
+                    session="hapax-codex-cx-fugu-1",
+                    platform="codex",
+                )
+            )
+
+        assert state.alive is True
+        assert state.claimed_task is None
+        assert state.idle is True
+        assert state.dispatchable is False
 
     def test_active_task_file_still_beats_retired_role_status(self, tmp_path: Path):
         role = "ut-role"
@@ -1397,6 +1430,45 @@ class TestDispatchableLaneSelection:
             coordinator.tick()
 
         assert dispatched == []
+
+    def test_tick_does_not_dispatch_retired_codex_relay_lane(self):
+        coordinator = Coordinator()
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("codex",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+        )
+        lanes = {
+            "cx-fugu-1": LaneState(
+                role="cx-fugu-1",
+                platform="codex",
+                alive=True,
+                idle=True,
+                dispatchable=False,
+            ),
+        }
+
+        with (
+            patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_check_lanes", return_value=lanes),
+            patch.object(
+                Coordinator,
+                "_dispatch",
+                side_effect=AssertionError("retired codex relay lane was dispatched"),
+            ),
+            patch.object(Coordinator, "_write_state"),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=AdmissionDecision(state="open"),
+            ),
+        ):
+            coordinator.tick()
 
 
 class TestDispatch:

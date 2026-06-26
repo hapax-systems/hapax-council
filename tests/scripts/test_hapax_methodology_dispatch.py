@@ -960,6 +960,7 @@ def test_blocks_claude_dev_operator_pool_before_worktree_probe(tmp_path: Path) -
         assert result.returncode == 10
         assert "interactive Claude operator pool" in result.stderr
         assert "not a governed dispatch lane" in result.stderr
+        assert "scripts/hapax-codex-health" in result.stderr
         assert "missing cc-claim" not in result.stderr
 
 
