@@ -21,14 +21,14 @@ CheckId = Literal[
     "duplicate_claim",
     "orphan_pr",
     "relay_yaml_stale",
+    "relay_retire_failed",
     "wip_limit",
     "offered_stale",
     "refusal_dormancy",
     "spec_staleness",
     "vault_link_integrity",
 ]
-"""The 8 research §2 check identifiers, plus spec_staleness and the
-Phase-0 vault_link_integrity recurrence guard."""
+"""Stable check identifiers emitted by the cc-hygiene sweeper."""
 
 Severity = Literal["info", "warning", "violation"]
 """Event severity tier. ntfy alerts (PR5) gate on `violation`."""
@@ -48,7 +48,7 @@ class HygieneEvent(BaseModel):
     """UTC ISO-8601 timestamp at which the sweep observed the issue."""
 
     check_id: CheckId
-    """Which of the 8 checks fired."""
+    """Which hygiene check fired."""
 
     severity: Severity
     """info / warning / violation. Drives downstream alert routing."""

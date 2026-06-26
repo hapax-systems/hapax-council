@@ -1274,6 +1274,7 @@ def review_pr(
             changed_files=pr_info.files,
             changed_file_count=pr_info.changed_file_count,
             repo_root=repo_root,
+            degraded_family_outage_witness=outage_witness,
         )
         if dossier["review_team_verdict"] == "no-quorum":
             dead = [

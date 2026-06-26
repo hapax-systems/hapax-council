@@ -11,12 +11,29 @@ Implements the 8 checks described in §2 and emits:
 * a machine-readable JSON snapshot at
   ``~/.cache/hapax/cc-hygiene-state.json``
 
-The 8 checks are read-only; the only mutation is the ghost-claimed self-heal
-(``cc_hygiene.actions``, scoped to ``ghost_claimed``): a ``status: claimed`` note
-with no claimer/``claimed_at`` is a definitional violation ``cc-claim`` cannot
-produce, so it is reverted to ``offered`` (reversible, re-validated on disk) to
-stop the violation re-firing every sweep. Disable with ``--no-actions``. The
-other auto-actions (H2 stale-in-progress, H7 offered-stale) remain unwired.
+Most checks are read-only. Mutations are limited to the ghost-claimed self-heal
+(``cc_hygiene.actions``, scoped to ``ghost_claimed``) and dead-lane relay
+retirement before stale-relay checks. A ``status: claimed`` note with no
+claimer/``claimed_at`` is a definitional violation ``cc-claim`` cannot produce,
+so it is reverted to ``offered`` (reversible, re-validated on disk) to stop the
+violation re-firing every sweep. Relay retirement uses ``hapax-relay-retire``
+and refuses to reap lanes listed in ``session-protection.md``. The protection
+file defaults to ``<relay-root>/session-protection.md`` and can be overridden by
+``HAPAX_SESSION_PROTECTION_FILE`` or ``HAPAX_SESSION_PROTECTION``; explicit
+override files fail closed when missing or unreadable and log a concrete
+``test -r ... && sed -n ...`` recheck command. The default CLI writing path runs
+relay retirement before stale-relay checks and passes the evaluated
+``--relay-root`` to ``hapax-relay-retire`` through ``HAPAX_RELAY_DIR``.
+``HAPAX_RELAY_RETIRE_SCRIPT`` can point at an alternate retire helper; otherwise
+the sweeper prefers its sibling ``scripts/hapax-relay-retire``, then ``PATH``,
+then the legacy ``~/projects/hapax-council/scripts/hapax-relay-retire`` path.
+Retire helper failures emit ``relay_retire_failed`` every writing sweep until
+the helper path, permissions, or runtime error is repaired using the logged
+recheck command.
+``--no-write`` is the full diagnostic mode and skips relay retirement.
+``--no-actions`` disables only the ghost-claim self-heal.
+``HAPAX_CC_HYGIENE_OFF=1`` is the global killswitch. The other auto-actions
+(H2 stale-in-progress, H7 offered-stale) remain unwired.
 
 Usage::
 
@@ -31,6 +48,9 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
+import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -82,10 +102,19 @@ DEFAULT_RELAY_ROOT = Path.home() / ".cache" / "hapax" / "relay"
 DEFAULT_REPO_ROOT = Path.home() / "projects" / "hapax-council"
 
 KILLSWITCH_ENV = "HAPAX_CC_HYGIENE_OFF"
+RELAY_RETIRE_SCRIPT_ENV = "HAPAX_RELAY_RETIRE_SCRIPT"
 
 
 def _relay_payload_is_retired(payload: dict[str, Any]) -> bool:
     """Return true for relays that explicitly mark a retired/superseded lane."""
+    retired_prefixes = ("RETIR", "SUPERSEDED", "CLOSED", "ANTIGRAVITY")
+    retired_exact = {
+        "IDLE_WOUND_DOWN",
+        "WIND_DOWN_IDLE",
+        "WOUND_DOWN",
+        "WIND_DOWN",
+        "WINDING_DOWN",
+    }
     values: list[str] = []
     for key in ("status", "state", "relay_status", "session_state", "role", "session_status"):
         raw = payload.get(key)
@@ -93,9 +122,148 @@ def _relay_payload_is_retired(payload: dict[str, Any]) -> bool:
             values.append(str(raw))
     for value in values:
         normalized = value.strip().strip("\"'").upper()
-        if normalized.startswith(("RETIR", "SUPERSEDED", "CLOSED", "ANTIGRAVITY")):
+        if normalized in retired_exact or normalized.startswith(retired_prefixes):
             return True
     return False
+
+
+_CODEX_STATUS_SUFFIX = "-status"
+
+
+def _payload_identity_matches(payload: dict[str, Any], role: str) -> bool:
+    """Return true when a relay payload explicitly identifies ``role``."""
+    identities = [
+        str(payload.get(key, "")).strip()
+        for key in ("session", "role", "lane")
+        if str(payload.get(key, "")).strip()
+    ]
+    return bool(identities) and all(identity == role for identity in identities)
+
+
+def _payload_identity_conflicts(payload: dict[str, Any], role: str) -> bool:
+    """Return true when any explicit relay identity contradicts ``role``."""
+    for key in ("session", "role", "lane"):
+        identity = str(payload.get(key, "")).strip()
+        if identity and identity != role:
+            return True
+    return False
+
+
+def _protection_recheck_command(protection_file: Path) -> str:
+    quoted = shlex.quote(str(protection_file))
+    return f"test -r {quoted} && sed -n '1,120p' {quoted}"
+
+
+def _line_mentions_session(line: str, session: str) -> bool:
+    """Return true when ``line`` names ``session`` as a standalone token."""
+    return bool(re.search(rf"(?<![A-Za-z0-9_-]){re.escape(session)}(?![A-Za-z0-9_-])", line))
+
+
+def _line_has_word(line: str, word: str) -> bool:
+    return bool(re.search(rf"\b{re.escape(word)}\b", line, flags=re.IGNORECASE))
+
+
+def _relay_retire_script() -> Path:
+    override = os.environ.get(RELAY_RETIRE_SCRIPT_ENV)
+    if override:
+        return Path(override).expanduser()
+
+    sibling = _HERE / "hapax-relay-retire"
+    if sibling.exists():
+        return sibling
+
+    found = shutil.which("hapax-relay-retire")
+    if found:
+        return Path(found)
+
+    return DEFAULT_REPO_ROOT / "scripts" / "hapax-relay-retire"
+
+
+def _session_is_protected(session: str, relay_root: Path) -> bool:
+    """Return true when session-protection.md marks ``session`` protected."""
+    protection_override = os.environ.get("HAPAX_SESSION_PROTECTION_FILE") or os.environ.get(
+        "HAPAX_SESSION_PROTECTION"
+    )
+    protection_file = (
+        Path(protection_override) if protection_override else relay_root / "session-protection.md"
+    )
+    if not protection_file.exists():
+        if protection_override:
+            LOG.warning(
+                "Configured session protection file %s is missing; refusing to reap '%s'; "
+                "repair the protection override before reaping; recheck with: %s",
+                protection_file,
+                session,
+                _protection_recheck_command(protection_file),
+            )
+            return True
+        return False
+    try:
+        text = protection_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        LOG.warning(
+            "Unable to read session protection file %s; refusing to reap '%s'; "
+            "repair the protection file before reaping; recheck with: %s",
+            protection_file,
+            session,
+            _protection_recheck_command(protection_file),
+        )
+        return True
+    in_protected_session_section = False
+    in_nonprotected_section = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        lower = stripped.lower()
+        if stripped.startswith("#"):
+            protected_section = _line_has_word(stripped, "protected") and any(
+                marker in lower for marker in ("session", "live", "lane")
+            )
+            in_protected_session_section = protected_section
+            in_nonprotected_section = stripped.startswith("##") and not protected_section
+        if _line_mentions_session(line, session) and (
+            (_line_has_word(stripped, "protected") and not in_nonprotected_section)
+            or in_protected_session_section
+        ):
+            LOG.warning(
+                "Refusing to reap protected session '%s' listed in %s: %s",
+                session,
+                protection_file,
+                stripped,
+            )
+            return True
+    return False
+
+
+def _canonical_cx_relay_role(path: Path, payload: dict[str, Any]) -> str | None:
+    """Return the Codex lane role for canonical cx relay files.
+
+    Codex lanes now mostly write ``cx-foo-status.yaml`` with ``role``/``lane``
+    fields, while older launchers wrote ``cx-foo.yaml`` with ``session``. Audit
+    sidecars can also match ``cx-*.yaml``, so require the payload identity to
+    agree with the canonical filename.
+    """
+    stem = path.stem
+    if not stem.startswith("cx-"):
+        return None
+    if stem.endswith(_CODEX_STATUS_SUFFIX):
+        role = stem[: -len(_CODEX_STATUS_SUFFIX)]
+        if _payload_identity_matches(payload, role):
+            return role
+        return None
+    if payload.get("session") == stem and not _payload_identity_conflicts(payload, stem):
+        return stem
+    return None
+
+
+def _retired_cx_status_relay_role(path: Path, payload: dict[str, Any]) -> str | None:
+    """Return filename role for retired cx status relays unless identity conflicts."""
+    stem = path.stem
+    if not stem.startswith("cx-") or not stem.endswith(_CODEX_STATUS_SUFFIX):
+        return None
+    role = stem[: -len(_CODEX_STATUS_SUFFIX)]
+    if _payload_identity_conflicts(payload, role):
+        return None
+    return role
 
 
 _AGENT_PGREP_PATTERN = (
@@ -171,17 +339,90 @@ def _lane_has_live_process(role: str) -> bool:
     return False
 
 
-def reap_dead_lanes(relay_root: Path) -> list[str]:
+def _record_reap_failure(
+    role: str,
+    *,
+    failures: list[str] | None,
+    failed_roles: set[str],
+) -> None:
+    failed_roles.add(role)
+    if failures is not None and role not in failures:
+        failures.append(role)
+
+
+def _relay_retire_recheck_command(retire_script: Path, relay_root: Path, role: str) -> str:
+    return " ".join(
+        [
+            f"HAPAX_RELAY_DIR={shlex.quote(str(relay_root))}",
+            shlex.quote(str(retire_script)),
+            shlex.quote(role),
+            "--reason",
+            shlex.quote("manual recheck after cc-hygiene relay_retire_failed"),
+        ]
+    )
+
+
+def _retire_dead_lane(
+    retire_script: Path,
+    retire_env: dict[str, str],
+    relay_root: Path,
+    role: str,
+) -> bool:
+    recheck_command = _relay_retire_recheck_command(retire_script, relay_root, role)
+    try:
+        result = subprocess.run(
+            [
+                str(retire_script),
+                role,
+                "--reason",
+                "reaped by hygiene sweeper (no running process)",
+            ],
+            env=retire_env,
+            timeout=5,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        # Missing helpers, permission failures, and transient exec errors all leave
+        # the relay unretired, so report them as the same failed-retire condition.
+        LOG.warning(
+            "Failed to retire relay YAML for '%s': %s; recheck with: %s",
+            role,
+            exc,
+            recheck_command,
+        )
+        return False
+
+    returncode = getattr(result, "returncode", 0)
+    if returncode != 0:
+        LOG.warning(
+            "Failed to retire relay YAML for '%s': %s exited with status %s; recheck with: %s",
+            role,
+            retire_script,
+            returncode,
+            recheck_command,
+        )
+        return False
+
+    return True
+
+
+def reap_dead_lanes(relay_root: Path, *, failures: list[str] | None = None) -> list[str]:
     """Retire relay YAMLs for lanes with no running process.
 
-    Returns list of roles that were reaped.
+    Returns list of roles that were reaped. When provided, ``failures`` receives
+    roles whose retire helper invocation failed.
     """
     from cc_hygiene.checks import _read_relay_yaml
 
     reaped: list[str] = []
-    retire_script = Path.home() / "projects" / "hapax-council" / "scripts" / "hapax-relay-retire"
+    retire_script = _relay_retire_script()
+    retire_env = {**os.environ, "HAPAX_RELAY_DIR": str(relay_root)}
 
+    reaped_roles: set[str] = set()
+    failed_roles: set[str] = set()
     for role in KNOWN_ROLES:
+        if role in failed_roles:
+            continue
         for suffix in (f"{role}-status.yaml", f"{role}.yaml"):
             yaml_path = relay_root / suffix
             if not yaml_path.exists():
@@ -189,51 +430,47 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
             payload = _read_relay_yaml(yaml_path)
             if payload is None or _relay_payload_is_retired(payload):
                 continue
+            # Legacy Claude relays predate explicit session/role/lane fields.
+            # For KNOWN_ROLES the filename remains authoritative unless the
+            # payload explicitly declares a conflicting identity.
+            if _payload_identity_conflicts(payload, role):
+                LOG.warning(
+                    "Skipping relay retirement for '%s'; %s declares a different identity",
+                    role,
+                    yaml_path,
+                )
+                continue
+            if _session_is_protected(role, relay_root):
+                continue
             if _lane_has_live_process(role):
                 continue
             LOG.info("Reaping dead lane '%s' — no running process found", role)
-            try:
-                subprocess.run(
-                    [
-                        str(retire_script),
-                        role,
-                        "--reason",
-                        "reaped by hygiene sweeper (no running process)",
-                    ],
-                    timeout=5,
-                    check=False,
-                )
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                LOG.warning("Failed to retire relay YAML for '%s'", role)
-                continue
+            if not _retire_dead_lane(retire_script, retire_env, relay_root, role):
+                _record_reap_failure(role, failures=failures, failed_roles=failed_roles)
+                # Do not retry the plain/status sibling for a role whose retire helper
+                # already failed, but continue evaluating the remaining roles.
+                break
             reaped.append(role)
+            reaped_roles.add(role)
             break  # only one file per role
 
     for path in sorted(relay_root.glob("cx-*.yaml")):
-        session = path.stem
         payload = _read_relay_yaml(path)
         if payload is None or _relay_payload_is_retired(payload):
             continue
-        if payload.get("session") != session:
+        session = _canonical_cx_relay_role(path, payload)
+        if session is None or session in reaped_roles or session in failed_roles:
+            continue
+        if _session_is_protected(session, relay_root):
             continue
         if _lane_has_live_process(session):
             continue
         LOG.info("Reaping dead cx lane '%s' — no running process found", session)
-        try:
-            subprocess.run(
-                [
-                    str(retire_script),
-                    session,
-                    "--reason",
-                    "reaped by hygiene sweeper (no running process)",
-                ],
-                timeout=5,
-                check=False,
-            )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            LOG.warning("Failed to retire relay YAML for '%s'", session)
-        else:
-            reaped.append(session)
+        if not _retire_dead_lane(retire_script, retire_env, relay_root, session):
+            _record_reap_failure(session, failures=failures, failed_roles=failed_roles)
+            continue
+        reaped.append(session)
+        reaped_roles.add(session)
 
     return reaped
 
@@ -269,6 +506,7 @@ def _load_relay_payloads(relay_root: Path) -> dict[str, dict[str, Any]]:
     from cc_hygiene.checks import _read_relay_yaml  # local helper
 
     payloads: dict[str, dict[str, Any]] = {}
+    retired_status_roles: set[str] = set()
     if not relay_root.is_dir():
         return payloads
     for role in KNOWN_ROLES:
@@ -277,16 +515,30 @@ def _load_relay_payloads(relay_root: Path) -> dict[str, dict[str, Any]]:
             if _relay_payload_is_retired(payload):
                 continue
             payloads[role] = payload
-    for path in sorted(relay_root.glob("cx-*.yaml")):
-        role = path.stem
+    cx_paths = [*sorted(relay_root.glob("cx-*-status.yaml"))]
+    cx_paths.extend(
+        path
+        for path in sorted(relay_root.glob("cx-*.yaml"))
+        if not path.stem.endswith(_CODEX_STATUS_SUFFIX)
+    )
+    for path in cx_paths:
         payload = _read_relay_yaml(path)
         if payload is not None:
             # `cx-*.yaml` also includes read-only audit sidecars such as
-            # `cx-amber-wsjf-007-velocity-audit.yaml`. Only the canonical
-            # live relay file is named exactly after its `session`.
-            if payload.get("session") != role:
-                continue
+            # `cx-amber-wsjf-007-velocity-audit.yaml`. Only canonical live
+            # relay files are named after their lane (`cx-foo.yaml`) or status
+            # relay (`cx-foo-status.yaml`) and agree with the payload identity.
             if _relay_payload_is_retired(payload):
+                role = _retired_cx_status_relay_role(path, payload)
+                if role is not None:
+                    retired_status_roles.add(role)
+                continue
+            role = _canonical_cx_relay_role(path, payload)
+            if role is None:
+                continue
+            if role in payloads:
+                continue
+            if role in retired_status_roles:
                 continue
             payloads[role] = payload
     return payloads
@@ -336,6 +588,7 @@ def _summarize_checks(events: list[HygieneEvent]) -> list[CheckSummary]:
         "duplicate_claim",
         "orphan_pr",
         "relay_yaml_stale",
+        "relay_retire_failed",
         "wip_limit",
         "offered_stale",
         "refusal_dormancy",
@@ -351,25 +604,57 @@ def run_sweep(
     relay_root: Path = DEFAULT_RELAY_ROOT,
     repo_root: Path = DEFAULT_REPO_ROOT,
     now: datetime | None = None,
+    reap_relay_yaml: bool = False,
 ) -> HygieneState:
-    """Perform one sweep and return the snapshot. Does NOT write to disk."""
+    """Perform one sweep and return the snapshot.
+
+    This is read-only by default. Set ``reap_relay_yaml`` only from writing
+    producer paths that intentionally retire dead relay YAMLs before stale checks.
+    """
     now = now or datetime.now(UTC)
     started = time.monotonic()
 
-    reaped = reap_dead_lanes(relay_root)
-    if reaped:
-        LOG.info("Reaped %d dead lane(s): %s", len(reaped), ", ".join(reaped))
+    reap_failures: list[str] = []
+    if reap_relay_yaml:
+        reaped = reap_dead_lanes(relay_root, failures=reap_failures)
+        if reaped:
+            LOG.info("Reaped %d dead lane(s): %s", len(reaped), ", ".join(reaped))
 
     notes = _load_active_notes(vault_root)
     closed_notes = _load_closed_notes(vault_root)
     relay_payloads = _load_relay_payloads(relay_root)
+    failed_reap_roles = set(reap_failures)
 
     events: list[HygieneEvent] = []
     events.extend(check_stale_in_progress(notes, repo_root, now=now))
     events.extend(check_ghost_claimed(notes, now=now))
     events.extend(check_duplicate_claim(relay_payloads, now=now))
     events.extend(check_orphan_pr(notes, repo_root, closed_notes=closed_notes, now=now))
-    events.extend(check_relay_yaml_staleness(relay_payloads, now=now))
+    retire_script = _relay_retire_script()
+    for role in sorted(failed_reap_roles):
+        recheck_command = _relay_retire_recheck_command(retire_script, relay_root, role)
+        events.append(
+            HygieneEvent(
+                timestamp=now,
+                check_id="relay_retire_failed",
+                severity="violation",
+                session=role,
+                message=(
+                    f"Relay retirement failed for dead lane {role}; stale-relay "
+                    "checks are suppressed for this lane until the retire helper is repaired; "
+                    f"recheck with: {recheck_command}"
+                ),
+                metadata={
+                    "relay_root": str(relay_root),
+                    "retire_script": str(retire_script),
+                    "recheck_command": recheck_command,
+                },
+            )
+        )
+    relay_payloads_for_stale = {
+        role: payload for role, payload in relay_payloads.items() if role not in failed_reap_roles
+    }
+    events.extend(check_relay_yaml_staleness(relay_payloads_for_stale, now=now))
     events.extend(check_wip_limit(notes, now=now))
     events.extend(check_offered_staleness(notes, now=now))
     events.extend(check_refusal_pipeline_dormancy(closed_notes, now=now))
@@ -421,7 +706,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--no-write",
         action="store_true",
-        help="Run the sweep but do not write event log or state JSON (diagnostic mode).",
+        help=(
+            "Run the sweep in diagnostic mode: do not write event log/state JSON, "
+            "do not retire relay YAMLs, and do not self-heal ghost claims."
+        ),
     )
     parser.add_argument(
         "--no-ntfy",
@@ -436,7 +724,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--no-actions",
         action="store_true",
-        help="Skip the ghost-claimed self-heal auto-action (observational mode).",
+        help=(
+            "Skip the ghost-claimed self-heal auto-action only; dead-lane relay "
+            "retirement still runs on writing sweeps. Use --no-write for full "
+            "diagnostic mode with no event/state writes, self-heal, or relay retirement."
+        ),
     )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
@@ -463,6 +755,7 @@ def main(argv: list[str] | None = None) -> int:
         vault_root=args.vault_root,
         relay_root=args.relay_root,
         repo_root=args.repo_root,
+        reap_relay_yaml=not args.no_write,
     )
     LOG.info(
         "sweep complete: %d events in %d ms",
