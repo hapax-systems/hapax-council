@@ -1602,6 +1602,7 @@ class TestFamilyOutageDegradation:
         assert "claude" not in seated, "walled family must not be seated"
         assert dossier["review_team_verdict"] == "quorum-accept"
         assert dossier["degraded_family_outage"] == ["claude"]
+        assert dossier["degraded_family_outage_witness"] == {"claude": now}
         assert dossier["post_recovery_rereview_required"] is True
         entries = [
             json.loads(line)
@@ -1644,6 +1645,7 @@ class TestFamilyOutageDegradation:
 
         assert result["dossier"]["review_team_verdict"] == "quorum-accept"
         assert result["dossier"]["degraded_family_outage"] == ["claude"]
+        assert result["dossier"]["degraded_family_outage_witness"] == {"claude": now}
         receipt_path = note.parent / "task-a.acceptance.yaml"
         assert result["side_effects"]["receipt_path"] == str(receipt_path)
         assert receipt_path.is_file()

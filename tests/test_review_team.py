@@ -484,6 +484,27 @@ class TestSynthesizeDossier:
         assert dossier["changed_file_count"] is None
         assert dossier["changed_files"] is None
 
+    def test_degraded_dossier_persists_outage_witness_snapshot(self) -> None:
+        rt = _load_review_team_module()
+        now = "2026-06-11T19:30:00+00:00"
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("gemini-2", "gemini", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=(
+                "degraded_family_outage:claude",
+                "degraded_to:t2_standard",
+                "post_recovery_rereview_required",
+            ),
+            degraded_family_outage_witness={"claude": now, "codex": now},
+        )
+
+        assert dossier["degraded_family_outage_witness"] == {"claude": now}
+
     def test_reviewer_supplied_resolved_critical_blocks(self) -> None:
         rt = _load_review_team_module()
         dossier = _synth(
@@ -1570,6 +1591,25 @@ class TestFamilyOutageDegradation:
         )
         assert any(b.startswith("review_dossier_degradation_unwitnessed:") for b in blockers)
 
+    def test_dossier_embedded_witness_admits_when_external_state_absent(
+        self, tmp_path: Path
+    ) -> None:
+        """Remote admission can validate the constitution-time witness snapshot."""
+        rt = _load_review_team_module()
+        dossier = self._degraded_dossier(rt)
+        dossier["degraded_family_outage_witness"] = {"claude": "2026-06-11T19:30:00+00:00"}
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=tmp_path / "absent-witness.json",
+            admission_time="2026-06-11T20:30:00+00:00",
+        )
+
+        assert blockers == ()
+
     def test_recovered_witness_invalidates_pending_degraded_admission(self, tmp_path) -> None:
         # the family recovered (entry cleared) -> the pending degraded dossier
         # stops admitting: post_recovery_rereview_required, enforced mechanically
@@ -1583,6 +1623,24 @@ class TestFamilyOutageDegradation:
             pr_head_sha="a" * 40,
             outage_state_path=empty_witness,
         )
+        assert any(b.startswith("review_dossier_degradation_unwitnessed:") for b in blockers)
+
+    def test_live_recovered_state_overrides_embedded_degraded_witness(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = self._degraded_dossier(rt)
+        dossier["degraded_family_outage_witness"] = {"claude": "2026-06-11T19:30:00+00:00"}
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        empty_witness = tmp_path / "family-outage.json"
+        empty_witness.write_text("{}", encoding="utf-8")
+
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=empty_witness,
+            admission_time="2026-06-11T20:30:00+00:00",
+        )
+
         assert any(b.startswith("review_dossier_degradation_unwitnessed:") for b in blockers)
 
     def test_expired_witness_blocks_current_admission(self, tmp_path) -> None:

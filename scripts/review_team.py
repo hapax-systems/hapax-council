@@ -1071,6 +1071,7 @@ def synthesize_dossier(
     changed_files: Sequence[str] | None = None,
     changed_file_count: int | None = None,
     repo_root: Path | None = None,
+    degraded_family_outage_witness: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Reconcile blind reviews into a dossier (the synthesizer, spec §3/§5).
 
@@ -1182,7 +1183,7 @@ def synthesize_dossier(
             quorum_met = set(roster) <= accept_families
         verdict = QUORUM_ACCEPT if quorum_met else "no-quorum"
 
-    return {
+    dossier: dict[str, Any] = {
         "dossier_schema": 1,
         "task_id": task_id,
         "pr": pr_number,
@@ -1205,6 +1206,13 @@ def synthesize_dossier(
         "accept_count": len(accepts),
         "review_team_verdict": verdict,
     }
+    if degraded_outage and degraded_family_outage_witness:
+        dossier["degraded_family_outage_witness"] = {
+            family: degraded_family_outage_witness[family]
+            for family in degraded_outage
+            if family in degraded_family_outage_witness
+        }
+    return dossier
 
 
 # --- Admission gate (consumed by scripts/cc-pr-autoqueue.py) ------------------
@@ -1300,49 +1308,53 @@ def _dossier_validity_blockers(
                 "review_dossier_degradation_unknown_family:" + ",".join(_unknown_degraded)
             )
             return tuple(blockers)
-        # external witness (round-4 finding: dossier-internal consistency can
-        # be forged wholesale): each degraded family must appear in the
-        # dispatcher's outage state with observed_at within TTL BEFORE this
-        # dossier's constituted_at. Recovery clears the state entry, which
-        # mechanically enforces post_recovery_rereview_required — degraded
-        # dossiers stop admitting the moment the family answers again.
+        # Witness model: prefer live dispatcher outage state when it exists so
+        # recovery clears the family entry and mechanically enforces
+        # post_recovery_rereview_required. If the external state is absent,
+        # fall back to the dossier's durable snapshot from constitution time so
+        # remote admission checks can validate the same outage evidence.
         witness_path = outage_state_path or FAMILY_OUTAGE_STATE
         unwitnessed = list(degraded_outage)
         try:
             witness_state = json.loads(Path(witness_path).read_text(encoding="utf-8"))
             if not isinstance(witness_state, Mapping):
                 raise TypeError("family outage witness is not a mapping")
-            constituted = _parse_iso_datetime(dossier.get("constituted_at"))
-            admitted_at = _coerce_datetime(admission_time, reference=constituted)
-            unwitnessed = []
-            for fam in degraded_outage:
-                try:
-                    started, observed = _witness_window(witness_state.get(fam))
-                    if started is None or observed is None:
+        except OSError:
+            witness_state = dossier.get("degraded_family_outage_witness") or {}
+        except (json.JSONDecodeError, TypeError, ValueError):
+            witness_state = {}
+        if isinstance(witness_state, Mapping):
+            try:
+                constituted = _parse_iso_datetime(dossier.get("constituted_at"))
+                admitted_at = _coerce_datetime(admission_time, reference=constituted)
+                unwitnessed = []
+                for fam in degraded_outage:
+                    try:
+                        started, observed = _witness_window(witness_state.get(fam))
+                        if started is None or observed is None:
+                            unwitnessed.append(fam)
+                            continue
+                        # Window model (#4246 re-design): the dossier is valid iff it was
+                        # constituted AND admitted DURING the sustained outage. The STABLE
+                        # outage_started_at anchors the lower bound (anti-forge: a back-dated
+                        # constituted_at < outage_started_at blocks — the abs() symmetric
+                        # relaxation is NOT used, per the #4246 review finding). The MOVING
+                        # observed_at bounds freshness on the upper side (constituted/admitted
+                        # within TTL of the latest observation) — re-stamping observed_at
+                        # forward only extends the window, so a valid dossier stays valid.
+                        if not (
+                            _seconds_between(constituted, started) >= 0
+                            and _seconds_between(constituted, observed) <= FAMILY_OUTAGE_TTL_S
+                            and _seconds_between(admitted_at, started) >= 0
+                            and _seconds_between(admitted_at, observed) <= FAMILY_OUTAGE_TTL_S
+                        ):
+                            unwitnessed.append(fam)
+                    except (TypeError, ValueError):
                         unwitnessed.append(fam)
-                        continue
-                    # Window model (#4246 re-design): the dossier is valid iff it was
-                    # constituted AND admitted DURING the sustained outage. The STABLE
-                    # outage_started_at anchors the lower bound (anti-forge: a back-dated
-                    # constituted_at < outage_started_at blocks — the abs() symmetric
-                    # relaxation is NOT used, per the #4246 review finding). The MOVING
-                    # observed_at bounds freshness on the upper side (constituted/admitted
-                    # within TTL of the latest observation) — re-stamping observed_at
-                    # forward only extends the window, so a later run never un-witnesses a
-                    # valid dossier (the clobber fix). Recovery clears the family entirely
-                    # in update_family_outage (-> entry absent -> None -> unwitnessed),
-                    # which mechanically enforces post_recovery_rereview_required.
-                    if not (
-                        _seconds_between(constituted, started) >= 0
-                        and _seconds_between(constituted, observed) <= FAMILY_OUTAGE_TTL_S
-                        and _seconds_between(admitted_at, started) >= 0
-                        and _seconds_between(admitted_at, observed) <= FAMILY_OUTAGE_TTL_S
-                    ):
-                        unwitnessed.append(fam)
-                except (TypeError, ValueError):
-                    unwitnessed.append(fam)
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            pass  # unreadable witness state -> every family stays unwitnessed
+            except (TypeError, ValueError):
+                pass
+        else:
+            unwitnessed = list(degraded_outage)
         if unwitnessed:
             blockers.append(
                 "review_dossier_degradation_unwitnessed:" + ",".join(sorted(unwitnessed))
