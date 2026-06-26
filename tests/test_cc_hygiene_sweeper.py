@@ -1122,6 +1122,15 @@ def test_payload_identity_matches_requires_all_present_fields_to_agree() -> None
     )
 
 
+def test_payload_identity_conflicts_ignores_absent_fields() -> None:
+    """Known-role relays may omit identity, but explicit conflicts block reaping."""
+    sweeper = _load_sweeper_module()
+
+    assert not sweeper._payload_identity_conflicts({}, "alpha")
+    assert not sweeper._payload_identity_conflicts({"session": "alpha"}, "alpha")
+    assert sweeper._payload_identity_conflicts({"role": "cx-other"}, "cx-p0")
+
+
 def test_load_relay_payloads_keeps_status_relay_when_plain_relay_exists(tmp_path: Path) -> None:
     """If both Codex relay shapes exist, the status relay is authoritative."""
     sweeper = _load_sweeper_module()
@@ -1270,6 +1279,70 @@ def test_reap_dead_lanes_dedups_known_role_and_codex_status_relay(
     assert [call[1] for call in retire_calls] == ["cx-p0"]
 
 
+def test_reap_dead_lanes_skips_known_role_status_with_conflicting_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The known-role loop must not retire a status relay for another lane."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    _write_relay(
+        relay,
+        "cx-p0-status",
+        {
+            "role": "cx-other",
+            "lane": "cx-other",
+            "timestamp": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "blocked",
+        },
+    )
+    retire_calls: list[list[str]] = []
+
+    monkeypatch.setattr(sweeper, "KNOWN_ROLES", ("cx-p0",))
+    monkeypatch.setattr(sweeper, "_lane_has_live_process", lambda _role: False)
+    monkeypatch.setattr(sweeper.subprocess, "run", lambda args, **_: retire_calls.append(args))
+    caplog.set_level("WARNING")
+
+    reaped = sweeper.reap_dead_lanes(relay)
+
+    assert reaped == []
+    assert retire_calls == []
+    assert "different identity" in caplog.text
+
+
+def test_session_is_protected_matches_protected_live_section_shape(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Protection may be declared by section context and wrapped details."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    relay.mkdir()
+    (relay / "session-protection.md").write_text(
+        """# Session Protection
+
+Updated: 2026-05-01T16:16:39Z
+
+## Protected Live Sessions
+
+- 2026-05-01T16:16Z - `cx-violet` reactivated by explicit restart
+  bootstrap at
+  `/home/hapax/.cache/hapax/codex-spawns/cx-violet-research-restart.md`.
+  Scope: protected research/design/spec backlog lane only. Do not kill,
+  replace, relaunch, or reclaim this lane unless the operator explicitly
+  overrides it.
+
+## Retirement log
+
+- 2026-05-01T01:35Z - `cx-green` retired after session exit.
+""",
+        encoding="utf-8",
+    )
+    caplog.set_level("WARNING")
+
+    assert sweeper._session_is_protected("cx-violet", relay)
+    assert not sweeper._session_is_protected("cx-green", relay)
+    assert "Refusing to reap protected session 'cx-violet'" in caplog.text
+
+
 def test_reap_dead_lanes_skips_protected_codex_status_relay(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -1286,7 +1359,18 @@ def test_reap_dead_lanes_skips_protected_codex_status_relay(
             "status": "blocked",
         },
     )
-    (relay / "session-protection.md").write_text("- `cx-violet` is protected.\n", encoding="utf-8")
+    (relay / "session-protection.md").write_text(
+        """# Session Protection
+
+## Protected Live Sessions
+
+- 2026-05-01T16:16Z - `cx-violet` reactivated by explicit restart
+  Scope: protected research/design/spec backlog lane only. Do not kill,
+  replace, relaunch, or reclaim this lane unless the operator explicitly
+  overrides it.
+""",
+        encoding="utf-8",
+    )
     retire_calls: list[list[str]] = []
 
     monkeypatch.setattr(sweeper, "_lane_has_live_process", lambda _role: False)
@@ -1298,7 +1382,37 @@ def test_reap_dead_lanes_skips_protected_codex_status_relay(
     assert reaped == []
     assert retire_calls == []
     assert "session-protection.md" in caplog.text
-    assert "`cx-violet` is protected" in caplog.text
+    assert "`cx-violet` reactivated" in caplog.text
+
+
+def test_reap_dead_lanes_continues_when_codex_status_retire_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failing retire call for a cx status relay must not crash the sweep."""
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    _write_relay(
+        relay,
+        "cx-p0-status",
+        {
+            "role": "cx-p0",
+            "lane": "cx-p0",
+            "timestamp": (_now() - timedelta(hours=2)).isoformat(),
+            "status": "blocked",
+        },
+    )
+
+    def raise_oserror(_args: list[str], **_: Any) -> object:
+        raise OSError("retire script missing")
+
+    monkeypatch.setattr(sweeper, "_lane_has_live_process", lambda _role: False)
+    monkeypatch.setattr(sweeper.subprocess, "run", raise_oserror)
+    caplog.set_level("WARNING")
+
+    reaped = sweeper.reap_dead_lanes(relay)
+
+    assert reaped == []
+    assert "Failed to retire relay YAML for 'cx-p0'" in caplog.text
 
 
 def test_session_is_protected_fails_closed_when_protection_file_unreadable(
@@ -1323,6 +1437,7 @@ def test_session_is_protected_fails_closed_when_protection_file_unreadable(
     assert sweeper._session_is_protected("cx-violet", relay)
     assert str(protection) in caplog.text
     assert "repair the protection file" in caplog.text
+    assert "recheck with: test -r" in caplog.text
 
 
 def test_reap_dead_lanes_fail_closed_when_protection_file_unreadable(
@@ -1374,6 +1489,7 @@ def test_session_is_protected_fails_closed_when_override_file_missing(
     assert sweeper._session_is_protected("cx-violet", tmp_path / "relay")
     assert str(missing) in caplog.text
     assert "repair the protection override" in caplog.text
+    assert "recheck with: test -r" in caplog.text
 
 
 # ----------------------------------------------------------------------------

@@ -20,9 +20,11 @@ violation re-firing every sweep. Relay retirement uses ``hapax-relay-retire``
 and refuses to reap lanes listed in ``session-protection.md``. The protection
 file defaults to ``<relay-root>/session-protection.md`` and can be overridden by
 ``HAPAX_SESSION_PROTECTION_FILE`` or ``HAPAX_SESSION_PROTECTION``; explicit
-override files fail closed when missing or unreadable. Disable ghost-claim
-mutation with ``--no-actions``. The other auto-actions (H2 stale-in-progress,
-H7 offered-stale) remain unwired.
+override files fail closed when missing or unreadable and log a concrete
+``test -r ... && sed -n ...`` recheck command. ``--no-actions`` disables only
+the ghost-claim self-heal; relay retirement still runs before stale-relay
+checks and remains guarded by process/protection checks. The other auto-actions
+(H2 stale-in-progress, H7 offered-stale) remain unwired.
 
 Usage::
 
@@ -37,6 +39,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -117,6 +120,20 @@ def _payload_identity_matches(payload: dict[str, Any], role: str) -> bool:
     return bool(identities) and all(identity == role for identity in identities)
 
 
+def _payload_identity_conflicts(payload: dict[str, Any], role: str) -> bool:
+    """Return true when any explicit relay identity contradicts ``role``."""
+    for key in ("session", "role", "lane"):
+        identity = str(payload.get(key, "")).strip()
+        if identity and identity != role:
+            return True
+    return False
+
+
+def _protection_recheck_command(protection_file: Path) -> str:
+    quoted = shlex.quote(str(protection_file))
+    return f"test -r {quoted} && sed -n '1,120p' {quoted}"
+
+
 def _session_is_protected(session: str, relay_root: Path) -> bool:
     """Return true when session-protection.md marks ``session`` protected."""
     protection_override = os.environ.get("HAPAX_SESSION_PROTECTION_FILE") or os.environ.get(
@@ -129,9 +146,10 @@ def _session_is_protected(session: str, relay_root: Path) -> bool:
         if protection_override:
             LOG.warning(
                 "Configured session protection file %s is missing; refusing to reap '%s'; "
-                "repair the protection override before reaping",
+                "repair the protection override before reaping; recheck with: %s",
                 protection_file,
                 session,
+                _protection_recheck_command(protection_file),
             )
             return True
         return False
@@ -140,19 +158,27 @@ def _session_is_protected(session: str, relay_root: Path) -> bool:
     except OSError:
         LOG.warning(
             "Unable to read session protection file %s; refusing to reap '%s'; "
-            "repair the protection file before reaping",
+            "repair the protection file before reaping; recheck with: %s",
             protection_file,
             session,
+            _protection_recheck_command(protection_file),
         )
         return True
     needle = f"`{session}`"
+    in_protected_session_section = False
     for line in text.splitlines():
-        if needle in line and "protected" in line.lower():
+        stripped = line.strip()
+        lower = stripped.lower()
+        if stripped.startswith("#"):
+            in_protected_session_section = "protected" in lower and (
+                "session" in lower or "live" in lower
+            )
+        if needle in line and ("protected" in lower or in_protected_session_section):
             LOG.warning(
                 "Refusing to reap protected session '%s' listed in %s: %s",
                 session,
                 protection_file,
-                line.strip(),
+                stripped,
             )
             return True
     return False
@@ -271,6 +297,13 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
             payload = _read_relay_yaml(yaml_path)
             if payload is None or _relay_payload_is_retired(payload):
                 continue
+            if _payload_identity_conflicts(payload, role):
+                LOG.warning(
+                    "Skipping relay retirement for '%s'; %s declares a different identity",
+                    role,
+                    yaml_path,
+                )
+                continue
             if _session_is_protected(role, relay_root):
                 continue
             if _lane_has_live_process(role):
@@ -287,7 +320,7 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
                     timeout=5,
                     check=False,
                 )
-            except (subprocess.TimeoutExpired, FileNotFoundError):
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
                 LOG.warning("Failed to retire relay YAML for '%s'", role)
                 continue
             reaped.append(role)
@@ -317,7 +350,7 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
                 timeout=5,
                 check=False,
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             LOG.warning("Failed to retire relay YAML for '%s'", session)
         else:
             reaped.append(session)
@@ -538,7 +571,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--no-actions",
         action="store_true",
-        help="Skip the ghost-claimed self-heal auto-action (observational mode).",
+        help=(
+            "Skip the ghost-claimed self-heal auto-action only; dead-lane relay "
+            "retirement still runs unless the global killswitch is active."
+        ),
     )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
