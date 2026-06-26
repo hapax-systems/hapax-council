@@ -1040,15 +1040,18 @@ current_claim: null
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
         statuses = (
+            "retired",
             "retired-clean-exit",
-            "superseded-by-cx-blue",
-            "closed-by-operator",
             "idle_wound_down",
+            "idle-wound-down-after-close",
             "wind_down_idle",
+            "wind-down-idle-after-close",
             "wound_down",
+            "wound-down-by-operator",
             "wind_down",
+            "wind-down-after-retire",
+            "winding_down",
             "winding_down-after-retire",
-            "antigravity_takeover",
         )
         for index, status in enumerate(statuses):
             role = f"cx-retired-{index}"
@@ -1083,6 +1086,8 @@ current_claim: stale-task-{index}
                 assert state.dispatchable is False
 
         assert _relay_status_is_retired("retiring") is False
+        assert _relay_status_is_retired("superseded-by-cx-blue") is False
+        assert _relay_status_is_retired("closed-by-operator") is False
 
     def test_active_task_file_still_beats_retired_role_status(self, tmp_path: Path):
         role = "ut-role"
@@ -1536,6 +1541,11 @@ class TestDispatchableLaneSelection:
                 dispatchable=False,
             ),
         }
+        dispatched: list[tuple[str, str]] = []
+        written: list[CoordinatorState] = []
+
+        def capture_state(state: CoordinatorState, **_kwargs: object) -> None:
+            written.append(state)
 
         with (
             patch.object(Coordinator, "_scan_tasks", return_value=[task]),
@@ -1543,15 +1553,19 @@ class TestDispatchableLaneSelection:
             patch.object(
                 Coordinator,
                 "_dispatch",
-                side_effect=AssertionError("retired codex relay lane was dispatched"),
+                side_effect=lambda t, lane: dispatched.append((t.task_id, lane.role)) or (True, ""),
             ),
-            patch.object(Coordinator, "_write_state"),
+            patch.object(Coordinator, "_write_state", side_effect=capture_state),
             patch(
                 "agents.coordinator.core.admission_state",
                 return_value=AdmissionDecision(state="open"),
             ),
         ):
             coordinator.tick()
+
+        assert dispatched == []
+        assert written[0].lanes_idle == 0
+        assert written[0].lanes["cx-fugu-1"]["dispatchable"] is False
 
     def test_tick_excludes_wind_down_codex_relay_before_dispatch(self, tmp_path: Path):
         coordinator = Coordinator()
@@ -1578,6 +1592,7 @@ current_claim: null
         )
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
+        dispatched: list[tuple[str, str]] = []
         written: list[CoordinatorState] = []
 
         def capture_state(state: CoordinatorState, **_kwargs: object) -> None:
@@ -1601,7 +1616,7 @@ current_claim: null
             patch.object(
                 Coordinator,
                 "_dispatch",
-                side_effect=AssertionError("wind-down codex relay lane was dispatched"),
+                side_effect=lambda t, lane: dispatched.append((t.task_id, lane.role)) or (True, ""),
             ),
             patch.object(Coordinator, "_write_state", side_effect=capture_state),
             patch(
@@ -1611,6 +1626,7 @@ current_claim: null
         ):
             coordinator.tick()
 
+        assert dispatched == []
         assert written[0].lanes_alive == 1
         assert written[0].lanes_idle == 0
         assert written[0].lanes["cx-fugu-1"]["dispatchable"] is False

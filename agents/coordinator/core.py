@@ -1185,14 +1185,11 @@ def _claim_from_relay(relay: dict) -> str | None:
 
 _RETIRED_RELAY_STATUS_PREFIXES = (
     "retired",
-    "superseded",
-    "closed",
     "idle-wound-down",
     "wind-down-idle",
     "wound-down",
     "wind-down",
     "winding-down",
-    "antigravity-takeover",
 )
 
 
