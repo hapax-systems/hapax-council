@@ -31,7 +31,8 @@ def dispatch_worktree(role: str, platform: str) -> Path:
     override = os.environ.get("HAPAX_DISPATCH_WORKTREE")
     if override:
         return Path(override).expanduser()
-    root = Path(os.environ.get("HAPAX_DISPATCH_PROJECT_ROOT", str(Path.home() / "projects")))
+    configured_root = os.environ.get("HAPAX_DISPATCH_PROJECT_ROOT")
+    root = Path(configured_root).expanduser() if configured_root else Path.home() / "projects"
     if platform == "codex":
         if role.startswith("cx-"):
             return root / f"hapax-council--{role}"

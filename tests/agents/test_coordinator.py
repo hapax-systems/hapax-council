@@ -98,6 +98,16 @@ class TestDispatchWorktreeGuard:
             assert _dispatch_worktree("antigravity", "antigrav") == root / "hapax-council--antigrav"
             assert _dispatch_worktree("other", "unknown") == root / "hapax-council"
 
+    def test_dispatch_worktree_expands_project_root_home(self, tmp_path: Path):
+        with patch.dict(
+            "os.environ",
+            {"HOME": str(tmp_path), "HAPAX_DISPATCH_PROJECT_ROOT": "~/projects"},
+            clear=False,
+        ):
+            assert _dispatch_worktree("cx-red", "codex") == (
+                tmp_path / "projects" / "hapax-council--cx-red"
+            )
+
     def test_dispatch_worktree_matches_methodology_dispatcher(self, tmp_path: Path):
         dispatcher = _dispatcher_module()
         root = tmp_path / "projects"
