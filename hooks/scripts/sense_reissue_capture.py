@@ -182,6 +182,7 @@ def run_emit(cmd: Sequence[str]) -> dict[str, object]:
             timeout=8,
         )
     except Exception:
+        # fail-open: subprocess spawn/timeout/OS error -> empty receipt (the hook never blocks).
         return {}
     if proc.returncode != 0:
         return {}
@@ -213,6 +214,7 @@ def _default_tasks_dir() -> Path:
 
         return DEFAULT_VAULT_TASKS / "active"
     except Exception:
+        # shared not importable in this context -> last-resort literal (the single-user SSOT path).
         return Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
 
 
@@ -222,13 +224,13 @@ def _train_from_note(tasks_dir: Path, task_id: str) -> str | None:
     try:
         notes = sorted(tasks_dir.glob(f"{task_id}-*.md"))
     except Exception:
-        notes = []
+        notes = []  # glob failed (e.g. dir absent) -> fall through to the exact <task_id>.md below
     notes.append(tasks_dir / f"{task_id}.md")
     for note in notes:
         try:
             lines = note.read_text(encoding="utf-8").splitlines()
         except Exception:
-            continue
+            continue  # unreadable/absent note -> try the next candidate
         for line in lines:
             if line.startswith("train:"):
                 train = line.split(":", 1)[1].strip()
@@ -267,7 +269,7 @@ def resolve_program(
         try:
             lines = marker.read_text(encoding="utf-8").strip().splitlines()
         except Exception:
-            continue
+            continue  # unreadable/absent marker -> try the next candidate
         task_id = lines[0].strip() if lines else ""
         if not task_id:
             continue
@@ -312,7 +314,7 @@ def main(
         raw = stream.read()
         payload = json.loads(raw) if raw.strip() else {}
     except Exception:
-        return 0
+        return 0  # fail-open: malformed/unreadable stdin -> never block the prompt
     if not isinstance(payload, dict):
         return 0
     prompt = str(payload.get("prompt") or "")
