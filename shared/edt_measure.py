@@ -575,6 +575,16 @@ def _resolve_d3(leaf_key: str, route: PlatformCapabilityRoute) -> D3SliceFit:
     )
 
 
+def _removable_quota_reasons(route: PlatformCapabilityRoute) -> frozenset[str]:
+    """Mirror of ``_quota_unobservable_removable_reasons``: the blocked_reasons the upstream overlay
+    is allowed to clear given a quota-unobservable receipt. A route blocked for ANY OTHER reason
+    stays blocked — the quota path must not unblock it."""
+    reasons = {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
+    if route.capacity_pool in {CapacityPool.API_PAID_SPEND, CapacityPool.BOOTSTRAP_BUDGET}:
+        reasons.add("provider_budget_receipt_absent")
+    return frozenset(reasons)
+
+
 def _resolve_d4(
     leaf_key: str,
     route: PlatformCapabilityRoute,
@@ -582,9 +592,16 @@ def _resolve_d4(
     *,
     variant_blocked: bool = False,
 ) -> D4UsePolicy:
-    route_available = (route.route_state is RouteState.ACTIVE and not route.blocked_reasons) or (
-        _mirrored_quota_unobservable_nonblocking(route, receipt)
+    active_clean = route.route_state is RouteState.ACTIVE and not route.blocked_reasons
+    # the quota-unobservable receipt may unblock a route ONLY when EVERY blocked_reason is a
+    # removable quota reason (fail-closed): an unrelated blocker (e.g. session_dead) is preserved,
+    # matching the upstream overlay which clears only the removable reasons.
+    quota_override = (
+        bool(route.blocked_reasons)
+        and set(route.blocked_reasons) <= _removable_quota_reasons(route)
+        and _mirrored_quota_unobservable_nonblocking(route, receipt)
     )
+    route_available = active_clean or quota_override
     # a BLOCKED descriptor variant is unavailable even on an active route (fail-closed): its leaf
     # neither counts toward the productive denominator nor can pass.
     available = route_available and not variant_blocked
@@ -632,6 +649,7 @@ def score_variant_leaf(
     route: PlatformCapabilityRoute,
     *,
     knobs: EdtKnobs,
+    registry: PlatformCapabilityRegistry,
     receipt: PlatformCapabilityReceipt | None = None,
     now: datetime,
     d0_omitted: bool = False,
@@ -641,7 +659,11 @@ def score_variant_leaf(
 
     v1 scores sibling variant leaves of a route IDENTICALLY (D1-D5 are route-level) EXCEPT a BLOCKED
     variant leaf, which is marked unavailable — per-variant differential scoring lands with STEP-0
-    ``score_delta``. ``descriptor`` is the leaf's own materialized descriptor (its identity)."""
+    ``score_delta``. ``descriptor`` is the leaf's own materialized descriptor (its identity).
+
+    ``registry`` is part of the declared public-API contract (the EDT scorer-spec signature); it is
+    RESERVED for STEP-0 cross-route resolution (e.g. a variant's ``scores_inherited_from`` provenance)
+    and accepted now so callers code against the stable signature."""
     variant = _variant_for_leaf(leaf_key, route)
     variant_blocked = variant is not None and bool(variant.blocked_reasons)
     d1 = _resolve_d1(leaf_key, route)
@@ -730,13 +752,18 @@ def score_platform(
     platform: str,
     leaves: Sequence[LeafEdt],
     *,
+    knobs: EdtKnobs,
     expected_platform_set: int,
     expected_platform_members: tuple[str, ...],
     observed_platform_count: int,
     omitted_platforms: tuple[str, ...],
 ) -> EdtMeasure:
     """Aggregate a platform's leaves (MIN ratio/completeness/evidence, MAX provisional, MIN-by-rank
-    depth_class). An OMITTED platform is scored with empty ``leaves`` -> ``platform_passes=False``."""
+    depth_class). An OMITTED platform is scored with empty ``leaves`` -> ``platform_passes=False``.
+
+    ``knobs`` is part of the declared public-API contract; it is RESERVED for STEP-0 per-platform
+    knob-driven aggregation (e.g. a depth-cap or threshold override) and accepted now so callers code
+    against the stable signature."""
     platform_ratio = _min_optional([leaf.specificity_ratio for leaf in leaves])
     platform_completeness = _min_optional([leaf.slice_policy_completeness for leaf in leaves])
     platform_evidence = _min_optional([leaf.evidence_health for leaf in leaves])
@@ -807,6 +834,7 @@ def score_edt(
             descriptor,
             route,
             knobs=knobs,
+            registry=registry,
             receipt=receipt,
             now=resolved_now,
             d0_omitted=platform in omitted_platforms,
@@ -817,6 +845,7 @@ def score_edt(
         return score_platform(
             platform,
             leaves,
+            knobs=knobs,
             expected_platform_set=knobs.expected_platform_set,
             expected_platform_members=knobs.expected_platform_members,
             observed_platform_count=len(observed_platforms),

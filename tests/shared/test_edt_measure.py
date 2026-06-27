@@ -555,22 +555,20 @@ def _make_receipt(route_id: str, platform: str) -> PlatformCapabilityReceipt:
     )
 
 
-def test_receipts_quota_unobservable_makes_blocked_subscription_route_available() -> None:
+def _blocked_opus_payload(reason: str) -> dict:
     payload = _fresh_payload()
     opus = _route_in(payload, "claude.headless.opus")  # subscription_quota
     opus["route_state"] = "blocked"
-    opus["blocked_reasons"] = ["test: route_state forced blocked"]
+    opus["blocked_reasons"] = [reason]
+    return payload
+
+
+def test_receipts_quota_unobservable_makes_blocked_subscription_route_available() -> None:
     receipts = {"claude.headless.opus": _make_receipt("claude.headless.opus", "claude")}
 
-    # without receipts: blocked -> unavailable
-    leaf_no_receipt = _leaf_for(
-        score_edt(_registry(payload), knobs_path=_knobs_file(_OBSERVED_MEMBERS), now=NOW),
-        "claude.headless.opus",
-    )
-    assert leaf_no_receipt.d4 is not None and leaf_no_receipt.d4.available is False
-
-    # WITH the quota-unobservable receipt: the mirror treats it as evidence -> available
-    leaf_with_receipt = _leaf_for(
+    # blocked ONLY by a removable quota reason + the quota-unobservable receipt -> available
+    payload = _blocked_opus_payload("account_live_quota_receipt_absent")
+    leaf = _leaf_for(
         score_edt(
             _registry(payload),
             knobs_path=_knobs_file(_OBSERVED_MEMBERS),
@@ -579,7 +577,29 @@ def test_receipts_quota_unobservable_makes_blocked_subscription_route_available(
         ),
         "claude.headless.opus",
     )
-    assert leaf_with_receipt.d4 is not None and leaf_with_receipt.d4.available is True
+    assert leaf.d4 is not None and leaf.d4.available is True
+
+    # FAIL-CLOSED: an UNRELATED blocker is PRESERVED even with the quota receipt -> unavailable
+    # (the quota path must not unblock a route blocked for a non-quota reason).
+    payload_unrelated = _blocked_opus_payload("session_dead")
+    leaf_unrelated = _leaf_for(
+        score_edt(
+            _registry(payload_unrelated),
+            knobs_path=_knobs_file(_OBSERVED_MEMBERS),
+            receipts=receipts,
+            now=NOW,
+        ),
+        "claude.headless.opus",
+    )
+    assert leaf_unrelated.d4 is not None and leaf_unrelated.d4.available is False
+    assert leaf_unrelated.d4.unavailability_reason == "session_dead"
+
+    # and WITHOUT the receipt, even the removable-quota-blocked route stays unavailable (no override)
+    leaf_no_receipt = _leaf_for(
+        score_edt(_registry(payload), knobs_path=_knobs_file(_OBSERVED_MEMBERS), now=NOW),
+        "claude.headless.opus",
+    )
+    assert leaf_no_receipt.d4 is not None and leaf_no_receipt.d4.available is False
 
 
 # --------------------------------------------------------------------------------------------
@@ -587,13 +607,15 @@ def test_receipts_quota_unobservable_makes_blocked_subscription_route_available(
 # --------------------------------------------------------------------------------------------
 def test_d0_omitted_gate_fails_closed() -> None:
     payload = _fresh_payload()
-    route = _registry(payload).route_map()["claude.headless.full"]
+    reg = _registry(payload)
+    route = reg.route_map()["claude.headless.full"]
     knobs = load_edt_knobs(_knobs_file(_OBSERVED_MEMBERS))
     leaf = score_variant_leaf(
         "claude.headless.full",
         route.execution_descriptor,
         route,
         knobs=knobs,
+        registry=reg,
         now=NOW,
         d0_omitted=True,
     )
@@ -602,6 +624,7 @@ def test_d0_omitted_gate_fails_closed() -> None:
     measure = score_platform(
         "claude",
         [leaf],
+        knobs=knobs,
         expected_platform_set=12,
         expected_platform_members=tuple(_OBSERVED_MEMBERS),
         observed_platform_count=7,
@@ -668,3 +691,18 @@ def test_blocked_variant_leaf_is_unavailable() -> None:
     assert blocked_leaf.d4.unavailability_reason == "variant_blocked"
     base_leaf = _leaf_for(measures, "claude.headless.opus")
     assert base_leaf.d4 is not None and base_leaf.d4.available is True
+
+
+# --------------------------------------------------------------------------------------------
+# 24. the SHIPPED config's retired phantoms (cohere/hf) surface as omitted failing measures
+#     (the shipped config declares 10 members incl cohere/hf; verify that path end-to-end)
+# --------------------------------------------------------------------------------------------
+def test_shipped_config_retired_phantoms_are_omitted() -> None:
+    payload = _fresh_payload()
+    shipped_members = [*_OBSERVED_MEMBERS, "cohere", "hf"]  # mirrors config/edt-platform-knobs.yaml
+    measures = score_edt(_registry(payload), knobs_path=_knobs_file(shipped_members), now=NOW)
+    for phantom in ("cohere", "hf"):
+        assert phantom in measures[0].omitted_platforms
+        synthetic = _by_platform(measures, phantom)
+        assert synthetic.leaves == ()
+        assert synthetic.platform_passes is False
