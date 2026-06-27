@@ -5,9 +5,17 @@ from pydantic import ValidationError
 
 from shared.route_metadata_schema import (
     AuthorityLevel,
+    BenchmarkGap,
+    ClassificationEnvelope,
+    FixedRouteOverhead,
     FreshnessState,
+    HardeningAllocation,
+    HardeningIntensity,
+    LearningEligibility,
     MutationSurface,
+    PublicReleaseProjection,
     QualityFloor,
+    RouteAdmissionAction,
     RouteMetadata,
     RouteMetadataStatus,
     assess_route_metadata,
@@ -57,6 +65,57 @@ def _explicit_metadata() -> dict[str, object]:
             "authoritative_acceptor_profile": None,
         },
     }
+
+
+def _valid_classification_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "label": "source_python",
+        "classifier": "test.deterministic",
+        "source_kind": "deterministic",
+        "confidence": 0.92,
+        "evidence_refs": ["test:classification-evidence"],
+        "freshness": "fresh",
+        "authority_ceiling": "authoritative",
+        "validity_mask": {
+            "label": True,
+            "source": True,
+            "confidence": True,
+            "freshness": True,
+            "authority_ceiling": True,
+        },
+        "deterministic_facts_used": ["mutation_surface:source", "quality_floor:frontier_required"],
+        "consumer_floor": "frontier_required",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _valid_route_eligibility_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "authority_allowed": True,
+        "privacy_allowed": True,
+        "freshness_ok": True,
+        "quality_floor_satisfied": True,
+        "required_tools_available": True,
+        "budget_allowed": True,
+        "reason_codes": ["eligibility_witnessed"],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _valid_route_envelope_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "classification_envelope": _valid_classification_payload(),
+        "eligibility": _valid_route_eligibility_payload(),
+        "admission": {"admission_action": "route", "reason_codes": ["fresh"]},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _dispatchable_metadata() -> dict[str, object]:
+    return {**_explicit_metadata(), "route_envelope": _valid_route_envelope_payload()}
 
 
 def test_full_explicit_route_metadata_validates() -> None:
@@ -260,13 +319,450 @@ def test_support_artifact_requires_independent_frontier_review() -> None:
         RouteMetadata.model_validate(payload)
 
 
+def test_missing_route_envelope_defaults_fail_closed_without_breaking_flat_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The route-envelope gate ships in SHADOW mode by default; this test exercises the
+    # fail-closed (enforce) behaviour of build_demand_vector.
+    monkeypatch.setenv("HAPAX_ROUTE_ENVELOPE_GATE", "enforce")
+    metadata = RouteMetadata.model_validate(_explicit_metadata())
+
+    envelope = metadata.route_envelope
+    assert envelope.classification_envelope.label == "unknown"
+    assert envelope.admission.admission_action is RouteAdmissionAction.HOLD
+    assert "route_envelope_missing" in envelope.admission.reason_codes
+    assert envelope.learning_eligibility.thompson_update_allowed is False
+    assert envelope.learning_eligibility.local_posterior_update_allowed is False
+
+    assessment = assess_route_metadata(_explicit_metadata())
+    assert assessment.status is RouteMetadataStatus.EXPLICIT
+    assert assessment.dispatchable is False
+    assert "route_envelope_missing" in assessment.hold_reasons
+    assert assessment.planning_status()["dispatchable"] is False
+
+    with pytest.raises(ValueError, match="route_envelope_missing"):
+        build_demand_vector(
+            {
+                **_explicit_metadata(),
+                "task_id": "flat-metadata",
+                "authority_case": "CASE-TEST-001",
+            }
+        )
+
+
+def test_route_envelope_requires_all_consumers_when_explicitly_listed() -> None:
+    payload = {
+        **_explicit_metadata(),
+        "route_envelope": {"consumers": ["primary_dispatch"]},
+    }
+
+    with pytest.raises(ValidationError, match="add all RouteEnvelopeConsumer values"):
+        RouteMetadata.model_validate(payload)
+
+
+def test_low_confidence_classification_can_only_hold_or_shadow() -> None:
+    payload = {
+        **_explicit_metadata(),
+        "route_envelope": {
+            "classification_envelope": _valid_classification_payload(confidence=0.4),
+            "admission": {"admission_action": "route", "reason_codes": ["bad"]},
+        },
+    }
+
+    with pytest.raises(ValidationError, match="low-confidence classification"):
+        RouteMetadata.model_validate(payload)
+
+    payload["route_envelope"] = {
+        "classification_envelope": _valid_classification_payload(confidence=0.4),
+        "admission": {"admission_action": "shadow", "reason_codes": ["low_confidence"]},
+    }
+    metadata = RouteMetadata.model_validate(payload)
+    assert metadata.route_envelope.admission.admission_action is RouteAdmissionAction.SHADOW
+
+
+def test_route_admission_requires_explicit_eligibility_evidence() -> None:
+    payload = {
+        **_explicit_metadata(),
+        "route_envelope": {
+            "classification_envelope": _valid_classification_payload(),
+            "admission": {"admission_action": "route", "reason_codes": ["fresh"]},
+        },
+    }
+
+    with pytest.raises(ValidationError, match="eligibility_not_satisfied:authority_allowed"):
+        RouteMetadata.model_validate(payload)
+
+    payload["route_envelope"]["eligibility"] = _valid_route_eligibility_payload()  # type: ignore[index]
+    metadata = RouteMetadata.model_validate(payload)
+    assert metadata.route_envelope.admission.admission_action is RouteAdmissionAction.ROUTE
+
+
+def test_high_confidence_classification_requires_justifying_evidence() -> None:
+    with pytest.raises(ValidationError, match="high-confidence classification"):
+        ClassificationEnvelope.model_validate(
+            _valid_classification_payload(
+                evidence_refs=[],
+                deterministic_facts_used=[],
+                validity_mask={"label": True},
+            )
+        )
+
+
+def test_classification_validity_mask_must_contain_required_keys_for_dispatch() -> None:
+    with pytest.raises(ValidationError, match="fully valid mask"):
+        ClassificationEnvelope.model_validate(
+            _valid_classification_payload(validity_mask={"label": True})
+        )
+
+    envelope = ClassificationEnvelope.model_validate(
+        _valid_classification_payload(confidence=0.4, validity_mask={"label": True})
+    )
+    assert envelope.valid_for_dispatch is False
+
+
+def test_benchmark_gap_and_public_projection_round_trip_through_demand_vector() -> None:
+    demand = build_demand_vector(
+        {
+            **_explicit_metadata(),
+            "task_id": "benchmark-public-projection",
+            "authority_case": "CASE-TEST-001",
+            "route_envelope": {
+                **_valid_route_envelope_payload(),
+                "benchmark_gap": {
+                    "coverage": {
+                        "coverage_state": "absent",
+                        "gap_refs": ["eval-ledger:missing-slice"],
+                        "evidence_refs": ["eval-ledger:gap-review"],
+                    },
+                    "public_candidate": True,
+                    "meaningful_sdlc_slice": True,
+                    "public_benchmarks_absent_or_stale": True,
+                    "hapax_operational_value": True,
+                    "external_utility": True,
+                    "exposes_llm_failure_mode": True,
+                    "gap_summary": "No public benchmark covers governed SDLC routing envelopes.",
+                    "evidence_refs": ["eval-ledger:gap-review"],
+                },
+                "public_release_projection": {
+                    "projection_state": "candidate",
+                    "may_create_public_claim": True,
+                    "publication_authorized": False,
+                    "evidence_refs": ["research-export-ledger:pending"],
+                },
+            },
+        }
+    )
+
+    envelope = demand.route_envelope
+    assert envelope.benchmark_gap.public_candidate is True
+    assert envelope.public_release_projection.public_projection_forbidden is True
+    assert envelope.model_dump(mode="json")["benchmark_gap"]["coverage"]["coverage_state"] == (
+        "absent"
+    )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_error"),
+    (
+        (
+            {"meaningful_sdlc_slice": False},
+            "public benchmark candidates must satisfy all five criteria; next action:",
+        ),
+        (
+            {"evidence_refs": []},
+            "public benchmark candidates require evidence_refs",
+        ),
+    ),
+)
+def test_public_benchmark_candidates_require_all_criteria_and_evidence(
+    overrides: dict[str, object],
+    expected_error: str,
+) -> None:
+    payload = {
+        "public_candidate": True,
+        "meaningful_sdlc_slice": True,
+        "public_benchmarks_absent_or_stale": True,
+        "hapax_operational_value": True,
+        "external_utility": True,
+        "exposes_llm_failure_mode": True,
+        "evidence_refs": ["eval-ledger:benchmark-gap"],
+        **overrides,
+    }
+
+    with pytest.raises(ValidationError, match=expected_error):
+        BenchmarkGap.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("projection_payload", "expected_error"),
+    (
+        (
+            {
+                "projection_state": "approved",
+                "may_create_public_claim": True,
+                "publication_authorized": False,
+            },
+            "approved public-claim projections require publication_authorized",
+        ),
+        (
+            {
+                "projection_state": "approved",
+                "may_create_dataset_export": True,
+                "dataset_export_authorized": False,
+            },
+            "approved dataset projections require dataset_export_authorized",
+        ),
+    ),
+)
+def test_approved_public_projection_requires_specific_authorization(
+    projection_payload: dict[str, object],
+    expected_error: str,
+) -> None:
+    with pytest.raises(ValidationError, match=expected_error):
+        PublicReleaseProjection.model_validate(projection_payload)
+
+
+@pytest.mark.parametrize(
+    "overhead_payload",
+    (
+        {"fixed_cost_score": 1},
+        {"setup_seconds": 30},
+        {"context_tokens": 1000},
+        {"coordination_steps": 1},
+    ),
+)
+def test_nonzero_fixed_route_overhead_requires_evidence_refs(
+    overhead_payload: dict[str, object],
+) -> None:
+    with pytest.raises(
+        ValidationError, match="nonzero fixed route overhead requires evidence_refs"
+    ):
+        FixedRouteOverhead.model_validate(overhead_payload)
+
+    metadata = FixedRouteOverhead.model_validate(
+        {**overhead_payload, "evidence_refs": ["route-history:fixed-overhead"]}
+    )
+    assert metadata.evidence_refs == ["route-history:fixed-overhead"]
+
+
+def test_break_glass_hardening_requires_receipt_ref() -> None:
+    payload = {
+        "hardening_intensity": "break_glass",
+        "axes": ["public_release"],
+        "justification": ["operator-authorized emergency hardening"],
+    }
+
+    with pytest.raises(ValidationError, match="break_glass hardening requires receipt_ref"):
+        HardeningAllocation.model_validate(payload)
+
+    allocation = HardeningAllocation.model_validate(
+        {**payload, "receipt_ref": "hardening-receipt:break-glass"}
+    )
+    assert allocation.hardening_intensity is HardeningIntensity.BREAK_GLASS
+
+
+def test_forbidden_public_projection_blocks_learning_even_without_public_action_flags() -> None:
+    payload = {
+        **_explicit_metadata(),
+        "route_envelope": {
+            "classification_envelope": _valid_classification_payload(),
+            "eligibility": _valid_route_eligibility_payload(),
+            "admission": {"admission_action": "route", "reason_codes": ["fresh"]},
+            "public_release_projection": {"projection_state": "forbidden"},
+            "learning_eligibility": {
+                "thompson_update_allowed": True,
+                "local_posterior_update_allowed": True,
+                "evidence_kind": "witnessed",
+                "evidence_freshness": "fresh",
+                "confidence": 0.9,
+                "envelope_valid": True,
+                "support_only": False,
+                "hkp_only": False,
+                "public_projection_forbidden": False,
+                "evidence_refs": ["witness:route-success"],
+            },
+        },
+    }
+
+    with pytest.raises(ValidationError, match="public-projection-forbidden"):
+        RouteMetadata.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("classification_overrides", "expected_reason", "admission_action"),
+    (
+        ({"source_kind": "supplied_only"}, "classification_source_kind:supplied_only", "route"),
+        ({"source_kind": "inferred"}, "classification_source_kind:inferred", "route"),
+        ({"authority_ceiling": "support_only"}, "support_only", "route"),
+        ({"confidence": 0.4}, "low_confidence", "shadow"),
+        (
+            {"source_kind": "hkp_cache", "authority_ceiling": "support_only"},
+            "hkp_only",
+            "route",
+        ),
+    ),
+)
+def test_explicit_learning_updates_must_match_classification_provenance(
+    classification_overrides: dict[str, object],
+    expected_reason: str,
+    admission_action: str,
+) -> None:
+    payload = {
+        **_explicit_metadata(),
+        "route_envelope": {
+            "classification_envelope": _valid_classification_payload(**classification_overrides),
+            "eligibility": _valid_route_eligibility_payload(),
+            "admission": {"admission_action": admission_action, "reason_codes": ["fresh"]},
+            "public_release_projection": {"projection_state": "internal_only"},
+            "learning_eligibility": {
+                "thompson_update_allowed": True,
+                "local_posterior_update_allowed": True,
+                "evidence_kind": "witnessed",
+                "evidence_freshness": "fresh",
+                "confidence": 0.9,
+                "envelope_valid": True,
+                "support_only": False,
+                "hkp_only": False,
+                "public_projection_forbidden": False,
+                "evidence_refs": ["witness:route-success"],
+            },
+        },
+    }
+
+    with pytest.raises(ValidationError, match=expected_reason):
+        RouteMetadata.model_validate(payload)
+
+
+def test_route_admission_rejects_support_only_hkp_classification_without_learning() -> None:
+    payload = {
+        **_explicit_metadata(),
+        "route_envelope": {
+            "classification_envelope": _valid_classification_payload(
+                source_kind="hkp_cache",
+                authority_ceiling="support_only",
+            ),
+            "eligibility": _valid_route_eligibility_payload(),
+            "admission": {"admission_action": "route", "reason_codes": ["fresh"]},
+        },
+    }
+
+    with pytest.raises(ValidationError, match="hkp_only"):
+        RouteMetadata.model_validate(payload)
+
+
+def test_hardening_allocation_derives_from_public_ambiguous_source_work() -> None:
+    assessment = assess_route_metadata(
+        {
+            "type": "cc-task",
+            "task_id": "hardening-task",
+            "title": "Ambiguous public routing claim",
+            "kind": "implementation",
+            "risk_tier": "T1",
+            "authority_case": "CASE-TEST-001",
+            "parent_spec": "/tmp/spec.md",
+            "tags": ["public", "ambiguous"],
+        }
+    )
+
+    assert assessment.metadata is not None
+    hardening = assessment.metadata.route_envelope.hardening_allocation
+    assert hardening.hardening_intensity is HardeningIntensity.TARGETED
+    assert set(hardening.axes) >= {"public_release", "ambiguity", "implementation"}
+    assert hardening.request_claims_as_priors is True
+
+
+def test_learning_updates_reject_stale_inferred_redacted_support_hkp_and_public_projection() -> (
+    None
+):
+    allowed = {
+        "thompson_update_allowed": True,
+        "local_posterior_update_allowed": True,
+        "evidence_kind": "witnessed",
+        "evidence_freshness": "fresh",
+        "confidence": 0.9,
+        "envelope_valid": True,
+        "support_only": False,
+        "hkp_only": False,
+        "public_projection_forbidden": False,
+        "evidence_refs": ["witness:route-success"],
+    }
+    disallowed_cases = (
+        {"evidence_freshness": "stale"},
+        {"evidence_kind": "inferred"},
+        {"evidence_kind": "supplied_only"},
+        {"evidence_kind": "redacted"},
+        {"confidence": 0.7},
+        {"envelope_valid": False},
+        {"support_only": True},
+        {"hkp_only": True},
+        {"public_projection_forbidden": True},
+    )
+
+    LearningEligibility.model_validate(allowed)
+    for update in disallowed_cases:
+        with pytest.raises(ValidationError):
+            LearningEligibility.model_validate({**allowed, **update})
+
+
+def test_hkp_classification_is_non_authoritative_support_only() -> None:
+    with pytest.raises(ValidationError, match="HKP cache classification"):
+        ClassificationEnvelope.model_validate(
+            _valid_classification_payload(
+                source_kind="hkp_cache",
+                authority_ceiling="authoritative",
+            )
+        )
+
+    hkp = ClassificationEnvelope.model_validate(
+        _valid_classification_payload(
+            source_kind="hkp_cache",
+            authority_ceiling="support_only",
+        )
+    )
+    assert hkp.authority_ceiling.value == "support_only"
+
+
+def test_supply_history_projects_benchmark_calibration_and_bounded_overhead_score() -> None:
+    from shared.dispatcher_policy import _fixed_route_overhead_fit_score
+    from shared.platform_capability_registry import (
+        build_supply_vector,
+        load_platform_capability_registry,
+    )
+    from shared.route_metadata_schema import BenchmarkCoverage, FixedRouteOverhead
+
+    registry = load_platform_capability_registry()
+    route = registry.require("codex.headless.full")
+    history = route.historical_performance.model_copy(
+        update={
+            "benchmark_coverage": BenchmarkCoverage(
+                coverage_state="partial",
+                benchmark_refs=["benchmark:capacity-routing"],
+                evidence_refs=["eval-ledger:capacity-routing"],
+            ),
+            "fixed_route_overhead": FixedRouteOverhead(
+                fixed_cost_score=5,
+                setup_seconds=120,
+                context_tokens=8000,
+                coordination_steps=3,
+                evidence_refs=["route-history:codex-full-overhead"],
+            ),
+        }
+    )
+    supply = build_supply_vector(route.model_copy(update={"historical_performance": history}))
+
+    assert supply.historical_performance.benchmark_coverage.coverage_state.value == "partial"
+    assert supply.historical_performance.fixed_route_overhead.fixed_cost_score == 5
+    assert _fixed_route_overhead_fit_score(5, 5) == 1.0
+    assert _fixed_route_overhead_fit_score(5, 0) == 5.0
+
+
 def test_demand_vector_hashes_frontmatter_and_source_refs(tmp_path) -> None:
     task_note = tmp_path / "task.md"
     parent_spec = tmp_path / "spec.md"
     parent_spec.write_text("---\ncase_id: CASE-TEST-001\n---\n", encoding="utf-8")
     task_note.write_text("---\ntask_id: source-task\n---\n", encoding="utf-8")
     frontmatter = {
-        **_explicit_metadata(),
+        **_dispatchable_metadata(),
         "task_id": "source-task",
         "authority_case": "CASE-TEST-001",
         "parent_spec": str(parent_spec),
@@ -288,7 +784,7 @@ def test_demand_vector_freshness_stales_when_frontmatter_changes(tmp_path) -> No
     task_note = tmp_path / "task.md"
     task_note.write_text("---\ntask_id: source-task\n---\n", encoding="utf-8")
     frontmatter = {
-        **_explicit_metadata(),
+        **_dispatchable_metadata(),
         "task_id": "source-task",
         "authority_case": "CASE-TEST-001",
         "title": "Original",
@@ -322,7 +818,7 @@ def test_demand_axis_vocabulary_pins_the_registry_enums() -> None:
 
 
 def _demand_frontmatter(**task_demand: object) -> dict[str, object]:
-    payload = _explicit_metadata()
+    payload = _dispatchable_metadata()
     payload["task_id"] = "demand-axis-test"
     payload["authority_case"] = "CASE-TEST-001"
     if task_demand:

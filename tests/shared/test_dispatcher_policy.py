@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+
+import pytest
 
 from shared.dispatcher_policy import (
     ClogRouteState,
@@ -30,10 +31,19 @@ from shared.quota_spend_ledger import (
     QUOTA_SPEND_LEDGER_LIVE_ENV,
     QuotaSpendLedger,
 )
-from shared.route_metadata_schema import DemandVector, build_demand_vector
+from shared.route_metadata_schema import DemandVector, RouteEnvelope, build_demand_vector
 
-if TYPE_CHECKING:
-    import pytest
+
+@pytest.fixture(autouse=True)
+def _enforce_route_envelope_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin these policy units to the route-envelope gate's ENFORCE behaviour.
+
+    The gate ships in SHADOW mode by default (``HAPAX_ROUTE_ENVELOPE_GATE`` unset); these
+    units exercise its full fail-closed (enforce) logic. The SHADOW rollout default is
+    covered end-to-end in tests/scripts/test_hapax_methodology_dispatch.py.
+    """
+    monkeypatch.setenv("HAPAX_ROUTE_ENVELOPE_GATE", "enforce")
+
 
 NOW = datetime(2026, 5, 9, 22, 30, tzinfo=UTC)
 GLMCP_ADMISSION_EVIDENCE_REF = (
@@ -133,7 +143,45 @@ def _request(**overrides: object) -> DispatchRequest:
         "legacy_route_mutable": True,
     }
     payload.update(overrides)
+    if "demand_vector" not in overrides and payload.get("route_metadata_status") == "explicit":
+        payload["demand_vector"] = _demand()
     return DispatchRequest.model_validate(payload)
+
+
+def _route_envelope(*, admission_action: str = "route") -> dict[str, object]:
+    return {
+        "classification_envelope": {
+            "label": "source_python",
+            "classifier": "test.deterministic",
+            "source_kind": "deterministic",
+            "confidence": 0.92,
+            "evidence_refs": ["test:classification-evidence"],
+            "freshness": "fresh",
+            "authority_ceiling": "authoritative",
+            "validity_mask": {
+                "label": True,
+                "source": True,
+                "confidence": True,
+                "freshness": True,
+                "authority_ceiling": True,
+            },
+            "deterministic_facts_used": ["mutation_surface:source"],
+            "consumer_floor": "frontier_required",
+        },
+        "eligibility": {
+            "authority_allowed": True,
+            "privacy_allowed": True,
+            "freshness_ok": True,
+            "quality_floor_satisfied": True,
+            "required_tools_available": True,
+            "budget_allowed": True,
+            "reason_codes": ["eligibility_witnessed"],
+        },
+        "admission": {
+            "admission_action": admission_action,
+            "reason_codes": [f"route_envelope_{admission_action}"],
+        },
+    }
 
 
 def _demand(**overrides: object) -> DemandVector:
@@ -165,6 +213,7 @@ def _demand(**overrides: object) -> DemandVector:
         },
         "route_constraints": {},
         "review_requirement": {},
+        "route_envelope": _route_envelope(),
         "task_id": "policy-test",
         "authority_case": "CASE-TEST-001",
     }
@@ -276,6 +325,26 @@ def _task_fields() -> dict[str, object]:
     return payload
 
 
+def _move_route_metadata_under_nested_key(task_fields: dict[str, object]) -> None:
+    route_metadata_keys = (
+        "route_metadata_schema",
+        "route_envelope",
+        "quality_floor",
+        "authority_level",
+        "mutation_surface",
+        "mutation_scope_refs",
+        "risk_flags",
+        "context_shape",
+        "verification_surface",
+        "route_constraints",
+        "review_requirement",
+        "cloud_burst",
+    )
+    task_fields["route_metadata"] = {
+        key: task_fields.pop(key) for key in route_metadata_keys if key in task_fields
+    }
+
+
 def _review_task_fields() -> dict[str, object]:
     # A review-seat task: non-mutating, support-non-authoritative — the work a
     # read-only ReviewSeatAdapter (glmcp.review.direct) actually does. Used to
@@ -357,6 +426,145 @@ def test_malformed_route_metadata_holds_before_launch() -> None:
 
     assert decision.action is DispatchAction.HOLD
     assert "route_metadata_malformed" in decision.reason_codes
+
+
+def test_route_envelope_hold_blocks_dispatch_launch() -> None:
+    demand = _demand().model_copy(
+        update={
+            "route_envelope": RouteEnvelope.model_validate(
+                {
+                    "admission": {
+                        "admission_action": "hold",
+                        "reason_codes": ["route_envelope_missing"],
+                    }
+                }
+            )
+        }
+    )
+    request = _request(
+        demand_vector=demand,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
+    assert "route_envelope_admission_hold" in decision.reason_codes
+    assert "route_envelope_missing" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_missing_demand_vector_blocks_dispatch_launch() -> None:
+    request = _request(demand_vector=None)
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
+    assert "missing_demand_vector" in decision.reason_codes
+    assert "route_envelope_missing" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_build_dispatch_request_missing_route_envelope_holds_before_launch() -> None:
+    task_fields = _task_fields()
+    task_fields.pop("route_envelope", None)
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert request.demand_vector is None
+    assert decision.action is DispatchAction.HOLD
+    assert "missing_demand_vector" in decision.reason_codes
+    assert "route_envelope_missing" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_build_dispatch_request_preserves_explicit_route_envelope_hold_reasons() -> None:
+    task_fields = _task_fields()
+    task_fields["route_envelope"] = _route_envelope(admission_action="hold")
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert request.demand_vector is not None
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
+    assert "route_envelope_admission_hold" in decision.reason_codes
+    assert "route_envelope_hold" in decision.reason_codes
+    assert "missing_demand_vector" not in decision.reason_codes
+    assert "route_envelope_missing" not in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_build_dispatch_request_preserves_nested_route_envelope_hold_reasons() -> None:
+    task_fields = _task_fields()
+    task_fields["route_envelope"] = _route_envelope(admission_action="hold")
+    _move_route_metadata_under_nested_key(task_fields)
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert request.demand_vector is not None
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
+    assert "route_envelope_admission_hold" in decision.reason_codes
+    assert "route_envelope_hold" in decision.reason_codes
+    assert "missing_demand_vector" not in decision.reason_codes
+    assert "route_envelope_missing" not in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_build_dispatch_request_invalid_demand_vector_holds_before_launch() -> None:
+    task_fields = _task_fields()
+    task_demand = dict(task_fields["task_demand"])  # type: ignore[index]
+    task_demand["fixed_route_overhead_sensitivity"] = 999
+    task_fields["task_demand"] = task_demand
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert request.demand_vector is None
+    assert decision.action is DispatchAction.HOLD
+    assert "missing_demand_vector" in decision.reason_codes
+    assert "route_envelope_missing" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
 
 
 def test_operator_coupled_headless_refuses_before_capability_lookup() -> None:
@@ -444,6 +652,99 @@ def test_build_dispatch_request_without_operator_evidence_is_not_operator_couple
     assert request.operator_coupled_evidence_refs == ()
     assert "operator_coupled_interactive_only" not in decision.reason_codes
     assert all(not reason.startswith("operator_coupled:path:") for reason in decision.reason_codes)
+
+
+def test_candidate_set_cannot_bypass_primary_missing_route_envelope() -> None:
+    task_fields = _task_fields()
+    task_fields.pop("route_envelope", None)
+    primary = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+    same_route_candidate = _dimensional_request("codex.headless.full", score=5)
+
+    decision = evaluate_dispatch_policy(
+        primary,
+        candidate_requests=(same_route_candidate,),
+        now=NOW,
+    )
+
+    assert primary.demand_vector is None
+    assert same_route_candidate.demand_vector is not None
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
+    assert "missing_demand_vector" in decision.reason_codes
+    assert "route_envelope_missing" in decision.reason_codes
+    assert "dimensional_unique_dominant_route" not in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_candidate_set_cannot_bypass_primary_route_envelope_hold() -> None:
+    # Regression guard: candidate-set evaluation used to run before the primary
+    # route-envelope hold, allowing an alternate route to bypass admission.
+    task_fields = _task_fields()
+    task_fields["route_envelope"] = _route_envelope(admission_action="hold")
+    primary = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+    alternative = _dimensional_request("claude.headless.full", score=5)
+
+    decision = evaluate_dispatch_policy(
+        primary,
+        candidate_requests=(alternative,),
+        now=NOW,
+    )
+
+    assert primary.demand_vector is not None
+    assert alternative.demand_vector is not None
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
+    assert "route_envelope_admission_hold" in decision.reason_codes
+    assert "route_envelope_hold" in decision.reason_codes
+    assert "dimensional_unique_dominant_route" not in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+    assert decision.dimensional_receipt is not None
+    assert [candidate.route_id for candidate in decision.dimensional_receipt.candidates] == [
+        "codex.headless.full"
+    ]
+
+
+def test_candidate_set_keeps_primary_for_same_route_candidate() -> None:
+    # Regression guard: same-route candidates used to overwrite the primary
+    # request in candidate-set deduplication.
+    primary = _dimensional_request("codex.headless.full", score=3)
+    same_route_candidate = _dimensional_request("codex.headless.full", score=5)
+    primary_only = evaluate_dispatch_policy(primary, candidate_requests=(), now=NOW)
+
+    decision = evaluate_dispatch_policy(
+        primary,
+        candidate_requests=(same_route_candidate,),
+        now=NOW,
+    )
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert "dimensional_unique_dominant_route" in decision.reason_codes
+    assert decision.dimensional_receipt is not None
+    assert decision.dimensional_receipt.selected_route_id == "codex.headless.full"
+    assert len(decision.dimensional_receipt.candidates) == 1
+    receipt = decision.dimensional_receipt.candidates[0]
+    assert receipt.route_id == "codex.headless.full"
+    assert receipt.aggregate_score is not None
+    assert primary_only.dimensional_receipt is not None
+    assert receipt.aggregate_score == primary_only.dimensional_receipt.candidates[0].aggregate_score
 
 
 def test_stale_capability_data_holds() -> None:
@@ -1321,6 +1622,35 @@ def test_dimensional_policy_vetoes_missing_required_tool() -> None:
     assert decision.dimensional_receipt is not None
     [candidate] = decision.dimensional_receipt.candidates
     assert any(veto.code == "required_tool_unavailable" for veto in candidate.vetoes)
+
+
+def test_dimensional_policy_scores_fixed_route_overhead_through_dispatch() -> None:
+    demand = _demand(tags=["fixed-overhead-sensitive"])
+    route_payload = _route_with_scores("codex.headless.full", score=5).model_dump(mode="json")
+    route_payload["historical_performance"]["fixed_route_overhead"] = {
+        "fixed_cost_score": 4,
+        "setup_seconds": 90,
+        "context_tokens": 3000,
+        "coordination_steps": 2,
+        "evidence_refs": ["overhead:test:codex-headless-full"],
+        "projection_ref": "overhead:test:projection",
+    }
+    supply = build_supply_vector(PlatformCapabilityRoute.model_validate(route_payload), now=NOW)
+    request = _request(demand_vector=demand, supply_vector=supply)
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.dimensional_receipt is not None
+    [candidate] = decision.dimensional_receipt.candidates
+    overhead_score = next(
+        score for score in candidate.dimensional_scores if score.dimension == "fixed_route_overhead"
+    )
+    assert overhead_score.demand == 5
+    assert overhead_score.supply == 4
+    assert overhead_score.score == 1.0
+    assert overhead_score.confidence == 3.0
+    assert overhead_score.evidence_refs == ("overhead:test:codex-headless-full",)
 
 
 def test_policy_rollback_is_retired_and_requires_signed_route_receipts() -> None:

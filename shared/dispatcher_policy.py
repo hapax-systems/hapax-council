@@ -54,6 +54,7 @@ from shared.route_metadata_schema import (
     RouteMetadataAssessment,
     assess_route_metadata,
     build_demand_vector,
+    route_envelope_gate_enforced,
     stable_payload_hash,
 )
 
@@ -499,6 +500,7 @@ def build_dispatch_request(
             {**dict(task_fields), "task_id": task_id},
             note_path=_optional_string(task_fields.get("__task_note_path")),
             observed_at=now,
+            preserve_route_envelope_hold=True,
         )
     except ValueError:
         demand_vector = None
@@ -575,13 +577,6 @@ def evaluate_dispatch_policy(
     """Return a fail-closed route decision without side effects."""
 
     checked_at = now_utc() if now is None else _coerce_utc(now)
-    if candidate_requests is not None:
-        return _evaluate_dimensional_candidate_set(
-            request,
-            candidate_requests=candidate_requests,
-            checked_at=checked_at,
-        )
-
     if request.rollback_mode:
         return _decision(
             request,
@@ -611,6 +606,17 @@ def evaluate_dispatch_policy(
             authority_allowed=False,
         )
 
+    route_envelope_reasons = _route_envelope_hold_reasons(request)
+    if route_envelope_reasons and route_envelope_gate_enforced():
+        return _decision(
+            request,
+            DispatchAction.HOLD,
+            route_envelope_reasons,
+            checked_at,
+            quality_floor_satisfied=False,
+            authority_allowed=False,
+        )
+
     if request.operator_coupled and request.mode == "headless":
         return _decision(
             request,
@@ -623,6 +629,13 @@ def evaluate_dispatch_policy(
             checked_at,
             quality_floor_satisfied=False,
             authority_allowed=False,
+        )
+
+    if candidate_requests is not None:
+        return _evaluate_dimensional_candidate_set(
+            request,
+            candidate_requests=candidate_requests,
+            checked_at=checked_at,
         )
 
     capability = request.capability
@@ -1119,6 +1132,7 @@ DIMENSION_WEIGHTS: Mapping[str, int] = {
     # _aggregate_score never assumes a constant divisor, so this is harmless.
     "effort_fit": 12,
     "context_mode_fit": 12,
+    "fixed_route_overhead": 6,
 }
 
 #: The reasoning-effort ordinal ladder (none < low < ... < max), derived from the supply-side
@@ -1255,8 +1269,10 @@ def _evaluate_dimensional_candidate_set(
 def _candidate_set_with_primary(
     request: DispatchRequest, candidates: tuple[DispatchRequest, ...]
 ) -> tuple[DispatchRequest, ...]:
-    by_route = {candidate.route_id: candidate for candidate in candidates}
-    by_route.setdefault(request.route_id, request)
+    by_route = {request.route_id: request}
+    for candidate in candidates:
+        if candidate.route_id != request.route_id:
+            by_route[candidate.route_id] = candidate
     return tuple(by_route[route_id] for route_id in sorted(by_route))
 
 
@@ -1327,6 +1343,24 @@ def _policy_vetoes(gate: RouteDecision) -> tuple[DimensionalVeto, ...]:
             message=reason,
         )
         for reason in gate.reason_codes
+    )
+
+
+def _route_envelope_hold_reasons(request: DispatchRequest) -> tuple[str, ...]:
+    demand = request.demand_vector
+    if demand is None:
+        return ("missing_demand_vector", "route_envelope_missing")
+    admission = demand.route_envelope.admission
+    action = admission.admission_action.value
+    if action == "route":
+        return ()
+    return tuple(
+        dict.fromkeys(
+            [
+                f"route_envelope_admission_{action}",
+                *admission.reason_codes,
+            ]
+        )
     )
 
 
@@ -1584,7 +1618,34 @@ def _capability_fit_scores(request: DispatchRequest) -> tuple[DimensionalScore, 
             )
         )
 
+    if task_demand.fixed_route_overhead_sensitivity > 0:
+        overhead = supply.historical_performance.fixed_route_overhead
+        fits.append(
+            DimensionalScore(
+                dimension="fixed_route_overhead",
+                demand=task_demand.fixed_route_overhead_sensitivity,
+                supply=overhead.fixed_cost_score,
+                score=_fixed_route_overhead_fit_score(
+                    overhead.fixed_cost_score,
+                    task_demand.fixed_route_overhead_sensitivity,
+                ),
+                confidence=3.0 if overhead.evidence_refs else 1.0,
+                evidence_refs=tuple(overhead.evidence_refs),
+            )
+        )
+
     return tuple(fits)
+
+
+def _fixed_route_overhead_fit_score(overhead_score: int, sensitivity: int) -> float:
+    """Bounded setup-cost penalty: fixed overhead can affect a demanded route, not dominate it."""
+
+    bounded_overhead = max(0, min(5, overhead_score))
+    bounded_sensitivity = max(0, min(5, sensitivity))
+    if bounded_sensitivity == 0:
+        return 5.0
+    penalty = min(4.0, (bounded_overhead * bounded_sensitivity) / 5.0)
+    return round(max(1.0, 5.0 - penalty), 4)
 
 
 def _effort_fit_score(effort_demand: str, reachable_efforts: tuple[str, ...]) -> float:

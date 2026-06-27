@@ -3713,7 +3713,12 @@ from agents.request_decomposer.models import RequestDecomposition, TaskSpec
 TaskSpec._normalize_authority_level
 TaskSpec._normalize_mutation_surface
 TaskSpec._normalize_quality_floor
+TaskSpec._normalize_routing_class
+TaskSpec._normalize_composition_tolerance
+TaskSpec._normalize_requirement_vector
+TaskSpec._normalize_requirement_vector_validity_mask
 TaskSpec._normalize_route_metadata
+TaskSpec._taxonomy_payload_is_complete
 TaskSpec._blocked_needs_reason
 TaskSpec._needs_acceptance_criteria
 RequestDecomposition._validate_dag
@@ -3888,7 +3893,12 @@ from agents.request_decomposer.models import TaskSpec
 TaskSpec._normalize_mutation_surface
 TaskSpec._normalize_authority_level
 TaskSpec._normalize_quality_floor
+TaskSpec._normalize_routing_class
+TaskSpec._normalize_composition_tolerance
+TaskSpec._normalize_requirement_vector
+TaskSpec._normalize_requirement_vector_validity_mask
 TaskSpec._normalize_route_metadata
+TaskSpec._taxonomy_payload_is_complete
 TaskSpec._needs_authority_case
 TaskSpec._needs_parent_lineage
 
@@ -4185,6 +4195,66 @@ is_persistent
 from agents.request_decomposer.models import TaskSpec as _TaskSpecD8  # noqa: E402
 
 _TaskSpecD8._enforce_d8_governance_floor
+
+# Capability-routing stack consolidation — these are deliberate support APIs
+# and Pydantic validators for the default-off/shadow router stack. Some entries
+# are invoked dynamically by Pydantic; router learning-gate helpers are held as a
+# tested public boundary until the learning-ledger activation slice chooses its
+# production caller. REQ-20260616-capability-aware-routing / S5-CAPABILITY-ROUTING-TIER1.
+from shared.dag_composability import (  # noqa: E402
+    DagComposability as _DagComposability,
+)
+from shared.dag_composability import (
+    classify_dag_composability,
+)
+from shared.route_metadata_schema import (  # noqa: E402
+    BenchmarkGap as _BenchmarkGap,
+)
+from shared.route_metadata_schema import (
+    FixedRouteOverhead as _FixedRouteOverhead,
+)
+from shared.route_metadata_schema import (
+    PublicReleaseProjection as _PublicReleaseProjection,
+)
+from shared.route_metadata_schema import (
+    RouteAdmission as _RouteAdmission,
+)
+from shared.route_metadata_schema import (
+    RouteEligibility as _RouteEligibility,
+)
+from shared.sdlc_router import (  # noqa: E402
+    SdlcRouteCandidate as _SdlcRouteCandidate,
+)
+from shared.sdlc_router import (
+    SdlcRouteDecision as _SdlcRouteDecision,
+)
+from shared.sdlc_router import (
+    SdlcRouter as _SdlcRouter,
+)
+from shared.sdlc_router import (
+    SdlcRoutingRequest as _SdlcRoutingRequest,
+)
+from shared.sdlc_router import (
+    gate_event_learning_allowed,
+)
+
+_DagComposability.is_parallel_independent
+_DagComposability.is_sequential
+classify_dag_composability
+_FixedRouteOverhead._evidence_refs_are_string_lists
+_BenchmarkGap._evidence_refs_are_string_lists
+_BenchmarkGap._public_candidate_requires_all_five_criteria
+_PublicReleaseProjection._evidence_refs_are_string_lists
+_PublicReleaseProjection._approved_projection_requires_authority
+_RouteEligibility._reason_codes_are_string_lists
+_RouteAdmission._reason_codes_are_string_lists
+_SdlcRoutingRequest._requirement_vector_uses_strict_int_scores
+_SdlcRoutingRequest._requirement_vector_scores_are_bounded
+_SdlcRouteCandidate._capability_maps_use_strict_bounded_scores
+_SdlcRouteCandidate.from_supply_vector
+_SdlcRouteDecision.route_allowed
+_SdlcRouter.ingest_gate_events
+gate_event_learning_allowed
 
 # InterviewConductor is the new turn-state-motor MVP (cc-task
 # voice-interview-conductor-turn-motor-20260615, REQ-20260616 Track A). Its live caller

@@ -368,11 +368,24 @@ def _route_metadata_blockers(frontmatter: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(f"route_metadata:{reason}" for reason in reasons or ("invalid",))
 
 
+def _route_metadata_validation_blockers(frontmatter: Mapping[str, Any]) -> tuple[str, ...]:
+    """Governance-only route-metadata blockers: validation_errors only (e.g. a
+    frontier_review_required task marked authoritative), NOT a merely absent
+    envelope. Dependency-closure callers (cc-claim, cc-cascade-unblock) use this
+    to block on a broken/governance-invalid dependency task while allowing an
+    external-repo dependency that simply carries no dispatch envelope."""
+    from shared.route_metadata_schema import assess_route_metadata
+
+    assessment = assess_route_metadata(frontmatter)
+    return tuple(f"route_metadata:{reason}" for reason in assessment.validation_errors)
+
+
 def task_closure_validity(
     text: str,
     *,
     pr_state_lookup: PrStateLookup | None = None,
     require_route_metadata: bool = False,
+    require_route_metadata_validity: bool = False,
 ) -> TaskClosureValidity:
     """Validate that a cc-task closure may satisfy downstream work.
 
@@ -408,6 +421,8 @@ def task_closure_validity(
 
     if require_route_metadata:
         blockers.extend(_route_metadata_blockers(frontmatter))
+    if require_route_metadata_validity:
+        blockers.extend(_route_metadata_validation_blockers(frontmatter))
 
     return TaskClosureValidity(
         valid=not blockers,

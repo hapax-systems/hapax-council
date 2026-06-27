@@ -81,6 +81,16 @@ Each task object must have these fields:
 - effort_class: "standard" | "high" | "max"
 - mutation_surface: "none" | "vault_docs" | "source" | "runtime" | "public" | "provider_spend"
 - quality_floor: "deterministic_ok" | "frontier_review_required" | "frontier_required"
+- target_paths: list of repo-relative paths the task is expected to touch; [] if none/unknown
+- routing_class: one of "coordination", "research_support", "docs_planning",
+  "source_python", "source_other", "source_governance", "runtime_ops",
+  "public_surface", "provider_spend", "operator_action", "verification", "unknown"
+- requirement_vector: object with exactly these 8 integer 0..5 dimensions:
+  quality_floor, information_scope, context_length, mutation_risk, verification_demand,
+  ambiguity_novelty, composition_coupling, governance_sensitivity
+- composition_tolerance: "atomic" | "parallel_ok" | "sequential_required" |
+  "decompose_required" | "unknown"
+- requirement_vector_validity_mask: object with the same 8 keys and boolean values
 
 Rules:
 1. EVERY task the request needs must appear. No stubs.
@@ -88,6 +98,12 @@ Rules:
 3. Acceptance criteria must be observable/testable.
 4. If the request has explicit phases, use them. If not, infer from scope.
 5. Generate 1-8 tasks. If >8 needed, the request should be split.
+6. Use routing_class="source_governance" for source tasks touching Rust, WGSL,
+   CODEOWNERS, or governance-protected paths; otherwise use the narrowest class.
+7. The requirement_vector is demand/risk, where 0 is trivial/none and 5 is
+   frontier/high-risk/unknown. Set a validity-mask dimension false when the
+   request lacks enough evidence; use conservative high scores for unknown hard
+   dimensions.
 """
 
 
@@ -590,6 +606,15 @@ def _coerce_llm_task(
         "mutation_surface": _normalize_mutation_surface(raw_task.get("mutation_surface")),
         "quality_floor": _normalize_quality_floor(raw_task.get("quality_floor"), request_data),
         "target_paths": _string_items(raw_task.get("target_paths")),
+        "routing_class": raw_task.get("routing_class", "unknown"),
+        "requirement_vector": raw_task.get("requirement_vector", {}),
+        "composition_tolerance": raw_task.get("composition_tolerance", "unknown"),
+        "requirement_vector_validity_mask": raw_task.get(
+            "requirement_vector_validity_mask",
+            raw_task.get("validity_mask", {}),
+        ),
+        "route_envelope": raw_task.get("route_envelope"),
+        "task_demand": raw_task.get("task_demand", {}),
     }
 
 
@@ -776,6 +801,12 @@ def _decompose_with_llm(request_data: dict) -> RequestDecomposition | None:
                     mutation_surface=normalized["mutation_surface"],
                     quality_floor=normalized["quality_floor"],
                     target_paths=normalized["target_paths"],
+                    routing_class=normalized["routing_class"],
+                    requirement_vector=normalized["requirement_vector"],
+                    composition_tolerance=normalized["composition_tolerance"],
+                    requirement_vector_validity_mask=normalized["requirement_vector_validity_mask"],
+                    route_envelope=normalized["route_envelope"],
+                    task_demand=normalized["task_demand"],
                 )
             )
 

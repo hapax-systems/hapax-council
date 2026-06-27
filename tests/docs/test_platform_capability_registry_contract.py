@@ -60,6 +60,13 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
     ):
         assert field in required
 
+    assert "historical_performance" in route["properties"]
+    history = schema["$defs"]["historical_performance"]
+    assert history["properties"]["class_posteriors"]["additionalProperties"] == {
+        "$ref": "#/$defs/score_confidence"
+    }
+    assert history["properties"]["fixed_route_overhead"] == {"$ref": "#/$defs/fixed_route_overhead"}
+
     assert set(schema["$defs"]["platform"]["enum"]) >= {
         "claude",
         "codex",
@@ -169,3 +176,20 @@ def test_seed_registry_records_dimensional_scores_with_evidence() -> None:
             assert score["evidence_refs"]
             assert score["stale_after"]
         assert route["tool_state"]
+
+
+def test_supply_history_contract_projects_benchmark_overhead_and_calibration_fields() -> None:
+    from shared.platform_capability_registry import (
+        build_supply_vector,
+        load_platform_capability_registry,
+    )
+
+    registry = load_platform_capability_registry()
+    supply = build_supply_vector(registry.require("codex.headless.full"))
+    history = supply.historical_performance
+    history_fields = type(history).model_fields
+
+    assert "benchmark_coverage" in history_fields
+    assert "fixed_route_overhead" in history_fields
+    assert "local_calibration_provenance" in history_fields
+    assert history.fixed_route_overhead.fixed_cost_score == 0

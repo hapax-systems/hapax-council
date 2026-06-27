@@ -10,6 +10,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import yaml
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "request-intake-consumer"
 SERVICE = (
     Path(__file__).resolve().parents[1]
@@ -43,6 +45,39 @@ def _write_request(
         frontmatter += f"{key}: {value}\n"
     frontmatter += "---\n"
     path.write_text(frontmatter, encoding="utf-8")
+
+
+def _route_envelope() -> dict[str, object]:
+    return {
+        "classification_envelope": {
+            "label": "source_python",
+            "classifier": "test.deterministic",
+            "source_kind": "deterministic",
+            "confidence": 0.91,
+            "evidence_refs": ["test:classification-evidence"],
+            "freshness": "fresh",
+            "authority_ceiling": "authoritative",
+            "validity_mask": {
+                "label": True,
+                "source": True,
+                "confidence": True,
+                "freshness": True,
+                "authority_ceiling": True,
+            },
+            "deterministic_facts_used": ["test:task-frontmatter"],
+            "consumer_floor": "frontier_required",
+        },
+        "eligibility": {
+            "authority_allowed": True,
+            "privacy_allowed": True,
+            "freshness_ok": True,
+            "quality_floor_satisfied": True,
+            "required_tools_available": True,
+            "budget_allowed": True,
+            "reason_codes": ["eligibility_witnessed"],
+        },
+        "admission": {"admission_action": "route", "reason_codes": ["fresh"]},
+    }
 
 
 def _write_task(
@@ -80,11 +115,22 @@ def _write_task(
             "authority_level": "authoritative",
             "mutation_surface": "source",
             "mutation_scope_refs": ["test:isap"],
+            "route_envelope": _route_envelope(),
         }
         if isinstance(route_metadata, dict):
             metadata.update(route_metadata)
         for key, value in metadata.items():
-            if isinstance(value, list):
+            if isinstance(value, dict):
+                frontmatter.extend(
+                    yaml.safe_dump(
+                        {key: value},
+                        sort_keys=False,
+                        allow_unicode=False,
+                    )
+                    .strip()
+                    .splitlines()
+                )
+            elif isinstance(value, list):
                 frontmatter.append(f"{key}:")
                 for item in value:
                     frontmatter.append(f"  - {item}")
