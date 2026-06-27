@@ -147,15 +147,6 @@ def _leaf_for(measures: tuple, leaf_key: str):
     raise KeyError(leaf_key)
 
 
-_CLAUDE_ROUTES = (
-    "claude.headless.full",
-    "claude.headless.haiku",
-    "claude.headless.opus",
-    "claude.headless.sonnet",
-    "claude.interactive.full",
-)
-
-
 def _knobs_file(members: list[str], *, expected_set: int = 12, depth_cap: int = 20) -> Path:
     tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False, encoding="utf-8")
     tmp.write(f"expected_platform_set: {expected_set}\n")
@@ -170,9 +161,9 @@ def _knobs_file(members: list[str], *, expected_set: int = 12, depth_cap: int = 
 
 _OBSERVED_MEMBERS = ["antigrav", "api", "claude", "codex", "glmcp", "local_tool", "vibe", "gemini"]
 
-# Frozen drift anchors for the 24-cell opus leaf at score=4/confidence=4 (captured after first green):
-# specificity = mean(d1_comp=1.0, d2_comp~0.64, d5_comp=8/11) ~= 0.789 ; completeness = 8/11 ~= 0.727.
-_ANCHOR_SPECIFICITY = 0.789
+# Frozen drift anchors for the opus BASE leaf at score=4/confidence=4 (leaf-specific D1 = 1 own cell):
+# specificity = mean(d1_comp=1/20=0.05, d2_comp~0.64, d5_comp=8/11) ~= 0.472 ; completeness = 8/11 ~= 0.727.
+_ANCHOR_SPECIFICITY = 0.472
 _ANCHOR_COMPLETENESS = 0.727
 
 
@@ -201,35 +192,38 @@ def test_specificity_and_slice_completeness_are_never_collapsed() -> None:
 
     # loose frozen anchor (drift canary; the never-collapsed structural assertion above is the
     # load-bearing guarantee). Pinned loosely to survive cosmetic refactors per the task spec.
-    # On the 24-cell opus leaf: d1_comp saturates (min(24/20,1)=1.0).
-    assert leaf.d1 is not None and leaf.d1.depth_class == "rich"
+    # Leaf-specific D1: the base opus leaf has cell_count=1 (its OWN descriptor) -> trivial, even
+    # though the route carries 24 sibling variants (the leaf-specificity guarantee).
+    assert leaf.d1 is not None and leaf.d1.cell_count == 1 and leaf.d1.depth_class == "trivial"
     assert leaf.specificity_ratio == pytest.approx(_ANCHOR_SPECIFICITY, abs=0.03)
     assert leaf.slice_policy_completeness == pytest.approx(_ANCHOR_COMPLETENESS, abs=0.01)
 
 
 # --------------------------------------------------------------------------------------------
-# 2. Disparity-awareness: depth_class rank is the PRIMARY selection key
+# 2. Leaf-specific scoring: a rich sibling variant does NOT inflate a shallow base leaf
 # --------------------------------------------------------------------------------------------
-def test_rich_platform_beats_trivial_platform_on_depth_class_rank() -> None:
+def test_leaf_specific_depth_base_not_inflated_by_rich_siblings() -> None:
+    # The EDT unit of treatment is the VARIANT LEAF: D1/D4 are scored on the leaf's OWN descriptor,
+    # not the route-wide reachable union. Adding 24 sibling variants must NOT make the base leaf
+    # (or any sibling) read as deep — so the platform MIN can expose an under-treated leaf.
     payload = _fresh_payload()
-    for rid in _CLAUDE_ROUTES:  # the platform depth_class is MIN over leaves -> enrich every route
-        rich = _route_in(payload, rid)
-        _add_distinct_variants(rich, 24)
-        _set_scores(rich, score=4, confidence=4)
-    trivial = _route_in(payload, "local_tool.local.worker")
-    trivial["descriptor_variants"] = []
-    _set_scores(trivial, score=2, confidence=2)
-
+    _add_distinct_variants(_route_in(payload, "claude.headless.opus"), 24)
     measures = score_edt(_registry(payload), knobs_path=_knobs_file(_OBSERVED_MEMBERS), now=NOW)
-    claude = _by_platform(measures, "claude")
-    local = _by_platform(measures, "local_tool")
 
-    assert claude.depth_class == "rich"
-    assert local.depth_class == "trivial"
-    assert platform_depth_rank(claude) > platform_depth_rank(local)
-    # score_edt sorts by (depth_class_rank, ratio) descending — rich claude ranks before trivial local
-    order = [m.platform for m in measures]
-    assert order.index("claude") < order.index("local_tool")
+    base = _leaf_for(measures, "claude.headless.opus")
+    assert base.d1 is not None
+    assert base.d1.cell_count == 1  # its OWN descriptor only — NOT 25 (the route union)
+    assert base.d1.depth_class == "trivial"
+
+    # every materialized sibling leaf is likewise scored on its own descriptor (1 cell each)
+    sibling = _leaf_for(measures, "claude.headless.opus#v0")
+    assert sibling.d1 is not None and sibling.d1.cell_count == 1
+
+    # consequently the claude platform depth is trivial (no leaf is individually rich in v1) — the
+    # depth_class ranking lever stays dormant until STEP-0 adds per-leaf meta-modes/use-records.
+    claude = _by_platform(measures, "claude")
+    assert claude.depth_class == "trivial"
+    assert platform_depth_rank(claude) == 0
 
 
 # --------------------------------------------------------------------------------------------

@@ -66,7 +66,6 @@ from shared.platform_capability_registry import (
     check_route_freshness,
     ensure_utc,
     materialize_descriptor_leaves,
-    materialize_variant_leaf,
     parse_duration_spec,
 )
 
@@ -393,16 +392,6 @@ def _locality(route: PlatformCapabilityRoute) -> str:
     return "local" if route.capacity_pool is CapacityPool.LOCAL_COMPUTE else "cloud"
 
 
-def _reachable_descriptors(route: PlatformCapabilityRoute) -> list[ExecutionDescriptor]:
-    """Base descriptor + every NON-blocked variant's materialized descriptor (fail-closed)."""
-    descriptors = [route.execution_descriptor]
-    for variant in route.descriptor_variants:
-        if variant.blocked_reasons:
-            continue
-        descriptors.append(materialize_variant_leaf(route, variant))
-    return descriptors
-
-
 def _cell_key(descriptor: ExecutionDescriptor, locality: str) -> str:
     return "|".join(
         (
@@ -415,15 +404,15 @@ def _cell_key(descriptor: ExecutionDescriptor, locality: str) -> str:
     )
 
 
-def _leaf_axes(route: PlatformCapabilityRoute) -> tuple[str, ...]:
-    """Distinct (axis=value) pairs reachable by the route — the D4 use-policy axis denominator."""
-    axes: set[str] = set()
-    for descriptor in _reachable_descriptors(route):
-        axes.add(f"effort={descriptor.effort.value}")
-        axes.add(f"context_mode={descriptor.context_mode.value}")
-        axes.add(f"fast_mode={descriptor.fast_mode.value}")
-        axes.add(f"quantization={descriptor.quantization.value}")
-    return tuple(sorted(axes))
+def _descriptor_axes(descriptor: ExecutionDescriptor) -> tuple[str, ...]:
+    """The 4 (axis=value) pairs THIS leaf's descriptor selects — the per-leaf D4 axis denominator.
+    Leaf-specific (the leaf is scored on ITS OWN descriptor, not the route-wide reachable union)."""
+    return (
+        f"effort={descriptor.effort.value}",
+        f"context_mode={descriptor.context_mode.value}",
+        f"fast_mode={descriptor.fast_mode.value}",
+        f"quantization={descriptor.quantization.value}",
+    )
 
 
 def _fit_classes(route: PlatformCapabilityRoute) -> frozenset[str]:
@@ -508,14 +497,15 @@ def _variant_for_leaf(leaf_key: str, route: PlatformCapabilityRoute) -> Descript
 
 
 # --- D-resolvers --------------------------------------------------------------------------
-def _resolve_d1(leaf_key: str, route: PlatformCapabilityRoute) -> D1Descriptor:
+def _resolve_d1(
+    leaf_key: str, descriptor: ExecutionDescriptor, route: PlatformCapabilityRoute
+) -> D1Descriptor:
+    """Per-leaf specificity: THIS leaf's own descriptor cell + the meta-modes/features declared FOR
+    THIS leaf — NOT the route-wide reachable union (a rich sibling variant must not inflate the base
+    leaf's depth; the platform MIN must be able to expose an under-treated leaf)."""
     locality = _locality(route)
-    cells = {_cell_key(descriptor, locality) for descriptor in _reachable_descriptors(route)}
-    meta_modes: set[str] = set()
-    for variant in route.descriptor_variants:
-        if variant.blocked_reasons:
-            continue
-        meta_modes.update(_optional_meta_modes(variant))
+    cells = {_cell_key(descriptor, locality)}
+    meta_modes = set(_optional_meta_modes(_variant_for_leaf(leaf_key, route)))
     features = _platform_features(route)
     deduped, ran = slicing_test_dedupe(
         sorted(cells | meta_modes | set(features)), policy_signatures=_d4_signatures_for(route)
@@ -587,6 +577,7 @@ def _removable_quota_reasons(route: PlatformCapabilityRoute) -> frozenset[str]:
 
 def _resolve_d4(
     leaf_key: str,
+    descriptor: ExecutionDescriptor,
     route: PlatformCapabilityRoute,
     receipt: PlatformCapabilityReceipt | None,
     *,
@@ -613,14 +604,14 @@ def _resolve_d4(
             unavailability_reason = "; ".join(route.blocked_reasons)
         else:
             unavailability_reason = "route_state_blocked"
-    axes = _leaf_axes(route)
+    axes = _descriptor_axes(descriptor)  # THIS leaf's own 4 axes (leaf-specific, not route-union)
     fit = _fit_classes(route)
     cells_present = len(fit) * len(axes) if available else 0
     interaction_records: list[str] = []
-    for variant in route.descriptor_variants:
-        ref = getattr(variant, "interaction_record_ref", None)
-        if ref:
-            interaction_records.append(str(ref))
+    leaf_variant = _variant_for_leaf(leaf_key, route)
+    ref = getattr(leaf_variant, "interaction_record_ref", None) if leaf_variant else None
+    if ref:
+        interaction_records.append(str(ref))
     return D4UsePolicy(
         leaf=leaf_key,
         cells_present=cells_present,
@@ -657,19 +648,21 @@ def score_variant_leaf(
     """Per-leaf D0..D5 descriptors + the two-layer normalization. An omitted/unavailable leaf gets
     every D-descriptor computed for transparency but ``passes=False``.
 
-    v1 scores sibling variant leaves of a route IDENTICALLY (D1-D5 are route-level) EXCEPT a BLOCKED
-    variant leaf, which is marked unavailable — per-variant differential scoring lands with STEP-0
-    ``score_delta``. ``descriptor`` is the leaf's own materialized descriptor (its identity).
+    Scoring is LEAF-SPECIFIC: D1 (specificity) and D4 (use-policy axes/availability) are computed from
+    THIS leaf's own ``descriptor`` (+ its own meta-modes / blocked status), NOT the route-wide reachable
+    union — so a rich sibling variant cannot inflate a shallow base leaf, and the platform MIN can
+    expose an under-treated leaf. D2/D3/D5 are route-level (capability scores, mutability fit, and
+    boundaries are route properties in v1; per-leaf ``score_delta`` differentiation lands with STEP-0).
 
     ``registry`` is part of the declared public-API contract (the EDT scorer-spec signature); it is
     RESERVED for STEP-0 cross-route resolution (e.g. a variant's ``scores_inherited_from`` provenance)
     and accepted now so callers code against the stable signature."""
     variant = _variant_for_leaf(leaf_key, route)
     variant_blocked = variant is not None and bool(variant.blocked_reasons)
-    d1 = _resolve_d1(leaf_key, route)
+    d1 = _resolve_d1(leaf_key, descriptor, route)
     d2 = _resolve_d2(leaf_key, route, now)
     d3 = _resolve_d3(leaf_key, route)
-    d4 = _resolve_d4(leaf_key, route, receipt, variant_blocked=variant_blocked)
+    d4 = _resolve_d4(leaf_key, descriptor, route, receipt, variant_blocked=variant_blocked)
     d5 = _resolve_d5(leaf_key, route)
 
     # LAYER 1 — specificity_ratio (cap-scaled D1, fresh-weighted D2 fraction, D5 boundary fraction).
