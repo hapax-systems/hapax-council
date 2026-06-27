@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 from shared.capability_dispatch import (
     CAPABILITY_ALIASES,
-    DISPATCHER_PLATFORMS,
+    LAUNCHABLE_PATHS,
     UNROUTED_POINTERS,
     launchable_aliases,
     load_valid_route_ids,
@@ -123,11 +127,20 @@ def test_load_valid_route_ids_malformed(tmp_path: Path) -> None:
 
 
 def test_load_valid_route_ids_reflects_real_registry() -> None:
-    # The shipped registry must expose required_route_ids; the aliases must be valid.
+    # The shipped registry must expose required_route_ids; aliases must be valid; and
+    # launchability must match the dispatcher's spawnable (platform, mode) lanes — the
+    # receipt-only api/local routes must never appear as launch capacity (makes the
+    # "latent capability" claim recheckable, not a hand-picked number).
     valid = load_valid_route_ids()
     assert valid, "registry should expose required_route_ids"
-    for route_id in launchable_aliases(valid).values():
+    launchable = launchable_aliases(valid)
+    for route_id in launchable.values():
         assert route_id in valid
+        platform, mode, _ = split_route_id(route_id)  # type: ignore[misc]
+        assert (platform, mode) in LAUNCHABLE_PATHS
+    assert "api" not in launchable and "api-frontier" not in launchable
+    assert "local-worker" not in launchable and "glmcp-review" not in launchable
+    assert not any(rid.startswith("api.") for rid in launchable.values())
 
 
 # --- launchable_aliases ----------------------------------------------------------
@@ -135,11 +148,54 @@ def test_load_valid_route_ids_reflects_real_registry() -> None:
 
 def test_launchable_aliases_excludes_non_spawnable() -> None:
     out = launchable_aliases(VALID)
-    assert "agy" in out and "codex" in out
+    assert "agy" in out and "codex" in out and "vibe" in out
     assert "glmcp-review" not in out  # platform glmcp not spawnable
-    assert "local-worker" not in out
+    assert "local-worker" not in out  # receipt-only local-inference, no lane
+    assert "api" not in out and "api-frontier" not in out  # receipt-only api routes
     for route_id in out.values():
-        assert split_route_id(route_id)[0] in DISPATCHER_PLATFORMS  # type: ignore[index]
+        platform, mode, _ = split_route_id(route_id)  # type: ignore[misc]
+        assert (platform, mode) in LAUNCHABLE_PATHS
+
+
+def test_resolve_api_route_is_receipt_only_not_launchable() -> None:
+    # api routes are valid + admittable but receipt-only (no spawnable lane) — they
+    # must fail closed, not appear as launch capacity (codex major finding).
+    res = resolve_capability("api", valid_route_ids=VALID)
+    assert not res.ok
+    assert "not a spawnable lane" in res.reason
+    assert res.route_id == "api.headless.provider_gateway"
+
+
+# --- the launchable set vs the LIVE dispatcher (contract, not a mock) ------------
+
+_DISPATCHER = Path(__file__).resolve().parents[2] / "scripts" / "hapax-methodology-dispatch"
+
+
+def test_launchable_paths_match_live_dispatcher() -> None:
+    # Guards the "tests mock away the dispatcher contract" finding: run the REAL
+    # dispatcher's --list-platform-paths and assert LAUNCHABLE_PATHS are exactly the
+    # spawnable lanes while api/local are receipt-only — so the set cannot drift.
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(_DISPATCHER), "--list-platform-paths"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover - env guard
+        pytest.skip(f"dispatcher not runnable: {exc}")
+    if proc.returncode != 0:  # pragma: no cover - env guard
+        pytest.skip(f"dispatcher --list-platform-paths failed: {proc.stderr[-300:]}")
+    lines = proc.stdout.splitlines()
+    for platform, mode in LAUNCHABLE_PATHS:
+        prefix = f"{platform}/{mode}/"
+        matched = [ln for ln in lines if ln.startswith(prefix)]
+        assert matched, f"{prefix} missing from --list-platform-paths"
+        assert any("receipt-only" not in ln and "no spawnable lane" not in ln for ln in matched), (
+            f"{prefix} is receipt-only in the dispatcher but LAUNCHABLE_PATHS claims it spawns"
+        )
+    api_lines = [ln for ln in lines if ln.startswith("api/")]
+    assert api_lines and all("receipt-only" in ln for ln in api_lines)
 
 
 def test_every_alias_targets_a_well_formed_route_id() -> None:

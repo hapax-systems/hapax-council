@@ -86,10 +86,11 @@ def test_dispatch_validate_builds_correct_cmd(monkeypatch) -> None:
         "run",
         lambda cmd, *a, **k: (calls.append(cmd), SimpleNamespace(returncode=0))[1],
     )
-    assert mod.main(["agy", "cc-task-x"]) == 0
+    assert mod.main(["agy", "cc-task-x", "--lane", "agy-1"]) == 0
     cmd = calls[0]
     assert cmd[:1] == ["DISPATCH"]
     assert "--task" in cmd and "cc-task-x" in cmd
+    assert cmd[cmd.index("--lane") + 1] == "agy-1"  # dispatcher requires --task AND --lane
     assert cmd[cmd.index("--platform") + 1] == "antigrav"
     assert cmd[cmd.index("--mode") + 1] == "interactive"
     assert cmd[cmd.index("--profile") + 1] == "full"
@@ -106,7 +107,7 @@ def test_dispatch_launch_passes_launch_flag(monkeypatch) -> None:
         "run",
         lambda cmd, *a, **k: (calls.append(cmd), SimpleNamespace(returncode=0))[1],
     )
-    assert mod.main(["agy", "cc-task-x", "--launch"]) == 0
+    assert mod.main(["agy", "cc-task-x", "--lane", "agy-1", "--launch"]) == 0
     assert "--launch" in calls[0]
 
 
@@ -120,7 +121,7 @@ def test_dispatch_passthrough_extra_flags(monkeypatch) -> None:
         "run",
         lambda cmd, *a, **k: (calls.append(cmd), SimpleNamespace(returncode=0))[1],
     )
-    assert mod.main(["agy", "cc-task-x", "--mq-message-id", "M1"]) == 0
+    assert mod.main(["agy", "cc-task-x", "--lane", "agy-1", "--mq-message-id", "M1"]) == 0
     assert "--mq-message-id" in calls[0] and "M1" in calls[0]
 
 
@@ -131,7 +132,47 @@ def test_missing_args_errors(monkeypatch) -> None:
         mod.main([])
 
 
+def test_missing_lane_errors(monkeypatch) -> None:
+    mod = _load()
+    _patch_valid(monkeypatch, mod)
+    with pytest.raises(SystemExit):
+        mod.main(["agy", "cc-task-x"])  # no --lane -> the dispatcher would reject; we fail early
+
+
 def test_dispatcher_cmd_env_override(monkeypatch) -> None:
     mod = _load()
     monkeypatch.setenv("HAPAX_METHODOLOGY_DISPATCH_BIN", "/opt/x/hapax-methodology-dispatch")
     assert mod.dispatcher_cmd() == ["/opt/x/hapax-methodology-dispatch"]
+
+
+def test_dispatcher_cmd_path_found(monkeypatch) -> None:
+    mod = _load()
+    monkeypatch.delenv("HAPAX_METHODOLOGY_DISPATCH_BIN", raising=False)
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/hapax-methodology-dispatch")
+    assert mod.dispatcher_cmd() == ["/usr/bin/hapax-methodology-dispatch"]
+
+
+def test_dispatcher_cmd_sibling_fallback(monkeypatch) -> None:
+    mod = _load()
+    monkeypatch.delenv("HAPAX_METHODOLOGY_DISPATCH_BIN", raising=False)
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: None)
+    cmd = mod.dispatcher_cmd()  # the real sibling scripts/hapax-methodology-dispatch exists
+    assert cmd[0] == mod.sys.executable
+    assert cmd[1].endswith("hapax-methodology-dispatch")
+
+
+def test_dispatcher_cmd_not_found_exits(monkeypatch, tmp_path) -> None:
+    mod = _load()
+    monkeypatch.delenv("HAPAX_METHODOLOGY_DISPATCH_BIN", raising=False)
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(mod, "_HERE", tmp_path)  # no sibling dispatcher here
+    with pytest.raises(SystemExit) as exc:
+        mod.dispatcher_cmd()
+    assert exc.value.code == 3
+
+
+def test_print_list_empty_registry_returns_1(monkeypatch, capsys) -> None:
+    mod = _load()
+    monkeypatch.setattr(mod, "load_valid_route_ids", lambda *a, **k: frozenset())
+    assert mod.main(["--list"]) == 1
+    assert "no launchable capabilities" in capsys.readouterr().err

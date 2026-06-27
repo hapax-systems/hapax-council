@@ -6,14 +6,17 @@ validate (default) or ``--launch`` the dispatch through ``hapax-methodology-disp
 — which records it in the spine's own ledger. Observe with ``--utilization``.
 
 Examples:
-  cc-dispatch --list                       # launchable capabilities -> route_ids
-  cc-dispatch agy cc-task-foo              # validate routing agy -> the task (no launch)
-  cc-dispatch agy cc-task-foo --launch     # actually launch the lane
-  cc-dispatch fugu cc-task-foo             # fails CLOSED with the route-definition follow-on
-  cc-dispatch --utilization                # active-vs-latent capability scorecard
+  cc-dispatch --list                                 # launchable capabilities -> route_ids
+  cc-dispatch agy cc-task-foo --lane agy-1           # validate routing agy -> the task (no launch)
+  cc-dispatch agy cc-task-foo --lane agy-1 --launch  # actually launch the lane
+  cc-dispatch fugu cc-task-foo --lane x              # fails CLOSED with the route-definition follow-on
+  cc-dispatch --utilization                          # active-vs-latent capability scorecard
 
-A capability with no governed route (fugu/sakana/glmcp-worker) fails closed with a
-pointer to the cc-task that defines it — never a silent bypass.
+The governed dispatcher requires a target --lane (the worktree/session to spawn in);
+cc-dispatch passes it through. Auto-deriving the lane from the routing calculus is the
+P2 follow-on (the doctrine: the operator steers direction; the calculus derives lane/
+speed/provider). A capability with no spawnable lane (fugu/sakana/glmcp-worker, or
+receipt-only api/local) fails closed with a pointer — never a silent bypass.
 """
 
 from __future__ import annotations
@@ -93,6 +96,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("cc_task", nargs="?", help="the cc-task id (slice) to dispatch")
     parser.add_argument(
+        "--lane",
+        help="target lane/worktree to dispatch into — required to dispatch (e.g. agy-1, cx-red)",
+    )
+    parser.add_argument(
         "--launch", action="store_true", help="actually launch (default: validate only)"
     )
     parser.add_argument(
@@ -115,14 +122,24 @@ def main(argv: list[str] | None = None) -> int:
     if not args.capability or not args.cc_task:
         parser.error("capability and cc_task are required (or use --list / --utilization)")
 
+    # Resolve FIRST so an un-routed / unknown / receipt-only capability fails closed
+    # with its pointer regardless of --lane; --lane only matters once we have a lane to spawn.
     res = resolve_capability(args.capability, valid_route_ids=load_valid_route_ids())
     if not res.ok:
         print(f"cc-dispatch: cannot dispatch '{args.capability}': {res.reason}", file=sys.stderr)
         return 2
 
+    if not args.lane:
+        parser.error(
+            "--lane is required to dispatch (the target worktree/session); "
+            "the governed dispatcher requires both --task and --lane"
+        )
+
     cmd = dispatcher_cmd() + [
         "--task",
         args.cc_task,
+        "--lane",
+        args.lane,
         "--platform",
         res.platform or "",
         "--mode",

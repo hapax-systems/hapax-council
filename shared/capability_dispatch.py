@@ -37,12 +37,22 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 DEFAULT_REGISTRY_PATH = _REPO_ROOT / "config" / "platform-capability-registry.json"
 
-# Platforms ``hapax-methodology-dispatch`` can actually spawn a lane for (its
-# ``--platform`` choices). A valid route whose platform is NOT in this set exists
-# in the registry but is reached by a *different* surface (e.g. the glmcp review
-# seat via the review plane; the receipt-only local-inference route) — cc-dispatch
-# resolves it but reports it as not-launchable-here rather than pretending.
-DISPATCHER_PLATFORMS: frozenset[str] = frozenset({"api", "claude", "codex", "vibe", "antigrav"})
+# The (platform, mode) pairs ``hapax-methodology-dispatch`` can actually spawn a
+# lane for — its ``launchers`` dict, verified against ``--list-platform-paths``.
+# Launchability is a (platform, mode) property, NOT platform alone: ``api`` and
+# ``local_tool`` ARE valid --platform values but are receipt-only ("no spawnable
+# lane"), so they must NOT be shown as launch capacity. A valid-but-non-launchable
+# route (api receipt-only, glmcp review seat, local worker) resolves but fails
+# CLOSED with a pointer to its real surface rather than pretending.
+LAUNCHABLE_PATHS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("claude", "headless"),
+        ("claude", "interactive"),
+        ("codex", "headless"),
+        ("vibe", "headless"),
+        ("antigrav", "interactive"),
+    }
+)
 
 # Friendly capability name -> governed route_id. Every value MUST be a real entry
 # in the registry's required_route_ids (resolve validates this). Ergonomic aliases
@@ -114,9 +124,10 @@ def resolve_capability(name: str, *, valid_route_ids: Iterable[str] | None = Non
     """Resolve a capability name to a launchable route, the right way per the spine.
 
     Accepts a friendly alias OR a raw ``route_id``. ``ok`` is True only when the
-    route exists in the registry AND its platform is one cc-dispatch can spawn. A
-    real-but-non-spawnable route (glmcp review seat, local worker) and an entirely
-    un-routed capability (fugu/sakana/glmcp-worker) both fail CLOSED with a pointer.
+    route exists in the registry AND its (platform, mode) is a spawnable lane. A
+    real-but-non-launchable route (api receipt-only, glmcp review seat, local
+    worker) and an entirely un-routed capability (fugu/sakana/glmcp-worker) both
+    fail CLOSED with a pointer.
     """
     valid = frozenset(valid_route_ids) if valid_route_ids is not None else load_valid_route_ids()
     key = name.strip().lower()
@@ -144,13 +155,14 @@ def resolve_capability(name: str, *, valid_route_ids: Iterable[str] | None = Non
             capability=name, ok=False, reason=f"malformed route_id '{route_id}'", route_id=route_id
         )
     platform, mode, profile = parts
-    if platform not in DISPATCHER_PLATFORMS:
+    if (platform, mode) not in LAUNCHABLE_PATHS:
         return ResolveResult(
             capability=name,
             ok=False,
             reason=(
-                f"route '{route_id}' exists but platform '{platform}' is not a spawnable lane; "
-                "reached via its own surface (review plane / receipt-only), not cc-dispatch"
+                f"route '{route_id}' exists but ({platform},{mode}) is not a spawnable lane; "
+                "it is receipt-only or reached via its own surface (review plane / local alias), "
+                "not cc-dispatch"
             ),
             route_id=route_id,
             platform=platform,
@@ -174,7 +186,7 @@ def launchable_aliases(valid_route_ids: Iterable[str] | None = None) -> dict[str
     out: dict[str, str] = {}
     for alias, route_id in CAPABILITY_ALIASES.items():
         parts = split_route_id(route_id)
-        if route_id in valid and parts is not None and parts[0] in DISPATCHER_PLATFORMS:
+        if route_id in valid and parts is not None and (parts[0], parts[1]) in LAUNCHABLE_PATHS:
             out[alias] = route_id
     return out
 
