@@ -30,6 +30,19 @@ _spec.loader.exec_module(src)
 
 _NOW = datetime(2026, 6, 27, 12, 0, 0, tzinfo=UTC)
 
+
+def _wrapper_python() -> str:
+    """Mirror sense-reissue-capture.sh's interpreter selection: the repo .venv python if present, else
+    python3 — so the wrapper-e2e skip probe reflects the ACTUAL runtime, not the pytest process."""
+    for cand in (
+        _REPO / ".venv" / "bin" / "python",
+        Path.home() / ".cache" / "hapax" / "rebuild" / "worktree" / ".venv" / "bin" / "python",
+    ):
+        if cand.exists():
+            return str(cand)
+    return "python3"
+
+
 # The operator's actual re-issues this session — the surface MUST flag every one.
 REAL_REISSUES = [
     "make sure you have all directional signals and plans and commitments in view",
@@ -381,13 +394,14 @@ def test_wrapper_success_path_emits_event(tmp_path) -> None:
     shell forwards a re-issue to the core and an event lands — the path where a program/flag break
     would surface in production. SKIPS (not fails) when shared.coord_event_log is unimportable, so an
     env gap stays attributable; the emit path is independently covered by the mocked + real-CLI tests."""
-    if str(_REPO) not in sys.path:
-        sys.path.insert(0, str(_REPO))
-    if (
-        importlib.util.find_spec("shared") is None
-        or importlib.util.find_spec("shared.coord_event_log") is None
-    ):
-        pytest.skip("shared.coord_event_log not importable in this environment")
+    # Probe the WRAPPER's interpreter (.venv else python3), NOT the pytest process — a divergence there
+    # must skip (env gap), never hard-fail.
+    py = _wrapper_python()
+    probe = subprocess.run(
+        [py, "-c", "import shared.coord_event_log"], cwd=str(_REPO), capture_output=True, text=True
+    )
+    if probe.returncode != 0:
+        pytest.skip(f"shared.coord_event_log not importable by the wrapper interpreter ({py})")
     coord = tmp_path / "coord"
     # No role env: the wrapper resolves whatever role it can (or roleless) and still emits — this test
     # pins the shell->core->CLI path + fail-open exit, not a specific role (avoids agent-role.sh coupling).
@@ -416,9 +430,20 @@ def test_default_cache_dir_matches_cc_claim_not_xdg(monkeypatch) -> None:
     assert src._default_cache_dir() == Path.home() / ".cache" / "hapax"
 
 
-def test_default_tasks_dir_is_active_under_canonical_root() -> None:
-    # Derived from the canonical SSOT (shared.coord_projection.DEFAULT_VAULT_TASKS) + /active, with a
-    # literal fail-open — either way it must end in .../hapax-cc-tasks/active.
+def test_default_tasks_dir_uses_canonical_ssot_when_importable() -> None:
+    # Pin SSOT-drift: when shared.coord_projection is importable, _default_tasks_dir MUST equal the
+    # canonical DEFAULT_VAULT_TASKS/active — not a hardcoded mirror that could silently diverge.
+    if str(_REPO) not in sys.path:
+        sys.path.insert(0, str(_REPO))
+    try:
+        from shared.coord_projection import DEFAULT_VAULT_TASKS
+    except Exception:
+        pytest.skip("shared.coord_projection not importable")
+    assert src._default_tasks_dir() == DEFAULT_VAULT_TASKS / "active"
+
+
+def test_default_tasks_dir_suffix_is_active_under_cc_tasks() -> None:
+    # Shape that holds for BOTH the canonical and the literal fail-open branch.
     d = src._default_tasks_dir()
     assert d.name == "active"
     assert d.parent.name == "hapax-cc-tasks"
