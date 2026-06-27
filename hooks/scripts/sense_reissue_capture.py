@@ -116,10 +116,16 @@ def _bucket(now: datetime) -> str:
     return now.astimezone(UTC).strftime("%Y-%m-%d")
 
 
-def reissue_event_id(session_id: str, prompt: str, *, now: datetime) -> str:
-    """Deterministic, idempotent-on-retry event id for a captured re-issue."""
+def reissue_event_id(
+    session_id: str, prompt: str, *, role: str, program: str | None, now: datetime
+) -> str:
+    """Deterministic, idempotent-on-retry event id for a captured re-issue.
+
+    Scoped by role + program (not just session+day+prompt) so the SAME prompt captured under a
+    different lane/program is a distinct event, not collapsed as a duplicate by the coord log.
+    """
     digest = hashlib.sha256(
-        f"{session_id}\x1f{_bucket(now)}\x1f{_normalize(prompt)}".encode()
+        f"{role}\x1f{program or ''}\x1f{session_id}\x1f{_bucket(now)}\x1f{_normalize(prompt)}".encode()
     ).hexdigest()
     return f"sigreissue-{digest[:32]}"
 
@@ -226,12 +232,16 @@ def resolve_program(
     return None
 
 
-def format_receipt(receipt: dict[str, object], *, trigger_class: str) -> str:
-    """One honest line for the operator (injected as context). Distinguishes committed vs spooled."""
+def format_receipt(
+    receipt: dict[str, object], *, trigger_class: str, program: str | None = None
+) -> str:
+    """One honest line for the operator (injected as context). Distinguishes committed vs spooled,
+    and only claims program-scoping when a program was actually attached."""
+    scope = "role/program-scoped" if program else "role-scoped"
     if receipt.get("appended"):
         return (
-            f"⟂ sense captured: signal.reissue [{trigger_class}] committed — durable + "
-            f"role/program-scoped; it propagates to the gestalt fold (no need to re-research)."
+            f"⟂ sense captured: signal.reissue [{trigger_class}] committed — durable + {scope}; "
+            f"it propagates to the gestalt fold (no need to re-research)."
         )
     if receipt.get("spooled"):
         return (
@@ -274,11 +284,11 @@ def main(
         role=role,
         session_id=session_id,
         program=program,
-        event_id=reissue_event_id(session_id, prompt, now=stamp),
+        event_id=reissue_event_id(session_id, prompt, role=role, program=program, now=stamp),
         trigger_class=trigger_class,
         verbatim=prompt,
     )
-    line = format_receipt(run_emit(cmd), trigger_class=trigger_class)
+    line = format_receipt(run_emit(cmd), trigger_class=trigger_class, program=program)
     if line:
         print(line)
     return 0

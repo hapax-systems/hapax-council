@@ -66,16 +66,17 @@ def test_classify_ignores_ordinary_prompts() -> None:
 
 
 def test_event_id_is_deterministic_and_distinguishing() -> None:
-    a = src.reissue_event_id("sess-1", "research your purview", now=_NOW)
-    again = src.reissue_event_id("sess-1", "research your purview", now=_NOW)
-    later_day = src.reissue_event_id(
-        "sess-1", "research your purview", now=datetime(2026, 6, 28, 9, 0, tzinfo=UTC)
-    )
-    other_prompt = src.reissue_event_id("sess-1", "make sure you have everything", now=_NOW)
-    assert a == again
+    def eid(session, prompt, *, role="dev2", program="continuity-substrate", now=_NOW):
+        return src.reissue_event_id(session, prompt, role=role, program=program, now=now)
+
+    a = eid("sess-1", "research your purview")
+    assert a == eid("sess-1", "research your purview")  # deterministic
     assert a.startswith("sigreissue-")
-    assert a != later_day  # genuine later re-issue is a new event
-    assert a != other_prompt
+    # genuine later re-issue, different prompt, different lane, different program -> distinct events
+    assert a != eid("sess-1", "research your purview", now=datetime(2026, 6, 28, 9, 0, tzinfo=UTC))
+    assert a != eid("sess-1", "make sure you have everything")
+    assert a != eid("sess-1", "research your purview", role="alpha")
+    assert a != eid("sess-1", "research your purview", program="other-program")
 
 
 def test_build_emit_command_shape() -> None:
@@ -114,10 +115,19 @@ def test_build_emit_command_omits_parent_spec_when_no_program() -> None:
 
 
 def test_format_receipt_is_honest() -> None:
-    committed = src.format_receipt({"appended": True, "spooled": False}, trigger_class="purview")
+    committed = src.format_receipt(
+        {"appended": True, "spooled": False},
+        trigger_class="purview",
+        program="continuity-substrate",
+    )
+    committed_no_prog = src.format_receipt(
+        {"appended": True}, trigger_class="purview", program=None
+    )
     queued = src.format_receipt({"appended": False, "spooled": True}, trigger_class="purview")
     nothing = src.format_receipt({}, trigger_class="purview")
     assert "captured" in committed and "queued" not in committed
+    assert "role/program-scoped" in committed
+    assert "role-scoped" in committed_no_prog and "program-scoped" not in committed_no_prog
     assert "queued" in queued
     assert nothing == ""
 
