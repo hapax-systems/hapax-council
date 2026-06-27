@@ -186,31 +186,68 @@ def gather_procs(now, proc_root="/proc"):
                 "deleted": deleted,
                 "cmdline": cmd,
                 "age_s": age_s,
+                "start_ticks": starttime,
             }
         )
     return out
 
 
-def live_pane_closure(procs):
-    """Pids reachable (as descendants) from any live tmux pane. Never reaped."""
+def current_start_ticks(pid, proc_root="/proc"):
+    """The process's start-time in clock ticks, or None if it's gone/unreadable.
+
+    Used as a PID-reuse guard: before SIGKILLing a straggler we re-confirm the
+    pid still names the SAME process we SIGTERM'd (same start time), so a pid
+    recycled during the grace window is never killed.
+    """
+    stat = _read(os.path.join(proc_root, str(pid), "stat"))
+    if stat is None:
+        return None
+    try:
+        return int(stat.rsplit(")", 1)[1].split()[19])
+    except (IndexError, ValueError):
+        return None
+
+
+def pane_roots_from_tmux(run=None):
+    """Pane pids of all live tmux sessions, or None if tmux cannot be queried.
+
+    Returns None — meaning "unknown, fail CLOSED" — when tmux is absent, errors,
+    or exits nonzero. A nonzero exit (server/socket error) does NOT raise from
+    subprocess.run, so it must be checked explicitly: treating an erroring tmux
+    as "no live panes" would clear the protection set and let the reaper kill
+    live trees (the review-team critical, 2026-06-27). An empty list (returncode
+    0, genuinely no sessions) is a real, trusted answer and is NOT None.
+    """
     import subprocess
 
-    children = defaultdict(list)
-    for p in procs:
-        children[p["ppid"]].append(p["pid"])
+    if run is None:
+        run = subprocess.run
     try:
-        res = subprocess.run(
+        res = run(
             ["tmux", "list-panes", "-a", "-F", "#{pane_pid}"],
             capture_output=True,
             text=True,
             timeout=10,
         )
-        roots = [int(x) for x in res.stdout.split() if x.isdigit()]
     except (OSError, subprocess.SubprocessError, ValueError):
-        # tmux absent/unreadable → FAIL SAFE: protect everything, reap nothing
-        # via rule 1 (return all pids as "live"). Rule 2 (deleted cwd) is still
-        # safe to run, but we conservatively protect all here.
+        return None
+    if getattr(res, "returncode", 1) != 0:
+        return None
+    return [int(x) for x in res.stdout.split() if x.isdigit()]
+
+
+def live_pane_closure(procs, roots):
+    """Pids reachable (as descendants) from any live tmux pane. Never reaped.
+
+    roots is the output of pane_roots_from_tmux: a list of pane pids, or None.
+    None ⇒ tmux unqueryable ⇒ FAIL CLOSED: protect EVERY pid (reap nothing via
+    rule 1). This is the single most safety-critical branch in the tool.
+    """
+    if roots is None:
         return {p["pid"] for p in procs}
+    children = defaultdict(list)
+    for p in procs:
+        children[p["ppid"]].append(p["pid"])
     live = set()
     stack = list(roots)
     while stack:
@@ -236,7 +273,13 @@ def main(argv=None):
 
     now = time.time()
     procs = gather_procs(now)
-    live = live_pane_closure(procs)
+    roots = pane_roots_from_tmux()
+    live = live_pane_closure(procs, roots)
+    if roots is None and not args.json:
+        print(
+            "orphan-reaper: tmux unqueryable — failing CLOSED (protecting all spawn-trees)",
+            file=sys.stderr,
+        )
     # Never reap our own tree.
     me = os.getpid()
     live.add(me)
@@ -270,21 +313,27 @@ def main(argv=None):
 
     reaped = 0
     if not args.dry_run:
+        # Remember each target's start-time so the SIGKILL pass can confirm the
+        # pid still names the SAME process before escalating (PID-reuse guard).
+        expected_start = {p["pid"]: p.get("start_ticks") for p in procs if p["pid"] in kill}
         for pid in sorted(kill):
             try:
                 os.kill(pid, signal.SIGTERM)
                 reaped += 1
             except (ProcessLookupError, PermissionError):
                 pass
-        # Give trees a moment to exit on SIGTERM, then SIGKILL stragglers.
+        # Give trees a moment to exit on SIGTERM, then SIGKILL stragglers — but
+        # only if the pid is still the same process (start-time unchanged), so a
+        # pid recycled during the grace window is never killed.
         if kill:
             time.sleep(3)
             for pid in sorted(kill):
-                if os.path.isdir(f"/proc/{pid}"):
-                    try:
-                        os.kill(pid, signal.SIGKILL)
-                    except (ProcessLookupError, PermissionError):
-                        pass
+                if current_start_ticks(pid) != expected_start.get(pid):
+                    continue  # gone, or pid reused → leave it alone
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
 
     summary = {"candidates": len(kill), "reaped": reaped, "dry_run": args.dry_run}
     if args.json:
@@ -301,5 +350,10 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except Exception as exc:  # best-effort: never block the GC pre-pass
-        print(f"orphan-reaper: non-fatal error: {exc}", file=sys.stderr)
+        print(
+            f"orphan-reaper: non-fatal error: {exc}\n"
+            "  next: re-run `scripts/hapax-orphan-spawn-reaper.py --dry-run` on the live host "
+            "(needs /proc + tmux); if it persists, file it — the GC pre-pass continues regardless.",
+            file=sys.stderr,
+        )
         sys.exit(0)

@@ -84,3 +84,60 @@ def test_arbitrary_non_spawn_process_in_worktree_is_left_alone():
     procs = [_p(600, 1, WT.format("crit"), cmd="python3 -m agents.something")]
     kill = reaper.classify_orphans(procs, live_pids=set(), now=0)
     assert kill == set()
+
+
+# ── live-pane closure: the single most safety-critical branch (review-team) ──
+
+
+class _FakeRun:
+    def __init__(self, *, returncode=0, stdout="", raises=None):
+        self.returncode = returncode
+        self.stdout = stdout
+        self._raises = raises
+
+    def __call__(self, *a, **k):
+        if self._raises is not None:
+            raise self._raises
+        return self
+
+
+def test_pane_roots_fail_closed_on_nonzero_tmux_exit():
+    # The critical bug: a present-but-erroring tmux exits nonzero WITHOUT raising.
+    # Must return None (→ fail closed), never an empty list.
+    assert reaper.pane_roots_from_tmux(run=_FakeRun(returncode=1, stdout="")) is None
+
+
+def test_pane_roots_fail_closed_on_exception():
+    assert reaper.pane_roots_from_tmux(run=_FakeRun(raises=OSError("no tmux"))) is None
+
+
+def test_pane_roots_parses_pane_pids_on_success():
+    roots = reaper.pane_roots_from_tmux(run=_FakeRun(returncode=0, stdout="100\n200\n300"))
+    assert roots == [100, 200, 300]
+
+
+def test_live_pane_closure_none_protects_all():
+    procs = [_p(1, 0, "/x"), _p(2, 1, "/x"), _p(3, 1, "/x")]
+    assert reaper.live_pane_closure(procs, None) == {1, 2, 3}
+
+
+def test_live_pane_closure_empty_roots_protects_nothing():
+    # returncode 0 with no panes is a TRUSTED answer (genuinely no live sessions).
+    procs = [_p(1, 0, "/x"), _p(2, 1, "/x")]
+    assert reaper.live_pane_closure(procs, []) == set()
+
+
+def test_live_pane_closure_walks_full_descendant_tree():
+    # pane pid 10 → child 11 → grandchild 12; unrelated 99 stays out.
+    procs = [_p(10, 1, "/x"), _p(11, 10, "/x"), _p(12, 11, "/x"), _p(99, 1, "/x")]
+    assert reaper.live_pane_closure(procs, [10]) == {10, 11, 12}
+
+
+def test_current_start_ticks_reads_field_and_handles_missing(tmp_path):
+    fields = ["S"] + [str(x) for x in range(100, 140)]
+    fields[19] = "777"  # field 22 overall = starttime
+    proc = tmp_path / "1234"
+    proc.mkdir()
+    (proc / "stat").write_text(f"1234 (some proc) {' '.join(fields)}\n")
+    assert reaper.current_start_ticks(1234, proc_root=str(tmp_path)) == 777
+    assert reaper.current_start_ticks(9999, proc_root=str(tmp_path)) is None

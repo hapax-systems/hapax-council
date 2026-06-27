@@ -12,10 +12,10 @@
 
 The workspace runs a cap of **twenty visible session worktrees**, matching
 the threshold enforced by `hooks/scripts/no-stale-branches.sh`. The floor is
-~16 steady-state slots (1 primary + ~4 Claude peers + 7 Codex lanes + 2 Vibe +
-1 Antigrav), leaving ~4 spontaneous slots. (An earlier draft of this doc and
-the audit tool said "eight"; that transition target diverged from the enforced
-hook and is retired — the two MUST stay in sync.)
+~15 steady-state slots (1 primary + 4 Claude peers + 7 Codex lanes + 2 Vibe +
+1 Antigrav = 15), leaving ~5 spontaneous slots. (An earlier draft of this doc
+and the audit tool said "eight"; that transition target diverged from the
+enforced hook and is retired — the two MUST stay in sync.)
 
 | Interface / slot | Path convention | Permanence | Role |
 |------|-----------------|------------|------|
@@ -226,9 +226,24 @@ docker containers, and a GC reporting `removable=7 removed=0 live_refused=7`.
 Safety: anything reachable from a live tmux pane is protected (operator sessions
 + any actively-respawned lane), production/infra paths are never touched, and
 killing a process never loses committed work — a false positive at worst
-triggers a clean supervisor respawn. Run it standalone to inspect:
+triggers a clean supervisor respawn. If tmux cannot be queried it FAILS CLOSED
+(protects every spawn-tree, reaps nothing via the orphan rule).
 
+**Recheck commands** (these are host-state-dependent — run them on the live
+podium host, where `/proc` and the tmux server are present; off-host they return
+a meaningless empty result):
+
+    # orphan reaper: what would it reap right now (expect 0 on a clean host)?
     scripts/hapax-orphan-spawn-reaper.py --dry-run
+
+    # timer chain wired + scheduled?
+    systemctl --user list-timers hapax-worktree-gc.timer hapax-lane-reaper.timer
+
+    # GC's own view (removable vs removed vs live_refused) without mutating:
+    scripts/hapax-worktree-gc.sh --dry-run --no-fetch
+
+    # cap accounting (relocated infra must show as INFRASTRUCTURE, unknown: 0):
+    scripts/worktree-cap-audit.sh --json
 
 ## 6. Cap adjustment — governance process
 

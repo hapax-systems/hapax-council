@@ -219,7 +219,11 @@ fi
 INFRA_WORKTREE_RE='/(\.cache|cache/hapax|\.claude/worktrees|\.codex/worktrees|source-activation|llm-data/runtime)/'
 if echo "$CMD" | grep -qE '^\s*git\s+worktree\s+add\s'; then
     session_wt_cap=20
-    session_wt_count=$(git worktree list 2>/dev/null | grep -Evc "$INFRA_WORKTREE_RE" || true)
+    # Anchor on the PATH (first field) only — a branch name that happens to
+    # contain an infra-like substring (e.g. a `source-activation` feature branch)
+    # must not drop the count and silently weaken the enforced cap. The audit
+    # tool already classifies on the path field; match it here.
+    session_wt_count=$(git worktree list 2>/dev/null | awk '{print $1}' | grep -Evc "$INFRA_WORKTREE_RE" || true)
     if [ "$session_wt_count" -ge "$session_wt_cap" ]; then
         _nsb_escape_or_block
         echo "BLOCKED: Max ${session_wt_cap} visible session worktrees. Clean up before adding another." >&2

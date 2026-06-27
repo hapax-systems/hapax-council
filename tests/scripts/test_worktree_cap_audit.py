@@ -112,6 +112,7 @@ if [ "$1" = "worktree" ] && [ "$2" = "list" ]; then
 /data2/data/cache/hapax/rebuild/worktree  abc123 (detached HEAD)
 /data2/data/cache/hapax/scratch/eval-batch  abc123 [cc/eval-batch]
 /data2/data/cache/hapax/source-activation/releases/deadbeef  abc123 (detached HEAD)
+/var/lib/hapax/source-activation/releases/feedf00d  abc123 (detached HEAD)
 /store/llm-data/runtime/health-monitor-source  abc123 (detached HEAD)
 EOF
   exit 0
@@ -134,9 +135,10 @@ exit 1
     )
 
     assert result.returncode == 0, result.stderr
-    # 4 infra (rebuild, scratch, release snapshot, runtime source); 2 sessions
-    # (primary + cx-green). No UNKNOWN leak flags for the relocated infra.
-    assert '"infra": 4' in result.stdout
+    # 5 infra: rebuild, scratch, release-under-cache/hapax, AND a standalone
+    # source-activation path NOT under cache/hapax (exercises the source-activation
+    # arm independently), plus the runtime source. 2 sessions (primary + cx-green).
+    assert '"infra": 5' in result.stdout
     assert '"session_total": 2' in result.stdout
     assert '"unknown": 0' in result.stdout
     assert '"status": "ok"' in result.stdout
