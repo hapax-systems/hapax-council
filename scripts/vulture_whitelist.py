@@ -416,6 +416,21 @@ _parse_prometheus_scalars
 _snapshot_from_prometheus
 _classify_final_frame
 _classify_final_frame_series
+
+# EDT scorer (cc-task-edt-scorer-20260626): the equal-depth-of-treatment engine ships AHEAD of its
+# in-repo consumers. score_edt is the public entry point and normalize_routing_class the public
+# routing-class normalizer; both are exercised by tests/shared/test_edt_measure.py today and will be
+# called by the observational aggregation watcher (sdlc_router.ingest_gate_events) + the gate-event
+# consumer in follow-up slices. Until then vulture sees no in-`shared` caller.
+from shared.edt_measure import (
+    normalize_routing_class as _edt_normalize_routing_class,
+)
+from shared.edt_measure import (
+    score_edt as _edt_score_edt,
+)
+
+_edt_score_edt
+_edt_normalize_routing_class
 _negative_space_contract_for_mode
 
 # Pydantic v2 validators for the programme live-prior contract. They are
@@ -4188,6 +4203,11 @@ from shared.gate_log import (
 append_gate_event
 read_gate_events
 is_persistent
+
+# Called from scripts/hapax-methodology-dispatch (a non-.py script vulture cannot scan).
+from shared.gate_event_producer import build_gate_event  # noqa: E402
+
+build_gate_event
 
 # Capability-routing D8 governance floor (Phase 0.3) — Pydantic invokes this
 # model_validator dynamically during TaskSpec validation; vulture cannot follow

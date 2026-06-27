@@ -47,6 +47,7 @@ from shared.coord_event_log import CoordEventLog, coord_base_dir
 from shared.dispatch_service_time import is_claude_operator_pool_role
 from shared.dispatcher_policy import (
     DispatchAction,
+    DispatchRequest,
     RouteDecision,
     build_dispatch_request,
     evaluate_dispatch_policy,
@@ -56,6 +57,8 @@ from shared.dispatcher_policy import (
 )
 from shared.failure_classification import FailureCode, FailureReceipt
 from shared.frontmatter import parse_frontmatter as parse_document_frontmatter
+from shared.gate_event_producer import build_gate_event
+from shared.gate_log import append_gate_event
 from shared.quota_wall import QUOTA_WALL_EXIT_CODE
 from shared.route_metadata_schema import assess_route_metadata, route_envelope_gate_enforced
 from shared.sdlc_dispatch_guards import (
@@ -1608,6 +1611,32 @@ def policy_task_fields(validation: Validation) -> dict[str, Any]:
     return payload
 
 
+def _emit_gate_event(
+    route_decision: RouteDecision,
+    policy_request: DispatchRequest,
+    task_fields: dict[str, Any],
+    *,
+    gate_result: str,
+) -> None:
+    """Fail-safe: emit one observational GateEvent for the dispatch admission decision.
+
+    KEYSTONE (cc-task-gate-event-producer-20260626). A gate-event write failure is logged
+    and swallowed — the measurement is best-effort and must NEVER break dispatch.
+    """
+    try:
+        route = route_decision.selected_descriptor_leaf or route_decision.route_id
+        append_gate_event(
+            build_gate_event(
+                task_fields,
+                route=route,
+                demand_vector=policy_request.demand_vector,
+                gate_result=gate_result,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - measurement must never break dispatch
+        print(f"gate-event emit failed (non-fatal): {exc}", file=sys.stderr)
+
+
 def launch_codex_headless(
     task_id: str,
     lane: str,
@@ -2118,13 +2147,14 @@ def main(argv: list[str] | None = None) -> int:
         registry_path=optional_env_path("HAPAX_PLATFORM_CAPABILITY_REGISTRY"),
         quota_ledger_path=optional_env_path("HAPAX_QUOTA_SPEND_LEDGER"),
     )
+    task_fields = policy_task_fields(validation)
     policy_request = build_dispatch_request(
         task_id=args.task,
         lane=args.lane,
         platform=args.platform,
         mode=args.mode,
         profile=args.profile,
-        task_fields=policy_task_fields(validation),
+        task_fields=task_fields,
         registry=policy_sources.registry,
         registry_error=policy_sources.registry_error,
         quota_ledger=policy_sources.quota_ledger,
@@ -2141,6 +2171,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if route_decision.action is not DispatchAction.LAUNCH:
+        _emit_gate_event(route_decision, policy_request, task_fields, gate_result="reject")
         route_reason = f"route policy {route_decision.action.value}: {route_decision.message}"
         blocked = Validation(
             False,
@@ -2170,6 +2201,7 @@ def main(argv: list[str] | None = None) -> int:
         return 10
 
     assert route is not None
+    _emit_gate_event(route_decision, policy_request, task_fields, gate_result="accept")
     mq_message_id = dispatch_message_id(args.mq_message_id)
     if args.launch and route.mutable and not validation.exempt_read_only and mq_message_id is None:
         durable_binding = DurableDispatchBinding(
