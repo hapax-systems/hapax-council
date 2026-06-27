@@ -320,6 +320,25 @@ def test_resolve_program_fail_open_on_unreadable_marker(tmp_path) -> None:
     assert src.resolve_program("dev2", cache_dir=cache, tasks_dir=tmp_path / "tasks") is None
 
 
+def test_resolve_program_prefers_session_keyed_over_stale_legacy(tmp_path) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    # stale legacy pointer -> program-A; session-keyed pointer -> program-B (the active claim)
+    (cache / "cc-active-task-dev2").write_text("cc-task-legacy\n", encoding="utf-8")
+    (cache / "cc-active-task-dev2-sess9").write_text("cc-task-current\n", encoding="utf-8")
+    (tasks / "cc-task-legacy.md").write_text("---\ntrain: program-A\n---\n", encoding="utf-8")
+    (tasks / "cc-task-current.md").write_text("---\ntrain: program-B\n---\n", encoding="utf-8")
+    # with the session id, the session-keyed claim wins (not the stale legacy pointer)
+    assert (
+        src.resolve_program("dev2", session_id="sess9", cache_dir=cache, tasks_dir=tasks)
+        == "program-B"
+    )
+    # without a session id, falls back to the legacy pointer
+    assert src.resolve_program("dev2", cache_dir=cache, tasks_dir=tasks) == "program-A"
+
+
 def test_run_emit_fail_open_on_timeout() -> None:
     with mock.patch.object(
         src.subprocess, "run", side_effect=src.subprocess.TimeoutExpired("x", 8)

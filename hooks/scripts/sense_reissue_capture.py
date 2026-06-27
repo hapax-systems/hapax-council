@@ -38,8 +38,10 @@ from pathlib import Path
 # repo root = hooks/scripts/<this> -> parents[2]; coord CLI runs with this on the path.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MAX_VERBATIM = 600
-# Env-configurable (XDG-aware cache; HAPAX_CC_TASKS_DIR override) so program resolution is not pinned
-# to one developer's absolute path — falls back to the single-user default when unset.
+# Env-configurable (XDG-aware cache; HAPAX_CC_TASKS_DIR override). The fallback is the codebase-wide
+# cc-task SSOT — the SAME path as shared.coord_projection.DEFAULT_VAULT_TASKS / cc-claim's vault_root
+# (not a developer-specific path); under the single_user axiom this is where cc-tasks always live. If
+# absent, resolve_program fail-opens to role-scoped (events are still captured).
 _DEFAULT_CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")) / "hapax"
 _DEFAULT_TASKS_DIR = Path(
     os.environ.get("HAPAX_CC_TASKS_DIR")
@@ -202,21 +204,33 @@ def run_emit(cmd: Sequence[str]) -> dict[str, object]:
 def resolve_program(
     role: str,
     *,
+    session_id: str | None = None,
     cache_dir: Path = _DEFAULT_CACHE_DIR,
     tasks_dir: Path = _DEFAULT_TASKS_DIR,
 ) -> str | None:
     """Best-effort program/train scope for the lane = the active cc-task's ``train`` field.
 
-    Reads the ``cc-active-task-<role>*`` marker -> task id -> the vault task's ``train:``. Any
-    failure returns None (the event is still captured, just unscoped). Never raises.
+    Reads the cc-active-task marker -> task id -> the vault task's ``train:``. Mirrors cc-claim's
+    pointer convention: PREFER the session-keyed claim ``cc-active-task-<role>-<session_id>`` (the
+    gate's preferred pointer), then the legacy ``cc-active-task-<role>``, then any other session-keyed
+    marker — so a stale legacy pointer from another session cannot attach the wrong train. Any failure
+    returns None (the event is still captured, just role-scoped). Never raises.
     """
     if not role:
         return None
+    candidates: list[Path] = []
+    if session_id:
+        candidates.append(cache_dir / f"cc-active-task-{role}-{session_id}")
+    candidates.append(cache_dir / f"cc-active-task-{role}")  # legacy fallback
     try:
-        markers = sorted(cache_dir.glob(f"cc-active-task-{role}*"))
+        candidates.extend(sorted(cache_dir.glob(f"cc-active-task-{role}-*")))
     except Exception:
-        return None
-    for marker in markers:
+        pass
+    seen: set[Path] = set()
+    for marker in candidates:
+        if marker in seen:
+            continue
+        seen.add(marker)
         try:
             lines = marker.read_text(encoding="utf-8").strip().splitlines()
         except Exception:
@@ -282,7 +296,7 @@ def main(
         return 0
 
     if program is None:
-        program = resolve_program(role)
+        program = resolve_program(role, session_id=session_id)
     stamp = now or datetime.now(UTC)
     cmd = build_emit_command(
         role=role,
