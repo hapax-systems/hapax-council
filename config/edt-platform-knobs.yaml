@@ -1,0 +1,42 @@
+# EDT platform knobs — the OPERATOR-MAINTAINED exogenous floor for shared/edt_measure.py.
+#
+# These values are an OPERATOR ASSERTION, not a code-derived fact (verify finding #4 defect C):
+# the registry, REQUIRED_ROUTE_IDS, and this file all share author/repo — there is NO independent
+# oracle. The D0 omitted-platform canary reads `expected_platform_members` from HERE (never from
+# registry.required_route_ids), so a platform the operator EXPECTS but the registry does NOT carry
+# is flagged. The scorer never hardcodes the count; edit this file to assert the real expected set.
+#
+# 7 prefixes are observed in the live registry (antigrav, api, claude, codex, glmcp, local_tool,
+# vibe). `gemini` has a Platform enum slot but no route yet. cohere/hf are retired phantoms the
+# operator still counts in the target.
+#
+# NOTE: this EXPLICIT members list (10 entries) is INTENTIONALLY LARGER than the absent-file default
+# fallback (8 = the 7 observed + gemini). When this file is present, the list below is authoritative
+# and the omitted-canary flags everything in it not observed in the registry (gemini, cohere, hf).
+# Only when this file is ABSENT does load_edt_knobs() synthesize the 8-member default (set=12,
+# depth_cap=20) — a fail-safe, never the operator's full declared target.
+
+# Operator target count (an assertion; MAY exceed the concrete members list below).
+expected_platform_set: 12
+
+# The concrete declared set. D0 omitted_platforms = (members - observed). A member not observed
+# in the registry cannot pass, regardless of descriptor richness.
+expected_platform_members:
+  - antigrav
+  - api
+  - claude
+  - codex
+  - gemini
+  - glmcp
+  - local_tool
+  - vibe
+  - cohere
+  - hf
+
+# D1 cell_count cap for the specificity_ratio normalization (a rich leaf cannot dominate).
+depth_cap: 20
+
+# Operator-declared retired/phantom slots: counted in the target, not expected to be observed.
+retired_phantoms:
+  - cohere
+  - hf
