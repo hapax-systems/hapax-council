@@ -57,7 +57,7 @@ from shared.dispatcher_policy import (
 from shared.failure_classification import FailureCode, FailureReceipt
 from shared.frontmatter import parse_frontmatter as parse_document_frontmatter
 from shared.quota_wall import QUOTA_WALL_EXIT_CODE
-from shared.route_metadata_schema import assess_route_metadata
+from shared.route_metadata_schema import assess_route_metadata, route_envelope_gate_enforced
 from shared.sdlc_dispatch_guards import (
     DISPATCH_CLAIM_GUARD_MARKERS,
     DISPATCH_CLOSE_GUARD_MARKERS,
@@ -1541,6 +1541,15 @@ def platform_route_validation(
 def route_metadata_validation_reason(validation: Validation) -> str | None:
     assessment = assess_route_metadata(policy_task_fields(validation))
     if assessment.dispatchable:
+        return None
+    if (
+        not route_envelope_gate_enforced()
+        and not assessment.missing_fields
+        and not assessment.validation_errors
+    ):
+        # SHADOW (HAPAX_ROUTE_ENVELOPE_GATE != enforce): a well-formed but non-dispatchable
+        # derived envelope (hold-only) does not block dispatch; malformed/incomplete
+        # metadata still blocks. The non-route admission stays observable.
         return None
     details = [
         *assessment.hold_reasons,

@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+
+import pytest
 
 from shared.dispatcher_policy import (
     ClogRouteState,
@@ -32,8 +33,17 @@ from shared.quota_spend_ledger import (
 )
 from shared.route_metadata_schema import DemandVector, RouteEnvelope, build_demand_vector
 
-if TYPE_CHECKING:
-    import pytest
+
+@pytest.fixture(autouse=True)
+def _enforce_route_envelope_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin these policy units to the route-envelope gate's ENFORCE behaviour.
+
+    The gate ships in SHADOW mode by default (``HAPAX_ROUTE_ENVELOPE_GATE`` unset); these
+    units exercise its full fail-closed (enforce) logic. The SHADOW rollout default is
+    covered end-to-end in tests/scripts/test_hapax_methodology_dispatch.py.
+    """
+    monkeypatch.setenv("HAPAX_ROUTE_ENVELOPE_GATE", "enforce")
+
 
 NOW = datetime(2026, 5, 9, 22, 30, tzinfo=UTC)
 GLMCP_ADMISSION_EVIDENCE_REF = (

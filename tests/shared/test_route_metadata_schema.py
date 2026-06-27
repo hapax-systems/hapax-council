@@ -319,7 +319,12 @@ def test_support_artifact_requires_independent_frontier_review() -> None:
         RouteMetadata.model_validate(payload)
 
 
-def test_missing_route_envelope_defaults_fail_closed_without_breaking_flat_metadata() -> None:
+def test_missing_route_envelope_defaults_fail_closed_without_breaking_flat_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The route-envelope gate ships in SHADOW mode by default; this test exercises the
+    # fail-closed (enforce) behaviour of build_demand_vector.
+    monkeypatch.setenv("HAPAX_ROUTE_ENVELOPE_GATE", "enforce")
     metadata = RouteMetadata.model_validate(_explicit_metadata())
 
     envelope = metadata.route_envelope

@@ -54,6 +54,7 @@ from shared.route_metadata_schema import (
     RouteMetadataAssessment,
     assess_route_metadata,
     build_demand_vector,
+    route_envelope_gate_enforced,
     stable_payload_hash,
 )
 
@@ -606,7 +607,7 @@ def evaluate_dispatch_policy(
         )
 
     route_envelope_reasons = _route_envelope_hold_reasons(request)
-    if route_envelope_reasons:
+    if route_envelope_reasons and route_envelope_gate_enforced():
         return _decision(
             request,
             DispatchAction.HOLD,

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -17,6 +18,21 @@ from pathlib import Path
 from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+
+
+def route_envelope_gate_enforced() -> bool:
+    """Whether the derived-route-envelope dispatch gate ENFORCES holds (default: shadow).
+
+    The #4296 routing-spine rollout ships the gate in SHADOW mode: a task lacking an
+    explicit ``admission_action=route`` envelope still dispatches (``build_demand_vector``
+    builds the vector from its non-dispatchable metadata and ``evaluate_dispatch_policy``
+    demotes the envelope hold to advisory) rather than fail-closing dispatch fleet-wide.
+    The non-route admission stays on the envelope, so the would-have-held remains
+    observable. Flip to enforcement once tasks carry explicit envelopes::
+
+        HAPAX_ROUTE_ENVELOPE_GATE=enforce
+    """
+    return os.environ.get("HAPAX_ROUTE_ENVELOPE_GATE", "shadow").strip().lower() == "enforce"
 
 
 class QualityFloor(StrEnum):
@@ -1217,13 +1233,18 @@ def build_demand_vector(
             *assessment.missing_fields,
             *assessment.validation_errors,
         ]
-        raise ValueError(
-            "cannot build demand vector for non-dispatchable route metadata: "
-            + ", ".join(reasons or [assessment.status.value])
-            + "; next action: attach a dispatchable route_envelope with "
-            "admission_action=route and fresh authoritative evidence, or keep "
-            "admission_action=hold/shadow/support_only so dispatch remains held"
-        )
+        if route_envelope_gate_enforced():
+            raise ValueError(
+                "cannot build demand vector for non-dispatchable route metadata: "
+                + ", ".join(reasons or [assessment.status.value])
+                + "; next action: attach a dispatchable route_envelope with "
+                "admission_action=route and fresh authoritative evidence, or keep "
+                "admission_action=hold/shadow/support_only so dispatch remains held"
+            )
+        # SHADOW (HAPAX_ROUTE_ENVELOPE_GATE != enforce): build the demand vector from the
+        # valid-but-non-dispatchable metadata so dispatch proceeds. The non-route admission
+        # stays on the envelope, so the would-have-held is observable; evaluate_dispatch_policy
+        # demotes the envelope hold to advisory under the same flag.
 
     metadata = assessment.metadata
     checked_at = _coerce_utc(observed_at)
