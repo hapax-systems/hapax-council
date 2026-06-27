@@ -1,0 +1,171 @@
+"""Tests for hapax-orphan-spawn-reaper's pure classifier.
+
+The reaper closes the 2026-06-27 worktree-pileup class: lanes that die
+ungracefully leave spawn-shell + MCP trees parked in their worktrees, which the
+GC live-PID guard then refuses to remove forever. These tests pin the safety
+model — live tmux panes protect their whole tree; production paths are never
+reaped; only orphaned spawn-trees and deleted-cwd council processes are.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).parent.parent.parent
+MODULE_PATH = REPO_ROOT / "scripts" / "hapax-orphan-spawn-reaper.py"
+
+_spec = importlib.util.spec_from_file_location("orphan_spawn_reaper", MODULE_PATH)
+reaper = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(reaper)
+
+WT = "/home/hapax/projects/hapax-council--{}"
+SPAWN = "fish -c /home/hapax/.cache/hapax/{}-spawns/run-20260623T010101Z-{}.sh"
+OLD = 100_000  # well past the default 3600s min-age
+YOUNG = 120
+
+
+def _p(pid, ppid, cwd, *, cmd="python3 x", deleted=False, age=OLD):
+    return {"pid": pid, "ppid": ppid, "cwd": cwd, "deleted": deleted, "cmdline": cmd, "age_s": age}
+
+
+def test_orphaned_spawn_tree_is_reaped_whole():
+    procs = [
+        _p(100, 1, WT.format("delta"), cmd=SPAWN.format("claude", "delta")),
+        _p(101, 100, WT.format("delta"), cmd="claude --effort max"),
+        _p(102, 101, WT.format("delta"), cmd="node playwright-mcp"),
+        _p(103, 101, WT.format("delta"), cmd="chrome-devtools-mcp"),
+    ]
+    kill = reaper.classify_orphans(procs, live_pids=set(), now=0)
+    assert kill == {100, 101, 102, 103}
+
+
+def test_live_tmux_pane_protects_its_whole_tree():
+    # cx-p0 spawn shell + child are reachable from a live pane (pid 999) → protected,
+    # even though the spawn shell is old (the respawn-under-live-pane case).
+    procs = [
+        _p(200, 999, WT.format("cx-p0"), cmd=SPAWN.format("codex", "cx-p0")),
+        _p(201, 200, WT.format("cx-p0"), cmd="codex"),
+    ]
+    kill = reaper.classify_orphans(procs, live_pids={999, 200, 201}, now=0)
+    assert kill == set()
+
+
+def test_young_spawn_tree_is_not_reaped():
+    procs = [_p(300, 1, WT.format("zeta"), cmd=SPAWN.format("claude", "zeta"), age=YOUNG)]
+    kill = reaper.classify_orphans(procs, live_pids=set(), now=0)
+    assert kill == set()
+
+
+def test_deleted_cwd_council_orphan_is_reaped():
+    procs = [_p(400, 1, WT.format("theta"), cmd="chrome-devtools-mcp", deleted=True)]
+    kill = reaper.classify_orphans(procs, live_pids=set(), now=0)
+    assert kill == {400}
+
+
+def test_production_paths_are_never_reaped():
+    rel = "/data2/data/cache/hapax/source-activation/releases/deadbeef"
+    rebuild = "/data2/data/cache/hapax/rebuild/worktree"
+    runtime = "/store/llm-data/runtime/health-monitor-source"
+    procs = [
+        # deleted + old + would otherwise match rule 2, but production-pinned:
+        _p(500, 1, rel, cmd="uv run python -m agents.triage_officer", deleted=True),
+        _p(501, 1, rebuild, cmd="python3 hook", deleted=True),
+        _p(502, 1, runtime, cmd="python3 health", deleted=True),
+        # a spawn shell whose tree dives into a release must not drag production down
+        _p(510, 1, rel, cmd=SPAWN.format("claude", "ghost")),
+    ]
+    kill = reaper.classify_orphans(procs, live_pids=set(), now=0)
+    assert kill == set()
+
+
+def test_arbitrary_non_spawn_process_in_worktree_is_left_alone():
+    # Not a spawn-shell tree, cwd exists (not deleted) → no rule matches.
+    procs = [_p(600, 1, WT.format("crit"), cmd="python3 -m agents.something")]
+    kill = reaper.classify_orphans(procs, live_pids=set(), now=0)
+    assert kill == set()
+
+
+# ── live-pane closure: the single most safety-critical branch (review-team) ──
+
+
+class _FakeRun:
+    def __init__(self, *, returncode=0, stdout="", raises=None):
+        self.returncode = returncode
+        self.stdout = stdout
+        self._raises = raises
+
+    def __call__(self, *a, **k):
+        if self._raises is not None:
+            raise self._raises
+        return self
+
+
+def test_pane_roots_fail_closed_on_nonzero_tmux_exit():
+    # The critical bug: a present-but-erroring tmux exits nonzero WITHOUT raising.
+    # Must return None (→ fail closed), never an empty list.
+    assert reaper.pane_roots_from_tmux(run=_FakeRun(returncode=1, stdout="")) is None
+
+
+def test_pane_roots_fail_closed_on_exception():
+    assert reaper.pane_roots_from_tmux(run=_FakeRun(raises=OSError("no tmux"))) is None
+
+
+def test_pane_roots_parses_pane_pids_on_success():
+    roots = reaper.pane_roots_from_tmux(run=_FakeRun(returncode=0, stdout="100\n200\n300"))
+    assert roots == [100, 200, 300]
+
+
+def test_live_pane_closure_none_protects_all():
+    procs = [_p(1, 0, "/x"), _p(2, 1, "/x"), _p(3, 1, "/x")]
+    assert reaper.live_pane_closure(procs, None) == {1, 2, 3}
+
+
+def test_live_pane_closure_empty_roots_protects_nothing():
+    # returncode 0 with no panes is a TRUSTED answer (genuinely no live sessions).
+    procs = [_p(1, 0, "/x"), _p(2, 1, "/x")]
+    assert reaper.live_pane_closure(procs, []) == set()
+
+
+def test_live_pane_closure_walks_full_descendant_tree():
+    # pane pid 10 → child 11 → grandchild 12; unrelated 99 stays out.
+    procs = [_p(10, 1, "/x"), _p(11, 10, "/x"), _p(12, 11, "/x"), _p(99, 1, "/x")]
+    assert reaper.live_pane_closure(procs, [10]) == {10, 11, 12}
+
+
+def test_signal_if_same_sends_when_start_ticks_match():
+    sent = []
+    ok = reaper.signal_if_same(
+        1234, 555, 15, start_ticks_fn=lambda pid: 555, kill_fn=lambda p, s: sent.append((p, s))
+    )
+    assert ok is True
+    assert sent == [(1234, 15)]
+
+
+def test_signal_if_same_skips_recycled_pid_both_phases():
+    # The pid's live start-time differs from the snapshot (reused) → NEVER signal,
+    # for SIGTERM (15) or SIGKILL (9). This is the review-team's SIGTERM-phase gap.
+    for sig in (15, 9):
+        sent = []
+        ok = reaper.signal_if_same(
+            1234, 555, sig, start_ticks_fn=lambda pid: 999, kill_fn=lambda p, s: sent.append((p, s))
+        )
+        assert ok is False
+        assert sent == []
+
+
+def test_signal_if_same_swallows_process_lookup():
+    def boom(p, s):
+        raise ProcessLookupError
+
+    assert reaper.signal_if_same(1, 5, 15, start_ticks_fn=lambda pid: 5, kill_fn=boom) is False
+
+
+def test_current_start_ticks_reads_field_and_handles_missing(tmp_path):
+    fields = ["S"] + [str(x) for x in range(100, 140)]
+    fields[19] = "777"  # field 22 overall = starttime
+    proc = tmp_path / "1234"
+    proc.mkdir()
+    (proc / "stat").write_text(f"1234 (some proc) {' '.join(fields)}\n")
+    assert reaper.current_start_ticks(1234, proc_root=str(tmp_path)) == 777
+    assert reaper.current_start_ticks(9999, proc_root=str(tmp_path)) is None

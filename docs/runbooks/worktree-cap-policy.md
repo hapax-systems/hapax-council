@@ -8,12 +8,14 @@
 
 ---
 
-## 1. Policy — the transition cap is eight
+## 1. Policy — the cap is twenty
 
-The workspace runs a Claude+Codex transition cap of **eight visible
-session worktrees**. This is deliberately higher than the old
-Claude-centric cap so Codex can become first-class without being forced
-through legacy Greek worktree paths.
+The workspace runs a cap of **twenty visible session worktrees**, matching
+the threshold enforced by `hooks/scripts/no-stale-branches.sh`. The floor is
+~15 steady-state slots (1 primary + 4 Claude peers + 7 Codex lanes + 2 Vibe +
+1 Antigrav = 15), leaving ~5 spontaneous slots. (An earlier draft of this doc
+and the audit tool said "eight"; that transition target diverged from the
+enforced hook and is retired — the two MUST stay in sync.)
 
 | Interface / slot | Path convention | Permanence | Role |
 |------|-----------------|------------|------|
@@ -29,14 +31,25 @@ through legacy Greek worktree paths.
   names are coordination lanes; Codex worktree names are `cx-*`.
 - The spontaneous slot must be cleaned up (merged / PR'd / removed)
   before a second spontaneous worktree can be created.
-- Infrastructure worktrees under `~/.cache/` (e.g.
-  `~/.cache/hapax/rebuild/worktree` managed by
-  `scripts/rebuild-logos.sh` via `flock`) are NOT counted against
-  the cap. They are disposable and recreated on demand.
-- Agent scratch worktrees under `.claude/worktrees/` and
-  `.codex/worktrees/` are also NOT
-  counted against the cap. They are tool-owned scratch infrastructure,
-  not operator-visible Hapax session slots.
+- Infrastructure worktrees are NOT counted against the cap. This covers the
+  legacy `~/.cache/hapax/` layout AND the relocated dev substrate on the data
+  mount. The full infra set (kept in sync across the hook, the audit tool, and
+  the classification tree in §3):
+  - `~/.cache/` and `/<mnt>/cache/hapax/` — rebuild-scratch (e.g.
+    `rebuild/worktree` managed by `scripts/rebuild-logos.sh` via `flock`) and
+    agent scratch. After the dev→appendix relocation these live under
+    `/data2/data/cache/hapax/`, NOT `~/.cache/`.
+  - `.claude/worktrees/` and `.codex/worktrees/` — tool-owned scratch.
+  - `source-activation/` — the deploy tree + pinned release snapshots
+    (`source-activation/releases/<sha>`), managed by `hapax-worktree-gc.sh`'s
+    release retention, not by session hygiene.
+  - `/<mnt>/llm-data/runtime/` — runtime source trees (e.g.
+    `health-monitor-source` on `/store`).
+
+  Until 2026-06-27 only the dotted `~/.cache/` form matched, so the 7
+  production/infra worktrees on `/data2` + `/store` counted as session
+  worktrees AND were flagged "UNKNOWN — likely leak", producing a false
+  over-cap (78 reported against a cap of 20).
 - Gamma is a reserved session name (see `scripts/hapax-whoami-audit.sh`)
   but does not currently claim a permanent worktree slot. An epic that
   activates it must amend this table and adjust the cap.
@@ -79,9 +92,12 @@ MUST agree on the count.
 
 Given a worktree path, classify via:
 
-    path starts with ~/.cache/         -> INFRASTRUCTURE (not counted)
+    path contains /.cache/             -> INFRASTRUCTURE (not counted)
+    path contains /cache/hapax/        -> INFRASTRUCTURE (not counted)  # relocated
     path contains .claude/worktrees/   -> INFRASTRUCTURE (not counted)
     path contains .codex/worktrees/    -> INFRASTRUCTURE (not counted)
+    path contains /source-activation/  -> INFRASTRUCTURE (not counted)  # deploy + releases
+    path contains /llm-data/runtime/   -> INFRASTRUCTURE (not counted)  # runtime source
     path == .../hapax-council          -> PRIMARY (alpha)
     path == .../hapax-council--beta*   -> SECONDARY permanent (beta)
     path == .../hapax-council--delta*  -> SECONDARY permanent (delta)
@@ -176,6 +192,58 @@ Do not force-delete a worktree whose branch has unpushed commits
 without first pushing the branch. The worktree removal deletes
 the reflog; the commits become unreachable and are eventually
 garbage-collected.
+
+## 5a. Automated hygiene & the orphaned-spawn-tree class
+
+Two timers keep the count bounded without manual cleanup:
+
+- **`hapax-worktree-gc.timer`** (every 6h) → `scripts/hapax-worktree-gc.sh`.
+  Removes stale, clean, MERGED worktrees (ancestry + squash-merge detection),
+  reaps stale `source-activation/releases/<sha>` snapshots (keeping
+  active+candidate from `current.json`), and ALERTS (never auto-removes) on
+  stale *unmerged* worktrees. A live-PID guard refuses to remove any worktree a
+  running process maps via `/proc/<pid>/cwd|exe` (the F1 release-ghost incident).
+- **`hapax-lane-reaper.timer`** (every 30m) → reaps *dead lanes that still have
+  a live tmux session*.
+
+**The 2026-06-27 pileup (root cause).** The lane-reaper only iterates EXISTING
+tmux sessions. When a lane dies *ungracefully* — its tmux session/pane is gone
+but its `*-spawns/run-*.sh` spawn shell and the MCP servers it started
+(node/playwright/chrome-devtools/context7/mcp-gemini + `docker run` github-mcp
+containers) survive — nothing reaps them. Each leaked tree keeps its `cwd`
+parked in the lane's (now-merged) worktree, so the GC's live-PID guard refuses
+removal *forever*. The result was 79 worktrees, 80 leaked processes, 9 leaked
+docker containers, and a GC reporting `removable=7 removed=0 live_refused=7`.
+
+**The fix.** `scripts/hapax-orphan-spawn-reaper.py` runs as a GC pre-pass
+(invoked from `hapax-worktree-gc.sh`; disable with
+`HAPAX_WORKTREE_GC_REAP_ORPHANS=0`). It SIGTERMs (then SIGKILLs stragglers):
+
+1. orphaned spawn-shell trees (`*-spawns/run-*.sh` + descendants) NOT reachable
+   from any live `tmux list-panes -a` pane and older than `--min-age` (3600s);
+2. processes whose `cwd` is an already-deleted `hapax-council` worktree.
+
+Safety: anything reachable from a live tmux pane is protected (operator sessions
++ any actively-respawned lane), production/infra paths are never touched, and
+killing a process never loses committed work — a false positive at worst
+triggers a clean supervisor respawn. If tmux cannot be queried it FAILS CLOSED
+(protects every spawn-tree, reaps nothing via the orphan rule).
+
+**Recheck commands** (these are host-state-dependent — run them on the live
+podium host, where `/proc` and the tmux server are present; off-host they return
+a meaningless empty result):
+
+    # orphan reaper: what would it reap right now (expect 0 on a clean host)?
+    scripts/hapax-orphan-spawn-reaper.py --dry-run
+
+    # timer chain wired + scheduled?
+    systemctl --user list-timers hapax-worktree-gc.timer hapax-lane-reaper.timer
+
+    # GC's own view (removable vs removed vs live_refused) without mutating:
+    scripts/hapax-worktree-gc.sh --dry-run --no-fetch
+
+    # cap accounting (relocated infra must show as INFRASTRUCTURE, unknown: 0):
+    scripts/worktree-cap-audit.sh --json
 
 ## 6. Cap adjustment — governance process
 
