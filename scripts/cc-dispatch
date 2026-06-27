@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""cc-dispatch — one-command governed capability dispatch (the friendly spine surface).
+
+Resolve a capability name to a governed route (validated against the registry), then
+validate (default) or ``--launch`` the dispatch through ``hapax-methodology-dispatch``
+— which records it in the spine's own ledger. Observe with ``--utilization``.
+
+Examples:
+  cc-dispatch --list                       # launchable capabilities -> route_ids
+  cc-dispatch agy cc-task-foo              # validate routing agy -> the task (no launch)
+  cc-dispatch agy cc-task-foo --launch     # actually launch the lane
+  cc-dispatch fugu cc-task-foo             # fails CLOSED with the route-definition follow-on
+  cc-dispatch --utilization                # active-vs-latent capability scorecard
+
+A capability with no governed route (fugu/sakana/glmcp-worker) fails closed with a
+pointer to the cc-task that defines it — never a silent bypass.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+_REPO_ROOT = _HERE.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from shared.capability_dispatch import (  # noqa: E402
+    launchable_aliases,
+    load_valid_route_ids,
+    read_dispatch_ledger,
+    resolve_capability,
+    utilization,
+)
+
+
+def dispatcher_cmd() -> list[str]:
+    """Resolve the governed dispatcher: env override -> PATH (deployed) -> sibling (tree)."""
+    override = os.environ.get("HAPAX_METHODOLOGY_DISPATCH_BIN")
+    if override:
+        return [override]
+    found = shutil.which("hapax-methodology-dispatch")
+    if found:
+        return [found]
+    sibling = _HERE / "hapax-methodology-dispatch"
+    if sibling.exists():
+        return [sys.executable, str(sibling)]
+    print(
+        "cc-dispatch: hapax-methodology-dispatch not found (env / PATH / sibling)", file=sys.stderr
+    )
+    raise SystemExit(3)
+
+
+def print_list() -> int:
+    valid = load_valid_route_ids()
+    aliases = launchable_aliases(valid)
+    if not aliases:
+        print("cc-dispatch: no launchable capabilities (registry unreadable?)", file=sys.stderr)
+        return 1
+    for alias, route_id in sorted(aliases.items()):
+        print(f"{alias:20s} -> {route_id}")
+    return 0
+
+
+def print_utilization() -> int:
+    valid = load_valid_route_ids()
+    u = utilization(read_dispatch_ledger(), valid_route_ids=valid)
+    print("capability utilization (launched dispatches in the spine ledger):")
+    print(f"  ACTIVE ({len(u.active)}/{len(u.known)}):")
+    for route_id in u.active:
+        print(
+            f"    {u.alias_for.get(route_id, route_id):20s} {route_id}  x{u.counts.get(route_id, 0)}"
+        )
+    print(f"  LATENT ({len(u.latent)}/{len(u.known)}) — capabilities we are not using:")
+    for route_id in u.latent:
+        print(f"    {u.alias_for.get(route_id, route_id):20s} {route_id}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="cc-dispatch",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "capability", nargs="?", help="capability name (see --list) or a raw route_id"
+    )
+    parser.add_argument("cc_task", nargs="?", help="the cc-task id (slice) to dispatch")
+    parser.add_argument(
+        "--launch", action="store_true", help="actually launch (default: validate only)"
+    )
+    parser.add_argument(
+        "--utilization", action="store_true", help="print the active-vs-latent scorecard and exit"
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        dest="list_caps",
+        help="list launchable capabilities and exit",
+    )
+    parser.add_argument("--slice-kind", default="", help="optional label for the slice")
+    args, passthrough = parser.parse_known_args(argv)
+
+    if args.list_caps:
+        return print_list()
+    if args.utilization:
+        return print_utilization()
+
+    if not args.capability or not args.cc_task:
+        parser.error("capability and cc_task are required (or use --list / --utilization)")
+
+    res = resolve_capability(args.capability, valid_route_ids=load_valid_route_ids())
+    if not res.ok:
+        print(f"cc-dispatch: cannot dispatch '{args.capability}': {res.reason}", file=sys.stderr)
+        return 2
+
+    cmd = dispatcher_cmd() + [
+        "--task",
+        args.cc_task,
+        "--platform",
+        res.platform or "",
+        "--mode",
+        res.mode or "",
+        "--profile",
+        res.profile or "",
+    ]
+    if args.launch:
+        cmd.append("--launch")
+    cmd.extend(passthrough)
+
+    verb = "launching" if args.launch else "validating"
+    print(f"cc-dispatch: {verb} {args.capability} -> {res.route_id} for {args.cc_task}")
+    return subprocess.run(cmd).returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
