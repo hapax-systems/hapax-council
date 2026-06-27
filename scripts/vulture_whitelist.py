@@ -4572,10 +4572,12 @@ from shared.capability_dispatch import (
     utilization,  # noqa: E402
 )
 
-launchable_aliases
-ledger_health
-load_valid_route_ids
-read_dispatch_ledger
-registry_error
-resolve_capability
-utilization
+_ = (
+    launchable_aliases,
+    ledger_health,
+    load_valid_route_ids,
+    read_dispatch_ledger,
+    registry_error,
+    resolve_capability,
+    utilization,
+)

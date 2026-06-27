@@ -231,21 +231,27 @@ def default_dispatch_ledger() -> Path:
 
 
 def read_dispatch_ledger(path: Path | str | None = None) -> Iterator[dict]:
-    """Yield dispatch records from the spine's ledger; skip blank/corrupt lines."""
+    """Yield dispatch records from the spine's ledger; skip blank/corrupt lines.
+
+    Degrades to empty on ANY read failure (missing / a directory / unreadable /
+    disappears mid-read) — a bad ledger path must never crash ``--utilization``;
+    it must yield no history. (``OSError`` covers FileNotFound/IsADirectory/Permission.)
+    """
     target = Path(path) if path is not None else default_dispatch_ledger()
-    if not target.exists():
+    try:
+        with target.open(encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(obj, dict):
+                    yield obj
+    except OSError:
         return
-    with target.open(encoding="utf-8") as fh:
-        for raw in fh:
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(obj, dict):
-                yield obj
 
 
 def ledger_health(path: Path | str | None = None) -> tuple[bool, int]:
@@ -258,17 +264,20 @@ def ledger_health(path: Path | str | None = None) -> tuple[bool, int]:
     target = Path(path) if path is not None else default_dispatch_ledger()
     if not target.exists():
         return (False, 0)
-    corrupt = 0
-    with target.open(encoding="utf-8") as fh:
-        for raw in fh:
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                json.loads(line)
-            except ValueError:
-                corrupt += 1
-    return (True, corrupt)
+    try:
+        corrupt = 0
+        with target.open(encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    json.loads(line)
+                except ValueError:
+                    corrupt += 1
+        return (True, corrupt)
+    except OSError:
+        return (False, 0)  # exists but unreadable (dir/permission) -> treat as absent, warn
 
 
 def record_route_id(record: dict) -> str | None:

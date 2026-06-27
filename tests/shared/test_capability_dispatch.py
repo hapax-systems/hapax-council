@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -148,6 +149,12 @@ def test_registry_error_missing_key(tmp_path: Path) -> None:
     assert "required_route_ids" in (registry_error(reg) or "")
 
 
+def test_registry_error_empty_list(tmp_path: Path) -> None:
+    reg = tmp_path / "reg.json"
+    reg.write_text(json.dumps({"required_route_ids": []}), encoding="utf-8")
+    assert "empty" in (registry_error(reg) or "")
+
+
 def test_ledger_health_missing(tmp_path: Path) -> None:
     assert ledger_health(tmp_path / "nope.jsonl") == (False, 0)
 
@@ -236,6 +243,16 @@ def test_launchable_paths_match_live_dispatcher() -> None:
         )
     api_lines = [ln for ln in lines if ln.startswith("api/")]
     assert api_lines and all("receipt-only" in ln for ln in api_lines)
+    # Set EQUALITY — catches drift BOTH ways (incl. a NEW spawnable lane LAUNCHABLE_PATHS forgot).
+    spawnable: set[tuple[str, str]] = set()
+    for ln in lines:
+        m = re.match(r"^([a-z_]+)/([a-z_]+)/\S+:", ln)
+        if m and "receipt-only" not in ln and "no spawnable lane" not in ln:
+            spawnable.add((m.group(1), m.group(2)))
+    assert spawnable == set(LAUNCHABLE_PATHS), (
+        f"LAUNCHABLE_PATHS drift: dispatcher spawnable={sorted(spawnable)} "
+        f"vs LAUNCHABLE_PATHS={sorted(LAUNCHABLE_PATHS)}"
+    )
 
 
 def test_every_alias_targets_a_well_formed_route_id() -> None:
