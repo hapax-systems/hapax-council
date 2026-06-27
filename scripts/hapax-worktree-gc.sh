@@ -169,6 +169,22 @@ if ((fetch_first)); then
     git -C "$repo" fetch --prune --quiet origin >/dev/null 2>&1 || true
 fi
 
+# Pre-pass: reap orphaned agent spawn-trees whose owning tmux session is gone.
+# The lane-reaper only sees LIVE tmux sessions, so a lane that died ungracefully
+# leaves its spawn-shell + MCP children parked in its worktree, which makes the
+# live-PID guard below REFUSE the (now-merged) worktree forever. Clearing those
+# orphans here is what unblocks the GC's per-worktree removal in the same run
+# (root cause of the 2026-06-27 pileup: removable=7 removed=0 live_refused=7).
+# Best-effort and self-limiting (live tmux panes are protected); never blocks GC.
+orphan_reaper="$(dirname "$(readlink -f "$0")")/hapax-orphan-spawn-reaper.py"
+if [[ "${HAPAX_WORKTREE_GC_REAP_ORPHANS:-1}" == "1" && -x "$orphan_reaper" ]]; then
+    if ((dry_run)); then
+        "$orphan_reaper" --dry-run || true
+    else
+        "$orphan_reaper" || true
+    fi
+fi
+
 if ((dry_run)); then
     printf 'hapax-worktree-gc: dry-run skips git worktree prune\n'
 else
