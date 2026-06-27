@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import subprocess
 import sys
@@ -194,19 +193,19 @@ def run_emit(cmd: Sequence[str]) -> dict[str, object]:
 
 
 def _default_cache_dir() -> Path:
-    """XDG-aware cache dir holding the cc-active-task markers (matches coord_event_log's XDG logic)."""
-    return Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")) / "hapax"
+    """The cc-active-task MARKER dir — matches cc-claim/cc-task-gate EXACTLY: ``$HOME/.cache/hapax``.
+    NOT XDG-aware: cc-claim writes the markers there unconditionally, so honoring XDG_CACHE_HOME would
+    read a different directory and miss the active claim (-> no program scope)."""
+    return Path.home() / ".cache" / "hapax"
 
 
 def _default_tasks_dir() -> Path:
-    """The cc-task SSOT ``active/`` dir. Prefer ``HAPAX_CC_TASKS_DIR``, else the canonical
-    ``shared.coord_projection.DEFAULT_VAULT_TASKS`` imported BY REFERENCE (so it cannot drift from the
-    rest of the spine — addresses the hardcoded-mirror fragility), else the literal as a last resort.
-    Resolved lazily so the import is paid only when a re-issue actually fires, never per prompt.
+    """The cc-task SSOT ``active/`` dir, derived from the canonical
+    ``shared.coord_projection.DEFAULT_VAULT_TASKS`` (the vault root cc-claim uses) imported BY
+    REFERENCE so it tracks any future change and cannot drift — fail-open to the literal. No bespoke
+    env var: the single source of truth is the shared constant. Resolved lazily so the import is paid
+    only when a re-issue actually fires, never per prompt.
     """
-    env = os.environ.get("HAPAX_CC_TASKS_DIR")
-    if env:
-        return Path(env)
     try:
         if str(_REPO_ROOT) not in sys.path:
             sys.path.insert(0, str(_REPO_ROOT))

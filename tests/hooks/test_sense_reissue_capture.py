@@ -18,6 +18,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 _REPO = Path(__file__).resolve().parents[2]
 _MOD_PATH = _REPO / "hooks" / "scripts" / "sense_reissue_capture.py"
 _WRAPPER = _REPO / "hooks" / "scripts" / "sense-reissue-capture.sh"
@@ -377,7 +379,15 @@ def test_run_emit_fail_open_on_timeout() -> None:
 def test_wrapper_success_path_emits_event(tmp_path) -> None:
     """End-to-end through the REAL wrapper -> core -> coord CLI (isolated coord dir). Pins that the
     shell forwards a re-issue to the core and an event lands — the path where a program/flag break
-    would surface in production."""
+    would surface in production. SKIPS (not fails) when shared.coord_event_log is unimportable, so an
+    env gap stays attributable; the emit path is independently covered by the mocked + real-CLI tests."""
+    if str(_REPO) not in sys.path:
+        sys.path.insert(0, str(_REPO))
+    if (
+        importlib.util.find_spec("shared") is None
+        or importlib.util.find_spec("shared.coord_event_log") is None
+    ):
+        pytest.skip("shared.coord_event_log not importable in this environment")
     coord = tmp_path / "coord"
     # No role env: the wrapper resolves whatever role it can (or roleless) and still emits — this test
     # pins the shell->core->CLI path + fail-open exit, not a specific role (avoids agent-role.sh coupling).
@@ -394,3 +404,51 @@ def test_wrapper_success_path_emits_event(tmp_path) -> None:
     found = list(coord.rglob("*.jsonl"))
     assert found, f"no ledger written; stdout={proc.stdout!r} stderr={proc.stderr!r}"
     assert any("signal.reissue" in f.read_text(encoding="utf-8") for f in found)
+
+
+# --- round-5: production default branches + argv override ---
+
+
+def test_default_cache_dir_matches_cc_claim_not_xdg(monkeypatch) -> None:
+    # cc-claim writes markers to $HOME/.cache/hapax unconditionally; the hook must look there even
+    # when XDG_CACHE_HOME is set, or it reads the wrong dir and misses the active claim.
+    monkeypatch.setenv("XDG_CACHE_HOME", "/tmp/some-xdg-root")
+    assert src._default_cache_dir() == Path.home() / ".cache" / "hapax"
+
+
+def test_default_tasks_dir_is_active_under_canonical_root() -> None:
+    # Derived from the canonical SSOT (shared.coord_projection.DEFAULT_VAULT_TASKS) + /active, with a
+    # literal fail-open — either way it must end in .../hapax-cc-tasks/active.
+    d = src._default_tasks_dir()
+    assert d.name == "active"
+    assert d.parent.name == "hapax-cc-tasks"
+
+
+def test_main_explicit_program_argv_overrides_resolution() -> None:
+    # main() takes program from argv[1] verbatim and must NOT consult resolve_program in that case.
+    stdin = io.StringIO(json.dumps({"prompt": "research your purview", "session_id": "s"}))
+    captured: dict[str, list[str]] = {}
+
+    def fake_emit(cmd):
+        captured["cmd"] = list(cmd)
+        return {"appended": True}
+
+    with (
+        mock.patch.object(src, "run_emit", side_effect=fake_emit),
+        mock.patch.object(src, "resolve_program") as resolver,
+    ):
+        rc = src.main(["dev2", "explicit-program"], stdin=stdin, now=_NOW)
+    assert rc == 0
+    resolver.assert_not_called()  # explicit argv program short-circuits resolution
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--parent-spec") + 1] == "explicit-program"
+
+
+def test_classify_suspected_gap_alternations() -> None:
+    # exercise several alternation branches of the suspected-gap lexicon, not just one corpus phrase
+    for prompt in (
+        "you overlooked the recent design work",
+        "we don't have the latest planning docs",
+        "this missed a chunk of the plan",
+    ):
+        assert src.classify_reissue(prompt) == (True, "suspected-gap"), prompt
