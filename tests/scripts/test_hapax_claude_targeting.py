@@ -194,6 +194,9 @@ def test_send_accepts_dev_interactive_pool_roles(tmp_path: Path) -> None:
             timeout=5,
         )
         assert "invalid role" not in result.stderr, (role, result.returncode, result.stderr)
+        # assert the role gate PASSED (took a later path), not merely that stderr lacks the string:
+        # the invalid-role path exits 2, so a passing gate must NOT exit 2.
+        assert result.returncode != 2, (role, result.returncode, result.stderr)
 
 
 def test_send_rejects_unknown_role(tmp_path: Path) -> None:
@@ -219,3 +222,31 @@ def test_send_rejects_unknown_role(tmp_path: Path) -> None:
     )
     assert result.returncode == 2
     assert "invalid role 'boguslane'" in result.stderr
+
+
+def test_send_rejects_dev_lookalikes_not_in_pool(tmp_path: Path) -> None:
+    # the dev pattern is digits-only (dev / dev<1-2 digits>) — NOT a `dev*` superset, so
+    # look-alikes with trailing junk are rejected (e.g. dev2foo, devel, dev-2).
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fast_fail_targeting(bin_dir)
+    for role in ("dev2foo", "devel", "dev-2", "dev99x"):
+        result = subprocess.run(
+            [
+                "bash",
+                str(SEND),
+                "--session",
+                role,
+                "--transport",
+                "auto",
+                "--no-submit",
+                "--",
+                "msg",
+            ],
+            capture_output=True,
+            text=True,
+            env=_env(tmp_path, bin_dir),
+            timeout=5,
+        )
+        assert result.returncode == 2, (role, result.returncode, result.stderr)
+        assert f"invalid role '{role}'" in result.stderr, (role, result.stderr)
