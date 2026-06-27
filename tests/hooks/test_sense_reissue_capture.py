@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -281,3 +282,66 @@ def test_wrapper_is_fail_open_on_garbage_stdin() -> None:
 def test_wrapper_is_fail_open_on_empty_stdin() -> None:
     proc = subprocess.run([str(_WRAPPER)], input="", capture_output=True, text=True, timeout=15)
     assert proc.returncode == 0, proc.stderr
+
+
+# --- round-2 review-team coverage ---
+
+
+def test_run_emit_real_cli_pins_parent_spec(tmp_path) -> None:
+    """The one flag the prior real-CLI test never exercised. A misnamed/unsupported --parent-spec
+    would make the real argparse exit nonzero -> run_emit -> {} -> this assertion fails."""
+    cmd = src.build_emit_command(
+        role="dev2",
+        session_id="itest-prog",
+        program="continuity-substrate",
+        event_id="sigreissue-prog",
+        trigger_class="purview",
+        verbatim="research your purview",
+        python_exe=sys.executable,
+    )
+    cmd += [
+        "--db-path",
+        str(tmp_path / "c.db"),
+        "--jsonl-path",
+        str(tmp_path / "c.jsonl"),
+        "--spool-dir",
+        str(tmp_path / "spool"),
+    ]
+    receipt = src.run_emit(cmd)
+    assert receipt.get("appended") is True, receipt
+    rows = (tmp_path / "c.jsonl").read_text(encoding="utf-8")
+    assert "continuity-substrate" in rows  # --parent-spec accepted + persisted by the real CLI
+
+
+def test_resolve_program_fail_open_on_unreadable_marker(tmp_path) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "cc-active-task-dev2").mkdir()  # a dir -> read_text raises -> caught -> None
+    assert src.resolve_program("dev2", cache_dir=cache, tasks_dir=tmp_path / "tasks") is None
+
+
+def test_run_emit_fail_open_on_timeout() -> None:
+    with mock.patch.object(
+        src.subprocess, "run", side_effect=src.subprocess.TimeoutExpired("x", 8)
+    ):
+        assert src.run_emit([sys.executable, "-c", "pass"]) == {}
+
+
+def test_wrapper_success_path_emits_event(tmp_path) -> None:
+    """End-to-end through the REAL wrapper -> core -> coord CLI (isolated coord dir). Pins that the
+    shell forwards a re-issue to the core and an event lands — the path where a program/flag break
+    would surface in production."""
+    coord = tmp_path / "coord"
+    env = {**os.environ, "HAPAX_COORD_DIR": str(coord), "HAPAX_AGENT_NAME": "dev2"}
+    proc = subprocess.run(
+        [str(_WRAPPER)],
+        input=json.dumps({"prompt": "research your purview", "session_id": "wrap-itest"}),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr
+    found = list(coord.rglob("*.jsonl"))
+    assert found, f"no ledger written; stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    assert any("signal.reissue" in f.read_text(encoding="utf-8") for f in found)

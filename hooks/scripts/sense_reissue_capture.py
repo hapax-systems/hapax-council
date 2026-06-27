@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -37,9 +38,12 @@ from pathlib import Path
 # repo root = hooks/scripts/<this> -> parents[2]; coord CLI runs with this on the path.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MAX_VERBATIM = 600
-_DEFAULT_CACHE_DIR = Path.home() / ".cache" / "hapax"
-_DEFAULT_TASKS_DIR = (
-    Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+# Env-configurable (XDG-aware cache; HAPAX_CC_TASKS_DIR override) so program resolution is not pinned
+# to one developer's absolute path — falls back to the single-user default when unset.
+_DEFAULT_CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")) / "hapax"
+_DEFAULT_TASKS_DIR = Path(
+    os.environ.get("HAPAX_CC_TASKS_DIR")
+    or (Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active")
 )
 
 # (compiled pattern, trigger_class). Deliberately narrow: each requires a coverage/purview-specific
