@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import subprocess
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,14 +13,23 @@ import pytest
 
 _CC_PATH = Path(__file__).resolve().parents[2] / "scripts" / "cc-dispatch"
 
+# Full registry set (matches the shared test fixture) so --list output is not
+# silently narrower than the real registry exposes.
 VALID = frozenset(
     {
         "antigrav.interactive.full",
         "codex.headless.full",
+        "codex.headless.spark",
         "claude.headless.full",
         "claude.headless.opus",
+        "claude.headless.sonnet",
+        "claude.headless.haiku",
+        "claude.interactive.full",
+        "api.headless.provider_gateway",
+        "api.headless.api_frontier",
         "vibe.headless.full",
         "glmcp.review.direct",
+        "local_tool.local.worker",
     }
 )
 
@@ -166,36 +177,62 @@ def test_missing_lane_errors(monkeypatch) -> None:
         mod.main(["agy", "cc-task-x"])  # no --lane -> the dispatcher would reject; we fail early
 
 
-def test_dispatcher_cmd_env_override(monkeypatch) -> None:
+def test_dispatcher_cmd_uses_repo_sibling() -> None:
+    # Trust ONLY the in-repo sibling — never env/PATH (those are bypass vectors).
     mod = _load()
-    monkeypatch.setenv("HAPAX_METHODOLOGY_DISPATCH_BIN", "/opt/x/hapax-methodology-dispatch")
-    assert mod.dispatcher_cmd() == ["/opt/x/hapax-methodology-dispatch"]
-
-
-def test_dispatcher_cmd_path_found(monkeypatch) -> None:
-    mod = _load()
-    monkeypatch.delenv("HAPAX_METHODOLOGY_DISPATCH_BIN", raising=False)
-    monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/hapax-methodology-dispatch")
-    assert mod.dispatcher_cmd() == ["/usr/bin/hapax-methodology-dispatch"]
-
-
-def test_dispatcher_cmd_sibling_fallback(monkeypatch) -> None:
-    mod = _load()
-    monkeypatch.delenv("HAPAX_METHODOLOGY_DISPATCH_BIN", raising=False)
-    monkeypatch.setattr(mod.shutil, "which", lambda _name: None)
-    cmd = mod.dispatcher_cmd()  # the real sibling scripts/hapax-methodology-dispatch exists
+    cmd = mod.dispatcher_cmd()
     assert cmd[0] == mod.sys.executable
-    assert cmd[1].endswith("hapax-methodology-dispatch")
+    assert cmd[1] == str(mod._HERE / "hapax-methodology-dispatch")
 
 
-def test_dispatcher_cmd_not_found_exits(monkeypatch, tmp_path) -> None:
+def test_dispatcher_cmd_ignores_hostile_env(monkeypatch) -> None:
+    # CRITICAL fix: a hostile env override must NOT redirect the governed dispatcher.
     mod = _load()
-    monkeypatch.delenv("HAPAX_METHODOLOGY_DISPATCH_BIN", raising=False)
-    monkeypatch.setattr(mod.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("HAPAX_METHODOLOGY_DISPATCH_BIN", "/bin/true")
+    cmd = mod.dispatcher_cmd()
+    assert cmd != ["/bin/true"]
+    assert cmd[1] == str(mod._HERE / "hapax-methodology-dispatch")
+
+
+def test_dispatcher_cmd_missing_sibling_exits(monkeypatch, tmp_path) -> None:
+    mod = _load()
     monkeypatch.setattr(mod, "_HERE", tmp_path)  # no sibling dispatcher here
     with pytest.raises(SystemExit) as exc:
         mod.dispatcher_cmd()
     assert exc.value.code == 3
+
+
+def test_dispatch_composes_with_real_dispatcher(tmp_path) -> None:
+    # Real-composition evidence (not a mock): cc-dispatch's resolved flags reach the
+    # governed dispatcher's validation (no argparse rejection) and a bogus task fails
+    # closed — rebuts "launch predicate only tested as mocked command construction".
+    mod = _load()
+    valid = mod.load_valid_route_ids()
+    if not valid:  # pragma: no cover - env guard
+        pytest.skip("registry unreadable")
+    res = mod.resolve_capability("claude", valid_route_ids=valid)
+    assert res.ok
+    cmd = mod.dispatcher_cmd() + [
+        "--task",
+        "cc-task-DOES-NOT-EXIST-ccdispatch-selftest",
+        "--lane",
+        "ccdispatch-selftest",
+        "--platform",
+        res.platform,
+        "--mode",
+        res.mode,
+        "--profile",
+        res.profile,
+    ]
+    env = {**os.environ, "HAPAX_ORCHESTRATION_LEDGER_DIR": str(tmp_path)}
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env)
+    except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover - env guard
+        pytest.skip(f"dispatcher not runnable: {exc}")
+    combined = proc.stdout + proc.stderr
+    assert "unrecognized arguments" not in combined  # flags accepted by the real dispatcher
+    assert "are required" not in combined  # --task/--lane satisfied
+    assert proc.returncode != 0  # a bogus task must NOT falsely succeed
 
 
 def test_print_list_empty_registry_returns_1(monkeypatch, capsys) -> None:
@@ -203,6 +240,26 @@ def test_print_list_empty_registry_returns_1(monkeypatch, capsys) -> None:
     monkeypatch.setattr(mod, "load_valid_route_ids", lambda *a, **k: frozenset())
     assert mod.main(["--list"]) == 1
     assert "no launchable capabilities" in capsys.readouterr().err
+
+
+def test_utilization_warns_on_missing_ledger(monkeypatch, capsys) -> None:
+    # MAJOR: a LATENT scorecard must not silently hide that the evidence source is absent.
+    mod = _load()
+    _patch_valid(monkeypatch, mod)
+    monkeypatch.setattr(mod, "ledger_health", lambda *a, **k: (False, 0))
+    monkeypatch.setattr(mod, "read_dispatch_ledger", lambda *a, **k: iter([]))
+    assert mod.main(["--utilization"]) == 0
+    err = capsys.readouterr().err
+    assert "no dispatch ledger" in err and "not verified non-use" in err
+
+
+def test_utilization_warns_on_corrupt_ledger(monkeypatch, capsys) -> None:
+    mod = _load()
+    _patch_valid(monkeypatch, mod)
+    monkeypatch.setattr(mod, "ledger_health", lambda *a, **k: (True, 3))
+    monkeypatch.setattr(mod, "read_dispatch_ledger", lambda *a, **k: iter([]))
+    assert mod.main(["--utilization"]) == 0
+    assert "corrupt ledger row" in capsys.readouterr().err
 
 
 def test_utilization_unreadable_registry_returns_1(monkeypatch, capsys) -> None:

@@ -14,6 +14,7 @@ from shared.capability_dispatch import (
     LAUNCHABLE_PATHS,
     UNROUTED_POINTERS,
     launchable_aliases,
+    ledger_health,
     load_valid_route_ids,
     read_dispatch_ledger,
     record_route_id,
@@ -145,6 +146,24 @@ def test_registry_error_missing_key(tmp_path: Path) -> None:
     reg = tmp_path / "reg.json"
     reg.write_text(json.dumps({"other": []}), encoding="utf-8")
     assert "required_route_ids" in (registry_error(reg) or "")
+
+
+def test_ledger_health_missing(tmp_path: Path) -> None:
+    assert ledger_health(tmp_path / "nope.jsonl") == (False, 0)
+
+
+def test_ledger_health_counts_corrupt(tmp_path: Path) -> None:
+    led = tmp_path / "methodology-dispatch.jsonl"
+    led.write_text(
+        json.dumps({"platform": "codex", "mode": "headless", "profile": "full"})
+        + "\n"
+        + "{ corrupt\n"
+        + "\n"
+        + "also not json\n",
+        encoding="utf-8",
+    )
+    exists, corrupt = ledger_health(led)
+    assert exists is True and corrupt == 2
 
 
 def test_load_valid_route_ids_reflects_real_registry() -> None:

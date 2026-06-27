@@ -22,8 +22,6 @@ receipt-only api/local) fails closed with a pointer — never a silent bypass.
 from __future__ import annotations
 
 import argparse
-import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -34,7 +32,9 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from shared.capability_dispatch import (  # noqa: E402
+    default_dispatch_ledger,
     launchable_aliases,
+    ledger_health,
     load_valid_route_ids,
     read_dispatch_ledger,
     registry_error,
@@ -44,20 +44,23 @@ from shared.capability_dispatch import (  # noqa: E402
 
 
 def dispatcher_cmd() -> list[str]:
-    """Resolve the governed dispatcher: env override -> PATH (deployed) -> sibling (tree)."""
-    override = os.environ.get("HAPAX_METHODOLOGY_DISPATCH_BIN")
-    if override:
-        return [override]
-    found = shutil.which("hapax-methodology-dispatch")
-    if found:
-        return [found]
+    """The governed dispatcher is the in-repo SIBLING — never env/PATH.
+
+    Trusting an env var or a PATH lookup would let a fake `hapax-methodology-dispatch`
+    (e.g. `/bin/true`, or a shim earlier in PATH) return success for an unvalidated
+    launch — bypassing task validation, route-policy admission, durable-MQ binding,
+    and the dispatch receipt. We trust only the dispatcher we ship beside (resolved
+    through symlinks, so an installed `~/.local/bin/cc-dispatch` still finds it).
+    """
     sibling = _HERE / "hapax-methodology-dispatch"
-    if sibling.exists():
-        return [sys.executable, str(sibling)]
-    print(
-        "cc-dispatch: hapax-methodology-dispatch not found (env / PATH / sibling)", file=sys.stderr
-    )
-    raise SystemExit(3)
+    if not sibling.exists():
+        print(
+            f"cc-dispatch: governed dispatcher not found at {sibling}; "
+            "refusing to dispatch via an untrusted path",
+            file=sys.stderr,
+        )
+        raise SystemExit(3)
+    return [sys.executable, str(sibling)]
 
 
 def print_list() -> int:
@@ -82,6 +85,19 @@ def print_utilization() -> int:
             file=sys.stderr,
         )
         return 1
+    exists, corrupt = ledger_health()
+    if not exists:
+        print(
+            f"cc-dispatch: WARNING — no dispatch ledger at {default_dispatch_ledger()}; "
+            "this scorecard reflects NO recorded history, not verified non-use",
+            file=sys.stderr,
+        )
+    elif corrupt:
+        print(
+            f"cc-dispatch: WARNING — {corrupt} corrupt ledger row(s) skipped; "
+            "the scorecard may be incomplete",
+            file=sys.stderr,
+        )
     u = utilization(read_dispatch_ledger(), valid_route_ids=valid)
     print("capability utilization (launched dispatches in the spine ledger):")
     print(f"  ACTIVE ({len(u.active)}/{len(u.known)}):")

@@ -4564,6 +4564,7 @@ _local_capacity_set_ttft_seconds = _LocalCapacityLlmCallSpan.set_ttft_seconds
 # RESUME capability-dispatch-spine-RESUME-2026-06-27 §P1 / CASE-CAPACITY-ROUTING-001.
 from shared.capability_dispatch import (
     launchable_aliases,  # noqa: E402
+    ledger_health,  # noqa: E402
     load_valid_route_ids,  # noqa: E402
     read_dispatch_ledger,  # noqa: E402
     registry_error,  # noqa: E402
@@ -4572,6 +4573,7 @@ from shared.capability_dispatch import (
 )
 
 launchable_aliases
+ledger_health
 load_valid_route_ids
 read_dispatch_ledger
 registry_error

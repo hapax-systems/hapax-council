@@ -248,6 +248,29 @@ def read_dispatch_ledger(path: Path | str | None = None) -> Iterator[dict]:
                 yield obj
 
 
+def ledger_health(path: Path | str | None = None) -> tuple[bool, int]:
+    """``(exists, corrupt_row_count)`` for the dispatch ledger.
+
+    Lets callers WARN that a LATENT scorecard reflects MISSING or DAMAGED evidence
+    (no ledger / corrupt rows) rather than verified non-use — ``read_dispatch_ledger``
+    silently skips both, which would otherwise hide bad observability input.
+    """
+    target = Path(path) if path is not None else default_dispatch_ledger()
+    if not target.exists():
+        return (False, 0)
+    corrupt = 0
+    with target.open(encoding="utf-8") as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                json.loads(line)
+            except ValueError:
+                corrupt += 1
+    return (True, corrupt)
+
+
 def record_route_id(record: dict) -> str | None:
     """Reconstruct ``<platform>.<mode>.<profile>`` from a ledger record, if present."""
     platform, mode, profile = record.get("platform"), record.get("mode"), record.get("profile")
