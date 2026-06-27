@@ -22,6 +22,7 @@ from unittest import mock
 import pytest
 
 from shared.edt_measure import (
+    DEFAULT_KNOBS_PATH,
     NUM_ROUTING_CLASSES,
     ROUTING_CLASSES,
     EdtKnobs,
@@ -725,3 +726,16 @@ def test_resolve_d2_unobserved_dim_contributes_zero() -> None:
     ]
     d2_all_fresh = _resolve_d2("claude.headless.full", fresh_route, NOW)
     assert d2_unobserved.done < d2_all_fresh.done
+
+
+# --------------------------------------------------------------------------------------------
+# 26. DEFAULT_KNOBS_PATH is module-anchored (absolute), so score_edt(registry) finds the shipped
+#     config from ANY cwd — a cwd-relative default would silently drop the operator's declared
+#     members (cohere/hf) and blind the D0 canary.
+# --------------------------------------------------------------------------------------------
+def test_default_knobs_path_is_absolute_and_resolves_shipped_config() -> None:
+    assert DEFAULT_KNOBS_PATH.is_absolute()
+    assert DEFAULT_KNOBS_PATH.is_file()
+    knobs = load_edt_knobs(None)  # resolves the default (shipped) config
+    assert "cohere" in knobs.expected_platform_members
+    assert "hf" in knobs.expected_platform_members
