@@ -11,12 +11,15 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
 _REPO = Path(__file__).resolve().parents[2]
 _MOD_PATH = _REPO / "hooks" / "scripts" / "sense_reissue_capture.py"
+_WRAPPER = _REPO / "hooks" / "scripts" / "sense-reissue-capture.sh"
 _spec = importlib.util.spec_from_file_location("sense_reissue_capture", _MOD_PATH)
 assert _spec is not None and _spec.loader is not None
 src = importlib.util.module_from_spec(_spec)
@@ -144,3 +147,127 @@ def test_main_is_fail_open_on_garbage_stdin(capsys) -> None:
     assert rc == 0
     emit.assert_not_called()
     assert capsys.readouterr().out == ""
+
+
+# --- run_emit: the subprocess boundary (was entirely mocked before; review-team blockers) ---
+
+
+def test_run_emit_against_real_cli_writes_event(tmp_path) -> None:
+    """Drive build_emit_command's argv through the REAL coord CLI — pins the flag contract
+    (a misspelled/absent flag would make argparse exit nonzero) AND run_emit's success path."""
+    cmd = src.build_emit_command(
+        role="dev2",
+        session_id="itest-sess",
+        program=None,
+        event_id="sigreissue-itest",
+        trigger_class="purview",
+        verbatim="research your purview",
+        python_exe=sys.executable,
+    )
+    cmd += [
+        "--db-path",
+        str(tmp_path / "c.db"),
+        "--jsonl-path",
+        str(tmp_path / "c.jsonl"),
+        "--spool-dir",
+        str(tmp_path / "spool"),
+    ]
+    receipt = src.run_emit(cmd)
+    assert receipt.get("appended") is True, receipt
+    rows = (tmp_path / "c.jsonl").read_text(encoding="utf-8")
+    assert "signal.reissue" in rows
+    assert "sigreissue-itest" in rows
+
+
+def test_run_emit_fail_open_on_nonzero_exit() -> None:
+    assert src.run_emit([sys.executable, "-c", "import sys; sys.exit(3)"]) == {}
+
+
+def test_run_emit_fail_open_on_garbage_stdout() -> None:
+    assert src.run_emit([sys.executable, "-c", "print('not json')"]) == {}
+
+
+def test_run_emit_fail_open_on_non_dict_json() -> None:
+    assert src.run_emit([sys.executable, "-c", "print('[1, 2, 3]')"]) == {}
+
+
+def test_run_emit_fail_open_on_missing_executable() -> None:
+    assert src.run_emit(["/nonexistent/python-xyz", "append"]) == {}
+
+
+def test_build_emit_command_truncates_long_verbatim() -> None:
+    cmd = src.build_emit_command(
+        role="dev2",
+        session_id="s",
+        program=None,
+        event_id="e",
+        trigger_class="coverage",
+        verbatim="x" * 1000,
+    )
+    payload = json.loads(cmd[cmd.index("--payload") + 1])
+    assert len(payload["verbatim"]) == 600
+    assert payload["trigger_class"] == "coverage"
+
+
+# --- program resolution (the critical: the real wrapper-to-core path must be program-scoped) ---
+
+
+def test_resolve_program_reads_train_from_active_task(tmp_path) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    (cache / "cc-active-task-dev2").write_text("cc-task-x-20260627\n", encoding="utf-8")
+    (tasks / "cc-task-x-20260627.md").write_text(
+        "---\nstatus: in_progress\ntrain: continuity-substrate\n---\n", encoding="utf-8"
+    )
+    assert src.resolve_program("dev2", cache_dir=cache, tasks_dir=tasks) == "continuity-substrate"
+
+
+def test_resolve_program_none_when_no_marker_or_role(tmp_path) -> None:
+    assert src.resolve_program("nobody", cache_dir=tmp_path, tasks_dir=tmp_path) is None
+    assert src.resolve_program("", cache_dir=tmp_path, tasks_dir=tmp_path) is None
+
+
+def test_main_resolves_and_passes_program() -> None:
+    stdin = io.StringIO(json.dumps({"prompt": "research your purview", "session_id": "s"}))
+    captured: dict[str, list[str]] = {}
+
+    def fake_emit(cmd):
+        captured["cmd"] = list(cmd)
+        return {"appended": True}
+
+    with (
+        mock.patch.object(src, "run_emit", side_effect=fake_emit),
+        mock.patch.object(src, "resolve_program", return_value="continuity-substrate"),
+    ):
+        rc = src.main(["dev2"], stdin=stdin, now=_NOW)
+    assert rc == 0
+    cmd = captured["cmd"]
+    assert "--parent-spec" in cmd
+    assert cmd[cmd.index("--parent-spec") + 1] == "continuity-substrate"
+
+
+def test_main_uses_wall_clock_when_now_is_none() -> None:
+    stdin = io.StringIO(json.dumps({"prompt": "research your purview", "session_id": "s"}))
+    with (
+        mock.patch.object(src, "run_emit", return_value={"appended": True}),
+        mock.patch.object(src, "resolve_program", return_value=None),
+    ):
+        rc = src.main(["dev2"], stdin=stdin)  # now omitted -> datetime.now(UTC) branch
+    assert rc == 0
+
+
+# --- the .sh wrapper: fail-open guarantee (was untested; review-team blockers) ---
+
+
+def test_wrapper_is_fail_open_on_garbage_stdin() -> None:
+    proc = subprocess.run(
+        [str(_WRAPPER)], input="{not json", capture_output=True, text=True, timeout=15
+    )
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_wrapper_is_fail_open_on_empty_stdin() -> None:
+    proc = subprocess.run([str(_WRAPPER)], input="", capture_output=True, text=True, timeout=15)
+    assert proc.returncode == 0, proc.stderr

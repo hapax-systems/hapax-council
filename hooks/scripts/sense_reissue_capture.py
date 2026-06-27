@@ -37,6 +37,10 @@ from pathlib import Path
 # repo root = hooks/scripts/<this> -> parents[2]; coord CLI runs with this on the path.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MAX_VERBATIM = 600
+_DEFAULT_CACHE_DIR = Path.home() / ".cache" / "hapax"
+_DEFAULT_TASKS_DIR = (
+    Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+)
 
 # (compiled pattern, trigger_class). Deliberately narrow: each requires a coverage/purview-specific
 # term, so "research the bug" / "make sure the tests pass" do NOT match. Ordered; first match wins.
@@ -185,18 +189,56 @@ def run_emit(cmd: Sequence[str]) -> dict[str, object]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def resolve_program(
+    role: str,
+    *,
+    cache_dir: Path = _DEFAULT_CACHE_DIR,
+    tasks_dir: Path = _DEFAULT_TASKS_DIR,
+) -> str | None:
+    """Best-effort program/train scope for the lane = the active cc-task's ``train`` field.
+
+    Reads the ``cc-active-task-<role>*`` marker -> task id -> the vault task's ``train:``. Any
+    failure returns None (the event is still captured, just unscoped). Never raises.
+    """
+    if not role:
+        return None
+    try:
+        markers = sorted(cache_dir.glob(f"cc-active-task-{role}*"))
+    except Exception:
+        return None
+    for marker in markers:
+        try:
+            lines = marker.read_text(encoding="utf-8").strip().splitlines()
+        except Exception:
+            continue
+        task_id = lines[0].strip() if lines else ""
+        if not task_id:
+            continue
+        try:
+            task_lines = (tasks_dir / f"{task_id}.md").read_text(encoding="utf-8").splitlines()
+        except Exception:
+            continue
+        for line in task_lines:
+            if line.startswith("train:"):
+                train = line.split(":", 1)[1].strip()
+                if train:
+                    return train
+    return None
+
+
 def format_receipt(receipt: dict[str, object], *, trigger_class: str) -> str:
     """One honest line for the operator (injected as context). Distinguishes committed vs spooled."""
     if receipt.get("appended"):
-        state = "captured"
-    elif receipt.get("spooled"):
-        state = "captured (queued for ingestion)"
-    else:
-        return ""
-    return (
-        f"⟂ sense {state}: signal.reissue [{trigger_class}] logged — this directive is now "
-        f"durable and role/program-scoped; it propagates to the gestalt fold (do not re-research)."
-    )
+        return (
+            f"⟂ sense captured: signal.reissue [{trigger_class}] committed — durable + "
+            f"role/program-scoped; it propagates to the gestalt fold (no need to re-research)."
+        )
+    if receipt.get("spooled"):
+        return (
+            f"⟂ sense captured (queued for ingestion): signal.reissue [{trigger_class}] spooled — "
+            f"it becomes durable and propagates once the daemon ingests the spool."
+        )
+    return ""
 
 
 def main(
@@ -225,6 +267,8 @@ def main(
     if not is_reissue or trigger_class is None:
         return 0
 
+    if program is None:
+        program = resolve_program(role)
     stamp = now or datetime.now(UTC)
     cmd = build_emit_command(
         role=role,
