@@ -38,7 +38,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REGISTRY_PATH = _REPO_ROOT / "config" / "platform-capability-registry.json"
 
 # The (platform, mode) pairs ``hapax-methodology-dispatch`` can actually spawn a
-# lane for — its ``launchers`` dict, verified against ``--list-platform-paths``.
+# lane for — mirroring its ``launchers`` dict. This literal is rechecked at RUNTIME
+# against the live ``--list-platform-paths`` by test_launchable_paths_match_live_dispatcher
+# (which fails, not silently passes, when the dispatcher is runnable), so drift surfaces.
 # Launchability is a (platform, mode) property, NOT platform alone: ``api`` and
 # ``local_tool`` ARE valid --platform values but are receipt-only ("no spawnable
 # lane"), so they must NOT be shown as launch capacity. A valid-but-non-launchable
@@ -97,6 +99,28 @@ def load_valid_route_ids(registry_path: Path | str | None = None) -> frozenset[s
     if not isinstance(route_ids, list):
         return frozenset()
     return frozenset(str(r) for r in route_ids)
+
+
+def registry_error(registry_path: Path | str | None = None) -> str | None:
+    """Return a human detail if the registry can't be read as expected, else None.
+
+    Distinguishes a real READ failure (missing file / malformed JSON / missing or
+    empty ``required_route_ids``) from a successfully-read registry, so callers can
+    name the actual fault instead of collapsing it into "route absent" / "0/0".
+    """
+    target = Path(registry_path) if registry_path is not None else DEFAULT_REGISTRY_PATH
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except OSError as exc:
+        return f"registry unreadable: {exc}"
+    except ValueError as exc:
+        return f"registry malformed JSON: {exc}"
+    route_ids = data.get("required_route_ids")
+    if not isinstance(route_ids, list):
+        return "registry missing required_route_ids list"
+    if not route_ids:
+        return "registry required_route_ids is empty"
+    return None
 
 
 def split_route_id(route_id: str) -> tuple[str, str, str] | None:

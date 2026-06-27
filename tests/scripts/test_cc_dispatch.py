@@ -111,7 +111,7 @@ def test_dispatch_launch_passes_launch_flag(monkeypatch) -> None:
     assert "--launch" in calls[0]
 
 
-def test_dispatch_passthrough_extra_flags(monkeypatch) -> None:
+def test_safe_flags_forwarded(monkeypatch) -> None:
     mod = _load()
     _patch_valid(monkeypatch, mod)
     calls: list[list[str]] = []
@@ -121,8 +121,35 @@ def test_dispatch_passthrough_extra_flags(monkeypatch) -> None:
         "run",
         lambda cmd, *a, **k: (calls.append(cmd), SimpleNamespace(returncode=0))[1],
     )
-    assert mod.main(["agy", "cc-task-x", "--lane", "agy-1", "--mq-message-id", "M1"]) == 0
-    assert "--mq-message-id" in calls[0] and "M1" in calls[0]
+    argv = [
+        "agy",
+        "cc-task-x",
+        "--lane",
+        "agy-1",
+        "--mq-message-id",
+        "M1",
+        "--idempotency-key",
+        "K1",
+    ]
+    assert mod.main(argv) == 0
+    cmd = calls[0]
+    assert cmd[cmd.index("--mq-message-id") + 1] == "M1"
+    assert cmd[cmd.index("--idempotency-key") + 1] == "K1"
+
+
+def test_reserved_flags_rejected(monkeypatch) -> None:
+    # CRITICAL: route-defining / receipt flags must NOT be operator-overridable.
+    # parse_args rejects them (unknown to cc-dispatch) -> SystemExit, never forwarded.
+    mod = _load()
+    _patch_valid(monkeypatch, mod)
+    for bad in (
+        ["--platform", "claude"],
+        ["--no-receipt"],
+        ["--task", "other"],
+        ["--skip-worktree-check"],
+    ):
+        with pytest.raises(SystemExit):
+            mod.main(["agy", "cc-task-x", "--lane", "agy-1", *bad])
 
 
 def test_missing_args_errors(monkeypatch) -> None:
@@ -176,3 +203,21 @@ def test_print_list_empty_registry_returns_1(monkeypatch, capsys) -> None:
     monkeypatch.setattr(mod, "load_valid_route_ids", lambda *a, **k: frozenset())
     assert mod.main(["--list"]) == 1
     assert "no launchable capabilities" in capsys.readouterr().err
+
+
+def test_utilization_unreadable_registry_returns_1(monkeypatch, capsys) -> None:
+    # MAJOR: utilization must NOT report 0/0 against an unread SSOT.
+    mod = _load()
+    monkeypatch.setattr(mod, "load_valid_route_ids", lambda *a, **k: frozenset())
+    monkeypatch.setattr(mod, "registry_error", lambda *a, **k: "registry unreadable: boom")
+    assert mod.main(["--utilization"]) == 1
+    err = capsys.readouterr().err
+    assert "cannot read the route registry" in err and "boom" in err
+
+
+def test_dispatch_unreadable_registry_returns_1(monkeypatch, capsys) -> None:
+    mod = _load()
+    monkeypatch.setattr(mod, "load_valid_route_ids", lambda *a, **k: frozenset())
+    monkeypatch.setattr(mod, "registry_error", lambda *a, **k: "registry malformed JSON: x")
+    assert mod.main(["agy", "cc-task-x", "--lane", "agy-1"]) == 1
+    assert "cannot read the route registry" in capsys.readouterr().err

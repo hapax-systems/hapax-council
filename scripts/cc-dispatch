@@ -37,6 +37,7 @@ from shared.capability_dispatch import (  # noqa: E402
     launchable_aliases,
     load_valid_route_ids,
     read_dispatch_ledger,
+    registry_error,
     resolve_capability,
     utilization,
 )
@@ -63,7 +64,8 @@ def print_list() -> int:
     valid = load_valid_route_ids()
     aliases = launchable_aliases(valid)
     if not aliases:
-        print("cc-dispatch: no launchable capabilities (registry unreadable?)", file=sys.stderr)
+        detail = registry_error() or "no launchable routes in required_route_ids"
+        print(f"cc-dispatch: no launchable capabilities ({detail})", file=sys.stderr)
         return 1
     for alias, route_id in sorted(aliases.items()):
         print(f"{alias:20s} -> {route_id}")
@@ -72,6 +74,14 @@ def print_list() -> int:
 
 def print_utilization() -> int:
     valid = load_valid_route_ids()
+    if not valid:
+        detail = registry_error() or "no required_route_ids"
+        print(
+            f"cc-dispatch: cannot read the route registry ({detail}); "
+            "refusing to report 0/0 utilization against an unread SSOT",
+            file=sys.stderr,
+        )
+        return 1
     u = utilization(read_dispatch_ledger(), valid_route_ids=valid)
     print("capability utilization (launched dispatches in the spine ledger):")
     print(f"  ACTIVE ({len(u.active)}/{len(u.known)}):")
@@ -111,8 +121,14 @@ def main(argv: list[str] | None = None) -> int:
         dest="list_caps",
         help="list launchable capabilities and exit",
     )
-    parser.add_argument("--slice-kind", default="", help="optional label for the slice")
-    args, passthrough = parser.parse_known_args(argv)
+    # Only an explicit SAFE allowlist of governed-dispatch options is forwarded. The
+    # route-defining flags (--task/--lane/--platform/--mode/--profile/--no-receipt) are
+    # owned by cc-dispatch and must never be operator-overridable — argparse is
+    # last-wins, so a raw passthrough could silently re-route or suppress the receipt.
+    # parse_args (not parse_known_args) rejects any other flag -> fail closed.
+    parser.add_argument("--mq-message-id", help="forward: durable relay MQ dispatch message id")
+    parser.add_argument("--idempotency-key", help="forward: stable idempotency key for replay")
+    args = parser.parse_args(argv)
 
     if args.list_caps:
         return print_list()
@@ -122,9 +138,16 @@ def main(argv: list[str] | None = None) -> int:
     if not args.capability or not args.cc_task:
         parser.error("capability and cc_task are required (or use --list / --utilization)")
 
+    # Name a registry-read failure as itself, not as "route absent" further down.
+    valid = load_valid_route_ids()
+    if not valid:
+        detail = registry_error() or "no required_route_ids"
+        print(f"cc-dispatch: cannot read the route registry ({detail})", file=sys.stderr)
+        return 1
+
     # Resolve FIRST so an un-routed / unknown / receipt-only capability fails closed
     # with its pointer regardless of --lane; --lane only matters once we have a lane to spawn.
-    res = resolve_capability(args.capability, valid_route_ids=load_valid_route_ids())
+    res = resolve_capability(args.capability, valid_route_ids=valid)
     if not res.ok:
         print(f"cc-dispatch: cannot dispatch '{args.capability}': {res.reason}", file=sys.stderr)
         return 2
@@ -149,7 +172,11 @@ def main(argv: list[str] | None = None) -> int:
     ]
     if args.launch:
         cmd.append("--launch")
-    cmd.extend(passthrough)
+    # forward ONLY the explicit safe options — never route-defining flags
+    if args.mq_message_id:
+        cmd += ["--mq-message-id", args.mq_message_id]
+    if args.idempotency_key:
+        cmd += ["--idempotency-key", args.idempotency_key]
 
     verb = "launching" if args.launch else "validating"
     print(f"cc-dispatch: {verb} {args.capability} -> {res.route_id} for {args.cc_task}")

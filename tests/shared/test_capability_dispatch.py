@@ -17,6 +17,7 @@ from shared.capability_dispatch import (
     load_valid_route_ids,
     read_dispatch_ledger,
     record_route_id,
+    registry_error,
     resolve_capability,
     split_route_id,
     utilization,
@@ -124,6 +125,26 @@ def test_load_valid_route_ids_malformed(tmp_path: Path) -> None:
     bad = tmp_path / "bad.json"
     bad.write_text("{not json", encoding="utf-8")
     assert load_valid_route_ids(bad) == frozenset()
+
+
+def test_registry_error_readable_returns_none() -> None:
+    assert registry_error() is None  # the shipped registry reads + has routes
+
+
+def test_registry_error_missing_file(tmp_path: Path) -> None:
+    assert "unreadable" in (registry_error(tmp_path / "nope.json") or "")
+
+
+def test_registry_error_malformed(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    assert "malformed" in (registry_error(bad) or "")
+
+
+def test_registry_error_missing_key(tmp_path: Path) -> None:
+    reg = tmp_path / "reg.json"
+    reg.write_text(json.dumps({"other": []}), encoding="utf-8")
+    assert "required_route_ids" in (registry_error(reg) or "")
 
 
 def test_load_valid_route_ids_reflects_real_registry() -> None:

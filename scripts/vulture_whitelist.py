@@ -4566,6 +4566,7 @@ from shared.capability_dispatch import (
     launchable_aliases,  # noqa: E402
     load_valid_route_ids,  # noqa: E402
     read_dispatch_ledger,  # noqa: E402
+    registry_error,  # noqa: E402
     resolve_capability,  # noqa: E402
     utilization,  # noqa: E402
 )
@@ -4573,5 +4574,6 @@ from shared.capability_dispatch import (
 launchable_aliases
 load_valid_route_ids
 read_dispatch_ledger
+registry_error
 resolve_capability
 utilization
