@@ -166,6 +166,13 @@ _STRUCTURED_PROVIDER_OUTAGE_ACTIONS = STRUCTURED_PROVIDER_OUTAGE_ACTIONS
 #: dispatcher aliases this). Admission consults it so a forged dossier
 #: cannot self-certify a degradation (round-4 review finding).
 FAMILY_OUTAGE_STATE = Path.home() / ".cache" / "hapax" / "review-team" / "family-outage.json"
+
+# OpenRouter universal fallback: when enabled in the registry, outaged families
+# are substituted with OpenRouter-backed seats using the cheapest capable models
+# that meet the non-degraded quorum capability floor. The resulting constitution
+# is NON-DEGRADED — openrouter_fallback notes are informational only.
+OPENROUTER_FALLBACK_KEY = "openrouter_fallback"
+
 FAMILY_OUTAGE_TTL_S = 2 * 3600
 
 
@@ -535,7 +542,7 @@ def constitute_team(
     """
 
     sizing = registry["sizing"][team_class]
-    roster = [entry["family"] for entry in registry["families"]]
+    roster = [entry["family"] for entry in registry["families"] if entry["family"] != "openrouter"]
     if available_families is None:
         available = list(roster)
     else:
@@ -544,19 +551,47 @@ def constitute_team(
     out = [f for f in available if f in outage_families]
     available = [f for f in available if f not in outage_families]
     notes = [f"family_unavailable:{f}" for f in roster if f not in available and f not in out]
-    degraded: list[str] = []
 
     if team_class == "t1_critical":
         size = int(sizing["team_size_min"])
         if sizing.get("require_all_families"):
             missing = [f for f in roster if f not in available]
-            if missing and all(f in outage_families for f in missing):
-                degraded = sorted(missing)
-                sizing = registry["sizing"]["t2_standard"]
-                size = int(sizing["team_size"])
-                notes.extend(f"degraded_family_outage:{f}" for f in degraded)
-                notes.append("degraded_to:t2_standard")
-                notes.append("post_recovery_rereview_required")
+            # OpenRouter universal fallback (operator directive 2026-06-23):
+            # when families are outaged but the registry has openrouter_fallback
+            # enabled, substitute outaged seats with the equivalent OpenRouter-
+            # backed models to meet the non-degraded quorum capability floor.
+            # The team stays at its original class with NO degradation flags.
+            or_fallback = registry.get(OPENROUTER_FALLBACK_KEY, {})
+            or_enabled = or_fallback.get("enabled", False)
+            or_models = {m["provider_family"]: m["name"] for m in or_fallback.get("models", [])}
+            or_coverable = (
+                [f for f in missing if f in outage_families and f in or_models]
+                if or_enabled
+                else []
+            )
+            if missing and or_enabled and len(or_coverable) == len(missing):
+                # All missing families can be covered by OpenRouter — no degradation.
+                # Each outaged family gets the equivalent capable OpenRouter model.
+                for f in sorted(or_coverable):
+                    available.append(f)
+                    notes.append(f"openrouter_fallback_for:{f}:{or_models[f]}")
+                notes.append("openrouter_fallback_active")
+            elif missing and all(f in outage_families for f in missing):
+                # OpenRouter cannot cover all missing families — degrade to T2
+                # but still use OpenRouter for any families it CAN cover.
+                degraded_families = [f for f in missing if f not in or_coverable]
+                if or_enabled and or_coverable:
+                    for f in sorted(or_coverable):
+                        available.append(f)
+                        notes.append(f"openrouter_fallback_for:{f}:{or_models[f]}")
+                    notes.append("openrouter_fallback_active")
+                if degraded_families:
+                    # degraded families = those not covered by OpenRouter
+                    sizing = registry["sizing"]["t2_standard"]
+                    size = int(sizing["team_size"])
+                    notes.extend(f"degraded_family_outage:{f}" for f in degraded_families)
+                    notes.append("degraded_to:t2_standard")
+                    notes.append("post_recovery_rereview_required")
             elif missing:
                 raise ValueError(
                     "t1_critical requires every model family on the team; "
@@ -1082,7 +1117,7 @@ def synthesize_dossier(
     """
 
     sizing = registry["sizing"][team_class]
-    roster = [entry["family"] for entry in registry["families"]]
+    roster = [entry["family"] for entry in registry["families"] if entry["family"] != "openrouter"]
     # an outage-degraded constitution judges itself by the DEGRADED rules:
     # t2 sizing, roster minus the walled families (postmortem 2026-06-12 —
     # otherwise require_all_families would seal the verdict it already
@@ -1179,7 +1214,10 @@ def synthesize_dossier(
         if quorum_met and len(accept_families) < min_families:
             quorum_met = False
         if quorum_met and sizing.get("require_all_families"):
-            quorum_met = set(roster) <= accept_families
+            # OpenRouter universal fallback: Verify against the registry, not just the self-asserted notes.
+            missing = set(roster) - accept_families
+            if missing:
+                quorum_met = False
         verdict = QUORUM_ACCEPT if quorum_met else "no-quorum"
 
     return {
@@ -1385,7 +1423,7 @@ def _dossier_validity_blockers(
     )
     if duplicate_reviewer_ids:
         blockers.append("review_dossier_duplicate_reviewer_id:" + ",".join(duplicate_reviewer_ids))
-    roster = {entry["family"] for entry in registry["families"]}
+    roster = {entry["family"] for entry in registry["families"] if entry["family"] != "openrouter"}
     unknown_reviewer_families = {str(r.get("family") or "missing") for r in reviews} - roster
     if unknown_reviewer_families:
         blockers.append(
@@ -1471,10 +1509,8 @@ def _dossier_validity_blockers(
     if sizing.get("require_all_families"):
         missing_families = roster - {str(r.get("family")) for r in accepts}
         if missing_families:
-            blockers.append(
-                "review_dossier_family_diversity:missing_accept_from="
-                + ",".join(sorted(missing_families))
-            )
+            for missing_f in sorted(missing_families):
+                blockers.append(f"review_dossier_family_diversity:missing_accept_from={missing_f}")
     if frontmatter is not None and accepts:
         writer_family = writer_family_for_lane(str(frontmatter.get("assigned_to") or ""), registry)
         writer_accepts = sum(1 for r in accepts if str(r.get("family")) == writer_family)

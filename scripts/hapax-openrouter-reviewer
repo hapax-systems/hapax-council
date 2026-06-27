@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Run one blind PR-review prompt through the LiteLLM gateway (OpenRouter routes).
+
+The review dispatcher passes a fully rendered prompt on stdin and expects the
+reviewer reply on stdout. This adapter calls the local LiteLLM gateway which
+routes to OpenRouter-backed models (claude-opus-or, deepseek, etc.),
+providing billing-path resilience when direct provider endpoints are
+quota-walled.
+
+Operator directive: when OpenRouter fills outaged family seats, the resulting
+quorum is treated as fully non-degraded.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+DEFAULT_MODEL = "claude-opus-or"
+DEFAULT_GATEWAY = "http://127.0.0.1:4000/v1/chat/completions"
+PASS_STORE_PATH = "litellm/master-key"
+
+SYSTEM_PROMPT = (
+    "You are a blind PR reviewer invoked non-interactively. Output policy is "
+    "ABSOLUTE and overrides any urge to explain: your ENTIRE reply MUST be "
+    "exactly one fenced yaml code block (opening ```yaml, your "
+    "verdict/findings/checklist, closing ```) and NOTHING ELSE — no preamble, "
+    "no reasoning, no prose, no text whatsoever before or after the fence. "
+    "The dossier parser requires the whole reply to be a single bare yaml "
+    "fence; ANY character outside it discards your entire review as "
+    "invalid-output (a silently lost vote). Do all reasoning silently; emit "
+    "only the fence."
+)
+
+
+def _api_key() -> str:
+    key = os.environ.get("LITELLM_MASTER_KEY", "").strip()
+    if key:
+        return key
+    try:
+        result = subprocess.run(
+            ["pass", PASS_STORE_PATH],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        return result.stdout.strip().splitlines()[0]
+    except (subprocess.SubprocessError, FileNotFoundError, IndexError):
+        pass
+    print(
+        "hapax-openrouter-reviewer: no auth token provided (check environment or "
+        f"store in pass {PASS_STORE_PATH})",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def _call_gateway(model: str, prompt: str, gateway: str, api_key: str) -> str:
+    body = json.dumps(
+        {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            "max_tokens": 8192,
+            "temperature": 0.0,
+        }
+    ).encode()
+    req = urllib.request.Request(
+        gateway,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=1200) as resp:
+            data = json.loads(resp.read())
+            return data["choices"][0]["message"]["content"]
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode(errors="replace")[:500]
+        code = exc.code
+        if code in (429, 402):
+            print(
+                f"hapax-openrouter-reviewer: quota-wall: HTTP {code}; {err_body}", file=sys.stderr
+            )
+        else:
+            print(f"hapax-openrouter-reviewer: api error: HTTP {code}; {err_body}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as exc:
+        print(f"hapax-openrouter-reviewer: error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--model", default=os.environ.get("HAPAX_OPENROUTER_REVIEW_MODEL", DEFAULT_MODEL)
+    )
+    parser.add_argument(
+        "--gateway", default=os.environ.get("HAPAX_OPENROUTER_GATEWAY", DEFAULT_GATEWAY)
+    )
+    args = parser.parse_args()
+
+    prompt = sys.stdin.read()
+    if not prompt.strip():
+        print("hapax-openrouter-reviewer: empty prompt on stdin", file=sys.stderr)
+        sys.exit(1)
+
+    api_key = _api_key()
+    reply = _call_gateway(args.model, prompt, args.gateway, api_key)
+    sys.stdout.write(reply)
+
+
+if __name__ == "__main__":
+    main()
