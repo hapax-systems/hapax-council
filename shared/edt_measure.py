@@ -191,9 +191,14 @@ def load_edt_knobs(path: Path | None = None) -> EdtKnobs:
     if not isinstance(raw, Mapping):
         raw = {}
 
+    # yaml.safe_load deserializes YAML booleans (yes/no/true/false) as Python bool, and bool IS an
+    # int subclass — so a stray boolean knob would slip through `isinstance(int)` as 0/1. Reject it
+    # explicitly and fall back to the default (fail-safe).
     expected_set = raw.get("expected_platform_set", DEFAULT_EXPECTED_PLATFORM_SET)
     expected_set = (
-        int(expected_set) if isinstance(expected_set, int) else DEFAULT_EXPECTED_PLATFORM_SET
+        int(expected_set)
+        if isinstance(expected_set, int) and not isinstance(expected_set, bool)
+        else DEFAULT_EXPECTED_PLATFORM_SET
     )
 
     members_raw = raw.get("expected_platform_members")
@@ -204,7 +209,9 @@ def load_edt_knobs(path: Path | None = None) -> EdtKnobs:
 
     depth_cap = raw.get("depth_cap", DEFAULT_DEPTH_CAP)
     depth_cap = (
-        int(depth_cap) if isinstance(depth_cap, int) and depth_cap > 0 else DEFAULT_DEPTH_CAP
+        int(depth_cap)
+        if isinstance(depth_cap, int) and not isinstance(depth_cap, bool) and depth_cap > 0
+        else DEFAULT_DEPTH_CAP
     )
 
     phantoms_raw = raw.get("retired_phantoms")
@@ -817,7 +824,14 @@ def score_edt(
     route_map = registry.route_map()
 
     observed_platforms = {route.platform.value for route in registry.routes}
-    omitted_platforms = tuple(sorted(set(knobs.expected_platform_members) - observed_platforms))
+    # retired_phantoms are EXPLICIT EXCLUSIONS (counted in expected_platform_set but deliberately not
+    # expected to be observed) — they are "done" per the D0 spec, NOT omitted. Excluding them keeps the
+    # canary a true missing-capability signal (e.g. gemini: declared, not retired, not observed).
+    omitted_platforms = tuple(
+        sorted(
+            set(knobs.expected_platform_members) - observed_platforms - set(knobs.retired_phantoms)
+        )
+    )
 
     def _receipt_for(route: PlatformCapabilityRoute) -> PlatformCapabilityReceipt | None:
         # The repository loader (load_platform_capability_receipts) keys receipts by PLATFORM and

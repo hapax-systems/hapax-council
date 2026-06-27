@@ -598,6 +598,23 @@ def test_receipts_quota_unobservable_makes_blocked_subscription_route_available(
     )
     assert leaf_no_receipt.d4 is not None and leaf_no_receipt.d4.available is False
 
+    # MIXED reasons: a removable quota reason AND an unrelated blocker -> NOT all removable -> stays
+    # unavailable even with the receipt (the subset check is conjunctive, not "any removable").
+    payload_mixed = _fresh_payload()
+    opus_mixed = _route_in(payload_mixed, "claude.headless.opus")
+    opus_mixed["route_state"] = "blocked"
+    opus_mixed["blocked_reasons"] = ["account_live_quota_receipt_absent", "session_dead"]
+    leaf_mixed = _leaf_for(
+        score_edt(
+            _registry(payload_mixed),
+            knobs_path=_knobs_file(_OBSERVED_MEMBERS),
+            receipts=receipts,
+            now=NOW,
+        ),
+        "claude.headless.opus",
+    )
+    assert leaf_mixed.d4 is not None and leaf_mixed.d4.available is False
+
 
 # --------------------------------------------------------------------------------------------
 # 20. d0_omitted gate fails closed at leaf AND platform level (direct unit)
@@ -696,16 +713,20 @@ def test_shipped_config_retired_phantoms_are_omitted() -> None:
     shipped = Path(__file__).resolve().parents[2] / "config" / "edt-platform-knobs.yaml"
     assert shipped.is_file(), shipped
     knobs = load_edt_knobs(shipped)
+    # cohere/hf are counted in the declared members + retired_phantoms (the operator's target total)
     assert "cohere" in knobs.expected_platform_members
     assert "hf" in knobs.expected_platform_members
+    assert set(knobs.retired_phantoms) == {"cohere", "hf"}
 
     payload = _fresh_payload()
     measures = score_edt(_registry(payload), knobs_path=shipped, now=NOW)
+    # retired_phantoms are EXPLICIT EXCLUSIONS ("done"), NOT omitted — the canary must not flag them
     for phantom in ("cohere", "hf"):
-        assert phantom in measures[0].omitted_platforms
-        synthetic = _by_platform(measures, phantom)
-        assert synthetic.leaves == ()
-        assert synthetic.platform_passes is False
+        assert phantom not in measures[0].omitted_platforms
+    # gemini IS declared, NOT retired, NOT observed -> a genuine omission (the canary's real signal)
+    assert "gemini" in measures[0].omitted_platforms
+    gemini = _by_platform(measures, "gemini")
+    assert gemini.leaves == () and gemini.platform_passes is False
 
 
 # --------------------------------------------------------------------------------------------
@@ -739,3 +760,16 @@ def test_default_knobs_path_is_absolute_and_resolves_shipped_config() -> None:
     knobs = load_edt_knobs(None)  # resolves the default (shipped) config
     assert "cohere" in knobs.expected_platform_members
     assert "hf" in knobs.expected_platform_members
+
+
+# --------------------------------------------------------------------------------------------
+# 27. boolean YAML scalars for numeric knobs are rejected (bool is an int subclass) -> defaults
+# --------------------------------------------------------------------------------------------
+def test_load_edt_knobs_rejects_boolean_yaml_scalars() -> None:
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False, encoding="utf-8")
+    # `yes`/`true` deserialize to Python bool (an int subclass) — must NOT coerce to int(True)==1
+    tmp.write("expected_platform_set: yes\ndepth_cap: true\nexpected_platform_members: [claude]\n")
+    tmp.close()
+    knobs = load_edt_knobs(Path(tmp.name))
+    assert knobs.expected_platform_set == 12  # default, NOT int(True)==1
+    assert knobs.depth_cap == 20  # default, NOT int(True)==1
