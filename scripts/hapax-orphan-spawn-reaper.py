@@ -208,6 +208,27 @@ def current_start_ticks(pid, proc_root="/proc"):
         return None
 
 
+def signal_if_same(pid, expected_start_ticks, sig, *, start_ticks_fn=None, kill_fn=os.kill):
+    """Send ``sig`` to ``pid`` ONLY if it still names the same process.
+
+    The PID-reuse guard applies to BOTH phases (SIGTERM and SIGKILL), not just
+    the SIGKILL escalation: a pid recycled between the /proc snapshot and the
+    signal must never receive EITHER signal (review-team finding 2026-06-27).
+    Re-reads the live start-time and compares it to the snapshot's; a mismatch
+    (process exited, or pid reused) means skip. Returns True iff the signal was
+    actually sent. (The residual stat-read→kill window is microseconds — the
+    finding was the unguarded snapshot→SIGTERM window, which this closes.)
+    """
+    fn = start_ticks_fn or current_start_ticks
+    if fn(pid) != expected_start_ticks:
+        return False
+    try:
+        kill_fn(pid, sig)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
 def pane_roots_from_tmux(run=None):
     """Pane pids of all live tmux sessions, or None if tmux cannot be queried.
 
@@ -313,27 +334,19 @@ def main(argv=None):
 
     reaped = 0
     if not args.dry_run:
-        # Remember each target's start-time so the SIGKILL pass can confirm the
-        # pid still names the SAME process before escalating (PID-reuse guard).
+        # Snapshot each target's start-time; BOTH the SIGTERM and the SIGKILL
+        # pass confirm the pid still names the SAME process before signalling,
+        # so a pid recycled after the /proc snapshot never receives either signal.
         expected_start = {p["pid"]: p.get("start_ticks") for p in procs if p["pid"] in kill}
         for pid in sorted(kill):
-            try:
-                os.kill(pid, signal.SIGTERM)
+            if signal_if_same(pid, expected_start.get(pid), signal.SIGTERM):
                 reaped += 1
-            except (ProcessLookupError, PermissionError):
-                pass
-        # Give trees a moment to exit on SIGTERM, then SIGKILL stragglers — but
-        # only if the pid is still the same process (start-time unchanged), so a
-        # pid recycled during the grace window is never killed.
+        # Give trees a moment to exit on SIGTERM, then SIGKILL the stragglers
+        # (same PID-reuse guard).
         if kill:
             time.sleep(3)
             for pid in sorted(kill):
-                if current_start_ticks(pid) != expected_start.get(pid):
-                    continue  # gone, or pid reused → leave it alone
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    pass
+                signal_if_same(pid, expected_start.get(pid), signal.SIGKILL)
 
     summary = {"candidates": len(kill), "reaped": reaped, "dry_run": args.dry_run}
     if args.json:

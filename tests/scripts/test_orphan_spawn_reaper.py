@@ -133,6 +133,34 @@ def test_live_pane_closure_walks_full_descendant_tree():
     assert reaper.live_pane_closure(procs, [10]) == {10, 11, 12}
 
 
+def test_signal_if_same_sends_when_start_ticks_match():
+    sent = []
+    ok = reaper.signal_if_same(
+        1234, 555, 15, start_ticks_fn=lambda pid: 555, kill_fn=lambda p, s: sent.append((p, s))
+    )
+    assert ok is True
+    assert sent == [(1234, 15)]
+
+
+def test_signal_if_same_skips_recycled_pid_both_phases():
+    # The pid's live start-time differs from the snapshot (reused) → NEVER signal,
+    # for SIGTERM (15) or SIGKILL (9). This is the review-team's SIGTERM-phase gap.
+    for sig in (15, 9):
+        sent = []
+        ok = reaper.signal_if_same(
+            1234, 555, sig, start_ticks_fn=lambda pid: 999, kill_fn=lambda p, s: sent.append((p, s))
+        )
+        assert ok is False
+        assert sent == []
+
+
+def test_signal_if_same_swallows_process_lookup():
+    def boom(p, s):
+        raise ProcessLookupError
+
+    assert reaper.signal_if_same(1, 5, 15, start_ticks_fn=lambda pid: 5, kill_fn=boom) is False
+
+
 def test_current_start_ticks_reads_field_and_handles_missing(tmp_path):
     fields = ["S"] + [str(x) for x in range(100, 140)]
     fields[19] = "777"  # field 22 overall = starttime
