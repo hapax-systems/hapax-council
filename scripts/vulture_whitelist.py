@@ -4189,6 +4189,11 @@ append_gate_event
 read_gate_events
 is_persistent
 
+# Called from scripts/hapax-methodology-dispatch (a non-.py script vulture cannot scan).
+from shared.gate_event_producer import build_gate_event  # noqa: E402
+
+build_gate_event
+
 # Capability-routing D8 governance floor (Phase 0.3) — Pydantic invokes this
 # model_validator dynamically during TaskSpec validation; vulture cannot follow
 # that dynamic path. REQ-20260616-capability-aware-routing / S5-CAPABILITY-ROUTING-TIER1.
