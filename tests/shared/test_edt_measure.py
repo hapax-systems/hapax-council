@@ -564,7 +564,9 @@ def _blocked_opus_payload(reason: str) -> dict:
 
 
 def test_receipts_quota_unobservable_makes_blocked_subscription_route_available() -> None:
-    receipts = {"claude.headless.opus": _make_receipt("claude.headless.opus", "claude")}
+    # receipts are keyed by PLATFORM (the real load_platform_capability_receipts shape), with route
+    # coverage in receipt.routes — NOT a route_id key.
+    receipts = {"claude": _make_receipt("claude.headless.opus", "claude")}
 
     # blocked ONLY by a removable quota reason + the quota-unobservable receipt -> available
     payload = _blocked_opus_payload("account_live_quota_receipt_absent")
@@ -621,16 +623,12 @@ def test_d0_omitted_gate_fails_closed() -> None:
     )
     assert leaf.d0_omitted is True
     assert leaf.passes is False
-    measure = score_platform(
-        "claude",
-        [leaf],
-        knobs=knobs,
-        expected_platform_set=12,
-        expected_platform_members=tuple(_OBSERVED_MEMBERS),
-        observed_platform_count=7,
-        omitted_platforms=(),
-    )
+    # the declared API is score_platform(platform, leaves, *, knobs) — expected_set/members come
+    # from knobs; observed_platform_count/omitted_platforms default when omitted by a contract caller
+    measure = score_platform("claude", [leaf], knobs=knobs)
     assert measure.platform_passes is False
+    assert measure.expected_platform_set == knobs.expected_platform_set
+    assert measure.observed_platform_count == 0  # default for a standalone call
 
 
 # --------------------------------------------------------------------------------------------
@@ -698,11 +696,38 @@ def test_blocked_variant_leaf_is_unavailable() -> None:
 #     (the shipped config declares 10 members incl cohere/hf; verify that path end-to-end)
 # --------------------------------------------------------------------------------------------
 def test_shipped_config_retired_phantoms_are_omitted() -> None:
+    # load the ACTUAL shipped config/edt-platform-knobs.yaml (not a mirrored temp file) so a typo or
+    # drift in the committed YAML fails this test.
+    shipped = Path(__file__).resolve().parents[2] / "config" / "edt-platform-knobs.yaml"
+    assert shipped.is_file(), shipped
+    knobs = load_edt_knobs(shipped)
+    assert "cohere" in knobs.expected_platform_members
+    assert "hf" in knobs.expected_platform_members
+
     payload = _fresh_payload()
-    shipped_members = [*_OBSERVED_MEMBERS, "cohere", "hf"]  # mirrors config/edt-platform-knobs.yaml
-    measures = score_edt(_registry(payload), knobs_path=_knobs_file(shipped_members), now=NOW)
+    measures = score_edt(_registry(payload), knobs_path=shipped, now=NOW)
     for phantom in ("cohere", "hf"):
         assert phantom in measures[0].omitted_platforms
         synthetic = _by_platform(measures, phantom)
         assert synthetic.leaves == ()
         assert synthetic.platform_passes is False
+
+
+# --------------------------------------------------------------------------------------------
+# 25. _resolve_d2 freshness edge: a None/stale observed_at zeroes that dim's contribution
+# --------------------------------------------------------------------------------------------
+def test_resolve_d2_unobserved_dim_contributes_zero() -> None:
+    payload = _fresh_payload(score=5, confidence=5)
+    route = _registry(payload).route_map()["claude.headless.full"]
+    base = dict(route.capability_scores.model_dump())
+    # grounding never observed -> freshness_factor 0 -> done_dim 0, but still counted in the denominator
+    base["grounding"] = {**base["grounding"], "observed_at": None}
+    with mock.patch.object(type(route.capability_scores), "model_dump", return_value=base):
+        d2_unobserved = _resolve_d2("claude.headless.full", route, NOW)
+    # the dim is still present (counted in the denominator) but contributes 0 to done
+    assert d2_unobserved.required == 14
+    fresh_route = _registry(_fresh_payload(score=5, confidence=5)).route_map()[
+        "claude.headless.full"
+    ]
+    d2_all_fresh = _resolve_d2("claude.headless.full", fresh_route, NOW)
+    assert d2_unobserved.done < d2_all_fresh.done

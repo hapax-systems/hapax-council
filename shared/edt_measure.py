@@ -753,17 +753,16 @@ def score_platform(
     leaves: Sequence[LeafEdt],
     *,
     knobs: EdtKnobs,
-    expected_platform_set: int,
-    expected_platform_members: tuple[str, ...],
-    observed_platform_count: int,
-    omitted_platforms: tuple[str, ...],
+    observed_platform_count: int = 0,
+    omitted_platforms: tuple[str, ...] = (),
 ) -> EdtMeasure:
     """Aggregate a platform's leaves (MIN ratio/completeness/evidence, MAX provisional, MIN-by-rank
     depth_class). An OMITTED platform is scored with empty ``leaves`` -> ``platform_passes=False``.
 
-    ``knobs`` is part of the declared public-API contract; it is RESERVED for STEP-0 per-platform
-    knob-driven aggregation (e.g. a depth-cap or threshold override) and accepted now so callers code
-    against the stable signature."""
+    Matches the declared public-API signature ``(platform, leaves, *, knobs)``: ``expected_platform_set``
+    and ``expected_platform_members`` are read from ``knobs`` (so a contract caller needs only knobs),
+    while ``observed_platform_count``/``omitted_platforms`` are OPTIONAL registry-global context that
+    ``score_edt`` supplies for the full D0 canary (a standalone call defaults them to 0/()."""
     platform_ratio = _min_optional([leaf.specificity_ratio for leaf in leaves])
     platform_completeness = _min_optional([leaf.slice_policy_completeness for leaf in leaves])
     platform_evidence = _min_optional([leaf.evidence_health for leaf in leaves])
@@ -798,8 +797,8 @@ def score_platform(
         depth_class=depth_class,
         platform_passes=platform_passes,
         leaves=tuple(leaves),
-        expected_platform_set=expected_platform_set,
-        expected_platform_members=expected_platform_members,
+        expected_platform_set=knobs.expected_platform_set,
+        expected_platform_members=knobs.expected_platform_members,
         observed_platform_count=observed_platform_count,
         omitted_platforms=omitted_platforms,
         build_defense_caveat=_BUILD_DEFENSE_CAVEATS,
@@ -824,18 +823,27 @@ def score_edt(
     observed_platforms = {route.platform.value for route in registry.routes}
     omitted_platforms = tuple(sorted(set(knobs.expected_platform_members) - observed_platforms))
 
+    def _receipt_for(route: PlatformCapabilityRoute) -> PlatformCapabilityReceipt | None:
+        # The repository loader (load_platform_capability_receipts) keys receipts by PLATFORM and
+        # carries route coverage in receipt.routes — match that shape, not a route_id key.
+        if not receipts:
+            return None
+        candidate = receipts.get(route.platform.value)
+        if candidate is not None and route.route_id in candidate.routes:
+            return candidate
+        return None
+
     leaves_by_platform: dict[str, list[LeafEdt]] = {}
     for leaf_key, descriptor in materialize_descriptor_leaves(registry).items():
         route = route_map[leaf_key.split("#")[0]]
         platform = route.platform.value
-        receipt = receipts.get(route.route_id) if receipts else None
         leaf = score_variant_leaf(
             leaf_key,
             descriptor,
             route,
             knobs=knobs,
             registry=registry,
-            receipt=receipt,
+            receipt=_receipt_for(route),
             now=resolved_now,
             d0_omitted=platform in omitted_platforms,
         )
@@ -846,8 +854,6 @@ def score_edt(
             platform,
             leaves,
             knobs=knobs,
-            expected_platform_set=knobs.expected_platform_set,
-            expected_platform_members=knobs.expected_platform_members,
             observed_platform_count=len(observed_platforms),
             omitted_platforms=omitted_platforms,
         )
