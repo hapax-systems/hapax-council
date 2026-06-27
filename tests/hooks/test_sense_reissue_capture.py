@@ -339,6 +339,34 @@ def test_resolve_program_prefers_session_keyed_over_stale_legacy(tmp_path) -> No
     assert src.resolve_program("dev2", cache_dir=cache, tasks_dir=tasks) == "program-A"
 
 
+def test_resolve_program_reads_descriptor_named_note(tmp_path) -> None:
+    # cc-claim resolves the note as <task_id>-*.md (descriptor-named) before <task_id>.md, so the hook
+    # must too — otherwise descriptor-named claimed tasks silently lose program scope.
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    (cache / "cc-active-task-dev2").write_text("cc-task-descr-20260627\n", encoding="utf-8")
+    (tasks / "cc-task-descr-20260627-some-slug.md").write_text(
+        "---\ntrain: continuity-substrate\n---\n", encoding="utf-8"
+    )
+    assert src.resolve_program("dev2", cache_dir=cache, tasks_dir=tasks) == "continuity-substrate"
+
+
+def test_classify_assigns_trigger_classes_by_name() -> None:
+    assert src.classify_reissue("research your purview") == (True, "purview")
+    assert src.classify_reissue("make sure you have all directional signals in view") == (
+        True,
+        "coverage",
+    )
+    assert src.classify_reissue("follow all the leads") == (True, "completeness")
+    assert src.classify_reissue("you are missing a large tranche of planned work") == (
+        True,
+        "suspected-gap",
+    )
+    assert src.classify_reissue("make sure you didn't go lossy after compaction") == (True, "lossy")
+
+
 def test_run_emit_fail_open_on_timeout() -> None:
     with mock.patch.object(
         src.subprocess, "run", side_effect=src.subprocess.TimeoutExpired("x", 8)
@@ -351,7 +379,9 @@ def test_wrapper_success_path_emits_event(tmp_path) -> None:
     shell forwards a re-issue to the core and an event lands — the path where a program/flag break
     would surface in production."""
     coord = tmp_path / "coord"
-    env = {**os.environ, "HAPAX_COORD_DIR": str(coord), "HAPAX_AGENT_NAME": "dev2"}
+    # No role env: the wrapper resolves whatever role it can (or roleless) and still emits — this test
+    # pins the shell->core->CLI path + fail-open exit, not a specific role (avoids agent-role.sh coupling).
+    env = {**os.environ, "HAPAX_COORD_DIR": str(coord)}
     proc = subprocess.run(
         [str(_WRAPPER)],
         input=json.dumps({"prompt": "research your purview", "session_id": "wrap-itest"}),

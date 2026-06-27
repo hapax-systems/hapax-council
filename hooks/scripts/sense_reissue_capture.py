@@ -38,15 +38,6 @@ from pathlib import Path
 # repo root = hooks/scripts/<this> -> parents[2]; coord CLI runs with this on the path.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MAX_VERBATIM = 600
-# Env-configurable (XDG-aware cache; HAPAX_CC_TASKS_DIR override). The fallback is the codebase-wide
-# cc-task SSOT — the SAME path as shared.coord_projection.DEFAULT_VAULT_TASKS / cc-claim's vault_root
-# (not a developer-specific path); under the single_user axiom this is where cc-tasks always live. If
-# absent, resolve_program fail-opens to role-scoped (events are still captured).
-_DEFAULT_CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")) / "hapax"
-_DEFAULT_TASKS_DIR = Path(
-    os.environ.get("HAPAX_CC_TASKS_DIR")
-    or (Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active")
-)
 
 # (compiled pattern, trigger_class). Deliberately narrow: each requires a coverage/purview-specific
 # term, so "research the bug" / "make sure the tests pass" do NOT match. Ordered; first match wins.
@@ -201,36 +192,78 @@ def run_emit(cmd: Sequence[str]) -> dict[str, object]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _default_cache_dir() -> Path:
+    """XDG-aware cache dir holding the cc-active-task markers (matches coord_event_log's XDG logic)."""
+    return Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")) / "hapax"
+
+
+def _default_tasks_dir() -> Path:
+    """The cc-task SSOT ``active/`` dir. Prefer ``HAPAX_CC_TASKS_DIR``, else the canonical
+    ``shared.coord_projection.DEFAULT_VAULT_TASKS`` imported BY REFERENCE (so it cannot drift from the
+    rest of the spine — addresses the hardcoded-mirror fragility), else the literal as a last resort.
+    Resolved lazily so the import is paid only when a re-issue actually fires, never per prompt.
+    """
+    env = os.environ.get("HAPAX_CC_TASKS_DIR")
+    if env:
+        return Path(env)
+    try:
+        if str(_REPO_ROOT) not in sys.path:
+            sys.path.insert(0, str(_REPO_ROOT))
+        from shared.coord_projection import DEFAULT_VAULT_TASKS
+
+        return DEFAULT_VAULT_TASKS / "active"
+    except Exception:
+        return Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+
+
+def _train_from_note(tasks_dir: Path, task_id: str) -> str | None:
+    """Read the ``train:`` from a claimed task note. Mirrors cc-claim's note resolution: a
+    descriptor-named ``<task_id>-*.md`` is preferred, then the exact ``<task_id>.md``."""
+    try:
+        notes = sorted(tasks_dir.glob(f"{task_id}-*.md"))
+    except Exception:
+        notes = []
+    notes.append(tasks_dir / f"{task_id}.md")
+    for note in notes:
+        try:
+            lines = note.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            continue
+        for line in lines:
+            if line.startswith("train:"):
+                train = line.split(":", 1)[1].strip()
+                if train:
+                    return train
+    return None
+
+
 def resolve_program(
     role: str,
     *,
     session_id: str | None = None,
-    cache_dir: Path = _DEFAULT_CACHE_DIR,
-    tasks_dir: Path = _DEFAULT_TASKS_DIR,
+    cache_dir: Path | None = None,
+    tasks_dir: Path | None = None,
 ) -> str | None:
     """Best-effort program/train scope for the lane = the active cc-task's ``train`` field.
 
-    Reads the cc-active-task marker -> task id -> the vault task's ``train:``. Mirrors cc-claim's
-    pointer convention: PREFER the session-keyed claim ``cc-active-task-<role>-<session_id>`` (the
-    gate's preferred pointer), then the legacy ``cc-active-task-<role>``, then any other session-keyed
-    marker — so a stale legacy pointer from another session cannot attach the wrong train. Any failure
-    returns None (the event is still captured, just role-scoped). Never raises.
+    Mirrors cc-claim's pointer convention: PREFER the session-keyed claim
+    ``cc-active-task-<role>-<session_id>`` (the gate's preferred pointer), then the legacy
+    ``cc-active-task-<role>`` (which cc-claim always also writes). No cross-session glob — another
+    session's claim must never supply this lane's scope. The marker holds the task id; the note is
+    resolved as ``<task_id>-*.md`` then ``<task_id>.md``. Any failure returns None (the event is still
+    captured, just role-scoped). Never raises.
     """
     if not role:
         return None
+    cache = cache_dir or _default_cache_dir()
+    tasks = tasks_dir or _default_tasks_dir()
     candidates: list[Path] = []
     if session_id:
-        candidates.append(cache_dir / f"cc-active-task-{role}-{session_id}")
-    candidates.append(cache_dir / f"cc-active-task-{role}")  # legacy fallback
-    try:
-        candidates.extend(sorted(cache_dir.glob(f"cc-active-task-{role}-*")))
-    except Exception:
-        pass
-    seen: set[Path] = set()
+        candidates.append(cache / f"cc-active-task-{role}-{session_id}")
+    candidates.append(
+        cache / f"cc-active-task-{role}"
+    )  # legacy fallback (always written by cc-claim)
     for marker in candidates:
-        if marker in seen:
-            continue
-        seen.add(marker)
         try:
             lines = marker.read_text(encoding="utf-8").strip().splitlines()
         except Exception:
@@ -238,15 +271,9 @@ def resolve_program(
         task_id = lines[0].strip() if lines else ""
         if not task_id:
             continue
-        try:
-            task_lines = (tasks_dir / f"{task_id}.md").read_text(encoding="utf-8").splitlines()
-        except Exception:
-            continue
-        for line in task_lines:
-            if line.startswith("train:"):
-                train = line.split(":", 1)[1].strip()
-                if train:
-                    return train
+        train = _train_from_note(tasks, task_id)
+        if train:
+            return train
     return None
 
 
