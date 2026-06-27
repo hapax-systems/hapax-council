@@ -181,11 +181,17 @@ if [ -z "$SESSION" ]; then
 fi
 
 # Validate ROLE: the space-separated allowlist (fixed greek slots + antigrav,
-# env-tunable) PLUS the cc-<name> pattern — relay-coordinated Claude lanes are
-# first-class governed lanes (hooks/scripts/agent-role.sh assert-identity).
+# env-tunable) PLUS the cc-<name> pattern (relay-coordinated Claude lanes) PLUS
+# the hapax-dev interactive pool (dev, dev2..devN) — all first-class governed
+# lanes (hooks/scripts/agent-role.sh assert-identity). The dev* pattern keeps
+# this in sync BY SHAPE with hapax-dev's CLAUDE_POOL (HAPAX_DEV_CLAUDE_POOL =
+# "dev dev2 dev3 dev4 dev5"), so it does not re-drift as the pool grows; the
+# greek slots are the headless reform fleet, the dev* pool is the interactive
+# operator-session namespace. (A unified role SSOT is the pending overhaul.)
 ROLE_OK=0
 case "$SESSION" in
   cc-[a-z]*) ROLE_OK=1 ;;
+  dev|dev[0-9]*) ROLE_OK=1 ;;
 esac
 if [ "$ROLE_OK" -ne 1 ]; then
   for r in $ROLE_ALLOWLIST; do
@@ -196,7 +202,7 @@ if [ "$ROLE_OK" -ne 1 ]; then
   done
 fi
 if [ "$ROLE_OK" -ne 1 ]; then
-  echo "hapax-claude-send: invalid role '$SESSION' (allowed: $ROLE_ALLOWLIST, or cc-<name>)" >&2
+  echo "hapax-claude-send: invalid role '$SESSION' (allowed: $ROLE_ALLOWLIST, cc-<name>, or dev/dev<N>)" >&2
   echo "  override via HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST=\"alpha beta gamma ...\"" >&2
   exit 2
 fi

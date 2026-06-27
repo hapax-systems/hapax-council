@@ -158,3 +158,64 @@ JSON
     assert result.returncode == 0, result.stderr
     assert "alpha: tmux=False foot=True" in result.stdout
     assert "stale_tmux_not_claude:fish" in result.stdout
+
+
+def _fast_fail_targeting(bin_dir: Path) -> None:
+    # tmux has no session, hyprctl no windows -> targeting fails fast (no hang) AFTER the role gate.
+    _write_exe(
+        bin_dir / "tmux",
+        '#!/usr/bin/env bash\ncase "$1" in has-session) exit 1 ;; *) exit 0 ;; esac\n',
+    )
+    _write_exe(bin_dir / "hyprctl", "#!/usr/bin/env bash\nprintf '[]\\n'\n")
+
+
+def test_send_accepts_dev_interactive_pool_roles(tmp_path: Path) -> None:
+    # The hapax-dev interactive pool (dev, dev2..devN) must pass the role gate — keeping
+    # hapax-claude-send in sync with hapax-dev's CLAUDE_POOL so review-team auto-wakes reach dev lanes.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fast_fail_targeting(bin_dir)
+    for role in ("dev", "dev2", "dev3", "dev5"):
+        result = subprocess.run(
+            [
+                "bash",
+                str(SEND),
+                "--session",
+                role,
+                "--transport",
+                "auto",
+                "--no-submit",
+                "--",
+                "msg",
+            ],
+            capture_output=True,
+            text=True,
+            env=_env(tmp_path, bin_dir),
+            timeout=5,
+        )
+        assert "invalid role" not in result.stderr, (role, result.returncode, result.stderr)
+
+
+def test_send_rejects_unknown_role(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fast_fail_targeting(bin_dir)
+    result = subprocess.run(
+        [
+            "bash",
+            str(SEND),
+            "--session",
+            "boguslane",
+            "--transport",
+            "auto",
+            "--no-submit",
+            "--",
+            "msg",
+        ],
+        capture_output=True,
+        text=True,
+        env=_env(tmp_path, bin_dir),
+        timeout=5,
+    )
+    assert result.returncode == 2
+    assert "invalid role 'boguslane'" in result.stderr
