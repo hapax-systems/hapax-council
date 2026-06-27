@@ -53,7 +53,12 @@ def _hold_local_capacity_span(
 
     with child_llm_call_span(model="command-r", route="dmn-thinking"):
         ready.set()
-        release.wait(5)
+        # Generous upper bound: the child must hold its capacity span until the PARENT
+        # signals release, which the parent does only after its own inflight==2/==1
+        # assertions. Under merge-group CI load that synchronous parent section can take
+        # several seconds; a tight wait let the child release early and raced the parent's
+        # assertion. The Event fires instantly on the happy path — this is only a ceiling.
+        release.wait(60)
 
 
 class TestTokenVolume:
@@ -183,7 +188,7 @@ class TestSpanEmitsTokensNotCost:
         )
         proc.start()
         try:
-            assert ready.wait(5)
+            assert ready.wait(30)
             with llm_call_span(model="command-r", route="dmn-thinking"):
                 active = json.loads(path.read_text(encoding="utf-8"))
                 assert active["inflight"] == 2
@@ -193,10 +198,10 @@ class TestSpanEmitsTokensNotCost:
             assert after_parent["inflight"] == 1
         finally:
             release.set()
-            proc.join(5)
+            proc.join(30)
             if proc.is_alive():
                 proc.terminate()
-                proc.join(5)
+                proc.join(30)
 
         assert proc.exitcode == 0
         finished = json.loads(path.read_text(encoding="utf-8"))
