@@ -48,18 +48,47 @@ def test_gather_sources_never_queries_self_generated_collection() -> None:
     # reintroduce self-citation while the constant test still passes.
     queried: list[str] = []
 
-    def _fake_qdrant_search(collection: str, topic: str, limit: int = 5) -> list:
+    def _fake_qdrant_search_by_vector(
+        collection: str, vector: list[float], *, limit: int = 5
+    ) -> list:
         queried.append(collection)
         return []
 
     with (
-        patch("agents.programme_authors.asset_resolver._qdrant_search", _fake_qdrant_search),
+        patch(
+            "agents.programme_authors.asset_resolver._qdrant_search_by_vector",
+            _fake_qdrant_search_by_vector,
+        ),
         patch("agents.programme_authors.asset_resolver._vault_notes_for_topic", lambda *a, **k: []),
+        patch("shared.config.embed_safe", lambda text, prefix=None: [0.0] * 768),
     ):
         angle_resolver._gather_sources("any topic")
 
     assert "stream-reactions" not in queried
     assert queried  # it did query the remaining (grounding) collections
+
+
+def test_gather_sources_embeds_topic_once_not_per_collection() -> None:
+    # Fix B: the recruit-density probe must embed the topic ONCE and reuse the vector
+    # across all collections — was: one embed per collection (N re-embeds of the same
+    # query, the probe's embed cost). One embed regardless of how many collections queried.
+    embed_calls: list[str] = []
+
+    def _fake_embed_safe(text, model=None, prefix=None, block_gpu=True):
+        embed_calls.append(text)
+        return [0.0] * 768
+
+    with (
+        patch(
+            "agents.programme_authors.asset_resolver._qdrant_search_by_vector",
+            lambda collection, vector, *, limit=5: [],
+        ),
+        patch("agents.programme_authors.asset_resolver._vault_notes_for_topic", lambda *a, **k: []),
+        patch("shared.config.embed_safe", _fake_embed_safe),
+    ):
+        angle_resolver._gather_sources("a single topic")
+
+    assert embed_calls == ["a single topic"]
 
 
 def test_recruit_source_set_supplements_via_web_when_local_dry() -> None:

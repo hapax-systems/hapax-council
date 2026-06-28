@@ -101,6 +101,18 @@ MODELS: dict[str, str] = {
 
 EMBEDDING_MODEL: str = "nomic-embed-cpu"
 EXPECTED_EMBED_DIMENSIONS: int = 768
+
+# CPU-only embed models bypass the GPU-VRAM coordinator (mirrors shared.config — see there
+# for the full rationale: a CPU embed contends for no VRAM, so gpu_slot's flock must not
+# serialize it; that was the producer deadlock). Vendored copy keeps agents.research/query
+# robust without depending on shared.config.
+_CPU_EMBED_MODELS: frozenset[str] = frozenset({"nomic-embed-cpu"})
+
+
+def _is_cpu_embed_model(model_name: str) -> bool:
+    return model_name in _CPU_EMBED_MODELS or model_name.endswith("-cpu")
+
+
 CLAP_EMBED_DIMENSIONS: int = 512
 STUDIO_MOMENTS_COLLECTION: str = "studio-moments"
 
@@ -154,6 +166,7 @@ def _get_ollama_client():
 def embed(text: str, model: str | None = None, prefix: str = "search_query") -> list[float]:
     """Generate embedding via Ollama."""
     model_name = model or EMBEDDING_MODEL
+    cpu_model = _is_cpu_embed_model(model_name)
     _parent = trace.get_current_span()
     _caller_agent = ""
     if _parent and hasattr(_parent, "attributes") and _parent.attributes:
@@ -166,10 +179,13 @@ def embed(text: str, model: str | None = None, prefix: str = "search_query") -> 
         span.set_attribute("rag.embed.text_length", len(text))
         prefixed = f"{prefix}: {text}" if prefix else text
         try:
+            from contextlib import nullcontext
+
             from agents._gpu_semaphore import gpu_slot
 
             client = _get_ollama_client()
-            with gpu_slot():
+            slot = nullcontext() if cpu_model else gpu_slot()
+            with slot:
                 result = client.embed(model=model_name, input=prefixed)
         except Exception as exc:
             span.set_attribute("rag.error", str(exc)[:500])
@@ -203,6 +219,7 @@ def embed_batch(
     if not texts:
         return []
     model_name = model or EMBEDDING_MODEL
+    cpu_model = _is_cpu_embed_model(model_name)
     _parent = trace.get_current_span()
     _caller_agent = ""
     if _parent and hasattr(_parent, "attributes") and _parent.attributes:
@@ -216,10 +233,13 @@ def embed_batch(
         span.set_attribute("rag.embed_batch.total_chars", sum(len(t) for t in texts))
         prefixed = [f"{prefix}: {t}" if prefix else t for t in texts]
         try:
+            from contextlib import nullcontext
+
             from agents._gpu_semaphore import gpu_slot
 
             client = _get_ollama_client()
-            with gpu_slot():
+            slot = nullcontext() if cpu_model else gpu_slot()
+            with slot:
                 result = client.embed(model=model_name, input=prefixed)
         except Exception as exc:
             span.set_attribute("rag.error", str(exc)[:500])
