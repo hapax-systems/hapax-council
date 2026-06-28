@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""cc-dispatch — one-command governed capability dispatch (the friendly spine surface).
+
+Resolve a capability name to a governed route (validated against the registry), then
+validate (default) or ``--launch`` the dispatch through ``hapax-methodology-dispatch``
+— which records it in the spine's own ledger. Observe with ``--utilization``.
+
+Examples:
+  cc-dispatch --list                                 # launchable capabilities -> route_ids
+  cc-dispatch agy cc-task-foo --lane agy-1           # validate routing agy -> the task (no launch)
+  cc-dispatch agy cc-task-foo --lane agy-1 --launch  # actually launch the lane
+  cc-dispatch fugu cc-task-foo --lane x              # fails CLOSED with the route-definition follow-on
+  cc-dispatch --utilization                          # active-vs-latent capability scorecard
+
+The governed dispatcher requires a target --lane (the worktree/session to spawn in);
+cc-dispatch passes it through. Auto-deriving the lane from the routing calculus is the
+P2 follow-on (the doctrine: the operator steers direction; the calculus derives lane/
+speed/provider). A capability with no spawnable lane (fugu/sakana/glmcp-worker, or
+receipt-only api/local) fails closed with a pointer — never a silent bypass.
+"""
+
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+_REPO_ROOT = _HERE.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from shared.capability_dispatch import (  # noqa: E402
+    default_dispatch_ledger,
+    launchable_aliases,
+    ledger_health,
+    load_valid_route_ids,
+    read_dispatch_ledger,
+    registry_error,
+    resolve_capability,
+    utilization,
+)
+
+
+def dispatcher_cmd() -> list[str]:
+    """The governed dispatcher is the in-repo SIBLING — never env/PATH.
+
+    Trusting an env var or a PATH lookup would let a fake `hapax-methodology-dispatch`
+    (e.g. `/bin/true`, or a shim earlier in PATH) return success for an unvalidated
+    launch — bypassing task validation, route-policy admission, durable-MQ binding,
+    and the dispatch receipt. We trust only the dispatcher we ship beside (resolved
+    through symlinks, so an installed `~/.local/bin/cc-dispatch` still finds it).
+    """
+    sibling = _HERE / "hapax-methodology-dispatch"
+    if not sibling.exists():
+        print(
+            f"cc-dispatch: governed dispatcher not found at {sibling}; "
+            "refusing to dispatch via an untrusted path",
+            file=sys.stderr,
+        )
+        raise SystemExit(3)
+    return [sys.executable, str(sibling)]
+
+
+def print_list() -> int:
+    valid = load_valid_route_ids()
+    aliases = launchable_aliases(valid)
+    if not aliases:
+        detail = registry_error() or "no launchable routes in required_route_ids"
+        print(f"cc-dispatch: no launchable capabilities ({detail})", file=sys.stderr)
+        return 1
+    for alias, route_id in sorted(aliases.items()):
+        print(f"{alias:20s} -> {route_id}")
+    return 0
+
+
+def print_utilization() -> int:
+    valid = load_valid_route_ids()
+    if not valid:
+        detail = registry_error() or "no required_route_ids"
+        print(
+            f"cc-dispatch: cannot read the route registry ({detail}); "
+            "refusing to report 0/0 utilization against an unread SSOT",
+            file=sys.stderr,
+        )
+        return 1
+    exists, corrupt = ledger_health()
+    if not exists:
+        print(
+            f"cc-dispatch: WARNING — no dispatch ledger at {default_dispatch_ledger()}; "
+            "this scorecard reflects NO recorded history, not verified non-use",
+            file=sys.stderr,
+        )
+    elif corrupt:
+        print(
+            f"cc-dispatch: WARNING — {corrupt} corrupt ledger row(s) skipped; "
+            "the scorecard may be incomplete",
+            file=sys.stderr,
+        )
+    u = utilization(read_dispatch_ledger(), valid_route_ids=valid)
+    print("capability utilization (launched dispatches in the spine ledger):")
+    print(f"  ACTIVE ({len(u.active)}/{len(u.known)}):")
+    for route_id in u.active:
+        print(
+            f"    {u.alias_for.get(route_id, route_id):20s} {route_id}  x{u.counts.get(route_id, 0)}"
+        )
+    print(f"  LATENT ({len(u.latent)}/{len(u.known)}) — capabilities we are not using:")
+    for route_id in u.latent:
+        print(f"    {u.alias_for.get(route_id, route_id):20s} {route_id}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="cc-dispatch",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "capability", nargs="?", help="capability name (see --list) or a raw route_id"
+    )
+    parser.add_argument("cc_task", nargs="?", help="the cc-task id (slice) to dispatch")
+    parser.add_argument(
+        "--lane",
+        help="target lane/worktree to dispatch into — required to dispatch (e.g. agy-1, cx-red)",
+    )
+    parser.add_argument(
+        "--launch", action="store_true", help="actually launch (default: validate only)"
+    )
+    parser.add_argument(
+        "--utilization", action="store_true", help="print the active-vs-latent scorecard and exit"
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        dest="list_caps",
+        help="list launchable capabilities and exit",
+    )
+    # Only an explicit SAFE allowlist of governed-dispatch options is forwarded. The
+    # route-defining flags (--task/--lane/--platform/--mode/--profile/--no-receipt) are
+    # owned by cc-dispatch and must never be operator-overridable — argparse is
+    # last-wins, so a raw passthrough could silently re-route or suppress the receipt.
+    # parse_args (not parse_known_args) rejects any other flag -> fail closed.
+    parser.add_argument("--mq-message-id", help="forward: durable relay MQ dispatch message id")
+    parser.add_argument("--idempotency-key", help="forward: stable idempotency key for replay")
+    args = parser.parse_args(argv)
+
+    if args.list_caps:
+        return print_list()
+    if args.utilization:
+        return print_utilization()
+
+    if not args.capability or not args.cc_task:
+        parser.error("capability and cc_task are required (or use --list / --utilization)")
+
+    # Name a registry-read failure as itself, not as "route absent" further down.
+    valid = load_valid_route_ids()
+    if not valid:
+        detail = registry_error() or "no required_route_ids"
+        print(f"cc-dispatch: cannot read the route registry ({detail})", file=sys.stderr)
+        return 1
+
+    # Resolve FIRST so an un-routed / unknown / receipt-only capability fails closed
+    # with its pointer regardless of --lane; --lane only matters once we have a lane to spawn.
+    res = resolve_capability(args.capability, valid_route_ids=valid)
+    if not res.ok:
+        print(f"cc-dispatch: cannot dispatch '{args.capability}': {res.reason}", file=sys.stderr)
+        return 2
+
+    if not args.lane:
+        parser.error(
+            "--lane is required to dispatch (the target worktree/session); "
+            "the governed dispatcher requires both --task and --lane"
+        )
+
+    cmd = dispatcher_cmd() + [
+        "--task",
+        args.cc_task,
+        "--lane",
+        args.lane,
+        "--platform",
+        res.platform or "",
+        "--mode",
+        res.mode or "",
+        "--profile",
+        res.profile or "",
+    ]
+    if args.launch:
+        cmd.append("--launch")
+    # forward ONLY the explicit safe options — never route-defining flags
+    if args.mq_message_id:
+        cmd += ["--mq-message-id", args.mq_message_id]
+    if args.idempotency_key:
+        cmd += ["--idempotency-key", args.idempotency_key]
+
+    verb = "launching" if args.launch else "validating"
+    print(f"cc-dispatch: {verb} {args.capability} -> {res.route_id} for {args.cc_task}")
+    return subprocess.run(cmd).returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

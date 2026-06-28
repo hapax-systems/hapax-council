@@ -4557,3 +4557,27 @@ _avi_intent_fields_from_record_and_frame
 from agents.telemetry.llm_call_span import LlmCallSpan as _LocalCapacityLlmCallSpan  # noqa: E402
 
 _local_capacity_set_ttft_seconds = _LocalCapacityLlmCallSpan.set_ttft_seconds
+
+# cc-dispatch capability surface — shared.capability_dispatch's resolver / ledger
+# reader / utilization rollup are called by scripts/cc-dispatch (an extensionless
+# script vulture cannot scan) + the test suite, not a static .py caller.
+# RESUME capability-dispatch-spine-RESUME-2026-06-27 §P1 / CASE-CAPACITY-ROUTING-001.
+from shared.capability_dispatch import (
+    launchable_aliases,  # noqa: E402
+    ledger_health,  # noqa: E402
+    load_valid_route_ids,  # noqa: E402
+    read_dispatch_ledger,  # noqa: E402
+    registry_error,  # noqa: E402
+    resolve_capability,  # noqa: E402
+    utilization,  # noqa: E402
+)
+
+_ = (
+    launchable_aliases,
+    ledger_health,
+    load_valid_route_ids,
+    read_dispatch_ledger,
+    registry_error,
+    resolve_capability,
+    utilization,
+)
