@@ -4595,6 +4595,7 @@ from shared.worktree_registry import (
     list_records,  # noqa: E402
     live_process_count,  # noqa: E402
     mtime_age_seconds,  # noqa: E402
+    probe_worktree,  # noqa: E402
     set_status,  # noqa: E402
 )
 
@@ -4603,9 +4604,10 @@ _ = (
     is_clean,
     is_infra_path,
     is_merged,
+    is_reapable,
     list_records,
     live_process_count,
     mtime_age_seconds,
+    probe_worktree,
     set_status,
-    is_reapable,
 )

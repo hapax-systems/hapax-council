@@ -24,6 +24,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -32,9 +33,11 @@ from pydantic import BaseModel
 
 Status = Literal["infra", "active", "merging", "abandoned", "done"]
 
-# A worktree whose owner heartbeat is older than this AND has no live process is no longer
-# "being worked" — the create -> work -> destroy contract was broken.
-DEFAULT_ABANDONED_AFTER_S = 3600
+# A worktree with no live process, no open PR, and no activity (heartbeat OR mtime) newer than this
+# is "abandoned". Deliberately generous (12h, not 1h) so a paused-mid-work session — operator at
+# lunch, a lane between commits — is NOT misread as abandoned; the automatic reaper passes an even
+# longer --min-idle-hours window. The live-process check is the primary, instantaneous guard.
+DEFAULT_ABANDONED_AFTER_S = 12 * 3600
 
 
 class WorktreeRecord(BaseModel):
@@ -113,8 +116,12 @@ def register(
     status: Status = "active",
     host: str | None = None,
     now: datetime | None = None,
+    last_heartbeat: datetime | None = None,
 ) -> WorktreeRecord:
-    """Create or refresh a registration. Preserves ``created_at`` across re-registration."""
+    """Create or refresh a registration. Preserves ``created_at`` across re-registration. ``now`` is
+    the creation timestamp; ``last_heartbeat`` defaults to ``now`` but can be set to a worktree's REAL
+    last-activity (e.g. its mtime) on back-fill, so a freshly-written record does not falsely look
+    just-heartbeated."""
     ts = _now(now)
     existing = load(path)
     created = existing.created_at if existing else ts
@@ -129,7 +136,7 @@ def register(
         pr=pr if pr is not None else (existing.pr if existing else None),
         status=status,
         created_at=created,
-        last_heartbeat=ts,
+        last_heartbeat=last_heartbeat if last_heartbeat is not None else ts,
         host=host if host is not None else (existing.host if existing else None),
     )
     save(rec)
@@ -214,13 +221,15 @@ def classify(
     return "abandoned"
 
 
-def is_reapable(status: Status, clean: bool) -> bool:
-    """Reap a checkout ONLY by EXPLICIT status — never by inference. Reapable iff ``done`` (merged,
-    work is already in base) or ``abandoned`` (no live owner, no open PR, stale). An ``active`` or
-    ``merging`` (open-PR, follow-through-in-progress) lane is KEPT — that is the whole point of the
-    registry: abandoned must be distinguishable from paused BEFORE cleanup. Dirty worktrees are never
-    reaped (unsaved work). The branch + commits survive ``git worktree remove``; only the checkout goes."""
-    return status in ("done", "abandoned") and clean
+def is_reapable(status: Status, clean: bool, *, live: bool = False) -> bool:
+    """Reap a checkout ONLY by EXPLICIT status — never by inference. Reapable iff status is ``done``
+    (merged, work is in base) or ``abandoned`` (no live owner, no open PR, stale), AND it is clean,
+    AND it is NOT live. The ``live`` gate is decisive even for ``done``: ``classify`` calls a merged
+    worktree ``done`` *before* checking liveness, so a merged worktree with an active process is
+    ``done`` yet must NOT be removed (someone is working in it; the merged-branch cleanup is the GC's
+    job, not ours). ``active``/``merging`` (open-PR) lanes are kept; dirty worktrees are kept (unsaved
+    work). The branch + commits survive ``git worktree remove``; only the checkout goes."""
+    return (not live) and clean and status in ("done", "abandoned")
 
 
 # --- probes (integration: read git + /proc; exercised via the CLI on real worktrees) -----------------
@@ -302,3 +311,53 @@ def mtime_age_seconds(path: str, *, now_epoch: float | None = None) -> float:
         return float("inf")
     now = now_epoch if now_epoch is not None else datetime.now(UTC).timestamp()
     return max(0.0, now - newest)
+
+
+def probe_worktree(
+    *,
+    path: str,
+    branch: str | None,
+    canonical: str,
+    open_pr_branches: set[str] | None,
+    abandoned_after_s: int = DEFAULT_ABANDONED_AFTER_S,
+    live_count_fn: Callable[[str], int] = live_process_count,
+    now_epoch: float | None = None,
+) -> dict | None:
+    """Derive a worktree's full status from live signals (the real reap code path; unit-tested with an
+    injected ``live_count_fn``). Returns None if the path is gone. Staleness folds BOTH the registry
+    ``last_heartbeat`` (set by the ``heartbeat`` subcommand / the P3 hook) AND the filesystem mtime —
+    the FRESHEST wins — so a heartbeated-but-quiet session reads ``active``, while a back-filled record
+    (whose ``last_heartbeat`` is seeded from mtime) reflects real activity. Keys: path, branch, infra,
+    live, clean, merged, has_pr, status."""
+    real = os.path.realpath(path)
+    if not os.path.isdir(real):
+        return None
+    infra = is_infra_path(real, canonical=canonical)
+    live = live_count_fn(real) > 0
+    clean = is_clean(real)
+    merged = is_merged(canonical, branch) if branch else False
+    has_pr = bool(open_pr_branches is not None and branch and branch in open_pr_branches)
+    now = now_epoch if now_epoch is not None else datetime.now(UTC).timestamp()
+    ages = [mtime_age_seconds(real, now_epoch=now)]
+    rec = load(real)
+    if rec is not None:
+        ages.append(max(0.0, now - rec.last_heartbeat.timestamp()))
+    status = classify(
+        is_infra=infra,
+        live=live,
+        clean=clean,
+        merged=merged,
+        heartbeat_age_s=min(ages),
+        abandoned_after_s=abandoned_after_s,
+        has_open_pr=has_pr,
+    )
+    return {
+        "path": real,
+        "branch": branch,
+        "infra": infra,
+        "live": live,
+        "clean": clean,
+        "merged": merged,
+        "has_pr": has_pr,
+        "status": status,
+    }

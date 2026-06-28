@@ -143,6 +143,16 @@ def test_not_reapable_dirty_even_if_abandoned() -> None:
     assert wr.is_reapable("abandoned", clean=False) is False
 
 
+def test_not_reapable_live_even_if_done() -> None:
+    # CRITICAL: classify() returns `done` for a merged worktree BEFORE checking liveness, so a merged
+    # worktree with a live process must still be protected from removal by the live gate.
+    assert wr.is_reapable("done", clean=True, live=True) is False
+
+
+def test_not_reapable_live_even_if_abandoned() -> None:
+    assert wr.is_reapable("abandoned", clean=True, live=True) is False
+
+
 # --- record CRUD round-trips (registry keyed by path) ------------------------------------------------
 
 
@@ -256,3 +266,102 @@ def test_mtime_age_resolves_linked_worktree_gitdir(tmp_path) -> None:
     git_dir = wr._resolve_git_dir(str(wt))
     assert git_dir is not None and os.path.isdir(git_dir)
     assert wr.mtime_age_seconds(str(wt)) < 3600
+
+
+# --- probe_worktree(): the real reap derivation path, through actual worktrees -----------------------
+
+# A fixed "now" far past every test-created mtime (system clock is well before 2040) but a valid
+# datetime — so an idle worktree reads stale without depending on wall-clock timing.
+_FUTURE = datetime(2040, 1, 1, tzinfo=UTC)
+_FUTURE_EPOCH = _FUTURE.timestamp()
+
+
+def _add_worktree(repo, name):
+    wt = repo.parent / name
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-q", "-b", f"feat/{name}", str(wt)],
+        check=True,
+    )
+    return wt, f"feat/{name}"
+
+
+def test_probe_abandoned_when_idle_no_pr_nonlive(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, branch = _add_worktree(repo, "wt")
+    p = wr.probe_worktree(
+        path=str(wt),
+        branch=branch,
+        canonical=str(repo),
+        open_pr_branches=set(),
+        abandoned_after_s=3600,
+        live_count_fn=lambda _p: 0,
+        now_epoch=_FUTURE_EPOCH,
+    )
+    assert p is not None
+    assert p["status"] == "abandoned"
+    assert wr.is_reapable(p["status"], p["clean"], live=p["live"]) is True
+
+
+def test_probe_merging_open_pr_is_kept(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, branch = _add_worktree(repo, "wt")
+    p = wr.probe_worktree(
+        path=str(wt),
+        branch=branch,
+        canonical=str(repo),
+        open_pr_branches={branch},
+        abandoned_after_s=3600,
+        live_count_fn=lambda _p: 0,
+        now_epoch=_FUTURE_EPOCH,
+    )
+    assert p is not None
+    assert p["status"] == "merging"
+    assert wr.is_reapable(p["status"], p["clean"], live=p["live"]) is False
+
+
+def test_probe_live_is_active_kept(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, branch = _add_worktree(repo, "wt")
+    p = wr.probe_worktree(
+        path=str(wt),
+        branch=branch,
+        canonical=str(repo),
+        open_pr_branches=set(),
+        abandoned_after_s=3600,
+        live_count_fn=lambda _p: 1,
+        now_epoch=_FUTURE_EPOCH,
+    )
+    assert p is not None
+    assert p["status"] == "active"
+    assert wr.is_reapable(p["status"], p["clean"], live=p["live"]) is False
+
+
+def test_probe_fresh_heartbeat_protects_idle_lane(tmp_path, monkeypatch) -> None:
+    # CRITICAL: a heartbeated session reads `active` even with an old mtime — paused != abandoned.
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, branch = _add_worktree(repo, "wt")
+    wr.register(os.path.realpath(str(wt)), branch=branch, last_heartbeat=_FUTURE)
+    p = wr.probe_worktree(
+        path=str(wt),
+        branch=branch,
+        canonical=str(repo),
+        open_pr_branches=set(),
+        abandoned_after_s=3600,
+        live_count_fn=lambda _p: 0,
+        now_epoch=_FUTURE_EPOCH,
+    )
+    assert p is not None
+    assert p["status"] == "active"
+    assert wr.is_reapable(p["status"], p["clean"], live=p["live"]) is False
