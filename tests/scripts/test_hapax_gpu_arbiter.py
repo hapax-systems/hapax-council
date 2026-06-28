@@ -113,11 +113,26 @@ def test_livestream_dev_via_cctask_heuristic(tmp_path: Path) -> None:
     tasks = paths.tasks
     _seed(
         tasks / "cc-task-compositor-fix.md",
-        "---\nstatus: in_progress\n---\nwork on the darkplaces compositor\n",
+        "---\nstatus: in_progress\nmutation_scope_refs:\n  - agents/studio_compositor/compositor.py\n---\nfix a rendering bug\n",
     )
     d = arb.decide(paths)
     assert d["mode"] == "PRODUCTION"
     assert "cc-task" in d["livestream_dev_why"]
+
+
+def test_keyword_mention_without_av_scope_is_not_dev(tmp_path: Path) -> None:
+    # A task that merely MENTIONS the surface (body keywords) but whose governed
+    # mutation_scope_refs touch no AV-source path must NOT pin PRODUCTION — authoritative
+    # metadata only, not free-text (CodeRabbit security finding). Mirrors this arbiter task.
+    paths = _paths(tmp_path)
+    _seed(paths.stream_mode, "private\n")
+    _seed(
+        paths.tasks / "cc-task-mentions-livestream.md",
+        "---\nstatus: in_progress\nmutation_scope_refs:\n  - scripts/some-tool\n---\nabout the livestream compositor gpu\n",
+    )
+    d = arb.decide(paths)
+    assert d["livestream_dev"] is False
+    assert d["mode"] == "ORNITH"
 
 
 def test_falsey_dev_flag_is_off(tmp_path: Path) -> None:
@@ -175,3 +190,12 @@ def test_set_livestream_dev_on_off(tmp_path: Path) -> None:
     assert arb.livestream_dev_active(paths)[0] is True
     arb.set_livestream_dev(False, paths)
     assert arb.livestream_dev_active(paths)[0] is False
+
+
+def test_set_override_atomic_leaves_no_temp(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    arb.set_override("ornith", paths)
+    arb.set_override("production", paths)
+    # temp-then-replace must leave only the target file, never a stray temp.
+    assert [p.name for p in paths.override.parent.iterdir()] == [paths.override.name]
+    assert arb.get_override(paths.override) == "production"

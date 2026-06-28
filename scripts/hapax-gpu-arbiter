@@ -16,7 +16,8 @@ a manual ``override=ornith``. Production-priority is structural, encoded in ``de
 Signals (file-backed, err toward protecting production):
   (1) livestreaming         : ~/.cache/hapax/stream-mode == 'public' (operator intent; 'private'/unset = not live)
   (2) livestream-surface-dev: ~/.cache/hapax/livestream-surface-dev present & truthy, OR a cc-task
-                              in_progress whose head mentions the compositor surface (heuristic backstop)
+                              in_progress whose GOVERNED mutation_scope_refs touch an AV-source path
+                              (authoritative metadata, not free-text body keywords — heuristic backstop)
   override                  : ~/.cache/hapax/gpu-arbiter-override in {auto, production, ornith} (default auto)
 """
 
@@ -24,8 +25,11 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
+from shared.frontmatter import parse_frontmatter
 
 _CACHE = Path.home() / ".cache" / "hapax"
 _TASKS = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
@@ -38,15 +42,18 @@ _PROM = (
     / "hapax-gpu-arbiter.prom"
 )
 
-# Keywords marking a cc-task as "developing the livestream surface" (signal-2 heuristic backstop).
-SURFACE_KEYWORDS = (
+# AV-source path SEGMENTS (mirrors shared.release_gate): a cc-task counts as "developing the
+# livestream surface" only when its GOVERNED mutation_scope_refs touch one of these — authoritative
+# task metadata, not free-text body keywords, so a stray note cannot pin the 5090 to PRODUCTION.
+_AV_SOURCE_SEGMENTS = (
     "compositor",
-    "livestream",
-    "screwm",
     "darkplaces",
+    "screwm",
+    "shaders",
     "reverie",
-    "studio",
-    "1080p",
+    "quake",
+    "pipewire",
+    "wireplumber",
 )
 _FALSEY = ("", "0", "off", "false", "no")
 
@@ -73,6 +80,16 @@ def _read(path: Path) -> str:
         return ""
 
 
+def _atomic_write(path: Path, data: str) -> None:
+    # temp file in the same dir + atomic replace, so a concurrent decide() never reads a
+    # truncated control file (write_text truncates in place — a fail-closed weakening).
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as tmp:
+        tmp.write(data)
+        tmp_path = Path(tmp.name)
+    tmp_path.replace(path)
+
+
 def is_livestreaming(stream_mode_path: Path) -> tuple[bool, str]:
     mode = _read(stream_mode_path).lower()
     if mode == "public":
@@ -80,17 +97,29 @@ def is_livestreaming(stream_mode_path: Path) -> tuple[bool, str]:
     return False, f"stream-mode={mode or 'unset'}"
 
 
+def _ref_touches_av_source(ref: str) -> bool:
+    parts = ref.lower().replace("\\", "/").split("/")
+    return any(seg in part for part in parts for seg in _AV_SOURCE_SEGMENTS)
+
+
 def _livestream_dev_cctask(tasks_dir: Path) -> str | None:
+    # Authoritative: parse the structured frontmatter and match only when an in_progress task's
+    # GOVERNED mutation_scope_refs touch an AV-source path — never on free-text body keywords.
     try:
         notes = sorted(tasks_dir.glob("*.md"))
     except OSError:
         return None
     for note in notes:
         try:
-            head = note.read_text(encoding="utf-8", errors="ignore")[:1500].lower()
-        except OSError:
+            frontmatter, _ = parse_frontmatter(note)
+        except (OSError, ValueError):
             continue
-        if "status: in_progress" in head and any(k in head for k in SURFACE_KEYWORDS):
+        if frontmatter.get("status") != "in_progress":
+            continue
+        scope = frontmatter.get("mutation_scope_refs") or []
+        if isinstance(scope, list) and any(
+            isinstance(ref, str) and _ref_touches_av_source(ref) for ref in scope
+        ):
             return note.stem
     return None
 
@@ -156,21 +185,18 @@ def write_prom(state: dict, paths: ArbiterPaths = DEFAULT_PATHS) -> None:
         f'hapax_gpu_arbiter_override{{value="{state["override"]}"}} 1',
     ]
     try:
-        paths.prom.parent.mkdir(parents=True, exist_ok=True)
-        paths.prom.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        _atomic_write(paths.prom, "\n".join(lines) + "\n")
     except OSError as exc:
         print(f"warn: prom write failed: {exc}", file=sys.stderr)
 
 
 def set_override(value: str, paths: ArbiterPaths = DEFAULT_PATHS) -> None:
-    paths.override.parent.mkdir(parents=True, exist_ok=True)
-    paths.override.write_text(value + "\n", encoding="utf-8")
+    _atomic_write(paths.override, value + "\n")
 
 
 def set_livestream_dev(on: bool, paths: ArbiterPaths = DEFAULT_PATHS) -> None:
     if on:
-        paths.livestream_dev.parent.mkdir(parents=True, exist_ok=True)
-        paths.livestream_dev.write_text("on\n", encoding="utf-8")
+        _atomic_write(paths.livestream_dev, "on\n")
     else:
         paths.livestream_dev.unlink(missing_ok=True)
 
