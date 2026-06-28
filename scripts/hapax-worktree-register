@@ -3,6 +3,7 @@
 
 Subcommands:
   list                 derive + print every worktree's status (no writes)
+  protected-paths      print registered worktrees the legacy GC inference sweep must NOT reap (no writes)
   backfill             register every current worktree with its derived status
   register <path>      register/refresh one worktree (--role --branch --task --pr --session)
   heartbeat <path>     stamp last_heartbeat (the "still being worked" signal)
@@ -48,8 +49,29 @@ _bootstrap()
 
 from shared import worktree_registry as wr  # noqa: E402
 
-CANONICAL = os.environ.get(
-    "HAPAX_WORKTREE_GC_REPO", str(Path.home() / "projects" / "hapax-council")
+
+def _resolve_canonical(start: str) -> str:
+    """Resolve to the repo's MAIN worktree root, even if ``start`` is a linked worktree path. The GC
+    passes the canonical repo, but a future caller (or `HAPAX_WORKTREE_GC_REPO` pointed at a worktree)
+    must not make `is_infra_path` miss the real repo or run `gh` from the wrong tree. `git rev-parse
+    --git-common-dir` is shared by every linked worktree, so its parent is the main checkout. Falls
+    back to the given path if it isn't a git tree (tests monkeypatch CANONICAL anyway)."""
+    res = subprocess.run(
+        ["git", "-C", start, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    common = res.stdout.strip()
+    if res.returncode == 0 and common:
+        root = os.path.dirname(common) if os.path.basename(common) == ".git" else common
+        if root:
+            return os.path.realpath(root)
+    return os.path.realpath(start)
+
+
+CANONICAL = _resolve_canonical(
+    os.environ.get("HAPAX_WORKTREE_GC_REPO", str(Path.home() / "projects" / "hapax-council"))
 )
 SELF = os.environ.get("HAPAX_WORKTREE_SELF", "")
 
@@ -133,6 +155,24 @@ def cmd_list(_args: argparse.Namespace) -> int:
             f"  {p['status']:<9} live={int(p['live'])} clean={int(p['clean'])} "
             f"merged={int(p['merged'])} pr={int(p['has_pr'])}  {p['path']} [{p['branch'] or '-'}]"
         )
+    return 0
+
+
+def cmd_protected_paths(_args: argparse.Namespace) -> int:
+    # Emit (one realpath per line) every REGISTERED worktree the legacy hapax-worktree-gc.sh age+clean+
+    # merged INFERENCE sweep must NOT reap: pinned, or in-use (infra/active/merging). This is what makes
+    # explicit lifecycle status AUTHORITATIVE over inference for the durable timer. Unregistered
+    # worktrees are omitted on purpose (the legacy sweep still applies inference to them, backward-
+    # compatibly); `done`/`abandoned` are omitted so the sweep can still reap merged checkouts + delete
+    # merged branches. A non-zero exit (Python import error / corrupt registry) tells the GC the registry
+    # is unavailable so it fails CLOSED rather than reverting to pure inference.
+    open_prs = _open_pr_branches()
+    for wt in _worktrees(CANONICAL):
+        p = _probe(wt, open_prs, wr.DEFAULT_ABANDONED_AFTER_S)
+        if p is None or not p["registered"]:
+            continue
+        if wr.is_inference_protected(p["status"], pinned=p["pinned"]):
+            print(p["path"])
     return 0
 
 
@@ -243,6 +283,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="hapax-worktree-register")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list").set_defaults(fn=cmd_list)
+    sub.add_parser("protected-paths").set_defaults(fn=cmd_protected_paths)
     sub.add_parser("backfill").set_defaults(fn=cmd_backfill)
     rp = sub.add_parser("register")
     rp.add_argument("path")

@@ -622,3 +622,162 @@ def test_cli_reap_done_merged_is_reaped(tmp_path, monkeypatch) -> None:
     cli.cmd_backfill(argparse.Namespace())
     cli.cmd_reap(argparse.Namespace(apply=True, min_idle_hours=0.0))
     assert not os.path.isdir(str(done_wt))  # done/merged -> reaped
+
+
+# --- is_inference_protected(): what the legacy GC sweep must NOT reap (review round 6) ----------------
+
+
+def test_is_inference_protected() -> None:
+    # In-use / infra statuses are protected from the legacy age+clean+merged inference sweep...
+    assert wr.is_inference_protected("active", pinned=False) is True
+    assert wr.is_inference_protected("merging", pinned=False) is True
+    assert wr.is_inference_protected("infra", pinned=False) is True
+    # ...done/abandoned are NOT (the sweep may reap a merged checkout + delete its merged branch)...
+    assert wr.is_inference_protected("done", pinned=False) is False
+    assert wr.is_inference_protected("abandoned", pinned=False) is False
+    # ...but an explicit PIN protects even a status the sweep would otherwise reap.
+    assert wr.is_inference_protected("done", pinned=True) is True
+    assert wr.is_inference_protected("abandoned", pinned=True) is True
+
+
+def test_cli_protected_paths_lists_only_protected(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt_act, b_act = _add_worktree(repo, "act")
+    wt_done, b_done = _add_worktree(repo, "done")
+    wt_unreg, _b_unreg = _add_worktree(repo, "unreg")
+    # active+pinned -> protected; done (registered, unpinned) -> NOT protected; unregistered -> omitted.
+    wr.register(os.path.realpath(str(wt_act)), branch=b_act, status="active", pinned=True)
+    wr.register(os.path.realpath(str(wt_done)), branch=b_done, status="done")
+    cli = _load_cli()
+    monkeypatch.setattr(cli, "CANONICAL", str(repo))
+    monkeypatch.setattr(cli, "_open_pr_branches", lambda: set())
+    monkeypatch.setattr(cli.wr, "live_process_count", lambda _p: 0)
+    monkeypatch.setattr(cli.wr, "is_merged", lambda _c, br, *a, **k: br == b_done)
+    assert cli.cmd_protected_paths(argparse.Namespace()) == 0
+    out = capsys.readouterr().out
+    assert os.path.realpath(str(wt_act)) in out  # pinned active -> protected
+    assert os.path.realpath(str(wt_done)) not in out  # done -> reapable, not protected
+    assert os.path.realpath(str(wt_unreg)) not in out  # unregistered -> legacy inference applies
+
+
+def test_cli_backfill_preserves_task_keying(tmp_path, monkeypatch) -> None:
+    # A lane registered by the creation contract carries cc-task keying; a later backfill (which probes
+    # git, not the contract) must PRESERVE it, not wipe it to None (glm minor: coverage for the gap).
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, b = _add_worktree(repo, "wt")
+    rp = os.path.realpath(str(wt))
+    wr.register(rp, branch=b, role="dev2", session_id="s1", task_id="cc-task-x", pr=99)
+    cli = _load_cli()
+    monkeypatch.setattr(cli, "CANONICAL", str(repo))
+    monkeypatch.setattr(cli, "_open_pr_branches", lambda: set())
+    monkeypatch.setattr(cli.wr, "live_process_count", lambda _p: 0)
+    assert cli.cmd_backfill(argparse.Namespace()) == 0
+    rec = wr.load(rp)
+    assert rec is not None
+    assert rec.task_id == "cc-task-x"  # backfill must not drop cc-task keying
+    assert rec.role == "dev2"
+    assert rec.session_id == "s1"
+    assert rec.pr == 99
+
+
+def test_canonical_resolves_linked_worktree_to_main(tmp_path) -> None:
+    # Given a LINKED worktree path, _resolve_canonical resolves to the MAIN checkout (glm minor: so
+    # is_infra_path / gh cwd are correct even if HAPAX_WORKTREE_GC_REPO points at a worktree).
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    subprocess.run(["git", "-C", str(repo), "branch", "-M", "main"], check=True)
+    wt = tmp_path / "wt"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-q", "-b", "lane", str(wt), "main"], check=True
+    )
+    cli = _load_cli()
+    assert os.path.realpath(cli._resolve_canonical(str(wt))) == os.path.realpath(str(repo))
+
+
+# --- gc.sh integration: the REAL production script is governed by lifecycle status (review round 6) ---
+
+
+def _run_gc(repo, registry_dir):
+    """Run the real hapax-worktree-gc.sh in dry-run against a throwaway repo; return combined output.
+    Orphan-reaper + fetch + ntfy disabled to keep it hermetic; clean-age 0 + far-future --now make
+    every clean merged worktree reach the legacy removable gate so the registry gate is what decides."""
+    gc = Path(__file__).resolve().parents[2] / "scripts" / "hapax-worktree-gc.sh"
+    env = {
+        **os.environ,
+        "HAPAX_WORKTREE_REGISTRY_DIR": str(registry_dir),
+        "HAPAX_WORKTREE_GC_REAP_ORPHANS": "0",
+        "HAPAX_WORKTREE_GC_NTFY_URL": "",
+    }
+    res = subprocess.run(
+        [
+            "bash",
+            str(gc),
+            "--repo",
+            str(repo),
+            "--base-ref",
+            "origin/main",
+            "--clean-age-seconds",
+            "0",
+            "--now",
+            "9999999999",
+            "--no-fetch",
+            "--dry-run",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    return res.stdout + res.stderr
+
+
+def test_gc_legacy_respects_registry_pin(tmp_path, monkeypatch) -> None:
+    # The CRITICAL: the durable timer's legacy age+clean+merged sweep must NOT reap a pinned active lane
+    # by inference, but must still reap an unpinned merged (done) lane. Exercises the REAL gc.sh end to
+    # end (backfill -> protected-paths -> reap -> legacy gate), not just the module/CLI handlers.
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    subprocess.run(["git", "-C", str(repo), "branch", "-M", "main"], check=True)
+    # origin/main is the base both the registry (is_merged) AND gc.sh default to; in production they
+    # agree, so the test must too — otherwise the registry can't see the lanes as merged.
+    subprocess.run(
+        ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", "main"], check=True
+    )
+    wt_a, b_a = _add_worktree(repo, "actlane")  # feat/actlane at main -> merged, clean
+    _wt_b, _b_b = _add_worktree(repo, "doomedlane")  # feat/doomedlane at main -> merged, clean
+    wr.register(os.path.realpath(str(wt_a)), branch=b_a, status="active", pinned=True)
+    lines = _run_gc(repo, tmp_path / "reg").splitlines()
+    # pinned active lane: kept by the registry gate, never marked removable by inference
+    assert any("registry-protected" in ln and "actlane" in ln for ln in lines), lines
+    assert not any("would remove" in ln and "actlane" in ln for ln in lines), lines
+    # unpinned merged lane: still reaped by the legacy sweep (selective gate, not a blanket disable)
+    assert any("would remove" in ln and "doomedlane" in ln for ln in lines), lines
+
+
+def test_gc_fail_closed_on_registry_pre_pass_error(tmp_path) -> None:
+    # If the registry pre-pass ERRORS (here: registry dir under a regular file, so backfill raises), the
+    # legacy sweep must fail CLOSED — reap nothing by inference + alert — never silently degrade to the
+    # inference behavior the lifecycle predicate forbids.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    subprocess.run(["git", "-C", str(repo), "branch", "-M", "main"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", "main"], check=True
+    )
+    _wt_b, _b_b = _add_worktree(repo, "doomedlane")  # merged, clean -> reapable by inference
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a dir")  # a FILE where the registry dir should be -> mkdir fails
+    lines = _run_gc(repo, blocker / "reg").splitlines()
+    assert any("registry pre-pass FAILED" in ln for ln in lines), lines
+    assert any("fail-closed" in ln and "doomedlane" in ln for ln in lines), lines
+    assert not any("would remove" in ln and "doomedlane" in ln for ln in lines), lines

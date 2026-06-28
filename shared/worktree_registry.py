@@ -286,6 +286,17 @@ def is_reapable(status: Status, clean: bool, *, live: bool = False) -> bool:
     return (not live) and clean and status in ("done", "abandoned")
 
 
+def is_inference_protected(status: Status, *, pinned: bool) -> bool:
+    """Whether the legacy ``hapax-worktree-gc.sh`` age+clean+merged INFERENCE sweep must keep its hands
+    off a REGISTERED worktree. The registry — explicit lifecycle status — is authoritative for the
+    durable timer: an explicit pin, or an in-use status (``infra``/``active``/``merging``), is never
+    overridden by inference. ``done``/``abandoned`` are NOT inference-protected — the legacy sweep may
+    still reap a merged ``done`` checkout and delete its merged branch (the registry reaper keeps
+    branches; the legacy sweep proves content-is-in-base first). Counterpart to ``is_reapable``:
+    ``is_reapable`` says what the REGISTRY reaper removes; this says what the legacy sweep must not."""
+    return pinned or status in ("infra", "active", "merging")
+
+
 # --- probes (integration: read git + /proc; exercised via the CLI on real worktrees) -----------------
 
 

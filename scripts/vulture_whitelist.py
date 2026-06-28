@@ -4589,6 +4589,7 @@ _ = (
 from shared.worktree_registry import (
     deregister,  # noqa: E402
     is_clean,  # noqa: E402
+    is_inference_protected,  # noqa: E402
     is_infra_path,  # noqa: E402
     is_merged,  # noqa: E402
     is_reapable,  # noqa: E402
@@ -4603,6 +4604,7 @@ _ = (
     deregister,
     is_clean,
     is_infra_path,
+    is_inference_protected,
     is_merged,
     is_reapable,
     list_records,

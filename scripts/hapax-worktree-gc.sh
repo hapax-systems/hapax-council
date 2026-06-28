@@ -186,22 +186,47 @@ if [[ "${HAPAX_WORKTREE_GC_REAP_ORPHANS:-1}" == "1" && -x "$orphan_reaper" ]]; t
 fi
 
 # Registry-governed pre-pass: this is what makes the DURABLE GC cycle governed by EXPLICIT lifecycle
-# status, not age+clean+merged inference. It registers every worktree (backfill) then reaps the ones
-# the registry classifies done/abandoned — non-live, clean, stale, registered — keeping branches, so a
-# session that stopped working without follow-through is reaped next cycle and the pileup cannot recur.
-# Runs with the BARE system python3 (shared.worktree_registry is stdlib-only, no venv needed). Note: the
-# open-PR signal needs `gh`; when it is unavailable (this systemd unit carries no GH_TOKEN) classify
-# fails CLOSED — only `done`/merged lanes are reaped, abandoned lanes are kept until a gh-capable run.
-# Env-gated (on by default); never blocks the legacy merged-branch + release cleanup below.
+# status, not age+clean+merged inference. It registers every worktree (backfill), captures the set of
+# registry-PROTECTED paths (pins + infra/active/merging) so the legacy sweep below cannot reap them by
+# inference, then reaps the ones the registry classifies done/abandoned — non-live, clean, stale,
+# registered — keeping branches, so a session that stopped working without follow-through is reaped next
+# cycle and the pileup cannot recur. Runs with the BARE system python3 (shared.worktree_registry is
+# stdlib-only, no venv needed). The open-PR signal needs `gh`; when unavailable (this systemd unit
+# carries no GH_TOKEN) classify fails CLOSED — only `done`/merged lanes are reaped.
+#   registry_mode=governed : pre-pass OK -> the legacy sweep SKIPS every protected path (status wins).
+#   registry_mode=failed   : pre-pass errored -> the legacy sweep reaps NOTHING by inference (fail-closed)
+#                            + alerts; a broken registry must not silently degrade to the inference
+#                            behavior the lifecycle predicate forbids.
+#   registry_mode=off      : HAPAX_WORKTREE_GC_REGISTRY=0 -> legacy pure-inference (explicit opt-out).
 registry_cli="$(dirname "$(readlink -f "$0")")/hapax-worktree-register"
+declare -A registry_protected_set=()
+registry_mode="off"
+registry_prepass_failed=0
 if [[ "${HAPAX_WORKTREE_GC_REGISTRY:-1}" == "1" && -f "$registry_cli" ]]; then
     idle_h="${HAPAX_WORKTREE_GC_REGISTRY_IDLE_HOURS:-48}"
-    HAPAX_WORKTREE_GC_REPO="$repo" python3 "$registry_cli" backfill >/dev/null 2>&1 || true
-    if ((dry_run)); then
-        HAPAX_WORKTREE_GC_REPO="$repo" python3 "$registry_cli" reap --min-idle-hours "$idle_h" || true
-    else
-        HAPAX_WORKTREE_GC_REPO="$repo" python3 "$registry_cli" reap --apply --min-idle-hours "$idle_h" \
-            || true
+    registry_mode="failed"  # assume failure until backfill AND protected-paths both succeed
+    if HAPAX_WORKTREE_GC_REPO="$repo" python3 "$registry_cli" backfill >/dev/null 2>&1; then
+        protected_raw=""
+        if protected_raw="$(HAPAX_WORKTREE_GC_REPO="$repo" python3 "$registry_cli" \
+            protected-paths 2>/dev/null)"; then
+            while IFS= read -r pp; do
+                if [[ -n "$pp" ]]; then
+                    registry_protected_set["$pp"]=1
+                fi
+            done <<<"$protected_raw"
+            if ((dry_run)); then
+                HAPAX_WORKTREE_GC_REPO="$repo" python3 "$registry_cli" reap \
+                    --min-idle-hours "$idle_h" || true
+            else
+                HAPAX_WORKTREE_GC_REPO="$repo" python3 "$registry_cli" reap --apply \
+                    --min-idle-hours "$idle_h" || true
+            fi
+            registry_mode="governed"
+        fi
+    fi
+    if [[ "$registry_mode" == "failed" ]]; then
+        registry_prepass_failed=1
+        printf 'hapax-worktree-gc: registry pre-pass FAILED — fail-closed, inference reaping disabled this cycle\n' >&2
     fi
 fi
 
@@ -232,6 +257,12 @@ old_unmerged=0
 skipped=0
 live_refused=0
 alert_lines=()
+
+# Surface a fail-closed registry pre-pass (set above, before counters exist) through the normal alert
+# channel: the legacy sweep ran inference-disabled this cycle, so the operator must fix the registry.
+if ((registry_prepass_failed)); then
+    alert_lines+=("- registry pre-pass FAILED (HAPAX_WORKTREE_GC_REGISTRY=1): the lifecycle-status pre-pass errored, so the legacy age+clean+merged sweep ran FAIL-CLOSED (no inference reaping) this cycle. Next: run \`python3 $registry_cli list\` to see the Python/registry error (import path or corrupt record), fix it, then re-run hapax-worktree-gc.sh.")
+fi
 
 # Live-PID guard. The release-GC ghost (audit 2026-06-11, F1/F1R): a release
 # dir was deleted while logos-api still executed from it, leaving the process
@@ -477,6 +508,23 @@ process_worktree() {
     fi
 
     if ((age >= clean_age_seconds && clean && merged)); then
+        # Lifecycle-status authority (PR #4337): the REGISTRY, not age+clean+merged inference, decides
+        # removability for registered lanes. governed -> skip any registry-protected path (an explicit
+        # pin, or an in-use infra/active/merging lane) so inference never overrides status. failed ->
+        # skip ALL inference reaping (fail-closed: a registry meant to govern but broken must not
+        # degrade to the inference behavior the predicate forbids). off -> legacy inference (opt-out).
+        if [[ "$registry_mode" == "governed" && -n "${registry_protected_set[$real_path]:-}" ]]; then
+            printf 'hapax-worktree-gc: keep %s — registry-protected lifecycle status overrides inference\n' \
+                "$path"
+            skipped=$((skipped + 1))
+            return 0
+        fi
+        if [[ "$registry_mode" == "failed" ]]; then
+            printf 'hapax-worktree-gc: keep %s — registry unavailable, fail-closed (no inference reap)\n' \
+                "$path"
+            skipped=$((skipped + 1))
+            return 0
+        fi
         old_merged_clean=$((old_merged_clean + 1))
         printf 'hapax-worktree-gc: removable %s branch=%s age=%s base=%s\n' \
             "$path" "$branch_label" "$(format_age "$age")" "$base_ref"
