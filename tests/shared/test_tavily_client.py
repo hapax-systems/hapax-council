@@ -13,8 +13,10 @@ from pathlib import Path
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from shared.tavily_client import (
+    TavilyAccountUsage,
     TavilyBudgetExceeded,
     TavilyClient,
     TavilyConfigError,
@@ -696,6 +698,54 @@ def test_usage_endpoint_uses_get_and_project_header(tmp_path: Path) -> None:
     assert response.key.usage == 12
     assert response.account.research_usage == 4
     assert not (tmp_path / "usage.jsonl").exists()
+
+
+def test_usage_endpoint_normalizes_null_numeric_fields_and_missing_objects(
+    tmp_path: Path,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/usage"
+        return httpx.Response(
+            200,
+            json={
+                "key": {
+                    "usage": None,
+                    "limit": None,
+                    "search_usage": "",
+                    "plan_limit": "250",
+                },
+                "account": {
+                    "usage": None,
+                    "limit": None,
+                    "research_usage": "",
+                },
+            },
+        )
+
+    client = TavilyClient(
+        api_key="test-token",
+        config_path=_config(tmp_path / "tavily.yaml"),
+        cache_dir=tmp_path / "cache",
+        ledger_path=tmp_path / "usage.jsonl",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        now=_now,
+    )
+
+    response = client.usage()
+
+    assert response.key.usage == 0
+    assert response.key.limit == 0
+    assert response.key.search_usage == 0
+    assert response.key.plan_limit == 250
+    assert response.account.usage == 0
+    assert response.account.limit == 0
+    assert response.account.research_usage == 0
+    assert not (tmp_path / "usage.jsonl").exists()
+
+
+def test_tavily_account_usage_rejects_non_numeric_usage_values() -> None:
+    with pytest.raises(ValidationError):
+        TavilyAccountUsage.model_validate({"usage": "not-a-number"})
 
 
 def test_extract_map_and_crawl_forward_supported_options(tmp_path: Path) -> None:

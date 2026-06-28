@@ -8,6 +8,7 @@ import logging
 from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import ValidationError
 
 from shared.tavily_client import (
     TavilyBudgetExceeded,
@@ -278,7 +279,7 @@ def tavily_usage(project_id: str | None = None) -> str:
     try:
         response = _client().usage(project_id=project_id)
         return _json({"ok": True, **response.model_dump(mode="json")})
-    except (TavilyConfigError, TavilyRequestError) as exc:
+    except (TavilyConfigError, TavilyRequestError, ValidationError) as exc:
         return _error(exc)
 
 
