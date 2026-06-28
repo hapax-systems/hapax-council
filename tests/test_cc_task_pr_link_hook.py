@@ -365,6 +365,29 @@ class TestRoleResolution:
         text = note.read_text(encoding="utf-8")
         assert "pr: 777" in text
 
+    def test_cc_governed_role_resolves_and_links(self, tmp_path: Path) -> None:
+        # Governed Claude lanes (cc-segprep, cc-cns-mig, cc-zai, cc-omnigent, ...)
+        # must resolve from HAPAX_AGENT_ROLE and link their cc-active-task-<role>
+        # claim. Regression for the orphan-cc-task bug class: cc-* was absent from
+        # the resolver's case patterns, and hapax_agent_role / hapax_agent_worktree_role
+        # are env-blind display stubs (return ""), so cc-* PRs fell through to
+        # "cannot determine role; skipping" and orphaned their cc-task.
+        _vault, note = _make_vault(tmp_path, task_id="cc-task-001", pr=None)
+        _write_claim(tmp_path, "cc-segprep", "cc-task-001")
+        result = _run_payload(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "gh pr create"},
+                "tool_response": {"output": "https://github.com/ryanklee/hapax-council/pull/4288"},
+            },
+            home=tmp_path,
+            extra_env={"HAPAX_AGENT_ROLE": "cc-segprep"},
+        )
+        assert result.returncode == 0, result.stderr
+        text = note.read_text(encoding="utf-8")
+        assert "pr: 4288" in text
+        assert "status: pr_open" in text
+
 
 class TestPrUrlParsing:
     def test_extracts_first_pr_url_from_multiline_output(self, tmp_path: Path) -> None:
