@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""Batch-withdraw stale blocked P0 incidents.
+
+Scans active/ for p0-incident-* tasks that are:
+  - status: blocked
+  - updated_at older than --stale-days (default 7)
+  - No PR, no branch, never claimed after becoming blocked
+
+These are auto-withdrawn with a machine-generated post-mortem. The
+underlying alert will re-mint a fresh task if the condition persists.
+
+Usage:
+    cc-batch-close-stale-p0 [--stale-days N] [--dry-run]
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+VAULT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+ACTIVE = VAULT / "active"
+CLOSED = VAULT / "closed"
+
+
+def _frontmatter_value(text: str, key: str) -> str | None:
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 4)
+    if end < 0:
+        return None
+    front = text[: end + 1]
+    match = re.search(rf"(?m)^{re.escape(key)}\s*:\s*(.+)$", front)
+    if match:
+        return match.group(1).strip().strip('"').strip("'")
+    return None
+
+
+def _set_frontmatter(text: str, key: str, value: str) -> str:
+    if not text.startswith("---"):
+        return text
+    end = text.find("\n---", 4)
+    if end < 0:
+        return text
+    front = text[: end + 1]
+    body = text[end + 1 :]
+    line = f"{key}: {value}"
+    if re.search(rf"(?m)^{re.escape(key)}\s*:", front):
+        front = re.sub(rf"(?m)^{re.escape(key)}\s*:.*$", line, front)
+    else:
+        front = front.rstrip("\n") + f"\n{line}\n"
+    return front + body
+
+
+def _parse_iso(s: str) -> datetime | None:
+    if not s or s in {"null", "~"}:
+        return None
+    s = s.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt
+    except ValueError:
+        return None
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--stale-days",
+        type=int,
+        default=7,
+        help="Days since last update to consider stale (default: 7)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would be closed without actually closing",
+    )
+    args = parser.parse_args(argv)
+
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(days=args.stale_days)
+    now_s = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    closed_count = 0
+    skipped_count = 0
+
+    for path in sorted(ACTIVE.glob("p0-incident-*.md")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        status = _frontmatter_value(text, "status")
+        if status != "blocked":
+            skipped_count += 1
+            continue
+
+        updated_at_s = _frontmatter_value(text, "updated_at") or ""
+        updated_at = _parse_iso(updated_at_s)
+        if updated_at is None or updated_at > cutoff:
+            skipped_count += 1
+            continue
+
+        # Skip if there's a PR or branch (someone started work)
+        pr = _frontmatter_value(text, "pr")
+        branch = _frontmatter_value(text, "branch")
+        if pr and pr not in {"null", "~", ""}:
+            skipped_count += 1
+            continue
+        if branch and branch not in {"null", "~", ""}:
+            skipped_count += 1
+            continue
+
+        task_id = _frontmatter_value(text, "task_id") or path.stem
+        age_days = (now - updated_at).days
+
+        if args.dry_run:
+            title = _frontmatter_value(text, "title") or ""
+            print(f"  [dry-run] would withdraw: {task_id} (stale {age_days}d) — {title[:60]}")
+            closed_count += 1
+            continue
+
+        # Rewrite frontmatter
+        text = _set_frontmatter(text, "status", "withdrawn")
+        text = _set_frontmatter(text, "completed_at", now_s)
+        text = _set_frontmatter(text, "updated_at", now_s)
+
+        # Add post-mortem
+        postmortem = (
+            f"\n- Root cause: Stale blocked P0 incident — blocked for {age_days} days "
+            f"with no PR, branch, or active remediation.\n"
+            f"- Remediation or refusal: Auto-withdrawn by cc-batch-close-stale-p0. "
+            f"The underlying alert will re-mint if the condition persists.\n"
+            f"- Verification evidence: No manual intervention was active; "
+            f"updated_at={updated_at_s} is past the {args.stale_days}-day stale threshold.\n"
+            f"- Recurrence prevention: Re-minting via p0_incident_intake recurrence "
+            f"tracking will create a fresh task with prior context if needed.\n"
+            f"- Follow-up tasks: None — condition either self-resolved or will re-mint.\n"
+        )
+        if "## Post-mortem" in text:
+            text = text.replace(
+                "## Post-mortem\n\n- Root cause:\n- Remediation or refusal:\n"
+                "- Verification evidence:\n- Recurrence prevention:\n- Follow-up tasks:",
+                f"## Post-mortem\n{postmortem}",
+                1,
+            )
+
+        # Add session log entry
+        log_line = (
+            f"- {now_s} cc-batch-close-stale-p0: auto-withdrawn (stale {age_days}d, "
+            f"no PR/branch/active work)."
+        )
+        if "## Session Log\n" in text:
+            text = text.replace("## Session Log\n", f"## Session Log\n{log_line}\n", 1)
+
+        # Write and move
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        dest = CLOSED / path.name
+        tmp.replace(dest)
+        path.unlink(missing_ok=True)
+        closed_count += 1
+        print(f"  withdrawn: {task_id} (stale {age_days}d) → closed/")
+
+    action = "would withdraw" if args.dry_run else "withdrawn"
+    print(f"\ncc-batch-close-stale-p0: {action} {closed_count}, skipped {skipped_count}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
