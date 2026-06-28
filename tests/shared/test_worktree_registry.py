@@ -8,6 +8,8 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from shared import worktree_registry as wr
 
 
@@ -781,3 +783,142 @@ def test_gc_fail_closed_on_registry_pre_pass_error(tmp_path) -> None:
     assert any("registry pre-pass FAILED" in ln for ln in lines), lines
     assert any("fail-closed" in ln and "doomedlane" in ln for ln in lines), lines
     assert not any("would remove" in ln and "doomedlane" in ln for ln in lines), lines
+
+
+# --- corrupt records fail CLOSED, never lose a pin (review round 7 critical) -------------------------
+
+
+def _corrupt_record(path: str) -> Path:
+    """Write an unparseable record file at a worktree's registry slot; return its path."""
+    rp = wr.record_path(path)
+    rp.write_text("{ this is not valid json :::", encoding="utf-8")
+    return rp
+
+
+def test_read_record_distinguishes_absent_from_corrupt(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    # absent -> (None, False); corrupt -> (None, True). Conflating them is the fail-open hole.
+    assert wr._read_record("/nope/absent") == (None, False)
+    _corrupt_record("/some/wt")
+    rec, corrupt = wr._read_record("/some/wt")
+    assert rec is None and corrupt is True
+
+
+def test_probe_corrupt_record_is_protected(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, branch = _add_worktree(repo, "wt")
+    _corrupt_record(os.path.realpath(str(wt)))
+    p = wr.probe_worktree(
+        path=str(wt),
+        branch=branch,
+        canonical=str(repo),
+        open_pr_branches=set(),
+        live_count_fn=lambda _p: 0,
+    )
+    assert p is not None
+    assert p["corrupt"] is True
+    assert p["registered"] is True  # a corrupt record is PRESENT, not absent
+    assert p["pinned"] is True  # fail closed -> protected
+    assert wr.is_reapable(p["status"], p["clean"], live=p["live"]) is False  # never reaped
+
+
+def test_register_refuses_to_overwrite_corrupt(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    rp = _corrupt_record("/some/wt")
+    before = rp.read_text(encoding="utf-8")
+    with pytest.raises(wr.CorruptRecordError):
+        wr.register(
+            "/some/wt", branch="x", status="done"
+        )  # backfill would pass a derived status here
+    assert (
+        rp.read_text(encoding="utf-8") == before
+    )  # the pin-bearing file is left intact, not clobbered
+
+
+def test_cli_protected_paths_emits_corrupt(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, _b = _add_worktree(repo, "wt")
+    _corrupt_record(os.path.realpath(str(wt)))
+    cli = _load_cli()
+    monkeypatch.setattr(cli, "CANONICAL", str(repo))
+    monkeypatch.setattr(cli, "_open_pr_branches", lambda: set())
+    monkeypatch.setattr(cli.wr, "live_process_count", lambda _p: 0)
+    assert cli.cmd_protected_paths(argparse.Namespace()) == 0
+    assert (
+        os.path.realpath(str(wt)) in capsys.readouterr().out
+    )  # corrupt -> protected from inference
+
+
+def test_cli_reap_keeps_corrupt(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, _b = _add_worktree(repo, "wt")
+    _corrupt_record(os.path.realpath(str(wt)))
+    cli = _load_cli()
+    monkeypatch.setattr(cli, "CANONICAL", str(repo))
+    monkeypatch.setattr(cli, "_open_pr_branches", lambda: set())
+    monkeypatch.setattr(cli.wr, "live_process_count", lambda _p: 0)
+    cli.cmd_reap(argparse.Namespace(apply=True, min_idle_hours=0.0))
+    assert os.path.isdir(str(wt))  # corrupt record -> fail closed -> never reaped
+    assert "KEEP corrupt" in capsys.readouterr().out
+
+
+def test_cli_backfill_leaves_corrupt_untouched(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, _b = _add_worktree(repo, "wt")
+    rp = _corrupt_record(os.path.realpath(str(wt)))
+    before = rp.read_text(encoding="utf-8")
+    cli = _load_cli()
+    monkeypatch.setattr(cli, "CANONICAL", str(repo))
+    monkeypatch.setattr(cli, "_open_pr_branches", lambda: set())
+    monkeypatch.setattr(cli.wr, "live_process_count", lambda _p: 0)
+    assert (
+        cli.cmd_backfill(argparse.Namespace()) == 0
+    )  # backfill succeeds, does not crash on corrupt
+    assert (
+        rp.read_text(encoding="utf-8") == before
+    )  # corrupt record NOT overwritten with derived status
+
+
+def test_cli_protected_paths_propagates_runtime_error(tmp_path, monkeypatch) -> None:
+    # glm minor: if protected-paths itself raises (after a successful backfill), the error must propagate
+    # so the GC sees a non-zero exit and fails CLOSED — it must not silently return an empty set.
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    cli = _load_cli()
+
+    def _boom(_canonical):
+        raise RuntimeError("git worktree list blew up")
+
+    monkeypatch.setattr(cli, "_worktrees", _boom)
+    monkeypatch.setattr(cli, "_open_pr_branches", lambda: set())
+    with pytest.raises(RuntimeError):
+        cli.cmd_protected_paths(argparse.Namespace())
+
+
+def test_gc_keeps_corrupt_record_lane(tmp_path, monkeypatch) -> None:
+    # End-to-end via the REAL gc.sh: a merged+clean+old lane that WOULD be reaped by inference is kept
+    # when its registry record is corrupt — the legacy sweep never reaps a record it cannot read.
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    subprocess.run(["git", "-C", str(repo), "branch", "-M", "main"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", "main"], check=True
+    )
+    wt, _b = _add_worktree(repo, "corruptlane")  # merged, clean -> reapable by inference
+    _corrupt_record(os.path.realpath(str(wt)))
+    lines = _run_gc(repo, tmp_path / "reg").splitlines()
+    assert any("registry-protected" in ln and "corruptlane" in ln for ln in lines), lines
+    assert not any("would remove" in ln and "corruptlane" in ln for ln in lines), lines

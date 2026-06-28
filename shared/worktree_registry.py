@@ -111,23 +111,38 @@ def record_path(path: str) -> Path:
     return registry_dir() / f"{_slug(path)}.json"
 
 
-def load(path: str) -> WorktreeRecord | None:
+class CorruptRecordError(Exception):
+    """A registry record file EXISTS but cannot be parsed. Callers must FAIL CLOSED on it: never
+    overwrite it with a derived status (that would silently drop a pin) and never treat the worktree as
+    reapable. Distinct from an ABSENT record (no file), which legitimately means "not registered"."""
+
+
+def _read_record(path: str) -> tuple[WorktreeRecord | None, bool]:
+    """Read a record, distinguishing ABSENT ((None, False): no file) from CORRUPT ((None, True): file
+    present but unparseable). Conflating the two is the fail-OPEN hole: a corrupt PINNED record read as
+    'absent' lets backfill overwrite the pin and the legacy sweep reap the lane. Warns on corruption."""
     rp = record_path(path)
     try:
         raw = rp.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return None
+        return None, False
     try:
-        return _record_from_json(raw)
+        return _record_from_json(raw), False
     except Exception as exc:
-        # A present-but-unparseable record is a real problem (schema drift / corruption), NOT the
-        # same as absent — surface it so it isn't silently masked, then treat as missing.
         print(
-            f"hapax-worktree-registry: WARN unparseable record {rp}: {exc} — "
-            f"Next: inspect the file; if stale, `rm {rp}` then `hapax-worktree-register backfill`.",
+            f"hapax-worktree-registry: WARN unparseable record {rp}: {exc} — fail-closed (the worktree "
+            f"stays PROTECTED from inference reaping until repaired). Next: inspect the file; if stale, "
+            f"`rm {rp}` then `hapax-worktree-register backfill`.",
             file=sys.stderr,
         )
-        return None
+        return None, True
+
+
+def load(path: str) -> WorktreeRecord | None:
+    """Best-effort read: the record, or None if ABSENT or CORRUPT (corruption is warned). Callers that
+    must fail closed on corruption (``register``, ``probe_worktree``) use ``_read_record`` to tell the
+    two apart — heartbeat/set_status return None on corrupt, a safe no-op that never clobbers the pin."""
+    return _read_record(path)[0]
 
 
 def save(rec: WorktreeRecord) -> None:
@@ -162,7 +177,16 @@ def register(
     last-activity (e.g. its mtime) on back-fill, so a freshly-written record does not falsely look
     just-heartbeated. A REFRESH (no explicit ``pinned``) never clobbers an explicit pin's status."""
     ts = _now(now)
-    existing = load(path)
+    existing, corrupt = _read_record(path)
+    if corrupt:
+        # Fail CLOSED: a present-but-corrupt record may hold a pin. Overwriting it with a derived status
+        # (what backfill passes) would silently drop that pin — the exact fail-open the lifecycle
+        # predicate forbids. Refuse; the caller (backfill) skips it so it stays protected, or an operator
+        # repairs it. heartbeat/set_status already no-op on corrupt (load -> None), preserving the file.
+        raise CorruptRecordError(
+            f"refusing to overwrite a corrupt registry record for {path}: repair it first "
+            f"(`rm {record_path(path)}` then re-register) so a pin is never silently dropped"
+        )
     created = existing.created_at if existing else ts
     if existing is not None and existing.pinned and pinned is None:
         eff_status: Status = existing.status
@@ -395,11 +419,14 @@ def probe_worktree(
     as-is — only NON-pinned records are refreshed from live signals. The derive folds BOTH the registry
     ``last_heartbeat`` AND the filesystem mtime (freshest wins), so a heartbeated-but-quiet session
     reads ``active``. ``open_pr_branches=None`` means the PR signal is UNAVAILABLE (gh down): the derive
-    fails closed (``merging``, kept) rather than assuming no PR. Keys: path, branch, infra, live, clean,
-    merged, has_pr, status, pinned."""
+    fails closed (``merging``, kept) rather than assuming no PR. A CORRUPT record (present but
+    unparseable) also fails closed: the worktree is returned registered + pinned + ``corrupt=True`` so it
+    is protected and never reaped on a guess. Keys: path, branch, infra, live, clean, merged, has_pr,
+    status, pinned, registered, corrupt."""
     real = os.path.realpath(path)
     if not os.path.isdir(real):
         return None
+    rec, corrupt = _read_record(real)
     live_fn = live_count_fn if live_count_fn is not None else live_process_count
     infra = is_infra_path(real, canonical=canonical)
     live = live_fn(real) > 0
@@ -407,9 +434,25 @@ def probe_worktree(
     merged = is_merged(canonical, branch) if branch else False
     pr_signal_available = open_pr_branches is not None
     has_pr = bool(pr_signal_available and branch and branch in open_pr_branches)
+    if corrupt:
+        # FAIL CLOSED: the record exists but we cannot read its (possibly pinned) status. Treat the
+        # worktree as registered + PROTECTED (pinned) + non-reapable until repaired — never reap on a
+        # guess. `status="active"` is the safe non-reapable default; `corrupt` is the real reason.
+        return {
+            "path": real,
+            "branch": branch,
+            "infra": infra,
+            "live": live,
+            "clean": clean,
+            "merged": merged,
+            "has_pr": has_pr,
+            "status": "active",
+            "pinned": True,
+            "registered": True,
+            "corrupt": True,
+        }
     now = now_epoch if now_epoch is not None else datetime.now(UTC).timestamp()
     ages = [mtime_age_seconds(real, now_epoch=now)]
-    rec = load(real)
     if rec is not None:
         ages.append(max(0.0, now - rec.last_heartbeat.timestamp()))
     derived = classify(
@@ -435,4 +478,5 @@ def probe_worktree(
         "status": status,
         "pinned": pinned,
         "registered": rec is not None,
+        "corrupt": False,
     }

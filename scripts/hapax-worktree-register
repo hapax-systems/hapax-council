@@ -151,8 +151,9 @@ def cmd_list(_args: argparse.Namespace) -> int:
         if p is None:
             print(f"  gone       {wt['path']}")
             continue
+        status_disp = "corrupt" if p.get("corrupt") else p["status"]
         print(
-            f"  {p['status']:<9} live={int(p['live'])} clean={int(p['clean'])} "
+            f"  {status_disp:<9} live={int(p['live'])} clean={int(p['clean'])} "
             f"merged={int(p['merged'])} pr={int(p['has_pr'])}  {p['path']} [{p['branch'] or '-'}]"
         )
     return 0
@@ -171,7 +172,9 @@ def cmd_protected_paths(_args: argparse.Namespace) -> int:
         p = _probe(wt, open_prs, wr.DEFAULT_ABANDONED_AFTER_S)
         if p is None or not p["registered"]:
             continue
-        if wr.is_inference_protected(p["status"], pinned=p["pinned"]):
+        # A corrupt record (present-but-unparseable) is protected too: we can't read its pin, so fail
+        # closed and keep the legacy sweep off it until repaired.
+        if p.get("corrupt") or wr.is_inference_protected(p["status"], pinned=p["pinned"]):
             print(p["path"])
     return 0
 
@@ -179,30 +182,47 @@ def cmd_protected_paths(_args: argparse.Namespace) -> int:
 def cmd_backfill(_args: argparse.Namespace) -> int:
     open_prs = _open_pr_branches()
     now = datetime.now(UTC)
-    n = 0
+    n = corrupt_kept = 0
     for wt in _worktrees(CANONICAL):
         p = _probe(wt, open_prs, wr.DEFAULT_ABANDONED_AFTER_S)
         if p is None:
+            continue
+        # A corrupt record is LEFT in place (overwriting it would drop a possibly-pinned status — the
+        # fail-open hole). The probe already keeps it protected; backfill must not heal it by guessing.
+        if p.get("corrupt"):
+            corrupt_kept += 1
             continue
         # Seed last_heartbeat from the worktree's REAL last activity (mtime), not now — otherwise a
         # back-filled record would look just-heartbeated and never become reapable.
         age = wr.mtime_age_seconds(p["path"])
         hb = now - timedelta(seconds=age) if age != float("inf") else now
-        wr.register(p["path"], branch=p["branch"], status=p["status"], last_heartbeat=hb)
+        try:
+            wr.register(p["path"], branch=p["branch"], status=p["status"], last_heartbeat=hb)
+        except wr.CorruptRecordError:
+            # Raced corruption between probe and register: still fail closed, leave the file untouched.
+            corrupt_kept += 1
+            continue
         n += 1
-    print(f"backfilled {n} worktree registrations -> {wr.registry_dir()}")
+    msg = f"backfilled {n} worktree registrations -> {wr.registry_dir()}"
+    if corrupt_kept:
+        msg += f" ({corrupt_kept} corrupt record(s) left protected — repair + re-run to re-govern)"
+    print(msg)
     return 0
 
 
 def cmd_register(args: argparse.Namespace) -> int:
-    wr.register(
-        os.path.realpath(args.path),
-        role=args.role,
-        branch=args.branch,
-        session_id=args.session,
-        task_id=args.task,
-        pr=args.pr,
-    )
+    try:
+        wr.register(
+            os.path.realpath(args.path),
+            role=args.role,
+            branch=args.branch,
+            session_id=args.session,
+            task_id=args.task,
+            pr=args.pr,
+        )
+    except wr.CorruptRecordError as exc:
+        print(f"register failed: {exc}", file=sys.stderr)
+        return 1
     print(f"registered {args.path}")
     return 0
 
@@ -236,6 +256,14 @@ def cmd_reap(args: argparse.Namespace) -> int:
         if SELF and os.path.realpath(p["path"]) == os.path.realpath(SELF):
             kept += 1
             print(f"KEEP self        {p['path']} [{p['status']}]")
+            continue
+        # A corrupt record fails CLOSED: its (possibly pinned) status is unreadable, so never reap it.
+        if p.get("corrupt"):
+            kept += 1
+            print(
+                f"KEEP corrupt     {p['path']} — unparseable record, fail-closed; "
+                f"repair with `rm {wr.record_path(p['path'])}` then `backfill`"
+            )
             continue
         # Cleanup is governed by the REGISTRY: never reap an UNREGISTERED worktree by inferred status.
         # Registration (backfill / the creation contract) is the governance step; an unregistered tree

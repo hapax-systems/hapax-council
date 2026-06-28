@@ -221,8 +221,24 @@ Two timers keep the count bounded without manual cleanup:
   - **Idle window.** The module default `abandoned` threshold is 12h, but the timer
     passes `--min-idle-hours 48` — so the automatic cycle reaps `abandoned` lanes
     only after ~48h idle, not 12h. The open-PR signal needs `gh`; when the timer
-    runs without it the classify fails CLOSED (only `done`/merged reaped).
-  - **Rechecks.** `hapax-worktree-register list` (per-worktree status),
+    runs without it the classify fails CLOSED (only `done`/merged reaped). This 48h
+    lives in the SCRIPT, not the unit — verify it with
+    `grep REGISTRY_IDLE_HOURS scripts/hapax-worktree-gc.sh` (the
+    `HAPAX_WORKTREE_GC_REGISTRY_IDLE_HOURS:-48` default) and the schedule with
+    `systemctl --user cat hapax-worktree-gc.timer`. If a future edit changes either,
+    re-sync this doc.
+  - **Corrupt records fail closed.** A present-but-unparseable
+    `worktree-registry/<slug>.json` is treated as registered + protected (it may hold
+    a pin we can't read): `backfill` leaves it untouched (never overwrites with a
+    derived status), `reap` keeps it (`KEEP corrupt …`), and it is emitted by
+    `protected-paths`. Repair: `rm` the named file, then `backfill`.
+  - **Unregistered worktrees (until P4).** `reap` KEEPS unregistered worktrees (flags,
+    never removes); `backfill` (which the timer runs first) registers every git-visible
+    worktree with a derived status, so after one GC cycle every worktree has an explicit
+    status. Registration *at creation time* is P4 (`hapax-worktree-create` + dispatch
+    wiring); until it lands, a freshly dispatch-created lane is unregistered only until
+    the next backfill.
+  - **Rechecks.** `hapax-worktree-register list` (per-worktree status; shows `corrupt`),
     `hapax-worktree-register protected-paths` (what the legacy sweep will NOT touch),
     and `hapax-worktree-gc.sh --dry-run` (the actual removal decisions, including the
     registry-gate `keep … registry-protected` / `fail-closed` lines).
