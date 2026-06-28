@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""hapax-gpu-arbiter — podium-5090 tenant control plane: compositing (production) XOR Ornith-35B (idle).
+
+Governing principle (operator 2026-06-27/28): production has ABSOLUTE priority; when there is no
+production, the 5090 is not left idle — it hosts the Ornith-35B local coding workhorse. This is the
+CONTROL PLANE only: it reads the signals, decides the mode, exposes the state, and accepts a manual
+toggle. It does NOT actuate the GPU (stop/start compositing, load/unload Ornith) — the actuator consumes
+``decide()["mode"]`` and is a separate, careful follow-on.
+
+    mode = PRODUCTION  iff (livestreaming OR developing-the-livestream-surface)  -> tenant = compositing
+           ORNITH      otherwise                                                 -> tenant = ornith-35b
+
+An actively-public livestream (signal 1) is NEVER pre-empted — not by the dev heuristic's absence, not by
+a manual ``override=ornith``. Production-priority is structural, encoded in ``decide()``.
+
+Signals (file-backed, err toward protecting production):
+  (1) livestreaming         : ~/.cache/hapax/stream-mode == 'public' (operator intent; 'private'/unset = not live)
+  (2) livestream-surface-dev: ~/.cache/hapax/livestream-surface-dev present & truthy, OR a cc-task
+                              in_progress whose head mentions the compositor surface (heuristic backstop)
+  override                  : ~/.cache/hapax/gpu-arbiter-override in {auto, production, ornith} (default auto)
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+_CACHE = Path.home() / ".cache" / "hapax"
+_TASKS = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+_PROM = (
+    Path.home()
+    / ".local"
+    / "share"
+    / "node_exporter"
+    / "textfile_collector"
+    / "hapax-gpu-arbiter.prom"
+)
+
+# Keywords marking a cc-task as "developing the livestream surface" (signal-2 heuristic backstop).
+SURFACE_KEYWORDS = (
+    "compositor",
+    "livestream",
+    "screwm",
+    "darkplaces",
+    "reverie",
+    "studio",
+    "1080p",
+)
+_FALSEY = ("", "0", "off", "false", "no")
+
+
+@dataclass(frozen=True)
+class ArbiterPaths:
+    """The files the arbiter reads/writes. Injected in tests; defaults are the live locations."""
+
+    stream_mode: Path = _CACHE / "stream-mode"
+    livestream_dev: Path = _CACHE / "livestream-surface-dev"
+    override: Path = _CACHE / "gpu-arbiter-override"
+    tasks: Path = _TASKS
+    prom: Path = _PROM
+
+
+# Shared immutable default — avoids a function-call default (ruff B008); ArbiterPaths is frozen.
+DEFAULT_PATHS = ArbiterPaths()
+
+
+def _read(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def is_livestreaming(stream_mode_path: Path) -> tuple[bool, str]:
+    mode = _read(stream_mode_path).lower()
+    if mode == "public":
+        return True, "stream-mode=public"
+    return False, f"stream-mode={mode or 'unset'}"
+
+
+def _livestream_dev_cctask(tasks_dir: Path) -> str | None:
+    try:
+        notes = sorted(tasks_dir.glob("*.md"))
+    except OSError:
+        return None
+    for note in notes:
+        try:
+            head = note.read_text(encoding="utf-8", errors="ignore")[:1500].lower()
+        except OSError:
+            continue
+        if "status: in_progress" in head and any(k in head for k in SURFACE_KEYWORDS):
+            return note.stem
+    return None
+
+
+def livestream_dev_active(paths: ArbiterPaths) -> tuple[bool, str]:
+    if paths.livestream_dev.exists() and _read(paths.livestream_dev).lower() not in _FALSEY:
+        return True, "flag:livestream-surface-dev"
+    task = _livestream_dev_cctask(paths.tasks)
+    if task:
+        return True, f"cc-task:{task}"
+    return False, "none"
+
+
+def get_override(override_path: Path) -> str:
+    value = _read(override_path).lower()
+    return value if value in ("auto", "production", "ornith") else "auto"
+
+
+def decide(paths: ArbiterPaths = DEFAULT_PATHS) -> dict:
+    live, live_why = is_livestreaming(paths.stream_mode)
+    dev, dev_why = livestream_dev_active(paths)
+    override = get_override(paths.override)
+
+    if live:
+        # Absolute priority — an active public stream is never pre-empted, override or not.
+        mode, why = "PRODUCTION", f"livestreaming ({live_why})"
+        if override == "ornith":
+            why += " — override=ornith refused (production has absolute priority)"
+    elif override == "production":
+        mode, why = "PRODUCTION", "override=production (reserve 5090 for compositing)"
+    elif override == "ornith":
+        mode, why = "ORNITH", "override=ornith (not livestreaming)"
+    elif dev:
+        mode, why = "PRODUCTION", f"developing the livestream surface ({dev_why})"
+    else:
+        mode, why = "ORNITH", f"idle (not livestreaming [{live_why}], not livestream-dev)"
+
+    return {
+        "mode": mode,
+        "why": why,
+        "override": override,
+        "livestreaming": live,
+        "livestreaming_why": live_why,
+        "livestream_dev": dev,
+        "livestream_dev_why": dev_why,
+        "tenant_5090": "compositing" if mode == "PRODUCTION" else "ornith-35b",
+    }
+
+
+def write_prom(state: dict, paths: ArbiterPaths = DEFAULT_PATHS) -> None:
+    prod = 1 if state["mode"] == "PRODUCTION" else 0
+    lines = [
+        "# HELP hapax_gpu_arbiter_mode podium-5090 tenant (1=active).",
+        "# TYPE hapax_gpu_arbiter_mode gauge",
+        f'hapax_gpu_arbiter_mode{{mode="production"}} {prod}',
+        f'hapax_gpu_arbiter_mode{{mode="ornith"}} {1 - prod}',
+        "# HELP hapax_gpu_arbiter_signal production signals (1=true).",
+        "# TYPE hapax_gpu_arbiter_signal gauge",
+        f'hapax_gpu_arbiter_signal{{signal="livestreaming"}} {1 if state["livestreaming"] else 0}',
+        f'hapax_gpu_arbiter_signal{{signal="livestream_dev"}} {1 if state["livestream_dev"] else 0}',
+        "# HELP hapax_gpu_arbiter_override manual override in effect.",
+        "# TYPE hapax_gpu_arbiter_override gauge",
+        f'hapax_gpu_arbiter_override{{value="{state["override"]}"}} 1',
+    ]
+    try:
+        paths.prom.parent.mkdir(parents=True, exist_ok=True)
+        paths.prom.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError as exc:
+        print(f"warn: prom write failed: {exc}", file=sys.stderr)
+
+
+def set_override(value: str, paths: ArbiterPaths = DEFAULT_PATHS) -> None:
+    paths.override.parent.mkdir(parents=True, exist_ok=True)
+    paths.override.write_text(value + "\n", encoding="utf-8")
+
+
+def set_livestream_dev(on: bool, paths: ArbiterPaths = DEFAULT_PATHS) -> None:
+    if on:
+        paths.livestream_dev.parent.mkdir(parents=True, exist_ok=True)
+        paths.livestream_dev.write_text("on\n", encoding="utf-8")
+    else:
+        paths.livestream_dev.unlink(missing_ok=True)
+
+
+def _print_status(state: dict) -> None:
+    print(f"5090 mode:       {state['mode']}  (tenant: {state['tenant_5090']})")
+    print(f"  reason:        {state['why']}")
+    print(f"  override:      {state['override']}")
+    print(f"  livestreaming: {state['livestreaming']}  [{state['livestreaming_why']}]")
+    print(f"  livestream-dev:{state['livestream_dev']}  [{state['livestream_dev_why']}]")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="hapax-gpu-arbiter", description=__doc__)
+    sub = parser.add_subparsers(dest="cmd")
+    sub.add_parser("status", help="print current mode + signals (default)")
+    sub.add_parser("prom", help="write the Prometheus textfile")
+    p_over = sub.add_parser("override", help="set the manual override")
+    p_over.add_argument("value", choices=["auto", "production", "ornith"])
+    p_dev = sub.add_parser("livestream-dev", help="toggle the livestream-surface-dev flag")
+    p_dev.add_argument("value", choices=["on", "off"])
+    args = parser.parse_args(argv)
+
+    paths = ArbiterPaths()
+    if args.cmd == "override":
+        set_override(args.value, paths)
+        print(f"override = {args.value}")
+    elif args.cmd == "livestream-dev":
+        set_livestream_dev(args.value == "on", paths)
+        print(f"livestream-surface-dev = {args.value}")
+    else:
+        state = decide(paths)
+        if args.cmd == "prom":
+            write_prom(state, paths)
+            print(f"wrote {paths.prom}")
+        else:
+            _print_status(state)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
