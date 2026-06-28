@@ -922,3 +922,110 @@ def test_gc_keeps_corrupt_record_lane(tmp_path, monkeypatch) -> None:
     lines = _run_gc(repo, tmp_path / "reg").splitlines()
     assert any("registry-protected" in ln and "corruptlane" in ln for ln in lines), lines
     assert not any("would remove" in ln and "corruptlane" in ln for ln in lines), lines
+
+
+# --- idle signal is not self-refreshed by the probe (review round 8 critical 1) ----------------------
+
+
+def test_is_clean_uses_no_optional_locks(tmp_path, monkeypatch) -> None:
+    # is_clean must use --no-optional-locks: a plain `git status` refreshes the index on disk, bumping
+    # the mtime the reap path reads as activity, so an abandoned lane would never age out.
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    captured: list = []
+    real_run = subprocess.run
+
+    def spy(args, **kw):
+        captured.append(args)
+        return real_run(args, **kw)
+
+    monkeypatch.setattr(wr.subprocess, "run", spy)
+    wr.is_clean(str(repo))
+    status_cmds = [a for a in captured if isinstance(a, list) and "status" in a]
+    assert status_cmds, captured
+    assert all("--no-optional-locks" in a for a in status_cmds)
+
+
+def test_is_clean_does_not_refresh_index_mtime(tmp_path) -> None:
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, _b = _add_worktree(repo, "wt")
+    git_dir = wr._resolve_git_dir(os.path.realpath(str(wt)))
+    assert git_dir is not None
+    index = os.path.join(git_dir, "index")
+    if not os.path.exists(index):
+        return  # nothing to refresh
+    old = 1_000_000_000.0  # 2001-09-09
+    os.utime(index, (old, old))
+    os.utime(str(Path(wt) / "f.txt"), None)  # stat-change a tracked file -> git wants to refresh
+    assert wr.is_clean(str(wt)) is True  # still clean (content identical)
+    assert os.path.getmtime(index) == old  # index NOT rewritten -> idle clock preserved
+
+
+# --- registry merge detection matches the legacy GC (squash merges) (round 8 critical 2) -------------
+
+
+def _squash_setup(repo, *, content_in_main: bool) -> None:
+    """Branch `feat` modifies f.txt; main lands the SAME content as a different commit iff
+    content_in_main (a squash merge). feat tracks origin/feat, which is gone (auto-deleted on merge)."""
+    subprocess.run(["git", "-C", str(repo), "branch", "-M", "main"], check=True)
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-b", "feat"], check=True)
+    (repo / "f.txt").write_text("feat content")
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-am", "feat work"], check=True)
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "main"], check=True)
+    if content_in_main:
+        (repo / "f.txt").write_text("feat content")  # same bytes -> squash landed
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-q", "-am", "squash-merge feat"], check=True
+        )
+    subprocess.run(
+        ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", "main"], check=True
+    )
+    subprocess.run(["git", "-C", str(repo), "config", "branch.feat.remote", "origin"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "branch.feat.merge", "refs/heads/feat"], check=True
+    )
+
+
+def test_is_merged_detects_squash_merge(tmp_path) -> None:
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    _squash_setup(repo, content_in_main=True)
+    # feat is NOT an ancestor of main, but its content IS present -> squash-merge -> reapable as done.
+    assert wr._git(str(repo), "merge-base", "--is-ancestor", "feat", "origin/main").returncode != 0
+    assert wr.is_merged(str(repo), "feat", "origin/main") is True
+
+
+def test_is_merged_keeps_unmerged_remote_deleted_branch(tmp_path) -> None:
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    _squash_setup(repo, content_in_main=False)  # remote-deleted, but content NOT in base
+    # Data-loss guard: a closed-without-merge / manually-deleted branch with real commits is NOT merged.
+    assert wr.is_merged(str(repo), "feat", "origin/main") is False
+
+
+# --- corrupt-record surfacing in list_records + heartbeat (round 8 minors) ---------------------------
+
+
+def test_list_records_warns_on_corrupt(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    wr.register("/a/wt", branch="x")  # one valid record
+    _corrupt_record("/b/wt")  # one corrupt record
+    recs = wr.list_records()
+    assert len(recs) == 1  # only the parseable record returned
+    assert "corrupt" in capsys.readouterr().err.lower()  # corruption surfaced, not silent
+
+
+def test_cli_heartbeat_corrupt_message(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    _corrupt_record("/some/wt")
+    cli = _load_cli()
+    assert cli.cmd_heartbeat(argparse.Namespace(path="/some/wt")) == 1
+    err = capsys.readouterr().err.lower()
+    assert (
+        "corrupt" in err
+    )  # distinguishes corrupt from "absent" -> sends operator to repair, not register

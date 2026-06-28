@@ -214,12 +214,17 @@ if [[ "${HAPAX_WORKTREE_GC_REGISTRY:-1}" == "1" && -f "$registry_cli" ]]; then
                     registry_protected_set["$pp"]=1
                 fi
             done <<<"$protected_raw"
+            # reap is NON-fatal to governance: protected-paths already succeeded, so the protected set +
+            # the legacy-sweep gate are intact even if reap errors mid-loop. But surface the error rather
+            # than swallow it — done/abandoned lanes simply go unreaped this cycle (next cycle retries).
             if ((dry_run)); then
                 HAPAX_WORKTREE_GC_REPO="$repo" python3 "$registry_cli" reap \
-                    --min-idle-hours "$idle_h" || true
+                    --min-idle-hours "$idle_h" \
+                    || printf 'hapax-worktree-gc: WARN registry reap (dry-run) errored — not fatal, protection intact\n' >&2
             else
                 HAPAX_WORKTREE_GC_REPO="$repo" python3 "$registry_cli" reap --apply \
-                    --min-idle-hours "$idle_h" || true
+                    --min-idle-hours "$idle_h" \
+                    || printf 'hapax-worktree-gc: WARN registry reap errored — done/abandoned lanes unreaped this cycle (not fatal, protection intact)\n' >&2
             fi
             registry_mode="governed"
         fi

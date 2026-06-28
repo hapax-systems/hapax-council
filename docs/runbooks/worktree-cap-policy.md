@@ -211,11 +211,15 @@ Two timers keep the count bounded without manual cleanup:
     age+clean+merged remover still deletes stale merged worktrees + their merged
     branches, but it now **skips every registry-protected lane** (pins +
     `infra`/`active`/`merging`), so inference can never override an explicit status.
-    If the registry pre-pass *fails* (Python import error / corrupt record), the
-    legacy sweep **fails CLOSED** — reaps nothing by inference that cycle — and
-    ntfy-alerts, rather than silently reverting to pure inference. (`done`/
-    `abandoned` are intentionally NOT protected, so the sweep can still reap a merged
-    checkout + delete its merged branch.) The release-snapshot cleanup
+    If the registry pre-pass *itself* fails — `backfill` or `protected-paths`
+    exits non-zero (Python import error, unwritable/unreadable registry dir) — the
+    legacy sweep **fails CLOSED** for the whole cycle: reaps nothing by inference and
+    ntfy-alerts, rather than silently reverting to pure inference. (An *individual*
+    corrupt record does NOT fail the pre-pass — it is handled within a successful
+    pre-pass: kept protected and emitted by `protected-paths`; see the
+    corrupt-records bullet below.) (`done`/`abandoned` are intentionally NOT
+    protected, so the sweep can still reap a merged checkout + delete its merged
+    branch.) The release-snapshot cleanup
     (`source-activation/releases/<sha>`, keeping active+candidate from `current.json`)
     and the stale-*unmerged* alerts are separate and not registry-gated.
   - **Idle window.** The module default `abandoned` threshold is 12h, but the timer

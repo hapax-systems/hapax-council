@@ -243,12 +243,26 @@ def deregister(path: str) -> None:
 
 
 def list_records() -> list[WorktreeRecord]:
+    """All parseable records. Corrupt files are skipped with a per-file warning AND an aggregate count
+    (not silently), so a corrupt record is never invisible to a caller of this function — callers that
+    must *act* on corruption use ``_read_record`` per path."""
     out: list[WorktreeRecord] = []
+    corrupt = 0
     for fp in sorted(registry_dir().glob("*.json")):
         try:
             out.append(_record_from_json(fp.read_text(encoding="utf-8")))
-        except Exception:
-            continue
+        except Exception as exc:
+            corrupt += 1
+            print(
+                f"hapax-worktree-registry: WARN skipping corrupt record {fp}: {exc}",
+                file=sys.stderr,
+            )
+    if corrupt:
+        print(
+            f"hapax-worktree-registry: WARN list_records skipped {corrupt} corrupt record(s) "
+            f"(fail-closed: they stay protected; repair with `rm` + `backfill`)",
+            file=sys.stderr,
+        )
     return out
 
 
@@ -349,15 +363,70 @@ def _git(repo: str, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def is_clean(worktree_path: str) -> bool:
-    res = _git(worktree_path, "status", "--porcelain=v1", "--untracked-files=all")
+    # --no-optional-locks (= GIT_OPTIONAL_LOCKS=0): a plain `git status` REFRESHES the index stat cache
+    # ON DISK, bumping the index file's mtime. The reap path reads that mtime as an activity signal
+    # (mtime_age_seconds), so without this flag every 6h GC probe would reset the idle clock and a
+    # genuinely-abandoned lane would NEVER age to the --min-idle-hours threshold. This flag makes the
+    # status read non-mutating, so only real work (commits, edits) advances the idle clock.
+    res = _git(
+        worktree_path, "--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all"
+    )
     return res.returncode == 0 and res.stdout.strip() == ""
 
 
+def _branch_remote_deleted(canonical: str, branch: str) -> bool:
+    """Port of the legacy GC guard: the branch was pushed AS ``origin/<name>`` (its upstream remote is
+    ``origin`` AND its merge ref is ``refs/heads/<name>``) AND that remote-tracking ref is now GONE
+    (GitHub auto-deleted on merge + pruned). The merge-ref guard avoids a data-loss false positive for a
+    branch that merely TRACKS a different ref (e.g. created off ``origin/main``), which never had an
+    ``origin/<name>`` ref to delete."""
+    name = branch.removeprefix("refs/heads/")
+    if not name or name.startswith("detached:"):
+        return False
+    if _git(canonical, "config", "--get", f"branch.{name}.remote").stdout.strip() != "origin":
+        return False
+    merge_ref = _git(canonical, "config", "--get", f"branch.{name}.merge").stdout.strip()
+    if merge_ref != f"refs/heads/{name}":
+        return False
+    return (
+        _git(
+            canonical, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{name}"
+        ).returncode
+        != 0
+    )
+
+
+def _branch_content_merged(canonical: str, branch: str, base_ref: str) -> bool:
+    """Port of the legacy GC content gate: True iff merging ``branch`` into ``base_ref`` adds NOTHING —
+    the merged tree equals base's own tree. POSITIVE evidence that a squash/rebase merge already landed
+    the content (ancestry cannot see that). A branch with real unique commits yields a different tree
+    (or a conflict, nonzero exit) and is NOT content-merged, so unmerged work is never classed done."""
+    base_tree = _git(
+        canonical, "rev-parse", "--verify", "--quiet", f"{base_ref}^{{tree}}"
+    ).stdout.strip()
+    if not base_tree:
+        return False
+    res = _git(canonical, "merge-tree", "--write-tree", base_ref, branch)
+    if res.returncode != 0:  # nonzero exit = the merge conflicts => not cleanly contained
+        return False
+    merged_tree = res.stdout.split("\n", 1)[0].strip()
+    return bool(merged_tree) and merged_tree == base_tree
+
+
 def is_merged(canonical: str, branch: str, base_ref: str = "origin/main") -> bool:
+    """Whether the branch's work is already in base, so removing its checkout loses nothing. Detects
+    BOTH (a) merge-commit / fast-forward merges via ancestry, AND (b) SQUASH/REBASE merges — the
+    council's DEFAULT, which break ancestry — via the same evidence the legacy GC uses: the remote
+    branch was auto-deleted+pruned AND the branch's content is positively present in base. Without (b),
+    a squash-merged stale lane mis-classifies as ``merging`` (kept) when gh is down, and the round-6
+    registry gate would then mask it from the legacy sweep — regressing cleanup for squash merges."""
     if not branch:
         return False
-    res = _git(canonical, "merge-base", "--is-ancestor", branch, base_ref)
-    return res.returncode == 0
+    if _git(canonical, "merge-base", "--is-ancestor", branch, base_ref).returncode == 0:
+        return True
+    return _branch_remote_deleted(canonical, branch) and _branch_content_merged(
+        canonical, branch, base_ref
+    )
 
 
 def _resolve_git_dir(path: str) -> str | None:

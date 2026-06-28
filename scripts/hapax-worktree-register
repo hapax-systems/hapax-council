@@ -229,8 +229,19 @@ def cmd_register(args: argparse.Namespace) -> int:
 
 def cmd_heartbeat(args: argparse.Namespace) -> int:
     rp = os.path.realpath(args.path)
-    rec = wr.heartbeat(rp)
-    if rec:
+    # Distinguish CORRUPT from ABSENT for a useful message (wr.heartbeat returns None for both — it does
+    # not raise, since load() returns None on corrupt — so the old code reported a corrupt record as
+    # "absent", sending the operator to re-register instead of repair).
+    _existing, corrupt = wr._read_record(rp)
+    if corrupt:
+        print(
+            f"corrupt registry record for {rp} ({wr.record_path(rp)}) — heartbeat refused (fail-closed; "
+            f"the worktree stays protected). Repair: `rm {wr.record_path(rp)}` then "
+            f"`hapax-worktree-register register {rp}` (or `backfill`).",
+            file=sys.stderr,
+        )
+        return 1
+    if wr.heartbeat(rp) is not None:
         print("heartbeat ok")
         return 0
     print(
