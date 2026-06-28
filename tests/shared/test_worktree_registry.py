@@ -706,10 +706,11 @@ def test_canonical_resolves_linked_worktree_to_main(tmp_path) -> None:
 # --- gc.sh integration: the REAL production script is governed by lifecycle status (review round 6) ---
 
 
-def _run_gc(repo, registry_dir):
-    """Run the real hapax-worktree-gc.sh in dry-run against a throwaway repo; return combined output.
-    Orphan-reaper + fetch + ntfy disabled to keep it hermetic; clean-age 0 + far-future --now make
-    every clean merged worktree reach the legacy removable gate so the registry gate is what decides."""
+def _run_gc(repo, registry_dir, *, apply=False, now="9999999999", clean_age="0"):
+    """Run the real hapax-worktree-gc.sh against a throwaway repo; return combined output. Orphan-reaper
+    + fetch + ntfy disabled to keep it hermetic. `apply=False` runs --dry-run; `apply=True` actually
+    removes. `now`/`clean_age` tune the legacy age gate (default: far-future now + 0 clean-age so every
+    clean merged worktree reaches the legacy removable gate, leaving the registry gate to decide)."""
     gc = Path(__file__).resolve().parents[2] / "scripts" / "hapax-worktree-gc.sh"
     env = {
         **os.environ,
@@ -717,26 +718,22 @@ def _run_gc(repo, registry_dir):
         "HAPAX_WORKTREE_GC_REAP_ORPHANS": "0",
         "HAPAX_WORKTREE_GC_NTFY_URL": "",
     }
-    res = subprocess.run(
-        [
-            "bash",
-            str(gc),
-            "--repo",
-            str(repo),
-            "--base-ref",
-            "origin/main",
-            "--clean-age-seconds",
-            "0",
-            "--now",
-            "9999999999",
-            "--no-fetch",
-            "--dry-run",
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
-    )
+    argv = [
+        "bash",
+        str(gc),
+        "--repo",
+        str(repo),
+        "--base-ref",
+        "origin/main",
+        "--clean-age-seconds",
+        clean_age,
+        "--now",
+        now,
+        "--no-fetch",
+    ]
+    if not apply:
+        argv.append("--dry-run")
+    res = subprocess.run(argv, capture_output=True, text=True, env=env, check=False)
     return res.stdout + res.stderr
 
 
@@ -1099,3 +1096,106 @@ def test_classify_squash_merged_lane_is_done_without_gh(tmp_path, monkeypatch) -
     assert p["merged"] is True  # squash detected git-only
     assert p["status"] == "done"  # NOT "merging" -> reapable
     assert wr.is_inference_protected(p["status"], pinned=p["pinned"]) is False  # not protected
+
+
+# --- review round 10: the REAL gc.sh path must not refresh the idle clock; squash reaps; reap-fail ---
+
+
+def test_gc_real_path_does_not_refresh_idle_index(tmp_path, monkeypatch) -> None:
+    # Critical: NEITHER the registry pre-pass (is_clean) NOR the legacy sweep's OWN `git status` (gc.sh
+    # process_worktree) may refresh the index mtime — else a sub-48h idle lane looks fresh every 6h cycle
+    # and never abandons. Run the REAL gc.sh --dry-run on a racy idle lane; assert its index mtime is
+    # unchanged (both git-status reads use --no-optional-locks).
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    subprocess.run(["git", "-C", str(repo), "branch", "-M", "main"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", "main"], check=True
+    )
+    wt, _b = _add_worktree(repo, "idlelane")
+    real = os.path.realpath(str(wt))
+    git_dir = wr._resolve_git_dir(real)
+    assert git_dir is not None
+    index = os.path.join(git_dir, "index")
+    old = 1_000_000_000.0  # 2001
+    # racy: a tracked file whose stat differs from the index's cached stat makes a plain `git status`
+    # want to rewrite the index; --no-optional-locks must prevent that on BOTH status reads.
+    os.utime(str(Path(wt) / "f.txt"), (old, old))
+    os.utime(index, (old, old))
+    before = os.path.getmtime(index)
+    _run_gc(repo, tmp_path / "reg")  # dry-run: backfill is_clean + legacy `git status` both run
+    assert os.path.getmtime(index) == before  # idle clock survived the whole real GC run
+
+
+def test_gc_real_path_reaps_squash_merged_without_gh(tmp_path, monkeypatch) -> None:
+    # Critical 4 end-to-end through the REAL gc.sh with gh UNAVAILABLE (throwaway repo has no remote, so
+    # _open_pr_branches degrades to None): a squash-merged lane is detected `done` and actually reaped.
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    _squash_setup(repo, content_in_main=True)
+    wt = tmp_path / "feat-wt"
+    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", str(wt), "feat"], check=True)
+    _run_gc(repo, tmp_path / "reg", apply=True)
+    assert not os.path.isdir(str(wt))  # squash-merged lane reaped through the real GC path, no gh
+
+
+def test_cli_reap_handles_remove_failure_gracefully(tmp_path, monkeypatch, capsys) -> None:
+    # Critical: a failing `git worktree remove` must print the FAIL + Next guidance and let the loop
+    # continue (not crash on the first removal failure, halting cleanup of remaining lanes).
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, branch = _add_worktree(repo, "doomed")
+    wr.register(os.path.realpath(str(wt)), branch=branch, status="done")
+    cli = _load_cli()
+    monkeypatch.setattr(cli, "CANONICAL", str(repo))
+    monkeypatch.setattr(cli, "SELF", "")
+    monkeypatch.setattr(cli, "_open_pr_branches", lambda: set())
+    monkeypatch.setattr(cli.wr, "live_process_count", lambda _p: 0)
+    monkeypatch.setattr(cli.wr, "is_merged", lambda *a, **k: True)  # -> done -> reap is attempted
+    real_run = subprocess.run
+
+    def failing_run(args, **kw):
+        if isinstance(args, list) and "worktree" in args and "remove" in args:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="fatal: is locked")
+        return real_run(args, **kw)
+
+    monkeypatch.setattr(cli.subprocess, "run", failing_run)
+    cli.cmd_reap(argparse.Namespace(apply=True, min_idle_hours=0.0))  # must not raise
+    err = capsys.readouterr().err
+    assert "FAIL remove" in err
+    assert "Next:" in err
+    assert os.path.isdir(str(wt))  # not removed (remove failed) — loop survived the failure
+
+
+def test_cli_backfill_preserves_fresh_heartbeat(tmp_path, monkeypatch) -> None:
+    # Codex major: an already-registered lane with a FRESH heartbeat but OLD file mtime must NOT be
+    # clobbered to the stale mtime by backfill (else an active lane looks abandoned and gets reaped).
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, branch = _add_worktree(repo, "wt")
+    real = os.path.realpath(str(wt))
+    git_dir = wr._resolve_git_dir(real)
+    old = 1_000_000_000.0  # 2001 — old FILE activity
+    for p in (real, os.path.join(git_dir, "index"), os.path.join(git_dir, "HEAD")):
+        if os.path.exists(p):
+            os.utime(p, (old, old))
+    fresh = datetime.now(UTC)  # but a fresh session heartbeat
+    wr.register(real, branch=branch, status="active", last_heartbeat=fresh)
+    cli = _load_cli()
+    monkeypatch.setattr(cli, "CANONICAL", str(repo))
+    monkeypatch.setattr(cli, "_open_pr_branches", lambda: set())
+    monkeypatch.setattr(cli.wr, "live_process_count", lambda _p: 0)
+    cli.cmd_backfill(argparse.Namespace())
+    rec = wr.load(real)
+    assert rec is not None
+    assert (
+        rec.last_heartbeat == fresh
+    )  # fresh heartbeat preserved, NOT moved back to the stale mtime

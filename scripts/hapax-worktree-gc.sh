@@ -487,7 +487,12 @@ process_worktree() {
     fi
 
     clean=0
-    if status="$(git -C "$path" status --porcelain=v1 --untracked-files=all)" && [[ -z "$status" ]]; then
+    # --no-optional-locks (GIT_OPTIONAL_LOCKS=0): like the registry probe's is_clean(), this legacy
+    # clean-check must NOT refresh the index stat cache on disk. mtime_age_seconds() reads the index
+    # mtime as the abandonment clock, and this sweep runs every 6h on every worktree; without the flag
+    # it would reset a sub-48h idle lane's clock each cycle so it never crosses the abandoned threshold.
+    if status="$(git -C "$path" --no-optional-locks status --porcelain=v1 --untracked-files=all)" \
+        && [[ -z "$status" ]]; then
         clean=1
     fi
 

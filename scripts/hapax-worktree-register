@@ -193,9 +193,15 @@ def cmd_backfill(_args: argparse.Namespace) -> int:
             corrupt_kept += 1
             continue
         # Seed last_heartbeat from the worktree's REAL last activity (mtime), not now — otherwise a
-        # back-filled record would look just-heartbeated and never become reapable.
+        # back-filled record would look just-heartbeated and never become reapable. But NEVER move a
+        # heartbeat BACKWARDS: an already-registered lane may carry a FRESH heartbeat (stamped by its
+        # session) with no recent file activity — clobbering it with the stale mtime would wrongly make
+        # an active lane look abandoned and get it reaped. Take the freshest of (existing hb, mtime).
         age = wr.mtime_age_seconds(p["path"])
         hb = now - timedelta(seconds=age) if age != float("inf") else now
+        existing = wr.load(p["path"])
+        if existing is not None and existing.last_heartbeat > hb:
+            hb = existing.last_heartbeat
         try:
             wr.register(p["path"], branch=p["branch"], status=p["status"], last_heartbeat=hb)
         except wr.CorruptRecordError:
