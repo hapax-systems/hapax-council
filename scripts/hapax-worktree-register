@@ -6,14 +6,15 @@ Subcommands:
   backfill             register every current worktree with its derived status
   register <path>      register/refresh one worktree (--role --branch --task --pr --session)
   heartbeat <path>     stamp last_heartbeat (the "still being worked" signal)
-  reap [--apply]       remove ONLY done/abandoned checkouts by explicit STATUS (branch always kept)
+  reap [--apply]       remove ONLY REGISTERED done/abandoned checkouts by status (branch always kept)
 
-The registry makes "abandoned vs paused" KNOWABLE so cleanup acts on STATUS, not inference. Reap
-removes a checkout ONLY when its status is `done` (merged) or `abandoned` (no live owner, no open PR,
-stale) AND it is clean (no uncommitted work) AND not live — never an `active`/`merging` (open-PR)
-lane, a dirty lane (unsaved work is kept), or one with a live process (even if merged). It ALWAYS keeps
-the branch (commits stay in .git, reversible via `git worktree add`); deleting a merged branch is left
-to hapax-worktree-gc.sh, which proves content-is-in-base first. `--min-idle-hours N` sets the staleness.
+Cleanup is governed by the REGISTRY, not inference. Reap removes a checkout ONLY when it is REGISTERED
+(an unregistered worktree is flagged, never reaped — register it via `backfill` first) AND its status
+is `done` (merged) or `abandoned` (no live owner, no open PR, stale) AND clean (no uncommitted work)
+AND not live — never an `active`/`merging` (open-PR) lane, a dirty lane, or one with a live process
+(even if merged). It ALWAYS keeps the branch (reversible via `git worktree add`); deleting a merged
+branch is left to hapax-worktree-gc.sh, which proves content-is-in-base first. `--min-idle-hours N`
+sets the abandoned staleness threshold.
 """
 
 from __future__ import annotations
@@ -77,24 +78,28 @@ def _worktrees(repo: str) -> list[dict]:
 
 
 def _open_pr_branches() -> set[str] | None:
-    res = subprocess.run(
-        [
-            "gh",
-            "pr",
-            "list",
-            "--state",
-            "open",
-            "--limit",
-            "300",
-            "--json",
-            "headRefName",
-            "-q",
-            ".[].headRefName",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        res = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--state",
+                "open",
+                "--limit",
+                "300",
+                "--json",
+                "headRefName",
+                "-q",
+                ".[].headRefName",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        # gh not installed -> PR signal unavailable; degrade to None (classify fails closed).
+        return None
     if res.returncode != 0:
         return None
     return set(res.stdout.split())
@@ -190,6 +195,15 @@ def cmd_reap(args: argparse.Namespace) -> int:
         if SELF and os.path.realpath(p["path"]) == os.path.realpath(SELF):
             kept += 1
             print(f"KEEP self        {p['path']} [{p['status']}]")
+            continue
+        # Cleanup is governed by the REGISTRY: never reap an UNREGISTERED worktree by inferred status.
+        # Registration (backfill / the creation contract) is the governance step; an unregistered tree
+        # is a contract violation to flag, not silently remove.
+        if not p["registered"]:
+            kept += 1
+            print(
+                f"KEEP unregistered {p['path']} [{p['branch'] or '-'}] — run `backfill` to govern it"
+            )
             continue
         # Reap ONLY by explicit status (done/abandoned) + clean + NOT live. The live gate is
         # decisive even for a merged (done) worktree someone is still working in. active/merging kept.

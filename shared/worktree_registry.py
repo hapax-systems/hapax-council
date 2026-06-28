@@ -393,4 +393,5 @@ def probe_worktree(
         "has_pr": has_pr,
         "status": status,
         "pinned": pinned,
+        "registered": rec is not None,
     }

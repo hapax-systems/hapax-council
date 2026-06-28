@@ -379,6 +379,10 @@ def test_cli_reap_reaps_abandoned_keeps_merging_and_live(tmp_path, monkeypatch, 
     monkeypatch.setattr(cli.wr, "live_process_count", lambda p: 1 if p == live_real else 0)
     monkeypatch.setattr(cli.wr, "DEFAULT_ABANDONED_AFTER_S", 0)  # any idle age counts as stale
 
+    cli.cmd_backfill(
+        argparse.Namespace()
+    )  # govern all worktrees first (cleanup needs a registry record)
+
     # dry-run: only the abandoned lane is reap-eligible; merging + live are silently kept.
     assert cli.cmd_reap(argparse.Namespace(apply=False, min_idle_hours=0.0)) == 0
     out = capsys.readouterr().out
@@ -386,9 +390,10 @@ def test_cli_reap_reaps_abandoned_keeps_merging_and_live(tmp_path, monkeypatch, 
     assert str(merging) not in out
     assert str(live_wt) not in out
 
-    # apply: the abandoned checkout is removed; merging + live survive (live gate + open-PR keep).
+    # apply: the abandoned checkout is removed + deregistered; merging + live survive.
     assert cli.cmd_reap(argparse.Namespace(apply=True, min_idle_hours=0.0)) == 0
     assert not os.path.isdir(str(abandoned))
+    assert wr.load(os.path.realpath(str(abandoned))) is None  # record deregistered after removal
     assert os.path.isdir(str(merging))
     assert os.path.isdir(str(live_wt))
 
@@ -405,8 +410,9 @@ def test_cli_reap_self_is_protected(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cli.wr, "live_process_count", lambda _p: 0)
     monkeypatch.setattr(cli.wr, "DEFAULT_ABANDONED_AFTER_S", 0)
     monkeypatch.setattr(cli, "SELF", os.path.realpath(str(self_wt)))
+    cli.cmd_backfill(argparse.Namespace())  # registered + abandoned, but SELF-protected
     cli.cmd_reap(argparse.Namespace(apply=True, min_idle_hours=0.0))
-    assert os.path.isdir(str(self_wt))  # would be abandoned, but SELF-protected
+    assert os.path.isdir(str(self_wt))
 
 
 def test_cli_heartbeat_missing_registration_returns_1(tmp_path, monkeypatch, capsys) -> None:
@@ -417,6 +423,68 @@ def test_cli_heartbeat_missing_registration_returns_1(tmp_path, monkeypatch, cap
     err = capsys.readouterr().err
     assert "no registration" in err
     assert "register" in err  # carries a next-action
+
+
+def test_cli_reap_skips_unregistered_worktree(tmp_path, monkeypatch, capsys) -> None:
+    # CRITICAL: an UNREGISTERED worktree is never reaped by inference (cleanup is registry-governed).
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, _b = _add_worktree(repo, "wt")  # deliberately NOT registered
+    cli = _load_cli()
+    monkeypatch.setattr(cli, "CANONICAL", str(repo))
+    monkeypatch.setattr(cli, "_open_pr_branches", lambda: set())
+    monkeypatch.setattr(cli.wr, "live_process_count", lambda _p: 0)
+    monkeypatch.setattr(cli.wr, "DEFAULT_ABANDONED_AFTER_S", 0)
+    cli.cmd_reap(argparse.Namespace(apply=True, min_idle_hours=0.0))
+    assert "unregistered" in capsys.readouterr().out
+    assert os.path.isdir(str(wt))  # kept despite being idle/abandoned-by-inference
+
+
+def test_cli_reap_pr_signal_unavailable_keeps_all(tmp_path, monkeypatch) -> None:
+    # gh unavailable -> no registered idle lane is reaped (fail-closed merging).
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, _b = _add_worktree(repo, "wt")
+    cli = _load_cli()
+    monkeypatch.setattr(cli, "CANONICAL", str(repo))
+    monkeypatch.setattr(cli, "_open_pr_branches", lambda: None)  # gh down
+    monkeypatch.setattr(cli.wr, "live_process_count", lambda _p: 0)
+    monkeypatch.setattr(cli.wr, "DEFAULT_ABANDONED_AFTER_S", 0)
+    cli.cmd_backfill(argparse.Namespace())
+    cli.cmd_reap(argparse.Namespace(apply=True, min_idle_hours=0.0))
+    assert os.path.isdir(str(wt))  # PR signal unavailable -> merging, not abandoned
+
+
+def test_cli_reap_apply_failure_keeps_record(tmp_path, monkeypatch, capsys) -> None:
+    # When `git worktree remove` fails, the worktree + its registry record are kept; the loop continues.
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, _b = _add_worktree(repo, "wt")
+    real = os.path.realpath(str(wt))
+    cli = _load_cli()
+    monkeypatch.setattr(cli, "CANONICAL", str(repo))
+    monkeypatch.setattr(cli, "_open_pr_branches", lambda: set())
+    monkeypatch.setattr(cli.wr, "live_process_count", lambda _p: 0)
+    monkeypatch.setattr(cli.wr, "DEFAULT_ABANDONED_AFTER_S", 0)
+    cli.cmd_backfill(argparse.Namespace())
+    real_run = cli.subprocess.run
+
+    def fake_run(cmd, *a, **k):
+        if "remove" in cmd:
+            return cli.subprocess.CompletedProcess(cmd, 1, "", "fatal: cannot remove")
+        return real_run(cmd, *a, **k)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    cli.cmd_reap(argparse.Namespace(apply=True, min_idle_hours=0.0))
+    assert "FAIL remove" in capsys.readouterr().err
+    assert os.path.isdir(str(wt))  # not removed
+    assert wr.load(real) is not None  # record NOT deregistered on failure
 
 
 def test_classify_pr_signal_unavailable_keeps_as_merging() -> None:
