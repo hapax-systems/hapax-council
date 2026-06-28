@@ -180,3 +180,16 @@ def test_is_infra_path_patterns() -> None:
     assert wr.is_infra_path("/x/rebuild/worktree", canonical=_CANON) is True
     assert wr.is_infra_path("/x/runtime/health-monitor-source", canonical=_CANON) is True
     assert wr.is_infra_path("/p/hapax-council--cx-red", canonical=_CANON) is False
+
+
+def test_mtime_age_seconds_uses_freshest_signal(tmp_path) -> None:
+    import os
+
+    d = tmp_path / "wt"
+    d.mkdir()
+    os.utime(d, (1000.0, 1000.0))
+    assert wr.mtime_age_seconds(str(d), now_epoch=5000.0) == 4000.0
+
+
+def test_mtime_age_seconds_missing_path_is_inf() -> None:
+    assert wr.mtime_age_seconds("/no/such/worktree", now_epoch=5000.0) == float("inf")

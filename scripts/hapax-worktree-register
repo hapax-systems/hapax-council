@@ -196,6 +196,9 @@ def cmd_reap(args: argparse.Namespace) -> int:
         if not wr.should_reap_worktree(is_infra=p["infra"], live=p["live"], clean=p["clean"]):
             kept += 1
             continue
+        if args.min_idle_hours > 0 and wr.mtime_age_seconds(p["path"]) < args.min_idle_hours * 3600:
+            kept += 1
+            continue
         label = "done/merged" if p["merged"] else ("merging" if p["has_pr"] else "abandoned")
         if not args.apply:
             tail = " +branch-D" if p["merged"] else " (branch kept)"
@@ -245,6 +248,12 @@ def main(argv: list[str] | None = None) -> int:
     hp.set_defaults(fn=cmd_heartbeat)
     rep = sub.add_parser("reap")
     rep.add_argument("--apply", action="store_true")
+    rep.add_argument(
+        "--min-idle-hours",
+        type=float,
+        default=0.0,
+        help="only reap worktrees idle >= N hours (staleness gate for automatic/timer runs)",
+    )
     rep.set_defaults(fn=cmd_reap)
     args = ap.parse_args(argv)
     return int(args.fn(args))

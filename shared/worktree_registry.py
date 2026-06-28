@@ -249,3 +249,23 @@ def is_merged(canonical: str, branch: str, base_ref: str = "origin/main") -> boo
         return False
     res = _git(canonical, "merge-base", "--is-ancestor", branch, base_ref)
     return res.returncode == 0
+
+
+def mtime_age_seconds(path: str, *, now_epoch: float | None = None) -> float:
+    """Seconds since the worktree's freshest activity signal (max of the dir, the git index, and
+    HEAD mtimes). A staleness GATE for automatic reaping: combined with non-live, a worktree idle
+    for many hours is abandoned, not paused. Returns inf if the path is gone (so callers reap it)."""
+    candidates = [path, os.path.join(path, ".git", "index"), os.path.join(path, ".git", "HEAD")]
+    newest = 0.0
+    found = False
+    for c in candidates:
+        try:
+            mt = os.path.getmtime(c)
+        except OSError:
+            continue
+        found = True
+        newest = max(newest, mt)
+    if not found:
+        return float("inf")
+    now = now_epoch if now_epoch is not None else datetime.now(UTC).timestamp()
+    return max(0.0, now - newest)
