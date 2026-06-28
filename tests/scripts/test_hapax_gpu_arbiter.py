@@ -199,3 +199,28 @@ def test_set_override_atomic_leaves_no_temp(tmp_path: Path) -> None:
     # temp-then-replace must leave only the target file, never a stray temp.
     assert [p.name for p in paths.override.parent.iterdir()] == [paths.override.name]
     assert arb.get_override(paths.override) == "production"
+
+
+def test_unreadable_stream_mode_fails_closed(tmp_path: Path) -> None:
+    # A read error on stream-mode (NOT a missing file) must preserve production priority,
+    # not be downgraded to "unset" -> ORNITH (CodeRabbit fail-closed finding).
+    paths = _paths(tmp_path)
+    paths.stream_mode.mkdir()  # a directory -> read_text raises OSError (not FileNotFoundError)
+    d = arb.decide(paths)
+    assert d["mode"] == "PRODUCTION"
+    assert d["livestreaming"] is True
+    assert "unreadable" in d["livestreaming_why"]
+
+
+def test_av_source_substring_does_not_falsely_match(tmp_path: Path) -> None:
+    # "docs/compositor-notes.md" / "src/notquake" must NOT count as AV-source authority —
+    # exact path segment, not substring (CodeRabbit governance backstop).
+    paths = _paths(tmp_path)
+    _seed(paths.stream_mode, "private\n")
+    _seed(
+        paths.tasks / "cc-task-doc.md",
+        "---\nstatus: in_progress\nmutation_scope_refs:\n  - docs/compositor-notes.md\n  - src/notquake\n---\nnotes about the compositor\n",
+    )
+    d = arb.decide(paths)
+    assert d["livestream_dev"] is False
+    assert d["mode"] == "ORNITH"

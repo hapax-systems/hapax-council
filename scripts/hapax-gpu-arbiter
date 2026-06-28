@@ -47,6 +47,7 @@ _PROM = (
 # task metadata, not free-text body keywords, so a stray note cannot pin the 5090 to PRODUCTION.
 _AV_SOURCE_SEGMENTS = (
     "compositor",
+    "studio_compositor",
     "darkplaces",
     "screwm",
     "shaders",
@@ -91,15 +92,24 @@ def _atomic_write(path: Path, data: str) -> None:
 
 
 def is_livestreaming(stream_mode_path: Path) -> tuple[bool, str]:
-    mode = _read(stream_mode_path).lower()
+    try:
+        mode = stream_mode_path.read_text(encoding="utf-8").strip().lower()
+    except FileNotFoundError:
+        mode = ""
+    except OSError as exc:
+        # A real read failure (permission/IO) must NOT downgrade to idle — fail closed to PRODUCTION.
+        return True, f"stream-mode=unreadable:{exc.__class__.__name__}"
     if mode == "public":
         return True, "stream-mode=public"
     return False, f"stream-mode={mode or 'unset'}"
 
 
 def _ref_touches_av_source(ref: str) -> bool:
+    # exact path-segment match (stem-stripped), not substring — so "docs/compositor-notes.md"
+    # or "src/notquake" do not count as AV-source authority (CodeRabbit governance backstop).
     parts = ref.lower().replace("\\", "/").split("/")
-    return any(seg in part for part in parts for seg in _AV_SOURCE_SEGMENTS)
+    segments = set(parts) | {p.rsplit(".", 1)[0] for p in parts}
+    return bool(segments & set(_AV_SOURCE_SEGMENTS))
 
 
 def _livestream_dev_cctask(tasks_dir: Path) -> str | None:
